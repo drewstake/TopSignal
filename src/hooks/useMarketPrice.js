@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { connectMarket } from "../services/market";
 import { useAuth } from "../context/AuthContext";
 import { flushSync } from "react-dom";
 
+const roundToQuarter = (n) => Math.round(n * 4) / 4;
+
 // tiny mock fallback so this hook is self-sufficient in dev
 function mockSub(onTick) {
-  let price = 19000 + Math.random() * 200;
-  onTick(Number(price.toFixed(2)));
+  let price = roundToQuarter(19000 + Math.random() * 200);
+  onTick(price);
   const id = setInterval(() => {
     const drift = (Math.random() - 0.5) * 10;
-    price = Math.max(1000, price + drift);
-    onTick(Number(price.toFixed(2)));
+    price = roundToQuarter(Math.max(1000, price + drift));
+    onTick(price);
   }, 2000);
   return () => clearInterval(id);
 }
@@ -21,7 +23,6 @@ export function useMarketPrice(contractId) {
   const [basePrice, setBasePrice] = useState(null);
   const [feedSource, setFeedSource] = useState(""); // "SignalR: ..." | "Mock"
   const [error, setError] = useState(null);
-  const didInit = useRef(false);
 
   useEffect(() => {
     if (!authed) return;
@@ -29,11 +30,27 @@ export function useMarketPrice(contractId) {
     let cancelled = false;
 
     function extractPrice(d) {
-      const vals = [d?.lastPrice, d?.LastPrice, d?.tradePrice, d?.TradePrice, d?.price, d?.Price, d?.last?.price, d?.lastTrade?.price];
+      const vals = [
+        d?.lastPrice,
+        d?.LastPrice,
+        d?.lastTradedPrice,
+        d?.LastTradedPrice,
+        d?.tradePrice,
+        d?.TradePrice,
+        d?.price,
+        d?.Price,
+        d?.last?.price,
+        d?.Last?.Price,
+        d?.lastTrade?.price,
+        d?.LastTrade?.Price,
+      ];
       for (const v of vals) {
         const n = Number(v);
         if (v != null && !Number.isNaN(n)) return n;
       }
+      const bid = Number(d?.bestBid ?? d?.BestBid);
+      const ask = Number(d?.bestAsk ?? d?.BestAsk);
+      if (!Number.isNaN(bid) && !Number.isNaN(ask)) return (bid + ask) / 2;
       return null;
     }
 
@@ -53,15 +70,17 @@ export function useMarketPrice(contractId) {
           onQuote: (d) => {
             const p = extractPrice(d);
             if (p != null) {
-              setPrice(p);
-              setBasePrice((bp) => (bp == null ? p : bp));
+              const rp = roundToQuarter(p);
+              setPrice(rp);
+              setBasePrice((bp) => (bp == null ? rp : bp));
             }
           },
           onTrade: (d) => {
             const p = extractPrice(d);
             if (p != null) {
-              flushSync(() => setPrice(p));
-              setBasePrice((bp) => (bp == null ? p : bp));
+              const rp = roundToQuarter(p);
+              flushSync(() => setPrice(rp));
+              setBasePrice((bp) => (bp == null ? rp : bp));
             }
           },
         });
@@ -80,10 +99,10 @@ export function useMarketPrice(contractId) {
       }
     })();
 
-    return () => {
-      cancelled = true;
-      try { stop?.(); } catch {}
-    };
+      return () => {
+        cancelled = true;
+        try { stop?.(); } catch { /* ignore */ }
+      };
   }, [authed, contractId]);
 
   const delta = useMemo(() => (price != null && basePrice != null ? price - basePrice : 0), [price, basePrice]);

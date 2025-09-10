@@ -52,21 +52,21 @@ export async function connectMarket({ contractId, onQuote, onTrade, onDepth, log
   };
 
   const unsubscribe = async () => {
-    try { await connection.invoke('UnsubscribeContractQuotes', contractId); } catch {}
-    try { await connection.invoke('UnsubscribeContractTrades', contractId); } catch {}
-    try { await connection.invoke('UnsubscribeContractMarketDepth', contractId); } catch {}
+    try { await connection.invoke('UnsubscribeContractQuotes', contractId); } catch { /* ignore */ }
+    try { await connection.invoke('UnsubscribeContractTrades', contractId); } catch { /* ignore */ }
+    try { await connection.invoke('UnsubscribeContractMarketDepth', contractId); } catch { /* ignore */ }
   };
 
   await subscribe();
 
   connection.onreconnected(() => {
     // re-subscribe after reconnect
-    subscribe().catch(() => {});
+    subscribe().catch(() => { /* ignore */ });
   });
 
   async function stop() {
     await unsubscribe();
-    try { await connection.stop(); } catch {}
+    try { await connection.stop(); } catch { /* ignore */ }
   }
 
   return { stop, connection };
