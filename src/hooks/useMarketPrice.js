@@ -3,14 +3,16 @@ import { connectMarket } from "../services/market";
 import { useAuth } from "../context/AuthContext";
 import { flushSync } from "react-dom";
 
+const roundToQuarter = (n) => Math.round(n * 4) / 4;
+
 // tiny mock fallback so this hook is self-sufficient in dev
 function mockSub(onTick) {
-  let price = 19000 + Math.random() * 200;
-  onTick(Number(price.toFixed(2)));
+  let price = roundToQuarter(19000 + Math.random() * 200);
+  onTick(price);
   const id = setInterval(() => {
     const drift = (Math.random() - 0.5) * 10;
-    price = Math.max(1000, price + drift);
-    onTick(Number(price.toFixed(2)));
+    price = roundToQuarter(Math.max(1000, price + drift));
+    onTick(price);
   }, 2000);
   return () => clearInterval(id);
 }
@@ -68,15 +70,17 @@ export function useMarketPrice(contractId) {
           onQuote: (d) => {
             const p = extractPrice(d);
             if (p != null) {
-              setPrice(p);
-              setBasePrice((bp) => (bp == null ? p : bp));
+              const rp = roundToQuarter(p);
+              setPrice(rp);
+              setBasePrice((bp) => (bp == null ? rp : bp));
             }
           },
           onTrade: (d) => {
             const p = extractPrice(d);
             if (p != null) {
-              flushSync(() => setPrice(p));
-              setBasePrice((bp) => (bp == null ? p : bp));
+              const rp = roundToQuarter(p);
+              flushSync(() => setPrice(rp));
+              setBasePrice((bp) => (bp == null ? rp : bp));
             }
           },
         });
