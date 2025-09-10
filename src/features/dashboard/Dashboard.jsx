@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Activity, Shield, LogOut } from "lucide-react";
-import Card from "../../components/ui/Card";
 import Button from "../../components/ui/Button";
 import { useAuth } from "../../context/AuthContext";
 import { useAccounts } from "../../hooks/useAccounts";
@@ -18,6 +17,7 @@ import OrdersTable from "./OrdersTable";
 import TradingLog from "./TradingLog";
 import OrderTicket from "../trade/OrderTicket";
 import PositionsCard from "../trade/PositionsCard";
+import PnlCard from "../trade/PnlCard";
 
 export default function Dashboard() {
   const { username, logout } = useAuth();
@@ -53,7 +53,7 @@ export default function Dashboard() {
     accountId: selectedAccount,
     pollMs: 5000,
   });
-  const { unrealized, realized } = useAccountPnl({
+  const { unrealized, realized, loading: pnlLoading } = useAccountPnl({
     accountId: selectedAccount,
     pollMs: 5000,
   });
@@ -183,11 +183,10 @@ export default function Dashboard() {
             botRunning={botRunning}
             disabled={!selectedAccount}
           />
+          <PnlCard unrealized={unrealized} realized={realized} loading={pnlLoading} />
           <PositionsCard
             positions={positions}
             loading={posLoading}
-            unrealizedPnl={unrealized}
-            realizedPnl={realized}
             onClose={(cid) =>
               close(cid)
                 .then(() => log(`Closed position ${cid}`))
