@@ -16,14 +16,27 @@ export default function PositionsCard({ positions, onClose, onPartial, loading }
         )}
 
         {positions.map((p) => (
-          <div key={p.id} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 flex items-center justify-between">
-            <div className="text-sm">
-              <div className="font-medium">{p.contractId}</div>
-              <div className="text-zinc-400">Size: {p.size} • Avg: {p.averagePrice != null ? p.averagePrice : "—"}</div>
+          <div
+            key={p.id}
+            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 flex items-center justify-between"
+          >
+            <div className="text-sm flex-1 min-w-0">
+              <div className="font-medium truncate">{p.contractId}</div>
+              <div className="text-zinc-400 truncate">
+                Size: {p.size} • Avg: {p.averagePrice != null ? p.averagePrice : "—"}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" onClick={()=>onPartial(p.contractId, 1)} disabled={p.size <= 0}>Close 1</Button>
-              <Button variant="danger" onClick={()=>onClose(p.contractId)}>Close All</Button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                onClick={() => onPartial(p.contractId, 1)}
+                disabled={p.size <= 0}
+              >
+                Close 1
+              </Button>
+              <Button variant="danger" onClick={() => onClose(p.contractId)}>
+                Close All
+              </Button>
             </div>
           </div>
         ))}
