@@ -42,4 +42,4 @@ export function AuthProvider({ children }) {
   );
 }
 
-export const useAuth = () => useContext(AuthCtx);
+export const useAuth = () => useContext(AuthCtx); // eslint-disable-line react-refresh/only-export-components

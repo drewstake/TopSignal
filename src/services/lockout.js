@@ -38,7 +38,7 @@ export function resolveUserId() {
       const found = candidates.find((v) => v && /^\d+$/.test(String(v)));
       if (found) return Number(found);
     }
-  } catch {}
+  } catch { /* ignore */ }
   return null;
 }
 
