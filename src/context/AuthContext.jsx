@@ -15,8 +15,17 @@ export function AuthProvider({ children }) {
     didInit.current = true;
     const t = getToken?.();
     if (t) {
-      setTokenState(t);
-      setAuthed(true);
+      try {
+        const payload = JSON.parse(atob(t.split(".")[1] || ""));
+        if (payload?.exp && payload.exp * 1000 > Date.now()) {
+          setTokenState(t);
+          setAuthed(true);
+        } else {
+          clearToken?.();
+        }
+      } catch {
+        clearToken?.();
+      }
     }
   }, []);
 
