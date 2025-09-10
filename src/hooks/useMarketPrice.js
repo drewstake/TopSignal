@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { connectMarket } from "../services/market";
 import { useAuth } from "../context/AuthContext";
 import { flushSync } from "react-dom";
@@ -21,7 +21,6 @@ export function useMarketPrice(contractId) {
   const [basePrice, setBasePrice] = useState(null);
   const [feedSource, setFeedSource] = useState(""); // "SignalR: ..." | "Mock"
   const [error, setError] = useState(null);
-  const didInit = useRef(false);
 
   useEffect(() => {
     if (!authed) return;
@@ -29,11 +28,27 @@ export function useMarketPrice(contractId) {
     let cancelled = false;
 
     function extractPrice(d) {
-      const vals = [d?.lastPrice, d?.LastPrice, d?.tradePrice, d?.TradePrice, d?.price, d?.Price, d?.last?.price, d?.lastTrade?.price];
+      const vals = [
+        d?.lastPrice,
+        d?.LastPrice,
+        d?.lastTradedPrice,
+        d?.LastTradedPrice,
+        d?.tradePrice,
+        d?.TradePrice,
+        d?.price,
+        d?.Price,
+        d?.last?.price,
+        d?.Last?.Price,
+        d?.lastTrade?.price,
+        d?.LastTrade?.Price,
+      ];
       for (const v of vals) {
         const n = Number(v);
         if (v != null && !Number.isNaN(n)) return n;
       }
+      const bid = Number(d?.bestBid ?? d?.BestBid);
+      const ask = Number(d?.bestAsk ?? d?.BestAsk);
+      if (!Number.isNaN(bid) && !Number.isNaN(ask)) return (bid + ask) / 2;
       return null;
     }
 
@@ -80,10 +95,10 @@ export function useMarketPrice(contractId) {
       }
     })();
 
-    return () => {
-      cancelled = true;
-      try { stop?.(); } catch {}
-    };
+      return () => {
+        cancelled = true;
+        try { stop?.(); } catch { /* ignore */ }
+      };
   }, [authed, contractId]);
 
   const delta = useMemo(() => (price != null && basePrice != null ? price - basePrice : 0), [price, basePrice]);

@@ -6,9 +6,9 @@ export const getToken = () => {
 };
 
 export const setToken = (token) => {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch {}
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ }
 };
 
 export const clearToken = () => {
-  try { localStorage.removeItem(TOKEN_KEY); } catch {}
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
 };
