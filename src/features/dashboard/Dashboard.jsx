@@ -7,6 +7,7 @@ import { useAccounts } from "../../hooks/useAccounts";
 import { useMarketPrice } from "../../hooks/useMarketPrice";
 import { useOrders } from "../../hooks/useOrders";
 import { usePositions } from "../../hooks/usePositions";
+import { useAccountPnl } from "../../hooks/useAccountPnl";
 import LockoutAllButton from "../lockout/LockoutAllButton";
 import LockoutAccountButton from "../lockout/LockoutAccountButton";
 
@@ -49,6 +50,10 @@ export default function Dashboard() {
     pollMs: 3000,
   });
   const { positions, loading: posLoading, close, partialClose } = usePositions({
+    accountId: selectedAccount,
+    pollMs: 5000,
+  });
+  const { unrealized, realized } = useAccountPnl({
     accountId: selectedAccount,
     pollMs: 5000,
   });
@@ -181,6 +186,8 @@ export default function Dashboard() {
           <PositionsCard
             positions={positions}
             loading={posLoading}
+            unrealizedPnl={unrealized}
+            realizedPnl={realized}
             onClose={(cid) =>
               close(cid)
                 .then(() => log(`Closed position ${cid}`))
