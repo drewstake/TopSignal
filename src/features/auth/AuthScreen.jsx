@@ -1,15 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LogIn, Loader2 } from "lucide-react";
 import Card from "../../components/ui/Card";
 import Button from "../../components/ui/Button";
 import Label from "../../components/ui/Label";
 import { useAuth } from "../../context/AuthContext";
+import { getCreds, setCreds, clearCreds } from "../../lib/storage";
 
 function AuthScreen() {
   const { login, setUsername } = useAuth();
   const [userName, setUserName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [loading, setLoading] = useState(false);
+  const [remember, setRemember] = useState(false);
+
+  useEffect(() => {
+    const stored = getCreds?.();
+    if (stored) {
+      setUserName(stored.userName || "");
+      setApiKey(stored.apiKey || "");
+      setRemember(true);
+    }
+  }, []);
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -17,6 +28,11 @@ function AuthScreen() {
     try {
       await login({ userName: userName.trim(), apiKey: apiKey.trim() });
       setUsername(userName.trim());
+      if (remember) {
+        setCreds({ userName: userName.trim(), apiKey: apiKey.trim() });
+      } else {
+        clearCreds();
+      }
     } catch (err) {
       alert(err?.message || "Auth failed");
     } finally {
@@ -47,11 +63,26 @@ function AuthScreen() {
           <div>
             <Label>API Key</Label>
             <input
+              type="password"
+              autoComplete="current-password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="paste your key"
               className="w-full rounded-xl bg-zinc-900/60 border border-white/10 px-4 py-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/60"
             />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="remember"
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+              className="h-4 w-4 rounded border-white/10 bg-zinc-900/60"
+            />
+            <label htmlFor="remember" className="text-xs text-zinc-400">
+              Remember me
+            </label>
           </div>
 
           <Button className="w-full group" disabled={loading}>
