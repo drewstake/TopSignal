@@ -18,7 +18,7 @@ const mapOrCode = (map, code) => map?.[code] ?? String(code);
 
 /** Convert API order to a UI-friendly shape */
 export function normalizeOrder(o) {
-  return {
+  const order = {
     id: o.id,
     accountId: o.accountId,
     contractId: o.contractId,
@@ -39,6 +39,21 @@ export function normalizeOrder(o) {
     filledPrice: o.filledPrice ?? null,
     customTag: o.customTag ?? null,
   };
+
+  // If the API reports a market order as still "Working" but it has
+  // already been completely filled, force the status to "Filled" so that
+  // the UI doesn't continue to treat it as an open order.
+  if (
+    order.typeCode === 2 &&
+    order.fillVolume !== null &&
+    order.fillVolume >= order.size &&
+    order.status !== ORDER_STATUS[2]
+  ) {
+    order.statusCode = 2;
+    order.status = ORDER_STATUS[2];
+  }
+
+  return order;
 }
 
 /**
@@ -62,7 +77,12 @@ export async function searchOpenOrders({ accountId, signal } = {}) {
   if (!accountId) throw new Error('accountId is required');
   const data = await apiPost('/api/Order/searchOpen', { accountId }, { signal });
   if (!data?.success) throw new Error(data?.errorMessage || `Open order search failed (code ${data?.errorCode})`);
-  return (data.orders || []).map(normalizeOrder);
+  const orders = (data.orders || []).map(normalizeOrder);
+  // Filter out any orders that are no longer active. Some gateways may
+  // briefly report recently filled market orders as "Working"; because
+  // `normalizeOrder` fixes their status to "Filled", this filter keeps the
+  // open orders list consistent with the actual state on the exchange.
+  return orders.filter((o) => ![2, 3, 4, 6].includes(o.statusCode));
 }
 
 /**
