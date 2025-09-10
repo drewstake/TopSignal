@@ -3,7 +3,6 @@ import Card from "../../components/ui/Card";
 import Label from "../../components/ui/Label";
 import Select from "../../components/ui/Select";
 import Button from "../../components/ui/Button";
-import { fmtUSD } from "../../lib/format";
 
 const TYPE_OPTS = [
   { id: 2, name: "Market" },
