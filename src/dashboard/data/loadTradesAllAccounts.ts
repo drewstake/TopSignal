@@ -83,6 +83,8 @@ function splitRange(startISO: string, endISO: string, daysPerChunk: number) {
     const next = addDays(cur, daysPerChunk);
     const chunkEnd = next < end ? next : end;
 
+    // The API returns 10k rows per request; chunk the range to avoid timeouts
+    // and to respect the client-side rate limits enforced in topstepClient.
     chunks.push({ start: toISO(cur), end: toISO(chunkEnd) });
     cur = chunkEnd;
   }
