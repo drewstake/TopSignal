@@ -4,6 +4,7 @@ import {
   HubConnectionState,
   HttpTransportType,
   LogLevel,
+  type RetryContext,
 } from "@microsoft/signalr";
 
 const REST_BASE = "https://api.topstepx.com";
@@ -312,7 +313,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
         skipNegotiation: true,
       })
       .withAutomaticReconnect({
-        nextRetryDelayInMilliseconds: (ctx) =>
+        nextRetryDelayInMilliseconds: (ctx: RetryContext) =>
           Math.min(30_000, 1000 * 2 ** Math.min(ctx.previousRetryCount, 10)),
       })
       .configureLogging(LogLevel.Error)
@@ -325,11 +326,11 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private attachHubHandlers(connection: HubConnection) {
-    connection.on("GatewayQuote", (_ignored, payload: QuotePayload) => {
+    connection.on("GatewayQuote", (_ignored: unknown, payload: QuotePayload) => {
       this.handleQuote(payload);
     });
 
-    connection.on("GatewayDepth", (_ignored, payload: DepthPayload) => {
+    connection.on("GatewayDepth", (_ignored: unknown, payload: DepthPayload) => {
       this.handleDepth(payload);
     });
 
