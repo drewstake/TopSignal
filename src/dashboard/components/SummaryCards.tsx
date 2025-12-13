@@ -23,29 +23,25 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
   const sectionOne: MetricCardData[] = [
     {
       label: "Net PnL",
-      description:
-        "Net profit after fees for the selected date range (gross PnL minus commissions and fees).",
+      description: "Net profit after fees for the selected date range (gross PnL minus commissions and fees).",
       value: fmtMoney(totals?.netPnl ?? 0),
       sub: `Range: last ${effectiveDaysBack} day(s)`,
     },
     {
       label: "Fees",
-      description:
-        "Total commissions/fees charged on executed trades within the range. Gross shows profit before fees.",
+      description: "Total commissions/fees charged on executed trades within the range. Gross shows profit before fees.",
       value: fmtMoney(totals?.fees ?? 0),
       sub: `Gross: ${fmtMoney(totals?.grossPnl ?? 0)}`,
     },
     {
       label: "Win rate",
-      description:
-        "Percentage of realized trades closed in profit (winning trades divided by all realized trades).",
+      description: "Percentage of realized trades closed in profit (winning trades divided by all realized trades).",
       value: fmtPct(totals?.winRate ?? 0),
       sub: `W ${totals?.wins ?? 0} / L ${totals?.losses ?? 0} / BE ${totals?.breakeven ?? 0}`,
     },
     {
       label: "Max drawdown",
-      description:
-        "Largest peak-to-trough decline of cumulative net equity across the date range, based on daily PnL.",
+      description: "Largest peak-to-trough decline of cumulative net equity across the date range, based on daily PnL.",
       value: fmtMoney(totals?.maxDrawdown ?? 0),
       sub: "From daily equity",
     },
@@ -54,8 +50,7 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
   const sectionTwo: MetricCardData[] = [
     {
       label: "Profit factor",
-      description:
-        "Total gross profit from winning trades divided by the absolute gross loss from losing trades.",
+      description: "Total gross profit from winning trades divided by the absolute gross loss from losing trades.",
       value: fmtPF(totals?.profitFactor ?? 0),
       sub: `Avg win ${fmtMoney(totals?.avgWin ?? 0)} | Avg loss ${fmtMoney(totals?.avgLoss ?? 0)}`,
     },
@@ -68,15 +63,13 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
     },
     {
       label: "Day win rate",
-      description:
-        "Share of active trading days that ended positive. Calculated as green days divided by active days.",
+      description: "Share of active trading days that ended positive. Calculated as green days divided by active days.",
       value: fmtPct(totals?.dayWinRate ?? 0),
       sub: `Green ${daySummary.greenDays} | Red ${daySummary.redDays} | Flat ${daySummary.flatDays}`,
     },
     {
       label: "Avg trades/day",
-      description:
-        "Average realized trades per active trading day (total realized trades divided by active days).",
+      description: "Average realized trades per active trading day (total realized trades divided by active days).",
       value: (totals?.avgTradesPerDay ?? 0).toFixed(2),
       sub: `Active days ${daySummary.activeDays}`,
     },
@@ -85,15 +78,13 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
   const sectionThree: MetricCardData[] = [
     {
       label: "Expectancy / trade",
-      description:
-        "Expected PnL per trade using win rate × average win minus loss rate × average loss magnitude.",
+      description: "Expected PnL per trade using win rate × average win minus loss rate × average loss magnitude.",
       value: fmtMoney(totals?.expectancyPerTrade ?? 0),
       sub: `Tail risk (avg worst 5%): ${fmtMoney(totals?.tailRiskAvg ?? 0)}`,
     },
     {
       label: "Risk & drawdown",
-      description:
-        "Largest intraday drawdown from session peak, computed from realized executions during each day.",
+      description: "Largest intraday drawdown from session peak, computed from realized executions during each day.",
       value: fmtMoney(totals?.maxIntradayDrawdown ?? 0),
       sub: `Avg DD ${fmtMoney(totals?.avgDrawdown ?? 0)} | Max length ${fmtDays(totals?.maxDrawdownLengthDays ?? 0)}`,
     },
@@ -183,7 +174,7 @@ function InfoTooltip({ label, description }: { label: string; description: React
       >
         i
       </button>
-      <div className="absolute right-0 top-6 z-20 hidden w-64 rounded-xl bg-zinc-900/95 p-3 text-left text-xs text-zinc-100 shadow-lg ring-1 ring-zinc-800 group-hover:block">
+      <div className="absolute right-0 top-6 z-20 hidden w-64 rounded-xl bg-zinc-900/95 p-3 text-left text-xs text-zinc-100 shadow-lg ring-1 ring-zinc-800 group-hover:block group-focus-within:block">
         {description}
       </div>
     </div>
