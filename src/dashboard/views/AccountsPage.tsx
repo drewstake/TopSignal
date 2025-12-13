@@ -48,13 +48,17 @@ export default function AccountsPage() {
 
     setLoading(true);
     try {
-      const res = await searchAccounts(onlyActive);
+      const res = await searchAccounts({
+        onlyActiveAccounts: onlyActive,
+        includeInvisibleAccounts: !onlyActive,
+      });
 
       if (!res.success || res.errorCode !== 0) {
         throw new Error(res.errorMessage || `Request failed (errorCode ${res.errorCode}).`);
       }
 
-      setAccounts(res.accounts || []);
+      const sorted = (res.accounts || []).slice().sort((a, b) => b.id - a.id);
+      setAccounts(sorted);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load accounts.";
       setAccounts([]);

@@ -7,6 +7,7 @@ import { searchTrades } from "../../api/trade";
 import { loadTradesAllAccounts } from "../data/loadTradesAllAccounts";
 import { computeDashboardFromTrades } from "../data/computeDashboard";
 import type { DashboardComputed } from "../data/computeDashboard";
+import type { DayPoint } from "../../types/metrics";
 
 type Mode = "active" | "all";
 
@@ -104,14 +105,24 @@ export default function DashboardPage() {
     const redDays = days.filter((d) => d.netPnl < 0).length;
     const flatDays = activeDays - greenDays - redDays;
 
-    const bestDay = days.reduce(
-      (best, d) => (d.netPnl > best.netPnl ? d : best),
-      { date: "", netPnl: Number.NEGATIVE_INFINITY } as any
-    );
-    const worstDay = days.reduce(
-      (worst, d) => (d.netPnl < worst.netPnl ? d : worst),
-      { date: "", netPnl: Number.POSITIVE_INFINITY } as any
-    );
+    const bestDaySeed: DayPoint = {
+      date: "",
+      grossPnl: 0,
+      fees: 0,
+      netPnl: Number.NEGATIVE_INFINITY,
+      trades: 0,
+      contracts: 0,
+      buys: 0,
+      sells: 0,
+    };
+
+    const worstDaySeed: DayPoint = {
+      ...bestDaySeed,
+      netPnl: Number.POSITIVE_INFINITY,
+    };
+
+    const bestDay = days.reduce((best, d) => (d.netPnl > best.netPnl ? d : best), bestDaySeed);
+    const worstDay = days.reduce((worst, d) => (d.netPnl < worst.netPnl ? d : worst), worstDaySeed);
 
     return {
       activeDays,
