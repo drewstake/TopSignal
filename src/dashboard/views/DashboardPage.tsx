@@ -30,14 +30,15 @@ function fmtDays(x: number) {
   return `${x.toFixed(1)}d`;
 }
 
-function fmtDuration(ms: number) {
-  if (!Number.isFinite(ms) || ms <= 0) return "0s";
-  const totalSeconds = Math.round(ms / 1000);
+function fmtDuration(msValue: number) {
+  if (!Number.isFinite(msValue) || msValue <= 0) return "0s";
+  const totalSeconds = Math.round(msValue / 1000);
+
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
-  const parts = [] as string[];
+  const parts: string[] = [];
   if (hours) parts.push(`${hours}h`);
   if (hours || minutes) parts.push(`${minutes}m`);
   parts.push(`${seconds}s`);
@@ -200,25 +201,27 @@ export default function DashboardPage() {
       }));
 
     const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const dayData = dayOrder.map((label) => ({ label, netPnl: byDay.get(label)?.netPnl ?? 0, trades: byDay.get(label)?.trades ?? 0 }));
+    const dayData = dayOrder.map((label) => ({
+      label,
+      netPnl: byDay.get(label)?.netPnl ?? 0,
+      trades: byDay.get(label)?.trades ?? 0,
+    }));
 
     const busiestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
       (best, row) => (row.trades > (best?.trades ?? 0) ? row : best),
-      null,
-    );
-    const bestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
-      (best, row) => (row.netPnl > (best?.netPnl ?? Number.NEGATIVE_INFINITY) ? row : best),
-      null,
+      null
     );
 
-    const bestDay = dayData.reduce<{ label: string; netPnl: number; trades: number } | null>(
-      (best, row) => {
-        if (row.trades === 0) return best;
-        if (!best) return row;
-        return row.netPnl > best.netPnl ? row : best;
-      },
-      null,
+    const bestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
+      (best, row) => (row.netPnl > (best?.netPnl ?? Number.NEGATIVE_INFINITY) ? row : best),
+      null
     );
+
+    const bestDay = dayData.reduce<{ label: string; netPnl: number; trades: number } | null>((best, row) => {
+      if (row.trades === 0) return best;
+      if (!best) return row;
+      return row.netPnl > best.netPnl ? row : best;
+    }, null);
 
     return { hourlyData, dayData, busiestHour, bestHour, bestDay };
   }, [computed]);
@@ -274,7 +277,9 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-950/40 p-1 text-sm">
               <button
                 onClick={() => setMode("active")}
-                className={"rounded-lg px-3 py-1.5 " + (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")}
+                className={
+                  "rounded-lg px-3 py-1.5 " + (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")
+                }
               >
                 Active account
               </button>
@@ -482,13 +487,16 @@ export default function DashboardPage() {
               {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
             </div>
           </div>
+
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
               <div>
                 <div className="font-semibold">Trade timing</div>
                 <div className="text-xs text-zinc-400">Hourly trades & PnL (New York time)</div>
               </div>
-              <div className="text-xs text-zinc-400">{timeAnalysis.busiestHour ? `${timeAnalysis.busiestHour.trades} trades` : "--"}</div>
+              <div className="text-xs text-zinc-400">
+                {timeAnalysis.busiestHour ? `${timeAnalysis.busiestHour.trades} trades` : "--"}
+              </div>
             </div>
 
             {loading ? (
@@ -501,8 +509,8 @@ export default function DashboardPage() {
 
             {timeAnalysis.bestHour ? (
               <div className="mt-2 text-xs text-emerald-300">
-                Most profitable hour (ET): {timeAnalysis.bestHour.label} ({fmtMoney(timeAnalysis.bestHour.netPnl)}; {timeAnalysis.bestHour.trades} trade
-                {timeAnalysis.bestHour.trades === 1 ? "" : "s"}).
+                Most profitable hour: {timeAnalysis.bestHour.label} ({fmtMoney(timeAnalysis.bestHour.netPnl)};{" "}
+                {timeAnalysis.bestHour.trades} trade{timeAnalysis.bestHour.trades === 1 ? "" : "s"}).
               </div>
             ) : null}
           </div>
