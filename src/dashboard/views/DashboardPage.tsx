@@ -45,6 +45,38 @@ export default function DashboardPage() {
     return { startISO: start.toISOString(), endISO: end.toISOString(), safeDays };
   }, [daysBack]);
 
+  async function fetchActiveTradesWithFallback(accountId: number) {
+    const initial = await searchTrades({
+      accountId,
+      startTimestamp: range.startISO,
+      endTimestamp: range.endISO,
+    });
+
+    if (!initial.success || initial.errorCode !== 0) {
+      throw new Error(initial.errorMessage || `Trade/search failed (errorCode ${initial.errorCode}).`);
+    }
+
+    const trades = initial.trades || [];
+    if (trades.length || range.safeDays >= 365) {
+      return trades;
+    }
+
+    // If nothing was returned for a short window, retry with a wider lookback so
+    // older accounts still show historical trades without manual tweaking.
+    const extendedStart = new Date(Date.parse(range.endISO) - 365 * 24 * 60 * 60 * 1000).toISOString();
+    const extended = await searchTrades({
+      accountId,
+      startTimestamp: extendedStart,
+      endTimestamp: range.endISO,
+    });
+
+    if (!extended.success || extended.errorCode !== 0) {
+      throw new Error(extended.errorMessage || `Trade/search failed (errorCode ${extended.errorCode}).`);
+    }
+
+    return extended.trades || [];
+  }
+
   async function load() {
     setError(null);
     setComputed(null);
@@ -60,17 +92,8 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const res = await searchTrades({
-          accountId: id,
-          startTimestamp: range.startISO,
-          endTimestamp: range.endISO,
-        });
-
-        if (!res.success || res.errorCode !== 0) {
-          throw new Error(res.errorMessage || `Trade/search failed (errorCode ${res.errorCode}).`);
-        }
-
-        setComputed(computeDashboardFromTrades(res.trades || []));
+        const trades = await fetchActiveTradesWithFallback(id);
+        setComputed(computeDashboardFromTrades(trades));
       } else {
         const agg = await loadTradesAllAccounts({
           startTimestamp: range.startISO,
