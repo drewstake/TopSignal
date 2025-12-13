@@ -102,6 +102,7 @@ export default function DashboardPage() {
           includeInvisibleAccounts,
           daysPerChunk: 30,
           concurrency: 2,
+          forceRefresh,
         });
 
         setComputed(computeDashboardFromTrades(agg.allTrades || []));
@@ -203,7 +204,7 @@ export default function DashboardPage() {
             </div>
 
             <button
-              onClick={load}
+              onClick={() => load(true)}
               className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
             >
               Refresh

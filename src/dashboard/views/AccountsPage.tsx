@@ -44,7 +44,7 @@ export default function AccountsPage() {
     return { count, canTradeCount, visibleCount, totalBalance, byType };
   }, [accounts]);
 
-  async function load() {
+  async function load(forceRefresh = false) {
     setError(null);
 
     if (!connected) {
@@ -107,7 +107,7 @@ export default function AccountsPage() {
             </label>
 
             <button
-              onClick={load}
+              onClick={() => load(true)}
               className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
             >
               Refresh

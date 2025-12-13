@@ -76,7 +76,24 @@ async function parseJsonOrThrow(res: Response) {
   }
 }
 
-export async function topstepPost<T>(path: string, body: unknown = {}): Promise<T> {
+type TopstepPostOptions = {
+  cacheTtlMs?: number;
+  cacheKey?: string;
+  forceRefresh?: boolean;
+};
+
+type CacheEntry = {
+  expiresAt: number;
+  data: unknown;
+};
+
+const responseCache = new Map<string, CacheEntry>();
+
+function makeCacheKey(path: string, body: unknown, cacheKey?: string) {
+  return cacheKey ?? `${path}:${JSON.stringify(body)}`;
+}
+
+export async function topstepPost<T>(path: string, body: unknown = {}, opts: TopstepPostOptions = {}): Promise<T> {
   const token = loadSessionToken();
   if (!token) throw new Error("No session token. Connect in Settings first.");
 

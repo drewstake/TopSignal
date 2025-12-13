@@ -9,6 +9,7 @@ type LoadTradesOptions = {
   includeInvisibleAccounts?: boolean; // default false
   daysPerChunk?: number; // default 30
   concurrency?: number; // default 2
+  forceRefresh?: boolean; // default false
 };
 
 export type TradesAllAccountsResult = {
@@ -104,11 +105,12 @@ async function loadTradesForAccountChunked(
   accountId: number,
   startISO: string,
   endISO: string,
-  daysPerChunk: number
+  daysPerChunk: number,
+  forceRefresh: boolean
 ) {
   const cacheKey = `v1:acct:${accountId}:${startISO}:${endISO}:d${daysPerChunk}`;
   const cached = memCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached && !forceRefresh) return cached;
 
   const chunks = splitRange(startISO, endISO, daysPerChunk);
 
@@ -141,6 +143,7 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
   const includeInvisible = opts.includeInvisibleAccounts ?? false;
   const daysPerChunk = clampChunkDays(opts.daysPerChunk ?? 30);
   const concurrency = clampConcurrency(opts.concurrency ?? 2);
+  const forceRefresh = opts.forceRefresh ?? false;
 
   const accRes = await searchAccounts({
     onlyActiveAccounts,
@@ -161,7 +164,8 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
         a.id,
         opts.startTimestamp,
         opts.endTimestamp,
-        daysPerChunk
+        daysPerChunk,
+        opts.forceRefresh ?? false
       );
       byAccountId[a.id] = trades;
       return trades;
