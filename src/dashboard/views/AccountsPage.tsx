@@ -7,8 +7,15 @@ import { fmtMoney } from "../../lib/format";
 import { getActiveAccountId, setActiveAccountId } from "../../lib/activeAccount";
 import { detectAccountTypeFromName, type AccountType } from "../../lib/accountType";
 
+const ONLY_ACTIVE_STORAGE_KEY = "accounts-only-active";
+
 export default function AccountsPage() {
-  const [onlyActive, setOnlyActive] = useState(true);
+  const [onlyActive, setOnlyActive] = useState(() => {
+    const stored = localStorage.getItem(ONLY_ACTIVE_STORAGE_KEY);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+    return true;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<TopstepAccount[]>([]);
@@ -69,6 +76,7 @@ export default function AccountsPage() {
   }
 
   useEffect(() => {
+    localStorage.setItem(ONLY_ACTIVE_STORAGE_KEY, String(onlyActive));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onlyActive]);
