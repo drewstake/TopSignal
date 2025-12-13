@@ -5,6 +5,7 @@ import type { DayPoint } from "../../types/metrics";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+// turn a date into a yyyy-mm-dd string so map lookups are stable
 function formatDateKey(date: Date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -12,6 +13,7 @@ function formatDateKey(date: Date) {
   return `${y}-${m}-${d}`;
 }
 
+// normalize incoming iso strings to noon to avoid timezone drift
 function normalizeDate(iso: string) {
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return null;
@@ -53,6 +55,7 @@ function buildMonths(days: DayPoint[], startISO: string, endISO: string): Calend
 
   const months: CalendarMonth[] = [];
 
+  // walk month by month across the requested range
   for (
     let cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
     cursor <= new Date(endDate.getFullYear(), endDate.getMonth(), 1);
@@ -67,10 +70,12 @@ function buildMonths(days: DayPoint[], startISO: string, endISO: string): Calend
     let monthNet = 0;
     let monthTrades = 0;
 
+    // pad to align the first weekday
     for (let i = 0; i < firstDayOffset; i++) {
       cells.push({ type: "pad", key: `${monthKey}-pad-${i}` });
     }
 
+    // create an entry for every calendar day
     for (let day = 1; day <= daysInMonth; day++) {
       const date = new Date(cursor.getFullYear(), cursor.getMonth(), day);
       date.setHours(12, 0, 0, 0);

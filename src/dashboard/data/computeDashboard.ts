@@ -3,16 +3,19 @@ import type { DayPoint, EquityPoint } from "../../types/metrics";
 
 const TZ = "America/New_York";
 
+// group a timestamp into a yyyy-mm-dd key in the target timezone
 function dayKeyFromISO(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
 }
 
+// defensively turn unknown input into a number
 function safeNum(n: unknown) {
   const v = Number(n);
   return Number.isFinite(v) ? v : 0;
 }
 
+// fallback-safe timestamp parsing for sorting
 function ms(iso: string) {
   const t = new Date(iso).getTime();
   return Number.isFinite(t) ? t : 0;
@@ -114,6 +117,7 @@ export type DashboardComputed = {
 };
 
 export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): DashboardComputed {
+  // remove voided fills before processing any metrics
   const trades = (tradesRaw || []).filter((t) => !t.voided);
 
   const dayMap = new Map<string, DayPoint>();
@@ -140,6 +144,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   let buys = 0;
   let sells = 0;
 
+  // first pass: aggregate per-day stats and global totals
   for (const t of trades) {
     totalExecutions += 1;
 
@@ -198,6 +203,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     }
   }
 
+  // convert day map to sorted array to drive downstream metrics
   const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
   for (const d of days) d.netPnl = d.grossPnl - d.fees;
 
@@ -224,6 +230,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   let maxPnlInDay = Number.NEGATIVE_INFINITY;
   let minPnlInDay = Number.POSITIVE_INFINITY;
 
+  // track day-level extremes for later summaries
   for (const d of days) {
     if (d.trades > maxTradesInDay) {
       maxTradesInDay = d.trades;
@@ -252,6 +259,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const drawdownLengths: number[] = [];
   const recoveryDurations: number[] = [];
 
+  // walk equity curve to find drawdowns and cumulative pnl
   for (const d of days) {
     cum += d.netPnl;
     if (cum > peak) peak = cum;
@@ -290,6 +298,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const buyPct = totalSides > 0 ? buys / totalSides : 0;
   const sellPct = totalSides > 0 ? sells / totalSides : 0;
 
+  // sort fills to reconstruct round trips in fill order
   const byTime = [...trades].sort((a, b) => ms(a.creationTimestamp) - ms(b.creationTimestamp));
 
   const lotsByContract = new Map<string, Lot[]>();
@@ -309,6 +318,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     return 0;
   }
 
+  // second pass: rebuild round trips contract by contract
   for (const t of byTime) {
     const cid = t.contractId;
     const lots = getLots(cid);
@@ -332,6 +342,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     const exitPrice = safeNum(t.price);
     const exitTime = t.creationTimestamp;
 
+    // close out prior open lots until this fill is consumed
     while (remaining > 0 && lots.length > 0 && netSign(lots) === -fillSign) {
       const head = lots[0];
       const take = Math.min(remaining, head.size);
@@ -390,6 +401,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   let curLosses = 0;
   const losingStreaks: number[] = [];
 
+  // measure streaks and max consecutive wins/losses
   for (const t of realizedExecs) {
     const p = safeNum(t.profitAndLoss) - safeNum(t.fees);
     if (p > 0) {
@@ -417,6 +429,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const expectancyPerTrade = winRate * avgWin - lossRate * Math.abs(avgLoss);
 
   let maxIntradayDrawdown = 0;
+  // compute the largest intraday drawdown per session
   for (const d of days) {
     const dayTrades = realizedExecs.filter((t) => dayKeyFromISO(t.creationTimestamp) === d.date);
     if (!dayTrades.length) continue;
