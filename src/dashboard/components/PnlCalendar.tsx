@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { fmtMoney } from "../../lib/format";
 import type { DayPoint } from "../../types/metrics";
@@ -136,6 +136,10 @@ function cellContent(cell: CalendarCell) {
 export default function PnlCalendar({ days, loading, startISO, endISO }: PnlCalendarProps) {
   const months = useMemo(() => buildMonths(days, startISO, endISO), [days, startISO, endISO]);
 
+  const [selectedMonthIndex, setSelectedMonthIndex] = useState<number | null>(null);
+  const lastMonthIndex = Math.max(months.length - 1, 0);
+  const activeMonthIndex = selectedMonthIndex === null ? lastMonthIndex : Math.min(selectedMonthIndex, lastMonthIndex);
+
   const rangeLabel = useMemo(() => {
     const startDate = normalizeDate(startISO);
     const endDate = normalizeDate(endISO);
@@ -162,30 +166,52 @@ export default function PnlCalendar({ days, loading, startISO, endISO }: PnlCale
         <div className="py-6 text-sm text-zinc-300">No day data found for this range.</div>
       ) : (
         <div className="mt-3 space-y-4">
-          {months.map((month) => (
-            <div key={month.key} className="space-y-2">
+          {months.length > 1 ? (
+            <div className="flex items-center justify-end gap-2 text-xs text-zinc-300">
+              <button
+                type="button"
+                className="rounded-lg border border-zinc-800 px-2 py-1 text-[11px] transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-900 disabled:text-zinc-600"
+                onClick={() => setSelectedMonthIndex(Math.max(activeMonthIndex - 1, 0))}
+                disabled={activeMonthIndex === 0}
+              >
+                Previous
+              </button>
+              <div className="text-[11px] text-zinc-400">{months[activeMonthIndex]?.label}</div>
+              <button
+                type="button"
+                className="rounded-lg border border-zinc-800 px-2 py-1 text-[11px] transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-900 disabled:text-zinc-600"
+                onClick={() => setSelectedMonthIndex(Math.min(activeMonthIndex + 1, lastMonthIndex))}
+                disabled={activeMonthIndex === months.length - 1}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
+
+          {months[activeMonthIndex] ? (
+            <div className="space-y-2" key={months[activeMonthIndex].key}>
               <div className="flex items-center justify-between text-xs text-zinc-300">
-                <div className="text-sm font-semibold text-zinc-100">{month.label}</div>
+                <div className="text-sm font-semibold text-zinc-100">{months[activeMonthIndex].label}</div>
                 <div className="text-[11px] text-zinc-400">
-                  Net {fmtMoney(month.netPnl)} · Trades {month.trades}
+                  Net {fmtMoney(months[activeMonthIndex].netPnl)} · Trades {months[activeMonthIndex].trades}
                 </div>
               </div>
               <div className="grid grid-cols-7 text-[10px] uppercase tracking-wide text-zinc-500">
                 {DAY_LABELS.map((label) => (
-                  <div key={`${month.key}-${label}`} className="text-center">
+                  <div key={`${months[activeMonthIndex].key}-${label}`} className="text-center">
                     {label}
                   </div>
                 ))}
               </div>
               <div className="grid grid-cols-7 gap-1 text-xs">
-                {month.cells.map((cell) => (
+                {months[activeMonthIndex].cells.map((cell) => (
                   <div key={cell.key} className={cellStyles(cell)}>
                     {cellContent(cell)}
                   </div>
                 ))}
               </div>
             </div>
-          ))}
+          ) : null}
         </div>
       )}
     </div>
