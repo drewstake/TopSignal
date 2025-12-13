@@ -57,7 +57,8 @@ export default function AccountsPage() {
         throw new Error(res.errorMessage || `Request failed (errorCode ${res.errorCode}).`);
       }
 
-      setAccounts(res.accounts || []);
+      const sorted = (res.accounts || []).slice().sort((a, b) => b.id - a.id);
+      setAccounts(sorted);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load accounts.";
       setAccounts([]);
