@@ -59,6 +59,7 @@ export default function DashboardPage() {
 
   async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
     const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
+
     const initial = await searchTrades({
       accountId,
       startTimestamp: range.startISO,
@@ -77,8 +78,6 @@ export default function DashboardPage() {
       return { trades, daysUsed: range.safeDays };
     }
 
-    // If nothing was returned for a short window, retry with a wider lookback so
-    // older accounts still show historical trades without manual tweaking.
     const fallbackWindowsDays = [365, 365 * 3];
     for (const days of fallbackWindowsDays) {
       if (days <= range.safeDays) continue;
@@ -121,9 +120,10 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const { trades: activeTrades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
-        setComputed(computeDashboardFromTrades(activeTrades));
+        const { trades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
+        setComputed(computeDashboardFromTrades(trades));
         setEffectiveDaysBack(daysUsed);
+
         if (daysUsed !== range.safeDays) {
           setDaysBack(daysUsed);
         }
@@ -192,6 +192,9 @@ export default function DashboardPage() {
     };
   }, [computed]);
 
+  // If DashboardComputed type does not include equity yet, this avoids TS errors.
+  const equity = (computed as unknown as { equity?: any[] } | null)?.equity ?? [];
+
   return (
     <div className="grid grid-cols-1 gap-3">
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
@@ -207,19 +210,13 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-950/40 p-1 text-sm">
               <button
                 onClick={() => setMode("active")}
-                className={
-                  "rounded-lg px-3 py-1.5 " +
-                  (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")
-                }
+                className={"rounded-lg px-3 py-1.5 " + (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")}
               >
                 Active account
               </button>
               <button
                 onClick={() => setMode("all")}
-                className={
-                  "rounded-lg px-3 py-1.5 " +
-                  (mode === "all" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")
-                }
+                className={"rounded-lg px-3 py-1.5 " + (mode === "all" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")}
               >
                 All accounts
               </button>
@@ -360,13 +357,17 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-xs text-zinc-400">Expectancy / trade</div>
             <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.expectancyPerTrade ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Tail risk (avg worst 5%): {fmtMoney(totals?.tailRiskAvg ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Tail risk (avg worst 5%): {fmtMoney(totals?.tailRiskAvg ?? 0)}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-xs text-zinc-400">Risk & drawdown</div>
             <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.maxIntradayDrawdown ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Avg DD {fmtMoney(totals?.avgDrawdown ?? 0)} | Max length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Avg DD {fmtMoney(totals?.avgDrawdown ?? 0)} | Max length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}
+            </div>
           </div>
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
@@ -379,34 +380,6 @@ export default function DashboardPage() {
             <div className="text-xs text-zinc-400">Efficiency</div>
             <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.profitPerHour ?? 0)} / hr</div>
             <div className="mt-1 text-xs text-zinc-500">Per day {fmtMoney(totals?.profitPerDay ?? 0)}</div>
-          </div>
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-            <div className="text-xs text-zinc-400">Consistency</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtPct(totals?.consistencyByWeek ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Week finish green %</div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-            <div className="text-xs text-zinc-400">Streaks</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-100">W {totals?.maxConsecutiveWins ?? 0} / L {totals?.maxConsecutiveLosses ?? 0}</div>
-            <div className="mt-1 text-xs text-zinc-500">
-              Avg losing streak {totals?.avgLosingStreak !== undefined ? totals.avgLosingStreak.toFixed(1) : "0"}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-            <div className="text-xs text-zinc-400">Duration</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtHours((totals?.avgTradeDurationMs ?? 0) / 1000 / 60 / 60)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Avg win {fmtHours((totals?.avgWinDurationMs ?? 0) / 1000 / 60 / 60)} | Avg loss {fmtHours((totals?.avgLossDurationMs ?? 0) / 1000 / 60 / 60)}</div>
-          </div>
-
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-            <div className="text-xs text-zinc-400">Time to recovery</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDays(totals?.avgTimeToRecoveryDays ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Max DD length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}</div>
           </div>
         </div>
 
@@ -423,9 +396,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               ))}
-              {!totals?.timeBlocks?.length ? (
-                <div className="py-2 text-zinc-400">No realized trades in range.</div>
-              ) : null}
+              {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
             </div>
           </div>
 
@@ -441,9 +412,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               ))}
-              {!totals?.instruments?.length ? (
-                <div className="py-2 text-zinc-400">No realized trades in range.</div>
-              ) : null}
+              {!totals?.instruments?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
             </div>
           </div>
         </div>
@@ -459,10 +428,10 @@ export default function DashboardPage() {
 
           {loading ? (
             <div className="py-6 text-sm text-zinc-300">Loading...</div>
-          ) : !computed?.equity?.length ? (
+          ) : !equity.length ? (
             <div className="py-6 text-sm text-zinc-300">No equity data found for this range.</div>
           ) : (
-            <EquityCurveChart data={computed.equity} />
+            <EquityCurveChart data={equity} />
           )}
         </div>
 
