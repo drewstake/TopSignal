@@ -39,6 +39,8 @@ async function scheduleRateLimitedRequest(config: RateLimitConfig, key: string) 
 
   limiterState.set(key, state);
 
+  // Chain onto the previous promise so concurrent callers serialize their waits
+  // against the same window instead of racing setTimeout calls.
   state.queue = state.queue.then(async () => {
     const now = Date.now();
     state.timestamps = state.timestamps.filter((ts) => now - ts < config.windowMs);
@@ -93,6 +95,11 @@ function makeCacheKey(path: string, body: unknown, cacheKey?: string) {
   return cacheKey ?? `${path}:${JSON.stringify(body)}`;
 }
 
+/**
+ * POST wrapper that enforces client-side rate limits and optional response caching.
+ * Retries 429s with server-provided backoff when available and caches successful
+ * responses per unique path/body pair.
+ */
 export async function topstepPost<T>(
   path: string,
   body: unknown = {},
@@ -132,6 +139,8 @@ export async function topstepPost<T>(
       const retryAfterSeconds = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : null;
       const fallbackDelay = Math.ceil(config.windowMs / config.limit);
 
+      // Honor server-provided backoff when available, otherwise fall back to
+      // spacing retries evenly across the rate-limit window.
       const retryDelayMs = Math.max(
         MIN_RETRY_DELAY_MS,
         Number.isFinite(retryAfterSeconds) ? retryAfterSeconds! * 1000 : fallbackDelay
