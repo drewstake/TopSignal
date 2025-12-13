@@ -174,7 +174,7 @@ function InfoTooltip({ label, description }: { label: string; description: React
       >
         i
       </button>
-      <div className="absolute right-0 top-6 z-20 hidden w-64 rounded-xl bg-zinc-900/95 p-3 text-left text-xs text-zinc-100 shadow-lg ring-1 ring-zinc-800 group-hover:block group-focus-within:block">
+      <div className="absolute right-0 top-6 z-20 hidden w-64 rounded-xl bg-zinc-900/95 p-3 text-left text-xs text-zinc-100 shadow-lg ring-1 ring-zinc-800 group-hover:block">
         {description}
       </div>
     </div>
