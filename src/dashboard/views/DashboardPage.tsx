@@ -45,13 +45,11 @@ export default function DashboardPage() {
     return { startISO: start.toISOString(), endISO: end.toISOString(), safeDays };
   }, [daysBack]);
 
-  async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
+  async function fetchActiveTradesWithFallback(accountId: number) {
     const initial = await searchTrades({
       accountId,
       startTimestamp: range.startISO,
       endTimestamp: range.endISO,
-      cacheTtlMs: 2 * 60 * 1000,
-      forceRefresh,
     });
 
     if (!initial.success || initial.errorCode !== 0) {
@@ -70,8 +68,6 @@ export default function DashboardPage() {
       accountId,
       startTimestamp: extendedStart,
       endTimestamp: range.endISO,
-      cacheTtlMs: 2 * 60 * 1000,
-      forceRefresh,
     });
 
     if (!extended.success || extended.errorCode !== 0) {
@@ -81,7 +77,7 @@ export default function DashboardPage() {
     return extended.trades || [];
   }
 
-  async function load(forceRefresh = false) {
+  async function load() {
     setError(null);
     setComputed(null);
 
@@ -96,7 +92,7 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const trades = await fetchActiveTradesWithFallback(id, forceRefresh);
+        const trades = await fetchActiveTradesWithFallback(id);
         setComputed(computeDashboardFromTrades(trades));
       } else {
         const agg = await loadTradesAllAccounts({

@@ -148,8 +148,6 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
   const accRes = await searchAccounts({
     onlyActiveAccounts,
     includeInvisibleAccounts: includeInvisible,
-    cacheTtlMs: 2 * 60 * 1000,
-    forceRefresh,
   });
   if (!accRes.success || accRes.errorCode !== 0) {
     throw new Error(accRes.errorMessage || `Account/search failed (errorCode ${accRes.errorCode}).`);
