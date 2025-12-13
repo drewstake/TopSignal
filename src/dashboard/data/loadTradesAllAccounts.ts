@@ -90,11 +90,7 @@ function splitRange(startISO: string, endISO: string, daysPerChunk: number) {
   return chunks;
 }
 
-async function mapLimit<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
 
@@ -144,8 +140,9 @@ async function loadTradesForAccountChunked(
       accountId,
       startTimestamp: c.start,
       endTimestamp: c.end,
-      cacheTtlMs: cacheTtlMs || undefined,
+      cacheTtlMs: cacheTtlMs > 0 ? cacheTtlMs : undefined,
       cacheKey: `${cacheKey}:chunk:${c.start}:${c.end}`,
+      forceRefresh,
     });
 
     if (!res.success || res.errorCode !== 0) {
@@ -156,7 +153,7 @@ async function loadTradesForAccountChunked(
   }
 
   const cleaned = dedupeTrades(all);
-  setCachedTrades(cacheKey, cleaned, cacheTtlMs || null);
+  setCachedTrades(cacheKey, cleaned, cacheTtlMs > 0 ? cacheTtlMs : null);
   return cleaned;
 }
 
@@ -181,6 +178,7 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
     cacheTtlMs: 2 * 60 * 1000,
     forceRefresh,
   });
+
   if (!accRes.success || accRes.errorCode !== 0) {
     throw new Error(accRes.errorMessage || `Account/search failed (errorCode ${accRes.errorCode}).`);
   }
@@ -188,24 +186,20 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
   const accounts = accRes.accounts || [];
 
   const byAccountId: Record<number, TopstepTrade[]> = {};
-  const perAccountTrades = await mapLimit(
-    accounts,
-    concurrency,
-    async (a) => {
-      const perAccountCacheKey = `v1:acct:${a.id}:${rangeStartDay}:${rangeEndDay}:d${daysPerChunk}`;
-      const trades = await loadTradesForAccountChunked(
-        a.id,
-        opts.startTimestamp,
-        opts.endTimestamp,
-        daysPerChunk,
-        opts.forceRefresh ?? false,
-        perAccountCacheKey,
-        cacheTtlMs
-      );
-      byAccountId[a.id] = trades;
-      return trades;
-    }
-  );
+  const perAccountTrades = await mapLimit(accounts, concurrency, async (a) => {
+    const perAccountCacheKey = `v1:acct:${a.id}:${rangeStartDay}:${rangeEndDay}:d${daysPerChunk}`;
+    const trades = await loadTradesForAccountChunked(
+      a.id,
+      opts.startTimestamp,
+      opts.endTimestamp,
+      daysPerChunk,
+      forceRefresh,
+      perAccountCacheKey,
+      cacheTtlMs
+    );
+    byAccountId[a.id] = trades;
+    return trades;
+  });
 
   const merged = dedupeTrades(perAccountTrades.flat());
 
