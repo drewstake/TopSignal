@@ -27,7 +27,6 @@ export async function searchTrades(args: {
   endTimestamp?: string | null;
   cacheTtlMs?: number;
   forceRefresh?: boolean;
-  cacheKey?: string;
 }) {
   return topstepPost<TradeSearchResponse>(
     "/api/Trade/search",
@@ -39,7 +38,6 @@ export async function searchTrades(args: {
     {
       cacheTtlMs: args.cacheTtlMs,
       forceRefresh: args.forceRefresh,
-      cacheKey: args.cacheKey,
     }
   );
 }

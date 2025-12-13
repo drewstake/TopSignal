@@ -10,7 +10,6 @@ type LoadTradesOptions = {
   daysPerChunk?: number; // default 30
   concurrency?: number; // default 2
   forceRefresh?: boolean; // default false
-  cacheTtlMs?: number; // default 2 min
 };
 
 export type TradesAllAccountsResult = {
@@ -129,12 +128,11 @@ async function loadTradesForAccountChunked(
   startISO: string,
   endISO: string,
   daysPerChunk: number,
-  forceRefresh: boolean,
-  cacheKey: string,
-  cacheTtlMs: number
+  forceRefresh: boolean
 ) {
-  const cached = !forceRefresh ? getCachedTrades(cacheKey) : null;
-  if (cached) return cached;
+  const cacheKey = `v1:acct:${accountId}:${startISO}:${endISO}:d${daysPerChunk}`;
+  const cached = memCache.get(cacheKey);
+  if (cached && !forceRefresh) return cached;
 
   const chunks = splitRange(startISO, endISO, daysPerChunk);
 
@@ -170,16 +168,10 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
   const daysPerChunk = clampChunkDays(opts.daysPerChunk ?? 30);
   const concurrency = clampConcurrency(opts.concurrency ?? 2);
   const forceRefresh = opts.forceRefresh ?? false;
-  const cacheTtlMs = opts.cacheTtlMs ?? 2 * 60 * 1000;
-
-  const rangeStartDay = opts.startTimestamp.slice(0, 10);
-  const rangeEndDay = opts.endTimestamp.slice(0, 10);
 
   const accRes = await searchAccounts({
     onlyActiveAccounts,
     includeInvisibleAccounts: includeInvisible,
-    cacheTtlMs: 2 * 60 * 1000,
-    forceRefresh,
   });
   if (!accRes.success || accRes.errorCode !== 0) {
     throw new Error(accRes.errorMessage || `Account/search failed (errorCode ${accRes.errorCode}).`);
@@ -198,9 +190,7 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
         opts.startTimestamp,
         opts.endTimestamp,
         daysPerChunk,
-        opts.forceRefresh ?? false,
-        perAccountCacheKey,
-        cacheTtlMs
+        opts.forceRefresh ?? false
       );
       byAccountId[a.id] = trades;
       return trades;

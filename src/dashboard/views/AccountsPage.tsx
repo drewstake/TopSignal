@@ -58,8 +58,6 @@ export default function AccountsPage() {
       const res = await searchAccounts({
         onlyActiveAccounts: onlyActive,
         includeInvisibleAccounts: !onlyActive,
-        cacheTtlMs: 2 * 60 * 1000,
-        forceRefresh,
       });
 
       if (!res.success || res.errorCode !== 0) {
