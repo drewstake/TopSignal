@@ -14,10 +14,10 @@ import ApiUsageNote from "../components/ApiUsageNote";
 type Mode = "active" | "all";
 
 type TimeAnalysis = {
-  hourlyData: { label: string; trades: number; netPnl: number }[];
+  timeData: { label: string; trades: number; netPnl: number }[];
   dayData: { label: string; netPnl: number; trades: number }[];
-  busiestHour: { label: string; trades: number; netPnl: number } | null;
-  bestHour: { label: string; trades: number; netPnl: number } | null;
+  busiestTime: { label: string; trades: number; netPnl: number } | null;
+  bestTime: { label: string; trades: number; netPnl: number } | null;
   bestDay: { label: string; netPnl: number; trades: number } | null;
 };
 
@@ -146,20 +146,29 @@ export default function DashboardPage() {
 
   const timeAnalysis: TimeAnalysis = useMemo(() => {
     const TZ = "America/New_York";
+    const timeFormatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
 
     const roundTrips = computed?.roundTrips ?? [];
-    const hourly = new Map<number, { netPnl: number; trades: number }>();
+    const byMinute = new Map<number, { netPnl: number; trades: number }>();
     const byDay = new Map<string, { netPnl: number; trades: number }>();
 
     for (const rt of roundTrips) {
       const entry = new Date(rt.entryTime);
-      const hour = Number(entry.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ }));
+      const parts = timeFormatter.formatToParts(entry);
+      const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+      const minute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+      const minuteKey = hour * 60 + minute;
       const dow = entry.toLocaleDateString("en-US", { weekday: "short", timeZone: TZ });
 
-      const hourRow = hourly.get(hour) || { netPnl: 0, trades: 0 };
-      hourRow.netPnl += rt.netPnl;
-      hourRow.trades += 1;
-      hourly.set(hour, hourRow);
+      const minuteRow = byMinute.get(minuteKey) || { netPnl: 0, trades: 0 };
+      minuteRow.netPnl += rt.netPnl;
+      minuteRow.trades += 1;
+      byMinute.set(minuteKey, minuteRow);
 
       const dayRow = byDay.get(dow) || { netPnl: 0, trades: 0 };
       dayRow.netPnl += rt.netPnl;
@@ -167,27 +176,32 @@ export default function DashboardPage() {
       byDay.set(dow, dayRow);
     }
 
-    const hourlyData = [...hourly.entries()]
+    const timeData = [...byMinute.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([hour, v]) => ({
-        label: `${String(hour).padStart(2, "0")}:00`,
-        trades: v.trades,
-        netPnl: v.netPnl,
-      }));
+      .map(([minuteKey, v]) => {
+        const hour = Math.floor(minuteKey / 60);
+        const minute = minuteKey % 60;
 
-    const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        return {
+          label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+          trades: v.trades,
+          netPnl: v.netPnl,
+        };
+      });
+
+    const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri"];
     const dayData = dayOrder.map((label) => ({
       label,
       netPnl: byDay.get(label)?.netPnl ?? 0,
       trades: byDay.get(label)?.trades ?? 0,
     }));
 
-    const busiestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
+    const busiestTime = timeData.reduce<{ label: string; trades: number; netPnl: number } | null>(
       (best, row) => (row.trades > (best?.trades ?? 0) ? row : best),
       null
     );
 
-    const bestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
+    const bestTime = timeData.reduce<{ label: string; trades: number; netPnl: number } | null>(
       (best, row) => (row.netPnl > (best?.netPnl ?? Number.NEGATIVE_INFINITY) ? row : best),
       null
     );
@@ -198,7 +212,7 @@ export default function DashboardPage() {
       return row.netPnl > best.netPnl ? row : best;
     }, null);
 
-    return { hourlyData, dayData, busiestHour, bestHour, bestDay };
+    return { timeData, dayData, busiestTime, bestTime, bestDay };
   }, [computed]);
 
   const daySummary: DaySummary = useMemo(() => {

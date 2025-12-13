@@ -6,10 +6,10 @@ import type { DashboardComputed } from "../data/computeDashboard";
 import type { EquityPoint } from "../../types/metrics";
 
 interface TimeAnalysis {
-  hourlyData: { label: string; trades: number; netPnl: number }[];
+  timeData: { label: string; trades: number; netPnl: number }[];
   dayData: { label: string; netPnl: number; trades: number }[];
-  busiestHour: { label: string; trades: number; netPnl: number } | null;
-  bestHour: { label: string; trades: number; netPnl: number } | null;
+  busiestTime: { label: string; trades: number; netPnl: number } | null;
+  bestTime: { label: string; trades: number; netPnl: number } | null;
   bestDay: { label: string; netPnl: number; trades: number } | null;
 }
 
@@ -46,23 +46,23 @@ export default function PerformanceBreakdowns({ loading, timeAnalysis, totals, e
           <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
             <div>
               <div className="font-semibold">Trade timing</div>
-              <div className="text-xs text-zinc-400">Hourly trades & PnL (New York time)</div>
+              <div className="text-xs text-zinc-400">Precise trade times & PnL (New York time)</div>
             </div>
-            <div className="text-xs text-zinc-400">{timeAnalysis.busiestHour ? `${timeAnalysis.busiestHour.trades} trades` : "--"}</div>
+            <div className="text-xs text-zinc-400">{timeAnalysis.busiestTime ? `${timeAnalysis.busiestTime.trades} trades` : "--"}</div>
           </div>
 
           {loading ? (
             <div className="py-6 text-sm text-zinc-300">Loading...</div>
-          ) : !timeAnalysis.hourlyData.length ? (
+          ) : !timeAnalysis.timeData.length ? (
             <div className="py-6 text-sm text-zinc-300">No realized trades to chart.</div>
           ) : (
-            <TradeTimeHistogram data={timeAnalysis.hourlyData} />
+            <TradeTimeHistogram data={timeAnalysis.timeData} />
           )}
 
-          {timeAnalysis.bestHour ? (
+          {timeAnalysis.bestTime ? (
             <div className="mt-2 text-xs text-emerald-300">
-              Most profitable hour: {timeAnalysis.bestHour.label} ({fmtMoney(timeAnalysis.bestHour.netPnl)}; {timeAnalysis.bestHour.trades}
-              trade{timeAnalysis.bestHour.trades === 1 ? "" : "s"}).
+              Most profitable time: {timeAnalysis.bestTime.label} ({fmtMoney(timeAnalysis.bestTime.netPnl)}; {timeAnalysis.bestTime.trades}
+              trade{timeAnalysis.bestTime.trades === 1 ? "" : "s"}).
             </div>
           ) : null}
         </div>
