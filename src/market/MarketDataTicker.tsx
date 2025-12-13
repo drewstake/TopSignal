@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MarketDataService, type QuoteUpdate } from "./TopstepXMarketData";
+import {
+  MarketDataService,
+  type DepthSnapshot,
+  type QuoteUpdate,
+} from "./TopstepXMarketData";
 
 const numberFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -34,9 +38,12 @@ const initialQuote: QuoteUpdate = {
   ts: null,
 };
 
+const initialDepth: DepthSnapshot = { bids: [], asks: [] };
+
 export function MarketDataTicker() {
   const [quote, setQuote] = useState<QuoteUpdate>(initialQuote);
   const [status, setStatus] = useState<StatusState>({ mode: "connecting", message: null });
+  const [depth, setDepth] = useState<DepthSnapshot>(initialDepth);
   const serviceRef = useRef<ReturnType<typeof MarketDataService.init> | null>(null);
 
   const statusLabel = useMemo(() => {
@@ -52,6 +59,10 @@ export function MarketDataTicker() {
 
     const unsubscribeQuote = md.onQuote((next) => {
       setQuote(next);
+    });
+
+    const unsubscribeDepth = md.onDepth((snapshot) => {
+      setDepth(snapshot);
     });
 
     const unsubscribeStatus = md.onStatus((connected) => {
@@ -74,6 +85,7 @@ export function MarketDataTicker() {
 
     return () => {
       unsubscribeQuote();
+      unsubscribeDepth();
       unsubscribeStatus();
       void md.stop();
       serviceRef.current = null;
@@ -117,11 +129,71 @@ export function MarketDataTicker() {
       </div>
 
       <div className="mt-2 text-[11px] text-emerald-300/80">Updated: {timestamp}</div>
+      <OrderBook depth={depth} />
       {status.mode === "error" && status.message ? (
         <div className="mt-2 rounded-lg border border-amber-700/60 bg-amber-900/30 px-3 py-2 text-xs text-amber-100">
           {status.message}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function DepthRow({ side, price, size }: { side: "bid" | "ask"; price: number; size: number }) {
+  const formattedPrice = formatNumber(price);
+  const formattedSize = formatVolume(size);
+  const isBid = side === "bid";
+  return (
+    <div className="grid grid-cols-2 items-center text-xs font-medium">
+      <div
+        className={
+          "flex items-center gap-2 rounded-lg px-2 py-1 " +
+          (isBid ? "bg-emerald-900/40 text-emerald-100" : "bg-emerald-950/40 text-emerald-50")
+        }
+      >
+        <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500" aria-hidden />
+        <span>{formattedPrice}</span>
+      </div>
+      <div className="text-right text-emerald-200">{formattedSize}</div>
+    </div>
+  );
+}
+
+function OrderBook({ depth }: { depth: DepthSnapshot }) {
+  const maxRows = 8;
+  const bids = depth.bids.slice(0, maxRows);
+  const asks = depth.asks.slice(0, maxRows);
+
+  const hasData = bids.length > 0 || asks.length > 0;
+
+  return (
+    <div className="mt-4 rounded-xl border border-emerald-900/60 bg-emerald-900/30 p-3">
+      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-emerald-300/90">
+        <span>Order Book</span>
+        <span className="text-[11px] text-emerald-200/80">Top {maxRows} levels</span>
+      </div>
+      {hasData ? (
+        <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
+          <div className="space-y-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-200/80">Bids</div>
+            <div className="space-y-1">
+              {bids.map((b) => (
+                <DepthRow key={`bid-${b.price}`} side="bid" price={b.price} size={b.size} />
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-200/80">Asks</div>
+            <div className="space-y-1">
+              {asks.map((a) => (
+                <DepthRow key={`ask-${a.price}`} side="ask" price={a.price} size={a.size} />
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="text-xs text-emerald-200/80">Waiting for order book data…</div>
+      )}
     </div>
   );
 }
