@@ -8,7 +8,9 @@ import { loadTradesAllAccounts } from "../data/loadTradesAllAccounts";
 import { computeDashboardFromTrades } from "../data/computeDashboard";
 import type { DashboardComputed } from "../data/computeDashboard";
 import type { DayPoint } from "../../types/metrics";
+import DayOfWeekBarChart from "../components/charts/DayOfWeekBarChart";
 import EquityCurveChart from "../components/charts/EquityCurveChart";
+import TradeTimeHistogram from "../components/charts/TradeTimeHistogram";
 
 type Mode = "active" | "all";
 
@@ -28,9 +30,14 @@ function fmtDays(x: number) {
   return `${x.toFixed(1)}d`;
 }
 
-function fmtHours(x: number) {
-  if (!Number.isFinite(x)) return "0.0";
-  return `${x.toFixed(1)}h`;
+function fmtDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  const totalMinutes = Math.round(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours && minutes) return `${hours}h ${minutes}m`;
+  if (hours) return `${hours}h`;
+  return `${minutes}m`;
 }
 
 export default function DashboardPage() {
@@ -155,6 +162,61 @@ export default function DashboardPage() {
 
   const totals = computed?.totals;
   const equity = computed?.equity ?? [];
+
+  const timeAnalysis = useMemo(() => {
+    const TZ = "America/New_York";
+
+    const roundTrips = computed?.roundTrips ?? [];
+    const hourly = new Map<number, { netPnl: number; trades: number }>();
+    const byDay = new Map<string, { netPnl: number; trades: number }>();
+
+    for (const rt of roundTrips) {
+      const entry = new Date(rt.entryTime);
+      const hour = Number(entry.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ }));
+      const dow = entry.toLocaleDateString("en-US", { weekday: "short", timeZone: TZ });
+
+      const hourRow = hourly.get(hour) || { netPnl: 0, trades: 0 };
+      hourRow.netPnl += rt.netPnl;
+      hourRow.trades += 1;
+      hourly.set(hour, hourRow);
+
+      const dayRow = byDay.get(dow) || { netPnl: 0, trades: 0 };
+      dayRow.netPnl += rt.netPnl;
+      dayRow.trades += 1;
+      byDay.set(dow, dayRow);
+    }
+
+    const hourlyData = [...hourly.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([hour, v]) => ({
+        label: `${String(hour).padStart(2, "0")}:00`,
+        trades: v.trades,
+        netPnl: v.netPnl,
+      }));
+
+    const dayOrder = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const dayData = dayOrder.map((label) => ({ label, netPnl: byDay.get(label)?.netPnl ?? 0, trades: byDay.get(label)?.trades ?? 0 }));
+
+    const busiestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
+      (best, row) => (row.trades > (best?.trades ?? 0) ? row : best),
+      null,
+    );
+    const bestHour = hourlyData.reduce<{ label: string; trades: number; netPnl: number } | null>(
+      (best, row) => (row.netPnl > (best?.netPnl ?? Number.NEGATIVE_INFINITY) ? row : best),
+      null,
+    );
+
+    const bestDay = dayData.reduce<{ label: string; netPnl: number; trades: number } | null>(
+      (best, row) => {
+        if (row.trades === 0) return best;
+        if (!best) return row;
+        return row.netPnl > best.netPnl ? row : best;
+      },
+      null,
+    );
+
+    return { hourlyData, dayData, busiestHour, bestHour, bestDay };
+  }, [computed]);
 
   const daySummary = useMemo(() => {
     const days = computed?.days || [];
@@ -378,6 +440,26 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Avg hold time</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDuration(totals?.avgTradeDurationMs ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">All realized trades</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Avg winner hold</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDuration(totals?.avgWinDurationMs ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Closed in profit</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Avg loser hold</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDuration(totals?.avgLossDurationMs ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Closed in loss</div>
+          </div>
+        </div>
+
         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-sm font-semibold text-zinc-100">Time-of-day performance</div>
@@ -394,9 +476,65 @@ export default function DashboardPage() {
               {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
             </div>
           </div>
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+              <div>
+                <div className="font-semibold">Trade timing</div>
+                <div className="text-xs text-zinc-400">Hourly trades & PnL (New York time)</div>
+              </div>
+              <div className="text-xs text-zinc-400">{timeAnalysis.busiestHour ? `${timeAnalysis.busiestHour.trades} trades` : "--"}</div>
+            </div>
+
+            {loading ? (
+              <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            ) : !timeAnalysis.hourlyData.length ? (
+              <div className="py-6 text-sm text-zinc-300">No realized trades to chart.</div>
+            ) : (
+              <TradeTimeHistogram data={timeAnalysis.hourlyData} />
+            )}
+
+            {timeAnalysis.bestHour ? (
+              <div className="mt-2 text-xs text-emerald-300">
+                Most profitable hour: {timeAnalysis.bestHour.label} ({fmtMoney(timeAnalysis.bestHour.netPnl)}; {timeAnalysis.bestHour.trades} trade
+                {timeAnalysis.bestHour.trades === 1 ? "" : "s"}).
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+              <div>
+                <div className="font-semibold">Day-of-week performance</div>
+                <div className="text-xs text-zinc-400">Net PnL by session day</div>
+              </div>
+              <div className="text-xs text-zinc-400">{timeAnalysis.bestDay ? `${timeAnalysis.bestDay.trades} trades` : "--"}</div>
+            </div>
+
+            {loading ? (
+              <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            ) : !timeAnalysis.dayData.some((d) => d.trades > 0) ? (
+              <div className="py-6 text-sm text-zinc-300">No trading days to show.</div>
+            ) : (
+              <DayOfWeekBarChart data={timeAnalysis.dayData} />
+            )}
+
+            {timeAnalysis.bestDay ? (
+              <div className="mt-2 text-xs text-emerald-300">
+                Most profitable day: {timeAnalysis.bestDay.label} ({fmtMoney(timeAnalysis.bestDay.netPnl)}).
+              </div>
+            ) : null}
+          </div>
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-            <div className="text-sm font-semibold text-zinc-100">Instrument breakdown</div>
+            <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+              <div>
+                <div className="font-semibold">Instrument breakdown</div>
+                <div className="text-xs text-zinc-400">PnL by contract</div>
+              </div>
+              <div className="text-xs text-zinc-400">{totals?.instruments.length ?? 0} instrument(s)</div>
+            </div>
             <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
               {(totals?.instruments || []).map((i) => (
                 <div key={i.contractId} className="flex items-center justify-between py-2">
