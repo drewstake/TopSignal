@@ -91,6 +91,8 @@ function createThrottled(fn: () => void, intervalMs: number) {
 
     if (timeout) return;
 
+    // Schedule a trailing call so bursts still emit the latest update once the
+    // throttle window cools down.
     timeout = setTimeout(() => {
       last = Date.now();
       timeout = null;
@@ -105,6 +107,8 @@ class OrderBook {
 
   apply(update: DepthPayload) {
     const price = toNumber(update.price);
+    // Depth payloads sometimes send cumulative size (currentVolume) instead of a
+    // delta, so prefer it when present to avoid compounding totals.
     const rawSize = update.currentVolume ?? update.volume;
     const size = toNumber(rawSize);
 
@@ -271,6 +275,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private loadJwt() {
+    // Support both Vite client builds and Node contexts so tests/tools can
+    // provide credentials without a browser.
     if (typeof import.meta !== "undefined" && import.meta.env) {
       if (import.meta.env.PROJECTX_JWT) return String(import.meta.env.PROJECTX_JWT);
       if (import.meta.env.VITE_PROJECTX_JWT) return String(import.meta.env.VITE_PROJECTX_JWT);
@@ -298,6 +304,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
 
     const results: ContractSearchResult[] = await response.json();
+    // The API returns multiple expirations; picking the MNQ prefix grabs the
+    // front-month micro NASDAQ future regardless of the specific month code.
     const match = results.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
     if (!match?.id) {
       throw new Error("MNQ contract not found in search results.");
