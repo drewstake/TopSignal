@@ -1,10 +1,10 @@
-import axios from "axios";
 import {
   HubConnection,
   HubConnectionBuilder,
   HubConnectionState,
   HttpTransportType,
   LogLevel,
+  type RetryContext,
 } from "@microsoft/signalr";
 
 const REST_BASE = "https://api.topstepx.com";
@@ -58,6 +58,8 @@ type QuotePayload = {
   timestamp?: string | null;
   time?: string | null;
 };
+
+type ContractSearchResult = { id?: string | null };
 
 type UnsubscribeFn = () => void;
 
@@ -282,13 +284,21 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async resolveContractId(symbol: string, jwt: string) {
-    const res = await axios.post<{ id: string }[]>(
-      `${REST_BASE}/api/Contract/search`,
-      { live: false, searchText: symbol },
-      { headers: { Authorization: `Bearer ${jwt}` } }
-    );
+    const response = await fetch(`${REST_BASE}/api/Contract/search`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({ live: false, searchText: symbol }),
+    });
 
-    const match = res.data.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
+    if (!response.ok) {
+      throw new Error(`Contract search failed with status ${response.status}`);
+    }
+
+    const results: ContractSearchResult[] = await response.json();
+    const match = results.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
     if (!match?.id) {
       throw new Error("MNQ contract not found in search results.");
     }
@@ -303,7 +313,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
         skipNegotiation: true,
       })
       .withAutomaticReconnect({
-        nextRetryDelayInMilliseconds: (ctx) =>
+        nextRetryDelayInMilliseconds: (ctx: RetryContext) =>
           Math.min(30_000, 1000 * 2 ** Math.min(ctx.previousRetryCount, 10)),
       })
       .configureLogging(LogLevel.Error)
@@ -316,11 +326,11 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private attachHubHandlers(connection: HubConnection) {
-    connection.on("GatewayQuote", (_ignored, payload: QuotePayload) => {
+    connection.on("GatewayQuote", (_ignored: unknown, payload: QuotePayload) => {
       this.handleQuote(payload);
     });
 
-    connection.on("GatewayDepth", (_ignored, payload: DepthPayload) => {
+    connection.on("GatewayDepth", (_ignored: unknown, payload: DepthPayload) => {
       this.handleDepth(payload);
     });
 
