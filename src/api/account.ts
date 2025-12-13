@@ -15,9 +15,21 @@ export type AccountSearchResponse = {
   errorMessage: string | null;
 };
 
-export async function searchAccounts(onlyActiveAccounts = true) {
+export type AccountSearchArgs =
+  | boolean
+  | {
+      onlyActiveAccounts?: boolean;
+      includeInvisibleAccounts?: boolean;
+    };
+
+export async function searchAccounts(args: AccountSearchArgs = true) {
+  const onlyActiveAccounts = typeof args === "boolean" ? args : args.onlyActiveAccounts ?? true;
+  const includeInvisibleAccounts =
+    typeof args === "boolean" ? false : args.includeInvisibleAccounts ?? false;
+
   // docs list onlyActiveAccounts as an optional parameter
   return topstepPost<AccountSearchResponse>("/api/Account/search", {
     onlyActiveAccounts,
+    includeInvisibleAccounts,
   });
 }
