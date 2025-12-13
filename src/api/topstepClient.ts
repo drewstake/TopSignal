@@ -93,7 +93,11 @@ function makeCacheKey(path: string, body: unknown, cacheKey?: string) {
   return cacheKey ?? `${path}:${JSON.stringify(body)}`;
 }
 
-export async function topstepPost<T>(path: string, body: unknown = {}, opts: TopstepPostOptions = {}): Promise<T> {
+export async function topstepPost<T>(
+  path: string,
+  body: unknown = {},
+  opts: TopstepPostOptions = {}
+): Promise<T> {
   const token = loadSessionToken();
   if (!token) throw new Error("No session token. Connect in Settings first.");
 
@@ -129,13 +133,13 @@ export async function topstepPost<T>(path: string, body: unknown = {}, opts: Top
       const fallbackDelay = Math.ceil(config.windowMs / config.limit);
       const retryDelayMs = Math.max(
         MIN_RETRY_DELAY_MS,
-        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds! * 1000 : fallbackDelay,
+        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds! * 1000 : fallbackDelay
       );
       const errorText = await res.text();
 
       lastError = new Error(
         errorText ||
-          "Request was throttled. Limits are 50 requests/30s for /api/History/retrieveBars and 200 requests/60s for other endpoints.",
+          "Request was throttled. Limits are 50 requests/30s for /api/History/retrieveBars and 200 requests/60s for other endpoints."
       );
 
       if (attempt < RATE_LIMIT_RETRIES - 1) {
@@ -174,12 +178,4 @@ export function clearTopstepCache(path?: string) {
       responseCache.delete(key);
     }
   }
-
-      break;
-    }
-
-    return (await parseJsonOrThrow(res)) as T;
-  }
-
-  throw lastError ?? new Error("Rate limit exceeded. Please slow down and try again.");
 }
