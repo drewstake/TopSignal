@@ -138,6 +138,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   private readonly quoteHandlers = new Set<(quote: QuoteUpdate) => void>();
   private readonly depthHandlers = new Set<(snapshot: DepthSnapshot) => void>();
   private readonly statusHandlers = new Set<(connected: boolean) => void>();
+
   private readonly quoteState: QuoteUpdate = {
     last: null,
     bestBid: null,
@@ -284,9 +285,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const res = await axios.post<{ id: string }[]>(
       `${REST_BASE}/api/Contract/search`,
       { live: false, searchText: symbol },
-      {
-        headers: { Authorization: `Bearer ${jwt}` },
-      }
+      { headers: { Authorization: `Bearer ${jwt}` } }
     );
 
     const match = res.data.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
@@ -298,7 +297,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private connectMarketHub(jwt: string) {
-    const connection = new HubConnectionBuilder()
+    return new HubConnectionBuilder()
       .withUrl(`${MARKET_HUB}?access_token=${encodeURIComponent(jwt)}`, {
         transport: HttpTransportType.WebSockets,
         skipNegotiation: true,
@@ -309,8 +308,6 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       })
       .configureLogging(LogLevel.Error)
       .build();
-
-    return connection;
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
@@ -330,6 +327,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     connection.onreconnected(async () => {
       this.connected = true;
       this.emitStatus();
+
       if (this.contractId) {
         try {
           await this.subscribe(connection, this.contractId);
