@@ -88,6 +88,26 @@ export type DashboardComputed = {
     avgTradeDurationMs: number;
     avgWinDurationMs: number;
     avgLossDurationMs: number;
+
+    maxIntradayDrawdown: number;
+    avgDrawdown: number;
+    avgDrawdownLengthDays: number;
+    maxDrawdownLengthDays: number;
+    avgTimeToRecoveryDays: number;
+    profitPerDay: number;
+    profitPerHour: number;
+    expectancyPerTrade: number;
+    tailRiskAvg: number;
+    consistencyByWeek: number;
+    maxConsecutiveWins: number;
+    maxConsecutiveLosses: number;
+    avgLosingStreak: number;
+
+    // breakdowns for further analysis
+    timeBlocks: { label: string; netPnl: number; trades: number }[];
+    instruments: { contractId: string; netPnl: number; trades: number }[];
+    hourly: { hour: number; netPnl: number; trades: number }[];
+    weekdays: { label: string; netPnl: number; trades: number }[];
   };
 
   days: DayPoint[];
@@ -229,12 +249,33 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   let peak = 0;
   let maxDrawdown = 0;
 
+  let drawdownStartIdx = -1;
+  let drawdownTrough = 0;
+  const drawdownDepths: number[] = [];
+  const drawdownLengths: number[] = [];
+  const recoveryDurations: number[] = [];
+
   for (const d of days) {
     cum += d.netPnl;
     if (cum > peak) peak = cum;
 
     const dd = peak - cum;
     if (dd > maxDrawdown) maxDrawdown = dd;
+
+    if (dd > 0 && drawdownStartIdx === -1) {
+      drawdownStartIdx = equity.length;
+      drawdownTrough = cum;
+    }
+    if (dd === 0 && drawdownStartIdx !== -1) {
+      const depth = peak - drawdownTrough;
+      drawdownDepths.push(depth);
+      drawdownLengths.push(equity.length - drawdownStartIdx);
+      recoveryDurations.push(equity.length - drawdownStartIdx);
+      drawdownStartIdx = -1;
+    }
+    if (drawdownStartIdx !== -1 && cum < drawdownTrough) {
+      drawdownTrough = cum;
+    }
 
     equity.push({
       date: d.date,
@@ -347,6 +388,154 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const avgWinDurationMs = rtWins.length ? rtWins.reduce((s, r) => s + r.durationMs, 0) / rtWins.length : 0;
   const avgLossDurationMs = rtLoss.length ? rtLoss.reduce((s, r) => s + r.durationMs, 0) / rtLoss.length : 0;
 
+  // streaks and expectancy
+  const realizedExecs = trades
+    .filter((t) => t.profitAndLoss !== null && t.profitAndLoss !== undefined)
+    .sort((a, b) => ms(a.creationTimestamp) - ms(b.creationTimestamp));
+  let maxConsecutiveWins = 0;
+  let maxConsecutiveLosses = 0;
+  let curWins = 0;
+  let curLosses = 0;
+  const losingStreaks: number[] = [];
+
+  for (const t of realizedExecs) {
+    const p = safeNum(t.profitAndLoss) - safeNum(t.fees);
+    if (p > 0) {
+      curWins += 1;
+      maxConsecutiveWins = Math.max(maxConsecutiveWins, curWins);
+      if (curLosses > 0) losingStreaks.push(curLosses);
+      curLosses = 0;
+    } else if (p < 0) {
+      curLosses += 1;
+      maxConsecutiveLosses = Math.max(maxConsecutiveLosses, curLosses);
+      if (curWins > 0) curWins = 0;
+    } else {
+      if (curLosses > 0) losingStreaks.push(curLosses);
+      curWins = 0;
+      curLosses = 0;
+    }
+  }
+  if (curLosses > 0) losingStreaks.push(curLosses);
+
+  const avgLosingStreak = losingStreaks.length
+    ? losingStreaks.reduce((s, n) => s + n, 0) / losingStreaks.length
+    : 0;
+
+  const lossRate = denomTrades > 0 ? losses / denomTrades : 0;
+  const expectancyPerTrade = winRate * avgWin - lossRate * Math.abs(avgLoss);
+
+  // intraday drawdowns (per day)
+  let maxIntradayDrawdown = 0;
+  for (const d of days) {
+    const dayTrades = realizedExecs.filter((t) => dayKeyFromISO(t.creationTimestamp) === d.date);
+    if (!dayTrades.length) continue;
+
+    let intradayCum = 0;
+    let intradayPeak = 0;
+    for (const t of dayTrades) {
+      intradayCum += safeNum(t.profitAndLoss) - safeNum(t.fees);
+      intradayPeak = Math.max(intradayPeak, intradayCum);
+      const dd = intradayPeak - intradayCum;
+      if (dd > maxIntradayDrawdown) maxIntradayDrawdown = dd;
+    }
+  }
+
+  const avgDrawdown = drawdownDepths.length
+    ? drawdownDepths.reduce((s, n) => s + n, 0) / drawdownDepths.length
+    : 0;
+  const avgDrawdownLengthDays = drawdownLengths.length
+    ? drawdownLengths.reduce((s, n) => s + n, 0) / drawdownLengths.length
+    : 0;
+  const maxDrawdownLengthDays = drawdownLengths.length ? Math.max(...drawdownLengths) : 0;
+  const avgTimeToRecoveryDays = recoveryDurations.length
+    ? recoveryDurations.reduce((s, n) => s + n, 0) / recoveryDurations.length
+    : 0;
+
+  const profitPerDay = activeDays > 0 ? netPnl / activeDays : 0;
+  const totalHoursInMarket = roundTrips.reduce((s, r) => s + r.durationMs, 0) / (1000 * 60 * 60);
+  const profitPerHour = totalHoursInMarket > 0 ? netPnl / totalHoursInMarket : 0;
+
+  // tail risk (average of worst 5% trades)
+  const realizedPnls = realizedExecs.map((t) => safeNum(t.profitAndLoss) - safeNum(t.fees)).sort((a, b) => a - b);
+  const tailCount = Math.max(1, Math.floor(realizedPnls.length * 0.05));
+  const tailRiskAvg = realizedPnls.length
+    ? realizedPnls.slice(0, tailCount).reduce((s, n) => s + n, 0) / tailCount
+    : 0;
+
+  // weekly consistency
+  function isoWeekKey(dateStr: string) {
+    const d = new Date(dateStr);
+    const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const dayNum = tmp.getUTCDay() || 7;
+    tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil(((tmp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+    return `${tmp.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+  }
+
+  const weekly = new Map<string, number>();
+  for (const d of days) {
+    const key = isoWeekKey(d.date);
+    weekly.set(key, (weekly.get(key) || 0) + d.netPnl);
+  }
+  const weekEntries = [...weekly.values()];
+  const consistencyByWeek = weekEntries.length
+    ? weekEntries.filter((v) => v > 0).length / weekEntries.length
+    : 0;
+
+  // time of day breakdown (America/New_York)
+  function timeBlockLabel(ts: string) {
+    const d = new Date(ts);
+    const hour = d.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ });
+    const minute = d.toLocaleString("en-US", { minute: "2-digit", hour12: false, timeZone: TZ });
+    const h = Number(hour);
+    const m = Number(minute);
+    const totalMinutes = h * 60 + m;
+    if (totalMinutes < 9 * 60 + 30) return "Pre-market";
+    if (totalMinutes <= 16 * 60) return "Regular";
+    return "After hours";
+  }
+
+  const timeBlockMap = new Map<string, { netPnl: number; trades: number }>();
+  const instrumentMap = new Map<string, { netPnl: number; trades: number }>();
+  const hourMap = new Map<number, { netPnl: number; trades: number }>();
+  const weekdayMap = new Map<string, { netPnl: number; trades: number; order: number }>();
+
+  const weekdayOrder = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  for (const t of realizedExecs) {
+    const pnl = safeNum(t.profitAndLoss) - safeNum(t.fees);
+    const block = timeBlockLabel(t.creationTimestamp);
+    const tb = timeBlockMap.get(block) || { netPnl: 0, trades: 0 };
+    tb.netPnl += pnl;
+    tb.trades += 1;
+    timeBlockMap.set(block, tb);
+
+    const inst = instrumentMap.get(t.contractId) || { netPnl: 0, trades: 0 };
+    inst.netPnl += pnl;
+    inst.trades += 1;
+    instrumentMap.set(t.contractId, inst);
+
+    const hour = Number(
+      new Date(t.creationTimestamp).toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ })
+    );
+    const hourBucket = hourMap.get(hour) || { netPnl: 0, trades: 0 };
+    hourBucket.netPnl += pnl;
+    hourBucket.trades += 1;
+    hourMap.set(hour, hourBucket);
+
+    const weekdayLabel = new Date(t.creationTimestamp).toLocaleDateString("en-US", {
+      weekday: "short",
+      timeZone: TZ,
+    });
+    const weekdayBucket =
+      weekdayMap.get(weekdayLabel) ||
+      ({ netPnl: 0, trades: 0, order: weekdayOrder.indexOf(weekdayLabel) } as const);
+    weekdayBucket.netPnl += pnl;
+    weekdayBucket.trades += 1;
+    weekdayMap.set(weekdayLabel, weekdayBucket);
+  }
+
   return {
     totals: {
       grossPnl,
@@ -388,6 +577,34 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       avgTradeDurationMs,
       avgWinDurationMs,
       avgLossDurationMs,
+
+      maxIntradayDrawdown,
+      avgDrawdown,
+      avgDrawdownLengthDays,
+      maxDrawdownLengthDays,
+      avgTimeToRecoveryDays,
+      profitPerDay,
+      profitPerHour,
+      expectancyPerTrade,
+      tailRiskAvg,
+      consistencyByWeek,
+      maxConsecutiveWins,
+      maxConsecutiveLosses,
+      avgLosingStreak,
+
+      timeBlocks: [...timeBlockMap.entries()].map(([label, v]) => ({ label, netPnl: v.netPnl, trades: v.trades })),
+      instruments: [...instrumentMap.entries()].map(([contractId, v]) => ({
+        contractId,
+        netPnl: v.netPnl,
+        trades: v.trades,
+      })),
+      hourly: [...hourMap.entries()]
+        .map(([hour, v]) => ({ hour, netPnl: v.netPnl, trades: v.trades }))
+        .sort((a, b) => a.hour - b.hour),
+      weekdays: [...weekdayMap.entries()]
+        .map(([label, v]) => ({ label, netPnl: v.netPnl, trades: v.trades, order: v.order }))
+        .sort((a, b) => a.order - b.order)
+        .map(({ label, netPnl, trades }) => ({ label, netPnl, trades })),
     },
     days,
     equity,

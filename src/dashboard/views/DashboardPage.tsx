@@ -7,6 +7,10 @@ import { searchTrades } from "../../api/trade";
 import { loadTradesAllAccounts } from "../data/loadTradesAllAccounts";
 import { computeDashboardFromTrades } from "../data/computeDashboard";
 import type { DashboardComputed } from "../data/computeDashboard";
+import type { DayPoint } from "../../types/metrics";
+import EquityCurveChart from "../components/charts/EquityCurveChart";
+import TradeTimeHistogram from "../components/charts/TradeTimeHistogram";
+import DayOfWeekBarChart from "../components/charts/DayOfWeekBarChart";
 
 type Mode = "active" | "all";
 
@@ -21,11 +25,24 @@ function fmtPF(x: number) {
   return x.toFixed(2);
 }
 
+function fmtDays(x: number) {
+  if (!Number.isFinite(x)) return "0.0";
+  return `${x.toFixed(1)}d`;
+}
+
+function fmtHours(x: number) {
+  if (!Number.isFinite(x)) return "0.0";
+  return `${x.toFixed(1)}h`;
+}
+
+const WEEKDAY_ORDER = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 export default function DashboardPage() {
   const connected = hasSessionToken();
 
   const [mode, setMode] = useState<Mode>("active");
   const [daysBack, setDaysBack] = useState<number>(30);
+  const [effectiveDaysBack, setEffectiveDaysBack] = useState<number>(30);
 
   // only used for "all accounts" mode
   const [onlyActiveAccounts, setOnlyActiveAccounts] = useState<boolean>(false);
@@ -44,7 +61,56 @@ export default function DashboardPage() {
     return { startISO: start.toISOString(), endISO: end.toISOString(), safeDays };
   }, [daysBack]);
 
-  async function load() {
+  async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
+    const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
+    const initial = await searchTrades({
+      accountId,
+      startTimestamp: range.startISO,
+      endTimestamp: range.endISO,
+      cacheTtlMs: 2 * 60 * 1000,
+      forceRefresh,
+      cacheKey: `active:${rangeKey}:initial`,
+    });
+
+    if (!initial.success || initial.errorCode !== 0) {
+      throw new Error(initial.errorMessage || `Trade/search failed (errorCode ${initial.errorCode}).`);
+    }
+
+    const trades = initial.trades || [];
+    if (trades.length || range.safeDays >= 365) {
+      return { trades, daysUsed: range.safeDays };
+    }
+
+    // If nothing was returned for a short window, retry with a wider lookback so
+    // older accounts still show historical trades without manual tweaking.
+    const fallbackWindowsDays = [365, 365 * 3];
+    for (const days of fallbackWindowsDays) {
+      if (days <= range.safeDays) continue;
+
+      const extendedStart = new Date(Date.parse(range.endISO) - days * 24 * 60 * 60 * 1000).toISOString();
+      const extended = await searchTrades({
+        accountId,
+        startTimestamp: extendedStart,
+        endTimestamp: range.endISO,
+        cacheTtlMs: 2 * 60 * 1000,
+        forceRefresh,
+        cacheKey: `active:${rangeKey}:extended:${days}`,
+      });
+
+      if (!extended.success || extended.errorCode !== 0) {
+        throw new Error(extended.errorMessage || `Trade/search failed (errorCode ${extended.errorCode}).`);
+      }
+
+      const extendedTrades = extended.trades || [];
+      if (extendedTrades.length) {
+        return { trades: extendedTrades, daysUsed: days };
+      }
+    }
+
+    return { trades: [], daysUsed: Math.max(range.safeDays, ...fallbackWindowsDays) };
+  }
+
+  async function load(forceRefresh = false) {
     setError(null);
     setComputed(null);
 
@@ -59,17 +125,12 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const res = await searchTrades({
-          accountId: id,
-          startTimestamp: range.startISO,
-          endTimestamp: range.endISO,
-        });
-
-        if (!res.success || res.errorCode !== 0) {
-          throw new Error(res.errorMessage || `Trade/search failed (errorCode ${res.errorCode}).`);
+        const { trades: activeTrades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
+        setComputed(computeDashboardFromTrades(activeTrades));
+        setEffectiveDaysBack(daysUsed);
+        if (daysUsed !== range.safeDays) {
+          setDaysBack(daysUsed);
         }
-
-        setComputed(computeDashboardFromTrades(res.trades || []));
       } else {
         const agg = await loadTradesAllAccounts({
           startTimestamp: range.startISO,
@@ -78,9 +139,11 @@ export default function DashboardPage() {
           includeInvisibleAccounts,
           daysPerChunk: 30,
           concurrency: 2,
+          forceRefresh,
         });
 
         setComputed(computeDashboardFromTrades(agg.allTrades || []));
+        setEffectiveDaysBack(range.safeDays);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load dashboard.";
@@ -104,14 +167,24 @@ export default function DashboardPage() {
     const redDays = days.filter((d) => d.netPnl < 0).length;
     const flatDays = activeDays - greenDays - redDays;
 
-    const bestDay = days.reduce(
-      (best, d) => (d.netPnl > best.netPnl ? d : best),
-      { date: "", netPnl: Number.NEGATIVE_INFINITY } as any
-    );
-    const worstDay = days.reduce(
-      (worst, d) => (d.netPnl < worst.netPnl ? d : worst),
-      { date: "", netPnl: Number.POSITIVE_INFINITY } as any
-    );
+    const bestDaySeed: DayPoint = {
+      date: "",
+      grossPnl: 0,
+      fees: 0,
+      netPnl: Number.NEGATIVE_INFINITY,
+      trades: 0,
+      contracts: 0,
+      buys: 0,
+      sells: 0,
+    };
+
+    const worstDaySeed: DayPoint = {
+      ...bestDaySeed,
+      netPnl: Number.POSITIVE_INFINITY,
+    };
+
+    const bestDay = days.reduce((best, d) => (d.netPnl > best.netPnl ? d : best), bestDaySeed);
+    const worstDay = days.reduce((worst, d) => (d.netPnl < worst.netPnl ? d : worst), worstDaySeed);
 
     return {
       activeDays,
@@ -122,6 +195,49 @@ export default function DashboardPage() {
       worstDay: activeDays ? worstDay : null,
     };
   }, [computed]);
+
+  const hourlyHistogram = useMemo(() => {
+    const rows = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      label: `${String(hour).padStart(2, "0")}:00`,
+      trades: 0,
+      netPnl: 0,
+    }));
+
+    (totals?.hourly || []).forEach((h) => {
+      if (rows[h.hour]) {
+        rows[h.hour].trades = h.trades;
+        rows[h.hour].netPnl = h.netPnl;
+      }
+    });
+
+    return rows;
+  }, [totals?.hourly]);
+
+  const weekdayBreakdown = useMemo(
+    () =>
+      WEEKDAY_ORDER.map((label) => {
+        const found = (totals?.weekdays || []).find((w) => w.label === label);
+        return { label, trades: found?.trades ?? 0, netPnl: found?.netPnl ?? 0 };
+      }),
+    [totals?.weekdays]
+  );
+
+  const mostActiveHour = hourlyHistogram.reduce(
+    (best, row) => (row.trades > best.trades ? row : best),
+    { label: "", trades: -1, netPnl: 0, hour: 0 }
+  );
+  const bestHour = hourlyHistogram.reduce((best, row) => (row.netPnl > best.netPnl ? row : best), {
+    label: "",
+    trades: 0,
+    netPnl: Number.NEGATIVE_INFINITY,
+    hour: 0,
+  });
+  const bestWeekday = weekdayBreakdown.reduce((best, row) => (row.netPnl > best.netPnl ? row : best), {
+    label: "",
+    trades: 0,
+    netPnl: Number.NEGATIVE_INFINITY,
+  });
 
   return (
     <div className="grid grid-cols-1 gap-3">
@@ -169,7 +285,7 @@ export default function DashboardPage() {
             </div>
 
             <button
-              onClick={load}
+              onClick={() => load(true)}
               className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
             >
               Refresh
@@ -229,7 +345,7 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-xs text-zinc-400">Net PnL</div>
             <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.netPnl ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Range: last {range.safeDays} day(s)</div>
+            <div className="mt-1 text-xs text-zinc-500">Range: last {effectiveDaysBack} day(s)</div>
           </div>
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
@@ -285,6 +401,189 @@ export default function DashboardPage() {
             </div>
             <div className="mt-1 text-xs text-zinc-500">Active days {daySummary.activeDays}</div>
           </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Expectancy / trade</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.expectancyPerTrade ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Tail risk (avg worst 5%): {fmtMoney(totals?.tailRiskAvg ?? 0)}</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Risk & drawdown</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.maxIntradayDrawdown ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Avg DD {fmtMoney(totals?.avgDrawdown ?? 0)} | Max length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Recovery</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDays(totals?.avgTimeToRecoveryDays ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Avg length {fmtDays(totals?.avgDrawdownLengthDays ?? 0)}</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Efficiency</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.profitPerHour ?? 0)} / hr</div>
+            <div className="mt-1 text-xs text-zinc-500">Per day {fmtMoney(totals?.profitPerDay ?? 0)}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Consistency</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtPct(totals?.consistencyByWeek ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Week finish green %</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Streaks</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">W {totals?.maxConsecutiveWins ?? 0} / L {totals?.maxConsecutiveLosses ?? 0}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Avg losing streak {totals?.avgLosingStreak !== undefined ? totals.avgLosingStreak.toFixed(1) : "0"}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Duration</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtHours((totals?.avgTradeDurationMs ?? 0) / 1000 / 60 / 60)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Avg win {fmtHours((totals?.avgWinDurationMs ?? 0) / 1000 / 60 / 60)} | Avg loss {fmtHours((totals?.avgLossDurationMs ?? 0) / 1000 / 60 / 60)}</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Time to recovery</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDays(totals?.avgTimeToRecoveryDays ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Max DD length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-sm font-semibold text-zinc-100">Time-of-day performance</div>
+            <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+              {(totals?.timeBlocks || []).map((b) => (
+                <div key={b.label} className="flex items-center justify-between py-2">
+                  <div>{b.label}</div>
+                  <div className="text-right">
+                    <div>{fmtMoney(b.netPnl)}</div>
+                    <div className="text-xs text-zinc-500">Trades {b.trades}</div>
+                  </div>
+                </div>
+              ))}
+              {!totals?.timeBlocks?.length ? (
+                <div className="py-2 text-zinc-400">No realized trades in range.</div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-sm font-semibold text-zinc-100">Instrument breakdown</div>
+            <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+              {(totals?.instruments || []).map((i) => (
+                <div key={i.contractId} className="flex items-center justify-between py-2">
+                  <div className="text-xs text-zinc-400">{i.contractId}</div>
+                  <div className="text-right">
+                    <div>{fmtMoney(i.netPnl)}</div>
+                    <div className="text-xs text-zinc-500">Trades {i.trades}</div>
+                  </div>
+                </div>
+              ))}
+              {!totals?.instruments?.length ? (
+                <div className="py-2 text-zinc-400">No realized trades in range.</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+              <div className="font-semibold">Trading time analysis</div>
+              <div className="text-xs text-zinc-500">Local time: New York</div>
+            </div>
+
+            {loading ? (
+              <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            ) : !computed?.totals?.hourly?.length ? (
+              <div className="py-6 text-sm text-zinc-300">No trades in this range.</div>
+            ) : (
+              <TradeTimeHistogram data={hourlyHistogram} />
+            )}
+
+            <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-zinc-400 md:grid-cols-2">
+              <div>
+                <div className="font-semibold text-zinc-100">Most active hour</div>
+                <div className="mt-1 text-sm text-zinc-200">
+                  {totals?.hourly?.length
+                    ? `${mostActiveHour.label} • ${mostActiveHour.trades} trade(s)`
+                    : "N/A"}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold text-zinc-100">Most profitable hour</div>
+                <div className="mt-1 text-sm text-zinc-200">
+                  {totals?.hourly?.length && Number.isFinite(bestHour.netPnl)
+                    ? `${bestHour.label || "--:--"} • ${fmtMoney(bestHour.netPnl)}`
+                    : "N/A"}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold text-zinc-100">Avg winner hold</div>
+                <div className="mt-1 text-sm text-zinc-200">
+                  {fmtHours((totals?.avgWinDurationMs ?? 0) / 1000 / 60 / 60)}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold text-zinc-100">Avg loser hold</div>
+                <div className="mt-1 text-sm text-zinc-200">
+                  {fmtHours((totals?.avgLossDurationMs ?? 0) / 1000 / 60 / 60)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+              <div className="font-semibold">Day-of-week performance</div>
+              <div className="text-xs text-zinc-500">Net PnL by weekday</div>
+            </div>
+
+            {loading ? (
+              <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            ) : !computed?.totals?.weekdays?.length ? (
+              <div className="py-6 text-sm text-zinc-300">No trades in this range.</div>
+            ) : (
+              <DayOfWeekBarChart data={weekdayBreakdown} />
+            )}
+
+            <div className="mt-3 text-xs text-zinc-400">
+              <div className="font-semibold text-zinc-100">Best weekday</div>
+              <div className="mt-1 text-sm text-zinc-200">
+                {totals?.weekdays?.length && Number.isFinite(bestWeekday.netPnl)
+                  ? `${bestWeekday.label} • ${fmtMoney(bestWeekday.netPnl)} (Trades ${bestWeekday.trades})`
+                  : "N/A"}
+              </div>
+              <div className="mt-2 text-zinc-400">Use this to spot when your edge is strongest.</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+          <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+            <div>
+              <div className="font-semibold">Equity curve</div>
+              <div className="text-xs text-zinc-400">Cumulative net PnL with daily PnL overlay</div>
+            </div>
+            <div className="text-xs text-zinc-400">Range: last {effectiveDaysBack} day(s)</div>
+          </div>
+
+          {loading ? (
+            <div className="py-6 text-sm text-zinc-300">Loading...</div>
+          ) : !computed?.equity?.length ? (
+            <div className="py-6 text-sm text-zinc-300">No equity data found for this range.</div>
+          ) : (
+            <EquityCurveChart data={computed.equity} />
+          )}
         </div>
 
         <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-800">
