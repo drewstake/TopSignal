@@ -472,6 +472,12 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     ? weekEntries.filter((v) => v > 0).length / weekEntries.length
     : 0;
 
+  const timeBlocks = [
+    { key: "pre", label: "Pre-market (04:00–09:29 ET)", order: 0, match: (m: number) => m >= 4 * 60 && m < 9 * 60 + 30 },
+    { key: "regular", label: "Regular session (09:30–16:00 ET)", order: 1, match: (m: number) => m >= 9 * 60 + 30 && m <= 16 * 60 },
+    { key: "after", label: "After hours (16:01–03:59 ET)", order: 2, match: (_m: number) => true },
+  ];
+
   function timeBlockLabel(ts: string) {
     const d = new Date(ts);
     const hour = d.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ });
@@ -479,21 +485,19 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     const h = Number(hour);
     const m = Number(minute);
     const totalMinutes = h * 60 + m;
-    if (totalMinutes < 9 * 60 + 30) return "Pre-market";
-    if (totalMinutes <= 16 * 60) return "Regular";
-    return "After hours";
+    return timeBlocks.find((block) => block.match(totalMinutes)) ?? timeBlocks[timeBlocks.length - 1];
   }
 
-  const timeBlockMap = new Map<string, { netPnl: number; trades: number }>();
+  const timeBlockMap = new Map<string, { label: string; netPnl: number; trades: number; order: number }>();
   const instrumentMap = new Map<string, { netPnl: number; trades: number }>();
 
   for (const t of realizedExecs) {
     const pnl = safeNum(t.profitAndLoss) - safeNum(t.fees);
     const block = timeBlockLabel(t.creationTimestamp);
-    const tb = timeBlockMap.get(block) || { netPnl: 0, trades: 0 };
+    const tb = timeBlockMap.get(block.key) || { label: block.label, netPnl: 0, trades: 0, order: block.order };
     tb.netPnl += pnl;
     tb.trades += 1;
-    timeBlockMap.set(block, tb);
+    timeBlockMap.set(block.key, tb);
 
     const inst = instrumentMap.get(t.contractId) || { netPnl: 0, trades: 0 };
     inst.netPnl += pnl;
@@ -557,7 +561,9 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       maxConsecutiveLosses,
       avgLosingStreak,
 
-      timeBlocks: [...timeBlockMap.entries()].map(([label, v]) => ({ label, netPnl: v.netPnl, trades: v.trades })),
+      timeBlocks: [...timeBlockMap.values()]
+        .sort((a, b) => a.order - b.order)
+        .map(({ label, netPnl, trades }) => ({ label, netPnl, trades })),
       instruments: [...instrumentMap.entries()].map(([contractId, v]) => ({
         contractId,
         netPnl: v.netPnl,
