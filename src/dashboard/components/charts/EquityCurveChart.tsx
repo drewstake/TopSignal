@@ -25,7 +25,13 @@ export default function EquityCurveChart({ data }: { data: EquityPoint[] }) {
               return [String(value), String(name)];
             }}
           />
-          <Line type="monotone" dataKey="equity" dot={false} strokeWidth={2} />
+          <Line
+            type="monotone"
+            dataKey="equity"
+            dot={{ r: 3, strokeWidth: 1, strokeOpacity: 0.7, fillOpacity: 0.85 }}
+            activeDot={{ r: 5 }}
+            strokeWidth={2}
+          />
           <Line type="monotone" dataKey="pnl" dot={false} strokeWidth={1} strokeOpacity={0.6} />
         </LineChart>
       </ResponsiveContainer>
