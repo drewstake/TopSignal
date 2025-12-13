@@ -7,6 +7,7 @@ import { searchTrades } from "../../api/trade";
 import { loadTradesAllAccounts } from "../data/loadTradesAllAccounts";
 import { computeDashboardFromTrades } from "../data/computeDashboard";
 import type { DashboardComputed } from "../data/computeDashboard";
+import type { DayPoint } from "../../types/metrics";
 
 type Mode = "active" | "all";
 
@@ -44,7 +45,46 @@ export default function DashboardPage() {
     return { startISO: start.toISOString(), endISO: end.toISOString(), safeDays };
   }, [daysBack]);
 
-  async function load() {
+  async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
+    const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
+    const initial = await searchTrades({
+      accountId,
+      startTimestamp: range.startISO,
+      endTimestamp: range.endISO,
+      cacheTtlMs: 2 * 60 * 1000,
+      forceRefresh,
+      cacheKey: `active:${rangeKey}:initial`,
+    });
+
+    if (!initial.success || initial.errorCode !== 0) {
+      throw new Error(initial.errorMessage || `Trade/search failed (errorCode ${initial.errorCode}).`);
+    }
+
+    const trades = initial.trades || [];
+    if (trades.length || range.safeDays >= 365) {
+      return trades;
+    }
+
+    // If nothing was returned for a short window, retry with a wider lookback so
+    // older accounts still show historical trades without manual tweaking.
+    const extendedStart = new Date(Date.parse(range.endISO) - 365 * 24 * 60 * 60 * 1000).toISOString();
+    const extended = await searchTrades({
+      accountId,
+      startTimestamp: extendedStart,
+      endTimestamp: range.endISO,
+      cacheTtlMs: 2 * 60 * 1000,
+      forceRefresh,
+      cacheKey: `active:${rangeKey}:extended`,
+    });
+
+    if (!extended.success || extended.errorCode !== 0) {
+      throw new Error(extended.errorMessage || `Trade/search failed (errorCode ${extended.errorCode}).`);
+    }
+
+    return extended.trades || [];
+  }
+
+  async function load(forceRefresh = false) {
     setError(null);
     setComputed(null);
 
@@ -59,17 +99,8 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const res = await searchTrades({
-          accountId: id,
-          startTimestamp: range.startISO,
-          endTimestamp: range.endISO,
-        });
-
-        if (!res.success || res.errorCode !== 0) {
-          throw new Error(res.errorMessage || `Trade/search failed (errorCode ${res.errorCode}).`);
-        }
-
-        setComputed(computeDashboardFromTrades(res.trades || []));
+        const trades = await fetchActiveTradesWithFallback(id, forceRefresh);
+        setComputed(computeDashboardFromTrades(trades));
       } else {
         const agg = await loadTradesAllAccounts({
           startTimestamp: range.startISO,
@@ -78,6 +109,7 @@ export default function DashboardPage() {
           includeInvisibleAccounts,
           daysPerChunk: 30,
           concurrency: 2,
+          forceRefresh,
         });
 
         setComputed(computeDashboardFromTrades(agg.allTrades || []));
@@ -104,14 +136,24 @@ export default function DashboardPage() {
     const redDays = days.filter((d) => d.netPnl < 0).length;
     const flatDays = activeDays - greenDays - redDays;
 
-    const bestDay = days.reduce(
-      (best, d) => (d.netPnl > best.netPnl ? d : best),
-      { date: "", netPnl: Number.NEGATIVE_INFINITY } as any
-    );
-    const worstDay = days.reduce(
-      (worst, d) => (d.netPnl < worst.netPnl ? d : worst),
-      { date: "", netPnl: Number.POSITIVE_INFINITY } as any
-    );
+    const bestDaySeed: DayPoint = {
+      date: "",
+      grossPnl: 0,
+      fees: 0,
+      netPnl: Number.NEGATIVE_INFINITY,
+      trades: 0,
+      contracts: 0,
+      buys: 0,
+      sells: 0,
+    };
+
+    const worstDaySeed: DayPoint = {
+      ...bestDaySeed,
+      netPnl: Number.POSITIVE_INFINITY,
+    };
+
+    const bestDay = days.reduce((best, d) => (d.netPnl > best.netPnl ? d : best), bestDaySeed);
+    const worstDay = days.reduce((worst, d) => (d.netPnl < worst.netPnl ? d : worst), worstDaySeed);
 
     return {
       activeDays,
@@ -169,7 +211,7 @@ export default function DashboardPage() {
             </div>
 
             <button
-              onClick={load}
+              onClick={() => load(true)}
               className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
             >
               Refresh
