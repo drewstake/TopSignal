@@ -135,6 +135,7 @@ export async function topstepPost<T>(
         MIN_RETRY_DELAY_MS,
         Number.isFinite(retryAfterSeconds) ? retryAfterSeconds! * 1000 : fallbackDelay
       );
+
       const errorText = await res.text();
 
       lastError = new Error(

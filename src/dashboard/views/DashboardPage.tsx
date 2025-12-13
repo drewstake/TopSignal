@@ -22,6 +22,16 @@ function fmtPF(x: number) {
   return x.toFixed(2);
 }
 
+function fmtDays(x: number) {
+  if (!Number.isFinite(x)) return "0.0";
+  return `${x.toFixed(1)}d`;
+}
+
+function fmtHours(x: number) {
+  if (!Number.isFinite(x)) return "0.0";
+  return `${x.toFixed(1)}h`;
+}
+
 export default function DashboardPage() {
   const connected = hasSessionToken();
 
@@ -338,6 +348,105 @@ export default function DashboardPage() {
               {(totals?.avgTradesPerDay ?? 0).toFixed(2)}
             </div>
             <div className="mt-1 text-xs text-zinc-500">Active days {daySummary.activeDays}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Expectancy / trade</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.expectancyPerTrade ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Tail risk (avg worst 5%): {fmtMoney(totals?.tailRiskAvg ?? 0)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Risk & drawdown</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.maxIntradayDrawdown ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Avg DD {fmtMoney(totals?.avgDrawdown ?? 0)} | Max length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Recovery</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDays(totals?.avgTimeToRecoveryDays ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Avg length {fmtDays(totals?.avgDrawdownLengthDays ?? 0)}</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Efficiency</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.profitPerHour ?? 0)} / hr</div>
+            <div className="mt-1 text-xs text-zinc-500">Per day {fmtMoney(totals?.profitPerDay ?? 0)}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Consistency</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtPct(totals?.consistencyByWeek ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Week finish green %</div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Streaks</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">
+              W {totals?.maxConsecutiveWins ?? 0} / L {totals?.maxConsecutiveLosses ?? 0}
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Avg losing streak {totals?.avgLosingStreak !== undefined ? totals.avgLosingStreak.toFixed(1) : "0"}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Duration</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">
+              {fmtHours((totals?.avgTradeDurationMs ?? 0) / 1000 / 60 / 60)}
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Avg win {fmtHours((totals?.avgWinDurationMs ?? 0) / 1000 / 60 / 60)} | Avg loss{" "}
+              {fmtHours((totals?.avgLossDurationMs ?? 0) / 1000 / 60 / 60)}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-xs text-zinc-400">Time to recovery</div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtDays(totals?.avgTimeToRecoveryDays ?? 0)}</div>
+            <div className="mt-1 text-xs text-zinc-500">Max DD length {fmtDays(totals?.maxDrawdownLengthDays ?? 0)}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-sm font-semibold text-zinc-100">Time-of-day performance</div>
+            <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+              {(totals?.timeBlocks || []).map((b) => (
+                <div key={b.label} className="flex items-center justify-between py-2">
+                  <div>{b.label}</div>
+                  <div className="text-right">
+                    <div>{fmtMoney(b.netPnl)}</div>
+                    <div className="text-xs text-zinc-500">Trades {b.trades}</div>
+                  </div>
+                </div>
+              ))}
+              {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="text-sm font-semibold text-zinc-100">Instrument breakdown</div>
+            <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+              {(totals?.instruments || []).map((i) => (
+                <div key={i.contractId} className="flex items-center justify-between py-2">
+                  <div className="text-xs text-zinc-400">{i.contractId}</div>
+                  <div className="text-right">
+                    <div>{fmtMoney(i.netPnl)}</div>
+                    <div className="text-xs text-zinc-500">Trades {i.trades}</div>
+                  </div>
+                </div>
+              ))}
+              {!totals?.instruments?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
+            </div>
           </div>
         </div>
 
