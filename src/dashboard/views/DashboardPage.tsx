@@ -48,6 +48,7 @@ export default function DashboardPage() {
 
   async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
     const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
+
     const initial = await searchTrades({
       accountId,
       startTimestamp: range.startISO,
@@ -110,9 +111,10 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
-        const { trades: activeTrades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
-        setComputed(computeDashboardFromTrades(activeTrades));
+        const { trades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
+        setComputed(computeDashboardFromTrades(trades));
         setEffectiveDaysBack(daysUsed);
+
         if (daysUsed !== range.safeDays) {
           setDaysBack(daysUsed);
         }
@@ -196,19 +198,13 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-950/40 p-1 text-sm">
               <button
                 onClick={() => setMode("active")}
-                className={
-                  "rounded-lg px-3 py-1.5 " +
-                  (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")
-                }
+                className={"rounded-lg px-3 py-1.5 " + (mode === "active" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")}
               >
                 Active account
               </button>
               <button
                 onClick={() => setMode("all")}
-                className={
-                  "rounded-lg px-3 py-1.5 " +
-                  (mode === "all" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")
-                }
+                className={"rounded-lg px-3 py-1.5 " + (mode === "all" ? "bg-zinc-800 text-zinc-100" : "text-zinc-300")}
               >
                 All accounts
               </button>
