@@ -475,7 +475,7 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const timeBlocks = [
     { key: "pre", label: "Pre-market (04:00–09:29 ET)", order: 0, match: (m: number) => m >= 4 * 60 && m < 9 * 60 + 30 },
     { key: "regular", label: "Regular session (09:30–16:00 ET)", order: 1, match: (m: number) => m >= 9 * 60 + 30 && m <= 16 * 60 },
-    { key: "after", label: "After hours (16:01–03:59 ET)", order: 2, match: (_m: number) => true },
+    { key: "after", label: "After hours (16:01–03:59 ET)", order: 2, match: () => true },
   ];
 
   function timeBlockLabel(ts: string) {

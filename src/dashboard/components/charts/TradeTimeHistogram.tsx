@@ -1,21 +1,22 @@
 import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { TooltipProps } from "recharts";
 import { fmtMoney } from "../../../lib/format";
 
 type Props = { data: { label: string; trades: number; netPnl: number }[] };
 
 export default function TradeTimeHistogram({ data }: Props) {
-  const renderTooltip = ({ active, payload, label }: any) => {
+  const renderTooltip = ({ active, payload, label }: TooltipProps<number, string>) => {
     if (!active || !payload?.length) return null;
 
-    const trades = payload.find((p: any) => p.dataKey === "trades")?.value ?? 0;
-    const netPnl = payload.find((p: any) => p.dataKey === "netPnl")?.value ?? 0;
+    const trades = payload.find((p) => p.dataKey === "trades")?.value ?? 0;
+    const netPnl = payload.find((p) => p.dataKey === "netPnl")?.value ?? 0;
 
     return (
       <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-2 text-xs text-zinc-100 shadow-lg">
-        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-400">{label} ET</div>
+        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-400">{label ?? ""} ET</div>
         <div className="flex items-center justify-between gap-6">
           <div>Trades</div>
-          <div className="font-semibold text-indigo-200">{trades}</div>
+          <div className="font-semibold text-indigo-200">{Number(trades)}</div>
         </div>
         <div className="flex items-center justify-between gap-6">
           <div>Net PnL</div>
