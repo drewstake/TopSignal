@@ -7,8 +7,15 @@ import { fmtMoney } from "../../lib/format";
 import { getActiveAccountId, setActiveAccountId } from "../../lib/activeAccount";
 import { detectAccountTypeFromName, type AccountType } from "../../lib/accountType";
 
+const ONLY_ACTIVE_STORAGE_KEY = "accounts-only-active";
+
 export default function AccountsPage() {
-  const [onlyActive, setOnlyActive] = useState(true);
+  const [onlyActive, setOnlyActive] = useState(() => {
+    const stored = localStorage.getItem(ONLY_ACTIVE_STORAGE_KEY);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+    return true;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<TopstepAccount[]>([]);
@@ -37,7 +44,7 @@ export default function AccountsPage() {
     return { count, canTradeCount, visibleCount, totalBalance, byType };
   }, [accounts]);
 
-  async function load() {
+  async function load(forceRefresh = false) {
     setError(null);
 
     if (!connected) {
@@ -48,13 +55,19 @@ export default function AccountsPage() {
 
     setLoading(true);
     try {
-      const res = await searchAccounts(onlyActive);
+      const res = await searchAccounts({
+        onlyActiveAccounts: onlyActive,
+        includeInvisibleAccounts: !onlyActive,
+        cacheTtlMs: 2 * 60 * 1000,
+        forceRefresh,
+      });
 
       if (!res.success || res.errorCode !== 0) {
         throw new Error(res.errorMessage || `Request failed (errorCode ${res.errorCode}).`);
       }
 
-      setAccounts(res.accounts || []);
+      const sorted = (res.accounts || []).slice().sort((a, b) => b.id - a.id);
+      setAccounts(sorted);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load accounts.";
       setAccounts([]);
@@ -65,6 +78,7 @@ export default function AccountsPage() {
   }
 
   useEffect(() => {
+    localStorage.setItem(ONLY_ACTIVE_STORAGE_KEY, String(onlyActive));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onlyActive]);
@@ -95,7 +109,7 @@ export default function AccountsPage() {
             </label>
 
             <button
-              onClick={load}
+              onClick={() => load(true)}
               className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
             >
               Refresh
