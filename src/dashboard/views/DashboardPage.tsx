@@ -27,6 +27,7 @@ export default function DashboardPage() {
 
   const [mode, setMode] = useState<Mode>("active");
   const [daysBack, setDaysBack] = useState<number>(30);
+  const [effectiveDaysBack, setEffectiveDaysBack] = useState<number>(30);
 
   // only used for "all accounts" mode
   const [onlyActiveAccounts, setOnlyActiveAccounts] = useState<boolean>(false);
@@ -45,11 +46,16 @@ export default function DashboardPage() {
     return { startISO: start.toISOString(), endISO: end.toISOString(), safeDays };
   }, [daysBack]);
 
+  async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
+    const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
   async function fetchActiveTradesWithFallback(accountId: number) {
     const initial = await searchTrades({
       accountId,
       startTimestamp: range.startISO,
       endTimestamp: range.endISO,
+      cacheTtlMs: 2 * 60 * 1000,
+      forceRefresh,
+      cacheKey: `active:${rangeKey}:initial`,
     });
 
     if (!initial.success || initial.errorCode !== 0) {
@@ -58,11 +64,40 @@ export default function DashboardPage() {
 
     const trades = initial.trades || [];
     if (trades.length || range.safeDays >= 365) {
+      return { trades, daysUsed: range.safeDays };
       return trades;
     }
 
     // If nothing was returned for a short window, retry with a wider lookback so
     // older accounts still show historical trades without manual tweaking.
+    const fallbackWindowsDays = [365, 365 * 3];
+    for (const days of fallbackWindowsDays) {
+      if (days <= range.safeDays) continue;
+
+      const extendedStart = new Date(Date.parse(range.endISO) - days * 24 * 60 * 60 * 1000).toISOString();
+      const extended = await searchTrades({
+        accountId,
+        startTimestamp: extendedStart,
+        endTimestamp: range.endISO,
+        cacheTtlMs: 2 * 60 * 1000,
+        forceRefresh,
+        cacheKey: `active:${rangeKey}:extended:${days}`,
+      });
+
+      if (!extended.success || extended.errorCode !== 0) {
+        throw new Error(extended.errorMessage || `Trade/search failed (errorCode ${extended.errorCode}).`);
+      }
+
+      const extendedTrades = extended.trades || [];
+      if (extendedTrades.length) {
+        return { trades: extendedTrades, daysUsed: days };
+      }
+    }
+
+    return { trades: [], daysUsed: Math.max(range.safeDays, ...fallbackWindowsDays) };
+  }
+
+  async function load(forceRefresh = false) {
     const extendedStart = new Date(Date.parse(range.endISO) - 365 * 24 * 60 * 60 * 1000).toISOString();
     const extended = await searchTrades({
       accountId,
@@ -92,6 +127,12 @@ export default function DashboardPage() {
         const id = getActiveAccountId();
         if (!id) throw new Error("Pick an active account on the Accounts page first.");
 
+        const { trades, daysUsed } = await fetchActiveTradesWithFallback(id, forceRefresh);
+        setComputed(computeDashboardFromTrades(trades));
+        setEffectiveDaysBack(daysUsed);
+        if (daysUsed !== range.safeDays) {
+          setDaysBack(daysUsed);
+        }
         const trades = await fetchActiveTradesWithFallback(id);
         setComputed(computeDashboardFromTrades(trades));
       } else {
@@ -106,6 +147,7 @@ export default function DashboardPage() {
         });
 
         setComputed(computeDashboardFromTrades(agg.allTrades || []));
+        setEffectiveDaysBack(range.safeDays);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load dashboard.";
@@ -264,7 +306,7 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-xs text-zinc-400">Net PnL</div>
             <div className="mt-1 text-xl font-semibold text-zinc-100">{fmtMoney(totals?.netPnl ?? 0)}</div>
-            <div className="mt-1 text-xs text-zinc-500">Range: last {range.safeDays} day(s)</div>
+            <div className="mt-1 text-xs text-zinc-500">Range: last {effectiveDaysBack} day(s)</div>
           </div>
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">

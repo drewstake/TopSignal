@@ -100,6 +100,14 @@ export async function topstepPost<T>(path: string, body: unknown = {}, opts: Top
   const limiterKey = getLimiterKey(path);
   const config = getRateLimitConfig(path);
 
+  if (opts.cacheTtlMs && opts.cacheTtlMs > 0 && !opts.forceRefresh) {
+    const key = makeCacheKey(path, body, opts.cacheKey);
+    const cached = responseCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data as T;
+    }
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < RATE_LIMIT_RETRIES; attempt += 1) {
@@ -134,6 +142,38 @@ export async function topstepPost<T>(path: string, body: unknown = {}, opts: Top
         await sleep(retryDelayMs * (attempt + 1));
         continue;
       }
+
+      break;
+    }
+
+    const parsed = (await parseJsonOrThrow(res)) as T;
+
+    if (opts.cacheTtlMs && opts.cacheTtlMs > 0) {
+      const key = makeCacheKey(path, body, opts.cacheKey);
+      responseCache.set(key, {
+        expiresAt: Date.now() + opts.cacheTtlMs,
+        data: parsed,
+      });
+    }
+
+    return parsed;
+  }
+
+  throw lastError ?? new Error("Rate limit exceeded. Please slow down and try again.");
+}
+
+export function clearTopstepCache(path?: string) {
+  if (!path) {
+    responseCache.clear();
+    return;
+  }
+
+  const prefix = `${path}:`;
+  for (const key of responseCache.keys()) {
+    if (key.startsWith(prefix)) {
+      responseCache.delete(key);
+    }
+  }
 
       break;
     }
