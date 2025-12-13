@@ -135,6 +135,11 @@ async function loadTradesForAccountChunked(
 ) {
   const cached = !forceRefresh ? getCachedTrades(cacheKey) : null;
   if (cached) return cached;
+  forceRefresh: boolean
+) {
+  const cacheKey = `v1:acct:${accountId}:${startISO}:${endISO}:d${daysPerChunk}`;
+  const cached = memCache.get(cacheKey);
+  if (cached && !forceRefresh) return cached;
 
   const chunks = splitRange(startISO, endISO, daysPerChunk);
 
@@ -180,6 +185,10 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
     includeInvisibleAccounts: includeInvisible,
     cacheTtlMs: 2 * 60 * 1000,
     forceRefresh,
+
+  const accRes = await searchAccounts({
+    onlyActiveAccounts,
+    includeInvisibleAccounts: includeInvisible,
   });
   if (!accRes.success || accRes.errorCode !== 0) {
     throw new Error(accRes.errorMessage || `Account/search failed (errorCode ${accRes.errorCode}).`);
@@ -201,6 +210,7 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
         opts.forceRefresh ?? false,
         perAccountCacheKey,
         cacheTtlMs
+        opts.forceRefresh ?? false
       );
       byAccountId[a.id] = trades;
       return trades;

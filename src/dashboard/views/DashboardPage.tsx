@@ -48,6 +48,7 @@ export default function DashboardPage() {
 
   async function fetchActiveTradesWithFallback(accountId: number, forceRefresh: boolean) {
     const rangeKey = `${accountId}:${range.safeDays}:${range.startISO.slice(0, 10)}:${range.endISO.slice(0, 10)}`;
+  async function fetchActiveTradesWithFallback(accountId: number) {
     const initial = await searchTrades({
       accountId,
       startTimestamp: range.startISO,
@@ -64,6 +65,7 @@ export default function DashboardPage() {
     const trades = initial.trades || [];
     if (trades.length || range.safeDays >= 365) {
       return { trades, daysUsed: range.safeDays };
+      return trades;
     }
 
     // If nothing was returned for a short window, retry with a wider lookback so
@@ -96,6 +98,21 @@ export default function DashboardPage() {
   }
 
   async function load(forceRefresh = false) {
+    const extendedStart = new Date(Date.parse(range.endISO) - 365 * 24 * 60 * 60 * 1000).toISOString();
+    const extended = await searchTrades({
+      accountId,
+      startTimestamp: extendedStart,
+      endTimestamp: range.endISO,
+    });
+
+    if (!extended.success || extended.errorCode !== 0) {
+      throw new Error(extended.errorMessage || `Trade/search failed (errorCode ${extended.errorCode}).`);
+    }
+
+    return extended.trades || [];
+  }
+
+  async function load() {
     setError(null);
     setComputed(null);
 
@@ -116,6 +133,8 @@ export default function DashboardPage() {
         if (daysUsed !== range.safeDays) {
           setDaysBack(daysUsed);
         }
+        const trades = await fetchActiveTradesWithFallback(id);
+        setComputed(computeDashboardFromTrades(trades));
       } else {
         const agg = await loadTradesAllAccounts({
           startTimestamp: range.startISO,

@@ -174,4 +174,12 @@ export function clearTopstepCache(path?: string) {
       responseCache.delete(key);
     }
   }
+
+      break;
+    }
+
+    return (await parseJsonOrThrow(res)) as T;
+  }
+
+  throw lastError ?? new Error("Rate limit exceeded. Please slow down and try again.");
 }
