@@ -73,6 +73,9 @@ export function computeRoundTripsFromExecutions(tradesRaw: TopstepTrade[]): Roun
 
     // opening (same direction as position, or flat)
     if (st.posQty === 0 || Math.sign(st.posQty) === Math.sign(qtySigned)) {
+      // Track fees on the lot so partial exits can apportion commissions back to
+      // the fills that opened the position instead of charging the entire exit
+      // ticket to the last leg.
       st.lots.push({
         qty: qtySigned,
         entryPrice: px,
