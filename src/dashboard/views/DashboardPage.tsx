@@ -9,6 +9,7 @@ import DashboardHeader from "../components/DashboardHeader";
 import SummaryCards, { type DaySummary } from "../components/SummaryCards";
 import PerformanceBreakdowns from "../components/PerformanceBreakdowns";
 import RecentDaysTable from "../components/RecentDaysTable";
+import PnlCalendar from "../components/PnlCalendar";
 import ApiUsageNote from "../components/ApiUsageNote";
 import MarketDataTicker from "../../market/MarketDataTicker";
 
@@ -273,6 +274,12 @@ export default function DashboardPage() {
           totals={totals}
           equity={equity}
           effectiveDaysBack={effectiveDaysBack}
+        />
+        <PnlCalendar
+          loading={loading}
+          days={computed?.days ?? []}
+          startISO={range.startISO}
+          endISO={range.endISO}
         />
         <RecentDaysTable loading={loading} computed={computed} />
         <ApiUsageNote mode={mode} />
