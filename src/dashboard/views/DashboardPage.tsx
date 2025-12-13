@@ -10,6 +10,7 @@ import SummaryCards, { type DaySummary } from "../components/SummaryCards";
 import PerformanceBreakdowns from "../components/PerformanceBreakdowns";
 import RecentDaysTable from "../components/RecentDaysTable";
 import ApiUsageNote from "../components/ApiUsageNote";
+import MarketDataTicker from "../../market/MarketDataTicker";
 
 type Mode = "active" | "all";
 
@@ -261,6 +262,8 @@ export default function DashboardPage() {
         setIncludeInvisibleAccounts={setIncludeInvisibleAccounts}
         error={error}
       />
+
+      <MarketDataTicker />
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
         <SummaryCards totals={totals} daySummary={daySummary} effectiveDaysBack={effectiveDaysBack} />

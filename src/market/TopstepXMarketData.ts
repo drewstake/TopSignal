@@ -64,6 +64,7 @@ type UnsubscribeFn = () => void;
 type MarketDataCallbacks = {
   onQuote(cb: (quote: QuoteUpdate) => void): UnsubscribeFn;
   onDepth(cb: (snapshot: DepthSnapshot) => void): UnsubscribeFn;
+  onStatus(cb: (connected: boolean) => void): UnsubscribeFn;
 };
 
 function toNumber(value: number | string | null | undefined) {
@@ -136,6 +137,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   private readonly orderBook = new OrderBook();
   private readonly quoteHandlers = new Set<(quote: QuoteUpdate) => void>();
   private readonly depthHandlers = new Set<(snapshot: DepthSnapshot) => void>();
+  private readonly statusHandlers = new Set<(connected: boolean) => void>();
+
   private readonly quoteState: QuoteUpdate = {
     last: null,
     bestBid: null,
@@ -172,6 +175,11 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     return () => this.depthHandlers.delete(cb);
   }
 
+  onStatus(cb: (connected: boolean) => void): UnsubscribeFn {
+    this.statusHandlers.add(cb);
+    return () => this.statusHandlers.delete(cb);
+  }
+
   getSnapshot(): MarketDataSnapshot {
     return {
       quote: { ...this.quoteState },
@@ -204,10 +212,12 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       await this.connection.start();
       await this.subscribe(this.connection, this.contractId);
       this.connected = true;
+      this.emitStatus();
       this.registerShutdownHooks();
     } catch (err) {
       this.started = false;
       this.connected = false;
+      this.emitStatus();
       throw err;
     }
   }
@@ -216,6 +226,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     if (!this.started) return;
     this.started = false;
     this.connected = false;
+    this.emitStatus();
 
     for (const teardown of this.stopHandlers) {
       teardown();
@@ -245,6 +256,12 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
   }
 
+  private emitStatus() {
+    for (const cb of this.statusHandlers) {
+      cb(this.isConnected());
+    }
+  }
+
   private computeSpread() {
     const { bestAsk, bestBid } = this.quoteState;
     if (bestAsk === null || bestBid === null) return null;
@@ -268,9 +285,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const res = await axios.post<{ id: string }[]>(
       `${REST_BASE}/api/Contract/search`,
       { live: false, searchText: symbol },
-      {
-        headers: { Authorization: `Bearer ${jwt}` },
-      }
+      { headers: { Authorization: `Bearer ${jwt}` } }
     );
 
     const match = res.data.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
@@ -282,7 +297,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private connectMarketHub(jwt: string) {
-    const connection = new HubConnectionBuilder()
+    return new HubConnectionBuilder()
       .withUrl(`${MARKET_HUB}?access_token=${encodeURIComponent(jwt)}`, {
         transport: HttpTransportType.WebSockets,
         skipNegotiation: true,
@@ -293,8 +308,6 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       })
       .configureLogging(LogLevel.Error)
       .build();
-
-    return connection;
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
@@ -313,6 +326,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
     connection.onreconnected(async () => {
       this.connected = true;
+      this.emitStatus();
+
       if (this.contractId) {
         try {
           await this.subscribe(connection, this.contractId);
@@ -324,10 +339,12 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
     connection.onreconnecting(() => {
       this.connected = false;
+      this.emitStatus();
     });
 
     connection.onclose(() => {
       this.connected = false;
+      this.emitStatus();
     });
   }
 
