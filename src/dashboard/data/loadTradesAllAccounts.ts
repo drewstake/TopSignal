@@ -90,7 +90,11 @@ function splitRange(startISO: string, endISO: string, daysPerChunk: number) {
   return chunks;
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
 

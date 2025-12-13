@@ -131,13 +131,13 @@ export async function topstepPost<T>(
       const retryAfterHeader = res.headers.get("retry-after");
       const retryAfterSeconds = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : null;
       const fallbackDelay = Math.ceil(config.windowMs / config.limit);
+
       const retryDelayMs = Math.max(
         MIN_RETRY_DELAY_MS,
         Number.isFinite(retryAfterSeconds) ? retryAfterSeconds! * 1000 : fallbackDelay
       );
 
       const errorText = await res.text();
-
       lastError = new Error(
         errorText ||
           "Request was throttled. Limits are 50 requests/30s for /api/History/retrieveBars and 200 requests/60s for other endpoints."
