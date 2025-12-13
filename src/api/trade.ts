@@ -25,10 +25,21 @@ export async function searchTrades(args: {
   accountId: number;
   startTimestamp: string;
   endTimestamp?: string | null;
+  cacheTtlMs?: number;
+  forceRefresh?: boolean;
+  cacheKey?: string;
 }) {
-  return topstepPost<TradeSearchResponse>("/api/Trade/search", {
-    accountId: args.accountId,
-    startTimestamp: args.startTimestamp,
-    endTimestamp: args.endTimestamp ?? null,
-  });
+  return topstepPost<TradeSearchResponse>(
+    "/api/Trade/search",
+    {
+      accountId: args.accountId,
+      startTimestamp: args.startTimestamp,
+      endTimestamp: args.endTimestamp ?? null,
+    },
+    {
+      cacheTtlMs: args.cacheTtlMs,
+      forceRefresh: args.forceRefresh,
+      cacheKey: args.cacheKey,
+    }
+  );
 }
