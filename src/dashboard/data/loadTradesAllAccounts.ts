@@ -18,7 +18,12 @@ export type TradesAllAccountsResult = {
   byAccountId: Record<number, TopstepTrade[]>;
 };
 
-const memCache = new Map<string, TopstepTrade[]>();
+type TradeCacheEntry = {
+  data: TopstepTrade[];
+  expiresAt: number | null;
+};
+
+const memCache = new Map<string, TradeCacheEntry>();
 
 function toISO(d: Date) {
   return d.toISOString();
@@ -40,6 +45,23 @@ function addDays(d: Date, days: number) {
   const x = new Date(d.getTime());
   x.setUTCDate(x.getUTCDate() + days);
   return x;
+}
+
+function getCachedTrades(key: string) {
+  const entry = memCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt && entry.expiresAt < Date.now()) {
+    memCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCachedTrades(key: string, data: TopstepTrade[], ttlMs: number | null) {
+  memCache.set(key, {
+    data,
+    expiresAt: ttlMs && ttlMs > 0 ? Date.now() + ttlMs : null,
+  });
 }
 
 function splitRange(startISO: string, endISO: string, daysPerChunk: number) {
@@ -120,6 +142,8 @@ async function loadTradesForAccountChunked(
       accountId,
       startTimestamp: c.start,
       endTimestamp: c.end,
+      cacheTtlMs: cacheTtlMs || undefined,
+      cacheKey: `${cacheKey}:chunk:${c.start}:${c.end}`,
     });
 
     if (!res.success || res.errorCode !== 0) {
@@ -130,7 +154,7 @@ async function loadTradesForAccountChunked(
   }
 
   const cleaned = dedupeTrades(all);
-  memCache.set(cacheKey, cleaned);
+  setCachedTrades(cacheKey, cleaned, cacheTtlMs || null);
   return cleaned;
 }
 
@@ -160,6 +184,7 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
     accounts,
     concurrency,
     async (a) => {
+      const perAccountCacheKey = `v1:acct:${a.id}:${rangeStartDay}:${rangeEndDay}:d${daysPerChunk}`;
       const trades = await loadTradesForAccountChunked(
         a.id,
         opts.startTimestamp,
