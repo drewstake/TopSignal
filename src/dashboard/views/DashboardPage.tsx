@@ -40,7 +40,6 @@ export default function DashboardPage() {
   const [daysBack, setDaysBack] = useState<number>(30);
   const [effectiveDaysBack, setEffectiveDaysBack] = useState<number>(30);
 
-  // only used for "all accounts" mode
   const [onlyActiveAccounts, setOnlyActiveAccounts] = useState<boolean>(false);
   const [includeInvisibleAccounts, setIncludeInvisibleAccounts] = useState<boolean>(true);
 
@@ -155,6 +154,7 @@ export default function DashboardPage() {
   }, [mode, range.startISO, range.endISO, onlyActiveAccounts, includeInvisibleAccounts]);
 
   const totals = computed?.totals;
+  const equity = computed?.equity ?? [];
 
   const daySummary = useMemo(() => {
     const days = computed?.days || [];
@@ -191,9 +191,6 @@ export default function DashboardPage() {
       worstDay: activeDays ? worstDay : null,
     };
   }, [computed]);
-
-  // If DashboardComputed type does not include equity yet, this avoids TS errors.
-  const equity = (computed as unknown as { equity?: any[] } | null)?.equity ?? [];
 
   return (
     <div className="grid grid-cols-1 gap-3">
@@ -346,9 +343,7 @@ export default function DashboardPage() {
 
           <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
             <div className="text-xs text-zinc-400">Avg trades/day</div>
-            <div className="mt-1 text-xl font-semibold text-zinc-100">
-              {(totals?.avgTradesPerDay ?? 0).toFixed(2)}
-            </div>
+            <div className="mt-1 text-xl font-semibold text-zinc-100">{(totals?.avgTradesPerDay ?? 0).toFixed(2)}</div>
             <div className="mt-1 text-xs text-zinc-500">Active days {daySummary.activeDays}</div>
           </div>
         </div>

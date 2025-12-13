@@ -116,7 +116,6 @@ export type DashboardComputed = {
 export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): DashboardComputed {
   const trades = (tradesRaw || []).filter((t) => !t.voided);
 
-  // ---- day + base totals (same as before)
   const dayMap = new Map<string, DayPoint>();
 
   let totalContracts = 0;
@@ -291,7 +290,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const buyPct = totalSides > 0 ? buys / totalSides : 0;
   const sellPct = totalSides > 0 ? sells / totalSides : 0;
 
-  // ---- reconstruct round-trip trades for duration + MAE/MFE later
   const byTime = [...trades].sort((a, b) => ms(a.creationTimestamp) - ms(b.creationTimestamp));
 
   const lotsByContract = new Map<string, Lot[]>();
@@ -330,7 +328,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       continue;
     }
 
-    // closing: match FIFO
     let remaining = size;
     const exitPrice = safeNum(t.price);
     const exitTime = t.creationTimestamp;
@@ -371,13 +368,11 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       if (head.size <= 0) lots.shift();
     }
 
-    // if reversal, open new lots with leftover
     if (remaining > 0) {
       lots.push({ sign: fillSign, size: remaining, price: exitPrice, time: exitTime });
     }
   }
 
-  // duration aggregates
   const rtAll = roundTrips.filter((r) => r.durationMs > 0);
   const rtWins = roundTrips.filter((r) => r.netPnl > 0 && r.durationMs > 0);
   const rtLoss = roundTrips.filter((r) => r.netPnl < 0 && r.durationMs > 0);
@@ -386,7 +381,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const avgWinDurationMs = rtWins.length ? rtWins.reduce((s, r) => s + r.durationMs, 0) / rtWins.length : 0;
   const avgLossDurationMs = rtLoss.length ? rtLoss.reduce((s, r) => s + r.durationMs, 0) / rtLoss.length : 0;
 
-  // streaks and expectancy
   const realizedExecs = trades
     .filter((t) => t.profitAndLoss !== null && t.profitAndLoss !== undefined)
     .sort((a, b) => ms(a.creationTimestamp) - ms(b.creationTimestamp));
@@ -422,7 +416,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const lossRate = denomTrades > 0 ? losses / denomTrades : 0;
   const expectancyPerTrade = winRate * avgWin - lossRate * Math.abs(avgLoss);
 
-  // intraday drawdowns (per day)
   let maxIntradayDrawdown = 0;
   for (const d of days) {
     const dayTrades = realizedExecs.filter((t) => dayKeyFromISO(t.creationTimestamp) === d.date);
@@ -453,14 +446,12 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   const totalHoursInMarket = roundTrips.reduce((s, r) => s + r.durationMs, 0) / (1000 * 60 * 60);
   const profitPerHour = totalHoursInMarket > 0 ? netPnl / totalHoursInMarket : 0;
 
-  // tail risk (average of worst 5% trades)
   const realizedPnls = realizedExecs.map((t) => safeNum(t.profitAndLoss) - safeNum(t.fees)).sort((a, b) => a - b);
   const tailCount = Math.max(1, Math.floor(realizedPnls.length * 0.05));
   const tailRiskAvg = realizedPnls.length
     ? realizedPnls.slice(0, tailCount).reduce((s, n) => s + n, 0) / tailCount
     : 0;
 
-  // weekly consistency
   function isoWeekKey(dateStr: string) {
     const d = new Date(dateStr);
     const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -481,7 +472,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
     ? weekEntries.filter((v) => v > 0).length / weekEntries.length
     : 0;
 
-  // time of day breakdown (America/New_York)
   function timeBlockLabel(ts: string) {
     const d = new Date(ts);
     const hour = d.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: TZ });
