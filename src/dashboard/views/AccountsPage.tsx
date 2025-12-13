@@ -48,7 +48,10 @@ export default function AccountsPage() {
 
     setLoading(true);
     try {
-      const res = await searchAccounts(onlyActive);
+      const res = await searchAccounts({
+        onlyActiveAccounts: onlyActive,
+        includeInvisibleAccounts: !onlyActive,
+      });
 
       if (!res.success || res.errorCode !== 0) {
         throw new Error(res.errorMessage || `Request failed (errorCode ${res.errorCode}).`);

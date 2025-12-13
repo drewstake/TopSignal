@@ -142,7 +142,10 @@ export async function loadTradesAllAccounts(opts: LoadTradesOptions): Promise<Tr
   const daysPerChunk = clampChunkDays(opts.daysPerChunk ?? 30);
   const concurrency = clampConcurrency(opts.concurrency ?? 2);
 
-  const accRes = await searchAccounts(onlyActiveAccounts);
+  const accRes = await searchAccounts({
+    onlyActiveAccounts,
+    includeInvisibleAccounts: includeInvisible,
+  });
   if (!accRes.success || accRes.errorCode !== 0) {
     throw new Error(accRes.errorMessage || `Account/search failed (errorCode ${accRes.errorCode}).`);
   }
