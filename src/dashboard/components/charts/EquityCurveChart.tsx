@@ -25,6 +25,7 @@ export default function EquityCurveChart({ data }: { data: EquityPoint[] }) {
               return [String(value), String(name)];
             }}
           />
+
           <Line type="monotone" dataKey="equity" dot={false} strokeWidth={2} />
           <Line
             type="monotone"
