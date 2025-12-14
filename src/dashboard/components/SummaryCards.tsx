@@ -62,6 +62,12 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
       sub: `Half-turns ${totals?.halfTurns ?? 0} | Executions ${totals?.totalExecutions ?? 0}`,
     },
     {
+      label: "Direction bias",
+      description: "Mix of buy versus sell executions across the range, showing your long/short lean.",
+      value: `${fmtPct(totals?.buyPct ?? 0)} buys`,
+      sub: `Buys ${totals?.totalBuys ?? 0} | Sells ${totals?.totalSells ?? 0} (${fmtPct(totals?.sellPct ?? 0)} sells)`,
+    },
+    {
       label: "Day win rate",
       description: "Share of active trading days that ended positive. Calculated as green days divided by active days.",
       value: fmtPct(totals?.dayWinRate ?? 0),
@@ -127,7 +133,7 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
   return (
     <div className="space-y-3">
       <MetricSection metrics={sectionOne} columns="grid-cols-2 md:grid-cols-4" />
-      <MetricSection metrics={sectionTwo} columns="grid-cols-2 md:grid-cols-4" />
+      <MetricSection metrics={sectionTwo} columns="grid-cols-2 md:grid-cols-5" />
       <MetricSection metrics={sectionThree} columns="grid-cols-2 md:grid-cols-4" />
       <MetricSection metrics={sectionFour} columns="grid-cols-1 md:grid-cols-3" />
     </div>

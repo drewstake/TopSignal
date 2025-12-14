@@ -85,6 +85,8 @@ export type DashboardComputed = {
     maxDrawdown: number;
     avgTradesPerDay: number;
 
+    totalBuys: number;
+    totalSells: number;
     buyPct: number;
     sellPct: number;
 
@@ -553,6 +555,8 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       maxDrawdown,
       avgTradesPerDay,
 
+      totalBuys: buys,
+      totalSells: sells,
       buyPct,
       sellPct,
 
