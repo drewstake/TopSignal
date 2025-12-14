@@ -1,15 +1,21 @@
 import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { TooltipProps } from "recharts";
+import type { Payload } from "recharts/types/component/DefaultTooltipContent";
 import { fmtMoney } from "../../../lib/format";
 
 type Props = { data: { label: string; trades: number; netPnl: number }[] };
 
+type HistogramTooltipProps = {
+  active?: boolean;
+  label?: string | number;
+  payload?: ReadonlyArray<Payload<number, string>>;
+};
+
 export default function TradeTimeHistogram({ data }: Props) {
-  const renderTooltip = ({ active, payload, label }: TooltipProps<number, string>) => {
+  const renderTooltip = ({ active, payload, label }: HistogramTooltipProps) => {
     if (!active || !payload?.length) return null;
 
-    const trades = payload.find((p) => p.dataKey === "trades")?.value ?? 0;
-    const netPnl = payload.find((p) => p.dataKey === "netPnl")?.value ?? 0;
+    const trades = payload.find((p: Payload<number, string>) => p.dataKey === "trades")?.value ?? 0;
+    const netPnl = payload.find((p: Payload<number, string>) => p.dataKey === "netPnl")?.value ?? 0;
 
     return (
       <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-2 text-xs text-zinc-100 shadow-lg">
