@@ -272,11 +272,15 @@ export default function TradePage() {
     setResolvingContract(true);
 
     try {
-      const contractId = testerContractId ?? (await resolveContractId(testerInstrument));
+      const fallbackSymbol = testerSymbol;
+      const contractId =
+        testerContractId ??
+        (await resolveContractId(testerInstrument).catch(async () => resolveContractId(fallbackSymbol)));
+
       setTesterContractId(contractId);
 
       appendTesterLog(
-        `Starting random ${testerInstrument} orders on ${
+        `Starting random ${testerInstrument} (${testerSymbol}) orders on ${
           selectedTesterAccount ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})` : testerAccountId
         } | contract ${contractId}`,
       );
@@ -311,7 +315,7 @@ export default function TradePage() {
         ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})`
         : `Account ${testerAccountId}`;
 
-      const message = `${sideLabel} ${size} ${testerInstrument} @ ${price.toFixed(2)} | bid ${formatPrice(
+      const message = `${sideLabel} ${size} ${testerInstrument} (${testerSymbol}) @ ${price.toFixed(2)} | bid ${formatPrice(
         bestBid,
       )} / ask ${formatPrice(bestAsk)} (spread ${formatPrice(spread)}) on ${accountLabel}`;
 
