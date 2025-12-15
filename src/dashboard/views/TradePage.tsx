@@ -338,7 +338,7 @@ export default function TradePage() {
           setTesterError(msg);
           appendTesterLog(`${message} | order error: ${msg}`);
         });
-    }, 2400);
+    }, 10000);
 
     return () => clearInterval(interval);
   }, [selectedTesterAccount, testerAccountId, testerContractId, testerInstrument, testerRunning]);
