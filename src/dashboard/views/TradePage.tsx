@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { searchAccounts, type TopstepAccount } from "../../api/account";
 import { hasSessionToken } from "../../lib/session";
 import { fmtMoney } from "../../lib/format";
+import MarketDataTicker from "../../market/MarketDataTicker";
+import type { QuoteUpdate } from "../../market/TopstepXMarketData";
 
 export type BotStatus = "stopped" | "running" | "deploying" | "error";
 
@@ -83,6 +85,15 @@ const DEFAULT_BOTS: TradingBot[] = [
 ];
 
 export default function TradePage() {
+  const instrumentOptions = useMemo(
+    () => [
+      { value: "NQ", label: "Nasdaq (NQ)", mdSymbol: "MNQ" },
+      { value: "ES", label: "S&P (ES)", mdSymbol: "MES" },
+      { value: "GC", label: "Gold (GC)", mdSymbol: "MGC" },
+    ],
+    [],
+  );
+
   const [accounts, setAccounts] = useState<TopstepAccount[]>([]);
   const [bots, setBots] = useState<TradingBot[]>(DEFAULT_BOTS);
   const [selectedAccountId, setSelectedAccountId] = useState<number | "">("");
@@ -97,6 +108,12 @@ export default function TradePage() {
   const [error, setError] = useState<string | null>(null);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [testerAccountId, setTesterAccountId] = useState<number | "">("");
+  const [testerInstrument, setTesterInstrument] = useState<string>("NQ");
+  const [testerRunning, setTesterRunning] = useState(false);
+  const [testerLogs, setTesterLogs] = useState<string[]>([]);
+  const [testerError, setTesterError] = useState<string | null>(null);
+  const [latestQuote, setLatestQuote] = useState<QuoteUpdate | null>(null);
 
   const connected = hasSessionToken();
 
@@ -148,11 +165,34 @@ export default function TradePage() {
     return { running, stopped, deploying, atRisk, target };
   }, [bots]);
 
+  const testerSymbol = useMemo(
+    () => instrumentOptions.find((o) => o.value === testerInstrument)?.mdSymbol ?? testerInstrument,
+    [instrumentOptions, testerInstrument],
+  );
+
+  const selectedTesterAccount = useMemo(
+    () => accounts.find((a) => a.id === testerAccountId) || null,
+    [accounts, testerAccountId],
+  );
+
+  useEffect(() => {
+    if (accounts.length && testerAccountId === "") {
+      setTesterAccountId(accounts[0].id);
+    }
+  }, [accounts, testerAccountId]);
+
+  useEffect(() => {
+    if (!connected && testerRunning) {
+      setTesterRunning(false);
+      setTesterError("Disconnected — stop the test bot until a session is active.");
+    }
+  }, [connected, testerRunning]);
+
   function updateBot(botId: string, updater: (b: TradingBot) => TradingBot) {
     setBots((prev) => prev.map((b) => (b.id === botId ? updater(b) : b)));
   }
 
-  function handleAction(botId: string, action: PendingAction["action"]) {
+  function handleAction(botId: string, action: Exclude<PendingAction, null>["action"]) {
     setPendingAction({ botId, action });
 
     setTimeout(() => {
@@ -188,6 +228,71 @@ export default function TradePage() {
       }
     }, 600);
   }
+
+  const formatPrice = (value: number | null | undefined) => (value === null || value === undefined ? "--" : value.toFixed(2));
+
+  function appendTesterLog(message: string) {
+    setTesterLogs((prev) => {
+      const next = [`[${new Date().toLocaleTimeString()}] ${message}`, ...prev];
+      return next.slice(0, 20);
+    });
+  }
+
+  function toggleTesterBot() {
+    if (testerRunning) {
+      appendTesterLog("Stopped random order flow.");
+      setTesterRunning(false);
+      return;
+    }
+
+    if (!connected) {
+      setTesterError("Connect in Settings first.");
+      return;
+    }
+
+    if (!testerAccountId) {
+      setTesterError("Pick an account for the test bot.");
+      return;
+    }
+
+    setTesterError(null);
+    appendTesterLog(
+      `Starting random ${testerInstrument} orders on ${
+        selectedTesterAccount ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})` : testerAccountId
+      }`,
+    );
+    setTesterRunning(true);
+  }
+
+  useEffect(() => {
+    if (!testerRunning) return undefined;
+
+    const interval = setInterval(() => {
+      const side = Math.random() > 0.5 ? "BUY" : "SELL";
+      const size = Math.ceil(Math.random() * 2);
+      const bestBid = latestQuote?.bestBid ?? null;
+      const bestAsk = latestQuote?.bestAsk ?? null;
+      const spread = latestQuote?.spread ?? (bestAsk && bestBid ? bestAsk - bestBid : null);
+
+      const referencePrice =
+        side === "BUY"
+          ? bestAsk ?? bestBid ?? latestQuote?.last ?? null
+          : bestBid ?? latestQuote?.last ?? bestAsk ?? null;
+
+      const price = referencePrice ? Number(referencePrice.toFixed(2)) : Number((100 + Math.random() * 5).toFixed(2));
+      const accountLabel = selectedTesterAccount
+        ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})`
+        : `Account ${testerAccountId}`;
+
+      appendTesterLog(
+        `${side} ${size} ${testerInstrument} @ ${price.toFixed(2)} | bid ${formatPrice(bestBid)} / ask ${formatPrice(
+          bestAsk,
+        )} (spread ${formatPrice(spread)}) on ${accountLabel}`,
+      );
+    }, 2400);
+
+    return () => clearInterval(interval);
+  }, [latestQuote, selectedTesterAccount, testerAccountId, testerInstrument, testerRunning]);
 
   function handleCreateBot() {
     if (!connected) {
@@ -289,87 +394,96 @@ export default function TradePage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40">
-            <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+        <div className="space-y-4 lg:col-span-2">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-zinc-100">Deployed bots</div>
-                <div className="text-xs text-zinc-400">Start, stop, or redeploy configurations.</div>
+                <div className="text-sm font-semibold text-zinc-100">Strategy tester</div>
+                <div className="text-xs text-zinc-400">Pick an account and NQ / ES / GC to fire random buys and sells.</div>
               </div>
-              {pendingAction ? (
-                <div className="rounded-full border border-amber-700 bg-amber-900/50 px-3 py-1 text-xs text-amber-100">
-                  {pendingAction.action === "start" && "Starting bot..."}
-                  {pendingAction.action === "stop" && "Stopping bot..."}
-                  {pendingAction.action === "redeploy" && "Redeploying bot..."}
-                </div>
-              ) : null}
+              <button
+                onClick={toggleTesterBot}
+                className={`rounded-xl border px-3 py-2 text-xs font-semibold ${
+                  testerRunning
+                    ? "border-rose-600 bg-rose-950/60 text-rose-100 hover:border-rose-400"
+                    : "border-emerald-700 bg-emerald-950/50 text-emerald-100 hover:border-emerald-400"
+                }`}
+              >
+                {testerRunning ? "Stop random bot" : "Start random bot"}
+              </button>
             </div>
 
-            <div className="divide-y divide-zinc-800">
-              {bots.map((bot, index) => {
-                const account = accounts.find((a) => a.id === bot.accountId);
+            {testerError ? (
+              <div className="mt-3 rounded-xl border border-amber-800 bg-amber-950/50 px-3 py-2 text-xs text-amber-100">{testerError}</div>
+            ) : null}
 
-                return (
-                  <div
-                    key={bot.id}
-                    className={`grid grid-cols-1 gap-3 px-4 py-4 text-sm md:grid-cols-12 ${
-                      index % 2 === 0 ? "bg-zinc-950/30" : "bg-transparent"
-                    }`}
-                  >
-                    <div className="md:col-span-4">
-                      <div className="flex items-center gap-2">
-                        <div className="font-semibold text-zinc-100">{bot.name}</div>
-                        {statusBadge(bot.status)}
-                      </div>
-                      <div className="mt-1 text-xs text-zinc-400">{bot.strategy}</div>
-                      <div className="mt-1 text-xs text-zinc-400">Last: {bot.lastAction}</div>
-                    </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="grid gap-1 text-sm">
+                <span className="text-xs text-zinc-400">Test account</span>
+                <select
+                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  value={testerAccountId}
+                  onChange={(e) => setTesterAccountId(e.target.value ? Number(e.target.value) : "")}
+                  disabled={!connected || loadingAccounts}
+                >
+                  <option value="">{loadingAccounts ? "Loading accounts..." : "Select account"}</option>
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.id})
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-                    <div className="md:col-span-3">
-                      <div className="text-xs text-zinc-400">Account</div>
-                      <div className="text-sm text-zinc-100">
-                        {account ? `${account.name} (${account.id})` : "Unknown account"}
-                      </div>
-                      <div className="mt-1 text-xs text-zinc-400">Instrument: {bot.instrument}</div>
-                    </div>
+              <label className="grid gap-1 text-sm">
+                <span className="text-xs text-zinc-400">Instrument</span>
+                <select
+                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  value={testerInstrument}
+                  onChange={(e) => setTesterInstrument(e.target.value)}
+                >
+                  {instrumentOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
 
-                    <div className="md:col-span-3">
-                      <div className="text-xs text-zinc-400">Targets & risk</div>
-                      <div className="text-sm text-zinc-100">Target {fmtMoney(bot.dailyTarget)}</div>
-                      <div className="text-xs text-rose-200">Max loss {fmtMoney(bot.dailyMaxLoss)}</div>
-                      <div className="text-xs text-zinc-400">Size: {bot.positionSize} contracts</div>
-                    </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-200 sm:grid-cols-4">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-400">Last</div>
+                <div className="text-base font-semibold text-zinc-100">{formatPrice(latestQuote?.last)}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-400">Best Bid</div>
+                <div className="text-base font-semibold text-emerald-100">{formatPrice(latestQuote?.bestBid)}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-400">Best Ask</div>
+                <div className="text-base font-semibold text-amber-100">{formatPrice(latestQuote?.bestAsk)}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-400">Spread</div>
+                <div className="text-base font-semibold text-zinc-100">{formatPrice(latestQuote?.spread)}</div>
+              </div>
+            </div>
 
-                    <div className="flex items-center gap-2 md:col-span-2 md:justify-end">
-                      <button
-                        disabled={pendingAction !== null}
-                        onClick={() => handleAction(bot.id, bot.status === "running" ? "stop" : "start")}
-                        className="rounded-xl border border-zinc-700 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-100 hover:border-zinc-500 disabled:opacity-50"
-                      >
-                        {bot.status === "running" ? "Stop" : "Start"}
-                      </button>
-                      <button
-                        disabled={pendingAction !== null}
-                        onClick={() => handleAction(bot.id, "redeploy")}
-                        className="rounded-xl border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-100 hover:border-amber-500 disabled:opacity-50"
-                      >
-                        Redeploy
-                      </button>
-                    </div>
-
-                    <div className="md:col-span-12">
-                      <div className="h-px bg-zinc-800" />
-                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-                        <span className="rounded-full bg-zinc-800 px-2 py-1">Heartbeat {bot.heartbeatMs ? `${bot.heartbeatMs} ms` : "n/a"}</span>
-                        <span className="rounded-full bg-zinc-800 px-2 py-1">Instrument: {bot.instrument}</span>
-                        <span className="rounded-full bg-zinc-800 px-2 py-1">Position size: {bot.positionSize}</span>
-                      </div>
-                    </div>
+            <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/30 p-3">
+              <div className="text-xs font-semibold text-zinc-200">Random bot activity</div>
+              <div className="mt-2 space-y-2 text-[11px] text-zinc-300">
+                {testerLogs.length === 0 ? <div>No simulated orders yet.</div> : null}
+                {testerLogs.map((line, idx) => (
+                  <div key={idx} className="rounded-lg bg-zinc-900/70 px-3 py-2">
+                    {line}
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
           </div>
+
+          <MarketDataTicker symbol={testerSymbol} label={`${testerInstrument} order flow`} onQuote={setLatestQuote} />
         </div>
 
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
@@ -417,11 +531,17 @@ export default function TradePage() {
             <div className="grid grid-cols-2 gap-2">
               <label className="grid gap-1">
                 <span className="text-xs text-zinc-400">Instrument</span>
-                <input
+                <select
                   className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
                   value={form.instrument}
                   onChange={(e) => setForm((prev) => ({ ...prev, instrument: e.target.value }))}
-                />
+                >
+                  {instrumentOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="grid gap-1">
                 <span className="text-xs text-zinc-400">Position size</span>
@@ -476,6 +596,85 @@ export default function TradePage() {
               for supported endpoints like orders, positions, and risk controls.
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40">
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+          <div>
+            <div className="text-sm font-semibold text-zinc-100">Deployed bots</div>
+            <div className="text-xs text-zinc-400">Start, stop, or redeploy configurations.</div>
+          </div>
+          {pendingAction ? (
+            <div className="rounded-full border border-amber-700 bg-amber-900/50 px-3 py-1 text-xs text-amber-100">
+              {pendingAction.action === "start" && "Starting bot..."}
+              {pendingAction.action === "stop" && "Stopping bot..."}
+              {pendingAction.action === "redeploy" && "Redeploying bot..."}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="divide-y divide-zinc-800">
+          {bots.map((bot, index) => {
+            const account = accounts.find((a) => a.id === bot.accountId);
+
+            return (
+              <div
+                key={bot.id}
+                className={`grid grid-cols-1 gap-3 px-4 py-4 text-sm md:grid-cols-12 ${
+                  index % 2 === 0 ? "bg-zinc-950/30" : "bg-transparent"
+                }`}
+              >
+                <div className="md:col-span-4">
+                  <div className="flex items-center gap-2">
+                    <div className="font-semibold text-zinc-100">{bot.name}</div>
+                    {statusBadge(bot.status)}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-400">{bot.strategy}</div>
+                  <div className="mt-1 text-xs text-zinc-400">Last: {bot.lastAction}</div>
+                </div>
+
+                <div className="md:col-span-3">
+                  <div className="text-xs text-zinc-400">Account</div>
+                  <div className="text-sm text-zinc-100">{account ? `${account.name} (${account.id})` : "Unknown account"}</div>
+                  <div className="mt-1 text-xs text-zinc-400">Instrument: {bot.instrument}</div>
+                </div>
+
+                <div className="md:col-span-3">
+                  <div className="text-xs text-zinc-400">Targets & risk</div>
+                  <div className="text-sm text-zinc-100">Target {fmtMoney(bot.dailyTarget)}</div>
+                  <div className="text-xs text-rose-200">Max loss {fmtMoney(bot.dailyMaxLoss)}</div>
+                  <div className="text-xs text-zinc-400">Size: {bot.positionSize} contracts</div>
+                </div>
+
+                <div className="flex items-center gap-2 md:col-span-2 md:justify-end">
+                  <button
+                    disabled={pendingAction !== null}
+                    onClick={() => handleAction(bot.id, bot.status === "running" ? "stop" : "start")}
+                    className="rounded-xl border border-zinc-700 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-100 hover:border-zinc-500 disabled:opacity-50"
+                  >
+                    {bot.status === "running" ? "Stop" : "Start"}
+                  </button>
+                  <button
+                    disabled={pendingAction !== null}
+                    onClick={() => handleAction(bot.id, "redeploy")}
+                    className="rounded-xl border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-100 hover:border-amber-500 disabled:opacity-50"
+                  >
+                    Redeploy
+                  </button>
+                </div>
+
+                <div className="md:col-span-12">
+                  <div className="h-px bg-zinc-800" />
+                  <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
+                    <span className="rounded-full bg-zinc-800 px-2 py-1">Heartbeat {bot.heartbeatMs ? `${bot.heartbeatMs} ms` : "n/a"}</span>
+                    <span className="rounded-full bg-zinc-800 px-2 py-1">Instrument: {bot.instrument}</span>
+                    <span className="rounded-full bg-zinc-800 px-2 py-1">Position size: {bot.positionSize}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
