@@ -63,9 +63,10 @@ export default function SummaryCards({ totals, daySummary, effectiveDaysBack }: 
     },
     {
       label: "Direction bias",
-      description: "Mix of buy versus sell executions across the range, showing your long/short lean.",
-      value: `${fmtPct(totals?.buyPct ?? 0)} buys`,
-      sub: `Buys ${totals?.totalBuys ?? 0} | Sells ${totals?.totalSells ?? 0} (${fmtPct(totals?.sellPct ?? 0)} sells)`,
+      description:
+        "Mix of long versus short round-trip trades across the range, matching the Topstep direction bias calculation.",
+      value: `${fmtPct(totals?.longPct ?? 0)} long trades`,
+      sub: `Longs ${totals?.longTrades ?? 0} | Shorts ${totals?.shortTrades ?? 0} (${fmtPct(totals?.shortPct ?? 0)} short trades)`,
     },
     {
       label: "Day win rate",
