@@ -51,6 +51,11 @@ export function MarketDataTicker({ symbol = "ENQ", label, onQuote }: MarketDataT
   const [status, setStatus] = useState<StatusState>({ mode: "connecting", message: null });
   const [depth, setDepth] = useState<DepthSnapshot>(initialDepth);
   const serviceRef = useRef<ReturnType<typeof MarketDataService.init> | null>(null);
+  const onQuoteRef = useRef<MarketDataTickerProps["onQuote"]>(onQuote);
+
+  useEffect(() => {
+    onQuoteRef.current = onQuote;
+  }, [onQuote]);
 
   const statusLabel = useMemo(() => {
     if (status.mode === "live") return "Live";
@@ -72,7 +77,7 @@ export function MarketDataTicker({ symbol = "ENQ", label, onQuote }: MarketDataT
 
     const unsubscribeQuote = md.onQuote((next) => {
       setQuote(next);
-      onQuote?.(next);
+      onQuoteRef.current?.(next);
     });
 
     const unsubscribeDepth = md.onDepth((snapshot) => {
@@ -104,7 +109,7 @@ export function MarketDataTicker({ symbol = "ENQ", label, onQuote }: MarketDataT
       void md.stop();
       serviceRef.current = null;
     };
-  }, [symbol, onQuote]);
+  }, [symbol]);
 
   const bestBid = formatNumber(quote.bestBid);
   const bestAsk = formatNumber(quote.bestAsk);
