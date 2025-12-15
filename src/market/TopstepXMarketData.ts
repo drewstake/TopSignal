@@ -78,8 +78,11 @@ type DepthPayload = {
 
 type QuotePayload = {
   lastPrice?: number | null;
+  last?: number | null;
   bestBidPrice?: number | null;
   bestAskPrice?: number | null;
+  bestBid?: number | null;
+  bestAsk?: number | null;
   volume?: number | null;
   timestamp?: string | null;
   time?: string | null;
@@ -314,9 +317,17 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     return Object.prototype.hasOwnProperty.call(obj, key);
   }
 
-  private pickNumberField(payload: QuotePayload, key: keyof QuotePayload, current: number | null) {
-    if (!this.hasOwn(payload, key)) return current;
-    return toNumber(payload[key] as number | string | null | undefined);
+  private pickNumberField(
+    payload: QuotePayload,
+    keys: (keyof QuotePayload)[],
+    current: number | null
+  ) {
+    for (const key of keys) {
+      if (!this.hasOwn(payload, key)) continue;
+      return toNumber(payload[key] as number | string | null | undefined);
+    }
+
+    return current;
   }
 
   private computeSpread() {
@@ -556,10 +567,22 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleQuote(payload: QuotePayload) {
-    this.quoteState.last = this.pickNumberField(payload, "lastPrice", this.quoteState.last);
-    this.quoteState.bestBid = this.pickNumberField(payload, "bestBidPrice", this.quoteState.bestBid);
-    this.quoteState.bestAsk = this.pickNumberField(payload, "bestAskPrice", this.quoteState.bestAsk);
-    this.quoteState.volume = this.pickNumberField(payload, "volume", this.quoteState.volume);
+    this.quoteState.last = this.pickNumberField(
+      payload,
+      ["lastPrice", "last"],
+      this.quoteState.last
+    );
+    this.quoteState.bestBid = this.pickNumberField(
+      payload,
+      ["bestBidPrice", "bestBid"],
+      this.quoteState.bestBid
+    );
+    this.quoteState.bestAsk = this.pickNumberField(
+      payload,
+      ["bestAskPrice", "bestAsk"],
+      this.quoteState.bestAsk
+    );
+    this.quoteState.volume = this.pickNumberField(payload, ["volume"], this.quoteState.volume);
 
     // only update ts if the payload actually includes a ts field
     if (payload.timestamp !== undefined || payload.time !== undefined) {
