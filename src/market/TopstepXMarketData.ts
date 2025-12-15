@@ -242,8 +242,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
       this.attachHubHandlers(this.connection);
 
-      await this.connection.start();
-      await this.subscribe(this.connection, this.contractId);
+      await this.startConnection(this.connection, this.contractId);
       this.connected = true;
       this.emitStatus();
       this.registerShutdownHooks();
@@ -293,6 +292,15 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     for (const cb of this.statusHandlers) {
       cb(this.isConnected());
     }
+  }
+
+  private hasOwn<T extends object>(obj: T, key: keyof any) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  private pickNumberField(payload: QuotePayload, key: keyof QuotePayload, current: number | null) {
+    if (!this.hasOwn(payload, key)) return current;
+    return toNumber(payload[key] as number | string | null | undefined);
   }
 
   private computeSpread() {
@@ -445,8 +453,57 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
-    await connection.invoke("SubscribeContractQuotes", contractId);
-    await connection.invoke("SubscribeContractMarketDepth", contractId);
+    const invokeSubscriptions = async () => {
+      await connection.invoke("SubscribeContractQuotes", contractId);
+      await connection.invoke("SubscribeContractMarketDepth", contractId);
+    };
+
+    try {
+      await invokeSubscriptions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      const connectionClosed = connection.state !== HubConnectionState.Connected;
+      const invocationCanceled = message.includes("Invocation canceled");
+      const canRestart = connection.state === HubConnectionState.Disconnected;
+
+      if (connectionClosed || invocationCanceled) {
+        // The hub can momentarily close the underlying socket between start and
+        // the first invocation. Give it one more try; restart only if the hub
+        // fully disconnected.
+        if (canRestart) {
+          await connection.start();
+        }
+
+        await invokeSubscriptions();
+        return;
+      }
+
+      throw err;
+    }
+  }
+
+  private async startConnection(connection: HubConnection, contractId: string) {
+    const attempts = 2;
+
+    for (let i = 0; i < attempts; i++) {
+      try {
+        if (connection.state !== HubConnectionState.Connected) {
+          await connection.start();
+        }
+
+        await this.subscribe(connection, contractId);
+        return;
+      } catch (err) {
+        const isLastAttempt = i === attempts - 1;
+        if (isLastAttempt) throw err;
+
+        try {
+          await connection.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
 
   private attachHubHandlers(connection: HubConnection) {
@@ -483,10 +540,10 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleQuote(payload: QuotePayload) {
-    this.quoteState.last = toNumber(payload.lastPrice);
-    this.quoteState.bestBid = toNumber(payload.bestBidPrice);
-    this.quoteState.bestAsk = toNumber(payload.bestAskPrice);
-    this.quoteState.volume = toNumber(payload.volume);
+    this.quoteState.last = this.pickNumberField(payload, "lastPrice", this.quoteState.last);
+    this.quoteState.bestBid = this.pickNumberField(payload, "bestBidPrice", this.quoteState.bestBid);
+    this.quoteState.bestAsk = this.pickNumberField(payload, "bestAskPrice", this.quoteState.bestAsk);
+    this.quoteState.volume = this.pickNumberField(payload, "volume", this.quoteState.volume);
     this.quoteState.ts = payload.timestamp || payload.time || new Date().toISOString();
 
     this.emitQuoteThrottled();
