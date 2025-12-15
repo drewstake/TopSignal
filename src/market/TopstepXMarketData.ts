@@ -484,7 +484,18 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   private async subscribe(connection: HubConnection, contractId: string) {
     const invokeSubscriptions = async () => {
       await connection.invoke("SubscribeContractQuotes", contractId);
-      await connection.invoke("SubscribeContractMarketDepth", contractId);
+
+      try {
+        await connection.invoke("SubscribeContractMarketDepth", contractId, this.options.levels);
+      } catch (err) {
+        // Older hubs expect only the contractId; retry without the levels arg so we still
+        // receive depth updates instead of failing the whole subscription sequence.
+        await connection.invoke("SubscribeContractMarketDepth", contractId);
+
+        if (err instanceof Error) {
+          console.warn("Depth subscription fallback without level count", err.message);
+        }
+      }
     };
 
     try {
