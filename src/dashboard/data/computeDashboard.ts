@@ -85,10 +85,10 @@ export type DashboardComputed = {
     maxDrawdown: number;
     avgTradesPerDay: number;
 
-    totalBuys: number;
-    totalSells: number;
-    buyPct: number;
-    sellPct: number;
+    longTrades: number;
+    shortTrades: number;
+    longPct: number;
+    shortPct: number;
 
     avgTradeDurationMs: number;
     avgWinDurationMs: number;
@@ -143,18 +143,12 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
   let bestTrade = Number.NEGATIVE_INFINITY;
   let worstTrade = Number.POSITIVE_INFINITY;
 
-  let buys = 0;
-  let sells = 0;
-
   // first pass: aggregate per-day stats and global totals
   for (const t of trades) {
     totalExecutions += 1;
 
     const size = safeNum(t.size);
     totalContracts += size;
-
-    if (t.side === 1) buys += 1;
-    else if (t.side === 0) sells += 1;
 
     const key = dayKeyFromISO(t.creationTimestamp);
     if (!dayMap.has(key)) {
@@ -296,10 +290,6 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
 
   const avgTradesPerDay = activeDays > 0 ? realizedTrades / activeDays : 0;
 
-  const totalSides = buys + sells;
-  const buyPct = totalSides > 0 ? buys / totalSides : 0;
-  const sellPct = totalSides > 0 ? sells / totalSides : 0;
-
   // sort fills to reconstruct round trips in fill order
   const byTime = [...trades].sort((a, b) => ms(a.creationTimestamp) - ms(b.creationTimestamp));
 
@@ -385,6 +375,12 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       lots.push({ sign: fillSign, size: remaining, price: exitPrice, time: exitTime });
     }
   }
+
+  const longTrades = roundTrips.filter((r) => r.direction === "Long").length;
+  const shortTrades = roundTrips.filter((r) => r.direction === "Short").length;
+  const totalDirectionTrades = longTrades + shortTrades;
+  const longPct = totalDirectionTrades > 0 ? longTrades / totalDirectionTrades : 0;
+  const shortPct = totalDirectionTrades > 0 ? shortTrades / totalDirectionTrades : 0;
 
   const rtAll = roundTrips.filter((r) => r.durationMs > 0);
   const rtWins = roundTrips.filter((r) => r.netPnl > 0 && r.durationMs > 0);
@@ -555,10 +551,10 @@ export function computeDashboardFromTrades(tradesRaw: TopstepTrade[]): Dashboard
       maxDrawdown,
       avgTradesPerDay,
 
-      totalBuys: buys,
-      totalSells: sells,
-      buyPct,
-      sellPct,
+      longTrades,
+      shortTrades,
+      longPct,
+      shortPct,
 
       avgTradeDurationMs,
       avgWinDurationMs,
