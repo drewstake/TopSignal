@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useTheme } from "../../lib/theme";
 
 function navClass(isActive: boolean) {
   return (
@@ -10,6 +11,8 @@ function navClass(isActive: boolean) {
 }
 
 export default function Layout() {
+  const { theme, setTheme } = useTheme();
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-900 dark:text-zinc-100">
       <div className="mx-auto max-w-6xl px-4 py-5">
@@ -21,7 +24,7 @@ export default function Layout() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
               Dashboard
             </NavLink>
@@ -34,6 +37,14 @@ export default function Layout() {
             <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
               Settings
             </NavLink>
+            <button
+              type="button"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-200"
+              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            >
+              {theme === "dark" ? "Light Mode" : "Dark Mode"}
+            </button>
           </div>
         </div>
 
