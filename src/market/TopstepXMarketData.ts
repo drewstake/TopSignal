@@ -67,6 +67,7 @@ export type MarketDataSnapshot = {
 };
 
 type DepthSide = "Bid" | "Ask";
+
 type DepthPayload = {
   side: DepthSide;
   price: number;
@@ -307,9 +308,10 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const storedToken = loadStoredSessionToken();
     if (storedToken) return storedToken;
 
-    if (typeof import.meta !== "undefined" && import.meta.env) {
-      if (import.meta.env.PROJECTX_JWT) return String(import.meta.env.PROJECTX_JWT);
-      if (import.meta.env.VITE_PROJECTX_JWT) return String(import.meta.env.VITE_PROJECTX_JWT);
+    if (typeof import.meta !== "undefined" && (import.meta as any).env) {
+      const env: any = (import.meta as any).env;
+      if (env.PROJECTX_JWT) return String(env.PROJECTX_JWT);
+      if (env.VITE_PROJECTX_JWT) return String(env.VITE_PROJECTX_JWT);
     }
 
     if (globalProcess?.env?.PROJECTX_JWT) {
@@ -469,7 +471,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       const sigHandler = () => {
         void this.stop();
       };
-      globalProcess.on("SIGINT", sigHandler);
+      globalProcess.on!("SIGINT", sigHandler);
       this.stopHandlers.push(() => globalProcess.off?.("SIGINT", sigHandler));
     }
   }
