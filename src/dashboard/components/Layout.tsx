@@ -26,6 +26,9 @@ export default function Layout() {
             <NavLink to="/accounts" className={({ isActive }) => navClass(isActive)}>
               Accounts
             </NavLink>
+            <NavLink to="/trade" className={({ isActive }) => navClass(isActive)}>
+              Trade
+            </NavLink>
             <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
               Settings
             </NavLink>
