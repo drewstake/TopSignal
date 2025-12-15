@@ -67,6 +67,7 @@ export type MarketDataSnapshot = {
 };
 
 type DepthSide = "Bid" | "Ask";
+
 type DepthPayload = {
   side: DepthSide;
   price: number;
@@ -83,7 +84,7 @@ type QuotePayload = {
   time?: string | null;
 };
 
-type ContractSearchResult = { id?: string | null };
+type ContractSearchResult = { id?: string | null; contractId?: string | null };
 
 type UnsubscribeFn = () => void;
 
@@ -307,9 +308,10 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const storedToken = loadStoredSessionToken();
     if (storedToken) return storedToken;
 
-    if (typeof import.meta !== "undefined" && import.meta.env) {
-      if (import.meta.env.PROJECTX_JWT) return String(import.meta.env.PROJECTX_JWT);
-      if (import.meta.env.VITE_PROJECTX_JWT) return String(import.meta.env.VITE_PROJECTX_JWT);
+    if (typeof import.meta !== "undefined" && (import.meta as any).env) {
+      const env: any = (import.meta as any).env;
+      if (env.PROJECTX_JWT) return String(env.PROJECTX_JWT);
+      if (env.VITE_PROJECTX_JWT) return String(env.VITE_PROJECTX_JWT);
     }
 
     if (globalProcess?.env?.PROJECTX_JWT) {
@@ -320,34 +322,72 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async resolveContractId(symbol: string, jwt: string) {
-    const response = await fetch(`${REST_BASE}/api/Contract/search`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${jwt}`,
-      },
-      body: JSON.stringify({ live: false, searchText: symbol }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Contract search failed with status ${response.status}`);
+    const results = await this.searchContracts(symbol, jwt);
+    if (results.length === 0) {
+      throw new Error(`No contracts returned for ${symbol}.`);
     }
 
-    const body = await response.json();
-    const results: ContractSearchResult[] = Array.isArray(body)
-      ? body
-      : Array.isArray((body as { results?: unknown }).results)
-        ? ((body as { results: ContractSearchResult[] }).results || [])
-        : [];
+    const match = this.pickContract(results, symbol);
+    if (match) return match;
 
-    // The API returns multiple expirations; picking the MNQ prefix grabs the
-    // front-month micro NASDAQ future regardless of the specific month code.
-    const match = results.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
-    if (!match?.id) {
-      throw new Error("MNQ contract not found in search results.");
+    // Fall back to the first contract if nothing matches the symbol prefix to
+    // avoid blocking users when the API shape changes or symbols differ by
+    // expiration code.
+    const fallback = results.find((c) => c.id || c.contractId);
+    if (fallback?.id || fallback?.contractId) {
+      return fallback.id ?? fallback.contractId!;
     }
 
-    return match.id;
+    throw new Error(`${symbol} contract not found in search results.`);
+  }
+
+  private async searchContracts(symbol: string, jwt: string) {
+    const attempts = [
+      { live: false, label: "paper" },
+      { live: true, label: "live" },
+    ];
+
+    for (const attempt of attempts) {
+      const response = await fetch(`${REST_BASE}/api/Contract/search`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({ live: attempt.live, searchText: symbol }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Contract search (${attempt.label}) failed with status ${response.status}`);
+      }
+
+      const body = await response.json();
+      const results: ContractSearchResult[] = Array.isArray(body)
+        ? body
+        : Array.isArray((body as { results?: unknown }).results)
+          ? ((body as { results: ContractSearchResult[] }).results || [])
+          : [];
+
+      if (results.length > 0) return results;
+    }
+
+    return [] as ContractSearchResult[];
+  }
+
+  private pickContract(results: ContractSearchResult[], symbol: string) {
+    const upperSymbol = symbol.toUpperCase();
+    const prefixes = [`CON.F.US.${upperSymbol}`, upperSymbol];
+
+    for (const result of results) {
+      const id = result.id || result.contractId;
+      if (!id) continue;
+
+      if (prefixes.some((prefix) => id.toUpperCase().startsWith(prefix))) {
+        return id;
+      }
+    }
+
+    return null;
   }
 
   private connectMarketHub(jwt: string) {
@@ -431,7 +471,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       const sigHandler = () => {
         void this.stop();
       };
-      globalProcess.on("SIGINT", sigHandler);
+      globalProcess.on!("SIGINT", sigHandler);
       this.stopHandlers.push(() => globalProcess.off?.("SIGINT", sigHandler));
     }
   }
