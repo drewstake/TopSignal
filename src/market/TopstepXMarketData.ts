@@ -116,7 +116,7 @@ function createThrottled(fn: () => void, intervalMs: number) {
 
     if (timeout) return;
 
-    // Schedule a trailing call so bursts still emit the latest update once the
+    // schedule a trailing call so bursts still emit the latest update once the
     // throttle window cools down.
     timeout = setTimeout(() => {
       last = Date.now();
@@ -132,7 +132,7 @@ class OrderBook {
 
   apply(update: DepthPayload) {
     const price = toNumber(update.price);
-    // Depth payloads sometimes send cumulative size (currentVolume) instead of a
+    // depth payloads sometimes send cumulative size (currentVolume) instead of a
     // delta, so prefer it when present to avoid compounding totals.
     const rawSize = update.currentVolume ?? update.volume;
     const size = toNumber(rawSize);
@@ -311,9 +311,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private loadJwt() {
-    // Support both Vite client builds and Node contexts so tests/tools can
-    // provide credentials without a browser. Prefer an interactive session
-    // token saved by the UI, then fall back to environment variables.
+    // support both vite client builds and node contexts so tests/tools can
+    // provide credentials without a browser. prefer an interactive session
+    // token saved by the ui, then fall back to environment variables.
     const storedToken = loadStoredSessionToken();
     if (storedToken) return storedToken;
 
@@ -350,8 +350,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const match = this.pickContract(results, symbol);
     if (match) return match;
 
-    // Fall back to the first contract if nothing matches the symbol prefix to
-    // avoid blocking users when the API shape changes or symbols differ by
+    // fall back to the first contract if nothing matches the symbol prefix to
+    // avoid blocking users when the api shape changes or symbols differ by
     // expiration code.
     const fallback = results.find((c) => c.id || c.contractId);
     if (fallback?.id || fallback?.contractId) {
@@ -372,7 +372,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     });
 
     if (!response.ok) {
-      throw new Error(`Available contracts (${live ? "live" : "paper"}) failed with status ${response.status}`);
+      throw new Error(
+        `Available contracts (${live ? "live" : "paper"}) failed with status ${response.status}`
+      );
     }
 
     const body = await response.json();
@@ -468,8 +470,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       const canRestart = connection.state === HubConnectionState.Disconnected;
 
       if (connectionClosed || invocationCanceled) {
-        // The hub can momentarily close the underlying socket between start and
-        // the first invocation. Give it one more try; restart only if the hub
+        // the hub can momentarily close the underlying socket between start and
+        // the first invocation. give it one more try; restart only if the hub
         // fully disconnected.
         if (canRestart) {
           await connection.start();
@@ -521,7 +523,16 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     this.quoteState.bestBid = this.pickNumberField(payload, "bestBidPrice", this.quoteState.bestBid);
     this.quoteState.bestAsk = this.pickNumberField(payload, "bestAskPrice", this.quoteState.bestAsk);
     this.quoteState.volume = this.pickNumberField(payload, "volume", this.quoteState.volume);
-    this.quoteState.ts = payload.timestamp || payload.time || new Date().toISOString();
+
+    // only update ts if the payload actually includes a ts field
+    if (payload.timestamp !== undefined || payload.time !== undefined) {
+      this.quoteState.ts = payload.timestamp ?? payload.time ?? null;
+    }
+
+    // always ensure we have some timestamp for the ui
+    if (!this.quoteState.ts) {
+      this.quoteState.ts = new Date().toISOString();
+    }
 
     this.emitQuoteThrottled();
   }
