@@ -598,14 +598,19 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleDepth(payload: DepthPayload) {
-    if (payload.type === 6) {
+    const domType = toNumber(payload.type);
+
+    if (domType === 6) {
       this.orderBook.reset();
       this.latestDepth = { bids: [], asks: [] };
+      this.quoteState.bestBid = null;
+      this.quoteState.bestAsk = null;
       this.emitDepthThrottled();
+      this.emitQuoteThrottled();
       return;
     }
 
-    const side = this.resolveDepthSide(payload);
+    const side = this.resolveDepthSide(payload, domType);
     if (!side) return;
 
     this.orderBook.apply({ ...payload, side });
@@ -616,10 +621,10 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     this.emitQuoteThrottled();
   }
 
-  private resolveDepthSide(payload: DepthPayload): DepthSide | null {
+  private resolveDepthSide(payload: DepthPayload, domType: number | null): DepthSide | null {
     if (payload.side === "Bid" || payload.side === "Ask") return payload.side;
 
-    switch (payload.type) {
+    switch (domType) {
       case 1: // Ask
       case 3: // BestAsk
       case 10: // NewBestAsk
