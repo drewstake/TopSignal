@@ -116,7 +116,7 @@ function createThrottled(fn: () => void, intervalMs: number) {
 
     if (timeout) return;
 
-    // Schedule a trailing call so bursts still emit the latest update once the
+    // schedule a trailing call so bursts still emit the latest update once the
     // throttle window cools down.
     timeout = setTimeout(() => {
       last = Date.now();
@@ -132,7 +132,7 @@ class OrderBook {
 
   apply(update: DepthPayload) {
     const price = toNumber(update.price);
-    // Depth payloads sometimes send cumulative size (currentVolume) instead of a
+    // depth payloads sometimes send cumulative size (currentVolume) instead of a
     // delta, so prefer it when present to avoid compounding totals.
     const rawSize = update.currentVolume ?? update.volume;
     const size = toNumber(rawSize);
@@ -295,6 +295,15 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
   }
 
+  private hasOwn<T extends object>(obj: T, key: keyof any) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  private pickNumberField(payload: QuotePayload, key: keyof QuotePayload, current: number | null) {
+    if (!this.hasOwn(payload, key)) return current;
+    return toNumber(payload[key] as number | string | null | undefined);
+  }
+
   private computeSpread() {
     const { bestAsk, bestBid } = this.quoteState;
     if (bestAsk === null || bestBid === null) return null;
@@ -302,9 +311,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private loadJwt() {
-    // Support both Vite client builds and Node contexts so tests/tools can
-    // provide credentials without a browser. Prefer an interactive session
-    // token saved by the UI, then fall back to environment variables.
+    // support both vite client builds and node contexts so tests/tools can
+    // provide credentials without a browser. prefer an interactive session
+    // token saved by the ui, then fall back to environment variables.
     const storedToken = loadStoredSessionToken();
     if (storedToken) return storedToken;
 
@@ -341,8 +350,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const match = this.pickContract(results, symbol);
     if (match) return match;
 
-    // Fall back to the first contract if nothing matches the symbol prefix to
-    // avoid blocking users when the API shape changes or symbols differ by
+    // fall back to the first contract if nothing matches the symbol prefix to
+    // avoid blocking users when the api shape changes or symbols differ by
     // expiration code.
     const fallback = results.find((c) => c.id || c.contractId);
     if (fallback?.id || fallback?.contractId) {
@@ -363,7 +372,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     });
 
     if (!response.ok) {
-      throw new Error(`Available contracts (${live ? "live" : "paper"}) failed with status ${response.status}`);
+      throw new Error(
+        `Available contracts (${live ? "live" : "paper"}) failed with status ${response.status}`
+      );
     }
 
     const body = await response.json();
@@ -445,8 +456,33 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
-    await connection.invoke("SubscribeContractQuotes", contractId);
-    await connection.invoke("SubscribeContractMarketDepth", contractId);
+    const invokeSubscriptions = async () => {
+      await connection.invoke("SubscribeContractQuotes", contractId);
+      await connection.invoke("SubscribeContractMarketDepth", contractId);
+    };
+
+    try {
+      await invokeSubscriptions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      const connectionClosed = connection.state !== HubConnectionState.Connected;
+      const invocationCanceled = message.includes("Invocation canceled");
+      const canRestart = connection.state === HubConnectionState.Disconnected;
+
+      if (connectionClosed || invocationCanceled) {
+        // the hub can momentarily close the underlying socket between start and
+        // the first invocation. give it one more try; restart only if the hub
+        // fully disconnected.
+        if (canRestart) {
+          await connection.start();
+        }
+
+        await invokeSubscriptions();
+        return;
+      }
+
+      throw err;
+    }
   }
 
   private attachHubHandlers(connection: HubConnection) {
@@ -483,23 +519,18 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleQuote(payload: QuotePayload) {
-    if (payload.lastPrice !== undefined) {
-      this.quoteState.last = toNumber(payload.lastPrice);
-    }
-    if (payload.bestBidPrice !== undefined) {
-      this.quoteState.bestBid = toNumber(payload.bestBidPrice);
-    }
-    if (payload.bestAskPrice !== undefined) {
-      this.quoteState.bestAsk = toNumber(payload.bestAskPrice);
-    }
-    if (payload.volume !== undefined) {
-      this.quoteState.volume = toNumber(payload.volume);
-    }
+    this.quoteState.last = this.pickNumberField(payload, "lastPrice", this.quoteState.last);
+    this.quoteState.bestBid = this.pickNumberField(payload, "bestBidPrice", this.quoteState.bestBid);
+    this.quoteState.bestAsk = this.pickNumberField(payload, "bestAskPrice", this.quoteState.bestAsk);
+    this.quoteState.volume = this.pickNumberField(payload, "volume", this.quoteState.volume);
+
+    // only update ts if the payload actually includes a ts field
     if (payload.timestamp !== undefined || payload.time !== undefined) {
-      this.quoteState.ts = payload.timestamp || payload.time || null;
+      this.quoteState.ts = payload.timestamp ?? payload.time ?? null;
     }
 
-    if (this.quoteState.ts === null) {
+    // always ensure we have some timestamp for the ui
+    if (!this.quoteState.ts) {
       this.quoteState.ts = new Date().toISOString();
     }
 
