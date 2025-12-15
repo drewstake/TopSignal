@@ -84,7 +84,16 @@ type QuotePayload = {
   time?: string | null;
 };
 
-type ContractSearchResult = { id?: string | null; contractId?: string | null };
+type ContractSearchResult = {
+  id?: string | null;
+  contractId?: string | null;
+  activeContract?:
+    | boolean
+    | string
+    | null
+    | { id?: string | null; contractId?: string | null };
+  symbolId?: string | null;
+};
 
 type UnsubscribeFn = () => void;
 
@@ -378,11 +387,16 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
 
     const body = await response.json();
-    const contracts: { id?: string | null; symbolId?: string | null; activeContract?: boolean }[] =
-      Array.isArray(body?.contracts) ? body.contracts : Array.isArray(body) ? body : [];
+    const contracts = this.normalizeContractResults(body);
 
-    const match = contracts.find((c) => c.symbolId === symbolId && c.activeContract);
-    return match?.id ?? null;
+    const match = contracts.find(
+      (c) =>
+        (c.symbolId?.toUpperCase?.() === symbolId.toUpperCase() ||
+          this.getContractId(c)?.toUpperCase().startsWith(symbolId.toUpperCase())) &&
+        this.hasActiveContract(c)
+    );
+
+    return this.getContractId(match ?? {} as ContractSearchResult);
   }
 
   private async searchContracts(symbol: string, jwt: string) {
@@ -406,13 +420,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       }
 
       const body = await response.json();
-      const results: ContractSearchResult[] = Array.isArray(body)
-        ? body
-        : Array.isArray((body as { results?: unknown }).results)
-          ? ((body as { results: ContractSearchResult[] }).results || [])
-          : [];
+      const results = this.normalizeContractResults(body);
 
-      if (results.length > 0) return results;
+      if (results.length > 0) return results as ContractSearchResult[];
     }
 
     return [] as ContractSearchResult[];
@@ -420,18 +430,25 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
   private pickContract(results: ContractSearchResult[], symbol: string) {
     const upperSymbol = symbol.toUpperCase();
-    const prefixes = [`CON.F.US.${upperSymbol}`, upperSymbol];
+    const symbolId = this.toSymbolId(symbol).toUpperCase();
+    const prefixes = [`CON.${symbolId}`, symbolId, upperSymbol];
 
-    for (const result of results) {
-      const id = result.id || result.contractId;
-      if (!id) continue;
+    const matchId = (result: ContractSearchResult | undefined | null) => {
+      if (!result) return null;
+      return this.getContractId(result);
+    };
 
-      if (prefixes.some((prefix) => id.toUpperCase().startsWith(prefix))) {
-        return id;
-      }
-    }
+    const bySymbol = results.find((result) => {
+      const id = matchId(result)?.toUpperCase();
+      const matchesSymbolId = result.symbolId?.toUpperCase() === symbolId;
+      return matchesSymbolId || (!!id && prefixes.some((prefix) => id.startsWith(prefix)));
+    });
 
-    return null;
+    const activeSymbol = results.find(
+      (result) => this.hasActiveContract(result) && matchId(result)?.toUpperCase().startsWith(`CON.${symbolId}`)
+    );
+
+    return matchId(activeSymbol ?? bySymbol ?? results.find((r) => matchId(r)) ?? null);
   }
 
   private toSymbolId(symbol: string) {
@@ -541,6 +558,39 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     this.orderBook.apply(payload);
     this.latestDepth = this.orderBook.snapshot(this.options.levels);
     this.emitDepthThrottled();
+  }
+
+  private normalizeContractResults(payload: unknown): ContractSearchResult[] {
+    if (Array.isArray(payload)) return payload as ContractSearchResult[];
+    if (payload && typeof payload === "object") {
+      const obj = payload as Record<string, unknown>;
+      if (Array.isArray(obj.contracts)) return obj.contracts as ContractSearchResult[];
+      if (Array.isArray(obj.results)) return obj.results as ContractSearchResult[];
+      if (Array.isArray(obj.data)) return obj.data as ContractSearchResult[];
+    }
+
+    return [] as ContractSearchResult[];
+  }
+
+  private getContractId(result: ContractSearchResult | null | undefined) {
+    if (!result) return null;
+
+    if (typeof result.activeContract === "string") return result.activeContract;
+    if (result.activeContract && typeof result.activeContract === "object") {
+      return result.activeContract.contractId ?? result.activeContract.id ?? null;
+    }
+
+    return result.contractId ?? result.id ?? null;
+  }
+
+  private hasActiveContract(result: ContractSearchResult) {
+    if (result.activeContract === true) return true;
+    if (typeof result.activeContract === "string") return true;
+    if (result.activeContract && typeof result.activeContract === "object") {
+      return Boolean(result.activeContract.contractId ?? result.activeContract.id);
+    }
+
+    return false;
   }
 
   private registerShutdownHooks() {
