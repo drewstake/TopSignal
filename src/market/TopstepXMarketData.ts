@@ -454,8 +454,33 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
-    await connection.invoke("SubscribeContractQuotes", contractId);
-    await connection.invoke("SubscribeContractMarketDepth", contractId);
+    const invokeSubscriptions = async () => {
+      await connection.invoke("SubscribeContractQuotes", contractId);
+      await connection.invoke("SubscribeContractMarketDepth", contractId);
+    };
+
+    try {
+      await invokeSubscriptions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      const connectionClosed = connection.state !== HubConnectionState.Connected;
+      const invocationCanceled = message.includes("Invocation canceled");
+      const canRestart = connection.state === HubConnectionState.Disconnected;
+
+      if (connectionClosed || invocationCanceled) {
+        // The hub can momentarily close the underlying socket between start and
+        // the first invocation. Give it one more try; restart only if the hub
+        // fully disconnected.
+        if (canRestart) {
+          await connection.start();
+        }
+
+        await invokeSubscriptions();
+        return;
+      }
+
+      throw err;
+    }
   }
 
   private attachHubHandlers(connection: HubConnection) {
