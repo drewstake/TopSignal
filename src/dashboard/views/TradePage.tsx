@@ -195,6 +195,13 @@ export default function TradePage() {
   }, [testerInstrument, testerSymbol]);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLatestQuote(null);
+    latestQuoteRef.current = null;
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [testerSymbol]);
+
+  useEffect(() => {
     if (!connected && testerRunning) {
       setTesterRunning(false);
       setTesterError("Disconnected — stop the test bot until a session is active.");
@@ -540,7 +547,12 @@ export default function TradePage() {
             </div>
           </div>
 
-          <MarketDataTicker symbol={testerSymbol} label={`${testerInstrument} order flow`} onQuote={setLatestQuote} />
+          <MarketDataTicker
+            key={testerSymbol}
+            symbol={testerSymbol}
+            label={`${testerInstrument} order flow`}
+            onQuote={setLatestQuote}
+          />
         </div>
 
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
