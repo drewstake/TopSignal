@@ -333,7 +333,13 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       throw new Error(`Contract search failed with status ${response.status}`);
     }
 
-    const results: ContractSearchResult[] = await response.json();
+    const body = await response.json();
+    const results: ContractSearchResult[] = Array.isArray(body)
+      ? body
+      : Array.isArray((body as { results?: unknown }).results)
+        ? ((body as { results: ContractSearchResult[] }).results || [])
+        : [];
+
     // The API returns multiple expirations; picking the MNQ prefix grabs the
     // front-month micro NASDAQ future regardless of the specific month code.
     const match = results.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
