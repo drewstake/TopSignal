@@ -295,6 +295,15 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
   }
 
+  private hasOwn<T extends object>(obj: T, key: keyof any) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  private pickNumberField(payload: QuotePayload, key: keyof QuotePayload, current: number | null) {
+    if (!this.hasOwn(payload, key)) return current;
+    return toNumber(payload[key] as number | string | null | undefined);
+  }
+
   private computeSpread() {
     const { bestAsk, bestBid } = this.quoteState;
     if (bestAsk === null || bestBid === null) return null;
@@ -445,8 +454,33 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async subscribe(connection: HubConnection, contractId: string) {
-    await connection.invoke("SubscribeContractQuotes", contractId);
-    await connection.invoke("SubscribeContractMarketDepth", contractId);
+    const invokeSubscriptions = async () => {
+      await connection.invoke("SubscribeContractQuotes", contractId);
+      await connection.invoke("SubscribeContractMarketDepth", contractId);
+    };
+
+    try {
+      await invokeSubscriptions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      const connectionClosed = connection.state !== HubConnectionState.Connected;
+      const invocationCanceled = message.includes("Invocation canceled");
+      const canRestart = connection.state === HubConnectionState.Disconnected;
+
+      if (connectionClosed || invocationCanceled) {
+        // The hub can momentarily close the underlying socket between start and
+        // the first invocation. Give it one more try; restart only if the hub
+        // fully disconnected.
+        if (canRestart) {
+          await connection.start();
+        }
+
+        await invokeSubscriptions();
+        return;
+      }
+
+      throw err;
+    }
   }
 
   private attachHubHandlers(connection: HubConnection) {
@@ -483,10 +517,10 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleQuote(payload: QuotePayload) {
-    this.quoteState.last = toNumber(payload.lastPrice);
-    this.quoteState.bestBid = toNumber(payload.bestBidPrice);
-    this.quoteState.bestAsk = toNumber(payload.bestAskPrice);
-    this.quoteState.volume = toNumber(payload.volume);
+    this.quoteState.last = this.pickNumberField(payload, "lastPrice", this.quoteState.last);
+    this.quoteState.bestBid = this.pickNumberField(payload, "bestBidPrice", this.quoteState.bestBid);
+    this.quoteState.bestAsk = this.pickNumberField(payload, "bestAskPrice", this.quoteState.bestAsk);
+    this.quoteState.volume = this.pickNumberField(payload, "volume", this.quoteState.volume);
     this.quoteState.ts = payload.timestamp || payload.time || new Date().toISOString();
 
     this.emitQuoteThrottled();
