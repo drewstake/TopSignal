@@ -42,6 +42,8 @@ function normalizeContractResults(payload: unknown): ContractSearchResult[] {
 
 function toSymbolId(symbol: string) {
   const upperSymbol = symbol.toUpperCase();
+  if (upperSymbol === "NQ") return "F.US.ENQ";
+  if (upperSymbol === "ES") return "F.US.EP";
   if (upperSymbol === "MNQ") return "F.US.MNQ";
   if (upperSymbol === "MES") return "F.US.MES";
   return `F.US.${upperSymbol}`;

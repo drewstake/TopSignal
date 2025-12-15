@@ -46,7 +46,7 @@ type MarketDataTickerProps = {
   onQuote?: (quote: QuoteUpdate) => void;
 };
 
-export function MarketDataTicker({ symbol = "MNQ", label, onQuote }: MarketDataTickerProps) {
+export function MarketDataTicker({ symbol = "ENQ", label, onQuote }: MarketDataTickerProps) {
   const [quote, setQuote] = useState<QuoteUpdate>(initialQuote);
   const [status, setStatus] = useState<StatusState>({ mode: "connecting", message: null });
   const [depth, setDepth] = useState<DepthSnapshot>(initialDepth);
@@ -60,9 +60,11 @@ export function MarketDataTicker({ symbol = "MNQ", label, onQuote }: MarketDataT
   }, [status.mode]);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setQuote(initialQuote);
     setDepth(initialDepth);
     setStatus({ mode: "connecting", message: null });
+    /* eslint-enable react-hooks/set-state-in-effect */
 
     const md = MarketDataService.init({ symbol, levels: 10, throttleMs: 150 });
     serviceRef.current?.stop();
