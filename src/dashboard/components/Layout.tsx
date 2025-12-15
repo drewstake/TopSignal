@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 type Theme = "light" | "dark";
@@ -23,14 +23,13 @@ function getInitialTheme(): Theme {
 }
 
 export default function Layout() {
-  const [theme, setTheme] = useState<Theme>(() => getInitialTheme());
-
   useEffect(() => {
+    const theme = getInitialTheme();
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
     root.setAttribute("data-theme", theme);
     localStorage.setItem("topsignal-theme", theme);
-  }, [theme]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 transition-colors dark:bg-zinc-950 dark:text-zinc-100">
@@ -56,14 +55,6 @@ export default function Layout() {
             <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
               Settings
             </NavLink>
-
-            <button
-              type="button"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
-            >
-              {theme === "dark" ? "🌙 Dark" : "☀️ Light"}
-            </button>
           </div>
         </div>
 
