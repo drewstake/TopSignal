@@ -68,6 +68,12 @@ export type MarketDataSnapshot = {
 
 type DepthSide = "Bid" | "Ask";
 
+const DOM_TYPE = {
+  Ask: 1,
+  Bid: 2,
+  Reset: 6,
+} as const;
+
 type DepthPayload = {
   side?: DepthSide;
   type?: number;
@@ -495,18 +501,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   private async subscribe(connection: HubConnection, contractId: string) {
     const invokeSubscriptions = async () => {
       await connection.invoke("SubscribeContractQuotes", contractId);
-
-      try {
-        await connection.invoke("SubscribeContractMarketDepth", contractId, this.options.levels);
-      } catch (err) {
-        // Older hubs expect only the contractId; retry without the levels arg so we still
-        // receive depth updates instead of failing the whole subscription sequence.
-        await connection.invoke("SubscribeContractMarketDepth", contractId);
-
-        if (err instanceof Error) {
-          console.warn("Depth subscription fallback without level count", err.message);
-        }
-      }
+      await connection.invoke("SubscribeContractMarketDepth", contractId);
     };
 
     try {
@@ -600,7 +595,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   private handleDepth(payload: DepthPayload) {
     const domType = toNumber(payload.type);
 
-    if (domType === 6) {
+    if (domType === DOM_TYPE.Reset) {
       this.orderBook.reset();
       this.latestDepth = { bids: [], asks: [] };
       this.quoteState.bestBid = null;
@@ -622,14 +617,14 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private resolveDepthSide(payload: DepthPayload, domType: number | null): DepthSide | null {
+    if (domType === DOM_TYPE.Ask) return "Ask";
+    if (domType === DOM_TYPE.Bid) return "Bid";
     if (payload.side === "Bid" || payload.side === "Ask") return payload.side;
 
     switch (domType) {
-      case 1: // Ask
       case 3: // BestAsk
       case 10: // NewBestAsk
         return "Ask";
-      case 2: // Bid
       case 4: // BestBid
       case 9: // NewBestBid
         return "Bid";
