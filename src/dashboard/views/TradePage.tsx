@@ -86,6 +86,24 @@ const DEFAULT_BOTS: TradingBot[] = [
   },
 ];
 
+async function resolveContractIdWithFallback(primary: string, fallback: string) {
+  const candidates = [primary, fallback].filter(Boolean);
+  const unique = candidates.filter((v, i) => candidates.indexOf(v) === i);
+
+  let lastErr: unknown = null;
+
+  for (const symbol of unique) {
+    try {
+      return await resolveContractId(symbol);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error("Unable to resolve contract.");
+}
+
 export default function TradePage() {
   const instrumentOptions = useMemo(
     () => [
@@ -204,7 +222,7 @@ export default function TradePage() {
   useEffect(() => {
     if (!connected && testerRunning) {
       setTesterRunning(false);
-      setTesterError("Disconnected — stop the test bot until a session is active.");
+      setTesterError("Disconnected, stop the test bot until a session is active.");
     }
   }, [connected, testerRunning]);
 
@@ -249,7 +267,8 @@ export default function TradePage() {
     }, 600);
   }
 
-  const formatPrice = (value: number | null | undefined) => (value === null || value === undefined ? "--" : value.toFixed(2));
+  const formatPrice = (value: number | null | undefined) =>
+    value === null || value === undefined ? "--" : value.toFixed(2);
 
   function appendTesterLog(message: string) {
     setTesterLogs((prev) => {
@@ -279,7 +298,9 @@ export default function TradePage() {
     setResolvingContract(true);
 
     try {
-      const contractId = testerContractId ?? (await resolveContractId(testerSymbol));
+      const contractId =
+        testerContractId ?? (await resolveContractIdWithFallback(testerInstrument, testerSymbol));
+
       setTesterContractId(contractId);
 
       appendTesterLog(
@@ -313,14 +334,17 @@ export default function TradePage() {
       const referencePrice =
         sideLabel === "BUY" ? bestAsk ?? bestBid ?? quote?.last ?? null : bestBid ?? quote?.last ?? bestAsk ?? null;
 
-      const price = referencePrice ? Number(referencePrice.toFixed(2)) : Number((100 + Math.random() * 5).toFixed(2));
+      const price = referencePrice
+        ? Number(referencePrice.toFixed(2))
+        : Number((100 + Math.random() * 5).toFixed(2));
+
       const accountLabel = selectedTesterAccount
         ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})`
         : `Account ${testerAccountId}`;
 
-      const message = `${sideLabel} ${size} ${testerInstrument} (${testerSymbol}) @ ${price.toFixed(2)} | bid ${formatPrice(
-        bestBid,
-      )} / ask ${formatPrice(bestAsk)} (spread ${formatPrice(spread)}) on ${accountLabel}`;
+      const message = `${sideLabel} ${size} ${testerInstrument} (${testerSymbol}) @ ${price.toFixed(
+        2,
+      )} | bid ${formatPrice(bestBid)} / ask ${formatPrice(bestAsk)} (spread ${formatPrice(spread)}) on ${accountLabel}`;
 
       placeOrder({
         accountId: Number(testerAccountId),
@@ -417,7 +441,7 @@ export default function TradePage() {
 
         {!connected ? (
           <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-sm text-zinc-200">
-            You are not connected. Go to {" "}
+            You are not connected. Go to{" "}
             <Link to="/settings" className="underline">
               Settings
             </Link>{" "}
@@ -426,7 +450,9 @@ export default function TradePage() {
         ) : null}
 
         {error ? (
-          <div className="mt-4 rounded-xl border border-rose-900 bg-rose-950/60 px-3 py-2 text-sm text-rose-100">{error}</div>
+          <div className="mt-4 rounded-xl border border-rose-900 bg-rose-950/60 px-3 py-2 text-sm text-rose-100">
+            {error}
+          </div>
         ) : null}
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
@@ -456,9 +482,7 @@ export default function TradePage() {
               <div>
                 <div className="text-sm font-semibold text-zinc-100">Strategy tester</div>
                 <div className="text-xs text-zinc-400">Pick an account and NQ / ES / GC to fire random buys and sells.</div>
-                <div className="text-[11px] text-emerald-200/90">
-                  Sends live market orders via /api/Order/place while running.
-                </div>
+                <div className="text-[11px] text-emerald-200/90">Sends live market orders via /api/Order/place while running.</div>
               </div>
               <button
                 onClick={toggleTesterBot}
@@ -469,16 +493,14 @@ export default function TradePage() {
                     : "border-emerald-700 bg-emerald-950/50 text-emerald-100 hover:border-emerald-400"
                 }`}
               >
-                {testerRunning
-                  ? "Stop random bot"
-                  : resolvingContract
-                  ? "Resolving contract..."
-                  : "Start random bot"}
+                {testerRunning ? "Stop random bot" : resolvingContract ? "Resolving contract..." : "Start random bot"}
               </button>
             </div>
 
             {testerError ? (
-              <div className="mt-3 rounded-xl border border-amber-800 bg-amber-950/50 px-3 py-2 text-xs text-amber-100">{testerError}</div>
+              <div className="mt-3 rounded-xl border border-amber-800 bg-amber-950/50 px-3 py-2 text-xs text-amber-100">
+                {testerError}
+              </div>
             ) : null}
 
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -653,7 +675,7 @@ export default function TradePage() {
             </button>
 
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-xs text-zinc-400">
-              Deployments use the Project X Gateway API. Configure your API key in Settings. See {" "}
+              Deployments use the Project X Gateway API. Configure your API key in Settings. See{" "}
               <a
                 href="https://gateway.docs.projectx.com/docs/intro"
                 target="_blank"
@@ -705,7 +727,9 @@ export default function TradePage() {
 
                 <div className="md:col-span-3">
                   <div className="text-xs text-zinc-400">Account</div>
-                  <div className="text-sm text-zinc-100">{account ? `${account.name} (${account.id})` : "Unknown account"}</div>
+                  <div className="text-sm text-zinc-100">
+                    {account ? `${account.name} (${account.id})` : "Unknown account"}
+                  </div>
                   <div className="mt-1 text-xs text-zinc-400">Instrument: {bot.instrument}</div>
                 </div>
 
@@ -736,7 +760,9 @@ export default function TradePage() {
                 <div className="md:col-span-12">
                   <div className="h-px bg-zinc-800" />
                   <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-zinc-400">
-                    <span className="rounded-full bg-zinc-800 px-2 py-1">Heartbeat {bot.heartbeatMs ? `${bot.heartbeatMs} ms` : "n/a"}</span>
+                    <span className="rounded-full bg-zinc-800 px-2 py-1">
+                      Heartbeat {bot.heartbeatMs ? `${bot.heartbeatMs} ms` : "n/a"}
+                    </span>
                     <span className="rounded-full bg-zinc-800 px-2 py-1">Instrument: {bot.instrument}</span>
                     <span className="rounded-full bg-zinc-800 px-2 py-1">Position size: {bot.positionSize}</span>
                   </div>
