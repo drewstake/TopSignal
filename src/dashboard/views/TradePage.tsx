@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { searchAccounts, type TopstepAccount } from "../../api/account";
+import { placeOrder, type OrderSide } from "../../api/order";
+import { resolveContractId } from "../../api/contract";
 import { hasSessionToken } from "../../lib/session";
 import { fmtMoney } from "../../lib/format";
 import MarketDataTicker from "../../market/MarketDataTicker";
@@ -111,9 +113,12 @@ export default function TradePage() {
   const [testerAccountId, setTesterAccountId] = useState<number | "">("");
   const [testerInstrument, setTesterInstrument] = useState<string>("NQ");
   const [testerRunning, setTesterRunning] = useState(false);
+  const [resolvingContract, setResolvingContract] = useState(false);
+  const [testerContractId, setTesterContractId] = useState<string | null>(null);
   const [testerLogs, setTesterLogs] = useState<string[]>([]);
   const [testerError, setTesterError] = useState<string | null>(null);
   const [latestQuote, setLatestQuote] = useState<QuoteUpdate | null>(null);
+  const latestQuoteRef = useRef<QuoteUpdate | null>(null);
 
   const connected = hasSessionToken();
 
@@ -182,6 +187,14 @@ export default function TradePage() {
   }, [accounts, testerAccountId]);
 
   useEffect(() => {
+    latestQuoteRef.current = latestQuote;
+  }, [latestQuote]);
+
+  useEffect(() => {
+    setTesterContractId(null);
+  }, [testerInstrument]);
+
+  useEffect(() => {
     if (!connected && testerRunning) {
       setTesterRunning(false);
       setTesterError("Disconnected — stop the test bot until a session is active.");
@@ -238,7 +251,7 @@ export default function TradePage() {
     });
   }
 
-  function toggleTesterBot() {
+  async function toggleTesterBot() {
     if (testerRunning) {
       appendTesterLog("Stopped random order flow.");
       setTesterRunning(false);
@@ -256,43 +269,79 @@ export default function TradePage() {
     }
 
     setTesterError(null);
-    appendTesterLog(
-      `Starting random ${testerInstrument} orders on ${
-        selectedTesterAccount ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})` : testerAccountId
-      }`,
-    );
-    setTesterRunning(true);
+    setResolvingContract(true);
+
+    try {
+      const contractId = testerContractId ?? (await resolveContractId(testerInstrument));
+      setTesterContractId(contractId);
+
+      appendTesterLog(
+        `Starting random ${testerInstrument} orders on ${
+          selectedTesterAccount ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})` : testerAccountId
+        } | contract ${contractId}`,
+      );
+
+      setTesterRunning(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unable to resolve contract.";
+      setTesterError(msg);
+      appendTesterLog(`Order routing error: ${msg}`);
+    } finally {
+      setResolvingContract(false);
+    }
   }
 
   useEffect(() => {
-    if (!testerRunning) return undefined;
+    if (!testerRunning || !testerContractId || !testerAccountId) return undefined;
 
     const interval = setInterval(() => {
-      const side = Math.random() > 0.5 ? "BUY" : "SELL";
+      const sideLabel = Math.random() > 0.5 ? "BUY" : "SELL";
+      const side: OrderSide = sideLabel === "BUY" ? 0 : 1;
       const size = Math.ceil(Math.random() * 2);
-      const bestBid = latestQuote?.bestBid ?? null;
-      const bestAsk = latestQuote?.bestAsk ?? null;
-      const spread = latestQuote?.spread ?? (bestAsk && bestBid ? bestAsk - bestBid : null);
+      const quote = latestQuoteRef.current;
+      const bestBid = quote?.bestBid ?? null;
+      const bestAsk = quote?.bestAsk ?? null;
+      const spread = quote?.spread ?? (bestAsk && bestBid ? bestAsk - bestBid : null);
 
       const referencePrice =
-        side === "BUY"
-          ? bestAsk ?? bestBid ?? latestQuote?.last ?? null
-          : bestBid ?? latestQuote?.last ?? bestAsk ?? null;
+        sideLabel === "BUY" ? bestAsk ?? bestBid ?? quote?.last ?? null : bestBid ?? quote?.last ?? bestAsk ?? null;
 
       const price = referencePrice ? Number(referencePrice.toFixed(2)) : Number((100 + Math.random() * 5).toFixed(2));
       const accountLabel = selectedTesterAccount
         ? `${selectedTesterAccount.name} (${selectedTesterAccount.id})`
         : `Account ${testerAccountId}`;
 
-      appendTesterLog(
-        `${side} ${size} ${testerInstrument} @ ${price.toFixed(2)} | bid ${formatPrice(bestBid)} / ask ${formatPrice(
-          bestAsk,
-        )} (spread ${formatPrice(spread)}) on ${accountLabel}`,
-      );
+      const message = `${sideLabel} ${size} ${testerInstrument} @ ${price.toFixed(2)} | bid ${formatPrice(
+        bestBid,
+      )} / ask ${formatPrice(bestAsk)} (spread ${formatPrice(spread)}) on ${accountLabel}`;
+
+      placeOrder({
+        accountId: Number(testerAccountId),
+        contractId: testerContractId,
+        type: 2,
+        side,
+        size,
+        limitPrice: null,
+        stopPrice: null,
+        trailPrice: null,
+        customTag: `bot-${Date.now()}`,
+      })
+        .then((res) => {
+          if (!res.success || res.errorCode !== 0 || !res.orderId) {
+            throw new Error(res.errorMessage ?? `Order rejected (code ${res.errorCode}).`);
+          }
+
+          appendTesterLog(`${message} | order ${res.orderId}`);
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : "Order placement failed.";
+          setTesterError(msg);
+          appendTesterLog(`${message} | order error: ${msg}`);
+        });
     }, 2400);
 
     return () => clearInterval(interval);
-  }, [latestQuote, selectedTesterAccount, testerAccountId, testerInstrument, testerRunning]);
+  }, [selectedTesterAccount, testerAccountId, testerContractId, testerInstrument, testerRunning]);
 
   function handleCreateBot() {
     if (!connected) {
@@ -400,16 +449,24 @@ export default function TradePage() {
               <div>
                 <div className="text-sm font-semibold text-zinc-100">Strategy tester</div>
                 <div className="text-xs text-zinc-400">Pick an account and NQ / ES / GC to fire random buys and sells.</div>
+                <div className="text-[11px] text-emerald-200/90">
+                  Sends live market orders via /api/Order/place while running.
+                </div>
               </div>
               <button
                 onClick={toggleTesterBot}
+                disabled={resolvingContract}
                 className={`rounded-xl border px-3 py-2 text-xs font-semibold ${
                   testerRunning
                     ? "border-rose-600 bg-rose-950/60 text-rose-100 hover:border-rose-400"
                     : "border-emerald-700 bg-emerald-950/50 text-emerald-100 hover:border-emerald-400"
                 }`}
               >
-                {testerRunning ? "Stop random bot" : "Start random bot"}
+                {testerRunning
+                  ? "Stop random bot"
+                  : resolvingContract
+                  ? "Resolving contract..."
+                  : "Start random bot"}
               </button>
             </div>
 
