@@ -189,23 +189,23 @@ export default function TradePage() {
 
   return (
     <div className="grid grid-cols-1 gap-4">
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-lg font-semibold text-zinc-100">Trade</div>
-            <div className="mt-1 text-sm text-zinc-400">
+            <div className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Trade</div>
+            <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               Configure an order ticket with a clean, focused layout.
             </div>
           </div>
           {!connected ? (
-            <div className="rounded-full border border-amber-700 bg-amber-900/60 px-3 py-1 text-xs text-amber-100">
+            <div className="rounded-full border border-amber-200 bg-amber-100 px-3 py-1 text-xs text-amber-900 shadow-sm dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100">
               Not connected
             </div>
           ) : null}
         </div>
 
         {!connected ? (
-          <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-sm text-zinc-200">
+          <div className="mt-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-200">
             You are not connected. Go to{" "}
             <Link to="/settings" className="underline">
               Settings
@@ -215,28 +215,28 @@ export default function TradePage() {
         ) : null}
 
         {error ? (
-          <div className="mt-3 rounded-xl border border-rose-900 bg-rose-950/60 px-3 py-2 text-sm text-rose-100">{error}</div>
+          <div className="mt-3 rounded-xl border border-rose-200 bg-rose-100 px-3 py-2 text-sm text-rose-900 shadow-sm dark:border-rose-900 dark:bg-rose-950/60 dark:text-rose-100">{error}</div>
         ) : null}
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="text-sm font-semibold text-zinc-100">Order ticket</div>
-                <div className="text-xs text-zinc-400">Pick the essentials to route an order.</div>
+                <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Order ticket</div>
+                <div className="text-xs text-zinc-600 dark:text-zinc-400">Pick the essentials to route an order.</div>
               </div>
-              <div className="rounded-full border border-emerald-800 bg-emerald-900/40 px-3 py-1 text-[11px] font-semibold text-emerald-100">
+              <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-800 shadow-sm dark:border-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-100">
                 Live price: {priceSummary.reference !== null ? formatPrice(priceSummary.reference) : "--"}
               </div>
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="grid gap-1 text-sm">
-                <span className="text-xs text-zinc-400">Account</span>
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">Account</span>
                 <select
-                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-100"
                   value={selectedAccountId}
                   onChange={(e) => setSelectedAccountId(e.target.value ? Number(e.target.value) : "")}
                   disabled={!connected || loadingAccounts}
@@ -251,9 +251,9 @@ export default function TradePage() {
               </label>
 
               <label className="grid gap-1 text-sm">
-                <span className="text-xs text-zinc-400">Strategy</span>
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">Strategy</span>
                 <select
-                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-100"
                   value={selectedStrategy}
                   onChange={(e) => setSelectedStrategy(e.target.value)}
                 >
@@ -266,9 +266,9 @@ export default function TradePage() {
               </label>
 
               <label className="grid gap-1 text-sm">
-                <span className="text-xs text-zinc-400">Instrument</span>
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">Instrument</span>
                 <select
-                  className="rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100"
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-100"
                   value={selectedInstrument}
                   onChange={(e) => setSelectedInstrument(e.target.value)}
                 >
@@ -281,22 +281,22 @@ export default function TradePage() {
               </label>
 
               <label className="grid gap-1 text-sm">
-                <span className="text-xs text-zinc-400">Contract size</span>
-                <div className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">Contract size</span>
+                <div className="flex items-center gap-3 rounded-xl border border-zinc-300 bg-white px-3 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/60">
                   <input
                     type="range"
                     min={1}
                     max={10}
                     value={contractSize}
                     onChange={(e) => setContractSize(Number(e.target.value))}
-                    className="h-2 w-full accent-emerald-400"
+                    className="h-2 w-full accent-emerald-500"
                   />
-                  <span className="w-12 text-center text-sm text-zinc-100">{contractSize}x</span>
+                  <span className="w-12 text-center text-sm text-zinc-900 dark:text-zinc-100">{contractSize}x</span>
                 </div>
               </label>
             </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-zinc-800 bg-zinc-950/30 p-3 sm:grid-cols-3">
+            <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30 sm:grid-cols-3">
               <SummaryTile label="Selected account" value={selectedAccountId ? `#${selectedAccountId}` : "None"} />
               <SummaryTile label="Strategy" value={strategyOptions.find((s) => s.value === selectedStrategy)?.label ?? "--"} />
               <SummaryTile label="Size" value={`${contractSize} contracts`} />
@@ -305,14 +305,14 @@ export default function TradePage() {
               <SummaryTile label="Last / Spread" value={`${priceSummary.last} • ${priceSummary.spread}`} />
             </div>
 
-            <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+            <div className="mt-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-400">
               Prices update in real time from the Project X market data feed. Submit orders from your connected account once you are
               satisfied with the setup.
             </div>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-emerald-900/70 bg-emerald-950/40 p-4">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm dark:border-emerald-900/70 dark:bg-emerald-950/40">
           <MarketDataTicker
             symbol={activeInstrument.mdSymbol}
             label={activeInstrument.label}
@@ -320,15 +320,15 @@ export default function TradePage() {
           />
         </div>
 
-        <div className="rounded-2xl border border-amber-900/70 bg-amber-950/40 p-5 lg:col-span-3">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm dark:border-amber-900/70 dark:bg-amber-950/40 lg:col-span-3">
           {selectedStrategy === "liquidity-sweeps" ? (
             <div className="space-y-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-amber-100">{liquiditySweepsPlaybook.headline}</div>
-                  <div className="mt-1 text-xs text-amber-50/80">{liquiditySweepsPlaybook.intro}</div>
+                  <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">{liquiditySweepsPlaybook.headline}</div>
+                  <div className="mt-1 text-xs text-amber-800 dark:text-amber-50/80">{liquiditySweepsPlaybook.intro}</div>
                 </div>
-                <div className="rounded-full border border-amber-700/70 bg-amber-900/60 px-3 py-1 text-[11px] font-semibold text-amber-100">
+                <div className="rounded-full border border-amber-200 bg-amber-100 px-3 py-1 text-[11px] font-semibold text-amber-900 shadow-sm dark:border-amber-700/70 dark:bg-amber-900/60 dark:text-amber-100">
                   Sweep + reclaim
                 </div>
               </div>
@@ -337,10 +337,10 @@ export default function TradePage() {
                 {liquiditySweepsPlaybook.timeframes.map((tf) => (
                   <div
                     key={tf.label}
-                    className="rounded-lg border border-amber-900/70 bg-amber-950/60 px-3 py-2 text-xs text-amber-50/90"
+                    className="rounded-lg border border-amber-200 bg-amber-100 px-3 py-2 text-xs text-amber-900 shadow-sm dark:border-amber-900/70 dark:bg-amber-950/60 dark:text-amber-50/90"
                   >
-                    <div className="text-[11px] uppercase tracking-wide text-amber-200/70">{tf.label} bars</div>
-                    <div className="mt-1 font-mono text-amber-100">
+                    <div className="text-[11px] uppercase tracking-wide text-amber-700 dark:text-amber-200/70">{tf.label} bars</div>
+                    <div className="mt-1 font-mono text-amber-900 dark:text-amber-100">
                       unit: {tf.unit} • unitNumber: {tf.unitNumber}
                     </div>
                   </div>
@@ -349,59 +349,59 @@ export default function TradePage() {
 
               <div className="space-y-3">
                 {liquiditySweepsPlaybook.steps.map((step) => (
-                  <div key={step.title} className="rounded-lg border border-amber-900/70 bg-amber-950/50 px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-200/80">{step.title}</div>
-                    <div className="text-xs text-amber-50/80">{step.description}</div>
+                  <div key={step.title} className="rounded-lg border border-amber-200 bg-amber-100 px-3 py-2 shadow-sm dark:border-amber-900/70 dark:bg-amber-950/50">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200/80">{step.title}</div>
+                    <div className="text-xs text-amber-800 dark:text-amber-50/80">{step.description}</div>
                   </div>
                 ))}
               </div>
 
-              <div className="rounded-lg border border-emerald-900/60 bg-emerald-950/50 px-3 py-2 text-xs text-emerald-50/80">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/50 dark:text-emerald-50/80">
                 Tip: keep <code>includePartialBar</code> set to <code>false</code>, sort bars oldest-to-newest, and require a tiny
                 buffer past the prior swing (e.g., a few ticks) so a one-tick poke does not count as a real sweep.
               </div>
             </div>
           ) : (
-            <div className="text-xs text-amber-50/70">
-              Select <span className="font-semibold text-amber-100">Liquidity Sweeps</span> to see a playbook for scanning sweep-and-
+            <div className="text-xs text-amber-800 dark:text-amber-50/70">
+              Select <span className="font-semibold text-amber-900 dark:text-amber-100">Liquidity Sweeps</span> to see a playbook for scanning sweep-and-
               reject setups with <code>retrieveBars</code>.
             </div>
           )}
         </div>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 lg:col-span-3">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40 lg:col-span-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-zinc-100">Strategy endpoint: Retrieve Bars</div>
-              <div className="mt-1 text-xs text-zinc-400">
+              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Strategy endpoint: Retrieve Bars</div>
+              <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
                 Use the history service to pull aggregated bars for your strategy inputs.
               </div>
             </div>
-            <div className="rounded-full border border-emerald-900 bg-emerald-950/60 px-3 py-1 text-[11px] font-semibold text-emerald-100">
+            <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-800 shadow-sm dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-100">
               POST /api/History/retrieveBars
             </div>
           </div>
 
-          <div className="mt-4 rounded-xl border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-sm dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
             Note: the API caps responses at 20,000 bars per request. Use <code>unit</code> and <code>unitNumber</code> to
             adjust granularity.
           </div>
 
-          <div className="mt-4 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/30">
-            <table className="min-w-full text-left text-xs text-zinc-200">
+          <div className="mt-4 overflow-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30">
+            <table className="min-w-full text-left text-xs text-zinc-800 dark:text-zinc-200">
               <thead>
-                <tr className="border-b border-zinc-800 bg-zinc-950/40">
-                  <th className="px-3 py-2 font-semibold text-zinc-300">Parameter</th>
-                  <th className="px-3 py-2 font-semibold text-zinc-300">Type</th>
-                  <th className="px-3 py-2 font-semibold text-zinc-300">Description</th>
+                <tr className="border-b border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950/40">
+                  <th className="px-3 py-2 font-semibold text-zinc-700 dark:text-zinc-300">Parameter</th>
+                  <th className="px-3 py-2 font-semibold text-zinc-700 dark:text-zinc-300">Type</th>
+                  <th className="px-3 py-2 font-semibold text-zinc-700 dark:text-zinc-300">Description</th>
                 </tr>
               </thead>
               <tbody>
                 {retrieveBarsParameters.map((param) => (
-                  <tr key={param.name} className="border-b border-zinc-800 last:border-b-0">
-                    <td className="px-3 py-2 font-semibold text-zinc-100">{param.name}</td>
-                    <td className="px-3 py-2 text-zinc-300">{param.type}</td>
-                    <td className="px-3 py-2 text-zinc-400">{param.description}</td>
+                  <tr key={param.name} className="border-b border-zinc-200 last:border-b-0 dark:border-zinc-800">
+                    <td className="px-3 py-2 font-semibold text-zinc-900 dark:text-zinc-100">{param.name}</td>
+                    <td className="px-3 py-2 text-zinc-700 dark:text-zinc-300">{param.type}</td>
+                    <td className="px-3 py-2 text-zinc-600 dark:text-zinc-400">{param.description}</td>
                   </tr>
                 ))}
               </tbody>
@@ -410,15 +410,15 @@ export default function TradePage() {
 
           <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Example request</div>
-              <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-[11px] text-zinc-200">
+              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">Example request</div>
+              <pre className="overflow-auto rounded-xl border border-zinc-200 bg-zinc-100 p-3 text-[11px] text-zinc-800 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/70 dark:text-zinc-200">
                 <code>{retrieveBarsCurl}</code>
               </pre>
             </div>
 
             <div className="space-y-2">
-              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Example response</div>
-              <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-[11px] text-zinc-200">
+              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">Example response</div>
+              <pre className="overflow-auto rounded-xl border border-zinc-200 bg-zinc-100 p-3 text-[11px] text-zinc-800 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/70 dark:text-zinc-200">
                 <code>{retrieveBarsResponse}</code>
               </pre>
             </div>
@@ -431,9 +431,9 @@ export default function TradePage() {
 
 function SummaryTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-zinc-400">{label}</div>
-      <div className="text-sm font-semibold text-zinc-100">{value}</div>
+    <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/40">
+      <div className="text-[11px] uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{label}</div>
+      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{value}</div>
     </div>
   );
 }

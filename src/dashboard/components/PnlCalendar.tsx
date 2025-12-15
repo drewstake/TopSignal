@@ -106,22 +106,22 @@ function cellStyles(cell: CalendarCell) {
   const base = "flex h-16 flex-col justify-between rounded-xl border p-2 text-left transition";
 
   if (!cell.inRange) {
-    return `${base} border-dashed border-zinc-800 bg-zinc-950/20 text-zinc-600`;
+    return `${base} border-dashed border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950/20 dark:text-zinc-600`;
   }
 
   if (cell.pnl === null) {
-    return `${base} border border-zinc-800 bg-zinc-950/40 text-zinc-400`;
+    return `${base} border border-zinc-200 bg-white text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-400`;
   }
 
   if (cell.pnl > 0) {
-    return `${base} border-emerald-500/50 bg-emerald-500/10 text-emerald-100`;
+    return `${base} border-emerald-500/50 bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-100`;
   }
 
   if (cell.pnl < 0) {
-    return `${base} border-rose-500/50 bg-rose-500/10 text-rose-100`;
+    return `${base} border-rose-500/50 bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-100`;
   }
 
-  return `${base} border-zinc-700 bg-zinc-800 text-zinc-100`;
+  return `${base} border-zinc-300 bg-zinc-100 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100`;
 }
 
 function cellContent(cell: CalendarCell) {
@@ -131,9 +131,9 @@ function cellContent(cell: CalendarCell) {
 
   return (
     <>
-      <div className="text-[10px] text-zinc-400">{cell.date.getDate()}</div>
+      <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{cell.date.getDate()}</div>
       <div className="text-[11px] font-semibold leading-tight">{cell.pnl === null ? "—" : fmtMoney(cell.pnl)}</div>
-      <div className="text-[10px] text-zinc-500">{tradesLabel}</div>
+      <div className="text-[10px] text-zinc-500 dark:text-zinc-500">{tradesLabel}</div>
     </>
   );
 }
@@ -156,35 +156,35 @@ export default function PnlCalendar({ days, loading, startISO, endISO }: PnlCale
   }, [startISO, endISO]);
 
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-      <div className="flex items-start justify-between gap-2 text-sm text-zinc-100">
+    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30">
+      <div className="flex items-start justify-between gap-2 text-sm text-zinc-900 dark:text-zinc-100">
         <div>
           <div className="font-semibold">PNL calendar</div>
-          <div className="text-xs text-zinc-400">Daily net results across the selected date range.</div>
+          <div className="text-xs text-zinc-500 dark:text-zinc-400">Daily net results across the selected date range.</div>
         </div>
-        {rangeLabel ? <div className="text-xs text-zinc-500">Range: {rangeLabel}</div> : null}
+        {rangeLabel ? <div className="text-xs text-zinc-600 dark:text-zinc-500">Range: {rangeLabel}</div> : null}
       </div>
 
       {loading ? (
-        <div className="py-6 text-sm text-zinc-300">Loading...</div>
+        <div className="py-6 text-sm text-zinc-600 dark:text-zinc-300">Loading...</div>
       ) : !months.length ? (
-        <div className="py-6 text-sm text-zinc-300">No day data found for this range.</div>
+        <div className="py-6 text-sm text-zinc-600 dark:text-zinc-300">No day data found for this range.</div>
       ) : (
         <div className="mt-3 space-y-4">
           {months.length > 1 ? (
-            <div className="flex items-center justify-end gap-2 text-xs text-zinc-300">
+            <div className="flex items-center justify-end gap-2 text-xs text-zinc-600 dark:text-zinc-300">
               <button
                 type="button"
-                className="rounded-lg border border-zinc-800 px-2 py-1 text-[11px] transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-900 disabled:text-zinc-600"
+                className="rounded-lg border border-zinc-200 px-2 py-1 text-[11px] transition hover:border-zinc-300 hover:text-zinc-900 disabled:cursor-not-allowed disabled:border-zinc-100 disabled:text-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-700 dark:hover:text-zinc-100 dark:disabled:border-zinc-900 dark:disabled:text-zinc-600"
                 onClick={() => setSelectedMonthIndex(Math.max(activeMonthIndex - 1, 0))}
                 disabled={activeMonthIndex === 0}
               >
                 Previous
               </button>
-              <div className="text-[11px] text-zinc-400">{months[activeMonthIndex]?.label}</div>
+              <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{months[activeMonthIndex]?.label}</div>
               <button
                 type="button"
-                className="rounded-lg border border-zinc-800 px-2 py-1 text-[11px] transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-900 disabled:text-zinc-600"
+                className="rounded-lg border border-zinc-200 px-2 py-1 text-[11px] transition hover:border-zinc-300 hover:text-zinc-900 disabled:cursor-not-allowed disabled:border-zinc-100 disabled:text-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-700 dark:hover:text-zinc-100 dark:disabled:border-zinc-900 dark:disabled:text-zinc-600"
                 onClick={() => setSelectedMonthIndex(Math.min(activeMonthIndex + 1, lastMonthIndex))}
                 disabled={activeMonthIndex === months.length - 1}
               >
@@ -194,17 +194,17 @@ export default function PnlCalendar({ days, loading, startISO, endISO }: PnlCale
           ) : null}
 
           {months[activeMonthIndex] ? (
-            <div className="space-y-2" key={months[activeMonthIndex].key}>
-              <div className="flex items-center justify-between text-xs text-zinc-300">
-                <div className="text-sm font-semibold text-zinc-100">{months[activeMonthIndex].label}</div>
-                <div className="text-[11px] text-zinc-400">
-                  Net {fmtMoney(months[activeMonthIndex].netPnl)} · Trades {months[activeMonthIndex].trades}
+              <div className="space-y-2" key={months[activeMonthIndex].key}>
+                <div className="flex items-center justify-between text-xs text-zinc-700 dark:text-zinc-300">
+                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{months[activeMonthIndex].label}</div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Net {fmtMoney(months[activeMonthIndex].netPnl)} · Trades {months[activeMonthIndex].trades}
+                  </div>
                 </div>
-              </div>
-              <div className="grid grid-cols-7 text-[10px] uppercase tracking-wide text-zinc-500">
-                {DAY_LABELS.map((label) => (
-                  <div key={`${months[activeMonthIndex].key}-${label}`} className="text-center">
-                    {label}
+                <div className="grid grid-cols-7 text-[10px] uppercase tracking-wide text-zinc-500 dark:text-zinc-500">
+                  {DAY_LABELS.map((label) => (
+                    <div key={`${months[activeMonthIndex].key}-${label}`} className="text-center">
+                      {label}
                   </div>
                 ))}
               </div>
