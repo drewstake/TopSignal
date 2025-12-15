@@ -6,10 +6,10 @@ export default function KpiCard(props: {
   sub?: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-      <div className="text-xs text-zinc-400">{props.label}</div>
-      <div className="mt-1 text-xl font-semibold text-zinc-100">{props.value}</div>
-      {props.sub ? <div className="mt-1 text-xs text-zinc-400">{props.sub}</div> : null}
+    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30">
+      <div className="text-xs text-zinc-500 dark:text-zinc-400">{props.label}</div>
+      <div className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-100">{props.value}</div>
+      {props.sub ? <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{props.sub}</div> : null}
     </div>
   );
 }

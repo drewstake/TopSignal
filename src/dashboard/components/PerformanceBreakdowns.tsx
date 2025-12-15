@@ -22,45 +22,49 @@ interface PerformanceBreakdownsProps {
 }
 
 export default function PerformanceBreakdowns({ loading, timeAnalysis, totals, equity, effectiveDaysBack }: PerformanceBreakdownsProps) {
+  const cardClass = "rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30";
+  const titleClass = "text-sm font-semibold text-zinc-900 dark:text-zinc-100";
+  const subtitleClass = "text-xs text-zinc-500 dark:text-zinc-400";
+  const bodyTextClass = "text-sm text-zinc-700 dark:text-zinc-200";
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-          <div className="text-sm font-semibold text-zinc-100">Time-of-day performance</div>
-          <div className="text-xs text-zinc-500">Session ranges shown in New York time.</div>
-          <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+        <div className={cardClass}>
+          <div className={titleClass}>Time-of-day performance</div>
+          <div className={subtitleClass}>Session ranges shown in New York time.</div>
+          <div className="mt-2 divide-y divide-zinc-200 text-sm text-zinc-700 dark:divide-zinc-800 dark:text-zinc-200">
             {(totals?.timeBlocks || []).map((b) => (
               <div key={b.label} className="flex items-center justify-between py-2">
                 <div>{b.label}</div>
                 <div className="text-right">
                   <div>{fmtMoney(b.netPnl)}</div>
-                  <div className="text-xs text-zinc-500">Trades {b.trades}</div>
+                  <div className="text-xs text-zinc-500 dark:text-zinc-400">Trades {b.trades}</div>
                 </div>
               </div>
             ))}
-            {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
+            {!totals?.timeBlocks?.length ? <div className="py-2 text-zinc-500 dark:text-zinc-400">No realized trades in range.</div> : null}
           </div>
         </div>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-          <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+        <div className={cardClass}>
+          <div className={`mb-2 flex items-center justify-between ${bodyTextClass}`}>
             <div>
-              <div className="font-semibold">Trade timing</div>
-              <div className="text-xs text-zinc-400">Precise trade times & PnL (New York time)</div>
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">Trade timing</div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">Precise trade times & PnL (New York time)</div>
             </div>
-            <div className="text-xs text-zinc-400">{timeAnalysis.busiestTime ? `${timeAnalysis.busiestTime.trades} trades` : "--"}</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{timeAnalysis.busiestTime ? `${timeAnalysis.busiestTime.trades} trades` : "--"}</div>
           </div>
 
           {loading ? (
-            <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">Loading...</div>
           ) : !timeAnalysis.timeData.length ? (
-            <div className="py-6 text-sm text-zinc-300">No realized trades to chart.</div>
+            <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">No realized trades to chart.</div>
           ) : (
             <TradeTimeHistogram data={timeAnalysis.timeData} />
           )}
 
           {timeAnalysis.bestTime ? (
-            <div className="mt-2 text-xs text-emerald-300">
+            <div className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
               Most profitable time: {timeAnalysis.bestTime.label} ({fmtMoney(timeAnalysis.bestTime.netPnl)}; {timeAnalysis.bestTime.trades}
               trade{timeAnalysis.bestTime.trades === 1 ? "" : "s"}).
             </div>
@@ -69,64 +73,64 @@ export default function PerformanceBreakdowns({ loading, timeAnalysis, totals, e
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-          <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+        <div className={cardClass}>
+          <div className={`mb-2 flex items-center justify-between ${bodyTextClass}`}>
             <div>
-              <div className="font-semibold">Day-of-week performance</div>
-              <div className="text-xs text-zinc-400">Net PnL by session day</div>
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">Day-of-week performance</div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">Net PnL by session day</div>
             </div>
-            <div className="text-xs text-zinc-400">{timeAnalysis.bestDay ? `${timeAnalysis.bestDay.trades} trades` : "--"}</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{timeAnalysis.bestDay ? `${timeAnalysis.bestDay.trades} trades` : "--"}</div>
           </div>
 
           {loading ? (
-            <div className="py-6 text-sm text-zinc-300">Loading...</div>
+            <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">Loading...</div>
           ) : !timeAnalysis.dayData.some((d) => d.trades > 0) ? (
-            <div className="py-6 text-sm text-zinc-300">No trading days to show.</div>
+            <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">No trading days to show.</div>
           ) : (
             <DayOfWeekBarChart data={timeAnalysis.dayData} />
           )}
 
           {timeAnalysis.bestDay ? (
-            <div className="mt-2 text-xs text-emerald-300">Most profitable day: {timeAnalysis.bestDay.label} ({fmtMoney(timeAnalysis.bestDay.netPnl)}).</div>
+            <div className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">Most profitable day: {timeAnalysis.bestDay.label} ({fmtMoney(timeAnalysis.bestDay.netPnl)}).</div>
           ) : null}
         </div>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-          <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+        <div className={cardClass}>
+          <div className={`mb-2 flex items-center justify-between ${bodyTextClass}`}>
             <div>
-              <div className="font-semibold">Instrument breakdown</div>
-              <div className="text-xs text-zinc-400">PnL by contract</div>
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">Instrument breakdown</div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">PnL by contract</div>
             </div>
-            <div className="text-xs text-zinc-400">{totals?.instruments.length ?? 0} instrument(s)</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{totals?.instruments.length ?? 0} instrument(s)</div>
           </div>
-          <div className="mt-2 divide-y divide-zinc-800 text-sm text-zinc-200">
+          <div className="mt-2 divide-y divide-zinc-200 text-sm text-zinc-700 dark:divide-zinc-800 dark:text-zinc-200">
             {(totals?.instruments || []).map((i) => (
               <div key={i.contractId} className="flex items-center justify-between py-2">
-                <div className="text-xs text-zinc-400">{i.contractId}</div>
+                <div className="text-xs text-zinc-500 dark:text-zinc-400">{i.contractId}</div>
                 <div className="text-right">
                   <div>{fmtMoney(i.netPnl)}</div>
-                  <div className="text-xs text-zinc-500">Trades {i.trades}</div>
+                  <div className="text-xs text-zinc-500 dark:text-zinc-400">Trades {i.trades}</div>
                 </div>
               </div>
             ))}
-            {!totals?.instruments?.length ? <div className="py-2 text-zinc-400">No realized trades in range.</div> : null}
+            {!totals?.instruments?.length ? <div className="py-2 text-zinc-500 dark:text-zinc-400">No realized trades in range.</div> : null}
           </div>
         </div>
       </div>
 
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-950/30 p-4">
-        <div className="mb-2 flex items-center justify-between text-sm text-zinc-100">
+      <div className={cardClass}>
+        <div className={`mb-2 flex items-center justify-between ${bodyTextClass}`}>
           <div>
-            <div className="font-semibold">Equity curve</div>
-            <div className="text-xs text-zinc-400">Cumulative net PnL with daily PnL overlay</div>
+            <div className="font-semibold text-zinc-900 dark:text-zinc-100">Equity curve</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">Cumulative net PnL with daily PnL overlay</div>
           </div>
-          <div className="text-xs text-zinc-400">Range: last {effectiveDaysBack} day(s)</div>
+          <div className="text-xs text-zinc-500 dark:text-zinc-400">Range: last {effectiveDaysBack} day(s)</div>
         </div>
 
         {loading ? (
-          <div className="py-6 text-sm text-zinc-300">Loading...</div>
+          <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">Loading...</div>
         ) : !equity.length ? (
-          <div className="py-6 text-sm text-zinc-300">No equity data found for this range.</div>
+          <div className="py-6 text-sm text-zinc-500 dark:text-zinc-300">No equity data found for this range.</div>
         ) : (
           <EquityCurveChart data={equity} />
         )}
