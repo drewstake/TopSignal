@@ -266,7 +266,7 @@ export default function DashboardPage() {
 
       <MarketDataTicker />
 
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+      <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40 p-5 space-y-4">
         <SummaryCards totals={totals} daySummary={daySummary} effectiveDaysBack={effectiveDaysBack} />
         <PerformanceBreakdowns
           loading={loading}
