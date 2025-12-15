@@ -69,7 +69,8 @@ export type MarketDataSnapshot = {
 type DepthSide = "Bid" | "Ask";
 
 type DepthPayload = {
-  side: DepthSide;
+  side?: DepthSide;
+  type?: number;
   price: number;
   volume?: number | null;
   currentVolume?: number | null;
@@ -139,7 +140,12 @@ class OrderBook {
   private bids = new Map<number, number>();
   private asks = new Map<number, number>();
 
-  apply(update: DepthPayload) {
+  reset() {
+    this.bids.clear();
+    this.asks.clear();
+  }
+
+  apply(update: DepthPayload & { side: DepthSide }) {
     const price = toNumber(update.price);
     // depth payloads sometimes send cumulative size (currentVolume) instead of a
     // delta, so prefer it when present to avoid compounding totals.
@@ -304,7 +310,7 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
   }
 
-  private hasOwn<T extends object>(obj: T, key: keyof any) {
+  private hasOwn<T extends object>(obj: T, key: PropertyKey) {
     return Object.prototype.hasOwnProperty.call(obj, key);
   }
 
@@ -326,10 +332,13 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     const storedToken = loadStoredSessionToken();
     if (storedToken) return storedToken;
 
-    if (typeof import.meta !== "undefined" && (import.meta as any).env) {
-      const env: any = (import.meta as any).env;
-      if (env.PROJECTX_JWT) return String(env.PROJECTX_JWT);
-      if (env.VITE_PROJECTX_JWT) return String(env.VITE_PROJECTX_JWT);
+    if (typeof import.meta !== "undefined") {
+      const env = (import.meta as { env?: Record<string, unknown> }).env;
+      const projectxJwt = typeof env?.PROJECTX_JWT === "string" ? env.PROJECTX_JWT : null;
+      const viteProjectxJwt = typeof env?.VITE_PROJECTX_JWT === "string" ? env.VITE_PROJECTX_JWT : null;
+
+      if (projectxJwt?.length) return projectxJwt;
+      if (viteProjectxJwt?.length) return viteProjectxJwt;
     }
 
     if (globalProcess?.env?.PROJECTX_JWT) {
@@ -555,9 +564,39 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleDepth(payload: DepthPayload) {
-    this.orderBook.apply(payload);
+    if (payload.type === 6) {
+      this.orderBook.reset();
+      this.latestDepth = { bids: [], asks: [] };
+      this.emitDepthThrottled();
+      return;
+    }
+
+    const side = this.resolveDepthSide(payload);
+    if (!side) return;
+
+    this.orderBook.apply({ ...payload, side });
     this.latestDepth = this.orderBook.snapshot(this.options.levels);
+    this.quoteState.bestBid = this.latestDepth.bids[0]?.price ?? null;
+    this.quoteState.bestAsk = this.latestDepth.asks[0]?.price ?? null;
     this.emitDepthThrottled();
+    this.emitQuoteThrottled();
+  }
+
+  private resolveDepthSide(payload: DepthPayload): DepthSide | null {
+    if (payload.side === "Bid" || payload.side === "Ask") return payload.side;
+
+    switch (payload.type) {
+      case 1: // Ask
+      case 3: // BestAsk
+      case 10: // NewBestAsk
+        return "Ask";
+      case 2: // Bid
+      case 4: // BestBid
+      case 9: // NewBestBid
+        return "Bid";
+      default:
+        return null;
+    }
   }
 
   private normalizeContractResults(payload: unknown): ContractSearchResult[] {
