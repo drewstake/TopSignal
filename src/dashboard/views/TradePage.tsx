@@ -16,7 +16,47 @@ const strategyOptions = [
   { value: "mean-reversion", label: "Mean Reversion" },
   { value: "breakout", label: "Breakout" },
   { value: "scalping", label: "Scalping" },
+  { value: "liquidity-sweeps", label: "Liquidity Sweeps" },
 ];
+
+const liquiditySweepsPlaybook = {
+  headline: "Liquidity sweep playbook",
+  intro:
+    "Scan historical bars for a sweep-and-reject pattern where price trades through a prior swing level and quickly reclaims it.",
+  timeframes: [
+    { label: "15m", unit: 2, unitNumber: 15 },
+    { label: "1h", unit: 3, unitNumber: 1 },
+    { label: "4h", unit: 3, unitNumber: 4 },
+    { label: "1d", unit: 4, unitNumber: 1 },
+  ],
+  steps: [
+    {
+      title: "Define the pool (L1)",
+      description:
+        "Find a swing high/low: the extreme inside a small window (e.g., 3-5 bars on 15m, 2-4 on 1h).",
+    },
+    {
+      title: "Wait for the sweep (L2)",
+      description:
+        "A later bar must take the level (low below L1 for bullish, high above L1 for bearish) and then close back beyond it.",
+    },
+    {
+      title: "Score the timing",
+      description:
+        "Use a range, not one cutoff. Favor retests a session or a few sessions later; deprioritize sweeps that are too fresh or too stale.",
+    },
+    {
+      title: "Check rejection quality",
+      description:
+        "Look for a decisive reclaim: sizable wick through L1, close away from the swept extreme, and optional volume pop vs recent bars.",
+    },
+    {
+      title: "Optional time-of-day boost",
+      description:
+        "If L1 and L2 occur near the same clock time (e.g., both at the session open), bump the score without making it a hard rule.",
+    },
+  ],
+};
 
 const retrieveBarsParameters = [
   { name: "contractId", type: "string", description: "The contract ID." },
@@ -278,6 +318,55 @@ export default function TradePage() {
             label={activeInstrument.label}
             onQuote={(quote) => setLatestQuote(quote)}
           />
+        </div>
+
+        <div className="rounded-2xl border border-amber-900/70 bg-amber-950/40 p-5 lg:col-span-3">
+          {selectedStrategy === "liquidity-sweeps" ? (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-amber-100">{liquiditySweepsPlaybook.headline}</div>
+                  <div className="mt-1 text-xs text-amber-50/80">{liquiditySweepsPlaybook.intro}</div>
+                </div>
+                <div className="rounded-full border border-amber-700/70 bg-amber-900/60 px-3 py-1 text-[11px] font-semibold text-amber-100">
+                  Sweep + reclaim
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {liquiditySweepsPlaybook.timeframes.map((tf) => (
+                  <div
+                    key={tf.label}
+                    className="rounded-lg border border-amber-900/70 bg-amber-950/60 px-3 py-2 text-xs text-amber-50/90"
+                  >
+                    <div className="text-[11px] uppercase tracking-wide text-amber-200/70">{tf.label} bars</div>
+                    <div className="mt-1 font-mono text-amber-100">
+                      unit: {tf.unit} • unitNumber: {tf.unitNumber}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-3">
+                {liquiditySweepsPlaybook.steps.map((step) => (
+                  <div key={step.title} className="rounded-lg border border-amber-900/70 bg-amber-950/50 px-3 py-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-200/80">{step.title}</div>
+                    <div className="text-xs text-amber-50/80">{step.description}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-lg border border-emerald-900/60 bg-emerald-950/50 px-3 py-2 text-xs text-emerald-50/80">
+                Tip: keep <code>includePartialBar</code> set to <code>false</code>, sort bars oldest-to-newest, and require a tiny
+                buffer past the prior swing (e.g., a few ticks) so a one-tick poke does not count as a real sweep.
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-amber-50/70">
+              Select <span className="font-semibold text-amber-100">Liquidity Sweeps</span> to see a playbook for scanning sweep-and-
+              reject setups with <code>retrieveBars</code>.
+            </div>
+          )}
         </div>
 
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 lg:col-span-3">
