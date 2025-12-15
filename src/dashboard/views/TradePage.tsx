@@ -18,6 +18,60 @@ const strategyOptions = [
   { value: "scalping", label: "Scalping" },
 ];
 
+const retrieveBarsParameters = [
+  { name: "contractId", type: "string", description: "The contract ID." },
+  { name: "live", type: "boolean", description: "Use the live data subscription instead of simulated." },
+  { name: "startTime", type: "datetime", description: "Start time for the historical window." },
+  { name: "endTime", type: "datetime", description: "End time for the historical window." },
+  {
+    name: "unit",
+    type: "integer",
+    description: "Aggregation unit: 1=Second, 2=Minute, 3=Hour, 4=Day, 5=Week, 6=Month.",
+  },
+  { name: "unitNumber", type: "integer", description: "How many units to aggregate into each bar." },
+  { name: "limit", type: "integer", description: "Maximum number of bars to return (max 20,000)." },
+  { name: "includePartialBar", type: "boolean", description: "Include the partial bar for the current interval." },
+];
+
+const retrieveBarsCurl = `curl -X 'POST' \\
+  'https://api.topstepx.com/api/History/retrieveBars' \\
+  -H 'accept: text/plain' \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "contractId": "CON.F.US.RTY.Z24",
+    "live": false,
+    "startTime": "2024-12-01T00:00:00Z",
+    "endTime": "2024-12-31T21:00:00Z",
+    "unit": 3,
+    "unitNumber": 1,
+    "limit": 7,
+    "includePartialBar": false
+  }'`;
+
+const retrieveBarsResponse = `{
+  "bars": [
+    {
+      "t": "2024-12-20T14:00:00+00:00",
+      "o": 2208.100000000,
+      "h": 2217.000000000,
+      "l": 2206.700000000,
+      "c": 2210.100000000,
+      "v": 87
+    },
+    {
+      "t": "2024-12-20T13:00:00+00:00",
+      "o": 2195.800000000,
+      "h": 2215.000000000,
+      "l": 2192.900000000,
+      "c": 2209.800000000,
+      "v": 536
+    }
+  ],
+  "success": true,
+  "errorCode": 0,
+  "errorMessage": null
+}`;
+
 function formatPrice(value: number | null | undefined) {
   if (value === null || value === undefined) return "--";
   return value.toFixed(2);
@@ -224,6 +278,62 @@ export default function TradePage() {
             label={activeInstrument.label}
             onQuote={(quote) => setLatestQuote(quote)}
           />
+        </div>
+
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 lg:col-span-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-zinc-100">Strategy endpoint: Retrieve Bars</div>
+              <div className="mt-1 text-xs text-zinc-400">
+                Use the history service to pull aggregated bars for your strategy inputs.
+              </div>
+            </div>
+            <div className="rounded-full border border-emerald-900 bg-emerald-950/60 px-3 py-1 text-[11px] font-semibold text-emerald-100">
+              POST /api/History/retrieveBars
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs text-amber-100">
+            Note: the API caps responses at 20,000 bars per request. Use <code>unit</code> and <code>unitNumber</code> to
+            adjust granularity.
+          </div>
+
+          <div className="mt-4 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/30">
+            <table className="min-w-full text-left text-xs text-zinc-200">
+              <thead>
+                <tr className="border-b border-zinc-800 bg-zinc-950/40">
+                  <th className="px-3 py-2 font-semibold text-zinc-300">Parameter</th>
+                  <th className="px-3 py-2 font-semibold text-zinc-300">Type</th>
+                  <th className="px-3 py-2 font-semibold text-zinc-300">Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {retrieveBarsParameters.map((param) => (
+                  <tr key={param.name} className="border-b border-zinc-800 last:border-b-0">
+                    <td className="px-3 py-2 font-semibold text-zinc-100">{param.name}</td>
+                    <td className="px-3 py-2 text-zinc-300">{param.type}</td>
+                    <td className="px-3 py-2 text-zinc-400">{param.description}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Example request</div>
+              <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-[11px] text-zinc-200">
+                <code>{retrieveBarsCurl}</code>
+              </pre>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-300">Example response</div>
+              <pre className="overflow-auto rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-[11px] text-zinc-200">
+                <code>{retrieveBarsResponse}</code>
+              </pre>
+            </div>
+          </div>
         </div>
       </div>
     </div>
