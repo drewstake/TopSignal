@@ -9,7 +9,7 @@ import {
 
 const REST_BASE = "https://api.topstepx.com";
 const MARKET_HUB = "https://rtc.topstepx.com/hubs/market";
-const DEFAULT_OPTIONS = { symbol: "MNQ", levels: 10, throttleMs: 150 } as const;
+const DEFAULT_OPTIONS = { symbol: "ENQ", levels: 10, throttleMs: 150 } as const;
 
 const SESSION_TOKEN_KEY = "topsignal.topstep.sessionToken.v1";
 
@@ -479,6 +479,8 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
   private toSymbolId(symbol: string) {
     const upperSymbol = symbol.toUpperCase();
+    if (upperSymbol === "NQ") return "F.US.ENQ";
+    if (upperSymbol === "ES") return "F.US.EP";
     if (upperSymbol === "MNQ") return "F.US.MNQ";
     if (upperSymbol === "MES") return "F.US.MES";
     return `F.US.${upperSymbol}`;

@@ -89,9 +89,9 @@ const DEFAULT_BOTS: TradingBot[] = [
 export default function TradePage() {
   const instrumentOptions = useMemo(
     () => [
-      { value: "NQ", label: "Nasdaq (NQ)", mdSymbol: "MNQ" },
-      { value: "ES", label: "S&P (ES)", mdSymbol: "MES" },
-      { value: "GC", label: "Gold (GC)", mdSymbol: "MGC" },
+      { value: "NQ", label: "Nasdaq (NQ)", mdSymbol: "ENQ" },
+      { value: "ES", label: "S&P (ES)", mdSymbol: "EP" },
+      { value: "GC", label: "Gold (GC)", mdSymbol: "GC" },
     ],
     [],
   );
@@ -192,7 +192,7 @@ export default function TradePage() {
 
   useEffect(() => {
     setTesterContractId(null);
-  }, [testerInstrument]);
+  }, [testerInstrument, testerSymbol]);
 
   useEffect(() => {
     if (!connected && testerRunning) {
@@ -341,7 +341,7 @@ export default function TradePage() {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [selectedTesterAccount, testerAccountId, testerContractId, testerInstrument, testerRunning]);
+  }, [selectedTesterAccount, testerAccountId, testerContractId, testerInstrument, testerRunning, testerSymbol]);
 
   function handleCreateBot() {
     if (!connected) {
