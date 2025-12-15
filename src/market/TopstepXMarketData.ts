@@ -11,6 +11,8 @@ const REST_BASE = "https://api.topstepx.com";
 const MARKET_HUB = "https://rtc.topstepx.com/hubs/market";
 const DEFAULT_OPTIONS = { symbol: "MNQ", levels: 10, throttleMs: 150 } as const;
 
+const SESSION_TOKEN_KEY = "topsignal.topstep.sessionToken.v1";
+
 type MaybeProcess = {
   env?: Record<string, string | undefined>;
   on?: (event: string, cb: () => void) => void;
@@ -18,6 +20,28 @@ type MaybeProcess = {
 };
 
 const globalProcess = (globalThis as { process?: MaybeProcess }).process;
+
+function safeGetStorageItem(storage: Storage, key: string) {
+  try {
+    return storage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function loadStoredSessionToken() {
+  if (typeof sessionStorage !== "undefined") {
+    const token = safeGetStorageItem(sessionStorage, SESSION_TOKEN_KEY).trim();
+    if (token) return token;
+  }
+
+  if (typeof localStorage !== "undefined") {
+    const token = safeGetStorageItem(localStorage, SESSION_TOKEN_KEY).trim();
+    if (token) return token;
+  }
+
+  return "";
+}
 
 export type MarketDataOptions = {
   symbol: string;
@@ -207,7 +231,9 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     try {
       const jwt = this.loadJwt();
       if (!jwt) {
-        throw new Error("PROJECTX_JWT environment variable is missing.");
+        throw new Error(
+          "Topstep session token not found. Connect in Settings or set VITE_PROJECTX_JWT."
+        );
       }
 
       this.contractId = await this.resolveContractId(this.options.symbol, jwt);
@@ -276,7 +302,11 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
 
   private loadJwt() {
     // Support both Vite client builds and Node contexts so tests/tools can
-    // provide credentials without a browser.
+    // provide credentials without a browser. Prefer an interactive session
+    // token saved by the UI, then fall back to environment variables.
+    const storedToken = loadStoredSessionToken();
+    if (storedToken) return storedToken;
+
     if (typeof import.meta !== "undefined" && import.meta.env) {
       if (import.meta.env.PROJECTX_JWT) return String(import.meta.env.PROJECTX_JWT);
       if (import.meta.env.VITE_PROJECTX_JWT) return String(import.meta.env.VITE_PROJECTX_JWT);
@@ -303,7 +333,13 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       throw new Error(`Contract search failed with status ${response.status}`);
     }
 
-    const results: ContractSearchResult[] = await response.json();
+    const body = await response.json();
+    const results: ContractSearchResult[] = Array.isArray(body)
+      ? body
+      : Array.isArray((body as { results?: unknown }).results)
+        ? ((body as { results: ContractSearchResult[] }).results || [])
+        : [];
+
     // The API returns multiple expirations; picking the MNQ prefix grabs the
     // front-month micro NASDAQ future regardless of the specific month code.
     const match = results.find((c) => c.id?.startsWith("CON.F.US.MNQ"));
