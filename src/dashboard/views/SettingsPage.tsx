@@ -107,13 +107,13 @@ export default function SettingsPage() {
 
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 lg:col-span-7">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40 lg:col-span-7">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-lg font-semibold text-zinc-100">
+            <div className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
               Topstep Settings
             </div>
-            <div className="mt-1 text-sm text-zinc-400">
+            <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               Credentials save to localStorage on this device. Session token saves
               to sessionStorage.
             </div>
@@ -121,10 +121,10 @@ export default function SettingsPage() {
 
           <div
             className={
-              "rounded-full border px-3 py-1 text-xs " +
+              "rounded-full px-3 py-1 text-xs font-semibold " +
               (connected
-                ? "border-emerald-700 bg-emerald-950/40 text-emerald-200"
-                : "border-zinc-800 bg-zinc-950/40 text-zinc-300")
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-900 shadow-sm dark:border-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-100"
+                : "border border-amber-200 bg-amber-50 text-amber-900 shadow-sm dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100")
             }
           >
             {connected ? "Connected" : "Not connected"}
@@ -133,11 +133,11 @@ export default function SettingsPage() {
 
         <div className="mt-5 grid gap-4">
           <div>
-            <div className="mb-1 text-xs text-zinc-400">Username</div>
+            <div className="mb-1 text-xs text-zinc-600 dark:text-zinc-400">Username</div>
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="h-10 w-full rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 text-sm text-zinc-200 outline-none"
+              className="h-10 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 shadow-inner outline-none dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-100"
               placeholder="your Topstep username or email"
               autoCapitalize="none"
               autoCorrect="off"
@@ -146,13 +146,13 @@ export default function SettingsPage() {
           </div>
 
           <div>
-            <div className="mb-1 text-xs text-zinc-400">API Key</div>
+            <div className="mb-1 text-xs text-zinc-600 dark:text-zinc-400">API Key</div>
             <div className="flex gap-2">
               <input
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 type={showKey ? "text" : "password"}
-                className="h-10 w-full rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 text-sm text-zinc-200 outline-none"
+                className="h-10 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 shadow-inner outline-none dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-100"
                 placeholder="paste your API key"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -161,7 +161,7 @@ export default function SettingsPage() {
               <button
                 type="button"
                 onClick={() => setShowKey((v) => !v)}
-                className="h-10 rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 text-sm text-zinc-200"
+                className="h-10 rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
               >
                 {showKey ? "Hide" : "Show"}
               </button>
@@ -169,11 +169,11 @@ export default function SettingsPage() {
           </div>
 
           <div>
-            <div className="mb-1 text-xs text-zinc-400">Gateway URL (optional)</div>
+            <div className="mb-1 text-xs text-zinc-600 dark:text-zinc-400">Gateway URL (optional)</div>
             <input
               value={gatewayUrl}
               onChange={(e) => setGatewayUrl(e.target.value)}
-              className="h-10 w-full rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 text-sm text-zinc-200 outline-none"
+              className="h-10 w-full rounded-xl border border-zinc-300 bg-white px-3 text-sm text-zinc-900 shadow-inner outline-none dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-100"
               placeholder="https://api.topstepx.com"
               autoCapitalize="none"
               autoCorrect="off"
@@ -184,7 +184,7 @@ export default function SettingsPage() {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={onSaveCreds}
-              className="rounded-xl border border-zinc-600 bg-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
             >
               Save
             </button>
@@ -192,46 +192,46 @@ export default function SettingsPage() {
             <button
               onClick={onConnect}
               disabled={connecting}
-              className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200 disabled:opacity-50"
+              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
             >
               {connecting ? "Connecting..." : "Connect"}
             </button>
 
             <button
               onClick={onDisconnect}
-              className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
+              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
             >
               Disconnect
             </button>
 
             <button
               onClick={onClearAll}
-              className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-sm text-zinc-200"
+              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-200"
             >
               Clear all
             </button>
           </div>
 
           {status ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-sm text-zinc-200">
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-200">
               {status}
             </div>
           ) : null}
 
-          <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-xs text-zinc-400">
-            Tip: keep secrets out of Git. Add <span className="text-zinc-200">loginKey.json</span> and{" "}
-            <span className="text-zinc-200">.env.local</span> to <span className="text-zinc-200">.gitignore</span>.
+          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-400">
+            Tip: keep secrets out of Git. Add <span className="text-zinc-900 dark:text-zinc-200">loginKey.json</span> and{" "}
+            <span className="text-zinc-900 dark:text-zinc-200">.env.local</span> to <span className="text-zinc-900 dark:text-zinc-200">.gitignore</span>.
           </div>
         </div>
       </div>
 
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 lg:col-span-5">
-        <div className="text-sm font-semibold text-zinc-200">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40 lg:col-span-5">
+        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-200">
           How requests will work
         </div>
-        <div className="mt-2 text-sm text-zinc-400">
+        <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
           After you connect, call other endpoints with:
-          <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 font-mono text-xs text-zinc-200">
+          <div className="mt-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 font-mono text-xs text-zinc-800 shadow-sm dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-200">
             Authorization: Bearer &lt;token&gt;
           </div>
         </div>
