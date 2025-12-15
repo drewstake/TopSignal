@@ -529,12 +529,14 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private attachHubHandlers(connection: HubConnection) {
-    connection.on("GatewayQuote", (_ignored: unknown, payload: QuotePayload) => {
-      this.handleQuote(payload);
+    connection.on("GatewayQuote", (...args: unknown[]) => {
+      const payload = this.normalizePayload<QuotePayload>(args);
+      if (payload) this.handleQuote(payload);
     });
 
-    connection.on("GatewayDepth", (_ignored: unknown, payload: DepthPayload) => {
-      this.handleDepth(payload);
+    connection.on("GatewayDepth", (...args: unknown[]) => {
+      const payload = this.normalizePayload<DepthPayload>(args);
+      if (payload) this.handleDepth(payload);
     });
 
     connection.onreconnected(async () => {
@@ -559,6 +561,17 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
       this.connected = false;
       this.emitStatus();
     });
+  }
+
+  private normalizePayload<T extends { [k: string]: unknown }>(args: unknown[]) {
+    if (!args.length) return null;
+
+    // Events may emit as (contractId, payload) or just (payload). Accept either
+    // and fall back to the first argument when the second is missing.
+    const payload = (args[1] ?? args[0]) as T | undefined;
+    if (!payload || typeof payload !== "object") return null;
+
+    return payload;
   }
 
   private handleQuote(payload: QuotePayload) {
