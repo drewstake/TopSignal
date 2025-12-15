@@ -141,7 +141,9 @@ export function MarketDataTicker({ symbol = "ENQ", label, onQuote }: MarketDataT
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-emerald-200 sm:grid-cols-4">
+      <div
+        className="mt-3 grid grid-cols-2 gap-3 text-xs text-emerald-200 sm:grid-cols-[repeat(auto-fit,minmax(150px,1fr))]"
+      >
         <Stat label="Best Bid" value={bestBid} />
         <Stat label="Best Ask" value={bestAsk} />
         <Stat label="Spread" value={spread} />
@@ -256,7 +258,7 @@ function OrderBook({ depth }: { depth: DepthSnapshot }) {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-emerald-900/40 bg-emerald-900/30 p-3">
+    <div className="min-h-[80px] min-w-[150px] rounded-xl border border-emerald-900/40 bg-emerald-900/30 p-3">
       <div className="text-[11px] uppercase tracking-wide text-emerald-300/80">{label}</div>
       <div className="mt-1 text-lg font-semibold text-emerald-100">{value}</div>
     </div>
