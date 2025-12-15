@@ -322,6 +322,17 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private async resolveContractId(symbol: string, jwt: string) {
+    const symbolId = this.toSymbolId(symbol);
+    const attempts = [
+      { live: false, label: "paper" },
+      { live: true, label: "live" },
+    ];
+
+    for (const attempt of attempts) {
+      const available = await this.fetchAvailableContracts(symbolId, jwt, attempt.live);
+      if (available) return available;
+    }
+
     const results = await this.searchContracts(symbol, jwt);
     if (results.length === 0) {
       throw new Error(`No contracts returned for ${symbol}.`);
@@ -339,6 +350,28 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
 
     throw new Error(`${symbol} contract not found in search results.`);
+  }
+
+  private async fetchAvailableContracts(symbolId: string, jwt: string, live: boolean) {
+    const response = await fetch(`${REST_BASE}/api/Contract/available`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({ live }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Available contracts (${live ? "live" : "paper"}) failed with status ${response.status}`);
+    }
+
+    const body = await response.json();
+    const contracts: { id?: string | null; symbolId?: string | null; activeContract?: boolean }[] =
+      Array.isArray(body?.contracts) ? body.contracts : Array.isArray(body) ? body : [];
+
+    const match = contracts.find((c) => c.symbolId === symbolId && c.activeContract);
+    return match?.id ?? null;
   }
 
   private async searchContracts(symbol: string, jwt: string) {
@@ -388,6 +421,13 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
     }
 
     return null;
+  }
+
+  private toSymbolId(symbol: string) {
+    const upperSymbol = symbol.toUpperCase();
+    if (upperSymbol === "MNQ") return "F.US.MNQ";
+    if (upperSymbol === "MES") return "F.US.MES";
+    return `F.US.${upperSymbol}`;
   }
 
   private connectMarketHub(jwt: string) {
@@ -443,11 +483,25 @@ class MarketDataServiceImpl implements MarketDataCallbacks {
   }
 
   private handleQuote(payload: QuotePayload) {
-    this.quoteState.last = toNumber(payload.lastPrice);
-    this.quoteState.bestBid = toNumber(payload.bestBidPrice);
-    this.quoteState.bestAsk = toNumber(payload.bestAskPrice);
-    this.quoteState.volume = toNumber(payload.volume);
-    this.quoteState.ts = payload.timestamp || payload.time || new Date().toISOString();
+    if (payload.lastPrice !== undefined) {
+      this.quoteState.last = toNumber(payload.lastPrice);
+    }
+    if (payload.bestBidPrice !== undefined) {
+      this.quoteState.bestBid = toNumber(payload.bestBidPrice);
+    }
+    if (payload.bestAskPrice !== undefined) {
+      this.quoteState.bestAsk = toNumber(payload.bestAskPrice);
+    }
+    if (payload.volume !== undefined) {
+      this.quoteState.volume = toNumber(payload.volume);
+    }
+    if (payload.timestamp !== undefined || payload.time !== undefined) {
+      this.quoteState.ts = payload.timestamp || payload.time || null;
+    }
+
+    if (this.quoteState.ts === null) {
+      this.quoteState.ts = new Date().toISOString();
+    }
 
     this.emitQuoteThrottled();
   }
