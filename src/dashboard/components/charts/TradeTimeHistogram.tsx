@@ -18,8 +18,8 @@ export default function TradeTimeHistogram({ data }: Props) {
     const netPnl = payload.find((p: Payload<number, string>) => p.dataKey === "netPnl")?.value ?? 0;
 
     return (
-      <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-2 text-xs text-zinc-100 shadow-lg">
-        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-400">{label ?? ""} ET</div>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100 shadow-lg">
+        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-600 dark:text-zinc-400">{label ?? ""} ET</div>
         <div className="flex items-center justify-between gap-6">
           <div>Trades</div>
           <div className="font-semibold text-indigo-200">{Number(trades)}</div>
