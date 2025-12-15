@@ -166,12 +166,48 @@ function OrderBook({ depth }: { depth: DepthSnapshot }) {
 
   const hasData = bids.length > 0 || asks.length > 0;
 
+  const { bidPct, askPct, label } = useMemo(() => {
+    const topBids = depth.bids.slice(0, 10).reduce((sum, level) => sum + level.size, 0);
+    const topAsks = depth.asks.slice(0, 10).reduce((sum, level) => sum + level.size, 0);
+    const total = topBids + topAsks;
+
+    if (total <= 0) {
+      return { bidPct: null, askPct: null, label: "--" };
+    }
+
+    const bidPct = Math.round((topBids / total) * 100);
+    const askPct = 100 - bidPct;
+    const label = `Top-10 imbalance: ${bidPct}% bid / ${askPct}% ask`;
+
+    return { bidPct, askPct, label };
+  }, [depth]);
+
   return (
     <div className="mt-4 rounded-xl border border-emerald-900/60 bg-emerald-900/30 p-3">
       <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-emerald-300/90">
         <span>Order Book</span>
-        <span className="text-[11px] text-emerald-200/80">Top {maxRows} levels</span>
+        <div className="flex flex-col items-end gap-1 text-[11px] text-emerald-200/80 sm:flex-row sm:items-center sm:gap-2">
+          <span className="text-emerald-200/80">Top {maxRows} levels</span>
+          <span className="rounded-full border border-emerald-800/70 bg-emerald-900/50 px-2 py-0.5 font-medium text-emerald-100">
+            {label}
+          </span>
+        </div>
       </div>
+      {bidPct !== null && askPct !== null ? (
+        <div className="mb-3">
+          <div className="flex items-center justify-between text-[11px] text-emerald-200/80">
+            <span>Bid {bidPct}%</span>
+            <span>Ask {askPct}%</span>
+          </div>
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-emerald-900/60">
+            <div
+              className="h-full bg-emerald-500"
+              style={{ width: `${bidPct}%` }}
+              aria-label={`Bid depth ${bidPct}%`}
+            />
+          </div>
+        </div>
+      ) : null}
       {hasData ? (
         <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
           <div className="space-y-1">
