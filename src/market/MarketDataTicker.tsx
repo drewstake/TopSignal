@@ -40,7 +40,13 @@ const initialQuote: QuoteUpdate = {
 
 const initialDepth: DepthSnapshot = { bids: [], asks: [] };
 
-export function MarketDataTicker() {
+type MarketDataTickerProps = {
+  symbol?: string;
+  label?: string;
+  onQuote?: (quote: QuoteUpdate) => void;
+};
+
+export function MarketDataTicker({ symbol = "MNQ", label, onQuote }: MarketDataTickerProps) {
   const [quote, setQuote] = useState<QuoteUpdate>(initialQuote);
   const [status, setStatus] = useState<StatusState>({ mode: "connecting", message: null });
   const [depth, setDepth] = useState<DepthSnapshot>(initialDepth);
@@ -54,11 +60,17 @@ export function MarketDataTicker() {
   }, [status.mode]);
 
   useEffect(() => {
-    const md = MarketDataService.init({ symbol: "MNQ", levels: 10, throttleMs: 150 });
+    setQuote(initialQuote);
+    setDepth(initialDepth);
+    setStatus({ mode: "connecting", message: null });
+
+    const md = MarketDataService.init({ symbol, levels: 10, throttleMs: 150 });
+    serviceRef.current?.stop();
     serviceRef.current = md;
 
     const unsubscribeQuote = md.onQuote((next) => {
       setQuote(next);
+      onQuote?.(next);
     });
 
     const unsubscribeDepth = md.onDepth((snapshot) => {
@@ -90,7 +102,7 @@ export function MarketDataTicker() {
       void md.stop();
       serviceRef.current = null;
     };
-  }, []);
+  }, [symbol, onQuote]);
 
   const bestBid = formatNumber(quote.bestBid);
   const bestAsk = formatNumber(quote.bestAsk);
@@ -98,12 +110,13 @@ export function MarketDataTicker() {
   const spread = formatNumber(quote.spread ?? null);
   const volume = formatVolume(quote.volume);
   const timestamp = quote.ts ? new Date(quote.ts).toISOString() : "--";
+  const displaySymbol = (label || symbol).toUpperCase();
 
   return (
     <div className="rounded-2xl border border-emerald-900/50 bg-emerald-950/40 p-4 text-sm text-emerald-100">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-wide text-emerald-300">MNQ Market Data</div>
+          <div className="text-xs uppercase tracking-wide text-emerald-300">{displaySymbol} Market Data</div>
           <div className="mt-1 text-2xl font-semibold text-emerald-100">{last}</div>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-emerald-800 bg-emerald-900/50 px-3 py-1 text-xs font-semibold text-emerald-200">
