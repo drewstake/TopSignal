@@ -1,0 +1,32 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-slate-800;
+  }
+
+  body {
+    @apply min-h-screen bg-slate-950 text-slate-100 antialiased;
+    font-family: "Segoe UI", "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+
+  ::selection {
+    @apply bg-cyan-500/30 text-cyan-100;
+  }
+}
+
+@layer utilities {
+  .panel-bg {
+    background: linear-gradient(155deg, rgba(15, 23, 42, 0.84) 0%, rgba(2, 6, 23, 0.9) 100%);
+  }
+}
