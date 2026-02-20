@@ -124,3 +124,43 @@ create index if not exists idx_trades_symbol_opened_at
 -- ============================================
 create index if not exists idx_trades_is_rule_break
   on trades (is_rule_break);
+
+
+-- ============================================
+-- TABLE: projectx_trade_events
+-- Raw/normalized trade events from ProjectX.
+-- Deduplicated by account_id + order_id + trade_timestamp.
+-- ============================================
+create table if not exists projectx_trade_events (
+  id bigserial primary key,
+  account_id bigint not null,
+  contract_id text not null,
+  symbol text,
+  side text not null check (side in ('BUY','SELL','UNKNOWN')),
+  size numeric(18,6) not null,
+  price numeric(18,6) not null,
+  trade_timestamp timestamptz not null,
+  fees numeric(18,6) not null default 0,
+  pnl numeric(18,6),
+  order_id text not null,
+  source_trade_id text,
+  raw_payload jsonb,
+  created_at timestamptz not null default now(),
+  unique (account_id, order_id, trade_timestamp)
+);
+
+
+-- ============================================
+-- INDEX: idx_projectx_trade_events_account_ts
+-- Speeds account-specific recent-trades queries.
+-- ============================================
+create index if not exists idx_projectx_trade_events_account_ts
+  on projectx_trade_events (account_id, trade_timestamp desc);
+
+
+-- ============================================
+-- INDEX: idx_projectx_trade_events_symbol_ts
+-- Speeds symbol filtering for trade event review.
+-- ============================================
+create index if not exists idx_projectx_trade_events_symbol_ts
+  on projectx_trade_events (symbol, trade_timestamp desc);

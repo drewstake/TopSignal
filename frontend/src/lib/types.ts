@@ -74,3 +74,41 @@ export interface BehaviorMetrics {
   rule_break_pnl: number;
   rule_following_pnl: number;
 }
+
+export interface AccountInfo {
+  id: number;
+  name: string;
+  balance: number;
+  status: string;
+}
+
+export interface AccountTrade {
+  id: number;
+  account_id: number;
+  contract_id: string;
+  symbol: string;
+  side: string;
+  size: number;
+  price: number;
+  timestamp: string;
+  fees: number;
+  pnl: number | null;
+  order_id: string;
+}
+
+export interface AccountSummary {
+  realized_pnl: number;
+  gross_pnl: number;
+  fees: number;
+  net_pnl: number;
+  win_rate: number;
+  avg_win: number;
+  avg_loss: number;
+  max_drawdown: number;
+  trade_count: number;
+}
+
+export interface AccountTradeRefreshResult {
+  fetched_count: number;
+  inserted_count: number;
+}

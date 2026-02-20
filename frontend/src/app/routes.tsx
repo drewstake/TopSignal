@@ -1,6 +1,8 @@
 import { Navigate, createBrowserRouter } from "react-router-dom";
 import { AppShell } from "./AppShell";
+import { AccountsPage } from "../pages/accounts/AccountsPage";
 import { DashboardPage } from "../pages/dashboard/DashboardPage";
+import { TradesPage } from "../pages/trades/TradesPage";
 
 export const router = createBrowserRouter([
   {
@@ -10,6 +12,14 @@ export const router = createBrowserRouter([
       {
         index: true,
         element: <DashboardPage />,
+      },
+      {
+        path: "accounts",
+        element: <AccountsPage />,
+      },
+      {
+        path: "trades",
+        element: <TradesPage />,
       },
     ],
   },
