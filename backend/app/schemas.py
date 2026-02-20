@@ -15,6 +15,8 @@ class TradeOut(BaseModel):
     pnl: Optional[float] = None
     fees: Optional[float] = None
     notes: Optional[str] = None
+    is_rule_break: bool = False
+    rule_break_type: Optional[str] = None
 
     class Config:
         from_attributes = True

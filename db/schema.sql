@@ -87,6 +87,12 @@ create table if not exists trades (
   -- Notes you type in the dashboard (optional)
   notes text,
 
+  -- Flag for trades where you broke a rule (default false for older data)
+  is_rule_break boolean not null default false,
+
+  -- Optional free-text category for the rule break
+  rule_break_type text,
+
   -- When this row was created in your DB
   created_at timestamptz not null default now()
 );
@@ -110,3 +116,11 @@ create index if not exists idx_trades_account_opened_at
 -- ============================================
 create index if not exists idx_trades_symbol_opened_at
   on trades (symbol, opened_at desc);
+
+
+-- ============================================
+-- INDEX: idx_trades_is_rule_break
+-- Helps rule-break summaries and behavior metrics.
+-- ============================================
+create index if not exists idx_trades_is_rule_break
+  on trades (is_rule_break);

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, DateTime, Numeric, ForeignKey, CheckConstraint, func
+from sqlalchemy import Boolean, Column, BigInteger, Text, DateTime, Numeric, ForeignKey, CheckConstraint, func
 from .db import Base
 
 class Account(Base):
@@ -29,6 +29,8 @@ class Trade(Base):
     pnl = Column(Numeric(18, 2), nullable=True)
     fees = Column(Numeric(18, 2), nullable=True)
     notes = Column(Text, nullable=True)
+    is_rule_break = Column(Boolean, nullable=False, server_default="false")
+    rule_break_type = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
