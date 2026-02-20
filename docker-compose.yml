@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: topsignal_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: topsignal
+      POSTGRES_PASSWORD: topsignal_password
+      POSTGRES_DB: topsignal
+    ports:
+      - "5432:5432"
+    volumes:
+      - topsignal_pgdata:/var/lib/postgresql/data
+
+volumes:
+  topsignal_pgdata:
