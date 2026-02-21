@@ -2,6 +2,9 @@
 
 TopSignal is a local trading analytics dashboard for reviewing ProjectX/TopstepX accounts, syncing trade history into Postgres, and inspecting account-level performance from a React UI.
 
+<img width="689" height="1242" alt="image" src="https://github.com/user-attachments/assets/fe1faa81-ff4f-49f9-8857-77d1611de2f5" />
+
+
 This README is implementation-based and reflects the current code in this repo.
 
 ## 1. Project Overview
