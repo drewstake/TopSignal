@@ -12,6 +12,7 @@ interface MetricCardProps {
   info?: string;
   accentClassName?: string;
   className?: string;
+  contentClassName?: string;
   children?: ReactNode;
 }
 
@@ -23,6 +24,7 @@ export function MetricCard({
   info,
   accentClassName,
   className,
+  contentClassName,
   children,
 }: MetricCardProps) {
   return (
@@ -45,7 +47,7 @@ export function MetricCard({
       </div>
       <p className={cn("mt-2 text-[1.65rem] font-semibold leading-tight text-slate-100", primaryClassName)}>{primaryValue}</p>
       {subtitle ? <p className="mt-1 text-xs text-slate-400">{subtitle}</p> : null}
-      {children ? <div className="mt-3 space-y-2">{children}</div> : null}
+      {children ? <div className={cn("mt-3 space-y-2", contentClassName)}>{children}</div> : null}
     </Card>
   );
 }

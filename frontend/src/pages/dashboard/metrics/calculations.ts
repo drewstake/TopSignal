@@ -1,15 +1,14 @@
-import type { DashboardDerivedMetrics, DashboardMetricsInput, DirectionMetrics, MetricValue, StabilityMetrics } from "./types";
+import { computeBreakevenWinRate } from "../../../utils/metrics";
+import { buildDirectionSamples, computeDirectionExtras } from "../../../utils/metrics/directionExtras";
+import { computePayoffExtras } from "../../../utils/metrics/payoffExtras";
+import { computeSwingExtras } from "../../../utils/metrics/swingExtras";
+import type { DashboardDerivedMetrics, DashboardMetricsInput, DirectionMetrics, MetricValue, PayoffMetrics, StabilityMetrics } from "./types";
 
 const EPSILON = 1e-9;
 
-type InferredDirection = "LONG" | "SHORT";
-
-interface DirectionSample {
-  direction: InferredDirection;
-  pnl: number;
-}
-
 export function computeDashboardDerivedMetrics(input: DashboardMetricsInput): DashboardDerivedMetrics {
+  const breakevenWinRate = computeBreakevenWinRate(input.summary.avg_win, input.summary.avg_loss);
+
   return {
     winLossRatio: computeWinLossRatio(input.summary.avg_win, input.summary.avg_loss),
     winDurationOverLossDuration: computeWinDurationRatio(
@@ -17,7 +16,8 @@ export function computeDashboardDerivedMetrics(input: DashboardMetricsInput): Da
       input.summary.avg_loss_duration_minutes,
     ),
     direction: computeDirectionMetrics(input),
-    stability: computeStabilityMetrics(input.dailyPnlDays, input.summary.net_pnl),
+    stability: computeStabilityMetrics(input.dailyPnlDays, input.summary.net_pnl, input.summary.profit_per_day),
+    payoff: computePayoffMetrics(input, breakevenWinRate),
   };
 }
 
@@ -25,7 +25,7 @@ function computeWinLossRatio(avgWin: number, avgLoss: number): MetricValue {
   const lossMagnitude = Math.abs(avgLoss);
   // Win/Loss Ratio = Average Win / abs(Average Loss).
   if (lossMagnitude <= EPSILON) {
-    return missingMetric("Needs a non-zero average loss.");
+    return missingMetric("needs a non-zero average loss");
   }
   return metric(avgWin / lossMagnitude);
 }
@@ -33,7 +33,7 @@ function computeWinLossRatio(avgWin: number, avgLoss: number): MetricValue {
 function computeWinDurationRatio(avgWinMinutes: number, avgLossMinutes: number): MetricValue {
   // Win Duration / Loss Duration = Avg Win Duration / Avg Loss Duration.
   if (avgLossMinutes <= EPSILON) {
-    return missingMetric("Needs a non-zero average loss duration.");
+    return missingMetric("needs a non-zero average loss duration");
   }
   return metric(avgWinMinutes / avgLossMinutes);
 }
@@ -44,81 +44,81 @@ function computeDirectionMetrics(input: DashboardMetricsInput): DirectionMetrics
   }
 
   if (input.summary.trade_count === 0) {
-    return {
-      longTrades: metric(0),
-      shortTrades: metric(0),
-      longPercent: missingMetric("Needs at least one directional trade."),
-      longPnl: metric(0),
-      shortPnl: metric(0),
-      longWinRate: missingMetric("Needs at least one long trade."),
-      shortWinRate: missingMetric("Needs at least one short trade."),
-    };
+    return emptyDirectionMetrics("needs directional trades");
   }
 
   if (!input.hasCompleteDirectionalHistory) {
-    return missingDirectionMetrics("Needs complete closed-trade history for this range.");
+    return missingDirectionMetrics("needs complete closed-trade history for this range");
   }
 
-  const directionalSamples: DirectionSample[] = input.trades.flatMap((trade) => {
-    const direction = inferDirectionFromCloseSide(trade.side);
-    if (direction === null || trade.pnl === null) {
-      return [];
-    }
-    return [{ direction, pnl: trade.pnl }];
-  });
+  const directionalSamples = buildDirectionSamples(input.trades);
 
   if (directionalSamples.length === 0) {
-    return missingDirectionMetrics("Needs closed trades with BUY/SELL side values.");
+    return missingDirectionMetrics("needs closed trades with BUY/SELL or LONG/SHORT side values");
   }
 
-  const longSamples = directionalSamples.filter((sample) => sample.direction === "LONG");
-  const shortSamples = directionalSamples.filter((sample) => sample.direction === "SHORT");
+  const extras = computeDirectionExtras(directionalSamples, input.summary.net_pnl);
+  const longTrades = extras.long.trades.value;
+  const shortTrades = extras.short.trades.value;
+  const totalDirectionalTrades =
+    longTrades === null || shortTrades === null ? 0 : longTrades + shortTrades;
 
-  const longTrades = longSamples.length;
-  const shortTrades = shortSamples.length;
-  const totalDirectionalTrades = longTrades + shortTrades;
-
-  // Long % = Long Trades / Total Directional Trades.
-  const longPercent = totalDirectionalTrades > 0 ? (longTrades / totalDirectionalTrades) * 100 : null;
-  // Long/Short PnL = Sum of net PnL for trades in that direction.
-  const longPnl = sum(longSamples.map((sample) => sample.pnl));
-  const shortPnl = sum(shortSamples.map((sample) => sample.pnl));
-
-  const longWins = longSamples.filter((sample) => sample.pnl > 0).length;
-  const shortWins = shortSamples.filter((sample) => sample.pnl > 0).length;
-
-  // Optional directional win rates: wins / trades per direction.
-  const longWinRate =
-    longTrades > 0 ? metric((longWins / longTrades) * 100) : missingMetric("Needs at least one long trade.");
-  const shortWinRate =
-    shortTrades > 0 ? metric((shortWins / shortTrades) * 100) : missingMetric("Needs at least one short trade.");
+  const longPercent =
+    longTrades === null || totalDirectionalTrades <= 0
+      ? missingMetric("needs directional trades")
+      : metric((longTrades / totalDirectionalTrades) * 100);
 
   return {
-    longTrades: metric(longTrades),
-    shortTrades: metric(shortTrades),
-    longPercent: longPercent === null ? missingMetric("Needs directional trades.") : metric(longPercent),
-    longPnl: metric(longPnl),
-    shortPnl: metric(shortPnl),
-    longWinRate,
-    shortWinRate,
+    longTrades: extras.long.trades,
+    shortTrades: extras.short.trades,
+    longPercent,
+    longPnl: extras.long.pnl,
+    shortPnl: extras.short.pnl,
+    longWinRate: extras.long.winRate,
+    shortWinRate: extras.short.winRate,
+    longExpectancy: extras.long.expectancy,
+    shortExpectancy: extras.short.expectancy,
+    longProfitFactor: extras.long.profitFactor,
+    shortProfitFactor: extras.short.profitFactor,
+    longAvgWin: extras.long.avgWin,
+    longAvgLoss: extras.long.avgLoss,
+    shortAvgWin: extras.short.avgWin,
+    shortAvgLoss: extras.short.avgLoss,
+    longLargeLossRate: extras.long.largeLossRate,
+    shortLargeLossRate: extras.short.largeLossRate,
+    longPnlShare: extras.longPnlShare,
+    shortPnlShare: extras.shortPnlShare,
+    insight: extras.insight,
   };
 }
 
-function computeStabilityMetrics(dailyPnlDays: DashboardMetricsInput["dailyPnlDays"], netPnl: number): StabilityMetrics {
+function computeStabilityMetrics(
+  dailyPnlDays: DashboardMetricsInput["dailyPnlDays"],
+  netPnl: number,
+  profitPerDay: number,
+): StabilityMetrics {
   // Day-level stability metrics require a daily net PnL series that is already grouped
   // by trading day in the account timezone before it reaches this function.
   const dailyNetValues = dailyPnlDays
     .map((day) => day.net_pnl)
     .filter((value) => Number.isFinite(value));
+  const swingExtras = computeSwingExtras(dailyPnlDays, profitPerDay);
 
   if (dailyNetValues.length === 0) {
-    const reason = "Needs daily net PnL values grouped by trading day.";
+    const reason = "needs daily net PnL values grouped by trading day";
     return {
       bestDay: missingMetric(reason),
       worstDay: missingMetric(reason),
       dailyPnlVolatility: missingMetric(reason),
       bestDayPercentOfNet: missingMetric(reason),
       worstDayPercentOfNet: missingMetric(reason),
+      medianDayPnl: swingExtras.medianDayPnl,
+      avgGreenDay: swingExtras.avgGreenDay,
+      avgRedDay: swingExtras.avgRedDay,
+      redDayPercent: swingExtras.redDayPercent,
+      nukeRatio: swingExtras.nukeRatio,
+      greenRedDaySizeRatio: swingExtras.greenRedDaySizeRatio,
+      insight: swingExtras.insight,
     };
   }
 
@@ -128,13 +128,20 @@ function computeStabilityMetrics(dailyPnlDays: DashboardMetricsInput["dailyPnlDa
   const dailyPnlVolatility = populationStandardDeviation(dailyNetValues);
 
   if (Math.abs(netPnl) <= EPSILON) {
-    const denominatorReason = "Needs non-zero net PnL for percentage ratios.";
+    const denominatorReason = "needs non-zero net PnL for percentage ratios";
     return {
       bestDay: metric(bestDay),
       worstDay: metric(worstDay),
       dailyPnlVolatility: metric(dailyPnlVolatility),
       bestDayPercentOfNet: missingMetric(denominatorReason),
       worstDayPercentOfNet: missingMetric(denominatorReason),
+      medianDayPnl: swingExtras.medianDayPnl,
+      avgGreenDay: swingExtras.avgGreenDay,
+      avgRedDay: swingExtras.avgRedDay,
+      redDayPercent: swingExtras.redDayPercent,
+      nukeRatio: swingExtras.nukeRatio,
+      greenRedDaySizeRatio: swingExtras.greenRedDaySizeRatio,
+      insight: swingExtras.insight,
     };
   }
 
@@ -149,19 +156,45 @@ function computeStabilityMetrics(dailyPnlDays: DashboardMetricsInput["dailyPnlDa
     dailyPnlVolatility: metric(dailyPnlVolatility),
     bestDayPercentOfNet: metric(bestDayPercentOfNet),
     worstDayPercentOfNet: metric(worstDayPercentOfNet),
+    medianDayPnl: swingExtras.medianDayPnl,
+    avgGreenDay: swingExtras.avgGreenDay,
+    avgRedDay: swingExtras.avgRedDay,
+    redDayPercent: swingExtras.redDayPercent,
+    nukeRatio: swingExtras.nukeRatio,
+    greenRedDaySizeRatio: swingExtras.greenRedDaySizeRatio,
+    insight: swingExtras.insight,
   };
 }
 
-function inferDirectionFromCloseSide(side: string): InferredDirection | null {
-  const normalized = side.trim().toUpperCase();
-  // Closed rows use execution side; SELL generally closes longs, BUY closes shorts.
-  if (normalized === "SELL") {
-    return "LONG";
-  }
-  if (normalized === "BUY") {
-    return "SHORT";
-  }
-  return null;
+function computePayoffMetrics(input: DashboardMetricsInput, breakevenWinRate: MetricValue): PayoffMetrics {
+  const canUseTradeDistribution = !input.directionDataIssue && input.hasCompleteDirectionalHistory;
+  const tradeDistributionReason =
+    input.directionDataIssue ??
+    (input.hasCompleteDirectionalHistory ? "needs closed trade PnL data" : "needs complete closed-trade history for this range");
+
+  const payoffExtras = computePayoffExtras({
+    trades: input.trades,
+    avgWin: input.summary.avg_win,
+    avgLoss: input.summary.avg_loss,
+    currentWinRate: input.summary.win_rate,
+    breakevenWinRate: breakevenWinRate.value,
+    canUseTradeDistribution,
+    tradeDistributionReason,
+  });
+
+  return {
+    averageWin: metric(input.summary.avg_win),
+    averageLoss: metric(input.summary.avg_loss),
+    breakevenWinRate,
+    currentWinRate: metric(input.summary.win_rate),
+    wrCushion: payoffExtras.wrCushion,
+    largeLossThreshold: payoffExtras.largeLossThreshold,
+    largeLossRate: payoffExtras.largeLossRate,
+    p95Loss: payoffExtras.p95Loss,
+    capture: payoffExtras.capture,
+    containment: payoffExtras.containment,
+    insight: payoffExtras.insight,
+  };
 }
 
 function sum(values: number[]): number {
@@ -188,6 +221,31 @@ function missingMetric(missingReason: string): MetricValue {
   };
 }
 
+function emptyDirectionMetrics(reason: string): DirectionMetrics {
+  return {
+    longTrades: metric(0),
+    shortTrades: metric(0),
+    longPercent: missingMetric(reason),
+    longPnl: metric(0),
+    shortPnl: metric(0),
+    longWinRate: missingMetric(reason),
+    shortWinRate: missingMetric(reason),
+    longExpectancy: missingMetric(reason),
+    shortExpectancy: missingMetric(reason),
+    longProfitFactor: missingMetric(reason),
+    shortProfitFactor: missingMetric(reason),
+    longAvgWin: missingMetric(reason),
+    longAvgLoss: missingMetric(reason),
+    shortAvgWin: missingMetric(reason),
+    shortAvgLoss: missingMetric(reason),
+    longLargeLossRate: missingMetric(reason),
+    shortLargeLossRate: missingMetric(reason),
+    longPnlShare: missingMetric("needs non-zero net PnL"),
+    shortPnlShare: missingMetric("needs non-zero net PnL"),
+    insight: `N/A (${reason})`,
+  };
+}
+
 function missingDirectionMetrics(reason: string): DirectionMetrics {
   return {
     longTrades: missingMetric(reason),
@@ -197,5 +255,18 @@ function missingDirectionMetrics(reason: string): DirectionMetrics {
     shortPnl: missingMetric(reason),
     longWinRate: missingMetric(reason),
     shortWinRate: missingMetric(reason),
+    longExpectancy: missingMetric(reason),
+    shortExpectancy: missingMetric(reason),
+    longProfitFactor: missingMetric(reason),
+    shortProfitFactor: missingMetric(reason),
+    longAvgWin: missingMetric(reason),
+    longAvgLoss: missingMetric(reason),
+    shortAvgWin: missingMetric(reason),
+    shortAvgLoss: missingMetric(reason),
+    longLargeLossRate: missingMetric(reason),
+    shortLargeLossRate: missingMetric(reason),
+    longPnlShare: missingMetric(reason),
+    shortPnlShare: missingMetric(reason),
+    insight: `N/A (${reason})`,
   };
 }

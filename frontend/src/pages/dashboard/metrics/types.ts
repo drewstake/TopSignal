@@ -13,6 +13,19 @@ export interface DirectionMetrics {
   shortPnl: MetricValue;
   longWinRate: MetricValue;
   shortWinRate: MetricValue;
+  longExpectancy: MetricValue;
+  shortExpectancy: MetricValue;
+  longProfitFactor: MetricValue;
+  shortProfitFactor: MetricValue;
+  longAvgWin: MetricValue;
+  longAvgLoss: MetricValue;
+  shortAvgWin: MetricValue;
+  shortAvgLoss: MetricValue;
+  longLargeLossRate: MetricValue;
+  shortLargeLossRate: MetricValue;
+  longPnlShare: MetricValue;
+  shortPnlShare: MetricValue;
+  insight: string;
 }
 
 export interface StabilityMetrics {
@@ -21,6 +34,27 @@ export interface StabilityMetrics {
   dailyPnlVolatility: MetricValue;
   bestDayPercentOfNet: MetricValue;
   worstDayPercentOfNet: MetricValue;
+  medianDayPnl: MetricValue;
+  avgGreenDay: MetricValue;
+  avgRedDay: MetricValue;
+  redDayPercent: MetricValue;
+  nukeRatio: MetricValue;
+  greenRedDaySizeRatio: MetricValue;
+  insight: string;
+}
+
+export interface PayoffMetrics {
+  averageWin: MetricValue;
+  averageLoss: MetricValue;
+  breakevenWinRate: MetricValue;
+  currentWinRate: MetricValue;
+  wrCushion: MetricValue;
+  largeLossThreshold: MetricValue;
+  largeLossRate: MetricValue;
+  p95Loss: MetricValue;
+  capture: MetricValue;
+  containment: MetricValue;
+  insight: string;
 }
 
 export interface DashboardDerivedMetrics {
@@ -28,6 +62,7 @@ export interface DashboardDerivedMetrics {
   winDurationOverLossDuration: MetricValue;
   direction: DirectionMetrics;
   stability: StabilityMetrics;
+  payoff: PayoffMetrics;
 }
 
 export interface DashboardMetricsInput {

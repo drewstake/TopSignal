@@ -93,6 +93,8 @@ export interface AccountTrade {
   timestamp: string;
   fees: number;
   pnl: number | null;
+  mfe?: number | null;
+  mae?: number | null;
   order_id: string;
   source_trade_id: string | null;
 }
