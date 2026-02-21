@@ -777,57 +777,6 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Sustainability"
-              primaryValue={`${formatInteger(sustainability.score)}/100`}
-              subtitle="Composite score from Swing, Outliers, and Risk."
-              info="Sustainability combines swing ratio, outlier dependence, and drawdown efficiency into one score."
-              accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
-              className="self-start p-3 sm:col-span-2 md:col-span-6 md:row-start-4 md:col-start-1 lg:col-span-12 lg:col-start-1 lg:row-start-4"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
-                <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Swing</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.swingScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Outliers</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.outlierScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Risk</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.riskScore, 1)}/100</span>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
-                  <span>Score Gauge</span>
-                  <span className="font-semibold text-slate-300">{formatInteger(sustainability.score)}/100</span>
-                </div>
-                <div className="relative pt-4">
-                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
-                    <div
-                      aria-hidden="true"
-                      className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
-                      style={{ width: `${sustainability.score}%` }}
-                    />
-                  </div>
-                  {[40, 60, 80].map((tick) => (
-                    <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
-                      <span className="block text-[10px] text-slate-500">{tick}</span>
-                      <span className="mx-auto mt-0.5 block h-2 w-px bg-slate-500/70" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </MetricCard>
-
-            <MetricCard
               title="Risk"
               primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
               primaryClassName={metricPnlClass(maxDrawdownMetric)}
@@ -851,8 +800,8 @@ export function DashboardPage() {
               }
               info="Long % is long trades divided by total directional trades for this range."
               accentClassName="bg-gradient-to-r from-teal-300/65 via-cyan-200/20 to-transparent"
-              className="flex flex-col md:col-span-2 md:row-start-2 md:row-span-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2 lg:row-span-2"
-              contentClassName="mt-3 flex flex-1 flex-col gap-3 space-y-0"
+              className="flex flex-col md:col-span-2 md:row-start-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2"
+              contentClassName="mt-3 flex flex-col gap-3 space-y-0"
             >
               <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                 <DonutRing
@@ -1044,33 +993,6 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Hold Time"
-              primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
-              subtitle="Win duration divided by loss duration."
-              info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
-              accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3"
-            >
-              <SplitBar
-                leftLabel="Avg Win Duration"
-                rightLabel="Avg Loss Duration"
-                leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
-                rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
-                leftMagnitude={summary.avg_win_duration_minutes}
-                rightMagnitude={summary.avg_loss_duration_minutes}
-                leftBarClassName="bg-cyan-300/80"
-                rightBarClassName="bg-amber-300/75"
-              />
-              <MiniStatList
-                columns={1}
-                items={[
-                  { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
-                  { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
-                ]}
-              />
-            </MetricCard>
-
-            <MetricCard
               title="Activity"
               primaryValue={formatInteger(summary.trade_count)}
               subtitle="Closed trades in this range."
@@ -1110,6 +1032,84 @@ export function DashboardPage() {
               {activityMetrics.tradesPerActiveHour === null ? (
                 <p className="text-[10px] text-slate-500">Trades/active hour needs active hours tracking.</p>
               ) : null}
+            </MetricCard>
+
+            <MetricCard
+              title="Sustainability"
+              primaryValue={`${formatInteger(sustainability.score)}/100`}
+              subtitle="Composite score from Swing, Outliers, and Risk."
+              info="Sustainability combines swing ratio, outlier dependence, and drawdown efficiency into one score."
+              accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
+              className="self-start p-3 sm:col-span-2 md:col-span-2 md:row-start-3 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
+                <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Swing</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.swingScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Outliers</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.outlierScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Risk</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.riskScore, 1)}/100</span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                  <span>Score Gauge</span>
+                  <span className="font-semibold text-slate-300">{formatInteger(sustainability.score)}/100</span>
+                </div>
+                <div className="relative pt-4">
+                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                    <div
+                      aria-hidden="true"
+                      className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
+                      style={{ width: `${sustainability.score}%` }}
+                    />
+                  </div>
+                  {[40, 60, 80].map((tick) => (
+                    <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
+                      <span className="block text-[10px] text-slate-500">{tick}</span>
+                      <span className="mx-auto mt-0.5 block h-2 w-px bg-slate-500/70" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </MetricCard>
+
+            <MetricCard
+              title="Hold Time"
+              primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
+              subtitle="Win duration divided by loss duration."
+              info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
+              accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
+              className="md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3"
+            >
+              <SplitBar
+                leftLabel="Avg Win Duration"
+                rightLabel="Avg Loss Duration"
+                leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
+                rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
+                leftMagnitude={summary.avg_win_duration_minutes}
+                rightMagnitude={summary.avg_loss_duration_minutes}
+                leftBarClassName="bg-cyan-300/80"
+                rightBarClassName="bg-amber-300/75"
+              />
+              <MiniStatList
+                columns={1}
+                items={[
+                  { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
+                  { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
+                ]}
+              />
             </MetricCard>
           </>
         )}
