@@ -16,9 +16,12 @@ import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
+import { computeDashboardDerivedMetrics } from "./metrics/calculations";
+import type { MetricValue } from "./metrics/types";
 
 const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
+const METRIC_TRADE_LIMIT = 1000;
 type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
@@ -107,10 +110,6 @@ function formatPercent(value: number) {
   return `${value.toFixed(2)}%`;
 }
 
-function formatHours(value: number) {
-  return `${value.toFixed(2)}h`;
-}
-
 function formatNumber(value: number) {
   return value.toFixed(2);
 }
@@ -125,6 +124,31 @@ function formatMinutes(value: number) {
 
 function pnlClass(value: number) {
   return value >= 0 ? "text-emerald-300" : "text-rose-300";
+}
+
+function formatInteger(value: number) {
+  return Math.round(value).toLocaleString("en-US");
+}
+
+function formatMetricValue(metric: MetricValue, formatter: (value: number) => string) {
+  if (metric.value === null) {
+    return "N/A";
+  }
+  return formatter(metric.value);
+}
+
+function metricDetail(metric: MetricValue, availableText: string) {
+  if (metric.value === null) {
+    return metric.missingReason ?? "Needs required source data.";
+  }
+  return availableText;
+}
+
+function metricPnlClass(metric: MetricValue) {
+  if (metric.value === null) {
+    return undefined;
+  }
+  return pnlClass(metric.value);
 }
 
 function sideVariant(side: string) {
@@ -246,6 +270,13 @@ function getUtcDayRange(value: string) {
   };
 }
 
+interface SummaryCard {
+  label: string;
+  value: string;
+  detail: string;
+  className?: string;
+}
+
 export function DashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
@@ -265,6 +296,9 @@ export function DashboardPage() {
   const [trades, setTrades] = useState<AccountTrade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [tradesError, setTradesError] = useState<string | null>(null);
+  const [metricsTrades, setMetricsTrades] = useState<AccountTrade[]>([]);
+  const [metricsTradesLoading, setMetricsTradesLoading] = useState(false);
+  const [metricsTradesError, setMetricsTradesError] = useState<string | null>(null);
 
   const [pnlCalendarDays, setPnlCalendarDays] = useState<AccountPnlCalendarDay[]>([]);
   const [pnlCalendarLoading, setPnlCalendarLoading] = useState(false);
@@ -393,9 +427,36 @@ export function DashboardPage() {
     }
   }, [selectedAccountId, selectedTradeDate]);
 
+  const loadMetricsTrades = useCallback(async () => {
+    if (!selectedAccountId) {
+      setMetricsTrades([]);
+      setMetricsTradesError(null);
+      setMetricsTradesLoading(false);
+      return;
+    }
+
+    setMetricsTradesLoading(true);
+    setMetricsTradesError(null);
+
+    try {
+      const nextTrades = await accountsApi.getTrades(selectedAccountId, {
+        limit: METRIC_TRADE_LIMIT,
+        start: metricsRangeQuery.start,
+        end: metricsRangeQuery.end,
+      });
+      setMetricsTrades(nextTrades);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load directional trade history";
+      setMetricsTradesError(message);
+      setMetricsTrades([]);
+    } finally {
+      setMetricsTradesLoading(false);
+    }
+  }, [metricsRangeQuery.end, metricsRangeQuery.start, selectedAccountId]);
+
   const reloadDashboard = useCallback(async () => {
-    await Promise.all([loadSummaryAndCalendar(), loadTrades()]);
-  }, [loadSummaryAndCalendar, loadTrades]);
+    await Promise.all([loadSummaryAndCalendar(), loadTrades(), loadMetricsTrades()]);
+  }, [loadMetricsTrades, loadSummaryAndCalendar, loadTrades]);
 
   useEffect(() => {
     void loadSummaryAndCalendar();
@@ -404,6 +465,10 @@ export function DashboardPage() {
   useEffect(() => {
     void loadTrades();
   }, [loadTrades]);
+
+  useEffect(() => {
+    void loadMetricsTrades();
+  }, [loadMetricsTrades]);
 
   useEffect(() => {
     setSelectedTradeDate(null);
@@ -424,41 +489,184 @@ export function DashboardPage() {
     };
   }, [reloadDashboard, selectedAccountId]);
 
-  const summaryCards: Array<{ label: string; value: string; className?: string; detail?: string }> = [
-    { label: "Net PnL", value: formatPnl(summary.net_pnl), className: pnlClass(summary.net_pnl) },
-    { label: "Fees", value: currencyFormatter.format(summary.fees) },
-    { label: "Gross", value: formatPnl(summary.gross_pnl), className: pnlClass(summary.gross_pnl) },
-    {
-      label: "Win Rate",
-      value: formatPercent(summary.win_rate),
-      detail: `${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`,
-    },
-    { label: "Max Drawdown", value: formatPnl(summary.max_drawdown), className: pnlClass(summary.max_drawdown) },
-    { label: "Profit Factor", value: formatNumber(summary.profit_factor) },
-    { label: "Average Win", value: formatPnl(summary.avg_win), className: pnlClass(summary.avg_win) },
-    { label: "Average Loss", value: formatPnl(summary.avg_loss), className: pnlClass(summary.avg_loss) },
-    { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
-    { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
-    { label: "Trades", value: String(summary.trade_count) },
-    { label: "Half-turns", value: String(summary.half_turn_count) },
-    { label: "Executions", value: String(summary.execution_count) },
-    {
-      label: "Day Win Rate",
-      value: formatPercent(summary.day_win_rate),
-      detail: `${summary.green_days} green / ${summary.red_days} red / ${summary.flat_days} flat`,
-    },
-    { label: "Avg Trades / Day", value: formatNumber(summary.avg_trades_per_day) },
-    { label: "Active Days", value: String(summary.active_days) },
-    { label: "Expectancy / Trade", value: formatPnl(summary.expectancy_per_trade), className: pnlClass(summary.expectancy_per_trade) },
-    { label: "Tail Risk (Worst 5%)", value: formatPnl(summary.tail_risk_5pct), className: pnlClass(summary.tail_risk_5pct) },
-    { label: "Risk & Drawdown", value: formatPercent(summary.risk_drawdown_score) },
-    { label: "Average Drawdown", value: formatPnl(summary.average_drawdown), className: pnlClass(summary.average_drawdown) },
-    { label: "Max Drawdown Length", value: formatHours(summary.max_drawdown_length_hours) },
-    { label: "Recovery Time", value: formatHours(summary.recovery_time_hours) },
-    { label: "Average Recovery", value: formatHours(summary.average_recovery_length_hours) },
-    { label: "Efficiency / Hour", value: formatPnl(summary.efficiency_per_hour), className: pnlClass(summary.efficiency_per_hour) },
-    { label: "Profit / Day", value: formatPnl(summary.profit_per_day), className: pnlClass(summary.profit_per_day) },
-  ];
+  const directionDataIssue = metricsTradesLoading
+    ? "Loading directional trade history."
+    : metricsTradesError
+      ? "Needs directional trade history for this range."
+      : null;
+
+  const hasCompleteDirectionalHistory =
+    !metricsTradesLoading && !metricsTradesError && summary.trade_count <= metricsTrades.length;
+
+  const derivedMetrics = useMemo(
+    () =>
+      computeDashboardDerivedMetrics({
+        summary,
+        trades: metricsTrades,
+        dailyPnlDays: pnlCalendarDays,
+        hasCompleteDirectionalHistory,
+        directionDataIssue,
+      }),
+    [directionDataIssue, hasCompleteDirectionalHistory, metricsTrades, pnlCalendarDays, summary],
+  );
+
+  const summaryCards = useMemo<SummaryCard[]>(() => {
+    const netPnlMetric: MetricValue = { value: summary.net_pnl };
+    const profitPerDayMetric: MetricValue = { value: summary.profit_per_day };
+    const efficiencyPerHourMetric: MetricValue = { value: summary.efficiency_per_hour };
+    const expectancyPerTradeMetric: MetricValue = { value: summary.expectancy_per_trade };
+    const maxDrawdownMetric: MetricValue = { value: summary.max_drawdown };
+    const averageWinMetric: MetricValue = { value: summary.avg_win };
+    const averageLossMetric: MetricValue = { value: summary.avg_loss };
+
+    const longWinRateDetail =
+      derivedMetrics.direction.longWinRate.value === null
+        ? derivedMetrics.direction.longWinRate.missingReason ?? "Needs long trades."
+        : `Long win rate ${formatPercent(derivedMetrics.direction.longWinRate.value)}.`;
+    const shortWinRateDetail =
+      derivedMetrics.direction.shortWinRate.value === null
+        ? derivedMetrics.direction.shortWinRate.missingReason ?? "Needs short trades."
+        : `Short win rate ${formatPercent(derivedMetrics.direction.shortWinRate.value)}.`;
+
+    return [
+      {
+        label: "Net PnL",
+        value: formatMetricValue(netPnlMetric, formatPnl),
+        className: metricPnlClass(netPnlMetric),
+        detail: "Net realized PnL after fees.",
+      },
+      {
+        label: "Profit / Day",
+        value: formatMetricValue(profitPerDayMetric, formatPnl),
+        className: metricPnlClass(profitPerDayMetric),
+        detail: "Net PnL divided by active trading days.",
+      },
+      {
+        label: "Efficiency / Hour",
+        value: formatMetricValue(efficiencyPerHourMetric, formatPnl),
+        className: metricPnlClass(efficiencyPerHourMetric),
+        detail: "Existing tracked PnL per active hour.",
+      },
+      {
+        label: "Expectancy / Trade",
+        value: formatMetricValue(expectancyPerTradeMetric, formatPnl),
+        className: metricPnlClass(expectancyPerTradeMetric),
+        detail: "Average net outcome per closed trade.",
+      },
+      {
+        label: "Max Drawdown",
+        value: formatMetricValue(maxDrawdownMetric, formatPnl),
+        className: metricPnlClass(maxDrawdownMetric),
+        detail: "Largest peak-to-trough equity drop.",
+      },
+      {
+        label: "Profit Factor",
+        value: formatNumber(summary.profit_factor),
+        detail: "Gross wins divided by gross loss magnitude.",
+      },
+      {
+        label: "Win Rate",
+        value: formatPercent(summary.win_rate),
+        detail: `Winning closed trades. ${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE.`,
+      },
+      {
+        label: "Average Win",
+        value: formatMetricValue(averageWinMetric, formatPnl),
+        className: metricPnlClass(averageWinMetric),
+        detail: "Mean net PnL of winning trades.",
+      },
+      {
+        label: "Average Loss",
+        value: formatMetricValue(averageLossMetric, formatPnl),
+        className: metricPnlClass(averageLossMetric),
+        detail: "Mean net PnL of losing trades.",
+      },
+      {
+        label: "Win/Loss Ratio",
+        value: formatMetricValue(derivedMetrics.winLossRatio, formatNumber),
+        detail: metricDetail(derivedMetrics.winLossRatio, "Average win divided by average loss magnitude."),
+      },
+      {
+        label: "Long Trades",
+        value: formatMetricValue(derivedMetrics.direction.longTrades, formatInteger),
+        detail: metricDetail(derivedMetrics.direction.longTrades, `Closed long trades. ${longWinRateDetail}`),
+      },
+      {
+        label: "Short Trades",
+        value: formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger),
+        detail: metricDetail(derivedMetrics.direction.shortTrades, `Closed short trades. ${shortWinRateDetail}`),
+      },
+      {
+        label: "Long %",
+        value: formatMetricValue(derivedMetrics.direction.longPercent, formatPercent),
+        detail: metricDetail(derivedMetrics.direction.longPercent, "Long trades as a share of directional trades."),
+      },
+      {
+        label: "Long PnL",
+        value: formatMetricValue(derivedMetrics.direction.longPnl, formatPnl),
+        className: metricPnlClass(derivedMetrics.direction.longPnl),
+        detail: metricDetail(derivedMetrics.direction.longPnl, "Net PnL summed across long trades."),
+      },
+      {
+        label: "Short PnL",
+        value: formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl),
+        className: metricPnlClass(derivedMetrics.direction.shortPnl),
+        detail: metricDetail(derivedMetrics.direction.shortPnl, "Net PnL summed across short trades."),
+      },
+      {
+        label: "Avg Win Duration",
+        value: formatMinutes(summary.avg_win_duration_minutes),
+        detail: "Mean hold time for winning trades.",
+      },
+      {
+        label: "Avg Loss Duration",
+        value: formatMinutes(summary.avg_loss_duration_minutes),
+        detail: "Mean hold time for losing trades.",
+      },
+      {
+        label: "Win Duration \u00F7 Loss Duration",
+        value: formatMetricValue(derivedMetrics.winDurationOverLossDuration, formatNumber),
+        detail: metricDetail(derivedMetrics.winDurationOverLossDuration, "Average win hold time divided by average loss hold time."),
+      },
+      {
+        label: "Avg Trades / Day",
+        value: formatNumber(summary.avg_trades_per_day),
+        detail: `Closed trades per active day (${summary.active_days} active days).`,
+      },
+      {
+        label: "Trades",
+        value: formatInteger(summary.trade_count),
+        detail: "Closed trade count in the selected range.",
+      },
+      {
+        label: "Best Day",
+        value: formatMetricValue(derivedMetrics.stability.bestDay, formatPnl),
+        className: metricPnlClass(derivedMetrics.stability.bestDay),
+        detail: metricDetail(derivedMetrics.stability.bestDay, "Highest daily net PnL."),
+      },
+      {
+        label: "Worst Day",
+        value: formatMetricValue(derivedMetrics.stability.worstDay, formatPnl),
+        className: metricPnlClass(derivedMetrics.stability.worstDay),
+        detail: metricDetail(derivedMetrics.stability.worstDay, "Lowest daily net PnL."),
+      },
+      {
+        label: "Daily PnL Volatility ($)",
+        value: formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, (value) => currencyFormatter.format(value)),
+        detail: metricDetail(derivedMetrics.stability.dailyPnlVolatility, "Standard deviation of daily net PnL."),
+      },
+      {
+        label: "Best Day % of Net PnL",
+        value: formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent),
+        detail: metricDetail(derivedMetrics.stability.bestDayPercentOfNet, "Best day divided by net PnL."),
+      },
+      {
+        label: "Worst Day % of Net PnL",
+        value: formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent),
+        detail: metricDetail(derivedMetrics.stability.worstDayPercentOfNet, "Abs(worst day) divided by net PnL."),
+      },
+    ];
+  }, [derivedMetrics, summary]);
 
   return (
     <div className="space-y-6 pb-10">
@@ -520,15 +728,15 @@ export function DashboardPage() {
             </Card>
           ))
         ) : summaryError ? (
-          <Card className="sm:col-span-2 xl:col-span-6 p-4">
+          <Card className="sm:col-span-2 xl:col-span-5 p-4">
             <p className="text-sm text-rose-300">{summaryError}</p>
           </Card>
         ) : (
           summaryCards.map((metric) => (
             <Card key={metric.label} className="p-4">
               <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{metric.label}</p>
-              <p className={`mt-2 text-2xl font-semibold text-slate-100 ${metric.className}`}>{metric.value}</p>
-              {metric.detail ? <p className="mt-1 text-xs text-slate-400">{metric.detail}</p> : null}
+              <p className={`mt-2 text-2xl font-semibold text-slate-100 ${metric.className ?? ""}`}>{metric.value}</p>
+              <p className="mt-1 text-xs text-slate-400">{metric.detail}</p>
             </Card>
           ))
         )}
