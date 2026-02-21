@@ -20,6 +20,7 @@ export function computeDrawdownPercentOfNetPnl(maxDrawdown: number, netPnl: numb
   if (Math.abs(netPnl) <= EPSILON) {
     return missingMetric("Needs non-zero net PnL.");
   }
+  // Drawdown % of Net PnL = abs(Max Drawdown) / abs(Net PnL).
   const percent = (Math.abs(maxDrawdown) / Math.abs(netPnl)) * 100;
   return metric(percent);
 }
@@ -33,6 +34,7 @@ export function computeBreakevenWinRate(avgWin: number, avgLoss: number): Derive
     return missingMetric("Needs non-zero average win and average loss.");
   }
 
+  // Breakeven Win Rate = abs(avgLoss) / (avgWin + abs(avgLoss)).
   return metric((lossMagnitude / denominator) * 100);
 }
 
@@ -53,6 +55,7 @@ export function computeDirectionPercentages(longTrades: number, shortTrades: num
     };
   }
 
+  // Long % = longTrades / (longTrades + shortTrades).
   const longPercent = (safeLongTrades / total) * 100;
   return {
     longPercent: metric(longPercent),
@@ -65,8 +68,7 @@ export function computeStabilityScoreFromWorstDayPercent(worstDayPercentOfNet: n
     return missingMetric("Needs worst day % of net PnL.");
   }
 
-  // 100 = most stable, 0 = highly unstable.
+  // Stability = clamp(100 - WorstDayPercentOfNet, 0, 100).
   const score = Math.max(0, Math.min(100, 100 - Math.abs(worstDayPercentOfNet)));
   return metric(score);
 }
-

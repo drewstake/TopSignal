@@ -2,55 +2,50 @@ import type { ReactNode } from "react";
 
 import { Card } from "../ui/Card";
 import { cn } from "../ui/cn";
-import { Tooltip } from "./Tooltip";
+import { InfoPopover } from "./InfoPopover";
 
 interface MetricCardProps {
   title: string;
   primaryValue: string;
   primaryClassName?: string;
-  tooltip?: ReactNode;
-  chips?: ReactNode;
-  subValue?: ReactNode;
-  hoverDetails?: ReactNode;
+  subtitle?: ReactNode;
+  info?: string;
+  accentClassName?: string;
   className?: string;
+  children?: ReactNode;
 }
 
 export function MetricCard({
   title,
   primaryValue,
   primaryClassName,
-  tooltip,
-  chips,
-  subValue,
-  hoverDetails,
+  subtitle,
+  info,
+  accentClassName,
   className,
+  children,
 }: MetricCardProps) {
   return (
     <Card
       className={cn(
-        "group h-full min-h-[210px] border-slate-800/90 bg-slate-900/75 p-4 transition duration-300 hover:-translate-y-0.5 hover:border-cyan-300/40 hover:shadow-[0_12px_28px_-18px_rgba(56,189,248,0.55)]",
+        "group relative h-full overflow-hidden border-slate-800/90 bg-slate-900/75 p-4 transition duration-300 hover:-translate-y-0.5 hover:border-cyan-300/40 hover:shadow-[0_14px_36px_-22px_rgba(56,189,248,0.62)]",
         className,
       )}
     >
+      <div
+        aria-hidden="true"
+        className={cn(
+          "pointer-events-none absolute inset-x-3 top-0 h-[2px] rounded-full bg-gradient-to-r from-cyan-300/55 via-cyan-200/15 to-transparent",
+          accentClassName,
+        )}
+      />
       <div className="flex items-start justify-between gap-2">
         <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{title}</p>
-        {tooltip ? (
-          <Tooltip content={tooltip}>
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/75 text-[10px] font-semibold text-slate-400 transition group-hover:border-cyan-300/60 group-hover:text-cyan-200">
-              i
-            </span>
-          </Tooltip>
-        ) : null}
+        {info ? <InfoPopover content={info} /> : null}
       </div>
       <p className={cn("mt-2 text-[1.65rem] font-semibold leading-tight text-slate-100", primaryClassName)}>{primaryValue}</p>
-      {chips}
-      {subValue ? <div className="mt-3 text-xs text-slate-300">{subValue}</div> : null}
-      {hoverDetails ? (
-        <div className="mt-3 translate-y-1 rounded-lg border border-slate-800/70 bg-slate-950/35 px-2.5 py-2 text-xs text-slate-400 opacity-0 transition duration-200 group-hover:translate-y-0 group-hover:opacity-100">
-          {hoverDetails}
-        </div>
-      ) : null}
+      {subtitle ? <p className="mt-1 text-xs text-slate-400">{subtitle}</p> : null}
+      {children ? <div className="mt-3 space-y-2">{children}</div> : null}
     </Card>
   );
 }
-

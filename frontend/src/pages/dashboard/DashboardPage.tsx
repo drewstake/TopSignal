@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { ChipRow } from "../../components/metrics/ChipRow";
-import { DirectionDonut } from "../../components/metrics/DirectionDonut";
+import { Chip } from "../../components/metrics/Chip";
+import { DonutRing } from "../../components/metrics/DonutRing";
+import { GaugeBar } from "../../components/metrics/GaugeBar";
+import { MasonryGrid } from "../../components/metrics/MasonryGrid";
 import { MetricCard } from "../../components/metrics/MetricCard";
+import { MiniStatList } from "../../components/metrics/MiniStatList";
 import { SplitBar } from "../../components/metrics/SplitBar";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -98,6 +101,20 @@ function formatFee(value: number) {
   return formatCurrency(-Math.abs(value));
 }
 
+function formatDurationCompact(minutes: number) {
+  const safeMinutes = Number.isFinite(minutes) ? Math.max(0, minutes) : 0;
+  const totalSeconds = Math.round(safeMinutes * 60);
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutesRemainder = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutesRemainder}m`;
+  }
+  return `${minutesRemainder}m ${seconds}s`;
+}
+
 function pnlClass(value: number) {
   return value >= 0 ? "text-emerald-300" : "text-rose-300";
 }
@@ -113,13 +130,6 @@ function formatMetricValue(metric: MetricValue, formatter: (value: number) => st
     return "N/A";
   }
   return formatter(metric.value);
-}
-
-function metricDetail(metric: MetricValue, availableText: string) {
-  if (metric.value === null) {
-    return metric.missingReason ?? "Needs required source data.";
-  }
-  return availableText;
 }
 
 function metricPnlClass(metric: MetricValue) {
@@ -523,20 +533,6 @@ export function DashboardPage() {
 
   const directionPrimaryValue =
     directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
-  const directionBiasText =
-    directionSplit.longPercent.value === null || directionSplit.shortPercent.value === null
-      ? directionSplit.longPercent.missingReason ?? "Needs directional trade data."
-      : `Bias: Long ${formatPercent(directionSplit.longPercent.value, 0)}, Short ${formatPercent(directionSplit.shortPercent.value, 0)}`;
-
-  const longDirectionTooltip =
-    derivedMetrics.direction.longTrades.value === null
-      ? derivedMetrics.direction.longTrades.missingReason ?? "Needs long trades."
-      : `Long ${formatInteger(derivedMetrics.direction.longTrades.value)} trades | Win ${formatMetricValue(derivedMetrics.direction.longWinRate, formatPercent)} | PnL ${formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)}`;
-
-  const shortDirectionTooltip =
-    derivedMetrics.direction.shortTrades.value === null
-      ? derivedMetrics.direction.shortTrades.missingReason ?? "Needs short trades."
-      : `Short ${formatInteger(derivedMetrics.direction.shortTrades.value)} trades | Win ${formatMetricValue(derivedMetrics.direction.shortWinRate, formatPercent)} | PnL ${formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)}`;
 
   return (
     <div className="space-y-6 pb-10">
@@ -589,13 +585,18 @@ export function DashboardPage() {
         </CardHeader>
       </Card>
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
+      <MasonryGrid>
         {summaryLoading ? (
           Array.from({ length: 8 }).map((_, index) => (
-            <MetricCard key={`summary-loading-${index}`} title="Loading" primaryValue="..." className="animate-pulse" />
+            <MetricCard
+              key={`summary-loading-${index}`}
+              title="Loading"
+              primaryValue="..."
+              className="animate-pulse sm:col-span-2 md:col-span-3 lg:col-span-4"
+            />
           ))
         ) : summaryError ? (
-          <Card className="col-span-2 p-4 md:col-span-3 lg:col-span-4">
+          <Card className="col-span-full p-4">
             <p className="text-sm text-rose-300">{summaryError}</p>
           </Card>
         ) : (
@@ -604,185 +605,206 @@ export function DashboardPage() {
               title="Performance"
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
               primaryClassName={metricPnlClass(netPnlMetric)}
-              tooltip="Net PnL with daily and hourly production rates."
-              chips={
-                <ChipRow
-                  chips={[
-                    {
-                      label: "Profit/Day",
-                      value: formatMetricValue(profitPerDayMetric, formatPnl),
-                      className: pnlChipClass(summary.profit_per_day),
-                      tooltip: "Net PnL divided by active days.",
-                    },
-                    {
-                      label: "Efficiency/Hour",
-                      value: formatMetricValue(efficiencyPerHourMetric, formatPnl),
-                      className: pnlChipClass(summary.efficiency_per_hour),
-                      tooltip: "Tracked net PnL per active hour.",
-                    },
-                  ]}
+              subtitle="Net realized PnL after fees."
+              info="Realized net profit and loss after fees in the selected range."
+              accentClassName="bg-gradient-to-r from-cyan-300/70 via-sky-200/25 to-transparent"
+              className="sm:col-span-2 md:col-span-4 lg:col-span-5"
+            >
+              <div className="flex flex-wrap gap-2">
+                <Chip
+                  label="Profit/Day"
+                  value={formatMetricValue(profitPerDayMetric, formatPnl)}
+                  className={pnlChipClass(summary.profit_per_day)}
                 />
-              }
-              hoverDetails="Net realized PnL after fees for the selected range."
-            />
-
-            <MetricCard
-              title="Risk"
-              primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
-              primaryClassName={metricPnlClass(maxDrawdownMetric)}
-              tooltip="Largest peak-to-trough equity drop."
-              hoverDetails={
-                drawdownPercentOfNet.value === null
-                  ? drawdownPercentOfNet.missingReason ?? "Needs non-zero net PnL."
-                  : `Drawdown is ${formatPercent(drawdownPercentOfNet.value)} of net PnL.`
-              }
-            />
+                <Chip
+                  label="Efficiency/Hour"
+                  value={formatMetricValue(efficiencyPerHourMetric, formatPnl)}
+                  className={pnlChipClass(summary.efficiency_per_hour)}
+                />
+              </div>
+            </MetricCard>
 
             <MetricCard
               title="Edge"
               primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
               primaryClassName={metricPnlClass(expectancyPerTradeMetric)}
-              tooltip="Average expected net result per trade."
-              chips={
-                <ChipRow
-                  chips={[
-                    { label: "PF", value: formatNumber(summary.profit_factor), tooltip: "Profit factor." },
-                    { label: "Win Rate", value: formatPercent(summary.win_rate), tooltip: "Winning closed trades." },
-                    {
-                      label: "W/L Ratio",
-                      value: formatMetricValue(derivedMetrics.winLossRatio, (value) => formatNumber(value)),
-                      tooltip: metricDetail(derivedMetrics.winLossRatio, "Average win / abs(average loss)."),
-                    },
-                  ]}
-                />
-              }
-              hoverDetails={`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}
-            />
+              subtitle="Expected net result per trade."
+              info="Expectancy combines your win rate and payoff profile into average dollars per trade."
+              accentClassName="bg-gradient-to-r from-sky-300/65 via-cyan-200/20 to-transparent"
+              className="sm:col-span-2 md:col-span-4 lg:col-span-5"
+            >
+              <div className="flex flex-wrap gap-2">
+                <Chip label="PF" value={formatNumber(summary.profit_factor)} />
+                <Chip label="Win Rate" value={formatPercent(summary.win_rate)} />
+                <Chip label="W/L Ratio" value={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)} />
+              </div>
+              <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
+                {`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}
+              </p>
+            </MetricCard>
 
             <MetricCard
-              title="Payoff"
-              primaryValue={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
-              tooltip="Average win versus average loss profile."
-              subValue={
-                <SplitBar
-                  leftLabel="Avg Win"
-                  rightLabel="Avg Loss"
-                  leftValue={formatMetricValue(averageWinMetric, formatPnl)}
-                  rightValue={formatMetricValue(averageLossMetric, formatPnl)}
-                  leftMagnitude={Math.abs(summary.avg_win)}
-                  rightMagnitude={Math.abs(summary.avg_loss)}
-                  badge={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
-                />
-              }
-              hoverDetails={
-                payoffBreakevenWinRate.value === null
-                  ? payoffBreakevenWinRate.missingReason ?? "Needs non-zero average win and loss."
-                  : `Breakeven win rate ${formatPercent(payoffBreakevenWinRate.value)} vs current ${formatPercent(summary.win_rate)}.`
-              }
-            />
-
-            <MetricCard
-              title="Direction"
-              primaryValue={directionPrimaryValue}
-              tooltip={metricDetail(derivedMetrics.direction.longPercent, "Long vs short directional mix.")}
-              subValue={
-                <DirectionDonut
-                  longPercent={directionSplit.longPercent.value}
-                  shortPercent={directionSplit.shortPercent.value}
-                  centerText={directionPrimaryValue}
-                  biasText={directionBiasText}
-                  longDetails={longDirectionTooltip}
-                  shortDetails={shortDirectionTooltip}
-                  missingReason={directionSplit.longPercent.missingReason}
-                />
-              }
-              hoverDetails="Hover long/short donut segments for count, win rate, and directional PnL."
-            />
-
-            <MetricCard
-              title="Hold Time"
-              primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
-              tooltip={metricDetail(derivedMetrics.winDurationOverLossDuration, "Average win hold / average loss hold.")}
-              subValue={
-                <SplitBar
-                  leftLabel="Avg Win Duration"
-                  rightLabel="Avg Loss Duration"
-                  leftValue={formatMinutes(summary.avg_win_duration_minutes)}
-                  rightValue={formatMinutes(summary.avg_loss_duration_minutes)}
-                  leftMagnitude={summary.avg_win_duration_minutes}
-                  rightMagnitude={summary.avg_loss_duration_minutes}
-                  badge={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
-                />
-              }
-              hoverDetails={`Win avg ${formatMinutes(summary.avg_win_duration_minutes)} | Loss avg ${formatMinutes(summary.avg_loss_duration_minutes)}`}
-            />
+              title="Risk"
+              primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
+              primaryClassName={metricPnlClass(maxDrawdownMetric)}
+              subtitle="Peak-to-trough drop."
+              info="Maximum realized drawdown over the selected period."
+              accentClassName="bg-gradient-to-r from-rose-300/70 via-amber-200/20 to-transparent"
+              className="md:col-span-2 lg:col-span-3"
+            >
+              <div className="flex flex-wrap gap-2">
+                <Chip label="DD % of Net PnL" value={formatMetricValue(drawdownPercentOfNet, formatPercent)} />
+              </div>
+            </MetricCard>
 
             <MetricCard
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
-              tooltip={metricDetail(derivedMetrics.stability.dailyPnlVolatility, "Population standard deviation of daily net PnL.")}
-              chips={
-                <ChipRow
-                  chips={[
-                    {
-                      label: "Best Day",
-                      value: formatMetricValue(derivedMetrics.stability.bestDay, formatPnl),
-                      className:
-                        derivedMetrics.stability.bestDay.value === null
-                          ? undefined
-                          : pnlChipClass(derivedMetrics.stability.bestDay.value),
-                    },
-                    {
-                      label: "Worst Day",
-                      value: formatMetricValue(derivedMetrics.stability.worstDay, formatPnl),
-                      className:
-                        derivedMetrics.stability.worstDay.value === null
-                          ? undefined
-                          : pnlChipClass(derivedMetrics.stability.worstDay.value),
-                    },
-                  ]}
-                />
-              }
-              subValue={
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>Best %: {formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent)}</span>
-                    <span>Worst %: {formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent)}</span>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                      <span>Stability</span>
-                      <span>{formatMetricValue(stabilityScore, (value) => formatNumber(value, 0))}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
-                      <div
-                        className="h-full bg-cyan-300/70 transition-all duration-500"
-                        style={{ width: `${stabilityScore.value === null ? 0 : stabilityScore.value}%` }}
-                      />
-                    </div>
-                  </div>
+              subtitle="Daily PnL volatility ($)."
+              info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
+              accentClassName="bg-gradient-to-r from-indigo-300/65 via-cyan-200/20 to-transparent"
+              className="sm:col-span-2 md:col-span-3 md:row-span-2 lg:col-span-4 lg:row-span-2"
+            >
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px]">
+                  <span className="text-emerald-100">Best Day</span>
+                  <span className="font-semibold text-emerald-50">{formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)}</span>
+                  <span className="text-emerald-200/85">{formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent)}</span>
                 </div>
+                <div className="flex items-center justify-between gap-2 rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[11px]">
+                  <span className="text-rose-100">Worst Day</span>
+                  <span className="font-semibold text-rose-50">{formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)}</span>
+                  <span className="text-rose-200/85">{formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent)}</span>
+                </div>
+              </div>
+              <GaugeBar
+                label="Stability"
+                value={stabilityScore.value}
+                valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
+              />
+            </MetricCard>
+
+            <MetricCard
+              title="Direction"
+              primaryValue={directionPrimaryValue}
+              subtitle={
+                directionSplit.longPercent.value === null
+                  ? directionSplit.longPercent.missingReason ?? "Needs directional trade history."
+                  : "Long vs short trade mix."
               }
-              hoverDetails="Stability gauge uses worst-day % of net PnL: smaller drawdowns score higher."
-            />
+              info="Long % is long trades divided by total directional trades for this range."
+              accentClassName="bg-gradient-to-r from-teal-300/65 via-cyan-200/20 to-transparent"
+              className="md:col-span-3 lg:col-span-4"
+            >
+              <DonutRing
+                segments={[
+                  {
+                    label: "Long",
+                    value: directionSplit.longPercent.value,
+                    valueLabel: formatMetricValue(directionSplit.longPercent, (value) => formatPercent(value, 0)),
+                    color: "rgba(16,185,129,0.9)",
+                  },
+                  {
+                    label: "Short",
+                    value: directionSplit.shortPercent.value,
+                    valueLabel: formatMetricValue(directionSplit.shortPercent, (value) => formatPercent(value, 0)),
+                    color: "rgba(248,113,113,0.92)",
+                  },
+                ]}
+                centerLabel={directionPrimaryValue}
+                centerSubLabel="Direction"
+              />
+              <MiniStatList
+                items={[
+                  { label: "Long Trades", value: formatMetricValue(derivedMetrics.direction.longTrades, formatInteger) },
+                  { label: "Short Trades", value: formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger) },
+                  { label: "Long WR", value: formatMetricValue(derivedMetrics.direction.longWinRate, formatPercent) },
+                  { label: "Short WR", value: formatMetricValue(derivedMetrics.direction.shortWinRate, formatPercent) },
+                ]}
+              />
+              <SplitBar
+                leftLabel="Long PnL"
+                rightLabel="Short PnL"
+                leftValue={formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)}
+                rightValue={formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)}
+                leftMagnitude={Math.abs(derivedMetrics.direction.longPnl.value ?? 0)}
+                rightMagnitude={Math.abs(derivedMetrics.direction.shortPnl.value ?? 0)}
+                leftBarClassName="bg-emerald-400/80"
+                rightBarClassName="bg-rose-400/75"
+              />
+            </MetricCard>
+
+            <MetricCard
+              title="Payoff"
+              primaryValue={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+              subtitle="Average win versus average loss."
+              info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
+              accentClassName="bg-gradient-to-r from-emerald-300/65 via-rose-200/20 to-transparent"
+              className="md:col-span-3 lg:col-span-4"
+            >
+              <SplitBar
+                leftLabel="Avg Win"
+                rightLabel="Avg Loss"
+                leftValue={formatMetricValue(averageWinMetric, formatPnl)}
+                rightValue={formatMetricValue(averageLossMetric, formatPnl)}
+                leftMagnitude={Math.abs(summary.avg_win)}
+                rightMagnitude={Math.abs(summary.avg_loss)}
+                leftBarClassName="bg-emerald-400/80"
+                rightBarClassName="bg-rose-400/75"
+              />
+              <MiniStatList
+                items={[
+                  { label: "Avg Win", value: formatMetricValue(averageWinMetric, formatPnl), valueClassName: pnlClass(summary.avg_win) },
+                  { label: "Avg Loss", value: formatMetricValue(averageLossMetric, formatPnl), valueClassName: pnlClass(summary.avg_loss) },
+                  { label: "Breakeven WR", value: formatMetricValue(payoffBreakevenWinRate, formatPercent) },
+                  { label: "Current WR", value: formatPercent(summary.win_rate) },
+                ]}
+              />
+            </MetricCard>
+
+            <MetricCard
+              title="Hold Time"
+              primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
+              subtitle="Win duration divided by loss duration."
+              info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
+              accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
+              className="md:col-span-3 lg:col-span-4"
+            >
+              <SplitBar
+                leftLabel="Avg Win Duration"
+                rightLabel="Avg Loss Duration"
+                leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
+                rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
+                leftMagnitude={summary.avg_win_duration_minutes}
+                rightMagnitude={summary.avg_loss_duration_minutes}
+                leftBarClassName="bg-cyan-300/80"
+                rightBarClassName="bg-amber-300/75"
+              />
+              <MiniStatList
+                columns={1}
+                items={[
+                  { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
+                  { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
+                ]}
+              />
+            </MetricCard>
 
             <MetricCard
               title="Activity"
               primaryValue={formatInteger(summary.trade_count)}
-              tooltip="Execution activity in the selected range."
-              chips={
-                <ChipRow
-                  chips={[
-                    { label: "Avg Trades/Day", value: formatNumber(summary.avg_trades_per_day) },
-                    { label: "Active Days", value: formatInteger(summary.active_days) },
-                  ]}
-                />
-              }
-              hoverDetails="Closed trades, normalized by active trading days."
-            />
+              subtitle="Closed trades in this range."
+              info="Activity normalizes execution count by active trading days."
+              accentClassName="bg-gradient-to-r from-slate-300/55 via-cyan-200/15 to-transparent"
+              className="md:col-span-2 lg:col-span-3"
+            >
+              <div className="flex flex-wrap gap-2">
+                <Chip label="Avg Trades/Day" value={formatNumber(summary.avg_trades_per_day)} />
+                <Chip label="Active Days" value={formatInteger(summary.active_days)} />
+              </div>
+            </MetricCard>
           </>
         )}
-      </section>
+      </MasonryGrid>
 
       <PnlCalendarCard
         days={pnlCalendarDays}
