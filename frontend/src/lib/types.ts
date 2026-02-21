@@ -109,6 +109,8 @@ export interface AccountSummary {
   profit_factor: number;
   avg_win: number;
   avg_loss: number;
+  avg_win_duration_minutes: number;
+  avg_loss_duration_minutes: number;
   expectancy_per_trade: number;
   tail_risk_5pct: number;
   max_drawdown: number;

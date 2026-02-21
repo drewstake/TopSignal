@@ -36,6 +36,8 @@ class ProjectXTradeSummaryOut(BaseModel):
     profit_factor: float
     avg_win: float
     avg_loss: float
+    avg_win_duration_minutes: float
+    avg_loss_duration_minutes: float
     expectancy_per_trade: float
     tail_risk_5pct: float
     max_drawdown: float

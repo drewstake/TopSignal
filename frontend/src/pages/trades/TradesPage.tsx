@@ -53,6 +53,8 @@ const emptySummary: AccountSummary = {
   profit_factor: 0,
   avg_win: 0,
   avg_loss: 0,
+  avg_win_duration_minutes: 0,
+  avg_loss_duration_minutes: 0,
   expectancy_per_trade: 0,
   tail_risk_5pct: 0,
   max_drawdown: 0,

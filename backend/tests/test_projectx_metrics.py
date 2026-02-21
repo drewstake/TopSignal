@@ -22,6 +22,8 @@ def test_compute_trade_summary_empty_payload():
         "profit_factor": 0.0,
         "avg_win": 0.0,
         "avg_loss": 0.0,
+        "avg_win_duration_minutes": 0.0,
+        "avg_loss_duration_minutes": 0.0,
         "expectancy_per_trade": 0.0,
         "tail_risk_5pct": 0.0,
         "max_drawdown": 0.0,
@@ -68,6 +70,8 @@ def test_compute_trade_summary_with_mixed_results_and_fees():
     assert summary["profit_factor"] == 4.0
     assert summary["avg_win"] == 75.75
     assert summary["avg_loss"] == -42.0
+    assert summary["avg_win_duration_minutes"] == 0.0
+    assert summary["avg_loss_duration_minutes"] == 0.0
     assert summary["expectancy_per_trade"] == 36.5
     assert summary["tail_risk_5pct"] == -42.0
     assert summary["max_drawdown"] == -42.0
@@ -216,3 +220,31 @@ def test_compute_trade_summary_day_win_rate_counts_green_red_and_flat_days():
     assert summary["active_days"] == 3
     assert summary["avg_trades_per_day"] == 0.67
     assert summary["profit_per_day"] == 16.67
+
+
+def test_compute_trade_summary_calculates_avg_win_and_loss_durations():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=None, fees=0.0, symbol="NQ", side="BUY", size=1.0),
+        TradeMetricSample(timestamp=_dt(9, 10), pnl=100.0, fees=0.0, symbol="NQ", side="SELL", size=1.0),
+        TradeMetricSample(timestamp=_dt(9, 20), pnl=None, fees=0.0, symbol="NQ", side="SELL", size=1.0),
+        TradeMetricSample(timestamp=_dt(9, 32), pnl=-80.0, fees=0.0, symbol="NQ", side="BUY", size=1.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["trade_count"] == 2
+    assert summary["avg_win_duration_minutes"] == 10.0
+    assert summary["avg_loss_duration_minutes"] == 12.0
+
+
+def test_compute_trade_summary_duration_matching_uses_most_recent_open_lot():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=None, fees=0.0, symbol="NQ", side="SELL", size=1.0),
+        TradeMetricSample(timestamp=_dt(10, 0), pnl=None, fees=0.0, symbol="NQ", side="SELL", size=1.0),
+        TradeMetricSample(timestamp=_dt(10, 1), pnl=50.0, fees=0.0, symbol="NQ", side="BUY", size=1.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    # LIFO matching closes the most recent lot first: 10:00 -> 10:01 = 1 minute.
+    assert summary["avg_win_duration_minutes"] == 1.0

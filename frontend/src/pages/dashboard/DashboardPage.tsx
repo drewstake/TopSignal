@@ -60,6 +60,8 @@ const emptySummary: AccountSummary = {
   profit_factor: 0,
   avg_win: 0,
   avg_loss: 0,
+  avg_win_duration_minutes: 0,
+  avg_loss_duration_minutes: 0,
   expectancy_per_trade: 0,
   tail_risk_5pct: 0,
   max_drawdown: 0,
@@ -100,6 +102,14 @@ function formatHours(value: number) {
 
 function formatNumber(value: number) {
   return value.toFixed(2);
+}
+
+function formatMinutes(value: number) {
+  const safeMinutes = Number.isFinite(value) ? Math.max(0, value) : 0;
+  const totalSeconds = Math.round(safeMinutes * 60);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} min ${seconds} sec`;
 }
 
 function pnlClass(value: number) {
@@ -304,6 +314,8 @@ export function DashboardPage() {
     { label: "Profit Factor", value: formatNumber(summary.profit_factor) },
     { label: "Average Win", value: formatPnl(summary.avg_win), className: pnlClass(summary.avg_win) },
     { label: "Average Loss", value: formatPnl(summary.avg_loss), className: pnlClass(summary.avg_loss) },
+    { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
+    { label: "Avg Loss Duration", value: formatMinutes(summary.avg_loss_duration_minutes) },
     { label: "Trades", value: String(summary.trade_count) },
     { label: "Half-turns", value: String(summary.half_turn_count) },
     { label: "Executions", value: String(summary.execution_count) },

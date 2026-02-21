@@ -27,6 +27,18 @@ class DrawdownEpisode:
     trough_drawdown: float
 
 
+@dataclass
+class PositionLot:
+    qty: float
+    timestamp: datetime
+
+
+@dataclass
+class SymbolPositionState:
+    position: float
+    lots: list[PositionLot]
+
+
 def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, float | int]:
     trades = sorted(samples, key=lambda sample: sample.timestamp)
     if not trades:
@@ -62,6 +74,17 @@ def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, flo
 
     drawdown_stats = _compute_drawdown_stats(trades, net_values)
     active_hours = _compute_active_hours(trades)
+    hold_durations = _compute_closed_trade_hold_durations_minutes(trades)
+    hold_win_minutes = [
+        duration
+        for trade, net, duration in zip(trades, net_values, hold_durations)
+        if trade.pnl is not None and net > 0 and duration is not None
+    ]
+    hold_loss_minutes = [
+        duration
+        for trade, net, duration in zip(trades, net_values, hold_durations)
+        if trade.pnl is not None and net < 0 and duration is not None
+    ]
 
     return {
         "realized_pnl": _round(gross_pnl),
@@ -75,6 +98,8 @@ def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, flo
         "profit_factor": _round(gross_profit / gross_loss_abs, 4) if gross_loss_abs > 0 else 0.0,
         "avg_win": _round(_mean(wins)),
         "avg_loss": _round(_mean(losses)),
+        "avg_win_duration_minutes": _round(_mean(hold_win_minutes)),
+        "avg_loss_duration_minutes": _round(_mean(hold_loss_minutes)),
         "expectancy_per_trade": _round(_mean(closed_net_values)),
         "tail_risk_5pct": _round(_tail_risk_worst_5pct(closed_net_values)),
         "max_drawdown": _round(drawdown_stats["max_drawdown"]),
@@ -170,6 +195,8 @@ def _empty_trade_summary() -> dict[str, float | int]:
         "profit_factor": 0.0,
         "avg_win": 0.0,
         "avg_loss": 0.0,
+        "avg_win_duration_minutes": 0.0,
+        "avg_loss_duration_minutes": 0.0,
         "expectancy_per_trade": 0.0,
         "tail_risk_5pct": 0.0,
         "max_drawdown": 0.0,
@@ -234,6 +261,69 @@ def _tail_risk_worst_5pct(values: list[float]) -> float:
     worst_slice = sorted_values[:worst_count]
     worst_avg = _mean(worst_slice)
     return min(0.0, worst_avg)
+
+
+def _compute_closed_trade_hold_durations_minutes(trades: list[TradeMetricSample]) -> list[Optional[float]]:
+    durations: list[Optional[float]] = [None] * len(trades)
+    states: dict[str, SymbolPositionState] = {}
+    epsilon = 1e-9
+
+    for index, trade in enumerate(trades):
+        trade_ts = _as_utc(trade.timestamp)
+        qty = abs(_safe_float(trade.size))
+        side_sign = _side_sign(trade.side)
+        if qty <= epsilon or side_sign == 0:
+            continue
+
+        symbol_key = trade.symbol or "__UNKNOWN__"
+        state = states.setdefault(symbol_key, SymbolPositionState(position=0.0, lots=[]))
+        remaining = side_sign * qty
+
+        closed_qty = 0.0
+        closed_weighted_minutes = 0.0
+
+        while (
+            abs(remaining) > epsilon
+            and abs(state.position) > epsilon
+            and _sign(remaining) != _sign(state.position)
+        ):
+            if not state.lots:
+                # In filtered windows, we may miss historical opening legs.
+                state.position = 0.0
+                break
+
+            # Match against the most recent open lot first (LIFO).
+            lot = state.lots[-1]
+            close_qty = min(abs(remaining), abs(lot.qty))
+            closed_qty += close_qty
+            closed_weighted_minutes += _duration_minutes(lot.timestamp, trade_ts) * close_qty
+
+            next_lot_qty = lot.qty - (_sign(lot.qty) * close_qty)
+            if abs(next_lot_qty) <= epsilon:
+                state.lots.pop()
+            else:
+                state.lots[-1] = PositionLot(qty=next_lot_qty, timestamp=lot.timestamp)
+
+            signed_close_qty = _sign(remaining) * close_qty
+            remaining -= signed_close_qty
+            state.position += signed_close_qty
+
+        if closed_qty > epsilon and trade.pnl is not None:
+            durations[index] = closed_weighted_minutes / closed_qty
+
+        if abs(remaining) > epsilon:
+            # Avoid creating a phantom open lot from a close-only row when
+            # there was no local opening context in the selected time range.
+            if trade.pnl is not None and closed_qty <= epsilon:
+                continue
+            state.lots.append(PositionLot(qty=remaining, timestamp=trade_ts))
+            state.position += remaining
+
+        if abs(state.position) <= epsilon:
+            state.position = 0.0
+            state.lots.clear()
+
+    return durations
 
 
 def _compute_active_hours(trades: list[TradeMetricSample]) -> float:
@@ -368,6 +458,30 @@ def _duration_hours(start: datetime, end: Optional[datetime]) -> float:
     if end is None:
         return 0.0
     return max(0.0, (end - start).total_seconds() / 3600.0)
+
+
+def _duration_minutes(start: datetime, end: datetime) -> float:
+    return max(0.0, (end - start).total_seconds() / 60.0)
+
+
+def _side_sign(side: Optional[str]) -> int:
+    if not side:
+        return 0
+
+    normalized = side.upper()
+    if normalized == "BUY":
+        return 1
+    if normalized == "SELL":
+        return -1
+    return 0
+
+
+def _sign(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
 
 
 def _as_utc(value: datetime) -> datetime:
