@@ -135,6 +135,10 @@ interface AccountSummaryQuery {
   refresh?: boolean;
 }
 
+interface AccountPnlCalendarQuery extends AccountSummaryQuery {
+  all_time?: boolean;
+}
+
 export const accountsApi = {
   getAccounts: () => getAccountsCached(),
   getTrades: (accountId: number, query: AccountTradesQuery = {}) =>
@@ -155,11 +159,12 @@ export const accountsApi = {
         refresh: query.refresh,
       },
     }),
-  getPnlCalendar: (accountId: number, query: AccountSummaryQuery = {}) =>
+  getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}) =>
     requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
       query: {
         start: query.start,
         end: query.end,
+        all_time: query.all_time,
         refresh: query.refresh,
       },
     }),

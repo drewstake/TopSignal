@@ -18,6 +18,15 @@ import { PnlCalendarCard } from "./components/PnlCalendarCard";
 
 const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
+type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL";
+
+const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
+  { key: "1D", label: "1D" },
+  { key: "1W", label: "1W" },
+  { key: "1M", label: "1M" },
+  { key: "6M", label: "6M" },
+  { key: "ALL", label: "All" },
+];
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -132,6 +141,58 @@ function parseUtcDay(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+function subtractUtcMonths(value: Date, months: number) {
+  const monthIndex = value.getUTCFullYear() * 12 + value.getUTCMonth() - months;
+  const targetYear = Math.floor(monthIndex / 12);
+  const targetMonth = ((monthIndex % 12) + 12) % 12;
+  const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const targetDay = Math.min(value.getUTCDate(), lastDayOfTargetMonth);
+
+  return new Date(
+    Date.UTC(
+      targetYear,
+      targetMonth,
+      targetDay,
+      value.getUTCHours(),
+      value.getUTCMinutes(),
+      value.getUTCSeconds(),
+      value.getUTCMilliseconds(),
+    ),
+  );
+}
+
+function buildMetricsRangeQuery(range: MetricsRangePreset): { start?: string; end?: string; allTime: boolean } {
+  if (range === "ALL") {
+    return { allTime: true };
+  }
+
+  const end = new Date();
+  let start = new Date(end.getTime());
+
+  switch (range) {
+    case "1D":
+      start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+      break;
+    case "1W":
+      start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case "1M":
+      start = subtractUtcMonths(end, 1);
+      break;
+    case "6M":
+      start = subtractUtcMonths(end, 6);
+      break;
+    default:
+      break;
+  }
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    allTime: false,
+  };
+}
+
 function getUtcDayRange(value: string) {
   const start = parseUtcDay(value);
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
@@ -150,6 +211,7 @@ export function DashboardPage() {
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [metricsRange, setMetricsRange] = useState<MetricsRangePreset>("ALL");
 
   const [selectedTradeDate, setSelectedTradeDate] = useState<string | null>(null);
 
@@ -209,6 +271,7 @@ export function DashboardPage() {
     [accounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange), [metricsRange]);
 
   const selectedTradeDateLabel = useMemo(() => {
     if (!selectedTradeDate) {
@@ -233,8 +296,15 @@ export function DashboardPage() {
 
     try {
       const [nextSummary, nextPnlCalendar] = await Promise.all([
-        accountsApi.getSummary(selectedAccountId),
-        accountsApi.getPnlCalendar(selectedAccountId),
+        accountsApi.getSummary(selectedAccountId, {
+          start: metricsRangeQuery.start,
+          end: metricsRangeQuery.end,
+        }),
+        accountsApi.getPnlCalendar(selectedAccountId, {
+          start: metricsRangeQuery.start,
+          end: metricsRangeQuery.end,
+          all_time: metricsRangeQuery.allTime,
+        }),
       ]);
       setSummary(nextSummary);
       setPnlCalendarDays(nextPnlCalendar);
@@ -248,7 +318,7 @@ export function DashboardPage() {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [selectedAccountId]);
+  }, [metricsRangeQuery, selectedAccountId]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
@@ -286,6 +356,10 @@ export function DashboardPage() {
   useEffect(() => {
     void loadTrades();
   }, [loadTrades]);
+
+  useEffect(() => {
+    setSelectedTradeDate(null);
+  }, [metricsRange]);
 
   useEffect(() => {
     function handleAccountTradesSynced(event: Event) {
@@ -340,6 +414,32 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6 pb-10">
+      <Card>
+        <CardHeader className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Metrics Window</CardTitle>
+            <CardDescription>Select the dashboard range for summary and calendar metrics.</CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {METRICS_RANGE_OPTIONS.map((option) => {
+              const active = option.key === metricsRange;
+              return (
+                <Button
+                  key={option.key}
+                  variant={active ? "secondary" : "ghost"}
+                  size="sm"
+                  aria-pressed={active}
+                  onClick={() => setMetricsRange(option.key)}
+                  className={active ? "ring-1 ring-cyan-300/60" : undefined}
+                >
+                  {option.label}
+                </Button>
+              );
+            })}
+          </div>
+        </CardHeader>
+      </Card>
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {summaryLoading ? (
           Array.from({ length: summaryCards.length }).map((_, index) => (

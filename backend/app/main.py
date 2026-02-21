@@ -220,14 +220,20 @@ def get_projectx_account_pnl_calendar(
     account_id: int,
     start: datetime | None = None,
     end: datetime | None = None,
+    all_time: bool = False,
     refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
+    if all_time and (start is not None or end is not None):
+        raise HTTPException(status_code=400, detail="all_time cannot be combined with start/end")
 
-    use_default_window = start is None and end is None
-    if use_default_window:
+    use_default_window = not all_time and start is None and end is None
+    if all_time:
+        effective_start = None
+        effective_end = None
+    elif use_default_window:
         effective_end = datetime.now(timezone.utc)
         effective_start = _subtract_utc_months(effective_end, _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS)
     else:
