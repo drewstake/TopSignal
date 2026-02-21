@@ -29,6 +29,7 @@ import {
   computeDrawdownPercentOfNetPnl,
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
+import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
@@ -137,6 +138,32 @@ function metricPnlClass(metric: MetricValue) {
     return undefined;
   }
   return pnlClass(metric.value);
+}
+
+function sustainabilityBadgeVariant(label: SustainabilityLabel) {
+  if (label === "Healthy") {
+    return "positive" as const;
+  }
+  if (label === "Mostly healthy") {
+    return "accent" as const;
+  }
+  if (label === "Unstable") {
+    return "warning" as const;
+  }
+  return "negative" as const;
+}
+
+function sustainabilityFillClass(score: number) {
+  if (score >= 80) {
+    return "bg-emerald-300/75";
+  }
+  if (score >= 60) {
+    return "bg-cyan-300/75";
+  }
+  if (score >= 40) {
+    return "bg-amber-300/80";
+  }
+  return "bg-rose-300/80";
 }
 
 function sideVariant(side: string) {
@@ -530,6 +557,25 @@ export function DashboardPage() {
     () => computeStabilityScoreFromWorstDayPercent(derivedMetrics.stability.worstDayPercentOfNet.value),
     [derivedMetrics.stability.worstDayPercentOfNet.value],
   );
+  const sustainability = useMemo(
+    () =>
+      computeSustainability({
+        netPnl: summary.net_pnl,
+        profitPerDay: summary.profit_per_day,
+        maxDrawdown: summary.max_drawdown,
+        bestDay: derivedMetrics.stability.bestDay.value ?? 0,
+        worstDay: derivedMetrics.stability.worstDay.value ?? 0,
+        dailyPnlVolatility: derivedMetrics.stability.dailyPnlVolatility.value ?? 0,
+      }),
+    [
+      derivedMetrics.stability.bestDay.value,
+      derivedMetrics.stability.dailyPnlVolatility.value,
+      derivedMetrics.stability.worstDay.value,
+      summary.max_drawdown,
+      summary.net_pnl,
+      summary.profit_per_day,
+    ],
+  );
 
   const directionPrimaryValue =
     directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
@@ -644,34 +690,20 @@ export function DashboardPage() {
             </MetricCard>
 
             <MetricCard
-              title="Risk"
-              primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
-              primaryClassName={metricPnlClass(maxDrawdownMetric)}
-              subtitle="Peak-to-trough drop."
-              info="Maximum realized drawdown over the selected period."
-              accentClassName="bg-gradient-to-r from-rose-300/70 via-amber-200/20 to-transparent"
-              className="md:col-span-2 lg:col-span-3"
-            >
-              <div className="flex flex-wrap gap-2">
-                <Chip label="DD % of Net PnL" value={formatMetricValue(drawdownPercentOfNet, formatPercent)} />
-              </div>
-            </MetricCard>
-
-            <MetricCard
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
               subtitle="Daily PnL volatility ($)."
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
               accentClassName="bg-gradient-to-r from-indigo-300/65 via-cyan-200/20 to-transparent"
-              className="sm:col-span-2 md:col-span-3 md:row-span-2 lg:col-span-4 lg:row-span-2"
+              className="self-start p-3 sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-2"
             >
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px]">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px]">
                   <span className="text-emerald-100">Best Day</span>
                   <span className="font-semibold text-emerald-50">{formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)}</span>
                   <span className="text-emerald-200/85">{formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent)}</span>
                 </div>
-                <div className="flex items-center justify-between gap-2 rounded-full border border-rose-400/30 bg-rose-500/10 px-2.5 py-1 text-[11px]">
+                <div className="flex items-center justify-between gap-1.5 rounded-full border border-rose-400/30 bg-rose-500/10 px-2 py-0.5 text-[10px]">
                   <span className="text-rose-100">Worst Day</span>
                   <span className="font-semibold text-rose-50">{formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)}</span>
                   <span className="text-rose-200/85">{formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent)}</span>
@@ -681,7 +713,73 @@ export function DashboardPage() {
                 label="Stability"
                 value={stabilityScore.value}
                 valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
+                className="space-y-1"
               />
+            </MetricCard>
+
+            <MetricCard
+              title="Sustainability"
+              primaryValue={`${formatInteger(sustainability.score)}/100`}
+              subtitle="Composite score from Swing, Outliers, and Risk."
+              info="Sustainability combines swing ratio, outlier dependence, and drawdown efficiency into one score."
+              accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
+              className="self-start p-3 sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
+                <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Swing</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.swingScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Outliers</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.outlierScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Risk</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.riskScore, 1)}/100</span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                  <span>Score Gauge</span>
+                  <span className="font-semibold text-slate-300">{formatInteger(sustainability.score)}/100</span>
+                </div>
+                <div className="relative pt-4">
+                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                    <div
+                      aria-hidden="true"
+                      className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
+                      style={{ width: `${sustainability.score}%` }}
+                    />
+                  </div>
+                  {[40, 60, 80].map((tick) => (
+                    <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
+                      <span className="block text-[10px] text-slate-500">{tick}</span>
+                      <span className="mx-auto mt-0.5 block h-2 w-px bg-slate-500/70" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </MetricCard>
+
+            <MetricCard
+              title="Risk"
+              primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
+              primaryClassName={metricPnlClass(maxDrawdownMetric)}
+              subtitle="Peak-to-trough drop."
+              info="Maximum realized drawdown over the selected period."
+              accentClassName="bg-gradient-to-r from-rose-300/70 via-amber-200/20 to-transparent"
+              className="self-start sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-3"
+            >
+              <div className="flex flex-wrap gap-2">
+                <Chip label="DD % of Net PnL" value={formatMetricValue(drawdownPercentOfNet, formatPercent)} />
+              </div>
             </MetricCard>
 
             <MetricCard
@@ -694,7 +792,7 @@ export function DashboardPage() {
               }
               info="Long % is long trades divided by total directional trades for this range."
               accentClassName="bg-gradient-to-r from-teal-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4"
+              className="md:col-span-3 lg:col-span-4 lg:row-start-2 lg:row-span-2"
             >
               <DonutRing
                 segments={[
@@ -740,7 +838,7 @@ export function DashboardPage() {
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
               accentClassName="bg-gradient-to-r from-emerald-300/65 via-rose-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4"
+              className="md:col-span-3 lg:col-span-4 lg:row-start-4"
             >
               <SplitBar
                 leftLabel="Avg Win"
@@ -768,7 +866,7 @@ export function DashboardPage() {
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
               accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4"
+              className="md:col-span-3 lg:col-span-4 lg:row-start-4"
             >
               <SplitBar
                 leftLabel="Avg Win Duration"
