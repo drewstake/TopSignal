@@ -4,7 +4,6 @@ import { useSearchParams } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Select } from "../../components/ui/Select";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -12,6 +11,7 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
 
@@ -54,10 +54,31 @@ const emptySummary: AccountSummary = {
   fees: 0,
   net_pnl: 0,
   win_rate: 0,
+  win_count: 0,
+  loss_count: 0,
+  breakeven_count: 0,
+  profit_factor: 0,
   avg_win: 0,
   avg_loss: 0,
+  expectancy_per_trade: 0,
+  tail_risk_5pct: 0,
   max_drawdown: 0,
+  average_drawdown: 0,
+  risk_drawdown_score: 0,
+  max_drawdown_length_hours: 0,
+  recovery_time_hours: 0,
+  average_recovery_length_hours: 0,
   trade_count: 0,
+  half_turn_count: 0,
+  execution_count: 0,
+  day_win_rate: 0,
+  green_days: 0,
+  red_days: 0,
+  flat_days: 0,
+  avg_trades_per_day: 0,
+  active_days: 0,
+  efficiency_per_hour: 0,
+  profit_per_day: 0,
 };
 
 function formatPnl(value: number) {
@@ -67,6 +88,18 @@ function formatPnl(value: number) {
 
 function formatFee(value: number) {
   return currencyFormatter.format(-Math.abs(value));
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(2)}%`;
+}
+
+function formatHours(value: number) {
+  return `${value.toFixed(2)}h`;
+}
+
+function formatNumber(value: number) {
+  return value.toFixed(2);
 }
 
 function pnlClass(value: number) {
@@ -102,8 +135,6 @@ export function DashboardPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
-  const [accountsLoading, setAccountsLoading] = useState(true);
-  const [accountsError, setAccountsError] = useState<string | null>(null);
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -119,9 +150,6 @@ export function DashboardPage() {
   const [pnlCalendarLoading, setPnlCalendarLoading] = useState(false);
   const [pnlCalendarError, setPnlCalendarError] = useState<string | null>(null);
 
-  const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-
   const setActiveAccount = useCallback(
     (accountId: number) => {
       const next = new URLSearchParams(searchParams);
@@ -134,17 +162,11 @@ export function DashboardPage() {
   );
 
   const loadAccounts = useCallback(async () => {
-    setAccountsLoading(true);
-    setAccountsError(null);
-
     try {
       const payload = await accountsApi.getAccounts();
       setAccounts(payload);
-    } catch (err) {
-      setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
+    } catch {
       setAccounts([]);
-    } finally {
-      setAccountsLoading(false);
     }
   }, []);
 
@@ -254,93 +276,60 @@ export function DashboardPage() {
     void loadTrades();
   }, [loadTrades]);
 
-  async function handleSyncNow() {
-    if (!selectedAccountId) {
-      return;
+  useEffect(() => {
+    function handleAccountTradesSynced(event: Event) {
+      const detail = (event as CustomEvent<AccountTradesSyncedDetail>).detail;
+      if (!selectedAccountId || detail.accountId !== selectedAccountId || detail.error) {
+        return;
+      }
+      void reloadDashboard();
     }
 
-    setSyncing(true);
-    setSyncMessage(null);
+    window.addEventListener(ACCOUNT_TRADES_SYNCED_EVENT, handleAccountTradesSynced as EventListener);
+    return () => {
+      window.removeEventListener(ACCOUNT_TRADES_SYNCED_EVENT, handleAccountTradesSynced as EventListener);
+    };
+  }, [reloadDashboard, selectedAccountId]);
 
-    try {
-      const result = await accountsApi.refreshTrades(selectedAccountId);
-      await reloadDashboard();
-      setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
-    } catch (err) {
-      setSyncMessage(err instanceof Error ? err.message : "Failed to sync account trades");
-    } finally {
-      setSyncing(false);
-    }
-  }
-
-  const summaryCards = [
+  const summaryCards: Array<{ label: string; value: string; className?: string; detail?: string }> = [
     { label: "Net PnL", value: formatPnl(summary.net_pnl), className: pnlClass(summary.net_pnl) },
-    { label: "Win Rate", value: `${summary.win_rate.toFixed(2)}%`, className: "" },
-    { label: "Avg Win", value: formatPnl(summary.avg_win), className: pnlClass(summary.avg_win) },
-    { label: "Avg Loss", value: formatPnl(summary.avg_loss), className: pnlClass(summary.avg_loss) },
-    { label: "Fees", value: currencyFormatter.format(summary.fees), className: "" },
-    { label: "Trade Count", value: String(summary.trade_count), className: "" },
+    { label: "Fees", value: currencyFormatter.format(summary.fees) },
+    { label: "Gross", value: formatPnl(summary.gross_pnl), className: pnlClass(summary.gross_pnl) },
+    {
+      label: "Win Rate",
+      value: formatPercent(summary.win_rate),
+      detail: `${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`,
+    },
+    { label: "Max Drawdown", value: formatPnl(summary.max_drawdown), className: pnlClass(summary.max_drawdown) },
+    { label: "Profit Factor", value: formatNumber(summary.profit_factor) },
+    { label: "Average Win", value: formatPnl(summary.avg_win), className: pnlClass(summary.avg_win) },
+    { label: "Average Loss", value: formatPnl(summary.avg_loss), className: pnlClass(summary.avg_loss) },
+    { label: "Trades", value: String(summary.trade_count) },
+    { label: "Half-turns", value: String(summary.half_turn_count) },
+    { label: "Executions", value: String(summary.execution_count) },
+    {
+      label: "Day Win Rate",
+      value: formatPercent(summary.day_win_rate),
+      detail: `${summary.green_days} green / ${summary.red_days} red / ${summary.flat_days} flat`,
+    },
+    { label: "Avg Trades / Day", value: formatNumber(summary.avg_trades_per_day) },
+    { label: "Active Days", value: String(summary.active_days) },
+    { label: "Expectancy / Trade", value: formatPnl(summary.expectancy_per_trade), className: pnlClass(summary.expectancy_per_trade) },
+    { label: "Tail Risk (Worst 5%)", value: formatPnl(summary.tail_risk_5pct), className: pnlClass(summary.tail_risk_5pct) },
+    { label: "Risk & Drawdown", value: formatPercent(summary.risk_drawdown_score) },
+    { label: "Average Drawdown", value: formatPnl(summary.average_drawdown), className: pnlClass(summary.average_drawdown) },
+    { label: "Max Drawdown Length", value: formatHours(summary.max_drawdown_length_hours) },
+    { label: "Recovery Time", value: formatHours(summary.recovery_time_hours) },
+    { label: "Average Recovery", value: formatHours(summary.average_recovery_length_hours) },
+    { label: "Efficiency / Hour", value: formatPnl(summary.efficiency_per_hour), className: pnlClass(summary.efficiency_per_hour) },
+    { label: "Profit / Day", value: formatPnl(summary.profit_per_day), className: pnlClass(summary.profit_per_day) },
   ];
 
   return (
     <div className="space-y-6 pb-10">
-      <Card>
-        <CardHeader>
-          <CardTitle>Active Account Dashboard</CardTitle>
-          <CardDescription>
-            Trades are pulled from ProjectX `Trade/search`, stored locally, and reflected in summary metrics.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <div className="xl:col-span-2">
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account</label>
-              <Select
-                value={selectedAccount ? String(selectedAccount.id) : ""}
-                onChange={(event) => {
-                  const next = parseAccountId(event.target.value);
-                  if (next) {
-                    setActiveAccount(next);
-                  }
-                }}
-                disabled={accountsLoading || accounts.length === 0}
-              >
-                {accountsLoading ? <option>Loading accounts...</option> : null}
-                {!accountsLoading && accounts.length === 0 ? <option>No accounts</option> : null}
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} ({account.id})
-                  </option>
-                ))}
-              </Select>
-              {accountsError ? <p className="mt-1 text-xs text-rose-300">{accountsError}</p> : null}
-            </div>
-
-            <div className="flex items-end">
-              <Button
-                className="w-full"
-                variant="secondary"
-                onClick={() => void reloadDashboard()}
-                disabled={summaryLoading || tradesLoading || pnlCalendarLoading}
-              >
-                Reload
-              </Button>
-            </div>
-
-            <div className="flex items-end">
-              <Button className="w-full" onClick={handleSyncNow} disabled={syncing || !selectedAccount}>
-                {syncing ? "Syncing..." : "Sync Latest Trades"}
-              </Button>
-            </div>
-          </div>
-
-          {syncMessage ? <p className="text-xs text-slate-400">{syncMessage}</p> : null}
-        </CardContent>
-      </Card>
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {summaryLoading ? (
-          Array.from({ length: 6 }).map((_, index) => (
+          Array.from({ length: summaryCards.length }).map((_, index) => (
             <Card key={`summary-loading-${index}`} className="p-4">
               <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Loading...</p>
               <p className="mt-2 text-2xl font-semibold text-slate-100">...</p>
@@ -355,6 +344,7 @@ export function DashboardPage() {
             <Card key={metric.label} className="p-4">
               <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{metric.label}</p>
               <p className={`mt-2 text-2xl font-semibold text-slate-100 ${metric.className}`}>{metric.value}</p>
+              {metric.detail ? <p className="mt-1 text-xs text-slate-400">{metric.detail}</p> : null}
             </Card>
           ))
         )}

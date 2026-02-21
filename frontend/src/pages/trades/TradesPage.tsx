@@ -47,10 +47,31 @@ const emptySummary: AccountSummary = {
   fees: 0,
   net_pnl: 0,
   win_rate: 0,
+  win_count: 0,
+  loss_count: 0,
+  breakeven_count: 0,
+  profit_factor: 0,
   avg_win: 0,
   avg_loss: 0,
+  expectancy_per_trade: 0,
+  tail_risk_5pct: 0,
   max_drawdown: 0,
+  average_drawdown: 0,
+  risk_drawdown_score: 0,
+  max_drawdown_length_hours: 0,
+  recovery_time_hours: 0,
+  average_recovery_length_hours: 0,
   trade_count: 0,
+  half_turn_count: 0,
+  execution_count: 0,
+  day_win_rate: 0,
+  green_days: 0,
+  red_days: 0,
+  flat_days: 0,
+  avg_trades_per_day: 0,
+  active_days: 0,
+  efficiency_per_hour: 0,
+  profit_per_day: 0,
 };
 
 function formatPnl(value: number) {
@@ -79,8 +100,6 @@ export function TradesPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
-  const [accountsLoading, setAccountsLoading] = useState(true);
-  const [accountsError, setAccountsError] = useState<string | null>(null);
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -113,17 +132,11 @@ export function TradesPage() {
   );
 
   const loadAccounts = useCallback(async () => {
-    setAccountsLoading(true);
-    setAccountsError(null);
-
     try {
       const payload = await accountsApi.getAccounts();
       setAccounts(payload);
-    } catch (err) {
-      setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
+    } catch {
       setAccounts([]);
-    } finally {
-      setAccountsLoading(false);
     }
   }, []);
 
@@ -253,30 +266,7 @@ export function TradesPage() {
           <CardDescription>Filter recent trade events and inspect account-level summary metrics.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-            <div className="xl:col-span-2">
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account</label>
-              <Select
-                value={selectedAccount ? String(selectedAccount.id) : ""}
-                onChange={(event) => {
-                  const next = parseAccountId(event.target.value);
-                  if (next) {
-                    setActiveAccount(next);
-                  }
-                }}
-                disabled={accountsLoading || accounts.length === 0}
-              >
-                {accountsLoading ? <option>Loading accounts...</option> : null}
-                {!accountsLoading && accounts.length === 0 ? <option>No accounts</option> : null}
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} ({account.id})
-                  </option>
-                ))}
-              </Select>
-              {accountsError ? <p className="mt-1 text-xs text-rose-300">{accountsError}</p> : null}
-            </div>
-
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
               <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start</label>
               <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
@@ -308,9 +298,6 @@ export function TradesPage() {
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => void loadTradesAndSummary()} disabled={tradesLoading || summaryLoading}>
-              Reload
-            </Button>
             <Button onClick={handleSyncNow} disabled={syncing || !selectedAccount}>
               {syncing ? "Syncing..." : "Sync Latest"}
             </Button>

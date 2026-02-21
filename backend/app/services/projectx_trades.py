@@ -347,6 +347,7 @@ def _to_metric_sample(row: ProjectXTradeEvent) -> TradeMetricSample:
         timestamp=_as_utc(row.trade_timestamp),
         pnl=float(row.pnl) if row.pnl is not None else None,
         fees=_normalized_trade_fees(row),
+        order_id=row.order_id,
         symbol=row.symbol or row.contract_id,
         side=row.side,
         size=float(row.size) if row.size is not None else None,

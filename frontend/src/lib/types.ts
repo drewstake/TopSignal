@@ -103,10 +103,31 @@ export interface AccountSummary {
   fees: number;
   net_pnl: number;
   win_rate: number;
+  win_count: number;
+  loss_count: number;
+  breakeven_count: number;
+  profit_factor: number;
   avg_win: number;
   avg_loss: number;
+  expectancy_per_trade: number;
+  tail_risk_5pct: number;
   max_drawdown: number;
+  average_drawdown: number;
+  risk_drawdown_score: number;
+  max_drawdown_length_hours: number;
+  recovery_time_hours: number;
+  average_recovery_length_hours: number;
   trade_count: number;
+  half_turn_count: number;
+  execution_count: number;
+  day_win_rate: number;
+  green_days: number;
+  red_days: number;
+  flat_days: number;
+  avg_trades_per_day: number;
+  active_days: number;
+  efficiency_per_hour: number;
+  profit_per_day: number;
 }
 
 export interface AccountTradeRefreshResult {
