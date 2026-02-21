@@ -144,8 +144,10 @@ create table if not exists projectx_trade_events (
   pnl numeric(18,6),
   order_id text not null,
   source_trade_id text,
+  status text,
   raw_payload jsonb,
   created_at timestamptz not null default now(),
+  unique (account_id, source_trade_id),
   unique (account_id, order_id, trade_timestamp)
 );
 
@@ -164,3 +166,28 @@ create index if not exists idx_projectx_trade_events_account_ts
 -- ============================================
 create index if not exists idx_projectx_trade_events_symbol_ts
   on projectx_trade_events (symbol, trade_timestamp desc);
+
+
+-- ============================================
+-- TABLE: projectx_trade_day_syncs
+-- Daily sync completeness tracking for cache safety.
+-- ============================================
+create table if not exists projectx_trade_day_syncs (
+  id bigserial primary key,
+  account_id bigint not null,
+  trade_date date not null,
+  sync_status text not null default 'partial' check (sync_status in ('partial','complete')),
+  last_synced_at timestamptz not null default now(),
+  row_count integer,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (account_id, trade_date)
+);
+
+
+-- ============================================
+-- INDEX: idx_projectx_trade_day_syncs_account_date
+-- Speeds cache checks for account/day requests.
+-- ============================================
+create index if not exists idx_projectx_trade_day_syncs_account_date
+  on projectx_trade_day_syncs (account_id, trade_date desc);

@@ -33,6 +33,7 @@ from .services.metrics import (
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.projectx_trades import (
+    ensure_trade_cache_for_request,
     get_earliest_trade_timestamp,
     get_trade_event_pnl_calendar,
     has_local_trades,
@@ -172,9 +173,14 @@ def list_projectx_account_trades(
     _validate_time_range(start=start, end=end)
 
     try:
-        if refresh or not has_local_trades(db, account_id):
-            client = ProjectXClient.from_env()
-            refresh_account_trades(db, client, account_id=account_id, start=start, end=end)
+        ensure_trade_cache_for_request(
+            db,
+            account_id=account_id,
+            start=start,
+            end=end,
+            refresh=refresh,
+            client_factory=ProjectXClient.from_env,
+        )
 
         rows = list_trade_events(
             db,

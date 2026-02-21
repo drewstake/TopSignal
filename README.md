@@ -369,9 +369,10 @@ docker compose up -d
 ### 2) Apply schema/migrations
 
 ```powershell
-docker exec -i topsignal_db psql -U topsignal -d topsignal < .\db\schema.sql
-docker exec -i topsignal_db psql -U topsignal -d topsignal < .\db\migrations\20260220_add_rule_break_fields.sql
-docker exec -i topsignal_db psql -U topsignal -d topsignal < .\db\migrations\20260220_add_projectx_trade_events.sql
+Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\migrations\20260220_add_rule_break_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 ```
 
 ### 3) Install dependencies

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "../../../components/ui/Button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { Skeleton } from "../../../components/ui/Skeleton";
 import type { AccountPnlCalendarDay } from "../../../lib/types";
 
@@ -17,6 +17,11 @@ interface CalendarCell {
   key: string;
   dayNumber: number | null;
   point: AccountPnlCalendarDay | null;
+}
+
+interface WeeklySummary {
+  tradeCount: number;
+  netPnl: number;
 }
 
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -177,14 +182,73 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
     return maxAbs > 0 ? maxAbs : 1;
   }, [calendarCells]);
 
+  const weeklySummaries = useMemo(() => {
+    const summaries = new Map<number, WeeklySummary>();
+    for (let rowStart = 0; rowStart < calendarCells.length; rowStart += 7) {
+      const weekCells = calendarCells.slice(rowStart, rowStart + 7);
+      const summary = weekCells.reduce(
+        (acc, cell) => {
+          if (!cell.point) {
+            return acc;
+          }
+          return {
+            tradeCount: acc.tradeCount + cell.point.trade_count,
+            netPnl: acc.netPnl + cell.point.net_pnl,
+          };
+        },
+        { tradeCount: 0, netPnl: 0.0 },
+      );
+      summaries.set(rowStart + 6, summary);
+    }
+    return summaries;
+  }, [calendarCells]);
+
+  const maxAbsWeekPnl = useMemo(() => {
+    let maxAbs = 0;
+    weeklySummaries.forEach((summary) => {
+      maxAbs = Math.max(maxAbs, Math.abs(summary.netPnl));
+    });
+    return maxAbs > 0 ? maxAbs : 1;
+  }, [weeklySummaries]);
+
   const canGoPrev = visibleMonth.getTime() > monthBounds.min.getTime();
   const canGoNext = visibleMonth.getTime() < monthBounds.max.getTime();
+  const hasCalendarData = !loading && !error && days.length > 0;
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>PnL Calendar</CardTitle>
-        <CardDescription>Daily net PnL by UTC date. Click a day to filter the trades table.</CardDescription>
+      <CardHeader className="mb-3 space-y-0">
+        {hasCalendarData ? (
+          <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center">
+            <CardTitle className="sm:justify-self-start">PnL Calendar</CardTitle>
+            <div className="text-center">
+              <p className="text-sm font-semibold text-slate-100">{monthLabelFormatter.format(visibleMonth)}</p>
+              <p className="text-xs text-slate-400">
+                {monthSummary.tradeCount} trades | {formatPnl(monthSummary.netPnl)}
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!canGoPrev}
+                onClick={() => setVisibleMonth((current) => addUtcMonths(current, -1))}
+              >
+                Prev
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!canGoNext}
+                onClick={() => setVisibleMonth((current) => addUtcMonths(current, 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <CardTitle>PnL Calendar</CardTitle>
+        )}
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -201,33 +265,6 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
           </p>
         ) : (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-sm font-semibold text-slate-100">{monthLabelFormatter.format(visibleMonth)}</p>
-                <p className="text-xs text-slate-400">
-                  {monthSummary.tradeCount} trades | {formatPnl(monthSummary.netPnl)}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={!canGoPrev}
-                  onClick={() => setVisibleMonth((current) => addUtcMonths(current, -1))}
-                >
-                  Prev
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={!canGoNext}
-                  onClick={() => setVisibleMonth((current) => addUtcMonths(current, 1))}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-
             <div className="overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/55 p-2">
               <div className="min-w-[680px]">
                 <div className="mb-2 grid grid-cols-7 gap-2">
@@ -239,7 +276,27 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
                 </div>
 
                 <div className="grid grid-cols-7 gap-2">
-                  {calendarCells.map((cell) => {
+                  {calendarCells.map((cell, index) => {
+                    const isSaturdayColumn = index % 7 === 6;
+
+                    if (isSaturdayColumn) {
+                      const summary = weeklySummaries.get(index) ?? { tradeCount: 0, netPnl: 0 };
+                      const weekNumber = Math.floor(index / 7) + 1;
+                      return (
+                        <div
+                          key={cell.key}
+                          className="flex h-20 flex-col items-center justify-center rounded-lg border border-slate-800/80 p-2 text-center"
+                          style={{ backgroundColor: tileBackground(summary.netPnl, maxAbsWeekPnl) }}
+                        >
+                          <p className="text-xs font-medium uppercase tracking-wide text-slate-300">Week {weekNumber}</p>
+                          <p className={`mt-1 text-sm font-semibold ${pnlClass(summary.netPnl)}`}>
+                            {formatPnlCompact(summary.netPnl)}
+                          </p>
+                          <p className="text-[11px] text-slate-300">{summary.tradeCount} trade(s)</p>
+                        </div>
+                      );
+                    }
+
                     if (cell.dayNumber === null) {
                       return <div key={cell.key} className="h-20 rounded-lg border border-transparent" />;
                     }
@@ -277,21 +334,6 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
                     );
                   })}
                 </div>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-              <p>Each tile is one UTC day.</p>
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/80" />
-                  Positive
-                </span>
-                <span className="inline-flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-rose-400/80" />
-                  Negative
-                </span>
-                <span>Month net: {formatPnl(monthSummary.netPnl)}</span>
               </div>
             </div>
           </div>

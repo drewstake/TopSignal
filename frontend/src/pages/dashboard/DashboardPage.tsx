@@ -11,6 +11,7 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
@@ -387,7 +388,7 @@ export function DashboardPage() {
           ) : null}
         </CardHeader>
         <CardContent className="space-y-0">
-          <div className="max-h-[560px] overflow-auto rounded-xl border border-slate-800/80">
+          <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800/80">
             <table className="w-full min-w-[1040px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
@@ -428,7 +429,9 @@ export function DashboardPage() {
                         <td className="px-3 py-3 text-left text-slate-300">
                           {timestampFormatter.format(new Date(trade.timestamp))}
                         </td>
-                        <td className="px-3 py-3 text-left font-medium text-slate-100">{trade.symbol || trade.contract_id}</td>
+                        <td className="px-3 py-3 text-left font-medium text-slate-100">
+                          {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
+                        </td>
                         <td className="px-3 py-3 text-left">
                           <Badge variant={sideVariant(trade.side)}>{trade.side}</Badge>
                         </td>

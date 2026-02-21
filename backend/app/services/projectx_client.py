@@ -138,6 +138,9 @@ class ProjectXClient:
         account_id: int,
         start: datetime,
         end: datetime | None = None,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
         start_utc = _as_utc(start)
         end_utc = _as_utc(end) if end is not None else None
@@ -148,6 +151,10 @@ class ProjectXClient:
         }
         if end_utc is not None:
             payload["endTimestamp"] = _iso_utc(end_utc)
+        if limit is not None:
+            payload["limit"] = max(1, int(limit))
+        if offset is not None:
+            payload["offset"] = max(0, int(offset))
 
         data = self._request("POST", "/api/Trade/search", payload=payload, with_auth=True)
 
@@ -197,6 +204,7 @@ class ProjectXClient:
                     "pnl": _safe_float(pnl_raw) if pnl_raw is not None else None,
                     "order_id": order_id_text,
                     "source_trade_id": source_trade_id_text,
+                    "status": _string_or_none(_first_value(row, ["status", "tradeStatus", "state"])),
                     "raw_payload": row,
                 }
             )

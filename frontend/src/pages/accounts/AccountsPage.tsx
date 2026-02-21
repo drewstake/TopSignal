@@ -12,6 +12,7 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
@@ -385,7 +386,9 @@ export function AccountsPage() {
                         <td className="px-3 py-3 text-left text-slate-300">
                           {timestampFormatter.format(new Date(trade.timestamp))}
                         </td>
-                        <td className="px-3 py-3 text-left font-medium text-slate-100">{trade.symbol || trade.contract_id}</td>
+                        <td className="px-3 py-3 text-left font-medium text-slate-100">
+                          {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
+                        </td>
                         <td className="px-3 py-3 text-left">
                           <Badge variant={trade.side === "BUY" ? "accent" : "warning"}>{trade.side}</Badge>
                         </td>

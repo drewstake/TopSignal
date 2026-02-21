@@ -4,8 +4,10 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
+    Integer,
     Numeric,
     Text,
     UniqueConstraint,
@@ -70,6 +72,7 @@ class ProjectXTradeEvent(Base):
     pnl = Column(Numeric(18, 6), nullable=True)
     order_id = Column(Text, nullable=False)
     source_trade_id = Column(Text, nullable=True)
+    status = Column(Text, nullable=True)
     raw_payload = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -77,8 +80,31 @@ class ProjectXTradeEvent(Base):
         CheckConstraint("side in ('BUY','SELL','UNKNOWN')", name="projectx_trade_events_side_check"),
         UniqueConstraint(
             "account_id",
+            "source_trade_id",
+            name="uq_projectx_trade_events_account_source_trade",
+        ),
+        UniqueConstraint(
+            "account_id",
             "order_id",
             "trade_timestamp",
             name="uq_projectx_trade_events_account_order_ts",
         ),
+    )
+
+
+class ProjectXTradeDaySync(Base):
+    __tablename__ = "projectx_trade_day_syncs"
+
+    id = Column(BigInteger, primary_key=True)
+    account_id = Column(BigInteger, nullable=False)
+    trade_date = Column(Date, nullable=False)
+    sync_status = Column(Text, nullable=False, server_default="partial")
+    last_synced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    row_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("sync_status in ('partial','complete')", name="projectx_trade_day_syncs_status_check"),
+        UniqueConstraint("account_id", "trade_date", name="uq_projectx_trade_day_syncs_account_date"),
     )
