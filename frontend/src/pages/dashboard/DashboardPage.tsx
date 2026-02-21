@@ -654,7 +654,7 @@ export function DashboardPage() {
               subtitle="Net realized PnL after fees."
               info="Realized net profit and loss after fees in the selected range."
               accentClassName="bg-gradient-to-r from-cyan-300/70 via-sky-200/25 to-transparent"
-              className="sm:col-span-2 md:col-span-4 lg:col-span-5"
+              className="sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1"
             >
               <div className="flex flex-wrap gap-2">
                 <Chip
@@ -677,7 +677,7 @@ export function DashboardPage() {
               subtitle="Expected net result per trade."
               info="Expectancy combines your win rate and payoff profile into average dollars per trade."
               accentClassName="bg-gradient-to-r from-sky-300/65 via-cyan-200/20 to-transparent"
-              className="sm:col-span-2 md:col-span-4 lg:col-span-5"
+              className="sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-3 lg:col-span-6 lg:row-start-1 lg:col-start-4"
             >
               <div className="flex flex-wrap gap-2">
                 <Chip label="PF" value={formatNumber(summary.profit_factor)} />
@@ -695,7 +695,7 @@ export function DashboardPage() {
               subtitle="Daily PnL volatility ($)."
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
               accentClassName="bg-gradient-to-r from-indigo-300/65 via-cyan-200/20 to-transparent"
-              className="self-start p-3 sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-2"
+              className="p-3 sm:col-span-2 md:col-span-2 md:row-start-2 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-2 lg:min-h-[420px]"
             >
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px]">
@@ -723,7 +723,7 @@ export function DashboardPage() {
               subtitle="Composite score from Swing, Outliers, and Risk."
               info="Sustainability combines swing ratio, outlier dependence, and drawdown efficiency into one score."
               accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
-              className="self-start p-3 sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-3"
+              className="self-start p-3 sm:col-span-2 md:col-span-6 md:row-start-4 md:col-start-1 lg:col-span-12 lg:col-start-1 lg:row-start-4"
             >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
@@ -775,7 +775,7 @@ export function DashboardPage() {
               subtitle="Peak-to-trough drop."
               info="Maximum realized drawdown over the selected period."
               accentClassName="bg-gradient-to-r from-rose-300/70 via-amber-200/20 to-transparent"
-              className="self-start sm:col-span-2 md:col-span-3 lg:col-span-4 lg:row-start-3"
+              className="self-start sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-5 lg:col-span-3 lg:row-start-1 lg:col-start-10"
             >
               <div className="flex flex-wrap gap-2">
                 <Chip label="DD % of Net PnL" value={formatMetricValue(drawdownPercentOfNet, formatPercent)} />
@@ -792,7 +792,7 @@ export function DashboardPage() {
               }
               info="Long % is long trades divided by total directional trades for this range."
               accentClassName="bg-gradient-to-r from-teal-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4 lg:row-start-2 lg:row-span-2"
+              className="md:col-span-2 md:row-start-2 md:row-span-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2 lg:row-span-2"
             >
               <DonutRing
                 segments={[
@@ -838,7 +838,7 @@ export function DashboardPage() {
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
               accentClassName="bg-gradient-to-r from-emerald-300/65 via-rose-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4 lg:row-start-4"
+              className="md:col-span-2 md:row-start-2 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-2"
             >
               <SplitBar
                 leftLabel="Avg Win"
@@ -866,7 +866,7 @@ export function DashboardPage() {
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
               accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-3 lg:col-span-4 lg:row-start-4"
+              className="md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3"
             >
               <SplitBar
                 leftLabel="Avg Win Duration"
@@ -893,7 +893,7 @@ export function DashboardPage() {
               subtitle="Closed trades in this range."
               info="Activity normalizes execution count by active trading days."
               accentClassName="bg-gradient-to-r from-slate-300/55 via-cyan-200/15 to-transparent"
-              className="md:col-span-2 lg:col-span-3"
+              className="md:col-span-2 md:row-start-3 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-3 lg:p-3"
             >
               <div className="flex flex-wrap gap-2">
                 <Chip label="Avg Trades/Day" value={formatNumber(summary.avg_trades_per_day)} />
