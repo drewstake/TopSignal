@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Input";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -18,7 +19,7 @@ import { PnlCalendarCard } from "./components/PnlCalendarCard";
 
 const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
-type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL";
+type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -161,7 +162,50 @@ function subtractUtcMonths(value: Date, months: number) {
   );
 }
 
-function buildMetricsRangeQuery(range: MetricsRangePreset): { start?: string; end?: string; allTime: boolean } {
+interface CustomDateRange {
+  startDate: string;
+  endDate: string;
+}
+
+function parseDateInput(value: string) {
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  return { year, month, day };
+}
+
+function toUtcIsoDate(value: string, endOfDay: boolean) {
+  const parsed = parseDateInput(value);
+  if (!parsed) {
+    return null;
+  }
+  const hour = endOfDay ? 23 : 0;
+  const minute = endOfDay ? 59 : 0;
+  const second = endOfDay ? 59 : 0;
+  const millisecond = endOfDay ? 999 : 0;
+  return new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day, hour, minute, second, millisecond)).toISOString();
+}
+
+function buildMetricsRangeQuery(
+  range: MetricsRangePreset,
+  customRange: CustomDateRange | null,
+): { start?: string; end?: string; allTime: boolean } {
+  if (range === "CUSTOM") {
+    if (!customRange) {
+      return { allTime: true };
+    }
+    const start = toUtcIsoDate(customRange.startDate, false);
+    const end = toUtcIsoDate(customRange.endDate, true);
+    if (!start || !end) {
+      return { allTime: true };
+    }
+    return { start, end, allTime: false };
+  }
+
   if (range === "ALL") {
     return { allTime: true };
   }
@@ -177,7 +221,7 @@ function buildMetricsRangeQuery(range: MetricsRangePreset): { start?: string; en
       start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
       break;
     case "1M":
-      start = subtractUtcMonths(end, 1);
+      start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1, 0, 0, 0, 0));
       break;
     case "6M":
       start = subtractUtcMonths(end, 6);
@@ -212,6 +256,9 @@ export function DashboardPage() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [metricsRange, setMetricsRange] = useState<MetricsRangePreset>("ALL");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [customRange, setCustomRange] = useState<CustomDateRange | null>(null);
 
   const [selectedTradeDate, setSelectedTradeDate] = useState<string | null>(null);
 
@@ -271,7 +318,8 @@ export function DashboardPage() {
     [accounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
-  const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange), [metricsRange]);
+  const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
+  const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
 
   const selectedTradeDateLabel = useMemo(() => {
     if (!selectedTradeDate) {
@@ -414,29 +462,52 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6 pb-10">
-      <Card>
-        <CardHeader className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle>Metrics Window</CardTitle>
-            <CardDescription>Select the dashboard range for summary and calendar metrics.</CardDescription>
+      <Card className="!bg-transparent !shadow-none border-slate-800/60 p-2 md:p-2">
+        <CardHeader className="mb-0 space-y-1">
+          <div className="overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/35 px-2 py-1.5">
+            <div className="flex min-w-max items-center gap-1.5">
+              <Input
+                type="date"
+                value={customStartDate}
+                max={customEndDate || undefined}
+                onChange={(event) => setCustomStartDate(event.target.value)}
+                className="h-8 w-[140px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
+                aria-label="Custom start date"
+              />
+              <Input
+                type="date"
+                value={customEndDate}
+                min={customStartDate || undefined}
+                onChange={(event) => {
+                  const nextEndDate = event.target.value;
+                  setCustomEndDate(nextEndDate);
+                  if (customStartDate !== "" && nextEndDate !== "" && customStartDate <= nextEndDate) {
+                    setCustomRange({ startDate: customStartDate, endDate: nextEndDate });
+                    setMetricsRange("CUSTOM");
+                    setSelectedTradeDate(null);
+                  }
+                }}
+                className="h-8 w-[140px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
+                aria-label="Custom end date"
+              />
+              {METRICS_RANGE_OPTIONS.map((option) => {
+                const active = option.key === metricsRange;
+                return (
+                  <Button
+                    key={option.key}
+                    variant={active ? "secondary" : "ghost"}
+                    size="sm"
+                    aria-pressed={active}
+                    onClick={() => setMetricsRange(option.key)}
+                    className={active ? "ring-1 ring-cyan-300/60" : undefined}
+                  >
+                    {option.label}
+                  </Button>
+                );
+              })}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {METRICS_RANGE_OPTIONS.map((option) => {
-              const active = option.key === metricsRange;
-              return (
-                <Button
-                  key={option.key}
-                  variant={active ? "secondary" : "ghost"}
-                  size="sm"
-                  aria-pressed={active}
-                  onClick={() => setMetricsRange(option.key)}
-                  className={active ? "ring-1 ring-cyan-300/60" : undefined}
-                >
-                  {option.label}
-                </Button>
-              );
-            })}
-          </div>
+          {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
         </CardHeader>
       </Card>
 

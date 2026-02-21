@@ -27,7 +27,7 @@ interface WeeklySummary {
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const monthLabelFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "long",
+  month: "short",
   year: "numeric",
   timeZone: "UTC",
 });
@@ -95,7 +95,13 @@ function tileBackground(value: number, maxAbs: number) {
   return `rgba(244, 63, 94, ${alpha.toFixed(3)})`;
 }
 
-export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelect }: PnlCalendarCardProps) {
+export function PnlCalendarCard({
+  days,
+  loading,
+  error,
+  selectedDate,
+  onDaySelect,
+}: PnlCalendarCardProps) {
   const dayMap = useMemo(() => {
     const map = new Map<string, AccountPnlCalendarDay>();
     days.forEach((day) => map.set(day.date, day));
@@ -222,9 +228,8 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center">
             <CardTitle className="sm:justify-self-start">PnL Calendar</CardTitle>
             <div className="text-center">
-              <p className="text-sm font-semibold text-slate-100">{monthLabelFormatter.format(visibleMonth)}</p>
-              <p className="text-xs text-slate-400">
-                {monthSummary.tradeCount} trades | {formatPnl(monthSummary.netPnl)}
+              <p className="text-sm font-medium text-slate-200 md:text-base">
+                {formatPnl(monthSummary.netPnl)} {" \u2022 "} {monthSummary.tradeCount} trades
               </p>
             </div>
             <div className="flex items-center justify-end gap-2">
@@ -236,6 +241,9 @@ export function PnlCalendarCard({ days, loading, error, selectedDate, onDaySelec
               >
                 Prev
               </Button>
+              <p className="min-w-[92px] text-center text-xs font-medium text-slate-300">
+                {monthLabelFormatter.format(visibleMonth)}
+              </p>
               <Button
                 variant="ghost"
                 size="sm"
