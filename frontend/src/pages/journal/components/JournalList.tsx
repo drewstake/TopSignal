@@ -1,11 +1,11 @@
 import { Badge } from "../../../components/ui/Badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
-import type { JournalEntry } from "../../../mock/data";
+import type { JournalEntry } from "../../../lib/types";
 
 export interface JournalListProps {
   entries: JournalEntry[];
-  selectedId: string;
-  onSelect: (id: string) => void;
+  selectedId: number | null;
+  onSelect: (id: number) => void;
 }
 
 const moodVariant = {
@@ -20,9 +20,14 @@ export function JournalList({ entries, selectedId, onSelect }: JournalListProps)
     <Card className="h-full">
       <CardHeader>
         <CardTitle>Journal Entries</CardTitle>
-        <CardDescription>Session notes and execution reflections.</CardDescription>
+        <CardDescription>Session notes and execution reflections by account.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
+        {entries.length === 0 ? (
+          <p className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-6 text-center text-sm text-slate-400">
+            No journal entries match the current filters.
+          </p>
+        ) : null}
         {entries.map((entry) => {
           const isActive = selectedId === entry.id;
 
@@ -39,9 +44,12 @@ export function JournalList({ entries, selectedId, onSelect }: JournalListProps)
             >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium text-slate-100">{entry.title}</p>
-                <Badge variant={moodVariant[entry.mood]}>{entry.mood}</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant={moodVariant[entry.mood]}>{entry.mood}</Badge>
+                  {entry.is_archived ? <Badge variant="neutral">Archived</Badge> : null}
+                </div>
               </div>
-              <p className="mt-1 text-xs text-slate-400">{entry.date}</p>
+              <p className="mt-1 text-xs text-slate-400">{entry.entry_date}</p>
             </button>
           );
         })}

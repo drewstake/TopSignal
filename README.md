@@ -11,7 +11,7 @@ This README is implementation-based and reflects the current code in this repo.
 
 ### What it is
 TopSignal is a full-stack app with:
-- A React frontend (`frontend/`) for account selection, trade review, and dashboard metrics.
+- A React frontend (`frontend/`) for account selection, trade review, dashboard metrics, and journaling.
 - A FastAPI backend (`backend/`) that fetches ProjectX data, normalizes it, stores it in Postgres, and serves internal APIs.
 
 ### Main purpose/use case
@@ -24,6 +24,7 @@ TopSignal is a full-stack app with:
 - Account-level summary metrics from locally stored ProjectX events.
 - Daily PnL calendar (UTC days) with click-to-filter trade table.
 - Trades page filters by date range and symbol search.
+- Account-scoped journal entries with autosave, filtering, and soft archive.
 - Active account persistence across pages via query string + `localStorage`.
 
 ### Who it is for
@@ -49,11 +50,13 @@ TopSignal/
 |   |-- app/
 |   |   |-- main.py                  # FastAPI routes
 |   |   |-- db.py                    # SQLAlchemy engine/session/init
-|   |   |-- models.py                # ORM models: accounts, trades, projectx_trade_events
+|   |   |-- models.py                # ORM models: accounts, trades, projectx_trade_events, journal_entries
+|   |   |-- journal_schemas.py       # Journal request/response schemas
 |   |   |-- schemas.py               # Legacy trade response schema
 |   |   |-- metrics_schemas.py       # Legacy metrics response schemas
 |   |   |-- projectx_schemas.py      # ProjectX response schemas
 |   |   `-- services/
+|   |       |-- journal.py           # Journal query/create/update/archive logic
 |   |       |-- projectx_client.py   # External API wrapper + token cache
 |   |       |-- projectx_trades.py   # Sync, dedupe, storage, serialization
 |   |       |-- projectx_metrics.py  # Summary + daily calendar metrics from event rows
@@ -67,7 +70,8 @@ TopSignal/
 |   |   |-- pages/
 |   |   |   |-- dashboard/           # Active dashboard page (summary + calendar + trades)
 |   |   |   |-- accounts/            # Active accounts page
-|   |   |   `-- trades/              # Active trades page
+|   |   |   |-- trades/              # Active trades page
+|   |   |   `-- journal/             # Active journal page
 |   |   |-- components/ui/           # Reusable UI primitives
 |   |   `-- mock/                    # Mock datasets for unrouted prototype pages
 |   |-- package.json
@@ -81,8 +85,8 @@ TopSignal/
 ```
 
 ### Active vs partial code paths
-- Active UI routes: `/`, `/accounts`, `/trades` (see `frontend/src/app/routes.tsx`).
-- Unrouted prototype pages exist under `frontend/src/pages/overview`, `frontend/src/pages/analytics`, `frontend/src/pages/journal` and consume `frontend/src/mock/data.ts`.
+- Active UI routes: `/`, `/accounts`, `/trades`, `/journal` (see `frontend/src/app/routes.tsx`).
+- Unrouted prototype pages exist under `frontend/src/pages/overview`, `frontend/src/pages/analytics` and consume `frontend/src/mock/data.ts`.
 - Backend `/metrics/*` + `/trades` endpoints are implemented but currently not used by routed frontend pages.
 
 ## 4. How It Works (End-to-End Data Flow)
@@ -177,7 +181,10 @@ TopSignal currently integrates with ProjectX/TopstepX Gateway only.
 | `GET` | `/metrics/pnl-by-symbol` | optional `account_id` | `SymbolPnlOut[]` | No (legacy API) |
 | `GET` | `/metrics/streaks` | optional `account_id` | `StreakMetricsOut` | No (legacy API) |
 | `GET` | `/metrics/behavior` | optional `account_id` | `BehaviorMetricsOut` | No (legacy API) |
-| `GET` | `/api/accounts` | None | `ProjectXAccountOut[]` | Dashboard, Accounts, Trades pages |
+| `GET` | `/api/accounts` | None | `ProjectXAccountOut[]` | Dashboard, Accounts, Trades, Journal pages |
+| `GET` | `/api/accounts/{account_id}/journal` | optional `start_date`, `end_date`, `mood`, `q`, `include_archived`, `limit` (1-200), `offset` | `{ items: JournalEntryOut[], total }` | Journal page |
+| `POST` | `/api/accounts/{account_id}/journal` | body `{ entry_date, title, mood, tags, body }` | `JournalEntryOut` | Journal page |
+| `PATCH` | `/api/accounts/{account_id}/journal/{entry_id}` | body with any of `{ entry_date, title, mood, tags, body, is_archived }` | `JournalEntryOut` | Journal page |
 | `POST` | `/api/accounts/{account_id}/trades/refresh` | optional `start`, `end` | `{ fetched_count, inserted_count }` | Dashboard, Accounts, Trades pages |
 | `GET` | `/api/accounts/{account_id}/trades` | `limit` (1-1000), optional `start`, `end`, `symbol`, `refresh` | `ProjectXTradeOut[]` | Dashboard, Accounts, Trades pages |
 | `GET` | `/api/accounts/{account_id}/summary` | optional `start`, `end`, `refresh` | `ProjectXTradeSummaryOut` | Dashboard, Accounts, Trades pages |
@@ -216,6 +223,8 @@ TopSignal currently integrates with ProjectX/TopstepX Gateway only.
 - `400`:
   - Invalid `account_id` (must be positive).
   - Invalid date range (`start > end`).
+- `404`:
+  - Journal entry not found for the selected account.
 - `500`:
   - Missing local server configuration (for example required ProjectX env vars not present).
 - `502`:
@@ -237,6 +246,7 @@ TopSignal currently integrates with ProjectX/TopstepX Gateway only.
 - `accounts`: account identity metadata.
 - `trades`: app-level trade table (legacy metrics endpoints).
 - `projectx_trade_events`: normalized ProjectX trade events, including `raw_payload` JSON from upstream.
+- `journal_entries`: account-scoped journal entries with mood/tags/body and soft-archive flag.
 
 ### Storage notes
 - `projectx_trade_events` is the primary live data source for the routed UI.
@@ -252,12 +262,14 @@ TopSignal currently integrates with ProjectX/TopstepX Gateway only.
 | `accounts` | `id`, `provider`, `external_id`, `name`, `created_at` | Account registry with unique (`provider`, `external_id`). |
 | `trades` | `account_id`, `symbol`, `side`, `opened_at`, `closed_at`, `qty`, `entry_price`, `exit_price`, `pnl`, `fees`, `is_rule_break`, `rule_break_type` | Legacy app trade model used by `/metrics/*` and `/trades` legacy endpoints. |
 | `projectx_trade_events` | `account_id`, `contract_id`, `symbol`, `side`, `size`, `price`, `trade_timestamp`, `fees`, `pnl`, `order_id`, `source_trade_id`, `raw_payload` | Normalized ProjectX events; unique on (`account_id`, `order_id`, `trade_timestamp`). |
+| `journal_entries` | `account_id`, `entry_date`, `title`, `mood`, `tags`, `body`, `is_archived`, `updated_at` | Account-scoped journaling rows with multi-entry/day support and soft archive. |
 
 ### API-facing models (selected)
 - `ProjectXAccountOut`: `id`, `name`, `balance`, `status`.
 - `ProjectXTradeOut`: normalized trade event row for UI table.
 - `ProjectXTradeSummaryOut`: net/gross/fees/win-rate/drawdown/trade-count metrics.
 - `ProjectXPnlCalendarDayOut`: `date`, `trade_count`, `gross_pnl`, `fees`, `net_pnl`.
+- `JournalEntryOut`: `id`, `account_id`, `entry_date`, `title`, `mood`, `tags`, `body`, `is_archived`, timestamps.
 
 ### Computed/derived fields
 - Net PnL values are computed server-side (gross realized minus effective fees).
@@ -376,6 +388,7 @@ Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d t
 Get-Content .\db\migrations\20260220_add_rule_break_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\migrations\20260221_add_journal_entries.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 ```
 
 ### 3) Install dependencies
@@ -449,6 +462,11 @@ npm run build
    - Change fetch limit (100/200/500/1000).
    - Page through results.
    - Sync latest events for the selected date range.
+5. Go to `Journal`:
+   - Create entries scoped to the active account.
+   - Edit title/mood/tags/body with autosave.
+   - Filter by date range, mood, and text search.
+   - Archive/unarchive entries (soft archive).
 
 ### "Active accounts only" behavior
 - The backend sends `onlyActiveAccounts: true` to ProjectX account search.
@@ -460,7 +478,7 @@ npm run build
 - `npm run stop` references `stop.ps1`, but `stop.ps1` is currently missing.
 - `db/README.md` references `db/seed.sql`, but `db/seed.sql` is not present.
 - Routed UI does not consume legacy `/metrics/*` and `/trades` endpoints yet.
-- Unrouted prototype pages (`overview/analytics/journal`) still use mock data.
+- Unrouted prototype pages (`overview/analytics`) still use mock data.
 - CORS origin is hardcoded to `http://localhost:5173` (single-origin local setup).
 - No automated migration tool (Alembic) is configured; SQL migrations are manual.
 - Requirements include packages (for example `websockets`) that are not currently used by active backend routes.

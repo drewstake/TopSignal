@@ -12,7 +12,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from .db import Base
 
 class Account(Base):
@@ -107,4 +109,30 @@ class ProjectXTradeDaySync(Base):
     __table_args__ = (
         CheckConstraint("sync_status in ('partial','complete')", name="projectx_trade_day_syncs_status_check"),
         UniqueConstraint("account_id", "trade_date", name="uq_projectx_trade_day_syncs_account_date"),
+    )
+
+
+class JournalEntry(Base):
+    __tablename__ = "journal_entries"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    account_id = Column(BigInteger, nullable=False)
+    entry_date = Column(Date, nullable=False)
+    title = Column(Text, nullable=False)
+    mood = Column(Text, nullable=False)
+    tags = Column(
+        ARRAY(Text).with_variant(JSON, "sqlite"),
+        nullable=False,
+        server_default=text("'{}'"),
+    )
+    body = Column(Text, nullable=False, server_default=text("''"))
+    is_archived = Column(Boolean, nullable=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "mood in ('Focused','Neutral','Frustrated','Confident')",
+            name="journal_entries_mood_check",
+        ),
     )

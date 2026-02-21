@@ -1,11 +1,18 @@
 import calendar
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from .db import get_db, init_db
+from .journal_schemas import (
+    JournalEntryCreateIn,
+    JournalEntryListOut,
+    JournalEntryOut,
+    JournalEntryUpdateIn,
+    JournalMood,
+)
 from .metrics_schemas import (
     BehaviorMetricsOut,
     DayPnlOut,
@@ -31,6 +38,15 @@ from .services.metrics import (
     get_streak_metrics,
     get_summary_metrics,
 )
+from .services.journal import (
+    archive_journal_entry,
+    create_journal_entry,
+    list_journal_entries,
+    serialize_journal_entry,
+    unarchive_journal_entry,
+    update_journal_entry,
+    validate_date_range as validate_journal_date_range,
+)
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.projectx_trades import (
     ensure_trade_cache_for_request,
@@ -44,10 +60,12 @@ from .services.projectx_trades import (
 
 app = FastAPI(title="TopSignal API")
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
+_LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    allow_origin_regex=_LOCAL_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,6 +149,102 @@ def list_projectx_accounts():
         return client.list_accounts()
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
+
+
+@app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)
+def list_projectx_account_journal_entries(
+    account_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    mood: JournalMood | None = None,
+    q: str | None = Query(default=None, max_length=200),
+    include_archived: bool = False,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    _validate_journal_date_range(start_date=start_date, end_date=end_date)
+
+    try:
+        rows, total = list_journal_entries(
+            db,
+            account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            mood=mood,
+            text_query=q,
+            include_archived=include_archived,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "items": [serialize_journal_entry(row) for row in rows],
+            "total": total,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/accounts/{account_id}/journal", response_model=JournalEntryOut, status_code=201)
+def create_projectx_account_journal_entry(
+    account_id: int,
+    payload: JournalEntryCreateIn,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+
+    try:
+        row = create_journal_entry(
+            db,
+            account_id=account_id,
+            entry_date=payload.entry_date,
+            title=payload.title,
+            mood=payload.mood,
+            tags=payload.tags,
+            body=payload.body,
+        )
+        return serialize_journal_entry(row)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/accounts/{account_id}/journal/{entry_id}", response_model=JournalEntryOut)
+def update_projectx_account_journal_entry(
+    account_id: int,
+    entry_id: int,
+    payload: JournalEntryUpdateIn,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+    if _journal_update_payload_is_empty(payload):
+        raise HTTPException(status_code=400, detail="at least one field must be provided")
+
+    try:
+        if _journal_update_payload_is_archive_only(payload) and payload.is_archived is not None:
+            if payload.is_archived:
+                row = archive_journal_entry(db, account_id=account_id, entry_id=entry_id)
+            else:
+                row = unarchive_journal_entry(db, account_id=account_id, entry_id=entry_id)
+        else:
+            row = update_journal_entry(
+                db,
+                account_id=account_id,
+                entry_id=entry_id,
+                entry_date=payload.entry_date,
+                title=payload.title,
+                mood=payload.mood,
+                tags=payload.tags,
+                body=payload.body,
+                is_archived=payload.is_archived,
+            )
+        return serialize_journal_entry(row)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/accounts/{account_id}/trades/refresh", response_model=ProjectXTradeRefreshOut)
@@ -272,6 +386,35 @@ def _validate_account_id(account_id: int) -> None:
 def _validate_time_range(*, start: datetime | None, end: datetime | None) -> None:
     if start and end and start > end:
         raise HTTPException(status_code=400, detail="start must be before end")
+
+
+def _validate_journal_date_range(*, start_date: date | None, end_date: date | None) -> None:
+    try:
+        validate_journal_date_range(start_date=start_date, end_date=end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _journal_update_payload_is_empty(payload: JournalEntryUpdateIn) -> bool:
+    return (
+        payload.entry_date is None
+        and payload.title is None
+        and payload.mood is None
+        and payload.tags is None
+        and payload.body is None
+        and payload.is_archived is None
+    )
+
+
+def _journal_update_payload_is_archive_only(payload: JournalEntryUpdateIn) -> bool:
+    return (
+        payload.is_archived is not None
+        and payload.entry_date is None
+        and payload.title is None
+        and payload.mood is None
+        and payload.tags is None
+        and payload.body is None
+    )
 
 
 def _as_utc(value: datetime) -> datetime:

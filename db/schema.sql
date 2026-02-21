@@ -191,3 +191,37 @@ create table if not exists projectx_trade_day_syncs (
 -- ============================================
 create index if not exists idx_projectx_trade_day_syncs_account_date
   on projectx_trade_day_syncs (account_id, trade_date desc);
+
+
+-- ============================================
+-- TABLE: journal_entries
+-- Account-scoped daily journaling entries.
+-- ============================================
+create table if not exists journal_entries (
+  id bigserial primary key,
+  account_id bigint not null,
+  entry_date date not null,
+  title text not null,
+  mood text not null check (mood in ('Focused','Neutral','Frustrated','Confident')),
+  tags text[] not null default '{}',
+  body text not null default '',
+  is_archived boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+
+-- ============================================
+-- INDEX: idx_journal_entries_account_archived_date_updated
+-- Speeds account-scoped list queries with active/archive toggle.
+-- ============================================
+create index if not exists idx_journal_entries_account_archived_date_updated
+  on journal_entries (account_id, is_archived, entry_date desc, updated_at desc);
+
+
+-- ============================================
+-- INDEX: idx_journal_entries_account_mood_date
+-- Speeds mood-filtered journal lookups.
+-- ============================================
+create index if not exists idx_journal_entries_account_mood_date
+  on journal_entries (account_id, mood, entry_date desc);

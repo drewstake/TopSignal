@@ -146,3 +146,50 @@ export interface AccountPnlCalendarDay {
   fees: number;
   net_pnl: number;
 }
+
+export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";
+
+export interface JournalEntry {
+  id: number;
+  account_id: number;
+  entry_date: string;
+  title: string;
+  mood: JournalMood;
+  tags: string[];
+  body: string;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalEntriesResponse {
+  items: JournalEntry[];
+  total: number;
+}
+
+export interface JournalEntriesQuery {
+  start_date?: string;
+  end_date?: string;
+  mood?: JournalMood;
+  q?: string;
+  include_archived?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface JournalEntryCreateInput {
+  entry_date: string;
+  title: string;
+  mood: JournalMood;
+  tags: string[];
+  body: string;
+}
+
+export interface JournalEntryUpdateInput {
+  entry_date?: string;
+  title?: string;
+  mood?: JournalMood;
+  tags?: string[];
+  body?: string;
+  is_archived?: boolean;
+}

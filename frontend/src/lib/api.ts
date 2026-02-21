@@ -1,5 +1,10 @@
 import type {
   AccountInfo,
+  JournalEntry,
+  JournalEntryCreateInput,
+  JournalEntryUpdateInput,
+  JournalEntriesQuery,
+  JournalEntriesResponse,
   AccountPnlCalendarDay,
   AccountSummary,
   AccountTrade,
@@ -19,7 +24,7 @@ const ACCOUNTS_CACHE_TTL_MS = 30_000;
 type QueryValue = string | number | boolean | null | undefined;
 
 interface RequestJsonOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PATCH";
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
@@ -175,5 +180,27 @@ export const accountsApi = {
         start: query.start,
         end: query.end,
       },
+    }),
+  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}) =>
+    requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
+      query: {
+        start_date: query.start_date,
+        end_date: query.end_date,
+        mood: query.mood,
+        q: query.q,
+        include_archived: query.include_archived,
+        limit: query.limit ?? 20,
+        offset: query.offset ?? 0,
+      },
+    }),
+  createJournalEntry: (accountId: number, body: JournalEntryCreateInput) =>
+    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal`, {
+      method: "POST",
+      body,
+    }),
+  updateJournalEntry: (accountId: number, entryId: number, body: JournalEntryUpdateInput) =>
+    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}`, {
+      method: "PATCH",
+      body,
     }),
 };
