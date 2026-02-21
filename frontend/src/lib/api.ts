@@ -14,6 +14,7 @@ import type {
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const ACCOUNTS_CACHE_TTL_MS = 30_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -22,6 +23,11 @@ interface RequestJsonOptions {
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
+}
+
+interface TimedCache<T> {
+  value: T;
+  expiresAtMs: number;
 }
 
 function buildUrl(path: string, query?: Record<string, QueryValue>) {
@@ -71,6 +77,33 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
   return (await response.json()) as T;
 }
 
+let accountsCache: TimedCache<AccountInfo[]> | null = null;
+let inFlightAccountsRequest: Promise<AccountInfo[]> | null = null;
+
+function getAccountsCached(): Promise<AccountInfo[]> {
+  const now = Date.now();
+  if (accountsCache && accountsCache.expiresAtMs > now) {
+    return Promise.resolve(accountsCache.value);
+  }
+  if (inFlightAccountsRequest) {
+    return inFlightAccountsRequest;
+  }
+
+  inFlightAccountsRequest = requestJson<AccountInfo[]>("/api/accounts")
+    .then((accounts) => {
+      accountsCache = {
+        value: accounts,
+        expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
+      };
+      return accounts;
+    })
+    .finally(() => {
+      inFlightAccountsRequest = null;
+    });
+
+  return inFlightAccountsRequest;
+}
+
 export const metricsApi = {
   getSummary: (accountId?: number) =>
     requestJson<SummaryMetrics>("/metrics/summary", { query: { account_id: accountId } }),
@@ -103,7 +136,7 @@ interface AccountSummaryQuery {
 }
 
 export const accountsApi = {
-  getAccounts: () => requestJson<AccountInfo[]>("/api/accounts"),
+  getAccounts: () => getAccountsCached(),
   getTrades: (accountId: number, query: AccountTradesQuery = {}) =>
     requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
       query: {

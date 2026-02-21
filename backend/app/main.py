@@ -34,7 +34,6 @@ from .services.metrics import (
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.projectx_trades import (
     ensure_trade_cache_for_request,
-    get_earliest_trade_timestamp,
     get_trade_event_pnl_calendar,
     has_local_trades,
     list_trade_events,
@@ -236,11 +235,9 @@ def get_projectx_account_pnl_calendar(
         effective_end = end
 
     try:
+        # Avoid expensive provider backfills on routine page refreshes.
+        # Use explicit refresh (or empty local cache) as the sync trigger.
         needs_sync = refresh or not has_local_trades(db, account_id)
-        if not needs_sync and use_default_window and effective_start is not None:
-            earliest_local = get_earliest_trade_timestamp(db, account_id)
-            needs_sync = earliest_local is None or _as_utc(earliest_local) > _as_utc(effective_start)
-
         if needs_sync:
             client = ProjectXClient.from_env()
             refresh_account_trades(

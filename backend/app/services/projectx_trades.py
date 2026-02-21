@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .projectx_client import ProjectXClient
@@ -250,6 +250,22 @@ def list_trade_events(
 ) -> list[ProjectXTradeEvent]:
     query = (
         db.query(ProjectXTradeEvent)
+        .options(
+            load_only(
+                ProjectXTradeEvent.id,
+                ProjectXTradeEvent.account_id,
+                ProjectXTradeEvent.contract_id,
+                ProjectXTradeEvent.symbol,
+                ProjectXTradeEvent.side,
+                ProjectXTradeEvent.size,
+                ProjectXTradeEvent.price,
+                ProjectXTradeEvent.trade_timestamp,
+                ProjectXTradeEvent.fees,
+                ProjectXTradeEvent.pnl,
+                ProjectXTradeEvent.order_id,
+                ProjectXTradeEvent.source_trade_id,
+            )
+        )
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         # Topstep day journal rows are closed trades only.
@@ -747,7 +763,17 @@ def _load_trade_metric_samples(
     end: datetime | None = None,
 ) -> list[TradeMetricSample]:
     query = (
-        db.query(ProjectXTradeEvent)
+        db.query(
+            ProjectXTradeEvent.trade_timestamp,
+            ProjectXTradeEvent.pnl,
+            ProjectXTradeEvent.fees,
+            ProjectXTradeEvent.order_id,
+            ProjectXTradeEvent.symbol,
+            ProjectXTradeEvent.contract_id,
+            ProjectXTradeEvent.side,
+            ProjectXTradeEvent.size,
+            ProjectXTradeEvent.price,
+        )
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
     )
@@ -760,7 +786,7 @@ def _load_trade_metric_samples(
     return [_to_metric_sample(row) for row in rows]
 
 
-def _to_metric_sample(row: ProjectXTradeEvent) -> TradeMetricSample:
+def _to_metric_sample(row: Any) -> TradeMetricSample:
     return TradeMetricSample(
         timestamp=_as_utc(row.trade_timestamp),
         pnl=float(row.pnl) if row.pnl is not None else None,
