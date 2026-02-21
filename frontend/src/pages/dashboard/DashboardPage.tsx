@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { ChipRow } from "../../components/metrics/ChipRow";
+import { DirectionDonut } from "../../components/metrics/DirectionDonut";
+import { MetricCard } from "../../components/metrics/MetricCard";
+import { SplitBar } from "../../components/metrics/SplitBar";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -15,6 +19,13 @@ import { accountsApi } from "../../lib/api";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
+import { formatCurrency, formatInteger, formatMinutes, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
+import {
+  computeBreakevenWinRate,
+  computeDirectionPercentages,
+  computeDrawdownPercentOfNetPnl,
+  computeStabilityScoreFromWorstDayPercent,
+} from "../../utils/metrics";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
@@ -31,20 +42,6 @@ const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> =
   { key: "6M", label: "6M" },
   { key: "ALL", label: "All" },
 ];
-
-const currencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-const pnlFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 2,
-});
 
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -97,37 +94,18 @@ const emptySummary: AccountSummary = {
   profit_per_day: 0,
 };
 
-function formatPnl(value: number) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${pnlFormatter.format(value)}`;
-}
-
 function formatFee(value: number) {
-  return currencyFormatter.format(-Math.abs(value));
-}
-
-function formatPercent(value: number) {
-  return `${value.toFixed(2)}%`;
-}
-
-function formatNumber(value: number) {
-  return value.toFixed(2);
-}
-
-function formatMinutes(value: number) {
-  const safeMinutes = Number.isFinite(value) ? Math.max(0, value) : 0;
-  const totalSeconds = Math.round(safeMinutes * 60);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes} min ${seconds} sec`;
+  return formatCurrency(-Math.abs(value));
 }
 
 function pnlClass(value: number) {
   return value >= 0 ? "text-emerald-300" : "text-rose-300";
 }
 
-function formatInteger(value: number) {
-  return Math.round(value).toLocaleString("en-US");
+function pnlChipClass(value: number) {
+  return value >= 0
+    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+    : "border-rose-400/35 bg-rose-500/10 text-rose-100";
 }
 
 function formatMetricValue(metric: MetricValue, formatter: (value: number) => string) {
@@ -268,13 +246,6 @@ function getUtcDayRange(value: string) {
     start: start.toISOString(),
     end: end.toISOString(),
   };
-}
-
-interface SummaryCard {
-  label: string;
-  value: string;
-  detail: string;
-  className?: string;
 }
 
 export function DashboardPage() {
@@ -510,163 +481,62 @@ export function DashboardPage() {
     [directionDataIssue, hasCompleteDirectionalHistory, metricsTrades, pnlCalendarDays, summary],
   );
 
-  const summaryCards = useMemo<SummaryCard[]>(() => {
-    const netPnlMetric: MetricValue = { value: summary.net_pnl };
-    const profitPerDayMetric: MetricValue = { value: summary.profit_per_day };
-    const efficiencyPerHourMetric: MetricValue = { value: summary.efficiency_per_hour };
-    const expectancyPerTradeMetric: MetricValue = { value: summary.expectancy_per_trade };
-    const maxDrawdownMetric: MetricValue = { value: summary.max_drawdown };
-    const averageWinMetric: MetricValue = { value: summary.avg_win };
-    const averageLossMetric: MetricValue = { value: summary.avg_loss };
+  const netPnlMetric: MetricValue = { value: summary.net_pnl };
+  const profitPerDayMetric: MetricValue = { value: summary.profit_per_day };
+  const efficiencyPerHourMetric: MetricValue = { value: summary.efficiency_per_hour };
+  const expectancyPerTradeMetric: MetricValue = { value: summary.expectancy_per_trade };
+  const maxDrawdownMetric: MetricValue = { value: summary.max_drawdown };
+  const averageWinMetric: MetricValue = { value: summary.avg_win };
+  const averageLossMetric: MetricValue = { value: summary.avg_loss };
 
-    const longWinRateDetail =
-      derivedMetrics.direction.longWinRate.value === null
-        ? derivedMetrics.direction.longWinRate.missingReason ?? "Needs long trades."
-        : `Long win rate ${formatPercent(derivedMetrics.direction.longWinRate.value)}.`;
-    const shortWinRateDetail =
-      derivedMetrics.direction.shortWinRate.value === null
-        ? derivedMetrics.direction.shortWinRate.missingReason ?? "Needs short trades."
-        : `Short win rate ${formatPercent(derivedMetrics.direction.shortWinRate.value)}.`;
+  const drawdownPercentOfNet = useMemo(
+    () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, summary.net_pnl),
+    [summary.max_drawdown, summary.net_pnl],
+  );
+  const payoffBreakevenWinRate = useMemo(() => computeBreakevenWinRate(summary.avg_win, summary.avg_loss), [summary.avg_loss, summary.avg_win]);
 
-    return [
-      {
-        label: "Net PnL",
-        value: formatMetricValue(netPnlMetric, formatPnl),
-        className: metricPnlClass(netPnlMetric),
-        detail: "Net realized PnL after fees.",
-      },
-      {
-        label: "Profit / Day",
-        value: formatMetricValue(profitPerDayMetric, formatPnl),
-        className: metricPnlClass(profitPerDayMetric),
-        detail: "Net PnL divided by active trading days.",
-      },
-      {
-        label: "Efficiency / Hour",
-        value: formatMetricValue(efficiencyPerHourMetric, formatPnl),
-        className: metricPnlClass(efficiencyPerHourMetric),
-        detail: "Existing tracked PnL per active hour.",
-      },
-      {
-        label: "Expectancy / Trade",
-        value: formatMetricValue(expectancyPerTradeMetric, formatPnl),
-        className: metricPnlClass(expectancyPerTradeMetric),
-        detail: "Average net outcome per closed trade.",
-      },
-      {
-        label: "Max Drawdown",
-        value: formatMetricValue(maxDrawdownMetric, formatPnl),
-        className: metricPnlClass(maxDrawdownMetric),
-        detail: "Largest peak-to-trough equity drop.",
-      },
-      {
-        label: "Profit Factor",
-        value: formatNumber(summary.profit_factor),
-        detail: "Gross wins divided by gross loss magnitude.",
-      },
-      {
-        label: "Win Rate",
-        value: formatPercent(summary.win_rate),
-        detail: `Winning closed trades. ${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE.`,
-      },
-      {
-        label: "Average Win",
-        value: formatMetricValue(averageWinMetric, formatPnl),
-        className: metricPnlClass(averageWinMetric),
-        detail: "Mean net PnL of winning trades.",
-      },
-      {
-        label: "Average Loss",
-        value: formatMetricValue(averageLossMetric, formatPnl),
-        className: metricPnlClass(averageLossMetric),
-        detail: "Mean net PnL of losing trades.",
-      },
-      {
-        label: "Win/Loss Ratio",
-        value: formatMetricValue(derivedMetrics.winLossRatio, formatNumber),
-        detail: metricDetail(derivedMetrics.winLossRatio, "Average win divided by average loss magnitude."),
-      },
-      {
-        label: "Long Trades",
-        value: formatMetricValue(derivedMetrics.direction.longTrades, formatInteger),
-        detail: metricDetail(derivedMetrics.direction.longTrades, `Closed long trades. ${longWinRateDetail}`),
-      },
-      {
-        label: "Short Trades",
-        value: formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger),
-        detail: metricDetail(derivedMetrics.direction.shortTrades, `Closed short trades. ${shortWinRateDetail}`),
-      },
-      {
-        label: "Long %",
-        value: formatMetricValue(derivedMetrics.direction.longPercent, formatPercent),
-        detail: metricDetail(derivedMetrics.direction.longPercent, "Long trades as a share of directional trades."),
-      },
-      {
-        label: "Long PnL",
-        value: formatMetricValue(derivedMetrics.direction.longPnl, formatPnl),
-        className: metricPnlClass(derivedMetrics.direction.longPnl),
-        detail: metricDetail(derivedMetrics.direction.longPnl, "Net PnL summed across long trades."),
-      },
-      {
-        label: "Short PnL",
-        value: formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl),
-        className: metricPnlClass(derivedMetrics.direction.shortPnl),
-        detail: metricDetail(derivedMetrics.direction.shortPnl, "Net PnL summed across short trades."),
-      },
-      {
-        label: "Avg Win Duration",
-        value: formatMinutes(summary.avg_win_duration_minutes),
-        detail: "Mean hold time for winning trades.",
-      },
-      {
-        label: "Avg Loss Duration",
-        value: formatMinutes(summary.avg_loss_duration_minutes),
-        detail: "Mean hold time for losing trades.",
-      },
-      {
-        label: "Win Duration \u00F7 Loss Duration",
-        value: formatMetricValue(derivedMetrics.winDurationOverLossDuration, formatNumber),
-        detail: metricDetail(derivedMetrics.winDurationOverLossDuration, "Average win hold time divided by average loss hold time."),
-      },
-      {
-        label: "Avg Trades / Day",
-        value: formatNumber(summary.avg_trades_per_day),
-        detail: `Closed trades per active day (${summary.active_days} active days).`,
-      },
-      {
-        label: "Trades",
-        value: formatInteger(summary.trade_count),
-        detail: "Closed trade count in the selected range.",
-      },
-      {
-        label: "Best Day",
-        value: formatMetricValue(derivedMetrics.stability.bestDay, formatPnl),
-        className: metricPnlClass(derivedMetrics.stability.bestDay),
-        detail: metricDetail(derivedMetrics.stability.bestDay, "Highest daily net PnL."),
-      },
-      {
-        label: "Worst Day",
-        value: formatMetricValue(derivedMetrics.stability.worstDay, formatPnl),
-        className: metricPnlClass(derivedMetrics.stability.worstDay),
-        detail: metricDetail(derivedMetrics.stability.worstDay, "Lowest daily net PnL."),
-      },
-      {
-        label: "Daily PnL Volatility ($)",
-        value: formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, (value) => currencyFormatter.format(value)),
-        detail: metricDetail(derivedMetrics.stability.dailyPnlVolatility, "Standard deviation of daily net PnL."),
-      },
-      {
-        label: "Best Day % of Net PnL",
-        value: formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent),
-        detail: metricDetail(derivedMetrics.stability.bestDayPercentOfNet, "Best day divided by net PnL."),
-      },
-      {
-        label: "Worst Day % of Net PnL",
-        value: formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent),
-        detail: metricDetail(derivedMetrics.stability.worstDayPercentOfNet, "Abs(worst day) divided by net PnL."),
-      },
-    ];
-  }, [derivedMetrics, summary]);
+  const directionSplit = useMemo(() => {
+    const longTrades = derivedMetrics.direction.longTrades.value;
+    const shortTrades = derivedMetrics.direction.shortTrades.value;
+    if (longTrades === null || shortTrades === null) {
+      const reason =
+        derivedMetrics.direction.longTrades.missingReason ??
+        derivedMetrics.direction.shortTrades.missingReason ??
+        "Needs directional trades.";
+      return {
+        longPercent: { value: null, missingReason: reason },
+        shortPercent: { value: null, missingReason: reason },
+      };
+    }
+    return computeDirectionPercentages(longTrades, shortTrades);
+  }, [
+    derivedMetrics.direction.longTrades.missingReason,
+    derivedMetrics.direction.longTrades.value,
+    derivedMetrics.direction.shortTrades.missingReason,
+    derivedMetrics.direction.shortTrades.value,
+  ]);
+
+  const stabilityScore = useMemo(
+    () => computeStabilityScoreFromWorstDayPercent(derivedMetrics.stability.worstDayPercentOfNet.value),
+    [derivedMetrics.stability.worstDayPercentOfNet.value],
+  );
+
+  const directionPrimaryValue =
+    directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
+  const directionBiasText =
+    directionSplit.longPercent.value === null || directionSplit.shortPercent.value === null
+      ? directionSplit.longPercent.missingReason ?? "Needs directional trade data."
+      : `Bias: Long ${formatPercent(directionSplit.longPercent.value, 0)}, Short ${formatPercent(directionSplit.shortPercent.value, 0)}`;
+
+  const longDirectionTooltip =
+    derivedMetrics.direction.longTrades.value === null
+      ? derivedMetrics.direction.longTrades.missingReason ?? "Needs long trades."
+      : `Long ${formatInteger(derivedMetrics.direction.longTrades.value)} trades | Win ${formatMetricValue(derivedMetrics.direction.longWinRate, formatPercent)} | PnL ${formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)}`;
+
+  const shortDirectionTooltip =
+    derivedMetrics.direction.shortTrades.value === null
+      ? derivedMetrics.direction.shortTrades.missingReason ?? "Needs short trades."
+      : `Short ${formatInteger(derivedMetrics.direction.shortTrades.value)} trades | Win ${formatMetricValue(derivedMetrics.direction.shortWinRate, formatPercent)} | PnL ${formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)}`;
 
   return (
     <div className="space-y-6 pb-10">
@@ -719,26 +589,198 @@ export function DashboardPage() {
         </CardHeader>
       </Card>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
         {summaryLoading ? (
-          Array.from({ length: summaryCards.length }).map((_, index) => (
-            <Card key={`summary-loading-${index}`} className="p-4">
-              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Loading...</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-100">...</p>
-            </Card>
+          Array.from({ length: 8 }).map((_, index) => (
+            <MetricCard key={`summary-loading-${index}`} title="Loading" primaryValue="..." className="animate-pulse" />
           ))
         ) : summaryError ? (
-          <Card className="sm:col-span-2 xl:col-span-5 p-4">
+          <Card className="col-span-2 p-4 md:col-span-3 lg:col-span-4">
             <p className="text-sm text-rose-300">{summaryError}</p>
           </Card>
         ) : (
-          summaryCards.map((metric) => (
-            <Card key={metric.label} className="p-4">
-              <p className="text-xs uppercase tracking-[0.16em] text-slate-500">{metric.label}</p>
-              <p className={`mt-2 text-2xl font-semibold text-slate-100 ${metric.className ?? ""}`}>{metric.value}</p>
-              <p className="mt-1 text-xs text-slate-400">{metric.detail}</p>
-            </Card>
-          ))
+          <>
+            <MetricCard
+              title="Performance"
+              primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
+              primaryClassName={metricPnlClass(netPnlMetric)}
+              tooltip="Net PnL with daily and hourly production rates."
+              chips={
+                <ChipRow
+                  chips={[
+                    {
+                      label: "Profit/Day",
+                      value: formatMetricValue(profitPerDayMetric, formatPnl),
+                      className: pnlChipClass(summary.profit_per_day),
+                      tooltip: "Net PnL divided by active days.",
+                    },
+                    {
+                      label: "Efficiency/Hour",
+                      value: formatMetricValue(efficiencyPerHourMetric, formatPnl),
+                      className: pnlChipClass(summary.efficiency_per_hour),
+                      tooltip: "Tracked net PnL per active hour.",
+                    },
+                  ]}
+                />
+              }
+              hoverDetails="Net realized PnL after fees for the selected range."
+            />
+
+            <MetricCard
+              title="Risk"
+              primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
+              primaryClassName={metricPnlClass(maxDrawdownMetric)}
+              tooltip="Largest peak-to-trough equity drop."
+              hoverDetails={
+                drawdownPercentOfNet.value === null
+                  ? drawdownPercentOfNet.missingReason ?? "Needs non-zero net PnL."
+                  : `Drawdown is ${formatPercent(drawdownPercentOfNet.value)} of net PnL.`
+              }
+            />
+
+            <MetricCard
+              title="Edge"
+              primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
+              primaryClassName={metricPnlClass(expectancyPerTradeMetric)}
+              tooltip="Average expected net result per trade."
+              chips={
+                <ChipRow
+                  chips={[
+                    { label: "PF", value: formatNumber(summary.profit_factor), tooltip: "Profit factor." },
+                    { label: "Win Rate", value: formatPercent(summary.win_rate), tooltip: "Winning closed trades." },
+                    {
+                      label: "W/L Ratio",
+                      value: formatMetricValue(derivedMetrics.winLossRatio, (value) => formatNumber(value)),
+                      tooltip: metricDetail(derivedMetrics.winLossRatio, "Average win / abs(average loss)."),
+                    },
+                  ]}
+                />
+              }
+              hoverDetails={`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}
+            />
+
+            <MetricCard
+              title="Payoff"
+              primaryValue={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+              tooltip="Average win versus average loss profile."
+              subValue={
+                <SplitBar
+                  leftLabel="Avg Win"
+                  rightLabel="Avg Loss"
+                  leftValue={formatMetricValue(averageWinMetric, formatPnl)}
+                  rightValue={formatMetricValue(averageLossMetric, formatPnl)}
+                  leftMagnitude={Math.abs(summary.avg_win)}
+                  rightMagnitude={Math.abs(summary.avg_loss)}
+                  badge={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+                />
+              }
+              hoverDetails={
+                payoffBreakevenWinRate.value === null
+                  ? payoffBreakevenWinRate.missingReason ?? "Needs non-zero average win and loss."
+                  : `Breakeven win rate ${formatPercent(payoffBreakevenWinRate.value)} vs current ${formatPercent(summary.win_rate)}.`
+              }
+            />
+
+            <MetricCard
+              title="Direction"
+              primaryValue={directionPrimaryValue}
+              tooltip={metricDetail(derivedMetrics.direction.longPercent, "Long vs short directional mix.")}
+              subValue={
+                <DirectionDonut
+                  longPercent={directionSplit.longPercent.value}
+                  shortPercent={directionSplit.shortPercent.value}
+                  centerText={directionPrimaryValue}
+                  biasText={directionBiasText}
+                  longDetails={longDirectionTooltip}
+                  shortDetails={shortDirectionTooltip}
+                  missingReason={directionSplit.longPercent.missingReason}
+                />
+              }
+              hoverDetails="Hover long/short donut segments for count, win rate, and directional PnL."
+            />
+
+            <MetricCard
+              title="Hold Time"
+              primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
+              tooltip={metricDetail(derivedMetrics.winDurationOverLossDuration, "Average win hold / average loss hold.")}
+              subValue={
+                <SplitBar
+                  leftLabel="Avg Win Duration"
+                  rightLabel="Avg Loss Duration"
+                  leftValue={formatMinutes(summary.avg_win_duration_minutes)}
+                  rightValue={formatMinutes(summary.avg_loss_duration_minutes)}
+                  leftMagnitude={summary.avg_win_duration_minutes}
+                  rightMagnitude={summary.avg_loss_duration_minutes}
+                  badge={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
+                />
+              }
+              hoverDetails={`Win avg ${formatMinutes(summary.avg_win_duration_minutes)} | Loss avg ${formatMinutes(summary.avg_loss_duration_minutes)}`}
+            />
+
+            <MetricCard
+              title="Swing"
+              primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
+              tooltip={metricDetail(derivedMetrics.stability.dailyPnlVolatility, "Population standard deviation of daily net PnL.")}
+              chips={
+                <ChipRow
+                  chips={[
+                    {
+                      label: "Best Day",
+                      value: formatMetricValue(derivedMetrics.stability.bestDay, formatPnl),
+                      className:
+                        derivedMetrics.stability.bestDay.value === null
+                          ? undefined
+                          : pnlChipClass(derivedMetrics.stability.bestDay.value),
+                    },
+                    {
+                      label: "Worst Day",
+                      value: formatMetricValue(derivedMetrics.stability.worstDay, formatPnl),
+                      className:
+                        derivedMetrics.stability.worstDay.value === null
+                          ? undefined
+                          : pnlChipClass(derivedMetrics.stability.worstDay.value),
+                    },
+                  ]}
+                />
+              }
+              subValue={
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Best %: {formatMetricValue(derivedMetrics.stability.bestDayPercentOfNet, formatPercent)}</span>
+                    <span>Worst %: {formatMetricValue(derivedMetrics.stability.worstDayPercentOfNet, formatPercent)}</span>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                      <span>Stability</span>
+                      <span>{formatMetricValue(stabilityScore, (value) => formatNumber(value, 0))}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                      <div
+                        className="h-full bg-cyan-300/70 transition-all duration-500"
+                        style={{ width: `${stabilityScore.value === null ? 0 : stabilityScore.value}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              }
+              hoverDetails="Stability gauge uses worst-day % of net PnL: smaller drawdowns score higher."
+            />
+
+            <MetricCard
+              title="Activity"
+              primaryValue={formatInteger(summary.trade_count)}
+              tooltip="Execution activity in the selected range."
+              chips={
+                <ChipRow
+                  chips={[
+                    { label: "Avg Trades/Day", value: formatNumber(summary.avg_trades_per_day) },
+                    { label: "Active Days", value: formatInteger(summary.active_days) },
+                  ]}
+                />
+              }
+              hoverDetails="Closed trades, normalized by active trading days."
+            />
+          </>
         )}
       </section>
 
