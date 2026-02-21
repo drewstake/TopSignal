@@ -1,4 +1,5 @@
-from datetime import datetime
+import calendar
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ from .metrics_schemas import (
 from .models import Trade
 from .projectx_schemas import (
     ProjectXAccountOut,
+    ProjectXPnlCalendarDayOut,
     ProjectXTradeOut,
     ProjectXTradeRefreshOut,
     ProjectXTradeSummaryOut,
@@ -31,6 +33,8 @@ from .services.metrics import (
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.projectx_trades import (
+    get_earliest_trade_timestamp,
+    get_trade_event_pnl_calendar,
     has_local_trades,
     list_trade_events,
     refresh_account_trades,
@@ -39,6 +43,7 @@ from .services.projectx_trades import (
 )
 
 app = FastAPI(title="TopSignal API")
+_DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
 
 app.add_middleware(
     CORSMiddleware,
@@ -205,6 +210,51 @@ def get_projectx_account_summary(
         raise _to_http_exception(exc) from exc
 
 
+@app.get("/api/accounts/{account_id}/pnl-calendar", response_model=list[ProjectXPnlCalendarDayOut])
+def get_projectx_account_pnl_calendar(
+    account_id: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    _validate_time_range(start=start, end=end)
+
+    use_default_window = start is None and end is None
+    if use_default_window:
+        effective_end = datetime.now(timezone.utc)
+        effective_start = _subtract_utc_months(effective_end, _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS)
+    else:
+        effective_start = start
+        effective_end = end
+
+    try:
+        needs_sync = refresh or not has_local_trades(db, account_id)
+        if not needs_sync and use_default_window and effective_start is not None:
+            earliest_local = get_earliest_trade_timestamp(db, account_id)
+            needs_sync = earliest_local is None or _as_utc(earliest_local) > _as_utc(effective_start)
+
+        if needs_sync:
+            client = ProjectXClient.from_env()
+            refresh_account_trades(
+                db,
+                client,
+                account_id=account_id,
+                start=effective_start,
+                end=effective_end,
+            )
+
+        return get_trade_event_pnl_calendar(
+            db,
+            account_id=account_id,
+            start=effective_start,
+            end=effective_end,
+        )
+    except ProjectXClientError as exc:
+        raise _to_http_exception(exc) from exc
+
+
 def _validate_account_id(account_id: int) -> None:
     if account_id <= 0:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
@@ -213,6 +263,25 @@ def _validate_account_id(account_id: int) -> None:
 def _validate_time_range(*, start: datetime | None, end: datetime | None) -> None:
     if start and end and start > end:
         raise HTTPException(status_code=400, detail="start must be before end")
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _subtract_utc_months(value: datetime, months: int) -> datetime:
+    months = max(0, int(months))
+    if months == 0:
+        return _as_utc(value)
+
+    current = _as_utc(value)
+    month_index = (current.year * 12 + (current.month - 1)) - months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(current.day, calendar.monthrange(year, month)[1])
+    return current.replace(year=year, month=month, day=day)
 
 
 def _to_http_exception(exc: ProjectXClientError) -> HTTPException:

@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  AccountPnlCalendarDay,
   AccountSummary,
   AccountTrade,
   AccountTradeRefreshResult,
@@ -115,6 +116,14 @@ export const accountsApi = {
     }),
   getSummary: (accountId: number, query: AccountSummaryQuery = {}) =>
     requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
+      query: {
+        start: query.start,
+        end: query.end,
+        refresh: query.refresh,
+      },
+    }),
+  getPnlCalendar: (accountId: number, query: AccountSummaryQuery = {}) =>
+    requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
       query: {
         start: query.start,
         end: query.end,

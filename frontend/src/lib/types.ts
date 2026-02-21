@@ -94,6 +94,7 @@ export interface AccountTrade {
   fees: number;
   pnl: number | null;
   order_id: string;
+  source_trade_id: string | null;
 }
 
 export interface AccountSummary {
@@ -111,4 +112,12 @@ export interface AccountSummary {
 export interface AccountTradeRefreshResult {
   fetched_count: number;
   inserted_count: number;
+}
+
+export interface AccountPnlCalendarDay {
+  date: string;
+  trade_count: number;
+  gross_pnl: number;
+  fees: number;
+  net_pnl: number;
 }

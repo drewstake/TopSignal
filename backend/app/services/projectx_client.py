@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -82,13 +83,17 @@ class ProjectXClient:
         return cls(base_url=base_url, username=username, api_key=api_key)
 
     def list_accounts(self) -> list[dict[str, Any]]:
-        payload = {"onlyActiveAccounts": False}
+        payload = {"onlyActiveAccounts": True}
         data = self._request("POST", "/api/Account/search", payload=payload, with_auth=True)
 
         rows = _unwrap_list(data, preferred_keys=["accounts", "data", "items"])
         output: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
+                continue
+
+            # Keep this defensive filter even when onlyActiveAccounts=true.
+            if row.get("canTrade") is False:
                 continue
 
             account_id_raw = _first_value(row, ["id", "accountId", "account_id"])
@@ -151,6 +156,10 @@ class ProjectXClient:
 
         for row in rows:
             if not isinstance(row, dict):
+                continue
+
+            if _is_truthy(_first_value(row, ["voided", "isVoided", "is_voided"])):
+                # Voided/canceled executions should not affect local trade history or PnL.
                 continue
 
             timestamp = _parse_datetime(
@@ -382,6 +391,16 @@ def _string_or_none(value: Any) -> str | None:
     return text if text else None
 
 
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -396,7 +415,7 @@ def _parse_datetime(value: Any) -> datetime | None:
         raw = value.strip()
         if raw == "":
             return None
-        candidate = raw.replace("Z", "+00:00")
+        candidate = _normalize_iso_datetime(raw)
         try:
             return _as_utc(datetime.fromisoformat(candidate))
         except ValueError:
@@ -492,3 +511,38 @@ def _extract_error_message(raw: Any) -> str:
         return _extract_error_message(parsed)
 
     return "Unknown error"
+
+
+def _normalize_iso_datetime(raw: str) -> str:
+    """
+    Normalize common ProjectX timestamp variants into an ISO string accepted by
+    datetime.fromisoformat.
+    """
+
+    text = raw.replace("Z", "+00:00")
+
+    # Handles timestamps like `2026-02-05T19:49:57.22185+00:00` where
+    # fractional precision may vary and can fail strict parsing.
+    match = re.match(
+        r"^(?P<prefix>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+        r"(?:\.(?P<fraction>\d+))?"
+        r"(?P<offset>[+-]\d{2}:?\d{2})?$",
+        text,
+    )
+    if not match:
+        return text
+
+    prefix = match.group("prefix")
+    fraction = match.group("fraction") or ""
+    offset = match.group("offset") or ""
+
+    normalized = prefix
+    if fraction:
+        normalized += f".{(fraction + '000000')[:6]}"
+
+    if offset:
+        if len(offset) == 5:  # +HHMM
+            offset = f"{offset[:3]}:{offset[3:]}"
+        normalized += offset
+
+    return normalized

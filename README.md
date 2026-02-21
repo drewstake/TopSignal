@@ -15,6 +15,7 @@ The app now includes a full ProjectX account/trade flow:
 - `GET /api/accounts`: list ProjectX accounts
 - `GET /api/accounts/{account_id}/trades`: list stored trade events (fills/trades)
 - `GET /api/accounts/{account_id}/summary`: summary metrics from stored trade events
+- `GET /api/accounts/{account_id}/pnl-calendar`: daily PnL aggregation for calendar views
 - `POST /api/accounts/{account_id}/trades/refresh`: pull latest events from ProjectX and persist
 
 Trade data collection behavior:
@@ -22,6 +23,8 @@ Trade data collection behavior:
 - Trade events are pulled from ProjectX on demand using `/api/Trade/search`.
 - Events are stored locally in `projectx_trade_events`.
 - Deduplication key: `account_id + order_id + trade_timestamp`.
+- First sync now pulls up to the last 365 days by default (`PROJECTX_INITIAL_LOOKBACK_DAYS`) and auto-backfills older missing history inside that window if local data is partial.
+- Large sync windows are split into chunks (default 90 days via `PROJECTX_SYNC_CHUNK_DAYS`) to reduce missed events from oversized API responses.
 - The `GET /api/accounts/{account_id}/trades` and `GET /api/accounts/{account_id}/summary` routes auto-sync when local storage is empty.
 
 UI paths:

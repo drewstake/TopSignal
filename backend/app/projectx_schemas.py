@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel
 
 
@@ -21,6 +21,7 @@ class ProjectXTradeOut(BaseModel):
     fees: float
     pnl: float | None = None
     order_id: str
+    source_trade_id: str | None = None
 
 
 class ProjectXTradeSummaryOut(BaseModel):
@@ -38,3 +39,11 @@ class ProjectXTradeSummaryOut(BaseModel):
 class ProjectXTradeRefreshOut(BaseModel):
     fetched_count: int
     inserted_count: int
+
+
+class ProjectXPnlCalendarDayOut(BaseModel):
+    date: date
+    trade_count: int
+    gross_pnl: float
+    fees: float
+    net_pnl: float

@@ -21,6 +21,13 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const pnlFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -44,7 +51,11 @@ const emptySummary: AccountSummary = {
 
 function formatPnl(value: number) {
   const prefix = value > 0 ? "+" : "";
-  return `${prefix}${currencyFormatter.format(value)}`;
+  return `${prefix}${pnlFormatter.format(value)}`;
+}
+
+function formatFee(value: number) {
+  return currencyFormatter.format(-Math.abs(value));
 }
 
 function pnlClass(value: number) {
@@ -359,7 +370,7 @@ export function AccountsPage() {
                         <td className="px-3 py-3 text-right font-mono text-slate-200">
                           {trade.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">{currencyFormatter.format(trade.fees)}</td>
+                        <td className="px-3 py-3 text-right text-slate-300">{formatFee(trade.fees)}</td>
                         <td className={`px-3 py-3 text-right font-semibold ${pnlClass(pnl)}`}>{formatPnl(pnl)}</td>
                       </tr>
                     );

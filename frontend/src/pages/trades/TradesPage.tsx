@@ -25,6 +25,13 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const pnlFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -48,7 +55,11 @@ const emptySummary: AccountSummary = {
 
 function formatPnl(value: number) {
   const prefix = value > 0 ? "+" : "";
-  return `${prefix}${currencyFormatter.format(value)}`;
+  return `${prefix}${pnlFormatter.format(value)}`;
+}
+
+function formatFee(value: number) {
+  return currencyFormatter.format(-Math.abs(value));
 }
 
 function pnlClass(value: number) {
@@ -346,7 +357,7 @@ export function TradesPage() {
                   <th className="px-3 py-3 text-right font-medium">Price</th>
                   <th className="px-3 py-3 text-right font-medium">Fees</th>
                   <th className="px-3 py-3 text-right font-medium">PnL</th>
-                  <th className="px-3 py-3 text-right font-medium">Order ID</th>
+                  <th className="px-3 py-3 text-right font-medium">Trade ID</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70">
@@ -386,9 +397,11 @@ export function TradesPage() {
                         <td className="px-3 py-3 text-right font-mono text-slate-200">
                           {trade.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">{currencyFormatter.format(trade.fees)}</td>
+                        <td className="px-3 py-3 text-right text-slate-300">{formatFee(trade.fees)}</td>
                         <td className={`px-3 py-3 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-400">{trade.order_id}</td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-400">
+                          {trade.source_trade_id ?? trade.order_id}
+                        </td>
                       </tr>
                     );
                   })
