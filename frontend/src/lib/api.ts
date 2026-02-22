@@ -1,10 +1,15 @@
 import type {
   AccountInfo,
   JournalEntry,
+  JournalEntryCreateResult,
   JournalEntryCreateInput,
+  JournalEntryImage,
   JournalEntryUpdateInput,
   JournalEntriesQuery,
   JournalEntriesResponse,
+  JournalDaysQuery,
+  JournalDaysResponse,
+  JournalPullTradeStatsInput,
   AccountPnlCalendarDay,
   AccountSummary,
   AccountTrade,
@@ -24,10 +29,35 @@ const ACCOUNTS_CACHE_TTL_MS = 30_000;
 type QueryValue = string | number | boolean | null | undefined;
 
 interface RequestJsonOptions {
-  method?: "GET" | "POST" | "PATCH";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
+}
+
+interface RequestMultipartOptions {
+  method?: "POST";
+  query?: Record<string, QueryValue>;
+  formData: FormData;
+  signal?: AbortSignal;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+  readonly detail: unknown;
+
+  constructor(message: string, status: number, body: unknown, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+    this.detail = detail;
+  }
+}
+
+export function isApiError(value: unknown): value is ApiError {
+  return value instanceof ApiError;
 }
 
 interface TimedCache<T> {
@@ -53,6 +83,17 @@ function buildUrl(path: string, query?: Record<string, QueryValue>) {
   return url.toString();
 }
 
+function toAbsoluteApiUrl(path: string) {
+  return new URL(path, API_BASE_URL).toString();
+}
+
+function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
+  return {
+    ...image,
+    url: toAbsoluteApiUrl(image.url),
+  };
+}
+
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal } = options;
   const response = await fetch(buildUrl(path, query), {
@@ -64,19 +105,59 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
 
   if (!response.ok) {
     let detail = `Request failed (${response.status} ${response.statusText})`;
+    let errorBody: unknown = null;
+    let detailValue: unknown = undefined;
 
     try {
-      const errorBody = (await response.json()) as { detail?: unknown };
-      if (typeof errorBody.detail === "string") {
-        detail = errorBody.detail;
-      } else if (errorBody.detail !== undefined) {
-        detail = JSON.stringify(errorBody.detail);
+      errorBody = (await response.json()) as { detail?: unknown };
+      const parsed = errorBody as { detail?: unknown };
+      detailValue = parsed.detail;
+      if (typeof parsed.detail === "string") {
+        detail = parsed.detail;
+      } else if (parsed.detail !== undefined) {
+        detail = JSON.stringify(parsed.detail);
       }
     } catch {
       // Keep default fallback error text.
     }
 
-    throw new Error(detail);
+    throw new ApiError(detail, response.status, errorBody, detailValue);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
+}
+
+async function requestMultipart<T>(path: string, options: RequestMultipartOptions): Promise<T> {
+  const { method = "POST", query, formData, signal } = options;
+  const response = await fetch(buildUrl(path, query), {
+    method,
+    body: formData,
+    signal,
+  });
+
+  if (!response.ok) {
+    let detail = `Request failed (${response.status} ${response.statusText})`;
+    let errorBody: unknown = null;
+    let detailValue: unknown = undefined;
+
+    try {
+      errorBody = (await response.json()) as { detail?: unknown };
+      const parsed = errorBody as { detail?: unknown };
+      detailValue = parsed.detail;
+      if (typeof parsed.detail === "string") {
+        detail = parsed.detail;
+      } else if (parsed.detail !== undefined) {
+        detail = JSON.stringify(parsed.detail);
+      }
+    } catch {
+      // Keep default fallback error text.
+    }
+
+    throw new ApiError(detail, response.status, errorBody, detailValue);
   }
 
   return (await response.json()) as T;
@@ -194,13 +275,47 @@ export const accountsApi = {
       },
     }),
   createJournalEntry: (accountId: number, body: JournalEntryCreateInput) =>
-    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal`, {
+    requestJson<JournalEntryCreateResult>(`/api/accounts/${accountId}/journal`, {
       method: "POST",
       body,
     }),
   updateJournalEntry: (accountId: number, entryId: number, body: JournalEntryUpdateInput) =>
     requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "PATCH",
+      body,
+    }),
+  deleteJournalEntry: (accountId: number, entryId: number) =>
+    requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}`, {
+      method: "DELETE",
+    }),
+  getJournalDays: (accountId: number, query: JournalDaysQuery) =>
+    requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
+      query: {
+        start_date: query.start_date,
+        end_date: query.end_date,
+        include_archived: query.include_archived,
+      },
+    }),
+  uploadJournalImage: (accountId: number, entryId: number, file: File | Blob, filename?: string) => {
+    const formData = new FormData();
+    const fallbackName =
+      typeof File !== "undefined" && file instanceof File ? file.name : "journal-image";
+    formData.append("file", file, filename ?? fallbackName);
+    return requestMultipart<JournalEntryImage>(`/api/accounts/${accountId}/journal/${entryId}/images`, {
+      formData,
+    }).then((image) => normalizeJournalImage(image));
+  },
+  listJournalImages: (accountId: number, entryId: number) =>
+    requestJson<JournalEntryImage[]>(`/api/accounts/${accountId}/journal/${entryId}/images`).then((images) =>
+      images.map((image) => normalizeJournalImage(image)),
+    ),
+  deleteJournalImage: (accountId: number, entryId: number, imageId: number) =>
+    requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}/images/${imageId}`, {
+      method: "DELETE",
+    }),
+  pullJournalTradeStats: (accountId: number, entryId: number, body: JournalPullTradeStatsInput = {}) =>
+    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}/pull-trade-stats`, {
+      method: "POST",
       body,
     }),
 };

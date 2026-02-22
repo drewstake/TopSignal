@@ -1,17 +1,24 @@
 import calendar
 from datetime import date, datetime, timezone
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from .db import get_db, init_db
 from .journal_schemas import (
     JournalEntryCreateIn,
+    JournalEntryCreateOut,
     JournalEntryListOut,
-    JournalEntryOut,
+    JournalDaysOut,
+    JournalImageOut,
     JournalEntryUpdateIn,
+    JournalEntryOut,
     JournalMood,
+    PullTradeStatsIn,
 )
 from .metrics_schemas import (
     BehaviorMetricsOut,
@@ -39,10 +46,20 @@ from .services.metrics import (
     get_summary_metrics,
 )
 from .services.journal import (
+    VersionConflictError,
     archive_journal_entry,
+    create_journal_entry_image,
     create_journal_entry,
+    delete_journal_entry,
+    delete_journal_entry_image,
+    get_journal_entry_image,
+    get_journal_image_file_path,
+    list_journal_days,
+    list_journal_entry_images,
     list_journal_entries,
+    pull_journal_entry_trade_stats,
     serialize_journal_entry,
+    serialize_journal_entry_image,
     unarchive_journal_entry,
     update_journal_entry,
     validate_date_range as validate_journal_date_range,
@@ -186,16 +203,17 @@ def list_projectx_account_journal_entries(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/accounts/{account_id}/journal", response_model=JournalEntryOut, status_code=201)
+@app.post("/api/accounts/{account_id}/journal", response_model=JournalEntryCreateOut, status_code=201)
 def create_projectx_account_journal_entry(
     account_id: int,
     payload: JournalEntryCreateIn,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     _validate_account_id(account_id)
 
     try:
-        row = create_journal_entry(
+        row, already_existed = create_journal_entry(
             db,
             account_id=account_id,
             entry_date=payload.entry_date,
@@ -204,7 +222,35 @@ def create_projectx_account_journal_entry(
             tags=payload.tags,
             body=payload.body,
         )
-        return serialize_journal_entry(row)
+        if already_existed:
+            response.status_code = 200
+        payload_out = serialize_journal_entry(row)
+        payload_out["already_existed"] = already_existed
+        return payload_out
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/accounts/{account_id}/journal/days", response_model=JournalDaysOut)
+def list_projectx_account_journal_days(
+    account_id: int,
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    include_archived: bool = False,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    _validate_journal_date_range(start_date=start_date, end_date=end_date)
+
+    try:
+        days = list_journal_days(
+            db,
+            account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            include_archived=include_archived,
+        )
+        return {"days": days}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -225,14 +271,15 @@ def update_projectx_account_journal_entry(
     try:
         if _journal_update_payload_is_archive_only(payload) and payload.is_archived is not None:
             if payload.is_archived:
-                row = archive_journal_entry(db, account_id=account_id, entry_id=entry_id)
+                row = archive_journal_entry(db, account_id=account_id, entry_id=entry_id, version=payload.version)
             else:
-                row = unarchive_journal_entry(db, account_id=account_id, entry_id=entry_id)
+                row = unarchive_journal_entry(db, account_id=account_id, entry_id=entry_id, version=payload.version)
         else:
             row = update_journal_entry(
                 db,
                 account_id=account_id,
                 entry_id=entry_id,
+                version=payload.version,
                 entry_date=payload.entry_date,
                 title=payload.title,
                 mood=payload.mood,
@@ -240,6 +287,162 @@ def update_projectx_account_journal_entry(
                 body=payload.body,
                 is_archived=payload.is_archived,
             )
+        return serialize_journal_entry(row)
+    except VersionConflictError as exc:
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(
+                {
+                    "detail": "version_conflict",
+                    "server": serialize_journal_entry(exc.server_row),
+                }
+            ),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/accounts/{account_id}/journal/{entry_id}", status_code=204)
+def delete_projectx_account_journal_entry(
+    account_id: int,
+    entry_id: int,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+
+    try:
+        delete_journal_entry(db, account_id=account_id, entry_id=entry_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return Response(status_code=204)
+
+
+@app.post("/api/accounts/{account_id}/journal/{entry_id}/images", response_model=JournalImageOut)
+async def upload_projectx_account_journal_image(
+    account_id: int,
+    entry_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+
+    file_bytes = await file.read()
+    await file.close()
+
+    try:
+        row = create_journal_entry_image(
+            db,
+            account_id=account_id,
+            entry_id=entry_id,
+            file_bytes=file_bytes,
+            mime_type=file.content_type,
+        )
+        return serialize_journal_entry_image(
+            row,
+            url=_journal_image_url(image_id=int(row.id), account_id=int(row.account_id)),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/accounts/{account_id}/journal/{entry_id}/images", response_model=list[JournalImageOut])
+def list_projectx_account_journal_images(
+    account_id: int,
+    entry_id: int,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+
+    try:
+        rows = list_journal_entry_images(db, account_id=account_id, entry_id=entry_id)
+        return [
+            serialize_journal_entry_image(
+                row,
+                url=_journal_image_url(image_id=int(row.id), account_id=int(row.account_id)),
+            )
+            for row in rows
+        ]
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/journal-images/{image_id}")
+def serve_journal_image(
+    image_id: int,
+    account_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+):
+    if image_id <= 0:
+        raise HTTPException(status_code=400, detail="image_id must be a positive integer")
+
+    try:
+        row = get_journal_entry_image(db, image_id=image_id, account_id=account_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    path = get_journal_image_file_path(row.filename)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="journal image file not found")
+
+    return FileResponse(path=path, media_type=row.mime_type, filename=Path(row.filename).name)
+
+
+@app.delete("/api/accounts/{account_id}/journal/{entry_id}/images/{image_id}", status_code=204)
+def delete_projectx_account_journal_image(
+    account_id: int,
+    entry_id: int,
+    image_id: int,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+    if image_id <= 0:
+        raise HTTPException(status_code=400, detail="image_id must be a positive integer")
+
+    try:
+        delete_journal_entry_image(
+            db,
+            account_id=account_id,
+            entry_id=entry_id,
+            image_id=image_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return Response(status_code=204)
+
+
+@app.post("/api/accounts/{account_id}/journal/{entry_id}/pull-trade-stats", response_model=JournalEntryOut)
+def pull_projectx_account_journal_trade_stats(
+    account_id: int,
+    entry_id: int,
+    payload: PullTradeStatsIn,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+    if entry_id <= 0:
+        raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+
+    try:
+        row = pull_journal_entry_trade_stats(
+            db,
+            account_id=account_id,
+            entry_id=entry_id,
+            trade_ids=payload.trade_ids,
+            entry_date=payload.entry_date,
+        )
         return serialize_journal_entry(row)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -434,6 +637,10 @@ def _subtract_utc_months(value: datetime, months: int) -> datetime:
     month = zero_based_month + 1
     day = min(current.day, calendar.monthrange(year, month)[1])
     return current.replace(year=year, month=month, day=day)
+
+
+def _journal_image_url(*, image_id: int, account_id: int) -> str:
+    return f"/api/journal-images/{image_id}?account_id={account_id}"
 
 
 def _to_http_exception(exc: ProjectXClientError) -> HTTPException:

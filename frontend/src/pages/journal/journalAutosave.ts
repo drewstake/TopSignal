@@ -5,6 +5,7 @@ interface DebouncedAutosaveQueueOptions<TPayload> {
   save: (payload: TPayload) => Promise<void>;
   equals: (left: TPayload, right: TPayload) => boolean;
   onStateChange: (state: JournalSaveState) => void;
+  onError?: (error: unknown) => void;
 }
 
 export class DebouncedAutosaveQueue<TPayload> {
@@ -12,6 +13,7 @@ export class DebouncedAutosaveQueue<TPayload> {
   private readonly save: (payload: TPayload) => Promise<void>;
   private readonly equals: (left: TPayload, right: TPayload) => boolean;
   private readonly onStateChange: (state: JournalSaveState) => void;
+  private readonly onError?: (error: unknown) => void;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private latestPayload: TPayload | null = null;
   private lastSavedPayload: TPayload | null = null;
@@ -25,6 +27,7 @@ export class DebouncedAutosaveQueue<TPayload> {
     this.save = options.save;
     this.equals = options.equals;
     this.onStateChange = options.onStateChange;
+    this.onError = options.onError;
   }
 
   setBaseline(payload: TPayload): void {
@@ -103,9 +106,10 @@ export class DebouncedAutosaveQueue<TPayload> {
     try {
       await this.save(payload);
       this.lastSavedPayload = payload;
-    } catch {
+    } catch (error) {
       this.queuedPayload = null;
       this.inFlight = false;
+      this.onError?.(error);
       this.setState("error");
       this.notifyIdle();
       return;

@@ -205,9 +205,14 @@ create table if not exists journal_entries (
   mood text not null check (mood in ('Focused','Neutral','Frustrated','Confident')),
   tags text[] not null default '{}',
   body text not null default '',
+  version integer not null default 1,
+  stats_source text,
+  stats_json jsonb,
+  stats_pulled_at timestamptz,
   is_archived boolean not null default false,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique (account_id, entry_date)
 );
 
 
@@ -225,3 +230,37 @@ create index if not exists idx_journal_entries_account_archived_date_updated
 -- ============================================
 create index if not exists idx_journal_entries_account_mood_date
   on journal_entries (account_id, mood, entry_date desc);
+
+
+-- ============================================
+-- TABLE: journal_entry_images
+-- Image metadata for account-scoped journal entries.
+-- ============================================
+create table if not exists journal_entry_images (
+  id bigserial primary key,
+  journal_entry_id bigint not null references journal_entries(id) on delete cascade,
+  account_id bigint not null,
+  entry_date date not null,
+  filename text not null,
+  mime_type text not null,
+  byte_size integer not null,
+  width integer,
+  height integer,
+  created_at timestamptz not null default now()
+);
+
+
+-- ============================================
+-- INDEX: idx_journal_entry_images_account_date
+-- Speeds account/day image lookups.
+-- ============================================
+create index if not exists idx_journal_entry_images_account_date
+  on journal_entry_images (account_id, entry_date);
+
+
+-- ============================================
+-- INDEX: idx_journal_entry_images_journal_entry
+-- Speeds entry-scoped image list queries.
+-- ============================================
+create index if not exists idx_journal_entry_images_journal_entry
+  on journal_entry_images (journal_entry_id);

@@ -149,6 +149,19 @@ export interface AccountPnlCalendarDay {
 
 export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";
 
+export interface JournalStatsSnapshot {
+  trade_count: number;
+  total_pnl: number;
+  total_fees: number;
+  win_rate: number;
+  avg_win: number;
+  avg_loss: number;
+  largest_win: number;
+  largest_loss: number;
+  gross: number;
+  net: number;
+}
+
 export interface JournalEntry {
   id: number;
   account_id: number;
@@ -157,9 +170,17 @@ export interface JournalEntry {
   mood: JournalMood;
   tags: string[];
   body: string;
+  version: number;
+  stats_source: string | null;
+  stats_json: JournalStatsSnapshot | null;
+  stats_pulled_at: string | null;
   is_archived: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface JournalEntryCreateResult extends JournalEntry {
+  already_existed: boolean;
 }
 
 export interface JournalEntriesResponse {
@@ -186,10 +207,40 @@ export interface JournalEntryCreateInput {
 }
 
 export interface JournalEntryUpdateInput {
+  version: number;
   entry_date?: string;
   title?: string;
   mood?: JournalMood;
   tags?: string[];
   body?: string;
   is_archived?: boolean;
+}
+
+export interface JournalEntryImage {
+  id: number;
+  journal_entry_id: number;
+  account_id: number;
+  entry_date: string;
+  filename: string;
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+  url: string;
+}
+
+export interface JournalDaysResponse {
+  days: string[];
+}
+
+export interface JournalDaysQuery {
+  start_date: string;
+  end_date: string;
+  include_archived?: boolean;
+}
+
+export interface JournalPullTradeStatsInput {
+  trade_ids?: number[];
+  entry_date?: string;
 }

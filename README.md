@@ -268,8 +268,15 @@ Route table
 | GET | `/metrics/behavior` | legacy behavior stats | `account_id` | `BehaviorMetricsOut` | not used | legacy pipeline |
 | GET | `/api/accounts` | list ProjectX accounts | none | `ProjectXAccountOut[]` | AppShell + all routed pages | upstream call |
 | GET | `/api/accounts/{account_id}/journal` | list journal entries | `start_date`, `end_date`, `mood`, `q`, `include_archived`, `limit`, `offset` | `{ items, total }` | JournalPage | `limit` 1..200, `offset>=0` |
-| POST | `/api/accounts/{account_id}/journal` | create journal entry | body: `entry_date`, `title`, `mood`, `tags`, `body` | `JournalEntryOut` | JournalPage | returns `201` |
-| PATCH | `/api/accounts/{account_id}/journal/{entry_id}` | update/archive journal entry | partial body fields | `JournalEntryOut` | JournalPage | archive-only fast path supported |
+| GET | `/api/accounts/{account_id}/journal/days` | list dates with entries | `start_date`, `end_date`, `include_archived` | `{ days: string[] }` | Dashboard calendar + JournalPage | range query for month indicators |
+| POST | `/api/accounts/{account_id}/journal` | create-or-return daily journal entry | body: `entry_date`, `title`, `mood`, `tags`, `body` | `JournalEntryCreateOut` | JournalPage, Dashboard day action | returns existing row with `already_existed=true` if same day already exists |
+| PATCH | `/api/accounts/{account_id}/journal/{entry_id}` | update/archive journal entry | body requires `version` + partial fields | `JournalEntryOut` | JournalPage autosave | stale version returns `409 {detail:\"version_conflict\", server}` |
+| DELETE | `/api/accounts/{account_id}/journal/{entry_id}` | hard delete journal entry | none | `204` | JournalPage | cascades to `journal_entry_images` |
+| POST | `/api/accounts/{account_id}/journal/{entry_id}/pull-trade-stats` | snapshot local trade stats into entry | optional body: `trade_ids` or `entry_date` | `JournalEntryOut` | JournalPage | uses locally cached `projectx_trade_events` |
+| POST | `/api/accounts/{account_id}/journal/{entry_id}/images` | upload journal image | multipart form file (`png/jpg/jpeg/webp`, max 10MB) | `JournalImageOut` | JournalEditor | stored on local disk under backend `storage/journal_images` |
+| GET | `/api/accounts/{account_id}/journal/{entry_id}/images` | list journal images for entry | none | `JournalImageOut[]` | JournalEditor | includes direct image URL |
+| GET | `/api/journal-images/{image_id}` | serve image binary | optional `account_id` | file response | JournalEditor | account-scoped validation when `account_id` provided |
+| DELETE | `/api/accounts/{account_id}/journal/{entry_id}/images/{image_id}` | delete image metadata + file | none | `204` | JournalEditor | removes DB row and local file |
 | POST | `/api/accounts/{account_id}/trades/refresh` | force sync from ProjectX | `start`, `end` | `{ fetched_count, inserted_count }` | AppShell, TradesPage | validates range |
 | GET | `/api/accounts/{account_id}/trades` | list local trade events | `limit`, `start`, `end`, `symbol`, `refresh` | `ProjectXTradeOut[]` | Dashboard, TradesPage | returns closed rows (`pnl != null`) |
 | GET | `/api/accounts/{account_id}/summary` | summary metrics from local events | `start`, `end`, `refresh` | `ProjectXTradeSummaryOut` | Dashboard, TradesPage | auto-sync if local empty |
@@ -445,9 +452,27 @@ Dedupe/upsert behavior
 | `mood` | text | mood category | client payload | enum-like check constraint |
 | `tags` | text[] | normalized tags | client payload | lowercased, deduped, max limits enforced |
 | `body` | text | free-form notes | client payload | max 20k chars (service-level) |
+| `version` | integer | optimistic concurrency version | app | increments on each update |
+| `stats_source` | text nullable | stats snapshot source | app | `trade_snapshot` when pulled |
+| `stats_json` | jsonb nullable | stored trade stats snapshot | app | compact per-entry stats payload |
+| `stats_pulled_at` | timestamptz nullable | snapshot timestamp | app | null until pull action |
 | `is_archived` | boolean | soft archive flag | client payload/app | default false |
 | `created_at` | timestamptz | created time | DB | default |
 | `updated_at` | timestamptz | last update | app/DB | updated on writes |
+
+### Database model: `journal_entry_images`
+| Field | Type | Meaning | Source | Notes |
+|---|---|---|---|---|
+| `id` | bigserial | image id | DB | internal |
+| `journal_entry_id` | bigint FK | parent journal entry | app | `on delete cascade` |
+| `account_id` | bigint | account scope | app | used for scoped image queries |
+| `entry_date` | date | denormalized entry date | app | month/day calendar lookups |
+| `filename` | text | storage-relative file path | app | under `backend/storage/journal_images` by default |
+| `mime_type` | text | content type | client payload/app | `png/jpg/jpeg/webp` allowed |
+| `byte_size` | integer | file size in bytes | app | 10MB max enforced |
+| `width` | integer nullable | image width | app | currently optional metadata |
+| `height` | integer nullable | image height | app | currently optional metadata |
+| `created_at` | timestamptz | created time | DB | default |
 
 ### Database models: legacy tables
 `accounts`
@@ -715,6 +740,7 @@ Get-Content .\db\migrations\20260220_add_rule_break_fields.sql | docker exec -i 
 Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 Get-Content .\db\migrations\20260221_add_journal_entries.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+Get-Content .\db\migrations\20260222_journal_entry_images_and_versioning.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 ```
 
 Run backend only
@@ -924,4 +950,3 @@ How to improve for scale
 
 15. **Q: What makes this project technically interesting beyond UI?**  
     **A:** The interesting part is the data lifecycle: upstream schema variability, deterministic normalization, dedupe/upsert guarantees, cache completeness tracking, and transparent metric formulas that are test-backed.
-

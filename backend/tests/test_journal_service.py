@@ -65,7 +65,7 @@ def test_list_journal_entries_filters_by_date_mood_search_and_archive(db_session
         tags=["nq", "discipline"],
         body="Waited for confirmation and followed the plan.",
     )
-    archived = create_journal_entry(
+    archived, _ = create_journal_entry(
         db_session,
         account_id=101,
         entry_date=date(2026, 2, 9),
@@ -78,6 +78,7 @@ def test_list_journal_entries_filters_by_date_mood_search_and_archive(db_session
         db_session,
         account_id=101,
         entry_id=int(archived.id),
+        version=1,
         is_archived=True,
     )
     create_journal_entry(
@@ -118,7 +119,7 @@ def test_list_journal_entries_filters_by_date_mood_search_and_archive(db_session
 
 
 def test_update_journal_entry_enforces_account_scoping(db_session):
-    row = create_journal_entry(
+    row, _ = create_journal_entry(
         db_session,
         account_id=555,
         entry_date=date(2026, 2, 20),
@@ -133,5 +134,6 @@ def test_update_journal_entry_enforces_account_scoping(db_session):
             db_session,
             account_id=777,
             entry_id=int(row.id),
+            version=1,
             title="Should fail",
         )

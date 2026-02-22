@@ -2,7 +2,7 @@ import os
 from datetime import date
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -48,6 +48,7 @@ def test_create_then_list_returns_new_journal_entry(db_session):
             tags=["nq", "discipline"],
             body="Wait for the first pullback.",
         ),
+        response=Response(),
         db=db_session,
     )
 
@@ -75,6 +76,7 @@ def test_patch_updates_fields_and_updated_at(db_session):
             tags=["plan"],
             body="Initial body.",
         ),
+        response=Response(),
         db=db_session,
     )
 
@@ -82,6 +84,7 @@ def test_patch_updates_fields_and_updated_at(db_session):
         account_id=13002,
         entry_id=created["id"],
         payload=JournalEntryUpdateIn(
+            version=created["version"],
             title="Updated title",
             body="Updated body.",
             tags=["review", "nq", "review"],
@@ -105,13 +108,14 @@ def test_soft_archive_hidden_by_default_and_visible_when_requested(db_session):
             tags=["risk"],
             body="One bad day.",
         ),
+        response=Response(),
         db=db_session,
     )
 
     update_projectx_account_journal_entry(
         account_id=13003,
         entry_id=created["id"],
-        payload=JournalEntryUpdateIn(is_archived=True),
+        payload=JournalEntryUpdateIn(version=created["version"], is_archived=True),
         db=db_session,
     )
 
@@ -154,4 +158,4 @@ def test_invalid_query_range_raises_bad_request(db_session):
 
 def test_invalid_payload_shape_raises_validation_error_before_route_call():
     with pytest.raises(ValidationError):
-        JournalEntryUpdateIn(tags="not-a-list")
+        JournalEntryUpdateIn(version=1, tags="not-a-list")

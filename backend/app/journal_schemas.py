@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -21,9 +22,17 @@ class JournalEntryOut(BaseModel):
     mood: JournalMood
     tags: list[str]
     body: str
+    version: int
+    stats_source: str | None = None
+    stats_json: dict[str, Any] | None = None
+    stats_pulled_at: datetime | None = None
     is_archived: bool
     created_at: datetime
     updated_at: datetime
+
+
+class JournalEntryCreateOut(JournalEntryOut):
+    already_existed: bool = False
 
 
 class JournalEntryCreateIn(BaseModel):
@@ -35,6 +44,7 @@ class JournalEntryCreateIn(BaseModel):
 
 
 class JournalEntryUpdateIn(BaseModel):
+    version: int = Field(ge=1)
     entry_date: date | None = None
     title: str | None = None
     mood: JournalMood | None = None
@@ -46,3 +56,26 @@ class JournalEntryUpdateIn(BaseModel):
 class JournalEntryListOut(BaseModel):
     items: list[JournalEntryOut]
     total: int
+
+
+class JournalDaysOut(BaseModel):
+    days: list[date]
+
+
+class JournalImageOut(BaseModel):
+    id: int
+    journal_entry_id: int
+    account_id: int
+    entry_date: date
+    filename: str
+    mime_type: str
+    byte_size: int
+    width: int | None = None
+    height: int | None = None
+    created_at: datetime
+    url: str
+
+
+class PullTradeStatsIn(BaseModel):
+    trade_ids: list[int] | None = None
+    entry_date: date | None = None

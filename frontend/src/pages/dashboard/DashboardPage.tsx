@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { Chip } from "../../components/metrics/Chip";
 import { DonutRing } from "../../components/metrics/DonutRing";
@@ -298,6 +298,7 @@ function getUtcDayRange(value: string) {
 }
 
 export function DashboardPage() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
@@ -323,6 +324,9 @@ export function DashboardPage() {
   const [pnlCalendarDays, setPnlCalendarDays] = useState<AccountPnlCalendarDay[]>([]);
   const [pnlCalendarLoading, setPnlCalendarLoading] = useState(false);
   const [pnlCalendarError, setPnlCalendarError] = useState<string | null>(null);
+  const [journalDays, setJournalDays] = useState<Set<string>>(new Set());
+  const [journalDaysLoading, setJournalDaysLoading] = useState(false);
+  const [calendarVisibleRange, setCalendarVisibleRange] = useState<{ startDate: string; endDate: string } | null>(null);
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -447,6 +451,26 @@ export function DashboardPage() {
     }
   }, [selectedAccountId, selectedTradeDate]);
 
+  const loadJournalDays = useCallback(async () => {
+    if (!selectedAccountId || !calendarVisibleRange) {
+      setJournalDays(new Set());
+      return;
+    }
+
+    setJournalDaysLoading(true);
+    try {
+      const payload = await accountsApi.getJournalDays(selectedAccountId, {
+        start_date: calendarVisibleRange.startDate,
+        end_date: calendarVisibleRange.endDate,
+      });
+      setJournalDays(new Set(payload.days));
+    } catch {
+      setJournalDays(new Set());
+    } finally {
+      setJournalDaysLoading(false);
+    }
+  }, [calendarVisibleRange, selectedAccountId]);
+
   const loadMetricsTrades = useCallback(async () => {
     if (!selectedAccountId) {
       setMetricsTrades([]);
@@ -489,6 +513,10 @@ export function DashboardPage() {
   useEffect(() => {
     void loadMetricsTrades();
   }, [loadMetricsTrades]);
+
+  useEffect(() => {
+    void loadJournalDays();
+  }, [loadJournalDays]);
 
   useEffect(() => {
     setSelectedTradeDate(null);
@@ -604,6 +632,46 @@ export function DashboardPage() {
       }),
     [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays, summary.active_days, summary.trade_count],
   );
+
+  const openJournalForDate = useCallback(
+    async (date: string) => {
+      if (!selectedAccountId) {
+        return;
+      }
+
+      try {
+        await accountsApi.createJournalEntry(selectedAccountId, {
+          entry_date: date,
+          title: "New Entry",
+          mood: "Neutral",
+          tags: [],
+          body: "",
+        });
+        setJournalDays((current) => {
+          const next = new Set(current);
+          next.add(date);
+          return next;
+        });
+
+        const next = new URLSearchParams();
+        next.set(ACCOUNT_QUERY_PARAM, String(selectedAccountId));
+        next.set("date", date);
+        navigate(`/journal?${next.toString()}`);
+      } catch (err) {
+        setTradesError(err instanceof Error ? err.message : "Failed to open journal entry");
+      }
+    },
+    [navigate, selectedAccountId],
+  );
+
+  const handleCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
+    setCalendarVisibleRange((current) => {
+      if (current && current.startDate === startDate && current.endDate === endDate) {
+        return current;
+      }
+      return { startDate, endDate };
+    });
+  }, []);
 
   return (
     <div className="space-y-6 pb-10">
@@ -1119,8 +1187,13 @@ export function DashboardPage() {
         days={pnlCalendarDays}
         loading={pnlCalendarLoading}
         error={pnlCalendarError}
+        journalDays={journalDays}
+        journalDaysLoading={journalDaysLoading}
         selectedDate={selectedTradeDate}
         onDaySelect={setSelectedTradeDate}
+        onJournalDayOpen={openJournalForDate}
+        onAddJournalForSelectedDay={openJournalForDate}
+        onVisibleRangeChange={handleCalendarVisibleRangeChange}
       />
 
       <Card>

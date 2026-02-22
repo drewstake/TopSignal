@@ -13,6 +13,7 @@ psycopg==3.3.3
 psycopg-binary==3.3.3
 pydantic==2.12.5
 pydantic_core==2.41.5
+python-multipart==0.0.20
 python-dotenv==1.2.1
 PyYAML==6.0.3
 SQLAlchemy==2.0.46
@@ -24,4 +25,3 @@ uvicorn==0.41.0
 watchfiles==1.1.1
 websockets==16.0
 pytest==8.4.2
-

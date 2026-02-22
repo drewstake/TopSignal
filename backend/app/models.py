@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -126,6 +127,10 @@ class JournalEntry(Base):
         server_default=text("'{}'"),
     )
     body = Column(Text, nullable=False, server_default=text("''"))
+    version = Column(Integer, nullable=False, server_default="1")
+    stats_source = Column(Text, nullable=True)
+    stats_json = Column(JSON, nullable=True)
+    stats_pulled_at = Column(DateTime(timezone=True), nullable=True)
     is_archived = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
@@ -135,4 +140,29 @@ class JournalEntry(Base):
             "mood in ('Focused','Neutral','Frustrated','Confident')",
             name="journal_entries_mood_check",
         ),
+        UniqueConstraint("account_id", "entry_date", name="uq_journal_entries_account_entry_date"),
+    )
+
+
+class JournalEntryImage(Base):
+    __tablename__ = "journal_entry_images"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    journal_entry_id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("journal_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    account_id = Column(BigInteger, nullable=False)
+    entry_date = Column(Date, nullable=False)
+    filename = Column(Text, nullable=False)
+    mime_type = Column(Text, nullable=False)
+    byte_size = Column(Integer, nullable=False)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("idx_journal_entry_images_account_date", "account_id", "entry_date"),
+        Index("idx_journal_entry_images_journal_entry", "journal_entry_id"),
     )

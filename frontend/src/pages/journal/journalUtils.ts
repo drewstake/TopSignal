@@ -13,6 +13,7 @@ export interface JournalDraft {
   mood: JournalMood;
   tagsInput: string;
   body: string;
+  version: number;
   is_archived: boolean;
 }
 
@@ -24,12 +25,14 @@ export function entryToDraft(entry: JournalEntry): JournalDraft {
     mood: entry.mood,
     tagsInput: entry.tags.join(", "),
     body: entry.body,
+    version: entry.version,
     is_archived: entry.is_archived,
   };
 }
 
-export function draftToUpdatePayload(draft: JournalDraft): JournalEntryUpdateInput {
+export function draftToUpdatePayload(draft: JournalDraft, versionOverride?: number): JournalEntryUpdateInput {
   return {
+    version: versionOverride ?? draft.version,
     title: draft.title,
     mood: draft.mood,
     tags: parseTagsInput(draft.tagsInput),

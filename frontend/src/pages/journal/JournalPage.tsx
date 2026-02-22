@@ -13,33 +13,72 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
-import type { AccountInfo, JournalEntry } from "../../lib/types";
+import type { AccountInfo, JournalEntry, JournalEntryImage, JournalEntryUpdateInput } from "../../lib/types";
 import { DebouncedAutosaveQueue, type JournalSaveState } from "./journalAutosave";
 import { JournalEditor } from "./components/JournalEditor";
 import { JournalList } from "./components/JournalList";
+import { getVersionConflictServerEntry } from "./journalConflict";
 import {
   buildJournalQuery,
-  draftToUpdatePayload,
   entryToDraft,
   getTodayUtcDateIso,
-  journalPayloadEquals,
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
+  parseTagsInput,
   type JournalDraft,
   type JournalMoodFilter,
 } from "./journalUtils";
 
+const JOURNAL_DATE_QUERY_PARAM = "date";
+
+type JournalAutosavePatch = Omit<JournalEntryUpdateInput, "version">;
+
 interface QueuedJournalSave {
   accountId: number;
   entryId: number;
-  patch: ReturnType<typeof draftToUpdatePayload>;
+  patch: JournalAutosavePatch;
+}
+
+function parseJournalDateParam(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function draftToAutosavePatch(draft: JournalDraft): JournalAutosavePatch {
+  return {
+    title: draft.title,
+    mood: draft.mood,
+    tags: parseTagsInput(draft.tagsInput),
+    body: draft.body,
+    is_archived: draft.is_archived,
+  };
+}
+
+function journalAutosavePatchEquals(left: JournalAutosavePatch, right: JournalAutosavePatch): boolean {
+  if (
+    left.title !== right.title ||
+    left.mood !== right.mood ||
+    left.body !== right.body ||
+    left.is_archived !== right.is_archived
+  ) {
+    return false;
+  }
+
+  const leftTags = left.tags ?? [];
+  const rightTags = right.tags ?? [];
+  if (leftTags.length !== rightTags.length) {
+    return false;
+  }
+  return leftTags.every((tag, index) => tag === rightTags[index]);
 }
 
 function toQueuedJournalSave(accountId: number, entryId: number, draft: JournalDraft): QueuedJournalSave {
   return {
     accountId,
     entryId,
-    patch: draftToUpdatePayload(draft),
+    patch: draftToAutosavePatch(draft),
   };
 }
 
@@ -47,13 +86,22 @@ function queuedJournalSaveEquals(left: QueuedJournalSave, right: QueuedJournalSa
   return (
     left.accountId === right.accountId &&
     left.entryId === right.entryId &&
-    journalPayloadEquals(left.patch, right.patch)
+    journalAutosavePatchEquals(left.patch, right.patch)
   );
+}
+
+function upsertEntry(entries: JournalEntry[], nextEntry: JournalEntry): JournalEntry[] {
+  const existingIndex = entries.findIndex((entry) => entry.id === nextEntry.id);
+  if (existingIndex === -1) {
+    return [nextEntry, ...entries];
+  }
+  return entries.map((entry) => (entry.id === nextEntry.id ? nextEntry : entry));
 }
 
 export function JournalPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
+  const dateFromQuery = parseJournalDateParam(searchParams.get(JOURNAL_DATE_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
@@ -65,6 +113,16 @@ export function JournalPage() {
   const [draft, setDraft] = useState<JournalDraft | null>(null);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
   const [creatingEntry, setCreatingEntry] = useState(false);
+  const [deletingEntry, setDeletingEntry] = useState(false);
+
+  const [images, setImages] = useState<JournalEntryImage[]>([]);
+  const [imagesLoading, setImagesLoading] = useState(false);
+  const [imagesError, setImagesError] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  const [pullingStats, setPullingStats] = useState(false);
+  const [pullStatsError, setPullStatsError] = useState<string | null>(null);
+  const [conflictServerEntry, setConflictServerEntry] = useState<JournalEntry | null>(null);
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -76,8 +134,10 @@ export function JournalPage() {
   const autosaveRef = useRef<DebouncedAutosaveQueue<QueuedJournalSave> | null>(null);
   const selectedEntryIdRef = useRef<number | null>(null);
   const selectedAccountIdRef = useRef<number | null>(null);
+  const selectedEntryVersionRef = useRef<number | null>(null);
   const draftRef = useRef<JournalDraft | null>(null);
   const includeArchivedRef = useRef(includeArchived);
+  const handledDateKeyRef = useRef<string | null>(null);
 
   includeArchivedRef.current = includeArchived;
 
@@ -182,6 +242,12 @@ export function JournalPage() {
         if (currentSelectedId && payload.items.some((entry) => entry.id === currentSelectedId)) {
           return currentSelectedId;
         }
+        if (dateFromQuery) {
+          const dateMatchedEntry = payload.items.find((entry) => entry.entry_date === dateFromQuery);
+          if (dateMatchedEntry) {
+            return dateMatchedEntry.id;
+          }
+        }
         return payload.items[0]?.id ?? null;
       });
     } catch (err) {
@@ -192,7 +258,7 @@ export function JournalPage() {
     } finally {
       setLoadingEntries(false);
     }
-  }, [flushAutosave, listQuery, selectedAccountId]);
+  }, [dateFromQuery, flushAutosave, listQuery, selectedAccountId]);
 
   useEffect(() => {
     void loadEntries();
@@ -206,12 +272,22 @@ export function JournalPage() {
   }, [page, totalPages]);
 
   useEffect(() => {
-    const queue = new DebouncedAutosaveQueue({
+    const queue = new DebouncedAutosaveQueue<QueuedJournalSave>({
       delayMs: JOURNAL_AUTOSAVE_DELAY_MS,
       equals: queuedJournalSaveEquals,
       onStateChange: setSaveState,
       save: async (payload) => {
-        const updated = await accountsApi.updateJournalEntry(payload.accountId, payload.entryId, payload.patch);
+        const expectedVersion = selectedEntryVersionRef.current;
+        if (!expectedVersion) {
+          return;
+        }
+
+        const updated = await accountsApi.updateJournalEntry(payload.accountId, payload.entryId, {
+          ...payload.patch,
+          version: expectedVersion,
+        });
+
+        setConflictServerEntry(null);
         setEntries((currentEntries) => {
           const hasEntry = currentEntries.some((entry) => entry.id === updated.id);
           if (!hasEntry) {
@@ -225,17 +301,37 @@ export function JournalPage() {
         setTotalEntries((currentTotal) =>
           updated.is_archived && !includeArchivedRef.current ? Math.max(0, currentTotal - 1) : currentTotal,
         );
+
+        selectedEntryVersionRef.current = updated.version;
+
         const currentDraft = draftRef.current;
         if (!currentDraft) {
           return;
         }
-        const currentPayload = draftToUpdatePayload(currentDraft);
-        if (!journalPayloadEquals(currentPayload, payload.patch)) {
+
+        const currentPatch = draftToAutosavePatch(currentDraft);
+        if (journalAutosavePatchEquals(currentPatch, payload.patch)) {
+          const normalizedDraft = entryToDraft(updated);
+          setDraft(normalizedDraft);
+          draftRef.current = normalizedDraft;
           return;
         }
-        const normalizedDraft = entryToDraft(updated);
-        setDraft(normalizedDraft);
-        draftRef.current = normalizedDraft;
+
+        if (currentDraft.version === expectedVersion) {
+          const nextDraft = {
+            ...currentDraft,
+            version: updated.version,
+          };
+          setDraft(nextDraft);
+          draftRef.current = nextDraft;
+        }
+      },
+      onError: (error) => {
+        const serverEntry = getVersionConflictServerEntry(error);
+        if (!serverEntry) {
+          return;
+        }
+        setConflictServerEntry(serverEntry);
       },
     });
 
@@ -251,18 +347,22 @@ export function JournalPage() {
     if (!selectedEntry) {
       setDraft(null);
       draftRef.current = null;
+      selectedEntryVersionRef.current = null;
       setSaveState("saved");
+      setConflictServerEntry(null);
       return;
     }
 
     const nextDraft = entryToDraft(selectedEntry);
     setDraft(nextDraft);
     draftRef.current = nextDraft;
+    selectedEntryVersionRef.current = selectedEntry.version;
+    setConflictServerEntry(null);
     if (!selectedAccountId) {
       return;
     }
     autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, selectedEntry.id, nextDraft));
-  }, [selectedAccountId, selectedEntry?.id]);
+  }, [selectedAccountId, selectedEntry?.id, selectedEntry?.version]);
 
   useEffect(() => {
     return () => {
@@ -270,14 +370,41 @@ export function JournalPage() {
     };
   }, [flushAutosave, selectedAccountId]);
 
+  const loadEntryImages = useCallback(async () => {
+    if (!selectedAccountId || !selectedEntry?.id) {
+      setImages([]);
+      setImagesError(null);
+      return;
+    }
+
+    setImagesLoading(true);
+    setImagesError(null);
+
+    try {
+      const rows = await accountsApi.listJournalImages(selectedAccountId, selectedEntry.id);
+      setImages(rows);
+    } catch (err) {
+      setImages([]);
+      setImagesError(err instanceof Error ? err.message : "Failed to load images");
+    } finally {
+      setImagesLoading(false);
+    }
+  }, [selectedAccountId, selectedEntry?.id]);
+
+  useEffect(() => {
+    void loadEntryImages();
+  }, [loadEntryImages]);
+
   const handleDraftChange = useCallback((nextDraft: JournalDraft) => {
     setDraft(nextDraft);
     draftRef.current = nextDraft;
+
     const accountId = selectedAccountIdRef.current;
     const entryId = selectedEntryIdRef.current;
     if (!accountId || !entryId) {
       return;
     }
+
     autosaveRef.current?.queue(toQueuedJournalSave(accountId, entryId, nextDraft));
   }, []);
 
@@ -289,32 +416,59 @@ export function JournalPage() {
     [flushAutosave],
   );
 
-  const handleCreateEntry = useCallback(async () => {
-    if (!selectedAccountId) {
+  const handleCreateEntry = useCallback(
+    async (entryDate?: string) => {
+      if (!selectedAccountId) {
+        return;
+      }
+
+      setCreatingEntry(true);
+      setEntriesError(null);
+      try {
+        await flushAutosave();
+        const created = await accountsApi.createJournalEntry(selectedAccountId, {
+          entry_date: entryDate ?? getTodayUtcDateIso(),
+          title: "New Entry",
+          mood: "Neutral",
+          tags: [],
+          body: "",
+        });
+        setEntries((currentEntries) => upsertEntry(currentEntries, created));
+        setTotalEntries((currentTotal) => (created.already_existed ? currentTotal : currentTotal + 1));
+        setPage(1);
+        setSelectedId(created.id);
+        setConflictServerEntry(null);
+      } catch (err) {
+        setEntriesError(err instanceof Error ? err.message : "Failed to create journal entry");
+      } finally {
+        setCreatingEntry(false);
+      }
+    },
+    [flushAutosave, selectedAccountId],
+  );
+
+  useEffect(() => {
+    const dateKey = selectedAccountId && dateFromQuery ? `${selectedAccountId}:${dateFromQuery}` : null;
+    if (!dateKey) {
+      handledDateKeyRef.current = null;
+      return;
+    }
+    if (handledDateKeyRef.current === dateKey) {
+      return;
+    }
+    if (!selectedAccountId || loadingEntries) {
       return;
     }
 
-    setCreatingEntry(true);
-    setEntriesError(null);
-    try {
-      await flushAutosave();
-      const created = await accountsApi.createJournalEntry(selectedAccountId, {
-        entry_date: getTodayUtcDateIso(),
-        title: "New Entry",
-        mood: "Neutral",
-        tags: [],
-        body: "",
-      });
-      setEntries((currentEntries) => [created, ...currentEntries]);
-      setTotalEntries((currentTotal) => currentTotal + 1);
-      setPage(1);
-      setSelectedId(created.id);
-    } catch (err) {
-      setEntriesError(err instanceof Error ? err.message : "Failed to create journal entry");
-    } finally {
-      setCreatingEntry(false);
+    handledDateKeyRef.current = dateKey;
+    const existing = entries.find((entry) => entry.entry_date === dateFromQuery);
+    if (existing) {
+      setSelectedId(existing.id);
+      return;
     }
-  }, [flushAutosave, selectedAccountId]);
+
+    void handleCreateEntry(dateFromQuery ?? undefined);
+  }, [dateFromQuery, entries, handleCreateEntry, loadingEntries, selectedAccountId]);
 
   const handleArchiveToggle = useCallback(async () => {
     if (!draftRef.current || !autosaveRef.current) {
@@ -349,6 +503,124 @@ export function JournalPage() {
     }
     await autosaveRef.current.retryNow();
   }, []);
+
+  const handleReloadServerVersion = useCallback(() => {
+    if (!conflictServerEntry || !selectedAccountId) {
+      return;
+    }
+
+    setEntries((currentEntries) => upsertEntry(currentEntries, conflictServerEntry));
+    selectedEntryVersionRef.current = conflictServerEntry.version;
+
+    const nextDraft = entryToDraft(conflictServerEntry);
+    setDraft(nextDraft);
+    draftRef.current = nextDraft;
+    setSelectedId(conflictServerEntry.id);
+    autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, conflictServerEntry.id, nextDraft));
+    setSaveState("saved");
+    setConflictServerEntry(null);
+  }, [conflictServerEntry, selectedAccountId]);
+
+  const handleUploadImage = useCallback(
+    async (file: File | Blob) => {
+      if (!selectedAccountId || !selectedEntry) {
+        return;
+      }
+
+      setUploadingImage(true);
+      setImagesError(null);
+      try {
+        const uploaded = await accountsApi.uploadJournalImage(selectedAccountId, selectedEntry.id, file);
+        setImages((current) => [...current, uploaded]);
+      } catch (err) {
+        setImagesError(err instanceof Error ? err.message : "Failed to upload image");
+      } finally {
+        setUploadingImage(false);
+      }
+    },
+    [selectedAccountId, selectedEntry],
+  );
+
+  const handleDeleteImage = useCallback(
+    async (imageId: number) => {
+      if (!selectedAccountId || !selectedEntry) {
+        return;
+      }
+
+      try {
+        await accountsApi.deleteJournalImage(selectedAccountId, selectedEntry.id, imageId);
+        setImages((current) => current.filter((image) => image.id !== imageId));
+      } catch (err) {
+        setImagesError(err instanceof Error ? err.message : "Failed to delete image");
+      }
+    },
+    [selectedAccountId, selectedEntry],
+  );
+
+  const handlePullTradeStats = useCallback(async () => {
+    if (!selectedAccountId || !selectedEntry) {
+      return;
+    }
+
+    setPullingStats(true);
+    setPullStatsError(null);
+
+    try {
+      await flushAutosave();
+      const updated = await accountsApi.pullJournalTradeStats(selectedAccountId, selectedEntry.id, {
+        entry_date: selectedEntry.entry_date,
+      });
+
+      setEntries((currentEntries) => currentEntries.map((entry) => (entry.id === updated.id ? updated : entry)));
+      selectedEntryVersionRef.current = updated.version;
+
+      const nextDraft = entryToDraft(updated);
+      setDraft(nextDraft);
+      draftRef.current = nextDraft;
+      autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, updated.id, nextDraft));
+      setConflictServerEntry(null);
+    } catch (err) {
+      setPullStatsError(err instanceof Error ? err.message : "Failed to pull trade stats");
+    } finally {
+      setPullingStats(false);
+    }
+  }, [flushAutosave, selectedAccountId, selectedEntry]);
+
+  const handleDeleteEntry = useCallback(async () => {
+    if (!selectedAccountId || !selectedEntry) {
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this entry permanently?");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingEntry(true);
+    setEntriesError(null);
+
+    try {
+      await flushAutosave();
+      await accountsApi.deleteJournalEntry(selectedAccountId, selectedEntry.id);
+
+      setEntries((currentEntries) => currentEntries.filter((entry) => entry.id !== selectedEntry.id));
+      setTotalEntries((currentTotal) => Math.max(0, currentTotal - 1));
+      setSelectedId((currentSelectedId) => {
+        if (currentSelectedId !== selectedEntry.id) {
+          return currentSelectedId;
+        }
+        return entries.find((entry) => entry.id !== selectedEntry.id)?.id ?? null;
+      });
+      setDraft(null);
+      draftRef.current = null;
+      setImages([]);
+      setConflictServerEntry(null);
+    } catch (err) {
+      setEntriesError(err instanceof Error ? err.message : "Failed to delete journal entry");
+    } finally {
+      setDeletingEntry(false);
+    }
+  }, [entries, flushAutosave, selectedAccountId, selectedEntry]);
 
   const savingDisabled = saveState === "saving" || !selectedEntry;
 
@@ -455,9 +727,22 @@ export function JournalPage() {
             draft={draft}
             saveState={saveState}
             savingDisabled={savingDisabled}
+            conflictServerEntry={conflictServerEntry}
+            images={images}
+            imagesLoading={imagesLoading}
+            imagesError={imagesError}
+            uploadingImage={uploadingImage}
+            pullingStats={pullingStats}
+            pullStatsError={pullStatsError}
+            deletingEntry={deletingEntry}
             onDraftChange={handleDraftChange}
             onArchiveToggle={() => void handleArchiveToggle()}
             onRetrySave={() => void handleRetrySave()}
+            onReloadServerVersion={handleReloadServerVersion}
+            onUploadImage={(file) => void handleUploadImage(file)}
+            onDeleteImage={(imageId) => void handleDeleteImage(imageId)}
+            onPullTradeStats={() => void handlePullTradeStats()}
+            onDeleteEntry={() => void handleDeleteEntry()}
           />
         </div>
       </div>
