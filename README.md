@@ -1,12 +1,11 @@
 # TopSignal
 
-Quick Interview Summary
-- Full-stack trading analytics app: React + FastAPI + Postgres.
-- Pulls account/trade data from ProjectX/TopstepX server-side, normalizes it, and persists it locally.
-- Uses local DB as the primary analytics source so UI pages are fast and mostly API-independent after sync.
-- Implements two analytics paths: active ProjectX event metrics and legacy `trades`-table metrics.
-- Includes account-scoped journaling with debounced autosave and soft-archive support.
-- Emphasizes practical data engineering concerns: dedupe, sync windows, day-level cache completeness, and UTC-safe filtering.
+TopSignal is a local trading analytics dashboard for reviewing ProjectX/TopstepX accounts, syncing trade history into Postgres, and inspecting account-level performance from a React UI.
+
+<img width="689" height="1242" alt="image" src="https://github.com/user-attachments/assets/fe1faa81-ff4f-49f9-8857-77d1611de2f5" />
+
+
+This README is implementation-based and reflects the current code in this repo.
 
 ## 1) Elevator Pitch (Interview Version)
 TopSignal is a local-first trading analytics dashboard I built to review ProjectX/TopstepX performance without depending on live broker calls for every page load. The backend authenticates with ProjectX, fetches account and trade data, normalizes it, and stores trade events in Postgres with dedupe and sync tracking. The frontend then reads from my own API for account summaries, daily PnL calendar, trade history, and journaling workflows. I built it because I wanted a reliable way to inspect performance patterns, not just raw broker screens, and I wanted full control over metrics logic. The technically interesting parts are the sync strategy (initial lookback + incremental overlap + day-level completeness), event normalization, and metric computation pipeline for drawdowns, expectancy, and directional analysis. I also keep legacy metrics endpoints and a newer ProjectX event pipeline side-by-side, which makes design tradeoffs very explicit. The project is intentionally practical: it solves a real workflow and exposes clear next steps for scale, reliability, and analytics depth.
