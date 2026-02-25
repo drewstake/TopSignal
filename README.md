@@ -1,4 +1,5 @@
-# TopSignal
+# TopSignal <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/d068c393-05e1-4535-972b-84f19b85de3e" />
+
 
 TopSignal is a local trading analytics dashboard for reviewing ProjectX/TopstepX accounts, syncing trade history into Postgres, and inspecting account-level performance from a React UI.
 
