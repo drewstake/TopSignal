@@ -1,14 +1,28 @@
 import calendar
-from datetime import date, datetime, timezone
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import get_db, init_db
+from .expense_schemas import (
+    ExpenseCategory,
+    ExpenseCreateIn,
+    ExpenseListOut,
+    ExpenseOut,
+    ExpenseRange,
+    ExpenseTotalsOut,
+    ExpenseUpdateIn,
+    WeekStart,
+)
 from .journal_schemas import (
     JournalEntryCreateIn,
     JournalEntryCreateOut,
@@ -28,9 +42,10 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Trade
+from .models import Expense, ProjectXTradeEvent, Trade
 from .projectx_schemas import (
     ProjectXAccountOut,
+    ProjectXAccountLastTradeOut,
     ProjectXPnlCalendarDayOut,
     ProjectXTradeOut,
     ProjectXTradeRefreshOut,
@@ -78,6 +93,9 @@ from .services.projectx_trades import (
 app = FastAPI(title="TopSignal API")
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
+_NEW_YORK_TZ = ZoneInfo("America/New_York")
+_PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
+_PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,6 +127,207 @@ def list_trades(
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
     return query.order_by(Trade.opened_at.desc()).limit(limit).all()
+
+
+@app.post("/api/expenses", response_model=ExpenseOut, status_code=201)
+def create_expense(
+    payload: ExpenseCreateIn,
+    db: Session = Depends(get_db),
+):
+    if payload.account_id is not None:
+        _validate_account_id(payload.account_id)
+
+    amount_cents = _resolve_amount_cents(payload.amount_cents)
+    description = _normalize_expense_description(payload.description)
+    tags = _normalize_expense_tags(payload.tags)
+
+    _validate_expense_practice_guard(
+        account_type=payload.account_type,
+        is_practice=payload.is_practice,
+        description=description,
+        tags=tags,
+        plan_size=payload.plan_size,
+    )
+    _validate_expense_amount(amount_cents=amount_cents, category=payload.category)
+
+    row = Expense(
+        account_id=payload.account_id,
+        provider=payload.provider,
+        expense_date=payload.expense_date,
+        amount_cents=amount_cents,
+        currency=payload.currency,
+        category=payload.category,
+        account_type=payload.account_type,
+        plan_size=payload.plan_size,
+        description=description,
+        tags=tags,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _to_expense_integrity_http_exception(exc) from exc
+
+    db.refresh(row)
+    return ExpenseOut.model_validate(row)
+
+
+@app.get("/api/expenses", response_model=ExpenseListOut)
+def list_expenses(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    account_id: int | None = None,
+    category: ExpenseCategory | None = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+    if account_id is not None:
+        _validate_account_id(account_id)
+
+    query = db.query(Expense)
+    if start_date is not None:
+        query = query.filter(Expense.expense_date >= start_date)
+    if end_date is not None:
+        query = query.filter(Expense.expense_date <= end_date)
+    if account_id is not None:
+        query = query.filter(Expense.account_id == account_id)
+    if category is not None:
+        query = query.filter(Expense.category == category)
+
+    total = query.count()
+    rows = query.order_by(Expense.expense_date.desc(), Expense.id.desc()).offset(offset).limit(limit).all()
+    return {
+        "items": [ExpenseOut.model_validate(row) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/expenses/totals", response_model=ExpenseTotalsOut)
+def get_expense_totals(
+    range: ExpenseRange = Query(...),
+    account_id: int | None = None,
+    week_start: WeekStart = Query(default="monday"),
+    db: Session = Depends(get_db),
+):
+    if account_id is not None:
+        _validate_account_id(account_id)
+
+    start_date, end_date = _resolve_expense_range_dates(range=range, week_start=week_start)
+
+    query = db.query(Expense).filter(Expense.expense_date <= end_date)
+    if start_date is not None:
+        query = query.filter(Expense.expense_date >= start_date)
+    if account_id is not None:
+        query = query.filter(Expense.account_id == account_id)
+
+    total_amount_cents, count = query.with_entities(
+        func.coalesce(func.sum(Expense.amount_cents), 0),
+        func.count(Expense.id),
+    ).one()
+
+    grouped_rows = query.with_entities(
+        Expense.category,
+        func.coalesce(func.sum(Expense.amount_cents), 0),
+        func.count(Expense.id),
+    ).group_by(Expense.category).all()
+
+    by_category = {
+        str(category): {
+            "amount": _cents_to_dollars(cents),
+            "amount_cents": int(cents),
+            "count": int(row_count),
+        }
+        for category, cents, row_count in grouped_rows
+    }
+
+    return {
+        "range": range,
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_amount": _cents_to_dollars(total_amount_cents),
+        "total_amount_cents": int(total_amount_cents),
+        "by_category": by_category,
+        "count": int(count),
+    }
+
+
+@app.patch("/api/expenses/{expense_id}", response_model=ExpenseOut)
+def update_expense(
+    expense_id: int,
+    payload: ExpenseUpdateIn,
+    db: Session = Depends(get_db),
+):
+    if expense_id <= 0:
+        raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
+
+    row = db.query(Expense).filter(Expense.id == expense_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="expense not found")
+
+    fields = payload.model_fields_set
+    if "expense_date" in fields:
+        if payload.expense_date is None:
+            raise HTTPException(status_code=400, detail="expense_date cannot be null")
+        row.expense_date = payload.expense_date
+    if "category" in fields:
+        if payload.category is None:
+            raise HTTPException(status_code=400, detail="category cannot be null")
+        row.category = payload.category
+    if "amount_cents" in fields:
+        if payload.amount_cents is None:
+            raise HTTPException(status_code=400, detail="amount_cents cannot be null")
+        row.amount_cents = payload.amount_cents
+    if "description" in fields:
+        row.description = _normalize_expense_description(payload.description)
+    if "tags" in fields:
+        row.tags = _normalize_expense_tags(payload.tags)
+    if "account_id" in fields:
+        if payload.account_id is not None:
+            _validate_account_id(payload.account_id)
+        row.account_id = payload.account_id
+    if "account_type" in fields:
+        row.account_type = payload.account_type
+    if "plan_size" in fields:
+        row.plan_size = payload.plan_size
+
+    _validate_expense_practice_guard(
+        account_type=row.account_type,
+        is_practice=payload.is_practice is True,
+        description=row.description,
+        tags=row.tags,
+        plan_size=row.plan_size,
+    )
+    _validate_expense_amount(amount_cents=row.amount_cents, category=row.category)
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _to_expense_integrity_http_exception(exc) from exc
+
+    db.refresh(row)
+    return ExpenseOut.model_validate(row)
+
+
+@app.delete("/api/expenses/{expense_id}", status_code=204)
+def delete_expense(
+    expense_id: int,
+    db: Session = Depends(get_db),
+):
+    if expense_id <= 0:
+        raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
+
+    row = db.query(Expense).filter(Expense.id == expense_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="expense not found")
+
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/metrics/summary", response_model=SummaryMetricsOut)
@@ -160,12 +379,79 @@ def metrics_behavior(
 
 
 @app.get("/api/accounts", response_model=list[ProjectXAccountOut])
-def list_projectx_accounts():
+def list_projectx_accounts(
+    only_active_accounts: bool = True,
+    db: Session = Depends(get_db),
+):
     try:
         client = ProjectXClient.from_env()
-        return client.list_accounts()
+        accounts = client.list_accounts(only_active_accounts=only_active_accounts)
+        if not accounts:
+            return accounts
+
+        last_trade_by_account_id = _load_last_trade_timestamps(
+            db,
+            account_ids=[int(account["id"]) for account in accounts],
+        )
+
+        for account in accounts:
+            account["last_trade_at"] = last_trade_by_account_id.get(int(account["id"]))
+
+        return accounts
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
+
+
+@app.get("/api/accounts/{account_id}/last-trade", response_model=ProjectXAccountLastTradeOut)
+def get_projectx_account_last_trade(
+    account_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+
+    local_timestamp = _load_last_trade_timestamps(db, account_ids=[account_id]).get(account_id)
+    if local_timestamp is not None and not refresh:
+        return {
+            "account_id": account_id,
+            "last_trade_at": local_timestamp,
+            "source": "local",
+        }
+
+    try:
+        client = ProjectXClient.from_env()
+        provider_timestamp = client.fetch_last_trade_timestamp(
+            account_id,
+            lookback_days=_read_int_env("PROJECTX_LAST_TRADE_LOOKBACK_DAYS", 3650),
+        )
+    except ProjectXClientError as exc:
+        if local_timestamp is not None:
+            return {
+                "account_id": account_id,
+                "last_trade_at": local_timestamp,
+                "source": "local",
+            }
+        raise _to_http_exception(exc) from exc
+
+    if provider_timestamp is not None:
+        return {
+            "account_id": account_id,
+            "last_trade_at": _as_utc(provider_timestamp),
+            "source": "provider",
+        }
+
+    if local_timestamp is not None:
+        return {
+            "account_id": account_id,
+            "last_trade_at": local_timestamp,
+            "source": "local",
+        }
+
+    return {
+        "account_id": account_id,
+        "last_trade_at": None,
+        "source": "none",
+    }
 
 
 @app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)
@@ -581,6 +867,105 @@ def get_projectx_account_pnl_calendar(
         raise _to_http_exception(exc) from exc
 
 
+def _resolve_amount_cents(amount_cents: int | None) -> int:
+    if amount_cents is None:
+        raise HTTPException(status_code=400, detail="amount_cents is required")
+    return int(amount_cents)
+
+
+def _normalize_expense_description(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_expense_tags(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+    return normalized
+
+
+def _contains_practice(value: str | None) -> bool:
+    if not value:
+        return False
+    return "practice" in value.lower()
+
+
+def _validate_expense_practice_guard(
+    *,
+    account_type: str | None,
+    is_practice: bool,
+    description: str | None,
+    tags: list[str] | None,
+    plan_size: str | None,
+) -> None:
+    if is_practice:
+        raise HTTPException(status_code=400, detail=_PRACTICE_ERROR_DETAIL)
+
+    has_practice_text = _contains_practice(description) or any(_contains_practice(tag) for tag in tags or [])
+    if account_type == "practice" or has_practice_text:
+        raise HTTPException(status_code=400, detail=_PRACTICE_ERROR_DETAIL)
+
+    if plan_size == "150k" and account_type not in _PAID_ACCOUNT_TYPES_FOR_150K:
+        raise HTTPException(
+            status_code=400,
+            detail="plan_size_150k_requires_account_type_no_activation_or_standard",
+        )
+
+
+def _validate_expense_amount(*, amount_cents: int | None, category: str | None) -> None:
+    if amount_cents is None:
+        raise HTTPException(status_code=400, detail="amount_cents is required")
+    if category is None:
+        raise HTTPException(status_code=400, detail="category is required")
+    if amount_cents < 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be >= 0")
+    if category != "other" and amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0 for non-other categories")
+
+
+def _resolve_expense_range_dates(*, range: ExpenseRange, week_start: WeekStart) -> tuple[date | None, date]:
+    today_local = datetime.now(_NEW_YORK_TZ).date()
+    end_date = today_local
+    if range == "week":
+        if week_start == "sunday":
+            days_since_week_start = (today_local.weekday() + 1) % 7
+        else:
+            days_since_week_start = today_local.weekday()
+        start_date = today_local - timedelta(days=days_since_week_start)
+    elif range == "month":
+        start_date = today_local.replace(day=1)
+    elif range == "ytd":
+        start_date = date(today_local.year, 1, 1)
+    else:
+        start_date = None
+    return start_date, end_date
+
+
+def _cents_to_dollars(amount_cents: int) -> float:
+    return round(int(amount_cents) / 100, 2)
+
+
+def _to_expense_integrity_http_exception(exc: IntegrityError) -> HTTPException:
+    message = str(exc.orig).lower() if exc.orig is not None else str(exc).lower()
+    if "uq_expenses_dedupe" in message or "unique constraint" in message:
+        return HTTPException(status_code=409, detail="duplicate_expense")
+    return HTTPException(status_code=400, detail="invalid_expense_payload")
+
+
 def _validate_account_id(account_id: int) -> None:
     if account_id <= 0:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
@@ -596,6 +981,40 @@ def _validate_journal_date_range(*, start_date: date | None, end_date: date | No
         validate_journal_date_range(start_date=start_date, end_date=end_date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _load_last_trade_timestamps(db: Session, *, account_ids: list[int]) -> dict[int, datetime]:
+    unique_ids = sorted({account_id for account_id in account_ids if account_id > 0})
+    if not unique_ids:
+        return {}
+
+    rows = (
+        db.query(
+            ProjectXTradeEvent.account_id.label("account_id"),
+            func.max(ProjectXTradeEvent.trade_timestamp).label("last_trade_at"),
+        )
+        .filter(ProjectXTradeEvent.account_id.in_(unique_ids))
+        .group_by(ProjectXTradeEvent.account_id)
+        .all()
+    )
+
+    output: dict[int, datetime] = {}
+    for row in rows:
+        if row.last_trade_at is None:
+            continue
+        output[int(row.account_id)] = _as_utc(row.last_trade_at)
+    return output
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _journal_update_payload_is_empty(payload: JournalEntryUpdateIn) -> bool:

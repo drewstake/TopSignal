@@ -173,6 +173,7 @@ export function AppShell() {
               { label: "Dashboard", to: "/" },
               { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Trades", to: `/trades${accountSuffix}` },
+              { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Journal", to: `/journal${accountSuffix}` },
             ]}
           />

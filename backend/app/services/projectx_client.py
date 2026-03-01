@@ -82,8 +82,8 @@ class ProjectXClient:
 
         return cls(base_url=base_url, username=username, api_key=api_key)
 
-    def list_accounts(self) -> list[dict[str, Any]]:
-        payload = {"onlyActiveAccounts": True}
+    def list_accounts(self, *, only_active_accounts: bool = True) -> list[dict[str, Any]]:
+        payload = {"onlyActiveAccounts": bool(only_active_accounts)}
         data = self._request("POST", "/api/Account/search", payload=payload, with_auth=True)
 
         rows = _unwrap_list(data, preferred_keys=["accounts", "data", "items"])
@@ -92,8 +92,8 @@ class ProjectXClient:
             if not isinstance(row, dict):
                 continue
 
-            # Keep this defensive filter even when onlyActiveAccounts=true.
-            if row.get("canTrade") is False:
+            # Keep this defensive filter for active-only requests.
+            if only_active_accounts and row.get("canTrade") is False:
                 continue
 
             account_id_raw = _first_value(row, ["id", "accountId", "account_id"])
@@ -106,7 +106,14 @@ class ProjectXClient:
 
             status_raw = _first_value(row, ["status", "state", "accountStatus"])
             can_trade = row.get("canTrade")
-            status = str(status_raw) if status_raw is not None else ("ACTIVE" if can_trade else "UNKNOWN")
+            if status_raw is not None:
+                status = str(status_raw)
+            elif can_trade is True:
+                status = "ACTIVE"
+            elif can_trade is False:
+                status = "INACTIVE"
+            else:
+                status = "UNKNOWN"
 
             output.append(
                 {
@@ -211,6 +218,27 @@ class ProjectXClient:
 
         normalized.sort(key=lambda trade: trade["timestamp"])
         return normalized
+
+    def fetch_last_trade_timestamp(self, account_id: int, *, lookback_days: int = 3650) -> datetime | None:
+        """
+        Return the latest known trade timestamp for an account using provider data.
+
+        This uses a bounded lookback window to avoid unbounded provider scans.
+        """
+        effective_lookback_days = max(1, int(lookback_days))
+        end_utc = datetime.now(timezone.utc)
+        start_utc = end_utc - timedelta(days=effective_lookback_days)
+
+        rows = self.fetch_trade_history(
+            account_id=account_id,
+            start=start_utc,
+            end=end_utc,
+            limit=1,
+        )
+        if not rows:
+            return None
+
+        return _as_utc(rows[0]["timestamp"])
 
     def stream_user_trades(
         self,

@@ -80,6 +80,13 @@ export interface AccountInfo {
   name: string;
   balance: number;
   status: string;
+  last_trade_at: string | null;
+}
+
+export interface AccountLastTradeInfo {
+  account_id: number;
+  last_trade_at: string | null;
+  source: string;
 }
 
 export interface AccountTrade {
@@ -145,6 +152,85 @@ export interface AccountPnlCalendarDay {
   gross_pnl: number;
   fees: number;
   net_pnl: number;
+}
+
+export type ExpenseCategory = "evaluation_fee" | "activation_fee" | "reset_fee" | "data_fee" | "other";
+export type ExpenseAccountType = "no_activation" | "standard" | "practice";
+export type ExpensePlanSize = "50k" | "100k" | "150k";
+export type ExpenseRange = "week" | "month" | "ytd" | "all_time";
+
+export interface ExpenseRecord {
+  id: number;
+  account_id: number | null;
+  provider: string;
+  expense_date: string;
+  amount_cents: number;
+  amount: number;
+  currency: string;
+  category: ExpenseCategory;
+  account_type: ExpenseAccountType | null;
+  plan_size: ExpensePlanSize | null;
+  description: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExpenseCreateInput {
+  expense_date: string;
+  amount?: number;
+  amount_cents?: number;
+  category: ExpenseCategory;
+  provider?: string;
+  account_id?: number;
+  account_type?: ExpenseAccountType;
+  plan_size?: ExpensePlanSize;
+  description?: string;
+  tags?: string[];
+  is_practice?: boolean;
+  currency?: string;
+}
+
+export interface ExpenseUpdateInput {
+  expense_date?: string;
+  amount_cents?: number;
+  category?: ExpenseCategory;
+  account_id?: number | null;
+  account_type?: ExpenseAccountType;
+  plan_size?: ExpensePlanSize;
+  description?: string;
+  tags?: string[];
+  is_practice?: boolean;
+}
+
+export interface ExpenseListQuery {
+  start_date?: string;
+  end_date?: string;
+  account_id?: number;
+  category?: ExpenseCategory;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ExpenseListResponse {
+  items: ExpenseRecord[];
+  total: number;
+}
+
+export interface ExpenseCategoryTotals {
+  amount: number;
+  amount_cents: number;
+  count: number;
+}
+
+export interface ExpenseTotals {
+  range: ExpenseRange;
+  start_date: string | null;
+  end_date: string;
+  total_amount: number;
+  total_amount_cents: number;
+  by_category: Record<string, ExpenseCategoryTotals>;
+  count: number;
 }
 
 export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";

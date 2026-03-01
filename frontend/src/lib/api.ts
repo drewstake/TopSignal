@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  AccountLastTradeInfo,
   JournalEntry,
   JournalEntryCreateResult,
   JournalEntryCreateInput,
@@ -16,6 +17,13 @@ import type {
   AccountTradeRefreshResult,
   BehaviorMetrics,
   DayPnlPoint,
+  ExpenseCreateInput,
+  ExpenseListQuery,
+  ExpenseListResponse,
+  ExpenseRange,
+  ExpenseRecord,
+  ExpenseTotals,
+  ExpenseUpdateInput,
   HourPnlPoint,
   StreakMetrics,
   SummaryMetrics,
@@ -166,7 +174,13 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
 let accountsCache: TimedCache<AccountInfo[]> | null = null;
 let inFlightAccountsRequest: Promise<AccountInfo[]> | null = null;
 
-function getAccountsCached(): Promise<AccountInfo[]> {
+function getAccountsCached(onlyActiveAccounts: boolean): Promise<AccountInfo[]> {
+  if (!onlyActiveAccounts) {
+    return requestJson<AccountInfo[]>("/api/accounts", {
+      query: { only_active_accounts: false },
+    });
+  }
+
   const now = Date.now();
   if (accountsCache && accountsCache.expiresAtMs > now) {
     return Promise.resolve(accountsCache.value);
@@ -175,7 +189,9 @@ function getAccountsCached(): Promise<AccountInfo[]> {
     return inFlightAccountsRequest;
   }
 
-  inFlightAccountsRequest = requestJson<AccountInfo[]>("/api/accounts")
+  inFlightAccountsRequest = requestJson<AccountInfo[]>("/api/accounts", {
+    query: { only_active_accounts: true },
+  })
     .then((accounts) => {
       accountsCache = {
         value: accounts,
@@ -226,7 +242,13 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 }
 
 export const accountsApi = {
-  getAccounts: () => getAccountsCached(),
+  getAccounts: (onlyActiveAccounts = true) => getAccountsCached(onlyActiveAccounts),
+  getLastTrade: (accountId: number, refresh = false) =>
+    requestJson<AccountLastTradeInfo>(`/api/accounts/${accountId}/last-trade`, {
+      query: {
+        refresh,
+      },
+    }),
   getTrades: (accountId: number, query: AccountTradesQuery = {}) =>
     requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
       query: {
@@ -319,3 +341,43 @@ export const accountsApi = {
       body,
     }),
 };
+
+export function listExpenses(params: ExpenseListQuery = {}) {
+  return requestJson<ExpenseListResponse>("/api/expenses", {
+    query: {
+      start_date: params.start_date,
+      end_date: params.end_date,
+      account_id: params.account_id,
+      category: params.category,
+      limit: params.limit ?? 200,
+      offset: params.offset ?? 0,
+    },
+  });
+}
+
+export function createExpense(payload: ExpenseCreateInput) {
+  return requestJson<ExpenseRecord>("/api/expenses", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function deleteExpense(id: number) {
+  return requestJson<void>(`/api/expenses/${id}`, { method: "DELETE" });
+}
+
+export function updateExpense(id: number, payload: ExpenseUpdateInput) {
+  return requestJson<ExpenseRecord>(`/api/expenses/${id}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export function getExpenseTotals(range: ExpenseRange, accountId?: number) {
+  return requestJson<ExpenseTotals>("/api/expenses/totals", {
+    query: {
+      range,
+      account_id: accountId,
+    },
+  });
+}

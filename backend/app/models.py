@@ -166,3 +166,54 @@ class JournalEntryImage(Base):
         Index("idx_journal_entry_images_account_date", "account_id", "entry_date"),
         Index("idx_journal_entry_images_journal_entry", "journal_entry_id"),
     )
+
+
+class Expense(Base):
+    __tablename__ = "expenses"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    account_id = Column(BigInteger, nullable=True)
+    provider = Column(Text, nullable=False, server_default="topstep")
+    expense_date = Column(Date, nullable=False)
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(Text, nullable=False, server_default="USD")
+    category = Column(Text, nullable=False)
+    account_type = Column(Text, nullable=True)
+    plan_size = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    tags = Column(
+        ARRAY(Text).with_variant(JSON, "sqlite"),
+        nullable=False,
+        server_default=text("'{}'"),
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("amount_cents >= 0", name="expenses_amount_cents_nonnegative_check"),
+        CheckConstraint(
+            "category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other')",
+            name="expenses_category_check",
+        ),
+        CheckConstraint(
+            "account_type in ('no_activation', 'standard', 'practice')",
+            name="expenses_account_type_check",
+        ),
+        CheckConstraint(
+            "plan_size in ('50k', '100k', '150k')",
+            name="expenses_plan_size_check",
+        ),
+        Index("idx_expenses_expense_date", "expense_date"),
+        Index("idx_expenses_account_id", "account_id"),
+        Index("idx_expenses_category", "category"),
+        Index(
+            "uq_expenses_dedupe",
+            "expense_date",
+            "category",
+            func.coalesce(account_type, ""),
+            func.coalesce(plan_size, ""),
+            func.coalesce(account_id, 0),
+            "amount_cents",
+            unique=True,
+        ),
+    )

@@ -80,3 +80,95 @@ def test_fetch_trade_history_skips_voided_rows():
 
     assert len(rows) == 1
     assert rows[0]["source_trade_id"] == "1"
+
+
+def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "accounts": [
+                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True},
+                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False},
+                ]
+            }
+
+    client = StubClient()
+
+    rows = client.list_accounts(only_active_accounts=True)
+
+    assert client.calls == [("POST", "/api/Account/search", {"onlyActiveAccounts": True}, True)]
+    assert rows == [
+        {
+            "id": 5,
+            "name": "ACTIVE_5",
+            "balance": 50000.0,
+            "status": "ACTIVE",
+        }
+    ]
+
+
+def test_list_accounts_can_request_all_accounts():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "accounts": [
+                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False},
+                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True},
+                ]
+            }
+
+    client = StubClient()
+    rows = client.list_accounts(only_active_accounts=False)
+
+    assert client.calls == [("POST", "/api/Account/search", {"onlyActiveAccounts": False}, True)]
+    assert rows == [
+        {
+            "id": 5,
+            "name": "ACTIVE_5",
+            "balance": 50000.0,
+            "status": "ACTIVE",
+        },
+        {
+            "id": 6,
+            "name": "NO_TRADE",
+            "balance": 25000.0,
+            "status": "INACTIVE",
+        },
+    ]
+
+
+def test_fetch_last_trade_timestamp_returns_latest_value():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
+            self.calls.append((account_id, start, end, limit, offset))
+            return [
+                {
+                    "account_id": account_id,
+                    "timestamp": datetime(2026, 2, 15, 18, 45, tzinfo=timezone.utc),
+                    "order_id": "A-1",
+                }
+            ]
+
+    client = StubClient()
+    timestamp = client.fetch_last_trade_timestamp(account_id=777, lookback_days=90)
+
+    assert timestamp == datetime(2026, 2, 15, 18, 45, tzinfo=timezone.utc)
+    assert len(client.calls) == 1
+    account_id, _start, _end, limit, offset = client.calls[0]
+    assert account_id == 777
+    assert limit == 1
+    assert offset is None
