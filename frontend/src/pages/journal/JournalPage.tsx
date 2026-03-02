@@ -33,6 +33,7 @@ import {
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
   parseTagsInput,
+  reconcileDraftWithServerEntry,
   type JournalDraft,
   type JournalMoodFilter,
 } from "./journalUtils";
@@ -144,6 +145,7 @@ export function JournalPage() {
   const selectedAccountIdRef = useRef<number | null>(null);
   const selectedEntryVersionRef = useRef<number | null>(null);
   const draftRef = useRef<JournalDraft | null>(null);
+  const draftEntryIdRef = useRef<number | null>(null);
   const includeArchivedRef = useRef(includeArchived);
   const handledDateKeyRef = useRef<string | null>(null);
 
@@ -369,22 +371,29 @@ export function JournalPage() {
     if (!selectedEntry) {
       setDraft(null);
       draftRef.current = null;
+      draftEntryIdRef.current = null;
       selectedEntryVersionRef.current = null;
       setSaveState("saved");
       setConflictServerEntry(null);
       return;
     }
 
-    const nextDraft = entryToDraft(selectedEntry);
+    const { nextDraft, replaceBaseline } = reconcileDraftWithServerEntry({
+      currentDraft: draftRef.current,
+      currentEntryId: draftEntryIdRef.current,
+      serverEntry: selectedEntry,
+    });
+
     setDraft(nextDraft);
     draftRef.current = nextDraft;
+    draftEntryIdRef.current = selectedEntry.id;
     selectedEntryVersionRef.current = selectedEntry.version;
     setConflictServerEntry(null);
-    if (!selectedAccountId) {
+    if (!selectedAccountId || !replaceBaseline) {
       return;
     }
     autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, selectedEntry.id, nextDraft));
-  }, [selectedAccountId, selectedEntry?.id, selectedEntry?.version]);
+  }, [selectedAccountId, selectedEntry]);
 
   useEffect(() => {
     return () => {

@@ -19,6 +19,17 @@ export interface JournalDraft {
 
 export type JournalMoodFilter = JournalMood | "ALL";
 
+export interface ReconcileDraftWithServerParams {
+  currentDraft: JournalDraft | null;
+  currentEntryId: number | null;
+  serverEntry: JournalEntry;
+}
+
+export interface ReconcileDraftWithServerResult {
+  nextDraft: JournalDraft;
+  replaceBaseline: boolean;
+}
+
 export function entryToDraft(entry: JournalEntry): JournalDraft {
   return {
     title: entry.title,
@@ -38,6 +49,44 @@ export function draftToUpdatePayload(draft: JournalDraft, versionOverride?: numb
     tags: parseTagsInput(draft.tagsInput),
     body: draft.body,
     is_archived: draft.is_archived,
+  };
+}
+
+export function reconcileDraftWithServerEntry({
+  currentDraft,
+  currentEntryId,
+  serverEntry,
+}: ReconcileDraftWithServerParams): ReconcileDraftWithServerResult {
+  const serverDraft = entryToDraft(serverEntry);
+  if (!currentDraft || currentEntryId !== serverEntry.id) {
+    return {
+      nextDraft: serverDraft,
+      replaceBaseline: true,
+    };
+  }
+
+  const currentPayload = draftToUpdatePayload(currentDraft, serverDraft.version);
+  const serverPayload = draftToUpdatePayload(serverDraft, serverDraft.version);
+  if (journalPayloadEquals(currentPayload, serverPayload)) {
+    return {
+      nextDraft: serverDraft,
+      replaceBaseline: true,
+    };
+  }
+
+  if (currentDraft.version === serverDraft.version) {
+    return {
+      nextDraft: currentDraft,
+      replaceBaseline: false,
+    };
+  }
+
+  return {
+    nextDraft: {
+      ...currentDraft,
+      version: serverDraft.version,
+    },
+    replaceBaseline: false,
   };
 }
 

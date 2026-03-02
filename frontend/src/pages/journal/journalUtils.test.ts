@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildJournalQuery, draftToUpdatePayload, getTodayTradingDateIso, parseTagsInput } from "./journalUtils";
+import type { JournalEntry } from "../../lib/types";
+import {
+  buildJournalQuery,
+  draftToUpdatePayload,
+  getTodayTradingDateIso,
+  parseTagsInput,
+  reconcileDraftWithServerEntry,
+} from "./journalUtils";
 
 describe("buildJournalQuery", () => {
   it("builds query params and omits empty mood/search values", () => {
@@ -53,5 +60,62 @@ describe("getTodayTradingDateIso", () => {
   it("uses New York calendar day boundaries", () => {
     expect(getTodayTradingDateIso(new Date("2026-03-02T03:30:00.000Z"))).toBe("2026-03-01");
     expect(getTodayTradingDateIso(new Date("2026-03-02T14:00:00.000Z"))).toBe("2026-03-02");
+  });
+});
+
+describe("reconcileDraftWithServerEntry", () => {
+  const serverEntry: JournalEntry = {
+    id: 21,
+    account_id: 13001,
+    entry_date: "2026-03-02",
+    title: "Session",
+    mood: "Neutral",
+    tags: ["nq"],
+    body: "first save",
+    version: 5,
+    stats_source: null,
+    stats_json: null,
+    stats_pulled_at: null,
+    is_archived: false,
+    created_at: "2026-03-02T10:00:00.000Z",
+    updated_at: "2026-03-02T10:01:00.000Z",
+  };
+
+  it("keeps local text and only advances version when local edits differ", () => {
+    const result = reconcileDraftWithServerEntry({
+      currentDraft: {
+        title: "Session",
+        mood: "Neutral",
+        tagsInput: "nq",
+        body: "first save + still typing",
+        version: 4,
+        is_archived: false,
+      },
+      currentEntryId: 21,
+      serverEntry,
+    });
+
+    expect(result.replaceBaseline).toBe(false);
+    expect(result.nextDraft.body).toBe("first save + still typing");
+    expect(result.nextDraft.version).toBe(5);
+  });
+
+  it("adopts server draft and baseline when content matches", () => {
+    const result = reconcileDraftWithServerEntry({
+      currentDraft: {
+        title: "Session",
+        mood: "Neutral",
+        tagsInput: "nq",
+        body: "first save",
+        version: 4,
+        is_archived: false,
+      },
+      currentEntryId: 21,
+      serverEntry,
+    });
+
+    expect(result.replaceBaseline).toBe(true);
+    expect(result.nextDraft.version).toBe(5);
+    expect(result.nextDraft.body).toBe("first save");
   });
 });
