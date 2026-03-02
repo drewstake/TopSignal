@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +26,9 @@ _ALLOWED_JOURNAL_IMAGE_MIME_TYPES = {
     "image/jpg": "jpg",
     "image/webp": "webp",
 }
+_TRADING_TZ = ZoneInfo("America/New_York")
+
+
 class VersionConflictError(Exception):
     def __init__(self, server_row: JournalEntry):
         super().__init__("version_conflict")
@@ -455,6 +459,9 @@ def pull_journal_entry_trade_stats(
     entry_id: int,
     trade_ids: list[int] | None = None,
     entry_date: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    before_query_sync: Callable[[datetime | None, datetime | None], None] | None = None,
 ) -> JournalEntry:
     resolved_user_id = _resolve_user_id(user_id)
     row = _get_entry_for_account(
@@ -477,9 +484,23 @@ def pull_journal_entry_trade_stats(
     normalized_trade_ids = _normalize_trade_ids(trade_ids)
     if normalized_trade_ids:
         query = query.filter(ProjectXTradeEvent.id.in_(normalized_trade_ids))
+    elif start_date is not None or end_date is not None:
+        validate_date_range(start_date=start_date, end_date=end_date)
+        start_dt: datetime | None = None
+        end_dt: datetime | None = None
+        if start_date is not None:
+            start_dt, _ = _trading_day_bounds(start_date)
+            query = query.filter(ProjectXTradeEvent.trade_timestamp >= start_dt)
+        if end_date is not None:
+            _, end_dt = _trading_day_bounds(end_date)
+            query = query.filter(ProjectXTradeEvent.trade_timestamp <= end_dt)
+        if before_query_sync is not None:
+            before_query_sync(start_dt, end_dt)
     else:
         effective_date = entry_date or row.entry_date
-        day_start, day_end = _utc_day_bounds(effective_date)
+        day_start, day_end = _trading_day_bounds(effective_date)
+        if before_query_sync is not None:
+            before_query_sync(day_start, day_end)
         query = query.filter(ProjectXTradeEvent.trade_timestamp >= day_start)
         query = query.filter(ProjectXTradeEvent.trade_timestamp <= day_end)
 
@@ -655,10 +676,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _utc_day_bounds(value: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(value, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1) - timedelta(microseconds=1)
-    return start, end
+def _trading_day_bounds(value: date) -> tuple[datetime, datetime]:
+    # Keep date boundaries aligned with dashboard/trading views (America/New_York).
+    start_local = datetime.combine(value, time.min, tzinfo=_TRADING_TZ)
+    end_local = start_local + timedelta(days=1) - timedelta(microseconds=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 def _effective_trade_fee(*, pnl: float | None, fees: float | None) -> float:
@@ -671,20 +693,23 @@ def _effective_trade_fee(*, pnl: float | None, fees: float | None) -> float:
 def _compute_trade_stats_snapshot(rows: Iterable[Any]) -> dict[str, Any]:
     pnls: list[float] = []
     fees: list[float] = []
+    net_values: list[float] = []
     for row in rows:
         pnl_value = float(row.pnl) if row.pnl is not None else None
         if pnl_value is None:
             continue
         pnls.append(pnl_value)
-        fees.append(_effective_trade_fee(pnl=pnl_value, fees=float(row.fees) if row.fees is not None else 0.0))
+        fee_value = _effective_trade_fee(pnl=pnl_value, fees=float(row.fees) if row.fees is not None else 0.0)
+        fees.append(fee_value)
+        net_values.append(pnl_value - fee_value)
 
-    trade_count = len(pnls)
+    trade_count = len(net_values)
     gross = sum(pnls)
     total_fees = sum(fees)
-    net = gross - total_fees
+    net = sum(net_values)
 
-    wins = [value for value in pnls if value > 0]
-    losses = [value for value in pnls if value < 0]
+    wins = [value for value in net_values if value > 0]
+    losses = [value for value in net_values if value < 0]
 
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
@@ -701,6 +726,7 @@ def _compute_trade_stats_snapshot(rows: Iterable[Any]) -> dict[str, Any]:
         "largest_loss": _round(min(losses) if losses else 0.0),
         "gross": _round(gross),
         "net": _round(net),
+        "net_realized_pnl": _round(net),
     }
 
 

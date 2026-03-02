@@ -1,7 +1,17 @@
 import { createClient, type Session } from "@supabase/supabase-js";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const LOCAL_SUPABASE_URLS = new Set(["http://127.0.0.1:54321", "http://localhost:54321"]);
+const SUPABASE_URL_RAW = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const SUPABASE_URL = SUPABASE_URL_RAW?.trim().replace(/\/+$/, "");
+
+export type SupabaseRuntimeMode = "disabled" | "local" | "cloud";
+export const supabaseRuntimeMode: SupabaseRuntimeMode = !SUPABASE_URL
+  ? "disabled"
+  : LOCAL_SUPABASE_URLS.has(SUPABASE_URL)
+    ? "local"
+    : "cloud";
+export const usesLocalSupabase = supabaseRuntimeMode === "local";
 
 export const hasSupabaseConfig = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 

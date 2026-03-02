@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildJournalQuery, draftToUpdatePayload, parseTagsInput } from "./journalUtils";
+import { buildJournalQuery, draftToUpdatePayload, getTodayTradingDateIso, parseTagsInput } from "./journalUtils";
 
 describe("buildJournalQuery", () => {
   it("builds query params and omits empty mood/search values", () => {
@@ -46,5 +46,12 @@ describe("draftToUpdatePayload", () => {
     });
 
     expect(payload.version).toBe(7);
+  });
+});
+
+describe("getTodayTradingDateIso", () => {
+  it("uses New York calendar day boundaries", () => {
+    expect(getTodayTradingDateIso(new Date("2026-03-02T03:30:00.000Z"))).toBe("2026-03-01");
+    expect(getTodayTradingDateIso(new Date("2026-03-02T14:00:00.000Z"))).toBe("2026-03-02");
   });
 });

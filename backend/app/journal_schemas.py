@@ -79,3 +79,5 @@ class JournalImageOut(BaseModel):
 class PullTradeStatsIn(BaseModel):
     trade_ids: list[int] | None = None
     entry_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None

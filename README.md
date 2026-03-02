@@ -72,7 +72,7 @@ User
 | Backend API | FastAPI | Quick typed REST endpoints with Pydantic response models. |
 | Backend Data Access | SQLAlchemy ORM | Query composition, model definitions, DB abstraction. |
 | Validation/Schema | Pydantic v2 | Typed API payloads for journal/trades/metrics responses. |
-| Database | PostgreSQL 16 (Docker container) | Durable local cache for trade events and journal data. |
+| Database | PostgreSQL (Supabase Cloud or local Supabase CLI) | Durable cache for trade events and journal data. |
 | External API | ProjectX/TopstepX Gateway | Source for accounts and broker trade history. |
 | Testing | Pytest (backend), Vitest (frontend) | Formula and workflow regression safety. |
 | Runtime tooling | `uvicorn`, `npm`, `concurrently` | Local backend/frontend dev workflow from root script. |
@@ -140,7 +140,7 @@ Important status callouts
 
 ## 6) End-to-End Data Flow (Detailed)
 How the app starts
-1. Postgres container starts (`docker-compose.yml`).
+1. Database target is available (Supabase Cloud or local Supabase stack).
 2. Backend boots (`uvicorn app.main:app`) and runs `init_db()` on startup.
 3. Frontend boots (`vite`) and mounts router.
 4. App shell immediately requests accounts from backend.
@@ -655,10 +655,27 @@ Planned/not fully implemented metrics behavior
 - MFE/MAE-based capture/containment formulas exist, but backend does not currently send `mfe`/`mae`, so these render as missing in normal flow.
 
 ## 12) Configuration and Environment Variables
+Use [.env.example](.env.example) as the source-of-truth template for two profiles:
+- Cloud mode: `SUPABASE_URL=https://<project-ref>.supabase.co` and cloud `DATABASE_URL` (no Docker required).
+- Local mode: `SUPABASE_URL=http://127.0.0.1:54321` and local `DATABASE_URL` (Docker required via `supabase start`).
+
+Runtime behavior in code:
+- Backend logs the resolved DB host and local/cloud mode at startup (`backend/app/db.py`).
+- Local Supabase mode is only selected when `SUPABASE_URL` is `http://127.0.0.1:54321` (or `http://localhost:54321`).
+
 ### Backend env vars
 | Variable | Required | Default | Description | Consumed in |
 |---|---|---|---|---|
 | `DATABASE_URL` | yes | none | SQLAlchemy connection URL | `backend/app/db.py` |
+| `SUPABASE_URL` | no | none | Supabase project URL used for auth/storage integration | `backend/app/auth.py`, `backend/app/services/journal_storage.py`, `backend/app/db.py` |
+| `SUPABASE_JWKS_URL` | no | `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` | JWKS endpoint for JWT verification | `backend/app/auth.py` |
+| `SUPABASE_JWT_ISSUER` | no | `${SUPABASE_URL}/auth/v1` | JWT issuer validation target | `backend/app/auth.py` |
+| `SUPABASE_JWT_AUDIENCE` | no | none | JWT audience expected for bearer token validation | `backend/app/auth.py` |
+| `SUPABASE_JWT_SECRET` | no | none | Required for HS* token signatures (typically local/dev) | `backend/app/auth.py` |
+| `AUTH_REQUIRED` | no | auto (`true` when `SUPABASE_URL` is set, else `false`) | Require bearer token on `/api/*` routes | `backend/app/auth.py` |
+| `JOURNAL_IMAGE_STORAGE_BACKEND` | no | `local` | Journal image backend (`local` or `supabase`) | `backend/app/services/journal_storage.py` |
+| `SUPABASE_STORAGE_BUCKET` | conditional | none | Required when journal storage backend is `supabase` | `backend/app/services/journal_storage.py` |
+| `SUPABASE_SERVICE_ROLE_KEY` | conditional | none | Required when journal storage backend is `supabase` | `backend/app/services/journal_storage.py` |
 | `PROJECTX_API_BASE_URL` | yes (or alias) | none | ProjectX base URL | `backend/app/services/projectx_client.py` |
 | `PROJECTX_USERNAME` | yes (or alias) | none | ProjectX username | `backend/app/services/projectx_client.py` |
 | `PROJECTX_API_KEY` | yes (or alias) | none | ProjectX API key | `backend/app/services/projectx_client.py` |
@@ -676,6 +693,8 @@ Frontend env vars
 | Variable | Required | Default | Description | Consumed in |
 |---|---|---|---|---|
 | `VITE_API_BASE_URL` | no | `http://localhost:8000` | frontend API base URL | `frontend/src/lib/api.ts` |
+| `VITE_SUPABASE_URL` | no | none | Supabase auth URL (`https://<project-ref>.supabase.co` for cloud) | `frontend/src/lib/supabase.ts` |
+| `VITE_SUPABASE_ANON_KEY` | no | none | Supabase public anon key | `frontend/src/lib/supabase.ts` |
 
 Vars present in local backend `.env` but not used by current backend code
 - `PROJECTX_USER_HUB_URL`
@@ -692,25 +711,18 @@ Secrets and gitignore guidance
   - `backend/.venv/`
   - `frontend/node_modules/`
   - `node_modules/`
-  - `frontend/.env.local` (recommended add)
+  - `frontend/.env.local`
 
-Safe example (`backend/.env`)
-```env
-DATABASE_URL=postgresql+psycopg://topsignal:topsignal_password@localhost:5432/topsignal
-PROJECTX_API_BASE_URL=https://api.topstepx.com
-PROJECTX_USERNAME=your_username
-PROJECTX_API_KEY=your_api_key
-PROJECTX_INITIAL_LOOKBACK_DAYS=365
-PROJECTX_SYNC_CHUNK_DAYS=90
-PROJECTX_DAY_SYNC_LIMIT=1000
-PROJECTX_YESTERDAY_REFRESH_MINUTES=180
-```
+Profile templates
+- Cloud and Local examples now live in `.env.example`.
+- Copy backend keys into `backend/.env` and frontend keys into `frontend/.env.local`.
 
 ## 13) Setup and Local Development
 Prerequisites
-- Docker Desktop (or equivalent Docker engine)
 - Node.js + npm
 - Python 3.x (for backend virtualenv)
+- Cloud mode: no Docker required.
+- Local mode only: Docker Desktop + Supabase CLI (`supabase start`).
 
 Install dependencies
 ```powershell
@@ -729,19 +741,41 @@ npm install
 cd ..
 ```
 
-Start database
+Configure environment
 ```powershell
-docker compose up -d
+# copy values from .env.example
+# - backend values -> backend/.env
+# - frontend values -> frontend/.env.local
+```
+
+Cloud mode (recommended, no Docker)
+```powershell
+# use cloud profile values in backend/.env and frontend/.env.local
+npm run dev
+```
+
+Local mode (optional, Docker required)
+```powershell
+# 1) start local Supabase stack
+supabase start
+
+# 2) use local profile values from .env.example
+#    SUPABASE_URL=http://127.0.0.1:54321
+#    DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:54322/postgres
+
+# 3) run app
+npm run dev
 ```
 
 Initialize schema and migrations (manual SQL flow currently)
 ```powershell
-Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-Get-Content .\db\migrations\20260220_add_rule_break_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-Get-Content .\db\migrations\20260221_add_journal_entries.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
-Get-Content .\db\migrations\20260222_journal_entry_images_and_versioning.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+# pass your active DATABASE_URL (cloud or local) to psql
+psql $env:DATABASE_URL -f .\db\schema.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260220_add_rule_break_fields.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260220_add_projectx_trade_events.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260221_add_projectx_trade_day_syncs.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260221_add_journal_entries.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260222_journal_entry_images_and_versioning.sql
 ```
 
 Run backend only
@@ -753,11 +787,6 @@ cd backend
 Run frontend only
 ```powershell
 cd frontend
-npm run dev
-```
-
-Run both together from root
-```powershell
 npm run dev
 ```
 
@@ -882,7 +911,7 @@ How to improve for scale
 ## 17) Known Issues / Current Limitations
 - `npm run stop` references `stop.ps1`, but `stop.ps1` is missing in repo root.
 - `db/README.md` references `db/seed.sql`, but `db/seed.sql` is not present.
-- No committed `.env.example` template; setup depends on manual env creation.
+- Use `.env.example` as the source template for cloud/local environment setup.
 - Routed frontend does not consume legacy backend routes (`/metrics/*`, `/trades`).
 - `overview` and `analytics` pages/components are present but unrouted and mock-data based.
 - `pages/trades/components/*` contains mock-data table/filter/drawer components that are not wired into the routed `TradesPage`.

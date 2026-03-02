@@ -77,8 +77,21 @@ export function buildJournalQuery(params: {
   };
 }
 
-export function getTodayUtcDateIso(): string {
-  return new Date().toISOString().slice(0, 10);
+function _readDatePart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes): string {
+  return parts.find((part) => part.type === type)?.value ?? "00";
+}
+
+export function getTodayTradingDateIso(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const year = _readDatePart(parts, "year");
+  const month = _readDatePart(parts, "month");
+  const day = _readDatePart(parts, "day");
+  return `${year}-${month}-${day}`;
 }
 
 export function journalPayloadEquals(a: JournalEntryUpdateInput, b: JournalEntryUpdateInput): boolean {

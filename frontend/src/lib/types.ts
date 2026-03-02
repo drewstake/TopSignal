@@ -263,6 +263,7 @@ export interface JournalStatsSnapshot {
   largest_loss: number;
   gross: number;
   net: number;
+  net_realized_pnl?: number;
 }
 
 export interface JournalEntry {
@@ -346,6 +347,8 @@ export interface JournalDaysQuery {
 export interface JournalPullTradeStatsInput {
   trade_ids?: number[];
   entry_date?: string;
+  start_date?: string;
+  end_date?: string;
 }
 
 export interface AuthMe {

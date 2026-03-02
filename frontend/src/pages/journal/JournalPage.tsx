@@ -15,7 +15,13 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
-import type { AccountInfo, JournalEntry, JournalEntryImage, JournalEntryUpdateInput } from "../../lib/types";
+import type {
+  AccountInfo,
+  JournalEntry,
+  JournalEntryImage,
+  JournalEntryUpdateInput,
+  JournalPullTradeStatsInput,
+} from "../../lib/types";
 import { DebouncedAutosaveQueue, type JournalSaveState } from "./journalAutosave";
 import { JournalEditor } from "./components/JournalEditor";
 import { JournalList } from "./components/JournalList";
@@ -23,7 +29,7 @@ import { getVersionConflictServerEntry } from "./journalConflict";
 import {
   buildJournalQuery,
   entryToDraft,
-  getTodayUtcDateIso,
+  getTodayTradingDateIso,
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
   parseTagsInput,
@@ -443,7 +449,7 @@ export function JournalPage() {
       try {
         await flushAutosave();
         const created = await accountsApi.createJournalEntry(selectedAccountId, {
-          entry_date: entryDate ?? getTodayUtcDateIso(),
+          entry_date: entryDate ?? getTodayTradingDateIso(),
           title: "New Entry",
           mood: "Neutral",
           tags: [],
@@ -583,9 +589,18 @@ export function JournalPage() {
 
     try {
       await flushAutosave();
-      const updated = await accountsApi.pullJournalTradeStats(selectedAccountId, selectedEntry.id, {
-        entry_date: selectedEntry.entry_date,
-      });
+      const payload: JournalPullTradeStatsInput = {};
+      if (startDate) {
+        payload.start_date = startDate;
+      }
+      if (endDate) {
+        payload.end_date = endDate;
+      }
+      if (!payload.start_date && !payload.end_date) {
+        payload.entry_date = selectedEntry.entry_date;
+      }
+
+      const updated = await accountsApi.pullJournalTradeStats(selectedAccountId, selectedEntry.id, payload);
 
       setEntries((currentEntries) => currentEntries.map((entry) => (entry.id === updated.id ? updated : entry)));
       selectedEntryVersionRef.current = updated.version;
@@ -600,7 +615,7 @@ export function JournalPage() {
     } finally {
       setPullingStats(false);
     }
-  }, [flushAutosave, selectedAccountId, selectedEntry]);
+  }, [endDate, flushAutosave, selectedAccountId, selectedEntry, startDate]);
 
   const handleDeleteEntry = useCallback(async () => {
     if (!selectedAccountId || !selectedEntry) {

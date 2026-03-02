@@ -235,14 +235,8 @@ export function JournalEditor({
                     <td className="px-2 py-1.5 text-right text-slate-200">{formatNumber(stats.win_rate)}%</td>
                   </tr>
                   <tr className="border-b border-slate-800/70">
-                    <td className="px-2 py-1.5 text-slate-400">Gross / Net</td>
-                    <td className="px-2 py-1.5 text-right text-slate-200">
-                      {formatNumber(stats.gross)} / {formatNumber(stats.net)}
-                    </td>
-                  </tr>
-                  <tr className="border-b border-slate-800/70">
-                    <td className="px-2 py-1.5 text-slate-400">Fees</td>
-                    <td className="px-2 py-1.5 text-right text-slate-200">{formatNumber(stats.total_fees)}</td>
+                    <td className="px-2 py-1.5 text-slate-400">Net Realized PnL (After Fees)</td>
+                    <td className="px-2 py-1.5 text-right text-slate-200">{formatNumber(stats.net_realized_pnl ?? stats.net)}</td>
                   </tr>
                   <tr className="border-b border-slate-800/70">
                     <td className="px-2 py-1.5 text-slate-400">Avg Win / Avg Loss</td>
