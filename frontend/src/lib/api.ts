@@ -409,11 +409,23 @@ export function updateExpense(id: number, payload: ExpenseUpdateInput) {
   });
 }
 
-export function getExpenseTotals(range: ExpenseRange, accountId?: number) {
+interface ExpenseTotalsQuery {
+  accountId?: number;
+  startDate?: string;
+  endDate?: string;
+  startCreatedAt?: string;
+  endCreatedAt?: string;
+}
+
+export function getExpenseTotals(range: ExpenseRange, options: ExpenseTotalsQuery = {}) {
   return requestJson<ExpenseTotals>("/api/expenses/totals", {
     query: {
       range,
-      account_id: accountId,
+      account_id: options.accountId,
+      start_date: options.startDate,
+      end_date: options.endDate,
+      start_created_at: options.startCreatedAt,
+      end_created_at: options.endCreatedAt,
     },
   });
 }

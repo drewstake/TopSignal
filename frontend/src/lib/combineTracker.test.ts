@@ -40,29 +40,43 @@ describe("evolveCombineSpendLedger", () => {
     vi.useRealTimers();
   });
 
-  it("tracks only active combine accounts and never removes prior purchases", () => {
+  it("tracks active and locked-out combines, and drops missing ones", () => {
     const start = createEmptyCombineSpendLedger();
     const first = evolveCombineSpendLedger(start, [
       { id: 1, name: "50KTC-1", status: "ACTIVE" },
       { id: 2, name: "100KTC-2", status: "ACTIVE" },
-      { id: 3, name: "150KTC-3", status: "INACTIVE" },
+      { id: 3, name: "150KTC-3", status: "MISSING" },
       { id: 4, name: "PA-1", status: "ACTIVE" },
     ]);
 
+    expect(first.baselineCaptured).toBe(true);
+    expect(first.knownCombineAccountIds).toEqual({
+      "1": true,
+      "2": true,
+    });
     expect(first.purchasesByAccountId).toEqual({
       "1": { planSize: "50k", purchasedOn: "2026-03-01" },
       "2": { planSize: "100k", purchasedOn: "2026-03-01" },
     });
 
     const second = evolveCombineSpendLedger(first, [
-      { id: 1, name: "50KTC-1", status: "INACTIVE" },
+      { id: 1, name: "50KTC-1", status: "LOCKED_OUT" },
       { id: 5, name: "150KTC-5", status: "ACTIVE" },
     ]);
 
     expect(second.purchasesByAccountId).toEqual({
       "1": { planSize: "50k", purchasedOn: "2026-03-01" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01" },
       "5": { planSize: "150k", purchasedOn: "2026-03-01" },
+    });
+  });
+
+  it("adds locked-out combines that appear after baseline", () => {
+    const start = createEmptyCombineSpendLedger();
+    const baseline = evolveCombineSpendLedger(start, []);
+    const next = evolveCombineSpendLedger(baseline, [{ id: 9, name: "150KTC-9", status: "LOCKED_OUT" }]);
+
+    expect(next.purchasesByAccountId).toEqual({
+      "9": { planSize: "150k", purchasedOn: "2026-03-01" },
     });
   });
 });
@@ -71,11 +85,18 @@ describe("computeCombineSpendSnapshotFromLedger", () => {
   it("totals base combine spend plus standard activations", () => {
     const snapshot = computeCombineSpendSnapshotFromLedger({
       startedOn: "2026-03-01",
+      startedAt: "2026-03-01T12:00:00.000Z",
       purchasesByAccountId: {
         "1": { planSize: "50k", purchasedOn: "2026-03-01" },
         "2": { planSize: "50k", purchasedOn: "2026-03-01" },
         "3": { planSize: "100k", purchasedOn: "2026-03-01" },
       },
+      knownCombineAccountIds: {
+        "1": true,
+        "2": true,
+        "3": true,
+      },
+      baselineCaptured: true,
       standardActivationCount: 2,
       syncedEvaluationExpenseAccountIds: {},
     });
@@ -150,10 +171,66 @@ describe("storage-backed helpers", () => {
       },
     ]);
 
-    const afterMark = markEvaluationExpensesSynced([7001]);
-    expect(afterMark.totalTrackedCombines).toBe(1);
+    const afterFirstMark = markEvaluationExpensesSynced([7001]);
+    expect(afterFirstMark.totalTrackedCombines).toBe(1);
 
-    const secondSync = syncCombineSpendTracker([{ id: 7001, name: "50KTC-7001", status: "ACTIVE" }]);
-    expect(secondSync.unsyncedEvaluationPurchases).toEqual([]);
+    const secondSync = syncCombineSpendTracker([
+      { id: 7001, name: "50KTC-7001", status: "ACTIVE" },
+      { id: 7003, name: "50KTC-7003", status: "ACTIVE" },
+    ]);
+    expect(secondSync.snapshot.totalTrackedCombines).toBe(2);
+    expect(secondSync.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 7003,
+        planSize: "50k",
+        purchasedOn: "2026-03-01",
+        amountCents: 11_500,
+      },
+    ]);
+
+    const afterSecondMark = markEvaluationExpensesSynced([7003]);
+    expect(afterSecondMark.totalTrackedCombines).toBe(2);
+
+    const thirdSync = syncCombineSpendTracker([
+      { id: 7001, name: "50KTC-7001", status: "ACTIVE" },
+      { id: 7003, name: "50KTC-7003", status: "ACTIVE" },
+    ]);
+    expect(thirdSync.unsyncedEvaluationPurchases).toEqual([]);
+  });
+
+  it("keeps locked-out combines tracked and synced", () => {
+    const first = syncCombineSpendTracker([{ id: 8101, name: "50KTC-8101", status: "ACTIVE" }]);
+    expect(first.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 8101,
+        planSize: "50k",
+        purchasedOn: "2026-03-01",
+        amountCents: 11_500,
+      },
+    ]);
+    markEvaluationExpensesSynced([8101]);
+
+    const secondSync = syncCombineSpendTracker([
+      { id: 8101, name: "50KTC-8101", status: "ACTIVE" },
+      { id: 8102, name: "100KTC-8102", status: "ACTIVE" },
+    ]);
+
+    expect(secondSync.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 8102,
+        planSize: "100k",
+        purchasedOn: "2026-03-01",
+        amountCents: 16_800,
+      },
+    ]);
+    markEvaluationExpensesSynced([8102]);
+
+    const lockedSync = syncCombineSpendTracker([
+      { id: 8101, name: "50KTC-8101", status: "ACTIVE" },
+      { id: 8102, name: "100KTC-8102", status: "LOCKED_OUT" },
+    ]);
+
+    expect(lockedSync.snapshot.totalTrackedCombines).toBe(2);
+    expect(lockedSync.unsyncedEvaluationPurchases).toEqual([]);
   });
 });

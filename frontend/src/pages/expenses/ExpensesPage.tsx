@@ -15,7 +15,9 @@ import {
   listExpenses,
 } from "../../lib/api";
 import {
+  COMBINE_PRICE_CENTS_BY_PLAN,
   decrementStandardActivationCount,
+  getCombinePlanSizeFromAccountName,
   incrementStandardActivationCount,
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
@@ -31,6 +33,7 @@ import type { ExpenseCategory, ExpenseRecord, ExpenseTotals } from "../../lib/ty
 
 const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
+const AUTO_TRACKED_COMBINE_EXPENSE_PAGE_SIZE = 200;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -50,7 +53,8 @@ const trackerDateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
   day: "numeric",
-  timeZone: "UTC",
+  hour: "numeric",
+  minute: "2-digit",
 });
 
 function formatCategoryLabel(category: string) {
@@ -88,6 +92,32 @@ function splitTags(input: string) {
 
 function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
   return expense.tags.includes("combine_tracker");
+}
+
+interface ActiveCombineAccount {
+  accountId: number;
+  planSize: "50k" | "100k" | "150k";
+}
+
+function collectActiveCombineAccounts(
+  accounts: Array<{ id: number; name: string; status?: string; account_state?: string }>,
+): ActiveCombineAccount[] {
+  const output: ActiveCombineAccount[] = [];
+  for (const account of accounts) {
+    const rawState = (account.account_state ?? account.status ?? "").trim().toUpperCase();
+    if (rawState !== "ACTIVE" && rawState !== "LOCKED_OUT") {
+      continue;
+    }
+    const planSize = getCombinePlanSizeFromAccountName(account.name);
+    if (planSize === null) {
+      continue;
+    }
+    output.push({
+      accountId: account.id,
+      planSize,
+    });
+  }
+  return output;
 }
 
 interface AddExpenseState {
@@ -183,7 +213,10 @@ export function ExpensesPage() {
     setTotalsLoading(true);
     setTotalsError(null);
     try {
-      const response = await getExpenseTotals(TOTAL_RANGE, parsedAccountFilter);
+      const response = await getExpenseTotals(TOTAL_RANGE, {
+        accountId: parsedAccountFilter,
+        startCreatedAt: combineSpendSnapshot.startedAt,
+      });
       setTotals(response);
     } catch (err) {
       setTotals(null);
@@ -191,46 +224,151 @@ export function ExpensesPage() {
     } finally {
       setTotalsLoading(false);
     }
-  }, [parsedAccountFilter]);
+  }, [combineSpendSnapshot.startedAt, parsedAccountFilter]);
+
+  const listAllAutoTrackedCombineExpenses = useCallback(async () => {
+    const rows: ExpenseRecord[] = [];
+    let nextOffset = 0;
+
+    while (true) {
+      const payload = await listExpenses({
+        category: "evaluation_fee",
+        limit: AUTO_TRACKED_COMBINE_EXPENSE_PAGE_SIZE,
+        offset: nextOffset,
+      });
+
+      for (const expense of payload.items) {
+        if (isAutoTrackedCombineExpense(expense)) {
+          rows.push(expense);
+        }
+      }
+
+      if (payload.items.length < AUTO_TRACKED_COMBINE_EXPENSE_PAGE_SIZE) {
+        break;
+      }
+      nextOffset += payload.items.length;
+    }
+
+    return rows;
+  }, []);
 
   const syncCombineTracker = useCallback(async () => {
     setCombineTrackerLoading(true);
     setCombineTrackerError(null);
     try {
-      const payload = await accountsApi.getAccounts(false);
+      const payload = await accountsApi.getAccounts({ showInactive: true, showMissing: false });
+      const activeCombineAccounts = collectActiveCombineAccounts(payload);
+      const activeCombineByAccountId = new Map<number, ActiveCombineAccount>();
+      for (const account of activeCombineAccounts) {
+        activeCombineByAccountId.set(account.accountId, account);
+      }
+
       const syncResult = syncCombineSpendTracker(payload);
       let nextSnapshot = syncResult.snapshot;
-      const syncedAccountIds: number[] = [];
-      let failedCount = 0;
+      const existingAutoTrackedExpenses = await listAllAutoTrackedCombineExpenses();
+      const existingAutoTrackedByAccountId = new Map<number, ExpenseRecord[]>();
+      const expenseIdsToDelete = new Set<number>();
+      for (const expense of existingAutoTrackedExpenses) {
+        const accountId = expense.account_id;
+        if (accountId === null || !activeCombineByAccountId.has(accountId)) {
+          expenseIdsToDelete.add(expense.id);
+          continue;
+        }
+        const rows = existingAutoTrackedByAccountId.get(accountId);
+        if (rows) {
+          rows.push(expense);
+        } else {
+          existingAutoTrackedByAccountId.set(accountId, [expense]);
+        }
+      }
 
-      for (const purchase of syncResult.unsyncedEvaluationPurchases) {
+      // Keep at most one auto-tracked evaluation expense per active combine account.
+      for (const rows of existingAutoTrackedByAccountId.values()) {
+        if (rows.length <= 1) {
+          continue;
+        }
+        const sorted = [...rows].sort((left, right) => {
+          const createdAtDiff = Date.parse(right.created_at) - Date.parse(left.created_at);
+          if (createdAtDiff !== 0) {
+            return createdAtDiff;
+          }
+          return right.id - left.id;
+        });
+        for (const duplicate of sorted.slice(1)) {
+          expenseIdsToDelete.add(duplicate.id);
+        }
+      }
+
+      const syncedAccountIds: number[] = [];
+      const unsyncedByAccountId = new Map(
+        syncResult.unsyncedEvaluationPurchases.map((purchase) => [purchase.accountId, purchase]),
+      );
+      let failedCreateCount = 0;
+      let failedDeleteCount = 0;
+      let didMutateExpenses = false;
+
+      for (const expenseId of expenseIdsToDelete) {
+        try {
+          await deleteExpense(expenseId);
+          didMutateExpenses = true;
+        } catch {
+          failedDeleteCount += 1;
+        }
+      }
+
+      const existingActiveAccountIds = new Set<number>();
+      for (const [accountId, rows] of existingAutoTrackedByAccountId.entries()) {
+        if (!activeCombineByAccountId.has(accountId)) {
+          continue;
+        }
+        const rowsNotDeleted = rows.filter((row) => !expenseIdsToDelete.has(row.id));
+        if (rowsNotDeleted.length > 0) {
+          existingActiveAccountIds.add(accountId);
+          syncedAccountIds.push(accountId);
+        }
+      }
+
+      for (const activeCombine of activeCombineAccounts) {
+        if (existingActiveAccountIds.has(activeCombine.accountId)) {
+          continue;
+        }
+        const unsyncedPurchase = unsyncedByAccountId.get(activeCombine.accountId);
+        const amountCents = unsyncedPurchase?.amountCents ?? COMBINE_PRICE_CENTS_BY_PLAN[activeCombine.planSize];
+        const purchasedOn = unsyncedPurchase?.purchasedOn ?? getTodayLocalIsoDate();
         try {
           await createExpense({
-            expense_date: purchase.purchasedOn,
-            amount_cents: purchase.amountCents,
+            expense_date: purchasedOn,
+            amount_cents: amountCents,
             category: "evaluation_fee",
-            plan_size: purchase.planSize,
-            account_id: purchase.accountId,
-            description: `Auto tracked combine purchase (${purchase.planSize.toUpperCase()})`,
+            plan_size: activeCombine.planSize,
+            account_id: activeCombine.accountId,
+            description: `Auto tracked combine purchase (${activeCombine.planSize.toUpperCase()})`,
             tags: ["combine_tracker", "auto"],
           });
-          syncedAccountIds.push(purchase.accountId);
+          syncedAccountIds.push(activeCombine.accountId);
+          didMutateExpenses = true;
         } catch (err) {
           if (isApiError(err) && err.status === 409 && err.detail === "duplicate_expense") {
-            syncedAccountIds.push(purchase.accountId);
+            syncedAccountIds.push(activeCombine.accountId);
           } else {
-            failedCount += 1;
+            failedCreateCount += 1;
           }
         }
       }
 
       if (syncedAccountIds.length > 0) {
         nextSnapshot = markEvaluationExpensesSynced(syncedAccountIds);
+      }
+
+      if (didMutateExpenses) {
         await Promise.all([loadExpenses(), loadTotals()]);
       }
 
+      const failedCount = failedCreateCount + failedDeleteCount;
       if (failedCount > 0) {
-        setCombineTrackerError(`Failed to save ${failedCount} combine expense${failedCount === 1 ? "" : "s"}.`);
+        setCombineTrackerError(
+          `Failed to update ${failedCount} combine expense record${failedCount === 1 ? "" : "s"}.`,
+        );
       }
       setCombineSpendSnapshot(nextSnapshot);
     } catch (err) {
@@ -238,7 +376,7 @@ export function ExpensesPage() {
     } finally {
       setCombineTrackerLoading(false);
     }
-  }, [loadExpenses, loadTotals]);
+  }, [listAllAutoTrackedCombineExpenses, loadExpenses, loadTotals]);
 
   useEffect(() => {
     void loadExpenses();
@@ -280,9 +418,7 @@ export function ExpensesPage() {
   const currentPage = Math.floor(offset / limit) + 1;
   const practiceBlocked = addState.accountType === "practice";
   const combineTrackerTotalAmount = combineSpendSnapshot.totalCostCents / 100;
-  const trackerStartedOnLabel = trackerDateFormatter.format(
-    new Date(`${combineSpendSnapshot.startedOn}T00:00:00.000Z`),
-  );
+  const trackerStartedOnLabel = trackerDateFormatter.format(new Date(combineSpendSnapshot.startedAt));
 
   function resetAddForm() {
     setAddState(buildInitialAddExpenseState(accountFilter));
@@ -371,7 +507,7 @@ export function ExpensesPage() {
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card className="xl:col-span-2">
           <CardHeader className="mb-2">
-            <CardDescription>All-time spend</CardDescription>
+            <CardDescription>Spend since {trackerStartedOnLabel}</CardDescription>
             <CardTitle className="text-2xl">
               {totalsLoading ? "..." : totals ? currencyFormatter.format(totals.total_amount) : "$0.00"}
             </CardTitle>

@@ -8,8 +8,8 @@ const COMBINE_PREFIX_BY_PLAN: Record<CombinePlanSize, string> = {
   "150k": "150KTC",
 };
 
-const COMBINE_SPEND_TRACKER_STORAGE_KEY = "topsignal.combineSpendTracker.v1";
-const COMBINE_SPEND_TRACKER_START_DATE = "2026-03-01";
+const COMBINE_SPEND_TRACKER_STORAGE_KEY = "topsignal.combineSpendTracker.v3";
+const LEGACY_COMBINE_SPEND_TRACKER_START_DATE = "2026-03-01";
 export const STANDARD_ACTIVATION_FEE_CENTS = 15_000;
 
 export const COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
@@ -20,13 +20,17 @@ export const COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
 
 export interface CombineSpendLedger {
   startedOn: string;
+  startedAt: string;
   purchasesByAccountId: Record<string, CombinePurchaseEntry>;
+  knownCombineAccountIds: Record<string, true>;
+  baselineCaptured: boolean;
   standardActivationCount: number;
   syncedEvaluationExpenseAccountIds: Record<string, true>;
 }
 
 export interface CombineSpendSnapshot {
   startedOn: string;
+  startedAt: string;
   countsByPlan: Record<CombinePlanSize, number>;
   totalTrackedCombines: number;
   baseCombineCostCents: number;
@@ -55,7 +59,18 @@ export interface CombineTrackerSyncResult {
 export interface CombineTrackerAccount {
   id: number;
   name: string;
-  status: string;
+  status?: string;
+  account_state?: string;
+}
+
+function normalizeCombineTrackerAccountState(account: CombineTrackerAccount): string {
+  const raw = account.status ?? account.account_state ?? "";
+  return raw.trim().toUpperCase();
+}
+
+function isTrackableCombineTrackerAccount(account: CombineTrackerAccount): boolean {
+  const state = normalizeCombineTrackerAccountState(account);
+  return state === "ACTIVE" || state === "LOCKED_OUT";
 }
 
 export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize | null {
@@ -74,8 +89,11 @@ export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize
 
 export function createEmptyCombineSpendLedger(): CombineSpendLedger {
   return {
-    startedOn: COMBINE_SPEND_TRACKER_START_DATE,
+    startedOn: getTodayLocalIsoDate(),
+    startedAt: getCurrentIsoTimestamp(),
     purchasesByAccountId: {},
+    knownCombineAccountIds: {},
+    baselineCaptured: false,
     standardActivationCount: 0,
     syncedEvaluationExpenseAccountIds: {},
   };
@@ -89,19 +107,29 @@ function getTodayLocalIsoDate(): string {
   return `${year}-${month}-${day}`;
 }
 
+function getCurrentIsoTimestamp(): string {
+  return new Date().toISOString();
+}
+
 export function evolveCombineSpendLedger(
   ledger: CombineSpendLedger,
   accounts: CombineTrackerAccount[],
 ): CombineSpendLedger {
   const nextLedger: CombineSpendLedger = {
     startedOn: ledger.startedOn,
+    startedAt: ledger.startedAt,
     purchasesByAccountId: { ...ledger.purchasesByAccountId },
+    knownCombineAccountIds: { ...ledger.knownCombineAccountIds },
+    baselineCaptured: ledger.baselineCaptured,
     standardActivationCount: ledger.standardActivationCount,
     syncedEvaluationExpenseAccountIds: { ...ledger.syncedEvaluationExpenseAccountIds },
   };
 
+  const activeCombineAccountIds = new Set<string>();
+
   for (const account of accounts) {
-    if (account.status.trim().toUpperCase() !== "ACTIVE") {
+    // Keep temporarily locked combines tracked as still-active purchases.
+    if (!isTrackableCombineTrackerAccount(account)) {
       continue;
     }
     const planSize = getCombinePlanSizeFromAccountName(account.name);
@@ -109,14 +137,35 @@ export function evolveCombineSpendLedger(
       continue;
     }
     const accountId = String(account.id);
-    if (nextLedger.purchasesByAccountId[accountId] !== undefined) {
+    activeCombineAccountIds.add(accountId);
+    nextLedger.knownCombineAccountIds[accountId] = true;
+
+    const existingPurchase = nextLedger.purchasesByAccountId[accountId];
+    if (existingPurchase === undefined) {
+      nextLedger.purchasesByAccountId[accountId] = {
+        planSize,
+        purchasedOn: getTodayLocalIsoDate(),
+      };
       continue;
     }
-    nextLedger.purchasesByAccountId[accountId] = {
-      planSize,
-      purchasedOn: getTodayLocalIsoDate(),
-    };
+
+    if (existingPurchase.planSize !== planSize) {
+      nextLedger.purchasesByAccountId[accountId] = {
+        ...existingPurchase,
+        planSize,
+      };
+    }
   }
+
+  for (const accountId of Object.keys(nextLedger.purchasesByAccountId)) {
+    if (activeCombineAccountIds.has(accountId)) {
+      continue;
+    }
+    delete nextLedger.purchasesByAccountId[accountId];
+    delete nextLedger.syncedEvaluationExpenseAccountIds[accountId];
+  }
+
+  nextLedger.baselineCaptured = true;
 
   return nextLedger;
 }
@@ -140,6 +189,7 @@ export function computeCombineSpendSnapshotFromLedger(ledger: CombineSpendLedger
 
   return {
     startedOn: ledger.startedOn,
+    startedAt: ledger.startedAt,
     countsByPlan,
     totalTrackedCombines: countsByPlan["50k"] + countsByPlan["100k"] + countsByPlan["150k"],
     baseCombineCostCents,
@@ -150,15 +200,21 @@ export function computeCombineSpendSnapshotFromLedger(ledger: CombineSpendLedger
 }
 
 function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
+  const todayLocalIsoDate = getTodayLocalIsoDate();
+  const nowIso = getCurrentIsoTimestamp();
   if (!raw || typeof raw !== "object") {
     return createEmptyCombineSpendLedger();
   }
 
   const candidate = raw as Record<string, unknown>;
-  const startedOn =
+  const rawStartedOn =
     typeof candidate.startedOn === "string" && candidate.startedOn.trim().length > 0
       ? candidate.startedOn
-      : COMBINE_SPEND_TRACKER_START_DATE;
+      : null;
+  const normalizedStartedOn = isIsoDate(rawStartedOn) ? rawStartedOn : null;
+  const rawStartedAt =
+    typeof candidate.startedAt === "string" && candidate.startedAt.trim().length > 0 ? candidate.startedAt : null;
+  const normalizedStartedAt = isIsoDateTime(rawStartedAt) ? rawStartedAt : null;
 
   const purchasesByAccountIdRaw =
     candidate.purchasesByAccountId && typeof candidate.purchasesByAccountId === "object"
@@ -169,7 +225,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     if (rawPurchase === "50k" || rawPurchase === "100k" || rawPurchase === "150k") {
       purchasesByAccountId[accountId] = {
         planSize: rawPurchase,
-        purchasedOn: startedOn,
+        purchasedOn: normalizedStartedOn ?? todayLocalIsoDate,
       };
       continue;
     }
@@ -184,11 +240,28 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     }
     purchasesByAccountId[accountId] = {
       planSize: purchase.planSize,
-      purchasedOn:
-        typeof purchase.purchasedOn === "string" && purchase.purchasedOn.trim().length > 0
-          ? purchase.purchasedOn
-          : startedOn,
+      purchasedOn: isIsoDate(purchase.purchasedOn) ? purchase.purchasedOn : normalizedStartedOn ?? todayLocalIsoDate,
     };
+  }
+
+  let earliestPurchaseDate: string | null = null;
+  for (const purchase of Object.values(purchasesByAccountId)) {
+    if (!isIsoDate(purchase.purchasedOn)) {
+      continue;
+    }
+    if (earliestPurchaseDate === null || purchase.purchasedOn < earliestPurchaseDate) {
+      earliestPurchaseDate = purchase.purchasedOn;
+    }
+  }
+
+  let startedOn = earliestPurchaseDate ?? normalizedStartedOn ?? todayLocalIsoDate;
+  let startedAt = normalizedStartedAt ?? (isIsoDate(startedOn) ? `${startedOn}T00:00:00.000Z` : nowIso);
+  if (
+    startedOn === LEGACY_COMBINE_SPEND_TRACKER_START_DATE &&
+    Object.keys(purchasesByAccountId).length === 0
+  ) {
+    startedOn = todayLocalIsoDate;
+    startedAt = nowIso;
   }
 
   const standardActivationCountRaw =
@@ -196,6 +269,26 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
   const standardActivationCount = Number.isFinite(standardActivationCountRaw)
     ? Math.max(0, standardActivationCountRaw)
     : 0;
+
+  const knownCombineAccountIdsRaw =
+    candidate.knownCombineAccountIds && typeof candidate.knownCombineAccountIds === "object"
+      ? (candidate.knownCombineAccountIds as Record<string, unknown>)
+      : {};
+  const knownCombineAccountIds: Record<string, true> = {};
+  for (const [accountId, value] of Object.entries(knownCombineAccountIdsRaw)) {
+    if (value === true) {
+      knownCombineAccountIds[accountId] = true;
+    }
+  }
+  for (const accountId of Object.keys(purchasesByAccountId)) {
+    knownCombineAccountIds[accountId] = true;
+  }
+
+  const rawBaselineCaptured = candidate.baselineCaptured;
+  const baselineCaptured =
+    typeof rawBaselineCaptured === "boolean"
+      ? rawBaselineCaptured
+      : Object.keys(knownCombineAccountIds).length > 0 || Object.keys(purchasesByAccountId).length > 0;
 
   const syncedEvaluationExpenseAccountIdsRaw =
     candidate.syncedEvaluationExpenseAccountIds && typeof candidate.syncedEvaluationExpenseAccountIds === "object"
@@ -210,10 +303,27 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
 
   return {
     startedOn,
+    startedAt,
     purchasesByAccountId,
+    knownCombineAccountIds,
+    baselineCaptured,
     standardActivationCount,
     syncedEvaluationExpenseAccountIds,
   };
+}
+
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function isIsoDateTime(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return Number.isFinite(Date.parse(value));
 }
 
 function readCombineSpendLedger(): CombineSpendLedger {
@@ -247,10 +357,25 @@ export function readCombineSpendSnapshot(): CombineSpendSnapshot {
 
 function listUnsyncedEvaluationExpensePurchases(
   ledger: CombineSpendLedger,
+  accounts: CombineTrackerAccount[],
 ): UnsyncedEvaluationExpensePurchase[] {
   const unsynced: UnsyncedEvaluationExpensePurchase[] = [];
+  const activeCombineAccountIds = new Set<string>();
+
+  for (const account of accounts) {
+    if (!isTrackableCombineTrackerAccount(account)) {
+      continue;
+    }
+    if (getCombinePlanSizeFromAccountName(account.name) === null) {
+      continue;
+    }
+    activeCombineAccountIds.add(String(account.id));
+  }
 
   for (const [accountId, purchase] of Object.entries(ledger.purchasesByAccountId)) {
+    if (!activeCombineAccountIds.has(accountId)) {
+      continue;
+    }
     if (ledger.syncedEvaluationExpenseAccountIds[accountId] === true) {
       continue;
     }
@@ -272,7 +397,7 @@ export function syncCombineSpendTracker(accounts: CombineTrackerAccount[]): Comb
   writeCombineSpendLedger(next);
   return {
     snapshot: computeCombineSpendSnapshotFromLedger(next),
-    unsyncedEvaluationPurchases: listUnsyncedEvaluationExpensePurchases(next),
+    unsyncedEvaluationPurchases: listUnsyncedEvaluationExpensePurchases(next, accounts),
   };
 }
 
