@@ -1,11 +1,12 @@
 import logging
 import os
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import NullPool
 
 load_dotenv()
 
@@ -20,8 +21,35 @@ _LOCAL_SUPABASE_URLS = {
     "http://127.0.0.1:54321",
     "http://localhost:54321",
 }
+_SUPABASE_POOLER_SUFFIX = ".pooler.supabase.com"
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+def _uses_supabase_pooler(database_url: str) -> bool:
+    parsed = make_url(database_url)
+    if parsed.get_backend_name() != "postgresql":
+        return False
+    host = (parsed.host or "").strip().strip("[]").lower()
+    return host.endswith(_SUPABASE_POOLER_SUFFIX)
+
+
+def _build_engine_options(database_url: str) -> dict[str, Any]:
+    options: dict[str, Any] = {"pool_pre_ping": True}
+    parsed = make_url(database_url)
+    connect_args: dict[str, Any] = {}
+
+    if parsed.get_backend_name() == "postgresql" and parsed.get_driver_name() == "psycopg":
+        if _uses_supabase_pooler(database_url):
+            # Supabase transaction pooler is incompatible with psycopg prepared statements.
+            connect_args["prepare_threshold"] = None
+            # Let Supabase own pooling to avoid stale connection/session state in app pool.
+            options["poolclass"] = NullPool
+            options["pool_pre_ping"] = False
+
+    if connect_args:
+        options["connect_args"] = connect_args
+    return options
+
+engine = create_engine(DATABASE_URL, **_build_engine_options(DATABASE_URL))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -67,6 +95,7 @@ def log_runtime_connection_targets() -> None:
     db_host, db_mode = resolve_database_host_mode()
     supabase_mode = resolve_supabase_mode()
     logger.info("Database target resolved: host=%s mode=%s", db_host, db_mode)
+    logger.info("Supabase pooler detected: enabled=%s", _uses_supabase_pooler(DATABASE_URL))
     logger.info(
         "Supabase mode resolved from SUPABASE_URL: mode=%s (local mode only when SUPABASE_URL is 127.0.0.1:54321)",
         supabase_mode,
