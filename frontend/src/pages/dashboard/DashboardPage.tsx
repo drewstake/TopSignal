@@ -12,7 +12,6 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
-import { Select } from "../../components/ui/Select";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -43,14 +42,8 @@ const DAY_FILTER_TRADE_LIMIT = 1000;
 const METRIC_TRADE_LIMIT = 1000;
 type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
 type PointsBasis = "auto" | "MNQ" | "MES" | "MGC" | "SIL";
-const POINTS_BASIS_QUERY_PARAM = "pointsBasis";
-const POINTS_BASIS_OPTIONS: Array<{ value: PointsBasis; label: string }> = [
-  { value: "auto", label: "Auto (per-symbol)" },
-  { value: "MNQ", label: "MNQ" },
-  { value: "MES", label: "MES" },
-  { value: "MGC", label: "MGC" },
-  { value: "SIL", label: "SIL" },
-];
+type ConcretePointsBasis = Exclude<PointsBasis, "auto">;
+const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "MGC", "SIL"];
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -114,6 +107,22 @@ const emptySummary: AccountSummary = {
   pointsBasisUsed: "auto",
 };
 
+interface PointPayoffStats {
+  avgPointGain: number | null;
+  avgPointLoss: number | null;
+}
+
+type PointPayoffByBasis = Record<ConcretePointsBasis, PointPayoffStats>;
+
+function createEmptyPointPayoffByBasis(): PointPayoffByBasis {
+  return {
+    MNQ: { avgPointGain: null, avgPointLoss: null },
+    MES: { avgPointGain: null, avgPointLoss: null },
+    MGC: { avgPointGain: null, avgPointLoss: null },
+    SIL: { avgPointGain: null, avgPointLoss: null },
+  };
+}
+
 function formatFee(value: number) {
   return formatCurrency(-Math.abs(value));
 }
@@ -130,6 +139,13 @@ function formatDurationCompact(minutes: number) {
     return `${hours}h ${minutesRemainder}m`;
   }
   return `${minutesRemainder}m ${seconds}s`;
+}
+
+function formatTradeDuration(minutes: number | null | undefined) {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
+    return "-";
+  }
+  return formatDurationCompact(minutes);
 }
 
 function pnlClass(value: number) {
@@ -161,11 +177,12 @@ function formatPoints(value: number) {
   return `${prefix}${formatNumber(value, 1)} pts`;
 }
 
-function formatPointMetric(value: number | null) {
+function formatPointMetric(value: number | null, basis: ConcretePointsBasis) {
   if (value === null || !Number.isFinite(value)) {
     return "—";
   }
-  return `${formatNumber(Math.abs(value), 2)} pts`;
+  const decimals = basis === "SIL" ? 3 : 2;
+  return `${formatNumber(Math.abs(value), decimals)} pts`;
 }
 
 function metricPnlClass(metric: MetricValue) {
@@ -366,26 +383,15 @@ function buildMetricsRangeQuery(
   };
 }
 
-function parsePointsBasis(rawValue: string | null): PointsBasis {
-  if (!rawValue) {
-    return "auto";
-  }
-  const upper = rawValue.toUpperCase();
-  if (upper === "MNQ" || upper === "MES" || upper === "MGC" || upper === "SIL") {
-    return upper;
-  }
-  return "auto";
-}
-
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-  const pointsBasis = useMemo(() => parsePointsBasis(searchParams.get(POINTS_BASIS_QUERY_PARAM)), [searchParams]);
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
+  const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [metricsRange, setMetricsRange] = useState<MetricsRangePreset>("ALL");
@@ -419,24 +425,6 @@ export function DashboardPage() {
     },
     [searchParams, setSearchParams],
   );
-
-  const setPointsBasis = useCallback(
-    (nextBasis: PointsBasis) => {
-      const next = new URLSearchParams(searchParams);
-      next.set(POINTS_BASIS_QUERY_PARAM, nextBasis);
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
-  useEffect(() => {
-    if (searchParams.get(POINTS_BASIS_QUERY_PARAM)) {
-      return;
-    }
-    const next = new URLSearchParams(searchParams);
-    next.set(POINTS_BASIS_QUERY_PARAM, "auto");
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -502,6 +490,7 @@ export function DashboardPage() {
   const loadSummaryAndCalendar = useCallback(async () => {
     if (!selectedAccountId) {
       setSummary(emptySummary);
+      setPointPayoffByBasis(createEmptyPointPayoffByBasis());
       setSummaryError(null);
       setPnlCalendarDays([]);
       setPnlCalendarError(null);
@@ -514,31 +503,59 @@ export function DashboardPage() {
     setPnlCalendarError(null);
 
     try {
-      const [nextSummary, nextPnlCalendar] = await Promise.all([
+      const summaryQuery = {
+        start: metricsRangeQuery.start,
+        end: metricsRangeQuery.end,
+      };
+
+      const [nextSummary, nextPnlCalendar, pointBasisSummaries] = await Promise.all([
         accountsApi.getSummary(selectedAccountId, {
-          start: metricsRangeQuery.start,
-          end: metricsRangeQuery.end,
-          pointsBasis,
+          start: summaryQuery.start,
+          end: summaryQuery.end,
         }),
         accountsApi.getPnlCalendar(selectedAccountId, {
           start: metricsRangeQuery.start,
           end: metricsRangeQuery.end,
           all_time: metricsRangeQuery.allTime,
         }),
+        Promise.allSettled(
+          PAYOFF_POINTS_BASES.map((basis) =>
+            accountsApi.getSummary(selectedAccountId, {
+              start: summaryQuery.start,
+              end: summaryQuery.end,
+              pointsBasis: basis,
+            }),
+          ),
+        ),
       ]);
+
+      const nextPointPayoffByBasis = createEmptyPointPayoffByBasis();
+      pointBasisSummaries.forEach((summaryResult, index) => {
+        if (summaryResult.status !== "fulfilled") {
+          return;
+        }
+        const basis = PAYOFF_POINTS_BASES[index];
+        nextPointPayoffByBasis[basis] = {
+          avgPointGain: summaryResult.value.avgPointGain,
+          avgPointLoss: summaryResult.value.avgPointLoss,
+        };
+      });
+
       setSummary(nextSummary);
+      setPointPayoffByBasis(nextPointPayoffByBasis);
       setPnlCalendarDays(nextPnlCalendar);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load dashboard data";
       setSummaryError(message);
       setPnlCalendarError(message);
       setSummary(emptySummary);
+      setPointPayoffByBasis(createEmptyPointPayoffByBasis());
       setPnlCalendarDays([]);
     } finally {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [metricsRangeQuery, pointsBasis, selectedAccountId]);
+  }, [metricsRangeQuery, selectedAccountId]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
@@ -831,21 +848,6 @@ export function DashboardPage() {
                   </Button>
                 );
               })}
-              <div className="ml-2 flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-900/55 px-2 py-1">
-                <span className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Points Basis</span>
-                <Select
-                  aria-label="Points basis"
-                  className="h-8 w-[170px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
-                  value={pointsBasis}
-                  onChange={(event) => setPointsBasis(parsePointsBasis(event.target.value))}
-                >
-                  {POINTS_BASIS_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
             </div>
           </div>
           {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
@@ -1161,14 +1163,6 @@ export function DashboardPage() {
                     value: formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl),
                     valueClassName: metricPnlClass(derivedMetrics.payoff.averageLoss),
                   },
-                  {
-                    label: "Avg Point Gain (pts)",
-                    value: formatPointMetric(derivedMetrics.payoff.avgPointGain.value),
-                  },
-                  {
-                    label: "Avg Point Loss (pts)",
-                    value: formatPointMetric(derivedMetrics.payoff.avgPointLoss.value),
-                  },
                   { label: "Breakeven WR", value: formatMetricValue(derivedMetrics.payoff.breakevenWinRate, (value) => formatPercent(value, 1)) },
                   { label: "Current WR", value: formatMetricValue(derivedMetrics.payoff.currentWinRate, (value) => formatPercent(value, 1)) },
                   { label: "WR Cushion", value: formatMetricValueWithNote(derivedMetrics.payoff.wrCushion, formatPoints) },
@@ -1195,6 +1189,26 @@ export function DashboardPage() {
                   },
                 ]}
               />
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Points Payoff By Basis</p>
+                <div className="overflow-hidden rounded-md border border-slate-800/70 bg-slate-950/25">
+                  <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    <span>Basis</span>
+                    <span className="text-right">Avg Point Gain</span>
+                    <span className="text-right">Avg Point Loss</span>
+                  </div>
+                  {PAYOFF_POINTS_BASES.map((basis) => (
+                    <div
+                      key={basis}
+                      className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] border-t border-slate-800/65 px-2 py-1 text-[11px]"
+                    >
+                      <span className="font-semibold text-slate-200">{basis}</span>
+                      <span className="text-right text-emerald-200">{formatPointMetric(pointPayoffByBasis[basis].avgPointGain, basis)}</span>
+                      <span className="text-right text-rose-200">{formatPointMetric(pointPayoffByBasis[basis].avgPointLoss, basis)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
               <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
                 <span className="font-semibold text-slate-200">Insight:</span> {derivedMetrics.payoff.insight}
               </p>
@@ -1354,14 +1368,17 @@ export function DashboardPage() {
         </CardHeader>
         <CardContent className="space-y-0">
           <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800/80">
-            <table className="w-full min-w-[1040px] border-collapse text-sm">
+            <table className="w-full min-w-[1500px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="px-3 py-3 text-left font-medium">Timestamp (ET)</th>
+                  <th className="px-3 py-3 text-left font-medium">Entry Time (ET)</th>
+                  <th className="px-3 py-3 text-left font-medium">Exit Time (ET)</th>
+                  <th className="px-3 py-3 text-right font-medium">Duration</th>
                   <th className="px-3 py-3 text-left font-medium">Symbol</th>
                   <th className="px-3 py-3 text-left font-medium">Direction</th>
                   <th className="px-3 py-3 text-right font-medium">Size</th>
-                  <th className="px-3 py-3 text-right font-medium">Price</th>
+                  <th className="px-3 py-3 text-right font-medium">Entry Price</th>
+                  <th className="px-3 py-3 text-right font-medium">Exit Price</th>
                   <th className="px-3 py-3 text-right font-medium">Fees</th>
                   <th className="px-3 py-3 text-right font-medium">PnL</th>
                   <th className="px-3 py-3 text-right font-medium">Trade ID</th>
@@ -1370,19 +1387,19 @@ export function DashboardPage() {
               <tbody className="divide-y divide-slate-800/70">
                 {tradesLoading ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
                       Loading trades...
                     </td>
                   </tr>
                 ) : tradesError ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-6 text-center text-rose-300">
+                    <td colSpan={11} className="px-3 py-6 text-center text-rose-300">
                       {tradesError}
                     </td>
                   </tr>
                 ) : trades.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
                       No trades available.
                     </td>
                   </tr>
@@ -1390,10 +1407,20 @@ export function DashboardPage() {
                   trades.map((trade) => {
                     const pnlValue = trade.pnl ?? 0;
                     const direction = formatTradeDirection(trade.side);
+                    const entryTime = trade.entry_time;
+                    const exitTime = trade.exit_time ?? trade.timestamp;
+                    const entryPrice = trade.entry_price;
+                    const exitPrice = trade.exit_price ?? trade.price;
                     return (
                       <tr key={trade.id} className="transition hover:bg-slate-900/65">
                         <td className="px-3 py-3 text-left text-slate-300">
-                          {timestampFormatter.format(new Date(trade.timestamp))}
+                          {entryTime ? timestampFormatter.format(new Date(entryTime)) : "-"}
+                        </td>
+                        <td className="px-3 py-3 text-left text-slate-300">
+                          {timestampFormatter.format(new Date(exitTime))}
+                        </td>
+                        <td className="px-3 py-3 text-right text-slate-300">
+                          {formatTradeDuration(trade.duration_minutes)}
                         </td>
                         <td className="px-3 py-3 text-left font-medium text-slate-100">
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
@@ -1401,9 +1428,12 @@ export function DashboardPage() {
                         <td className="px-3 py-3 text-left">
                           <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-200">{trade.size.toFixed(2)}</td>
+                        <td className="px-3 py-3 text-right text-slate-200">{formatInteger(trade.size)}</td>
                         <td className="px-3 py-3 text-right font-mono text-slate-200">
-                          {trade.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
+                          {entryPrice == null ? "-" : entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
+                        </td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-200">
+                          {exitPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
                         <td className="px-3 py-3 text-right text-slate-300">{formatFee(trade.fees)}</td>
                         <td className={`px-3 py-3 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>

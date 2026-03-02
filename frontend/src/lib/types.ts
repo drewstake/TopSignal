@@ -107,6 +107,11 @@ export interface AccountTrade {
   size: number;
   price: number;
   timestamp: string;
+  entry_time?: string | null;
+  exit_time?: string;
+  duration_minutes?: number | null;
+  entry_price?: number | null;
+  exit_price?: number;
   fees: number;
   pnl: number | null;
   mfe?: number | null;
