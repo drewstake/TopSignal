@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -10,8 +9,10 @@ from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..auth import get_authenticated_user_id
 from ..journal_schemas import JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
+from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
 
 _MAX_TITLE_LENGTH = 160
 _MAX_BODY_LENGTH = 20_000
@@ -24,9 +25,6 @@ _ALLOWED_JOURNAL_IMAGE_MIME_TYPES = {
     "image/jpg": "jpg",
     "image/webp": "webp",
 }
-_DEFAULT_JOURNAL_IMAGE_STORAGE_DIR = "storage/journal_images"
-
-
 class VersionConflictError(Exception):
     def __init__(self, server_row: JournalEntry):
         super().__init__("version_conflict")
@@ -38,9 +36,16 @@ def validate_date_range(*, start_date: date | None, end_date: date | None) -> No
         raise ValueError("start_date must be before or equal to end_date")
 
 
+def _resolve_user_id(user_id: str | None) -> str:
+    if user_id:
+        return user_id
+    return get_authenticated_user_id()
+
+
 def list_journal_entries(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -51,8 +56,13 @@ def list_journal_entries(
     offset: int = 0,
 ) -> tuple[list[JournalEntry], int]:
     validate_date_range(start_date=start_date, end_date=end_date)
+    resolved_user_id = _resolve_user_id(user_id)
 
-    query = db.query(JournalEntry).filter(JournalEntry.account_id == account_id)
+    query = (
+        db.query(JournalEntry)
+        .filter(JournalEntry.user_id == resolved_user_id)
+        .filter(JournalEntry.account_id == account_id)
+    )
     if not include_archived:
         query = query.filter(JournalEntry.is_archived.is_(False))
     if start_date is not None:
@@ -90,15 +100,18 @@ def list_journal_entries(
 def list_journal_days(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     start_date: date,
     end_date: date,
     include_archived: bool = False,
 ) -> list[date]:
     validate_date_range(start_date=start_date, end_date=end_date)
+    resolved_user_id = _resolve_user_id(user_id)
 
     query = (
         db.query(JournalEntry.entry_date)
+        .filter(JournalEntry.user_id == resolved_user_id)
         .filter(JournalEntry.account_id == account_id)
         .filter(JournalEntry.entry_date >= start_date)
         .filter(JournalEntry.entry_date <= end_date)
@@ -113,6 +126,7 @@ def list_journal_days(
 def create_journal_entry(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     entry_date: date,
     title: str,
@@ -120,12 +134,19 @@ def create_journal_entry(
     tags: list[str],
     body: str,
 ) -> tuple[JournalEntry, bool]:
-    existing = _get_entry_for_account_and_date(db, account_id=account_id, entry_date=entry_date)
+    resolved_user_id = _resolve_user_id(user_id)
+    existing = _get_entry_for_account_and_date(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_date=entry_date,
+    )
     if existing is not None:
         return existing, True
 
     now = _utcnow()
     row = JournalEntry(
+        user_id=resolved_user_id,
         account_id=account_id,
         entry_date=entry_date,
         title=normalize_title(title),
@@ -142,7 +163,12 @@ def create_journal_entry(
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing = _get_entry_for_account_and_date(db, account_id=account_id, entry_date=entry_date)
+        existing = _get_entry_for_account_and_date(
+            db,
+            user_id=resolved_user_id,
+            account_id=account_id,
+            entry_date=entry_date,
+        )
         if existing is not None:
             return existing, True
         raise
@@ -154,6 +180,7 @@ def create_journal_entry(
 def update_journal_entry(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     entry_id: int,
     version: int,
@@ -164,7 +191,13 @@ def update_journal_entry(
     body: str | None = None,
     is_archived: bool | None = None,
 ) -> JournalEntry:
-    row = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+    resolved_user_id = _resolve_user_id(user_id)
+    row = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if row is None:
         raise LookupError("journal entry not found")
 
@@ -174,7 +207,12 @@ def update_journal_entry(
         raise VersionConflictError(row)
 
     if entry_date is not None and entry_date != row.entry_date:
-        existing = _get_entry_for_account_and_date(db, account_id=account_id, entry_date=entry_date)
+        existing = _get_entry_for_account_and_date(
+            db,
+            user_id=resolved_user_id,
+            account_id=account_id,
+            entry_date=entry_date,
+        )
         if existing is not None and int(existing.id) != int(row.id):
             raise ValueError("journal entry already exists for this account and date")
         row.entry_date = entry_date
@@ -203,9 +241,17 @@ def update_journal_entry(
     return row
 
 
-def archive_journal_entry(db: Session, *, account_id: int, entry_id: int, version: int) -> JournalEntry:
+def archive_journal_entry(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    entry_id: int,
+    version: int,
+) -> JournalEntry:
     return update_journal_entry(
         db,
+        user_id=user_id,
         account_id=account_id,
         entry_id=entry_id,
         version=version,
@@ -213,9 +259,17 @@ def archive_journal_entry(db: Session, *, account_id: int, entry_id: int, versio
     )
 
 
-def unarchive_journal_entry(db: Session, *, account_id: int, entry_id: int, version: int) -> JournalEntry:
+def unarchive_journal_entry(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    entry_id: int,
+    version: int,
+) -> JournalEntry:
     return update_journal_entry(
         db,
+        user_id=user_id,
         account_id=account_id,
         entry_id=entry_id,
         version=version,
@@ -223,14 +277,27 @@ def unarchive_journal_entry(db: Session, *, account_id: int, entry_id: int, vers
     )
 
 
-def delete_journal_entry(db: Session, *, account_id: int, entry_id: int) -> None:
-    row = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+def delete_journal_entry(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    entry_id: int,
+) -> None:
+    resolved_user_id = _resolve_user_id(user_id)
+    row = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if row is None:
         raise LookupError("journal entry not found")
 
     image_filenames = [
         image_row.filename
         for image_row in db.query(JournalEntryImage.filename)
+        .filter(JournalEntryImage.user_id == resolved_user_id)
         .filter(JournalEntryImage.journal_entry_id == entry_id)
         .all()
     ]
@@ -239,18 +306,25 @@ def delete_journal_entry(db: Session, *, account_id: int, entry_id: int) -> None
     db.commit()
 
     for filename in image_filenames:
-        _delete_image_file(filename)
+        delete_journal_image(object_key=filename)
 
 
 def create_journal_entry_image(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     entry_id: int,
     file_bytes: bytes,
     mime_type: str | None,
 ) -> JournalEntryImage:
-    entry = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+    resolved_user_id = _resolve_user_id(user_id)
+    entry = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if entry is None:
         raise LookupError("journal entry not found")
 
@@ -262,12 +336,11 @@ def create_journal_entry_image(
 
     normalized_mime = _normalize_image_mime_type(mime_type)
     extension = _ALLOWED_JOURNAL_IMAGE_MIME_TYPES[normalized_mime]
-    filename = f"{account_id}/{entry_id}/{uuid4().hex}.{extension}"
-    file_path = _journal_image_storage_root() / filename
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_bytes(file_bytes)
+    filename = f"{resolved_user_id}/{account_id}/{entry_id}/{uuid4().hex}.{extension}"
+    save_journal_image(object_key=filename, file_bytes=file_bytes, mime_type=normalized_mime)
 
     row = JournalEntryImage(
+        user_id=resolved_user_id,
         journal_entry_id=int(entry.id),
         account_id=account_id,
         entry_date=entry.entry_date,
@@ -283,20 +356,33 @@ def create_journal_entry_image(
         db.commit()
     except Exception:
         db.rollback()
-        file_path.unlink(missing_ok=True)
+        delete_journal_image(object_key=filename)
         raise
 
     db.refresh(row)
     return row
 
 
-def list_journal_entry_images(db: Session, *, account_id: int, entry_id: int) -> list[JournalEntryImage]:
-    entry = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+def list_journal_entry_images(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    entry_id: int,
+) -> list[JournalEntryImage]:
+    resolved_user_id = _resolve_user_id(user_id)
+    entry = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if entry is None:
         raise LookupError("journal entry not found")
 
     return (
         db.query(JournalEntryImage)
+        .filter(JournalEntryImage.user_id == resolved_user_id)
         .filter(JournalEntryImage.account_id == account_id)
         .filter(JournalEntryImage.journal_entry_id == entry_id)
         .order_by(JournalEntryImage.created_at.asc(), JournalEntryImage.id.asc())
@@ -307,10 +393,16 @@ def list_journal_entry_images(db: Session, *, account_id: int, entry_id: int) ->
 def get_journal_entry_image(
     db: Session,
     *,
+    user_id: str | None = None,
     image_id: int,
     account_id: int | None = None,
 ) -> JournalEntryImage:
-    query = db.query(JournalEntryImage).filter(JournalEntryImage.id == image_id)
+    resolved_user_id = _resolve_user_id(user_id)
+    query = (
+        db.query(JournalEntryImage)
+        .filter(JournalEntryImage.user_id == resolved_user_id)
+        .filter(JournalEntryImage.id == image_id)
+    )
     if account_id is not None:
         query = query.filter(JournalEntryImage.account_id == account_id)
 
@@ -323,16 +415,24 @@ def get_journal_entry_image(
 def delete_journal_entry_image(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     entry_id: int,
     image_id: int,
 ) -> None:
-    entry = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+    resolved_user_id = _resolve_user_id(user_id)
+    entry = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if entry is None:
         raise LookupError("journal entry not found")
 
     row = (
         db.query(JournalEntryImage)
+        .filter(JournalEntryImage.user_id == resolved_user_id)
         .filter(JournalEntryImage.id == image_id)
         .filter(JournalEntryImage.account_id == account_id)
         .filter(JournalEntryImage.journal_entry_id == entry_id)
@@ -344,23 +444,31 @@ def delete_journal_entry_image(
     filename = row.filename
     db.delete(row)
     db.commit()
-    _delete_image_file(filename)
+    delete_journal_image(object_key=filename)
 
 
 def pull_journal_entry_trade_stats(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     entry_id: int,
     trade_ids: list[int] | None = None,
     entry_date: date | None = None,
 ) -> JournalEntry:
-    row = _get_entry_for_account(db, account_id=account_id, entry_id=entry_id)
+    resolved_user_id = _resolve_user_id(user_id)
+    row = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
     if row is None:
         raise LookupError("journal entry not found")
 
     query = (
         db.query(ProjectXTradeEvent.pnl, ProjectXTradeEvent.fees)
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .filter(ProjectXTradeEvent.pnl.isnot(None))
@@ -432,7 +540,11 @@ def serialize_journal_entry_image(row: JournalEntryImage, *, url: str) -> dict[s
 
 
 def get_journal_image_file_path(filename: str) -> Path:
-    return _journal_image_storage_root() / filename
+    return local_journal_image_path(filename)
+
+
+def get_journal_image_bytes(filename: str) -> bytes:
+    return load_journal_image(object_key=filename)
 
 
 def normalize_title(value: str) -> str:
@@ -496,18 +608,32 @@ def _normalize_trade_ids(trade_ids: Iterable[int] | None) -> list[int]:
     return normalized
 
 
-def _get_entry_for_account(db: Session, *, account_id: int, entry_id: int) -> JournalEntry | None:
+def _get_entry_for_account(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    entry_id: int,
+) -> JournalEntry | None:
     return (
         db.query(JournalEntry)
+        .filter(JournalEntry.user_id == user_id)
         .filter(JournalEntry.account_id == account_id)
         .filter(JournalEntry.id == entry_id)
         .one_or_none()
     )
 
 
-def _get_entry_for_account_and_date(db: Session, *, account_id: int, entry_date: date) -> JournalEntry | None:
+def _get_entry_for_account_and_date(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    entry_date: date,
+) -> JournalEntry | None:
     return (
         db.query(JournalEntry)
+        .filter(JournalEntry.user_id == user_id)
         .filter(JournalEntry.account_id == account_id)
         .filter(JournalEntry.entry_date == entry_date)
         .one_or_none()
@@ -523,37 +649,6 @@ def _normalize_image_mime_type(value: str | None) -> str:
     if normalized not in _ALLOWED_JOURNAL_IMAGE_MIME_TYPES:
         raise ValueError("unsupported image type")
     return normalized
-
-
-def _journal_image_storage_root() -> Path:
-    configured = os.getenv("JOURNAL_IMAGE_STORAGE_DIR")
-    if configured:
-        root = Path(configured).expanduser()
-        return root.resolve()
-
-    backend_root = Path(__file__).resolve().parents[2]
-    return backend_root / _DEFAULT_JOURNAL_IMAGE_STORAGE_DIR
-
-
-def _delete_image_file(filename: str) -> None:
-    path = get_journal_image_file_path(filename)
-    path.unlink(missing_ok=True)
-    _remove_empty_parent_dirs(path.parent, stop_at=_journal_image_storage_root())
-
-
-def _remove_empty_parent_dirs(path: Path, *, stop_at: Path) -> None:
-    current = path
-    while True:
-        if current == stop_at:
-            return
-        try:
-            current.rmdir()
-        except OSError:
-            return
-        parent = current.parent
-        if parent == current:
-            return
-        current = parent
 
 
 def _utcnow() -> datetime:

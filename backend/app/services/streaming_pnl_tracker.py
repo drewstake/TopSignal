@@ -6,6 +6,7 @@ from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
 
+from ..auth import get_authenticated_user_id
 from ..models import PositionLifecycle
 from .instruments import resolve_point_value
 
@@ -376,6 +377,7 @@ def parse_quote_trade(payload: Mapping[str, Any]) -> MarketPriceUpdate | None:
 def save_position_lifecycle_mae_mfe(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     contract_id: str,
     symbol: str | None = None,
@@ -392,7 +394,9 @@ def save_position_lifecycle_mae_mfe(
     mae_timestamp: datetime | None = None,
     mfe_timestamp: datetime | None = None,
 ) -> PositionLifecycle:
+    resolved_user_id = user_id or get_authenticated_user_id()
     row = PositionLifecycle(
+        user_id=resolved_user_id,
         account_id=account_id,
         contract_id=contract_id,
         symbol=symbol or contract_id,

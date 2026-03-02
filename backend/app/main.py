@@ -4,14 +4,24 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from .auth import (
+    AuthError,
+    auth_required,
+    authenticate_request_token,
+    bind_authenticated_user,
+    extract_access_token,
+    get_authenticated_user_id,
+    get_authenticated_user_or_default,
+    reset_authenticated_user,
+)
 from .db import get_db, init_db
 from .expense_schemas import (
     ExpenseCategory,
@@ -44,8 +54,11 @@ from .metrics_schemas import (
 )
 from .models import Expense, ProjectXTradeEvent, Trade
 from .projectx_schemas import (
+    AuthMeOut,
     ProjectXAccountMainOut,
     ProjectXAccountOut,
+    ProjectXCredentialsStatusOut,
+    ProjectXCredentialsUpsertIn,
     ProjectXAccountLastTradeOut,
     ProjectXPnlCalendarDayOut,
     ProjectXTradeOut,
@@ -69,6 +82,7 @@ from .services.journal import (
     delete_journal_entry,
     delete_journal_entry_image,
     get_journal_entry_image,
+    get_journal_image_bytes,
     get_journal_image_file_path,
     list_journal_days,
     list_journal_entry_images,
@@ -80,6 +94,7 @@ from .services.journal import (
     update_journal_entry,
     validate_date_range as validate_journal_date_range,
 )
+from .services.journal_storage import journal_storage_backend
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
     ACCOUNT_STATE_MISSING,
@@ -89,6 +104,12 @@ from .services.projectx_accounts import (
     set_main_projectx_account,
     should_include_account,
     sync_projectx_accounts,
+)
+from .services.projectx_credentials import (
+    delete_projectx_credentials,
+    get_projectx_credentials,
+    has_projectx_credentials,
+    upsert_projectx_credentials,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.instruments import normalize_points_basis
@@ -110,15 +131,48 @@ _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
 _streaming_runtime = None
+_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
+_ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_origin_regex=_LOCAL_ORIGIN_REGEX,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    token = extract_access_token(request)
+    should_require_auth = auth_required()
+    user = None
+
+    if token:
+        try:
+            user = authenticate_request_token(token)
+        except AuthError as exc:
+            return JSONResponse(status_code=401, content={"detail": str(exc)})
+    elif should_require_auth:
+        return JSONResponse(status_code=401, content={"detail": "missing_bearer_token"})
+    else:
+        user = get_authenticated_user_or_default()
+
+    context_token = bind_authenticated_user(user)
+    try:
+        return await call_next(request)
+    finally:
+        reset_authenticated_user(context_token)
 
 
 @app.on_event("startup")
@@ -135,6 +189,43 @@ def on_shutdown():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/auth/me", response_model=AuthMeOut)
+def get_auth_me():
+    user = get_authenticated_user_or_default()
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+    }
+
+
+@app.get("/api/me/providers/projectx/credentials/status", response_model=ProjectXCredentialsStatusOut)
+def get_projectx_credentials_status(db: Session = Depends(get_db)):
+    user_id = get_authenticated_user_id()
+    return {"configured": has_projectx_credentials(db, user_id=user_id)}
+
+
+@app.put("/api/me/providers/projectx/credentials", status_code=204)
+def put_projectx_credentials(payload: ProjectXCredentialsUpsertIn, db: Session = Depends(get_db)):
+    user_id = get_authenticated_user_id()
+    try:
+        upsert_projectx_credentials(
+            db,
+            user_id=user_id,
+            username=payload.username,
+            api_key=payload.api_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+@app.delete("/api/me/providers/projectx/credentials", status_code=204)
+def delete_projectx_credentials_for_user(db: Session = Depends(get_db)):
+    user_id = get_authenticated_user_id()
+    delete_projectx_credentials(db, user_id=user_id)
+    return Response(status_code=204)
 
 
 @app.get("/trades", response_model=list[TradeOut])
@@ -154,6 +245,7 @@ def create_expense(
     payload: ExpenseCreateIn,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if payload.account_id is not None:
         _validate_account_id(payload.account_id)
 
@@ -171,6 +263,7 @@ def create_expense(
     _validate_expense_amount(amount_cents=amount_cents, category=payload.category)
 
     row = Expense(
+        user_id=user_id,
         account_id=payload.account_id,
         provider=payload.provider,
         expense_date=payload.expense_date,
@@ -203,12 +296,13 @@ def list_expenses(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
     if account_id is not None:
         _validate_account_id(account_id)
 
-    query = db.query(Expense)
+    query = db.query(Expense).filter(Expense.user_id == user_id)
     if start_date is not None:
         query = query.filter(Expense.expense_date >= start_date)
     if end_date is not None:
@@ -237,6 +331,7 @@ def get_expense_totals(
     end_created_at: datetime | None = None,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if account_id is not None:
         _validate_account_id(account_id)
 
@@ -251,7 +346,11 @@ def get_expense_totals(
     if start_created_at and end_created_at and start_created_at > end_created_at:
         raise HTTPException(status_code=400, detail="start_created_at must be before or equal to end_created_at")
 
-    query = db.query(Expense).filter(Expense.expense_date <= effective_end_date)
+    query = (
+        db.query(Expense)
+        .filter(Expense.user_id == user_id)
+        .filter(Expense.expense_date <= effective_end_date)
+    )
     if effective_start_date is not None:
         query = query.filter(Expense.expense_date >= effective_start_date)
     if start_created_at is not None:
@@ -298,10 +397,16 @@ def update_expense(
     payload: ExpenseUpdateIn,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if expense_id <= 0:
         raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
 
-    row = db.query(Expense).filter(Expense.id == expense_id).first()
+    row = (
+        db.query(Expense)
+        .filter(Expense.user_id == user_id)
+        .filter(Expense.id == expense_id)
+        .first()
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
 
@@ -355,10 +460,16 @@ def delete_expense(
     expense_id: int,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if expense_id <= 0:
         raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
 
-    row = db.query(Expense).filter(Expense.id == expense_id).first()
+    row = (
+        db.query(Expense)
+        .filter(Expense.user_id == user_id)
+        .filter(Expense.id == expense_id)
+        .first()
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
 
@@ -422,17 +533,19 @@ def list_projectx_accounts(
     only_active_accounts: bool | None = None,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if only_active_accounts is not None:
         show_inactive = not only_active_accounts
         show_missing = not only_active_accounts
 
     provider_accounts: list[dict[str, object]] = []
     try:
-        client = ProjectXClient.from_env()
+        client = _projectx_client_for_user(db, user_id=user_id)
         provider_accounts = client.list_accounts(only_active_accounts=False)
         sync_projectx_accounts(
             db,
             provider_accounts,
+            user_id=user_id,
             missing_buffer=timedelta(
                 seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
             ),
@@ -450,7 +563,7 @@ def list_projectx_accounts(
         for account in provider_accounts
         if isinstance(account, dict) and account.get("id") is not None
     }
-    rows = get_projectx_account_rows(db)
+    rows = get_projectx_account_rows(db, user_id=user_id)
     visible_rows = [
         row
         for row in rows
@@ -466,7 +579,7 @@ def list_projectx_accounts(
         for account_id in (account_id_from_external_id(row.external_id) for row in visible_rows)
         if account_id is not None
     ]
-    last_trade_by_account_id = _load_last_trade_timestamps(db, account_ids=account_ids)
+    last_trade_by_account_id = _load_last_trade_timestamps(db, user_id=user_id, account_ids=account_ids)
 
     payload: list[dict[str, object]] = []
     for row in visible_rows:
@@ -507,10 +620,11 @@ def set_projectx_main_account(
     account_id: int,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
 
     try:
-        set_main_projectx_account(db, account_id)
+        set_main_projectx_account(db, account_id, user_id=user_id)
         db.commit()
     except Exception:
         db.rollback()
@@ -528,9 +642,10 @@ def get_projectx_account_last_trade(
     refresh: bool = False,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
 
-    local_timestamp = _load_last_trade_timestamps(db, account_ids=[account_id]).get(account_id)
+    local_timestamp = _load_last_trade_timestamps(db, user_id=user_id, account_ids=[account_id]).get(account_id)
     if local_timestamp is not None and not refresh:
         return {
             "account_id": account_id,
@@ -539,7 +654,7 @@ def get_projectx_account_last_trade(
         }
 
     try:
-        client = ProjectXClient.from_env()
+        client = _projectx_client_for_user(db, user_id=user_id)
         provider_timestamp = client.fetch_last_trade_timestamp(
             account_id,
             lookback_days=_read_int_env("PROJECTX_LAST_TRADE_LOOKBACK_DAYS", 3650),
@@ -586,12 +701,14 @@ def list_projectx_account_journal_entries(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_journal_date_range(start_date=start_date, end_date=end_date)
 
     try:
         rows, total = list_journal_entries(
             db,
+            user_id=user_id,
             account_id=account_id,
             start_date=start_date,
             end_date=end_date,
@@ -616,11 +733,13 @@ def create_projectx_account_journal_entry(
     response: Response,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
 
     try:
         row, already_existed = create_journal_entry(
             db,
+            user_id=user_id,
             account_id=account_id,
             entry_date=payload.entry_date,
             title=payload.title,
@@ -645,12 +764,14 @@ def list_projectx_account_journal_days(
     include_archived: bool = False,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_journal_date_range(start_date=start_date, end_date=end_date)
 
     try:
         days = list_journal_days(
             db,
+            user_id=user_id,
             account_id=account_id,
             start_date=start_date,
             end_date=end_date,
@@ -668,6 +789,7 @@ def update_projectx_account_journal_entry(
     payload: JournalEntryUpdateIn,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
@@ -677,12 +799,25 @@ def update_projectx_account_journal_entry(
     try:
         if _journal_update_payload_is_archive_only(payload) and payload.is_archived is not None:
             if payload.is_archived:
-                row = archive_journal_entry(db, account_id=account_id, entry_id=entry_id, version=payload.version)
+                row = archive_journal_entry(
+                    db,
+                    user_id=user_id,
+                    account_id=account_id,
+                    entry_id=entry_id,
+                    version=payload.version,
+                )
             else:
-                row = unarchive_journal_entry(db, account_id=account_id, entry_id=entry_id, version=payload.version)
+                row = unarchive_journal_entry(
+                    db,
+                    user_id=user_id,
+                    account_id=account_id,
+                    entry_id=entry_id,
+                    version=payload.version,
+                )
         else:
             row = update_journal_entry(
                 db,
+                user_id=user_id,
                 account_id=account_id,
                 entry_id=entry_id,
                 version=payload.version,
@@ -716,12 +851,13 @@ def delete_projectx_account_journal_entry(
     entry_id: int,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
 
     try:
-        delete_journal_entry(db, account_id=account_id, entry_id=entry_id)
+        delete_journal_entry(db, user_id=user_id, account_id=account_id, entry_id=entry_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -735,6 +871,7 @@ async def upload_projectx_account_journal_image(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
@@ -745,6 +882,7 @@ async def upload_projectx_account_journal_image(
     try:
         row = create_journal_entry_image(
             db,
+            user_id=user_id,
             account_id=account_id,
             entry_id=entry_id,
             file_bytes=file_bytes,
@@ -766,12 +904,13 @@ def list_projectx_account_journal_images(
     entry_id: int,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
 
     try:
-        rows = list_journal_entry_images(db, account_id=account_id, entry_id=entry_id)
+        rows = list_journal_entry_images(db, user_id=user_id, account_id=account_id, entry_id=entry_id)
         return [
             serialize_journal_entry_image(
                 row,
@@ -789,13 +928,23 @@ def serve_journal_image(
     account_id: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     if image_id <= 0:
         raise HTTPException(status_code=400, detail="image_id must be a positive integer")
 
     try:
-        row = get_journal_entry_image(db, image_id=image_id, account_id=account_id)
+        row = get_journal_entry_image(db, user_id=user_id, image_id=image_id, account_id=account_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if journal_storage_backend() == "supabase":
+        try:
+            file_bytes = get_journal_image_bytes(row.filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="journal image file not found") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return Response(content=file_bytes, media_type=row.mime_type)
 
     path = get_journal_image_file_path(row.filename)
     if not path.exists() or not path.is_file():
@@ -811,6 +960,7 @@ def delete_projectx_account_journal_image(
     image_id: int,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
@@ -820,6 +970,7 @@ def delete_projectx_account_journal_image(
     try:
         delete_journal_entry_image(
             db,
+            user_id=user_id,
             account_id=account_id,
             entry_id=entry_id,
             image_id=image_id,
@@ -837,6 +988,7 @@ def pull_projectx_account_journal_trade_stats(
     payload: PullTradeStatsIn,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
@@ -844,6 +996,7 @@ def pull_projectx_account_journal_trade_stats(
     try:
         row = pull_journal_entry_trade_stats(
             db,
+            user_id=user_id,
             account_id=account_id,
             entry_id=entry_id,
             trade_ids=payload.trade_ids,
@@ -863,14 +1016,16 @@ def refresh_projectx_account_trades(
     end: datetime | None = None,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
 
     try:
-        client = ProjectXClient.from_env()
+        client = _projectx_client_for_user(db, user_id=user_id)
         return refresh_account_trades(
             db,
             client,
+            user_id=user_id,
             account_id=account_id,
             start=start,
             end=end,
@@ -891,6 +1046,7 @@ def list_projectx_account_trades(
     refresh: bool = False,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
@@ -902,19 +1058,21 @@ def list_projectx_account_trades(
         try:
             ensure_trade_cache_for_request(
                 db,
+                user_id=user_id,
                 account_id=account_id,
                 start=start,
                 end=end,
                 refresh=refresh,
-                client_factory=ProjectXClient.from_env,
+                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
             )
         except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
                 raise
 
         rows = list_trade_events(
             db,
             account_id=account_id,
+            user_id=user_id,
             limit=limit,
             start=start,
             end=end,
@@ -922,6 +1080,7 @@ def list_projectx_account_trades(
         )
         lifecycle_by_trade_id = derive_trade_execution_lifecycles(
             db,
+            user_id=user_id,
             account_id=account_id,
             closed_rows=rows,
         )
@@ -945,6 +1104,7 @@ def get_projectx_account_summary(
     points_basis: str = Query(default="auto", alias="pointsBasis"),
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
     raw_points_basis = points_basis if isinstance(points_basis, str) else "auto"
@@ -954,17 +1114,25 @@ def get_projectx_account_summary(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        if refresh or not has_local_trades(db, account_id):
-            client = ProjectXClient.from_env()
+        if refresh or not has_local_trades(db, account_id, user_id=user_id):
+            client = _projectx_client_for_user(db, user_id=user_id)
             try:
-                refresh_account_trades(db, client, account_id=account_id, start=start, end=end)
+                refresh_account_trades(
+                    db,
+                    client,
+                    user_id=user_id,
+                    account_id=account_id,
+                    start=start,
+                    end=end,
+                )
             except ProjectXClientError as exc:
-                if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
                     raise
 
         return summarize_trade_events(
             db,
             account_id=account_id,
+            user_id=user_id,
             start=start,
             end=end,
             points_basis=normalized_points_basis,
@@ -982,6 +1150,7 @@ def get_projectx_account_pnl_calendar(
     refresh: bool = False,
     db: Session = Depends(get_db),
 ):
+    user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
     if all_time and (start is not None or end is not None):
@@ -1001,29 +1170,63 @@ def get_projectx_account_pnl_calendar(
     try:
         # Avoid expensive provider backfills on routine page refreshes.
         # Use explicit refresh (or empty local cache) as the sync trigger.
-        needs_sync = refresh or not has_local_trades(db, account_id)
+        needs_sync = refresh or not has_local_trades(db, account_id, user_id=user_id)
         if needs_sync:
-            client = ProjectXClient.from_env()
+            client = _projectx_client_for_user(db, user_id=user_id)
             try:
                 refresh_account_trades(
                     db,
                     client,
+                    user_id=user_id,
                     account_id=account_id,
                     start=effective_start,
                     end=effective_end,
                 )
             except ProjectXClientError as exc:
-                if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
                     raise
 
         return get_trade_event_pnl_calendar(
             db,
             account_id=account_id,
+            user_id=user_id,
             start=effective_start,
             end=effective_end,
         )
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
+
+
+def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
+    allow_legacy_env = _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", True)
+    try:
+        credentials = get_projectx_credentials(db, user_id=user_id)
+    except OperationalError:
+        db.rollback()
+        if allow_legacy_env:
+            return ProjectXClient.from_env()
+        raise HTTPException(status_code=500, detail="provider_credentials_table_missing")
+
+    if credentials is None:
+        if allow_legacy_env:
+            return ProjectXClient.from_env()
+        raise HTTPException(status_code=400, detail="projectx_credentials_not_configured")
+
+    base_url = _first_nonempty_env(
+        "PROJECTX_API_BASE_URL",
+        "PROJECTX_BASE_URL",
+        "PROJECTX_GATEWAY_URL",
+        "TOPSTEP_API_BASE_URL",
+        "TOPSTEPX_API_BASE_URL",
+    )
+    if not base_url:
+        raise HTTPException(status_code=500, detail="projectx_api_base_url_not_configured")
+
+    return ProjectXClient(
+        base_url=base_url,
+        username=credentials.username,
+        api_key=credentials.api_key,
+    )
 
 
 def _resolve_amount_cents(amount_cents: int | None) -> int:
@@ -1125,6 +1328,14 @@ def _to_expense_integrity_http_exception(exc: IntegrityError) -> HTTPException:
     return HTTPException(status_code=400, detail="invalid_expense_payload")
 
 
+def _first_nonempty_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
 def _validate_account_id(account_id: int) -> None:
     if account_id <= 0:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
@@ -1142,7 +1353,7 @@ def _validate_journal_date_range(*, start_date: date | None, end_date: date | No
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _load_last_trade_timestamps(db: Session, *, account_ids: list[int]) -> dict[int, datetime]:
+def _load_last_trade_timestamps(db: Session, *, user_id: str, account_ids: list[int]) -> dict[int, datetime]:
     unique_ids = sorted({account_id for account_id in account_ids if account_id > 0})
     if not unique_ids:
         return {}
@@ -1152,6 +1363,7 @@ def _load_last_trade_timestamps(db: Session, *, account_ids: list[int]) -> dict[
             ProjectXTradeEvent.account_id.label("account_id"),
             func.max(ProjectXTradeEvent.trade_timestamp).label("last_trade_at"),
         )
+        .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id.in_(unique_ids))
         .group_by(ProjectXTradeEvent.account_id)
         .all()
@@ -1168,13 +1380,14 @@ def _load_last_trade_timestamps(db: Session, *, account_ids: list[int]) -> dict[
 def _should_fallback_to_local_metrics(
     db: Session,
     *,
+    user_id: str,
     account_id: int,
     exc: ProjectXClientError,
 ) -> bool:
     if exc.status_code not in {403, 404}:
         return False
 
-    account = get_projectx_account_row(db, account_id)
+    account = get_projectx_account_row(db, account_id, user_id=user_id)
     if account is None:
         return False
 

@@ -18,7 +18,7 @@ class _TokenCache:
 
 
 _TOKEN_LOCK = Lock()
-_TOKEN_CACHE: _TokenCache | None = None
+_TOKEN_CACHE_BY_KEY: dict[str, _TokenCache] = {}
 _TOKEN_SAFETY_WINDOW = timedelta(seconds=60)
 
 
@@ -286,7 +286,7 @@ class ProjectXClient:
             return self._request_once(method, path, payload=payload, with_auth=with_auth)
         except ProjectXClientError as exc:
             if with_auth and exc.status_code == 401:
-                _clear_token_cache()
+                _clear_token_cache(self._token_cache_key())
                 return self._request_once(method, path, payload=payload, with_auth=with_auth)
             raise
 
@@ -341,12 +341,12 @@ class ProjectXClient:
         return self._get_access_token()
 
     def _get_access_token(self) -> str:
-        global _TOKEN_CACHE
-
+        cache_key = self._token_cache_key()
         now = datetime.now(timezone.utc)
         with _TOKEN_LOCK:
-            if _TOKEN_CACHE and (_TOKEN_CACHE.expires_at - _TOKEN_SAFETY_WINDOW) > now:
-                return _TOKEN_CACHE.token
+            cache_entry = _TOKEN_CACHE_BY_KEY.get(cache_key)
+            if cache_entry and (cache_entry.expires_at - _TOKEN_SAFETY_WINDOW) > now:
+                return cache_entry.token
 
         payload = {
             "userName": self.username,
@@ -363,15 +363,20 @@ class ProjectXClient:
         expires_at = _parse_token_expiry(data)
 
         with _TOKEN_LOCK:
-            _TOKEN_CACHE = _TokenCache(token=token, expires_at=expires_at)
+            _TOKEN_CACHE_BY_KEY[cache_key] = _TokenCache(token=token, expires_at=expires_at)
 
         return token
 
+    def _token_cache_key(self) -> str:
+        return f"{self.base_url}|{self.username}"
 
-def _clear_token_cache() -> None:
-    global _TOKEN_CACHE
+
+def _clear_token_cache(cache_key: str | None = None) -> None:
     with _TOKEN_LOCK:
-        _TOKEN_CACHE = None
+        if cache_key is None:
+            _TOKEN_CACHE_BY_KEY.clear()
+            return
+        _TOKEN_CACHE_BY_KEY.pop(cache_key, None)
 
 
 def _first_env(*names: str) -> str | None:

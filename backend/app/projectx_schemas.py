@@ -94,3 +94,17 @@ class ProjectXPnlCalendarDayOut(BaseModel):
     gross_pnl: float
     fees: float
     net_pnl: float
+
+
+class ProjectXCredentialsUpsertIn(BaseModel):
+    username: str
+    api_key: str
+
+
+class ProjectXCredentialsStatusOut(BaseModel):
+    configured: bool
+
+
+class AuthMeOut(BaseModel):
+    user_id: str
+    email: str | None = None

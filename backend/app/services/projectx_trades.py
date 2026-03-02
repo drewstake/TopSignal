@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
+from ..auth import get_authenticated_user_id
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient
@@ -27,6 +28,12 @@ _INCREMENTAL_OVERLAP = timedelta(minutes=5)
 _MAX_DAY_SYNC_PAGES = 200
 _SYNC_STATUS_PARTIAL = "partial"
 _SYNC_STATUS_COMPLETE = "complete"
+
+
+def _resolve_user_id(user_id: str | None) -> str:
+    if user_id:
+        return user_id
+    return get_authenticated_user_id()
 
 
 @dataclass(frozen=True)
@@ -62,18 +69,21 @@ class _PositionMatchState:
 def ensure_trade_cache_for_request(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     start: datetime | None = None,
     end: datetime | None = None,
     refresh: bool = False,
     client_factory: Callable[[], ProjectXClient],
 ) -> None:
+    resolved_user_id = _resolve_user_id(user_id)
     request_day = _single_day_request_utc_date(start=start, end=end)
     if request_day is None:
-        if refresh or not has_local_trades(db, account_id):
+        if refresh or not has_local_trades(db, account_id, user_id=resolved_user_id):
             refresh_account_trades(
                 db,
                 client_factory(),
+                user_id=resolved_user_id,
                 account_id=account_id,
                 start=start,
                 end=end,
@@ -83,6 +93,7 @@ def ensure_trade_cache_for_request(
     _sync_single_trade_day_if_needed(
         db,
         client_factory=client_factory,
+        user_id=resolved_user_id,
         account_id=account_id,
         trade_day=request_day,
         refresh=refresh,
@@ -94,16 +105,18 @@ def refresh_account_trades(
     client: ProjectXClient,
     account_id: int,
     *,
+    user_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
     lookback_days: int = _DEFAULT_INITIAL_LOOKBACK_DAYS,
 ) -> dict[str, int]:
+    resolved_user_id = _resolve_user_id(user_id)
     now = datetime.now(timezone.utc)
     end_utc = _as_utc(end) if end is not None else now
     effective_lookback_days = _read_int_env("PROJECTX_INITIAL_LOOKBACK_DAYS", lookback_days)
     chunk_days = _read_int_env("PROJECTX_SYNC_CHUNK_DAYS", _DEFAULT_SYNC_CHUNK_DAYS)
-    latest = get_latest_trade_timestamp(db, account_id) if start is None else None
-    earliest = get_earliest_trade_timestamp(db, account_id) if start is None else None
+    latest = get_latest_trade_timestamp(db, account_id, user_id=resolved_user_id) if start is None else None
+    earliest = get_earliest_trade_timestamp(db, account_id, user_id=resolved_user_id) if start is None else None
 
     windows = _build_sync_windows(
         start=start,
@@ -130,7 +143,7 @@ def refresh_account_trades(
                 )
                 fetched_count += len(events)
                 try:
-                    inserted_count += store_trade_events(db, events)
+                    inserted_count += store_trade_events(db, events, user_id=resolved_user_id)
                     db.commit()
                 except IntegrityError:
                     db.rollback()
@@ -151,9 +164,11 @@ def refresh_account_trades(
     }
 
 
-def has_local_trades(db: Session, account_id: int) -> bool:
+def has_local_trades(db: Session, account_id: int, *, user_id: str | None = None) -> bool:
+    resolved_user_id = _resolve_user_id(user_id)
     existing = (
         db.query(ProjectXTradeEvent.id)
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .limit(1)
@@ -162,9 +177,11 @@ def has_local_trades(db: Session, account_id: int) -> bool:
     return existing is not None
 
 
-def get_latest_trade_timestamp(db: Session, account_id: int) -> datetime | None:
+def get_latest_trade_timestamp(db: Session, account_id: int, *, user_id: str | None = None) -> datetime | None:
+    resolved_user_id = _resolve_user_id(user_id)
     value = (
         db.query(func.max(ProjectXTradeEvent.trade_timestamp))
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .scalar()
@@ -174,9 +191,11 @@ def get_latest_trade_timestamp(db: Session, account_id: int) -> datetime | None:
     return _as_utc(value)
 
 
-def get_earliest_trade_timestamp(db: Session, account_id: int) -> datetime | None:
+def get_earliest_trade_timestamp(db: Session, account_id: int, *, user_id: str | None = None) -> datetime | None:
+    resolved_user_id = _resolve_user_id(user_id)
     value = (
         db.query(func.min(ProjectXTradeEvent.trade_timestamp))
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .scalar()
@@ -186,7 +205,13 @@ def get_earliest_trade_timestamp(db: Session, account_id: int) -> datetime | Non
     return _as_utc(value)
 
 
-def store_trade_events(db: Session, events: list[dict[str, Any]]) -> int:
+def store_trade_events(
+    db: Session,
+    events: list[dict[str, Any]],
+    *,
+    user_id: str | None = None,
+) -> int:
+    resolved_user_id = _resolve_user_id(user_id)
     if not events:
         return 0
 
@@ -200,8 +225,8 @@ def store_trade_events(db: Session, events: list[dict[str, Any]]) -> int:
     )
 
     if _is_postgres_session(db):
-        return _store_trade_events_postgres(db, events_sorted)
-    return _store_trade_events_orm(db, events_sorted)
+        return _store_trade_events_postgres(db, events_sorted, user_id=resolved_user_id)
+    return _store_trade_events_orm(db, events_sorted, user_id=resolved_user_id)
 
 
 def _is_postgres_session(db: Session) -> bool:
@@ -209,18 +234,28 @@ def _is_postgres_session(db: Session) -> bool:
     return bind is not None and bind.dialect.name == "postgresql"
 
 
-def _store_trade_events_postgres(db: Session, events_sorted: list[dict[str, Any]]) -> int:
+def _store_trade_events_postgres(
+    db: Session,
+    events_sorted: list[dict[str, Any]],
+    *,
+    user_id: str,
+) -> int:
     if not events_sorted:
         return 0
 
-    values = [_event_to_insert_values(event) for event in events_sorted]
+    values = [_event_to_insert_values(event, user_id=user_id) for event in events_sorted]
     stmt = pg_insert(ProjectXTradeEvent).values(values)
     stmt = stmt.on_conflict_do_nothing()
     result = db.execute(stmt)
     return int(result.rowcount or 0)
 
 
-def _store_trade_events_orm(db: Session, events_sorted: list[dict[str, Any]]) -> int:
+def _store_trade_events_orm(
+    db: Session,
+    events_sorted: list[dict[str, Any]],
+    *,
+    user_id: str,
+) -> int:
     account_ids = sorted({int(event["account_id"]) for event in events_sorted})
     timestamps = [_as_utc(event["timestamp"]) for event in events_sorted]
     source_ids = sorted(
@@ -235,6 +270,7 @@ def _store_trade_events_orm(db: Session, events_sorted: list[dict[str, Any]]) ->
     if source_ids:
         source_rows = (
             db.query(ProjectXTradeEvent)
+            .filter(ProjectXTradeEvent.user_id == user_id)
             .filter(ProjectXTradeEvent.account_id.in_(account_ids))
             .filter(ProjectXTradeEvent.source_trade_id.in_(source_ids))
             .all()
@@ -249,6 +285,7 @@ def _store_trade_events_orm(db: Session, events_sorted: list[dict[str, Any]]) ->
     max_ts = max(timestamps)
     fallback_rows = (
         db.query(ProjectXTradeEvent)
+        .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id.in_(account_ids))
         .filter(ProjectXTradeEvent.trade_timestamp >= min_ts)
         .filter(ProjectXTradeEvent.trade_timestamp <= max_ts)
@@ -275,6 +312,7 @@ def _store_trade_events_orm(db: Session, events_sorted: list[dict[str, Any]]) ->
 
         if row is None:
             row = ProjectXTradeEvent(
+                user_id=user_id,
                 account_id=account_id,
                 contract_id=str(event["contract_id"]),
                 side="UNKNOWN",
@@ -301,11 +339,13 @@ def list_trade_events(
     db: Session,
     account_id: int,
     *,
+    user_id: str | None = None,
     limit: int,
     start: datetime | None = None,
     end: datetime | None = None,
     symbol_query: str | None = None,
 ) -> list[ProjectXTradeEvent]:
+    resolved_user_id = _resolve_user_id(user_id)
     query = (
         db.query(ProjectXTradeEvent)
         .options(
@@ -324,6 +364,7 @@ def list_trade_events(
                 ProjectXTradeEvent.source_trade_id,
             )
         )
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         # Topstep day journal rows are closed trades only.
@@ -350,9 +391,11 @@ def list_trade_events(
 def derive_trade_execution_lifecycles(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     closed_rows: list[ProjectXTradeEvent],
 ) -> dict[int, TradeExecutionLifecycle]:
+    resolved_user_id = _resolve_user_id(user_id)
     if not closed_rows:
         return {}
 
@@ -377,6 +420,7 @@ def derive_trade_execution_lifecycles(
                 ProjectXTradeEvent.pnl,
             )
         )
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .filter(ProjectXTradeEvent.trade_timestamp <= latest_close_ts)
@@ -522,11 +566,18 @@ def summarize_trade_events(
     db: Session,
     account_id: int,
     *,
+    user_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
     points_basis: str = "auto",
 ) -> dict[str, float | int | None | str]:
-    samples = _load_trade_metric_samples(db, account_id=account_id, start=start, end=end)
+    samples = _load_trade_metric_samples(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        start=start,
+        end=end,
+    )
     instrument_specs = load_instrument_specs(db)
     point_value_lookup = build_point_value_lookup(instrument_specs)
     return compute_trade_summary(
@@ -540,10 +591,17 @@ def get_trade_event_pnl_calendar(
     db: Session,
     account_id: int,
     *,
+    user_id: str | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> list[dict[str, str | int | float]]:
-    samples = _load_trade_metric_samples(db, account_id=account_id, start=start, end=end)
+    samples = _load_trade_metric_samples(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        start=start,
+        end=end,
+    )
     return compute_daily_pnl_calendar(samples)
 
 
@@ -584,6 +642,7 @@ def _sync_single_trade_day_if_needed(
     db: Session,
     *,
     client_factory: Callable[[], ProjectXClient],
+    user_id: str,
     account_id: int,
     trade_day: date,
     refresh: bool,
@@ -591,13 +650,14 @@ def _sync_single_trade_day_if_needed(
     now_utc = datetime.now(timezone.utc)
     today_utc = now_utc.date()
     yesterday_utc = today_utc - timedelta(days=1)
-    sync_row = _get_trade_day_sync(db, account_id=account_id, trade_day=trade_day)
+    sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
 
     if trade_day == today_utc:
         logger.info("[trades] refresh today account=%s day=%s", account_id, trade_day.isoformat())
         _sync_trade_day_from_provider(
             db,
             client_factory=client_factory,
+            user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
             allow_complete=False,
@@ -610,6 +670,7 @@ def _sync_single_trade_day_if_needed(
             _sync_trade_day_from_provider(
                 db,
                 client_factory=client_factory,
+                user_id=user_id,
                 account_id=account_id,
                 trade_day=trade_day,
                 allow_complete=True,
@@ -627,6 +688,7 @@ def _sync_single_trade_day_if_needed(
     _sync_trade_day_from_provider(
         db,
         client_factory=client_factory,
+        user_id=user_id,
         account_id=account_id,
         trade_day=trade_day,
         allow_complete=True,
@@ -637,6 +699,7 @@ def _sync_trade_day_from_provider(
     db: Session,
     *,
     client_factory: Callable[[], ProjectXClient],
+    user_id: str,
     account_id: int,
     trade_day: date,
     allow_complete: bool,
@@ -656,6 +719,7 @@ def _sync_trade_day_from_provider(
     except Exception:
         _mark_trade_day_partial(
             db,
+            user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
             last_synced_at=last_synced_at,
@@ -668,10 +732,16 @@ def _sync_trade_day_from_provider(
         sync_status = _SYNC_STATUS_PARTIAL
 
     try:
-        store_trade_events(db, fetch_result.events)
-        row_count = _count_trade_events_for_day(db, account_id=account_id, trade_day=trade_day)
+        store_trade_events(db, fetch_result.events, user_id=user_id)
+        row_count = _count_trade_events_for_day(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            trade_day=trade_day,
+        )
         _upsert_trade_day_sync(
             db,
+            user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
             sync_status=sync_status,
@@ -683,6 +753,7 @@ def _sync_trade_day_from_provider(
         db.rollback()
         _mark_trade_day_partial(
             db,
+            user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
             last_synced_at=last_synced_at,
@@ -801,9 +872,16 @@ def _should_refresh_yesterday(sync_row: ProjectXTradeDaySync | None, *, now_utc:
     return last_synced_at < (now_utc - timedelta(minutes=max_age_minutes))
 
 
-def _get_trade_day_sync(db: Session, *, account_id: int, trade_day: date) -> ProjectXTradeDaySync | None:
+def _get_trade_day_sync(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    trade_day: date,
+) -> ProjectXTradeDaySync | None:
     return (
         db.query(ProjectXTradeDaySync)
+        .filter(ProjectXTradeDaySync.user_id == user_id)
         .filter(ProjectXTradeDaySync.account_id == account_id)
         .filter(ProjectXTradeDaySync.trade_date == trade_day)
         .one_or_none()
@@ -813,15 +891,17 @@ def _get_trade_day_sync(db: Session, *, account_id: int, trade_day: date) -> Pro
 def _upsert_trade_day_sync(
     db: Session,
     *,
+    user_id: str,
     account_id: int,
     trade_day: date,
     sync_status: str,
     last_synced_at: datetime,
     row_count: int | None = None,
 ) -> None:
-    sync_row = _get_trade_day_sync(db, account_id=account_id, trade_day=trade_day)
+    sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
     if sync_row is None:
         sync_row = ProjectXTradeDaySync(
+            user_id=user_id,
             account_id=account_id,
             trade_date=trade_day,
             sync_status=sync_status,
@@ -841,14 +921,21 @@ def _upsert_trade_day_sync(
 def _mark_trade_day_partial(
     db: Session,
     *,
+    user_id: str,
     account_id: int,
     trade_day: date,
     last_synced_at: datetime,
 ) -> None:
     try:
-        row_count = _count_trade_events_for_day(db, account_id=account_id, trade_day=trade_day)
+        row_count = _count_trade_events_for_day(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            trade_day=trade_day,
+        )
         _upsert_trade_day_sync(
             db,
+            user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
             sync_status=_SYNC_STATUS_PARTIAL,
@@ -880,10 +967,17 @@ def _utc_day_bounds(value: date) -> tuple[datetime, datetime]:
     return start, end
 
 
-def _count_trade_events_for_day(db: Session, *, account_id: int, trade_day: date) -> int:
+def _count_trade_events_for_day(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    trade_day: date,
+) -> int:
     day_start, day_end = _utc_day_bounds(trade_day)
     count = (
         db.query(func.count(ProjectXTradeEvent.id))
+        .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
         .filter(ProjectXTradeEvent.trade_timestamp >= day_start)
@@ -894,6 +988,8 @@ def _count_trade_events_for_day(db: Session, *, account_id: int, trade_day: date
 
 
 def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) -> None:
+    if "user_id" in event and event["user_id"] is not None:
+        row.user_id = str(event["user_id"])
     row.account_id = int(event["account_id"])
     row.contract_id = str(event["contract_id"])
     row.symbol = event.get("symbol")
@@ -913,10 +1009,11 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
     row.raw_payload = event.get("raw_payload")
 
 
-def _event_to_insert_values(event: dict[str, Any]) -> dict[str, Any]:
+def _event_to_insert_values(event: dict[str, Any], *, user_id: str) -> dict[str, Any]:
     source_trade_id = _normalized_optional_text(event.get("source_trade_id"))
     status = _normalized_optional_text(event.get("status"))
     return {
+        "user_id": str(user_id),
         "account_id": int(event["account_id"]),
         "contract_id": str(event["contract_id"]),
         "symbol": event.get("symbol"),
@@ -1045,10 +1142,12 @@ def _read_int_env(name: str, default: int) -> int:
 def _load_trade_metric_samples(
     db: Session,
     *,
+    user_id: str | None = None,
     account_id: int,
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> list[TradeMetricSample]:
+    resolved_user_id = _resolve_user_id(user_id)
     query = (
         db.query(
             ProjectXTradeEvent.trade_timestamp,
@@ -1061,6 +1160,7 @@ def _load_trade_metric_samples(
             ProjectXTradeEvent.size,
             ProjectXTradeEvent.price,
         )
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
     )

@@ -15,13 +15,22 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from .db import Base
+
+DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000000"
+USER_ID_TYPE = UUID(as_uuid=False).with_variant(Text, "sqlite")
+
 
 class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     provider = Column(Text, nullable=False)
     external_id = Column(Text, nullable=False)
     name = Column(Text, nullable=True)
@@ -39,15 +48,20 @@ class Account(Base):
             "account_state in ('ACTIVE','LOCKED_OUT','HIDDEN','MISSING')",
             name="accounts_account_state_check",
         ),
-        UniqueConstraint("provider", "external_id", name="uq_accounts_provider_external_id"),
-        Index("idx_accounts_is_main", "is_main"),
-        Index("idx_accounts_account_state", "account_state"),
+        UniqueConstraint("user_id", "provider", "external_id", name="uq_accounts_provider_external_id"),
+        Index("idx_accounts_is_main", "user_id", "is_main"),
+        Index("idx_accounts_account_state", "user_id", "account_state"),
     )
 
 class Trade(Base):
     __tablename__ = "trades"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, ForeignKey("accounts.id"), nullable=False)
 
     symbol = Column(Text, nullable=False)
@@ -93,6 +107,11 @@ class ProjectXTradeEvent(Base):
     __tablename__ = "projectx_trade_events"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, nullable=False)
     contract_id = Column(Text, nullable=False)
     symbol = Column(Text, nullable=True)
@@ -111,11 +130,13 @@ class ProjectXTradeEvent(Base):
     __table_args__ = (
         CheckConstraint("side in ('BUY','SELL','UNKNOWN')", name="projectx_trade_events_side_check"),
         UniqueConstraint(
+            "user_id",
             "account_id",
             "source_trade_id",
             name="uq_projectx_trade_events_account_source_trade",
         ),
         UniqueConstraint(
+            "user_id",
             "account_id",
             "order_id",
             "trade_timestamp",
@@ -128,6 +149,11 @@ class ProjectXTradeDaySync(Base):
     __tablename__ = "projectx_trade_day_syncs"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, nullable=False)
     trade_date = Column(Date, nullable=False)
     sync_status = Column(Text, nullable=False, server_default="partial")
@@ -138,7 +164,7 @@ class ProjectXTradeDaySync(Base):
 
     __table_args__ = (
         CheckConstraint("sync_status in ('partial','complete')", name="projectx_trade_day_syncs_status_check"),
-        UniqueConstraint("account_id", "trade_date", name="uq_projectx_trade_day_syncs_account_date"),
+        UniqueConstraint("user_id", "account_id", "trade_date", name="uq_projectx_trade_day_syncs_account_date"),
     )
 
 
@@ -146,6 +172,11 @@ class PositionLifecycle(Base):
     __tablename__ = "position_lifecycles"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, nullable=False)
     contract_id = Column(Text, nullable=False)
     symbol = Column(Text, nullable=False)
@@ -166,8 +197,8 @@ class PositionLifecycle(Base):
     __table_args__ = (
         CheckConstraint("side in ('LONG','SHORT')", name="position_lifecycles_side_check"),
         CheckConstraint("max_qty > 0", name="position_lifecycles_max_qty_positive_check"),
-        Index("idx_position_lifecycles_account_opened", "account_id", "opened_at"),
-        Index("idx_position_lifecycles_contract_opened", "contract_id", "opened_at"),
+        Index("idx_position_lifecycles_account_opened", "user_id", "account_id", "opened_at"),
+        Index("idx_position_lifecycles_contract_opened", "user_id", "contract_id", "opened_at"),
     )
 
 
@@ -175,6 +206,11 @@ class JournalEntry(Base):
     __tablename__ = "journal_entries"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, nullable=False)
     entry_date = Column(Date, nullable=False)
     title = Column(Text, nullable=False)
@@ -198,7 +234,7 @@ class JournalEntry(Base):
             "mood in ('Focused','Neutral','Frustrated','Confident')",
             name="journal_entries_mood_check",
         ),
-        UniqueConstraint("account_id", "entry_date", name="uq_journal_entries_account_entry_date"),
+        UniqueConstraint("user_id", "account_id", "entry_date", name="uq_journal_entries_account_entry_date"),
     )
 
 
@@ -206,6 +242,11 @@ class JournalEntryImage(Base):
     __tablename__ = "journal_entry_images"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     journal_entry_id = Column(
         BigInteger().with_variant(Integer, "sqlite"),
         ForeignKey("journal_entries.id", ondelete="CASCADE"),
@@ -221,8 +262,29 @@ class JournalEntryImage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
-        Index("idx_journal_entry_images_account_date", "account_id", "entry_date"),
-        Index("idx_journal_entry_images_journal_entry", "journal_entry_id"),
+        Index("idx_journal_entry_images_account_date", "user_id", "account_id", "entry_date"),
+        Index("idx_journal_entry_images_journal_entry", "user_id", "journal_entry_id"),
+    )
+
+
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    provider = Column(Text, nullable=False)
+    username_encrypted = Column(Text, nullable=False)
+    api_key_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_provider_credentials_user_provider"),
+        Index("idx_provider_credentials_user_provider", "user_id", "provider"),
     )
 
 
@@ -230,6 +292,11 @@ class Expense(Base):
     __tablename__ = "expenses"
 
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
     account_id = Column(BigInteger, nullable=True)
     provider = Column(Text, nullable=False, server_default="topstep")
     expense_date = Column(Date, nullable=False)
@@ -261,11 +328,12 @@ class Expense(Base):
             "plan_size in ('50k', '100k', '150k')",
             name="expenses_plan_size_check",
         ),
-        Index("idx_expenses_expense_date", "expense_date"),
-        Index("idx_expenses_account_id", "account_id"),
-        Index("idx_expenses_category", "category"),
+        Index("idx_expenses_expense_date", "user_id", "expense_date"),
+        Index("idx_expenses_account_id", "user_id", "account_id"),
+        Index("idx_expenses_category", "user_id", "category"),
         Index(
             "uq_expenses_dedupe",
+            "user_id",
             "expense_date",
             "category",
             func.coalesce(account_type, ""),

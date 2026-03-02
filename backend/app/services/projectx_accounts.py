@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..auth import get_authenticated_user_id
 from ..models import Account
 
 ACCOUNT_PROVIDER = "projectx"
@@ -14,6 +15,12 @@ ACCOUNT_STATE_LOCKED_OUT = "LOCKED_OUT"
 ACCOUNT_STATE_HIDDEN = "HIDDEN"
 ACCOUNT_STATE_MISSING = "MISSING"
 ACCOUNT_STATE_INACTIVE = {ACCOUNT_STATE_LOCKED_OUT, ACCOUNT_STATE_HIDDEN}
+
+
+def _resolve_user_id(user_id: str | None) -> str:
+    if user_id:
+        return user_id
+    return get_authenticated_user_id()
 
 
 def account_state_from_flags(*, can_trade: bool | None, is_visible: bool | None) -> str:
@@ -28,9 +35,11 @@ def sync_projectx_accounts(
     db: Session,
     provider_accounts: list[dict[str, Any]],
     *,
+    user_id: str | None = None,
     now_utc: datetime | None = None,
     missing_buffer: timedelta = timedelta(minutes=5),
 ) -> None:
+    resolved_user_id = _resolve_user_id(user_id)
     now = _as_utc(now_utc or datetime.now(timezone.utc))
     normalized_rows = [_normalize_provider_account(row) for row in provider_accounts]
     normalized_rows = [row for row in normalized_rows if row is not None]
@@ -40,6 +49,7 @@ def sync_projectx_accounts(
     if seen_external_ids:
         rows = (
             db.query(Account)
+            .filter(Account.user_id == resolved_user_id)
             .filter(Account.provider == ACCOUNT_PROVIDER)
             .filter(Account.external_id.in_(sorted(seen_external_ids)))
             .all()
@@ -51,6 +61,7 @@ def sync_projectx_accounts(
         row = existing_by_external_id.get(external_id)
         if row is None:
             row = Account(
+                user_id=resolved_user_id,
                 provider=ACCOUNT_PROVIDER,
                 external_id=external_id,
             )
@@ -67,7 +78,11 @@ def sync_projectx_accounts(
         if row.account_state != ACCOUNT_STATE_MISSING:
             row.last_missing_at = None
 
-    missing_query = db.query(Account).filter(Account.provider == ACCOUNT_PROVIDER)
+    missing_query = (
+        db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+    )
     if seen_external_ids:
         missing_query = missing_query.filter(~Account.external_id.in_(sorted(seen_external_ids)))
 
@@ -81,29 +96,35 @@ def sync_projectx_accounts(
             row.last_missing_at = now
 
 
-def get_projectx_account_rows(db: Session) -> list[Account]:
+def get_projectx_account_rows(db: Session, *, user_id: str | None = None) -> list[Account]:
+    resolved_user_id = _resolve_user_id(user_id)
     return (
         db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .order_by(Account.is_main.desc(), Account.external_id.asc())
         .all()
     )
 
 
-def get_projectx_account_row(db: Session, account_id: int) -> Account | None:
+def get_projectx_account_row(db: Session, account_id: int, *, user_id: str | None = None) -> Account | None:
+    resolved_user_id = _resolve_user_id(user_id)
     return (
         db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.external_id == str(account_id))
         .first()
     )
 
 
-def set_main_projectx_account(db: Session, account_id: int) -> None:
+def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | None = None) -> None:
+    resolved_user_id = _resolve_user_id(user_id)
     external_id = str(account_id)
 
     target = (
         db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.external_id == external_id)
         .first()
@@ -111,6 +132,7 @@ def set_main_projectx_account(db: Session, account_id: int) -> None:
 
     if target is None:
         target = Account(
+            user_id=resolved_user_id,
             provider=ACCOUNT_PROVIDER,
             external_id=external_id,
             name=f"Account {account_id}",
@@ -120,6 +142,7 @@ def set_main_projectx_account(db: Session, account_id: int) -> None:
 
     (
         db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.is_main.is_(True))
         .update({Account.is_main: False}, synchronize_session=False)
