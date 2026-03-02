@@ -262,6 +262,7 @@ interface AccountSummaryQuery {
   start?: string;
   end?: string;
   refresh?: boolean;
+  pointsBasis?: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
 }
 
 interface AccountPnlCalendarQuery extends AccountSummaryQuery {
@@ -299,6 +300,7 @@ export const accountsApi = {
         start: query.start,
         end: query.end,
         refresh: query.refresh,
+        pointsBasis: query.pointsBasis,
       },
     }),
   getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}) =>

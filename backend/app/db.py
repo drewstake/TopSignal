@@ -21,6 +21,7 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     _ensure_accounts_schema_compatibility()
+    _ensure_default_instrument_metadata()
 
 
 def _ensure_accounts_schema_compatibility() -> None:
@@ -59,6 +60,32 @@ def _ensure_accounts_schema_compatibility() -> None:
         conn.execute(text("update accounts set is_main = false where is_main is null"))
         conn.execute(text("create index if not exists idx_accounts_is_main on accounts (is_main)"))
         conn.execute(text("create index if not exists idx_accounts_account_state on accounts (account_state)"))
+
+
+def _ensure_default_instrument_metadata() -> None:
+    from .services.instruments import DEFAULT_INSTRUMENT_SPECS
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        table_names = set(inspector.get_table_names())
+        if "instrument_metadata" not in table_names:
+            return
+
+        for symbol, spec in DEFAULT_INSTRUMENT_SPECS.items():
+            conn.execute(
+                text(
+                    """
+                    insert into instrument_metadata (symbol, tick_size, tick_value)
+                    values (:symbol, :tick_size, :tick_value)
+                    on conflict (symbol) do nothing
+                    """
+                ),
+                {
+                    "symbol": symbol,
+                    "tick_size": spec.tick_size,
+                    "tick_value": spec.tick_value,
+                },
+            )
 
 def get_db():
     db = SessionLocal()

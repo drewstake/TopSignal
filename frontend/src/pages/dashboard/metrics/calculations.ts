@@ -185,6 +185,8 @@ function computePayoffMetrics(input: DashboardMetricsInput, breakevenWinRate: Me
   return {
     averageWin: metric(input.summary.avg_win),
     averageLoss: metric(input.summary.avg_loss),
+    avgPointGain: metricOrMissing(input.summary.avgPointGain, "needs winning closed trades with point values"),
+    avgPointLoss: metricOrMissing(input.summary.avgPointLoss, "needs losing closed trades with point values"),
     breakevenWinRate,
     currentWinRate: metric(input.summary.win_rate),
     wrCushion: payoffExtras.wrCushion,
@@ -192,7 +194,6 @@ function computePayoffMetrics(input: DashboardMetricsInput, breakevenWinRate: Me
     largeLossRate: payoffExtras.largeLossRate,
     p95Loss: payoffExtras.p95Loss,
     capture: payoffExtras.capture,
-    containment: payoffExtras.containment,
     insight: payoffExtras.insight,
   };
 }
@@ -212,6 +213,13 @@ function populationStandardDeviation(values: number[]): number {
 
 function metric(value: number): MetricValue {
   return { value };
+}
+
+function metricOrMissing(value: number | null, reason: string): MetricValue {
+  if (value === null || !Number.isFinite(value)) {
+    return missingMetric(reason);
+  }
+  return metric(value);
 }
 
 function missingMetric(missingReason: string): MetricValue {

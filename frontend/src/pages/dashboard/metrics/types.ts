@@ -46,6 +46,8 @@ export interface StabilityMetrics {
 export interface PayoffMetrics {
   averageWin: MetricValue;
   averageLoss: MetricValue;
+  avgPointGain: MetricValue;
+  avgPointLoss: MetricValue;
   breakevenWinRate: MetricValue;
   currentWinRate: MetricValue;
   wrCushion: MetricValue;
@@ -53,7 +55,6 @@ export interface PayoffMetrics {
   largeLossRate: MetricValue;
   p95Loss: MetricValue;
   capture: MetricValue;
-  containment: MetricValue;
   insight: string;
 }
 

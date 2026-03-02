@@ -41,8 +41,8 @@ const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
-  hour12: false,
-  timeZone: "UTC",
+  hour12: true,
+  timeZone: "America/New_York",
 });
 
 const emptySummary: AccountSummary = {
@@ -78,6 +78,9 @@ const emptySummary: AccountSummary = {
   active_days: 0,
   efficiency_per_hour: 0,
   profit_per_day: 0,
+  avgPointGain: null,
+  avgPointLoss: null,
+  pointsBasisUsed: "auto",
 };
 
 function formatPnl(value: number) {
@@ -365,7 +368,7 @@ export function TradesPage() {
             <table className="w-full min-w-[1040px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="px-3 py-3 text-left font-medium">Timestamp (UTC)</th>
+                  <th className="px-3 py-3 text-left font-medium">Timestamp (ET)</th>
                   <th className="px-3 py-3 text-left font-medium">Symbol</th>
                   <th className="px-3 py-3 text-left font-medium">Direction</th>
                   <th className="px-3 py-3 text-right font-medium">Size</th>

@@ -73,6 +73,22 @@ class Trade(Base):
     )
 
 
+class InstrumentMetadata(Base):
+    __tablename__ = "instrument_metadata"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    symbol = Column(Text, nullable=False, unique=True)
+    tick_size = Column(Numeric(18, 6), nullable=False)
+    tick_value = Column(Numeric(18, 6), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("tick_size > 0", name="instrument_metadata_tick_size_positive_check"),
+        CheckConstraint("tick_value > 0", name="instrument_metadata_tick_value_positive_check"),
+    )
+
+
 class ProjectXTradeEvent(Base):
     __tablename__ = "projectx_trade_events"
 
@@ -123,6 +139,35 @@ class ProjectXTradeDaySync(Base):
     __table_args__ = (
         CheckConstraint("sync_status in ('partial','complete')", name="projectx_trade_day_syncs_status_check"),
         UniqueConstraint("account_id", "trade_date", name="uq_projectx_trade_day_syncs_account_date"),
+    )
+
+
+class PositionLifecycle(Base):
+    __tablename__ = "position_lifecycles"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    account_id = Column(BigInteger, nullable=False)
+    contract_id = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=False)
+    opened_at = Column(DateTime(timezone=True), nullable=False)
+    closed_at = Column(DateTime(timezone=True), nullable=False)
+    side = Column(Text, nullable=False)
+    max_qty = Column(Numeric(18, 6), nullable=False)
+    avg_entry_at_open = Column(Numeric(18, 6), nullable=True)
+    realized_pnl_usd = Column(Numeric(18, 6), nullable=True)
+    mae_usd = Column(Numeric(18, 6), nullable=True)
+    mfe_usd = Column(Numeric(18, 6), nullable=True)
+    mae_points = Column(Numeric(18, 6), nullable=True)
+    mfe_points = Column(Numeric(18, 6), nullable=True)
+    mae_timestamp = Column(DateTime(timezone=True), nullable=True)
+    mfe_timestamp = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("side in ('LONG','SHORT')", name="position_lifecycles_side_check"),
+        CheckConstraint("max_qty > 0", name="position_lifecycles_max_qty_positive_check"),
+        Index("idx_position_lifecycles_account_opened", "account_id", "opened_at"),
+        Index("idx_position_lifecycles_contract_opened", "contract_id", "opened_at"),
     )
 
 

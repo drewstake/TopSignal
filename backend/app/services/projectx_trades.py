@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
+from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_trade_summary
 
@@ -329,9 +330,16 @@ def summarize_trade_events(
     *,
     start: datetime | None = None,
     end: datetime | None = None,
-) -> dict[str, float | int]:
+    points_basis: str = "auto",
+) -> dict[str, float | int | None | str]:
     samples = _load_trade_metric_samples(db, account_id=account_id, start=start, end=end)
-    return compute_trade_summary(samples)
+    instrument_specs = load_instrument_specs(db)
+    point_value_lookup = build_point_value_lookup(instrument_specs)
+    return compute_trade_summary(
+        samples,
+        points_basis=points_basis,
+        point_value_by_symbol=point_value_lookup,
+    )
 
 
 def get_trade_event_pnl_calendar(
@@ -847,6 +855,7 @@ def _to_metric_sample(row: Any) -> TradeMetricSample:
         fees=_normalized_trade_fees(row),
         order_id=row.order_id,
         symbol=row.symbol or row.contract_id,
+        contract_id=row.contract_id,
         side=row.side,
         size=float(row.size) if row.size is not None else None,
         price=float(row.price) if row.price is not None else None,

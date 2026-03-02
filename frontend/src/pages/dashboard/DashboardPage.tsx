@@ -12,6 +12,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
+import { Select } from "../../components/ui/Select";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -41,6 +42,15 @@ const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
 const METRIC_TRADE_LIMIT = 1000;
 type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
+type PointsBasis = "auto" | "MNQ" | "MES" | "MGC" | "SIL";
+const POINTS_BASIS_QUERY_PARAM = "pointsBasis";
+const POINTS_BASIS_OPTIONS: Array<{ value: PointsBasis; label: string }> = [
+  { value: "auto", label: "Auto (per-symbol)" },
+  { value: "MNQ", label: "MNQ" },
+  { value: "MES", label: "MES" },
+  { value: "MGC", label: "MGC" },
+  { value: "SIL", label: "SIL" },
+];
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -55,8 +65,8 @@ const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
-  hour12: false,
-  timeZone: "UTC",
+  hour12: true,
+  timeZone: "America/New_York",
 });
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
@@ -99,6 +109,9 @@ const emptySummary: AccountSummary = {
   active_days: 0,
   efficiency_per_hour: 0,
   profit_per_day: 0,
+  avgPointGain: null,
+  avgPointLoss: null,
+  pointsBasisUsed: "auto",
 };
 
 function formatFee(value: number) {
@@ -148,6 +161,13 @@ function formatPoints(value: number) {
   return `${prefix}${formatNumber(value, 1)} pts`;
 }
 
+function formatPointMetric(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return "—";
+  }
+  return `${formatNumber(Math.abs(value), 2)} pts`;
+}
+
 function metricPnlClass(metric: MetricValue) {
   if (metric.value === null) {
     return undefined;
@@ -181,7 +201,20 @@ function sustainabilityFillClass(score: number) {
   return "bg-rose-300/80";
 }
 
-function parseUtcDay(value: string) {
+const EASTERN_TIME_ZONE = "America/New_York";
+
+const easternDateTimePartsFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: EASTERN_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+function parseIsoDay(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
@@ -221,16 +254,69 @@ function parseDateInput(value: string) {
   return { year, month, day };
 }
 
-function toUtcIsoDate(value: string, endOfDay: boolean) {
+function getEasternOffsetMs(utcInstant: Date) {
+  const parts = easternDateTimePartsFormatter.formatToParts(utcInstant);
+  const readPart = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? "0");
+  const year = readPart("year");
+  const month = readPart("month");
+  const day = readPart("day");
+  const hour = readPart("hour");
+  const minute = readPart("minute");
+  const second = readPart("second");
+  const asUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  return asUtcMs - utcInstant.getTime();
+}
+
+function easternMidnightUtc(value: string) {
   const parsed = parseDateInput(value);
   if (!parsed) {
     return null;
   }
-  const hour = endOfDay ? 23 : 0;
-  const minute = endOfDay ? 59 : 0;
-  const second = endOfDay ? 59 : 0;
-  const millisecond = endOfDay ? 999 : 0;
-  return new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day, hour, minute, second, millisecond)).toISOString();
+  const localMidnightAsUtcMs = Date.UTC(parsed.year, parsed.month - 1, parsed.day, 0, 0, 0, 0);
+  let utcMs = localMidnightAsUtcMs;
+  // Iterate to account for DST transitions when converting ET local midnight to UTC.
+  for (let index = 0; index < 3; index += 1) {
+    const offsetMs = getEasternOffsetMs(new Date(utcMs));
+    const nextUtcMs = localMidnightAsUtcMs - offsetMs;
+    if (nextUtcMs === utcMs) {
+      break;
+    }
+    utcMs = nextUtcMs;
+  }
+  return new Date(utcMs);
+}
+
+function addIsoDays(value: string, days: number) {
+  const parsed = parseDateInput(value);
+  if (!parsed) {
+    return null;
+  }
+  const next = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day + days, 0, 0, 0, 0));
+  return next.toISOString().slice(0, 10);
+}
+
+function getEasternDayRange(value: string) {
+  const start = easternMidnightUtc(value);
+  const nextDate = addIsoDays(value, 1);
+  if (!start || !nextDate) {
+    return null;
+  }
+  const nextStart = easternMidnightUtc(nextDate);
+  if (!nextStart) {
+    return null;
+  }
+  return {
+    start: start.toISOString(),
+    end: new Date(nextStart.getTime() - 1).toISOString(),
+  };
+}
+
+function toTradingBoundaryIso(value: string, endOfDay: boolean) {
+  const range = getEasternDayRange(value);
+  if (!range) {
+    return null;
+  }
+  return endOfDay ? range.end : range.start;
 }
 
 function buildMetricsRangeQuery(
@@ -241,8 +327,8 @@ function buildMetricsRangeQuery(
     if (!customRange) {
       return { allTime: true };
     }
-    const start = toUtcIsoDate(customRange.startDate, false);
-    const end = toUtcIsoDate(customRange.endDate, true);
+    const start = toTradingBoundaryIso(customRange.startDate, false);
+    const end = toTradingBoundaryIso(customRange.endDate, true);
     if (!start || !end) {
       return { allTime: true };
     }
@@ -280,19 +366,22 @@ function buildMetricsRangeQuery(
   };
 }
 
-function getUtcDayRange(value: string) {
-  const start = parseUtcDay(value);
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
-  return {
-    start: start.toISOString(),
-    end: end.toISOString(),
-  };
+function parsePointsBasis(rawValue: string | null): PointsBasis {
+  if (!rawValue) {
+    return "auto";
+  }
+  const upper = rawValue.toUpperCase();
+  if (upper === "MNQ" || upper === "MES" || upper === "MGC" || upper === "SIL") {
+    return upper;
+  }
+  return "auto";
 }
 
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
+  const pointsBasis = useMemo(() => parsePointsBasis(searchParams.get(POINTS_BASIS_QUERY_PARAM)), [searchParams]);
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
 
@@ -330,6 +419,24 @@ export function DashboardPage() {
     },
     [searchParams, setSearchParams],
   );
+
+  const setPointsBasis = useCallback(
+    (nextBasis: PointsBasis) => {
+      const next = new URLSearchParams(searchParams);
+      next.set(POINTS_BASIS_QUERY_PARAM, nextBasis);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  useEffect(() => {
+    if (searchParams.get(POINTS_BASIS_QUERY_PARAM)) {
+      return;
+    }
+    const next = new URLSearchParams(searchParams);
+    next.set(POINTS_BASIS_QUERY_PARAM, "auto");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -389,7 +496,7 @@ export function DashboardPage() {
     if (!selectedTradeDate) {
       return null;
     }
-    return dateFormatter.format(parseUtcDay(selectedTradeDate));
+    return dateFormatter.format(parseIsoDay(selectedTradeDate));
   }, [selectedTradeDate]);
 
   const loadSummaryAndCalendar = useCallback(async () => {
@@ -411,6 +518,7 @@ export function DashboardPage() {
         accountsApi.getSummary(selectedAccountId, {
           start: metricsRangeQuery.start,
           end: metricsRangeQuery.end,
+          pointsBasis,
         }),
         accountsApi.getPnlCalendar(selectedAccountId, {
           start: metricsRangeQuery.start,
@@ -430,7 +538,7 @@ export function DashboardPage() {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [metricsRangeQuery, selectedAccountId]);
+  }, [metricsRangeQuery, pointsBasis, selectedAccountId]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
@@ -443,9 +551,8 @@ export function DashboardPage() {
     setTradesError(null);
 
     try {
-      const query = selectedTradeDate
-        ? { limit: DAY_FILTER_TRADE_LIMIT, ...getUtcDayRange(selectedTradeDate) }
-        : { limit: TRADE_LIMIT };
+      const selectedRange = selectedTradeDate ? getEasternDayRange(selectedTradeDate) : null;
+      const query = selectedRange ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange } : { limit: TRADE_LIMIT };
       const nextTrades = await accountsApi.getTrades(selectedAccountId, query);
       setTrades(nextTrades);
     } catch (err) {
@@ -724,6 +831,21 @@ export function DashboardPage() {
                   </Button>
                 );
               })}
+              <div className="ml-2 flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-900/55 px-2 py-1">
+                <span className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Points Basis</span>
+                <Select
+                  aria-label="Points basis"
+                  className="h-8 w-[170px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
+                  value={pointsBasis}
+                  onChange={(event) => setPointsBasis(parsePointsBasis(event.target.value))}
+                >
+                  {POINTS_BASIS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
             </div>
           </div>
           {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
@@ -1039,6 +1161,14 @@ export function DashboardPage() {
                     value: formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl),
                     valueClassName: metricPnlClass(derivedMetrics.payoff.averageLoss),
                   },
+                  {
+                    label: "Avg Point Gain (pts)",
+                    value: formatPointMetric(derivedMetrics.payoff.avgPointGain.value),
+                  },
+                  {
+                    label: "Avg Point Loss (pts)",
+                    value: formatPointMetric(derivedMetrics.payoff.avgPointLoss.value),
+                  },
                   { label: "Breakeven WR", value: formatMetricValue(derivedMetrics.payoff.breakevenWinRate, (value) => formatPercent(value, 1)) },
                   { label: "Current WR", value: formatMetricValue(derivedMetrics.payoff.currentWinRate, (value) => formatPercent(value, 1)) },
                   { label: "WR Cushion", value: formatMetricValueWithNote(derivedMetrics.payoff.wrCushion, formatPoints) },
@@ -1062,10 +1192,6 @@ export function DashboardPage() {
                   {
                     label: "Capture",
                     value: formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1)),
-                  },
-                  {
-                    label: "Containment",
-                    value: formatMetricValueWithNote(derivedMetrics.payoff.containment, (value) => formatPercent(value * 100, 1)),
                   },
                 ]}
               />
@@ -1216,7 +1342,7 @@ export function DashboardPage() {
             <CardTitle>{selectedTradeDate ? "Trade Events" : "Recent Trade Events"}</CardTitle>
             <CardDescription>
               {selectedTradeDate
-                ? `Showing trades for ${selectedTradeDateLabel ?? selectedTradeDate} (UTC), up to ${DAY_FILTER_TRADE_LIMIT} events.`
+                ? `Showing trades for ${selectedTradeDateLabel ?? selectedTradeDate}, up to ${DAY_FILTER_TRADE_LIMIT} events.`
                 : `Showing up to ${TRADE_LIMIT} most recent events for the active account.`}
             </CardDescription>
           </div>
@@ -1231,7 +1357,7 @@ export function DashboardPage() {
             <table className="w-full min-w-[1040px] border-collapse text-sm">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="px-3 py-3 text-left font-medium">Timestamp (UTC)</th>
+                  <th className="px-3 py-3 text-left font-medium">Timestamp (ET)</th>
                   <th className="px-3 py-3 text-left font-medium">Symbol</th>
                   <th className="px-3 py-3 text-left font-medium">Direction</th>
                   <th className="px-3 py-3 text-right font-medium">Size</th>

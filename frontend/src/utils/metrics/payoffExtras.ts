@@ -17,7 +17,6 @@ export interface PayoffExtrasMetrics {
   largeLossRate: DerivedMetricValue;
   p95Loss: DerivedMetricValue;
   capture: DerivedMetricValue;
-  containment: DerivedMetricValue;
   insight: string;
 }
 
@@ -35,7 +34,6 @@ export function computePayoffExtras(input: PayoffExtrasInput): PayoffExtrasMetri
       largeLossRate: missing,
       p95Loss: missing,
       capture: missingMetric("needs MFE data"),
-      containment: missingMetric("needs MAE data"),
       insight: computePayoffInsight({
         currentWinRate: input.currentWinRate,
         breakevenWinRate: input.breakevenWinRate,
@@ -61,7 +59,6 @@ export function computePayoffExtras(input: PayoffExtrasInput): PayoffExtrasMetri
     p95LossMagnitude === null ? missingMetric("needs at least 5 losing trades") : metric(-p95LossMagnitude);
 
   const capture = computeCapture(input.trades, input.avgWin);
-  const containment = computeContainment(input.trades, input.avgLoss);
 
   return {
     wrCushion,
@@ -69,7 +66,6 @@ export function computePayoffExtras(input: PayoffExtrasInput): PayoffExtrasMetri
     largeLossRate,
     p95Loss,
     capture,
-    containment,
     insight: computePayoffInsight({
       currentWinRate: input.currentWinRate,
       breakevenWinRate: input.breakevenWinRate,
@@ -109,26 +105,6 @@ function computeCapture(trades: AccountTrade[], avgWin: number): DerivedMetricVa
   }
 
   return metric(avgWin / avgMfeWins);
-}
-
-function computeContainment(trades: AccountTrade[], avgLoss: number): DerivedMetricValue {
-  const losingMaeValues = trades
-    .filter((trade) => trade.pnl !== null && trade.pnl < 0)
-    .map((trade) => trade.mae)
-    .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value))
-    .map((value) => Math.abs(value))
-    .filter((value) => value > EPSILON);
-
-  if (losingMaeValues.length === 0) {
-    return missingMetric("needs MAE data");
-  }
-
-  const avgMaeLosses = average(losingMaeValues);
-  if (avgMaeLosses === null || avgMaeLosses <= EPSILON) {
-    return missingMetric("needs MAE data");
-  }
-
-  return metric(Math.abs(avgLoss) / avgMaeLosses);
 }
 
 function computePayoffInsight(args: {

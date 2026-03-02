@@ -148,6 +148,9 @@ export interface AccountSummary {
   active_days: number;
   efficiency_per_hour: number;
   profit_per_day: number;
+  avgPointGain: number | null;
+  avgPointLoss: number | null;
+  pointsBasisUsed: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
 }
 
 export interface AccountTradeRefreshResult {

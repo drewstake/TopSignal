@@ -43,6 +43,9 @@ def test_compute_trade_summary_empty_payload():
         "active_days": 0,
         "efficiency_per_hour": 0.0,
         "profit_per_day": 0.0,
+        "avgPointGain": None,
+        "avgPointLoss": None,
+        "pointsBasisUsed": "auto",
     }
 
 
@@ -127,7 +130,7 @@ def test_compute_trade_summary_treats_missing_pnl_as_zero_realized():
     assert summary["active_days"] == 1
 
 
-def test_compute_daily_pnl_calendar_groups_by_utc_date():
+def test_compute_daily_pnl_calendar_groups_by_new_york_trading_day():
     samples = [
         TradeMetricSample(timestamp=_dt(9, 0), pnl=100.0, fees=5.0),
         TradeMetricSample(timestamp=_dt(9, 15), pnl=-30.0, fees=2.5),
@@ -143,6 +146,25 @@ def test_compute_daily_pnl_calendar_groups_by_utc_date():
             "gross_pnl": 110.0,
             "fees": 8.5,
             "net_pnl": 101.5,
+        }
+    ]
+
+
+def test_compute_daily_pnl_calendar_rolls_sunday_trades_into_monday_bucket():
+    samples = [
+        TradeMetricSample(timestamp=datetime(2026, 3, 1, 23, 50, tzinfo=timezone.utc), pnl=40.0, fees=1.0),
+        TradeMetricSample(timestamp=datetime(2026, 3, 2, 0, 9, tzinfo=timezone.utc), pnl=60.0, fees=1.5),
+    ]
+
+    calendar = compute_daily_pnl_calendar(samples)
+
+    assert calendar == [
+        {
+            "date": "2026-03-02",
+            "trade_count": 2,
+            "gross_pnl": 100.0,
+            "fees": 2.5,
+            "net_pnl": 97.5,
         }
     ]
 
@@ -222,6 +244,23 @@ def test_compute_trade_summary_day_win_rate_counts_green_red_and_flat_days():
     assert summary["profit_per_day"] == 16.67
 
 
+def test_compute_trade_summary_daily_stats_use_new_york_day_boundary_across_midnight_utc():
+    samples = [
+        TradeMetricSample(timestamp=datetime(2026, 3, 1, 23, 50, tzinfo=timezone.utc), pnl=100.0, fees=0.0),
+        TradeMetricSample(timestamp=datetime(2026, 3, 2, 0, 9, tzinfo=timezone.utc), pnl=-50.0, fees=0.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["active_days"] == 1
+    assert summary["green_days"] == 1
+    assert summary["red_days"] == 0
+    assert summary["flat_days"] == 0
+    assert summary["day_win_rate"] == 100.0
+    assert summary["avg_trades_per_day"] == 2.0
+    assert summary["profit_per_day"] == 50.0
+
+
 def test_compute_trade_summary_calculates_avg_win_and_loss_durations():
     samples = [
         TradeMetricSample(timestamp=_dt(9, 0), pnl=None, fees=0.0, symbol="NQ", side="BUY", size=1.0),
@@ -248,3 +287,34 @@ def test_compute_trade_summary_duration_matching_uses_most_recent_open_lot():
 
     # LIFO matching closes the most recent lot first: 10:00 -> 10:01 = 1 minute.
     assert summary["avg_win_duration_minutes"] == 1.0
+
+
+def test_compute_trade_summary_points_basis_auto_uses_trade_symbol_point_value():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=5.0, fees=1.0, symbol="MNQ", size=1.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=-6.0, fees=0.0, symbol="MES", size=2.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    # MNQ point value = 0.5 / 0.25 = 2 -> 4/2 = 2.0 points
+    # MES point value = 1.25 / 0.25 = 5 -> -6/(2*5) = -0.6 points
+    assert summary["avgPointGain"] == 2.0
+    assert summary["avgPointLoss"] == 0.6
+    assert summary["pointsBasisUsed"] == "auto"
+
+
+def test_compute_trade_summary_points_basis_normalizes_all_trades_to_requested_symbol():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=10.0, fees=0.0, symbol="MNQ", size=1.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=-15.0, fees=0.0, symbol="MGC", size=3.0),
+    ]
+
+    summary = compute_trade_summary(samples, points_basis="MES")
+
+    # Normalize both to MES point value = 5.
+    # Gain: 10/(1*5) = 2.0 points
+    # Loss: abs(-15/(3*5)) = 1.0 points
+    assert summary["avgPointGain"] == 2.0
+    assert summary["avgPointLoss"] == 1.0
+    assert summary["pointsBasisUsed"] == "MES"

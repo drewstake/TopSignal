@@ -91,6 +91,7 @@ from .services.projectx_accounts import (
     sync_projectx_accounts,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
+from .services.instruments import normalize_points_basis
 from .services.projectx_trades import (
     ensure_trade_cache_for_request,
     get_trade_event_pnl_calendar,
@@ -107,6 +108,7 @@ _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
+_streaming_runtime = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,6 +123,12 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    _start_streaming_runtime_if_enabled()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    _stop_streaming_runtime()
 
 
 @app.get("/health")
@@ -905,10 +913,16 @@ def get_projectx_account_summary(
     start: datetime | None = None,
     end: datetime | None = None,
     refresh: bool = False,
+    points_basis: str = Query(default="auto", alias="pointsBasis"),
     db: Session = Depends(get_db),
 ):
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
+    raw_points_basis = points_basis if isinstance(points_basis, str) else "auto"
+    try:
+        normalized_points_basis = normalize_points_basis(raw_points_basis)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         if refresh or not has_local_trades(db, account_id):
@@ -919,7 +933,13 @@ def get_projectx_account_summary(
                 if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
                     raise
 
-        return summarize_trade_events(db, account_id=account_id, start=start, end=end)
+        return summarize_trade_events(
+            db,
+            account_id=account_id,
+            start=start,
+            end=end,
+            points_basis=normalized_points_basis,
+        )
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
 
@@ -1141,6 +1161,39 @@ def _read_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _start_streaming_runtime_if_enabled() -> None:
+    global _streaming_runtime
+    if not _read_bool_env("PROJECTX_STREAMING_ENABLED", False):
+        return
+    if _streaming_runtime is not None:
+        return
+
+    from .services.projectx_streaming_runtime import create_streaming_runtime
+
+    _streaming_runtime = create_streaming_runtime()
+    _streaming_runtime.start()
+
+
+def _stop_streaming_runtime() -> None:
+    global _streaming_runtime
+    if _streaming_runtime is None:
+        return
+    _streaming_runtime.stop()
+    _streaming_runtime = None
 
 
 def _journal_update_payload_is_empty(payload: JournalEntryUpdateIn) -> bool:

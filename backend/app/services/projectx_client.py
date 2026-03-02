@@ -337,6 +337,9 @@ class ProjectXClient:
 
         return parsed
 
+    def get_access_token(self) -> str:
+        return self._get_access_token()
+
     def _get_access_token(self) -> str:
         global _TOKEN_CACHE
 

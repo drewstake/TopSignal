@@ -73,6 +73,9 @@ class ProjectXTradeSummaryOut(BaseModel):
     active_days: int
     efficiency_per_hour: float
     profit_per_day: float
+    avgPointGain: float | None = None
+    avgPointLoss: float | None = None
+    pointsBasisUsed: str
 
 
 class ProjectXTradeRefreshOut(BaseModel):

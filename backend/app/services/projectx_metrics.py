@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
+from zoneinfo import ZoneInfo
+
+from .instruments import (
+    DEFAULT_INSTRUMENT_SPECS,
+    build_point_value_lookup,
+    normalize_points_basis,
+    resolve_point_value,
+)
+
+
+_TRADING_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -13,6 +24,7 @@ class TradeMetricSample:
     fees: Optional[float]
     order_id: Optional[str] = None
     symbol: Optional[str] = None
+    contract_id: Optional[str] = None
     side: Optional[str] = None
     size: Optional[float] = None
     price: Optional[float] = None
@@ -39,10 +51,17 @@ class SymbolPositionState:
     lots: list[PositionLot]
 
 
-def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, float | int]:
+def compute_trade_summary(
+    samples: Iterable[TradeMetricSample],
+    *,
+    points_basis: str = "auto",
+    point_value_by_symbol: Mapping[str, float] | None = None,
+) -> dict[str, float | int | None | str]:
+    normalized_points_basis = normalize_points_basis(points_basis)
+    point_value_lookup = dict(point_value_by_symbol or _default_point_value_lookup())
     trades = sorted(samples, key=lambda sample: sample.timestamp)
     if not trades:
-        return _empty_trade_summary()
+        return _empty_trade_summary(points_basis=normalized_points_basis)
 
     realized_values, closed_pnls = _compute_realized_values(trades)
     fee_values = [_effective_fee(trade) for trade in trades]
@@ -85,6 +104,12 @@ def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, flo
         for trade, net, duration in zip(trades, net_values, hold_durations)
         if trade.pnl is not None and net < 0 and duration is not None
     ]
+    point_metrics = _compute_point_metrics(
+        trades=trades,
+        net_values=net_values,
+        points_basis=normalized_points_basis,
+        point_value_lookup=point_value_lookup,
+    )
 
     return {
         "realized_pnl": _round(gross_pnl),
@@ -119,6 +144,9 @@ def compute_trade_summary(samples: Iterable[TradeMetricSample]) -> dict[str, flo
         "active_days": active_days,
         "efficiency_per_hour": _round((net_pnl / active_hours), 2) if active_hours > 0 else 0.0,
         "profit_per_day": _round((net_pnl / active_days), 2) if active_days else 0.0,
+        "avgPointGain": _round(point_metrics["avg_point_gain"], 4) if point_metrics["avg_point_gain"] is not None else None,
+        "avgPointLoss": _round(point_metrics["avg_point_loss"], 4) if point_metrics["avg_point_loss"] is not None else None,
+        "pointsBasisUsed": normalized_points_basis,
     }
 
 
@@ -135,7 +163,7 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
             # Calendar trade counts should reflect closed trades only.
             continue
 
-        day_key = _as_utc(trade.timestamp).date().isoformat()
+        day_key = _pnl_calendar_day_key(trade.timestamp)
         fees = _effective_fee(trade)
         bucket = buckets.setdefault(
             day_key,
@@ -182,7 +210,7 @@ def _compute_realized_values(trades: list[TradeMetricSample]) -> tuple[list[floa
     return realized_values, closed_pnls
 
 
-def _empty_trade_summary() -> dict[str, float | int]:
+def _empty_trade_summary(*, points_basis: str) -> dict[str, float | int | None | str]:
     return {
         "realized_pnl": 0.0,
         "gross_pnl": 0.0,
@@ -216,6 +244,9 @@ def _empty_trade_summary() -> dict[str, float | int]:
         "active_days": 0,
         "efficiency_per_hour": 0.0,
         "profit_per_day": 0.0,
+        "avgPointGain": None,
+        "avgPointLoss": None,
+        "pointsBasisUsed": points_basis,
     }
 
 
@@ -244,10 +275,62 @@ def _round(value: float, digits: int = 2) -> float:
     return round(float(value), digits)
 
 
+def _default_point_value_lookup() -> dict[str, float]:
+    return build_point_value_lookup(DEFAULT_INSTRUMENT_SPECS)
+
+
+def _compute_point_metrics(
+    *,
+    trades: list[TradeMetricSample],
+    net_values: list[float],
+    points_basis: str,
+    point_value_lookup: Mapping[str, float],
+) -> dict[str, float | None]:
+    epsilon = 1e-9
+    basis_point_value: float | None = None
+    if points_basis != "auto":
+        basis_point_value = point_value_lookup.get(points_basis)
+        if basis_point_value is None or basis_point_value <= epsilon:
+            return {"avg_point_gain": None, "avg_point_loss": None}
+
+    winners: list[float] = []
+    losers: list[float] = []
+    for trade, net_value in zip(trades, net_values):
+        if trade.pnl is None:
+            continue
+
+        qty = abs(_safe_float(trade.size))
+        if qty <= epsilon:
+            continue
+
+        point_value = (
+            basis_point_value
+            if basis_point_value is not None
+            else resolve_point_value(
+                symbol=trade.symbol,
+                contract_id=trade.contract_id,
+                point_value_by_symbol=point_value_lookup,
+            )
+        )
+        if point_value is None or point_value <= epsilon:
+            continue
+
+        equivalent_points = net_value / (qty * point_value)
+        if equivalent_points > epsilon:
+            winners.append(equivalent_points)
+        elif equivalent_points < -epsilon:
+            losers.append(abs(equivalent_points))
+
+    return {
+        "avg_point_gain": _mean(winners) if winners else None,
+        "avg_point_loss": _mean(losers) if losers else None,
+    }
+
+
 def _compute_daily_net_values(trades: list[TradeMetricSample], net_values: list[float]) -> dict[str, float]:
     daily_net: dict[str, float] = {}
     for trade, net in zip(trades, net_values):
-        day_key = _as_utc(trade.timestamp).date().isoformat()
+        day_key = _trading_day_key(trade.timestamp)
         daily_net[day_key] = daily_net.get(day_key, 0.0) + net
     return daily_net
 
@@ -334,7 +417,7 @@ def _compute_active_hours(trades: list[TradeMetricSample]) -> float:
     last_by_day: dict[str, datetime] = {}
     for trade in trades:
         ts = _as_utc(trade.timestamp)
-        day_key = ts.date().isoformat()
+        day_key = _trading_day_key(ts)
         if day_key not in first_by_day or ts < first_by_day[day_key]:
             first_by_day[day_key] = ts
         if day_key not in last_by_day or ts > last_by_day[day_key]:
@@ -488,3 +571,19 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _trading_day_date(value: datetime):
+    return _as_utc(value).astimezone(_TRADING_TZ).date()
+
+
+def _pnl_calendar_day_key(value: datetime) -> str:
+    trading_day = _trading_day_date(value)
+    # Broker activity can post on Sunday evening ET for Monday's session.
+    if trading_day.weekday() == 6:
+        trading_day = trading_day + timedelta(days=1)
+    return trading_day.isoformat()
+
+
+def _trading_day_key(value: datetime) -> str:
+    return _trading_day_date(value).isoformat()

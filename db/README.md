@@ -13,6 +13,7 @@ Apply migration updates (if schema already exists):
   Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260301_add_account_state_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+  Get-Content .\db\migrations\20260302_add_instrument_metadata_and_position_lifecycles.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 
 Dev note:
 - Backend startup (`init_db`) now applies a Postgres compatibility patch for legacy `accounts` tables so
