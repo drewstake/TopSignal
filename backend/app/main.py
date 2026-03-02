@@ -153,6 +153,8 @@ async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
     if not path.startswith("/api/"):
         return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
 
     token = extract_access_token(request)
     should_require_auth = auth_required()
@@ -995,16 +997,47 @@ def pull_projectx_account_journal_trade_stats(
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
 
-    try:
-        row = pull_journal_entry_trade_stats(
+    def sync_window(start: datetime | None, end: datetime | None) -> None:
+        client = _projectx_client_for_user(db, user_id=user_id)
+        refresh_account_trades(
             db,
+            client,
             user_id=user_id,
             account_id=account_id,
-            entry_id=entry_id,
-            trade_ids=payload.trade_ids,
-            entry_date=payload.entry_date,
+            start=start,
+            end=end,
         )
+
+    try:
+        try:
+            row = pull_journal_entry_trade_stats(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                entry_id=entry_id,
+                trade_ids=payload.trade_ids,
+                entry_date=payload.entry_date,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                before_query_sync=sync_window,
+            )
+        except ProjectXClientError as exc:
+            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+                raise
+
+            row = pull_journal_entry_trade_stats(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                entry_id=entry_id,
+                trade_ids=payload.trade_ids,
+                entry_date=payload.entry_date,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+            )
         return serialize_journal_entry(row)
+    except ProjectXClientError as exc:
+        raise _to_http_exception(exc) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
