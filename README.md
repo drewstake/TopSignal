@@ -125,7 +125,7 @@ What each important folder does
 - `backend/app/services/journal.py`: journal filtering, normalization, create/update/archive logic.
 - `backend/app/models.py`: SQLAlchemy models for all DB tables.
 - `backend/tests/`: formula and sync behavior tests.
-- `frontend/src/lib/api.ts`: frontend API client + accounts TTL cache.
+- `frontend/src/lib/api.ts`: frontend API client + in-memory TTL caches (accounts plus account-scoped dashboard/trades reads) with in-flight dedupe.
 - `frontend/src/pages/dashboard/DashboardPage.tsx`: main analytics UI and range/day filtering.
 - `frontend/src/pages/trades/TradesPage.tsx`: trade list and summary with filters and sync action.
 - `frontend/src/pages/journal/JournalPage.tsx`: autosave journal workflow.
@@ -155,6 +155,13 @@ How the app starts
 7. Frontend caches this list for 30 seconds (`ACCOUNTS_CACHE_TTL_MS`) and stores active account id in:
    - URL query: `?account=<id>`
    - `localStorage`: `topsignal.activeAccountId`
+8. Frontend also keeps a 30-second account-scoped read cache (`ACCOUNT_READ_CACHE_TTL_MS`) for:
+   - `GET /api/accounts/{id}/trades`
+   - `GET /api/accounts/{id}/summary`
+   - `GET /api/accounts/{id}/summary-with-point-bases`
+   - `GET /api/accounts/{id}/pnl-calendar`
+   - `GET /api/accounts/{id}/journal/days`
+   This makes dashboard/trades tab returns much faster when account/filter inputs have not changed.
 
 ### Trade events loading flow
 1. Frontend calls `GET /api/accounts/{account_id}/trades` with `limit` and optional UTC `start/end`.
@@ -385,7 +392,7 @@ Where data is stored
 | Postgres `accounts` | legacy account registry | yes | `(provider, external_id)` |
 | Postgres `trades` | legacy app trade table | yes | `id` + `account_id` |
 | Backend process memory | ProjectX bearer token cache | no | single in-process cache |
-| Frontend process memory | accounts API TTL cache + component state | no | request lifecycle |
+| Frontend process memory | accounts API TTL cache + account-scoped read TTL cache + component state | no | request lifecycle |
 | Browser `localStorage` | `topsignal.activeAccountId` | yes (browser) | account id string |
 
 Persisted vs temporary
@@ -397,6 +404,11 @@ Persisted vs temporary
 
 Caching strategy and invalidation
 - Frontend account list cache: 30s TTL + in-flight request dedupe.
+- Frontend account-scoped read cache: 30s TTL + in-flight request dedupe for `trades`, `summary`, `summary-with-point-bases`, `pnl-calendar`, and `journal-days`.
+- Frontend account-scoped read cache invalidation:
+  - account-level invalidation after `POST /api/accounts/{id}/trades/refresh`.
+  - global invalidation when main account is changed.
+  - account-level invalidation after journal mutations that can affect day markers or derived stats.
 - Day-level trade cache status:
   - today always refreshed for single-day pulls.
   - yesterday refresh based on staleness threshold.
@@ -882,6 +894,7 @@ Why cache/persist trade data
 
 Optimizations already implemented
 - Frontend accounts cache with TTL + in-flight request dedupe.
+- Frontend account-scoped dashboard/trades read cache with TTL + in-flight dedupe + mutation-driven invalidation.
 - Backend token cache with expiry and safety window.
 - Sync windows chunked by days to reduce oversized fetch risk.
 - Incremental sync overlap (5 minutes) for late-arriving edges.

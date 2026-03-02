@@ -2,6 +2,7 @@ import calendar
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -58,12 +59,14 @@ from .projectx_schemas import (
     ProjectXAccountMainOut,
     ProjectXAccountOut,
     ProjectXCredentialsStatusOut,
+    ProjectXPointPayoffOut,
     ProjectXCredentialsUpsertIn,
     ProjectXAccountLastTradeOut,
     ProjectXPnlCalendarDayOut,
     ProjectXTradeOut,
     ProjectXTradeRefreshOut,
     ProjectXTradeSummaryOut,
+    ProjectXTradeSummaryWithPointBasesOut,
 )
 from .schemas import TradeOut
 from .services.metrics import (
@@ -112,7 +115,7 @@ from .services.projectx_credentials import (
     upsert_projectx_credentials,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
-from .services.instruments import normalize_points_basis
+from .services.instruments import POINTS_BASIS_SYMBOLS, normalize_points_basis
 from .services.projectx_trades import (
     derive_trade_execution_lifecycles,
     ensure_trade_cache_for_request,
@@ -122,6 +125,7 @@ from .services.projectx_trades import (
     refresh_account_trades,
     serialize_trade_event,
     summarize_trade_events,
+    summarize_trade_events_with_point_bases,
 )
 
 app = FastAPI(title="TopSignal API")
@@ -145,16 +149,31 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Server-Timing", "X-Server-Time-Ms", "Content-Length"],
 )
 
 
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
+    should_time_request = path.startswith("/api/")
+    started_at = perf_counter() if should_time_request else None
+
+    def _with_timing_headers(response: Response) -> Response:
+        if started_at is None:
+            return response
+        duration_ms = max((perf_counter() - started_at) * 1000.0, 0.0)
+        duration_text = f"{duration_ms:.2f}"
+        response.headers["Server-Timing"] = f"app;dur={duration_text}"
+        response.headers["X-Server-Time-Ms"] = duration_text
+        return response
+
     if not path.startswith("/api/"):
-        return await call_next(request)
+        response = await call_next(request)
+        return _with_timing_headers(response)
     if request.method.upper() == "OPTIONS":
-        return await call_next(request)
+        response = await call_next(request)
+        return _with_timing_headers(response)
 
     token = extract_access_token(request)
     should_require_auth = auth_required()
@@ -164,15 +183,16 @@ async def api_auth_middleware(request: Request, call_next):
         try:
             user = authenticate_request_token(token)
         except AuthError as exc:
-            return JSONResponse(status_code=401, content={"detail": str(exc)})
+            return _with_timing_headers(JSONResponse(status_code=401, content={"detail": str(exc)}))
     elif should_require_auth:
-        return JSONResponse(status_code=401, content={"detail": "missing_bearer_token"})
+        return _with_timing_headers(JSONResponse(status_code=401, content={"detail": "missing_bearer_token"}))
     else:
         user = get_authenticated_user_or_default()
 
     context_token = bind_authenticated_user(user)
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        return _with_timing_headers(response)
     finally:
         reset_authenticated_user(context_token)
 
@@ -1172,6 +1192,55 @@ def get_projectx_account_summary(
             end=end,
             points_basis=normalized_points_basis,
         )
+    except ProjectXClientError as exc:
+        raise _to_http_exception(exc) from exc
+
+
+@app.get("/api/accounts/{account_id}/summary-with-point-bases", response_model=ProjectXTradeSummaryWithPointBasesOut)
+def get_projectx_account_summary_with_point_bases(
+    account_id: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    _validate_time_range(start=start, end=end)
+
+    point_bases = [normalize_points_basis(basis) for basis in POINTS_BASIS_SYMBOLS]
+
+    try:
+        if refresh or not has_local_trades(db, account_id, user_id=user_id):
+            client = _projectx_client_for_user(db, user_id=user_id)
+            try:
+                refresh_account_trades(
+                    db,
+                    client,
+                    user_id=user_id,
+                    account_id=account_id,
+                    start=start,
+                    end=end,
+                )
+            except ProjectXClientError as exc:
+                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+                    raise
+
+        summary, point_payoff_by_basis = summarize_trade_events_with_point_bases(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+            start=start,
+            end=end,
+            point_bases=point_bases,
+        )
+        return {
+            "summary": summary,
+            "point_payoff_by_basis": {
+                basis: ProjectXPointPayoffOut(**values)
+                for basis, values in point_payoff_by_basis.items()
+            },
+        }
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
 

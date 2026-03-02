@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { Chip } from "../../components/metrics/Chip";
@@ -479,6 +479,17 @@ export function DashboardPage() {
   const selectedAccountId = selectedAccount?.id ?? null;
   const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
+  const dashboardLoadPerfRef = useRef<{
+    accountId: number;
+    startedAtMs: number;
+    startedAtIso: string;
+  } | null>(null);
+  const dashboardWasLoadingRef = useRef(false);
+
+  useEffect(() => {
+    dashboardLoadPerfRef.current = null;
+    dashboardWasLoadingRef.current = false;
+  }, [selectedAccountId, metricsRangeQuery.end, metricsRangeQuery.start, selectedTradeDate]);
 
   const selectedTradeDateLabel = useMemo(() => {
     if (!selectedTradeDate) {
@@ -508,8 +519,8 @@ export function DashboardPage() {
         end: metricsRangeQuery.end,
       };
 
-      const [nextSummary, nextPnlCalendar, pointBasisSummaries] = await Promise.all([
-        accountsApi.getSummary(selectedAccountId, {
+      const [nextSummaryBundle, nextPnlCalendar] = await Promise.all([
+        accountsApi.getSummaryWithPointBases(selectedAccountId, {
           start: summaryQuery.start,
           end: summaryQuery.end,
         }),
@@ -518,30 +529,21 @@ export function DashboardPage() {
           end: metricsRangeQuery.end,
           all_time: metricsRangeQuery.allTime,
         }),
-        Promise.allSettled(
-          PAYOFF_POINTS_BASES.map((basis) =>
-            accountsApi.getSummary(selectedAccountId, {
-              start: summaryQuery.start,
-              end: summaryQuery.end,
-              pointsBasis: basis,
-            }),
-          ),
-        ),
       ]);
 
       const nextPointPayoffByBasis = createEmptyPointPayoffByBasis();
-      pointBasisSummaries.forEach((summaryResult, index) => {
-        if (summaryResult.status !== "fulfilled") {
+      PAYOFF_POINTS_BASES.forEach((basis) => {
+        const pointPayoff = nextSummaryBundle.point_payoff_by_basis[basis];
+        if (!pointPayoff) {
           return;
         }
-        const basis = PAYOFF_POINTS_BASES[index];
         nextPointPayoffByBasis[basis] = {
-          avgPointGain: summaryResult.value.avgPointGain,
-          avgPointLoss: summaryResult.value.avgPointLoss,
+          avgPointGain: pointPayoff.avgPointGain,
+          avgPointLoss: pointPayoff.avgPointLoss,
         };
       });
 
-      setSummary(nextSummary);
+      setSummary(nextSummaryBundle.summary);
       setPointPayoffByBasis(nextPointPayoffByBasis);
       setPnlCalendarDays(nextPnlCalendar);
     } catch (err) {
@@ -647,6 +649,71 @@ export function DashboardPage() {
   useEffect(() => {
     void loadJournalDays();
   }, [loadJournalDays]);
+
+  useEffect(() => {
+    const isDashboardLoading = summaryLoading || pnlCalendarLoading || tradesLoading || metricsTradesLoading || journalDaysLoading;
+    if (!selectedAccountId) {
+      dashboardWasLoadingRef.current = false;
+      dashboardLoadPerfRef.current = null;
+      return;
+    }
+
+    if (isDashboardLoading && !dashboardWasLoadingRef.current) {
+      const startedAtIso = new Date().toISOString();
+      dashboardLoadPerfRef.current = {
+        accountId: selectedAccountId,
+        startedAtMs: performance.now(),
+        startedAtIso,
+      };
+      dashboardWasLoadingRef.current = true;
+      console.info("[perf][dashboard] load-start", {
+        account_id: selectedAccountId,
+        started_at: startedAtIso,
+      });
+      return;
+    }
+
+    if (isDashboardLoading || !dashboardWasLoadingRef.current) {
+      return;
+    }
+
+    dashboardWasLoadingRef.current = false;
+    const loadPerf = dashboardLoadPerfRef.current;
+    if (!loadPerf || loadPerf.accountId !== selectedAccountId) {
+      return;
+    }
+    const totalMs = Math.max(performance.now() - loadPerf.startedAtMs, 0);
+    console.info("[perf][dashboard] load-end", {
+      account_id: selectedAccountId,
+      started_at: loadPerf.startedAtIso,
+      finished_at: new Date().toISOString(),
+      total_ms: Number(totalMs.toFixed(2)),
+      summary_error: summaryError,
+      pnl_calendar_error: pnlCalendarError,
+      trades_error: tradesError,
+      metrics_trades_error: metricsTradesError,
+      trades_count: trades.length,
+      metrics_trades_count: metricsTrades.length,
+      pnl_calendar_day_count: pnlCalendarDays.length,
+      journal_day_count: journalDays.size,
+    });
+    dashboardLoadPerfRef.current = null;
+  }, [
+    journalDays.size,
+    journalDaysLoading,
+    metricsTrades.length,
+    metricsTradesError,
+    metricsTradesLoading,
+    pnlCalendarDays.length,
+    pnlCalendarError,
+    pnlCalendarLoading,
+    selectedAccountId,
+    summaryError,
+    summaryLoading,
+    trades.length,
+    tradesError,
+    tradesLoading,
+  ]);
 
   useEffect(() => {
     setSelectedTradeDate(null);

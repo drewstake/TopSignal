@@ -15,6 +15,7 @@ import type {
   JournalPullTradeStatsInput,
   AccountPnlCalendarDay,
   AccountSummary,
+  AccountSummaryWithPointBases,
   AccountTrade,
   AccountTradeRefreshResult,
   BehaviorMetrics,
@@ -38,6 +39,7 @@ import { getAccessToken, getAccessTokenSync } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const ACCOUNTS_CACHE_TTL_MS = 30_000;
+const ACCOUNT_READ_CACHE_TTL_MS = 30_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -78,6 +80,49 @@ interface TimedCache<T> {
   expiresAtMs: number;
 }
 
+interface TimedCachedRequestOptions<T> {
+  cache: Map<string, TimedCache<T>>;
+  inFlight: Map<string, Promise<T>>;
+  cacheKey: string;
+  ttlMs: number;
+  load: () => Promise<T>;
+  bypassCache?: boolean;
+}
+
+function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promise<T> {
+  const { cache, inFlight, cacheKey, ttlMs, load, bypassCache = false } = options;
+  if (!bypassCache) {
+    const now = Date.now();
+    const cached = cache.get(cacheKey);
+    if (cached && cached.expiresAtMs > now) {
+      return Promise.resolve(cached.value);
+    }
+    const pendingRequest = inFlight.get(cacheKey);
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+  }
+
+  const request = load().then((value) => {
+    if (inFlight.get(cacheKey) === request) {
+      cache.set(cacheKey, {
+        value,
+        expiresAtMs: Date.now() + ttlMs,
+      });
+    }
+    return value;
+  });
+
+  inFlight.set(cacheKey, request);
+  void request.finally(() => {
+    if (inFlight.get(cacheKey) === request) {
+      inFlight.delete(cacheKey);
+    }
+  });
+
+  return request;
+}
+
 function buildUrl(path: string, query?: Record<string, QueryValue>) {
   const url = new URL(path, API_BASE_URL);
   if (query) {
@@ -96,8 +141,105 @@ function buildUrl(path: string, query?: Record<string, QueryValue>) {
   return url.toString();
 }
 
+function toSortedQueryCacheKey(query?: Record<string, QueryValue>) {
+  if (!query) {
+    return "";
+  }
+  return Object.entries(query)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+    .join("&");
+}
+
 function toAbsoluteApiUrl(path: string) {
   return new URL(path, API_BASE_URL).toString();
+}
+
+const ENABLE_PERF_LOGS = import.meta.env.DEV || String(import.meta.env.VITE_PERF_LOGS ?? "").toLowerCase() === "true";
+
+interface RequestPerfContext {
+  method: string;
+  path: string;
+  url: string;
+  startedAtIso: string;
+  startedAtMs: number;
+}
+
+function nowMs() {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function parseServerTimeMs(response: Response): number | null {
+  const direct = response.headers.get("x-server-time-ms");
+  if (direct) {
+    const parsed = Number.parseFloat(direct);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  const serverTiming = response.headers.get("server-timing");
+  if (!serverTiming) {
+    return null;
+  }
+  const match = /(?:^|,)\s*app;dur=([0-9]+(?:\.[0-9]+)?)/i.exec(serverTiming);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number.parseFloat(match[1]);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseContentLength(response: Response): number | null {
+  const raw = response.headers.get("content-length");
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function logApiPerfStart(context: RequestPerfContext) {
+  if (!ENABLE_PERF_LOGS) {
+    return;
+  }
+  console.info("[perf][api] start", {
+    method: context.method,
+    path: context.path,
+    url: context.url,
+    started_at: context.startedAtIso,
+  });
+}
+
+function logApiPerfEnd(context: RequestPerfContext, response: Response) {
+  if (!ENABLE_PERF_LOGS) {
+    return;
+  }
+  const finishedAtMs = nowMs();
+  const totalMs = Math.max(finishedAtMs - context.startedAtMs, 0);
+  const serverMs = parseServerTimeMs(response);
+  const networkMs = serverMs !== null ? Math.max(totalMs - serverMs, 0) : null;
+  console.info("[perf][api] end", {
+    method: context.method,
+    path: context.path,
+    status: response.status,
+    started_at: context.startedAtIso,
+    finished_at: new Date().toISOString(),
+    total_ms: Number(totalMs.toFixed(2)),
+    server_ms: serverMs !== null ? Number(serverMs.toFixed(2)) : null,
+    network_ms: networkMs !== null ? Number(networkMs.toFixed(2)) : null,
+    response_bytes: parseContentLength(response),
+  });
 }
 
 function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
@@ -121,6 +263,15 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal } = options;
   const accessToken = await getAccessToken();
+  const url = buildUrl(path, query);
+  const perfContext: RequestPerfContext = {
+    method,
+    path,
+    url,
+    startedAtIso: new Date().toISOString(),
+    startedAtMs: nowMs(),
+  };
+  logApiPerfStart(perfContext);
   const headers: Record<string, string> = {};
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -128,12 +279,13 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
-  const response = await fetch(buildUrl(path, query), {
+  const response = await fetch(url, {
     method,
     headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
+  logApiPerfEnd(perfContext, response);
 
   if (!response.ok) {
     let detail = `Request failed (${response.status} ${response.statusText})`;
@@ -166,16 +318,26 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
 async function requestMultipart<T>(path: string, options: RequestMultipartOptions): Promise<T> {
   const { method = "POST", query, formData, signal } = options;
   const accessToken = await getAccessToken();
+  const url = buildUrl(path, query);
+  const perfContext: RequestPerfContext = {
+    method,
+    path,
+    url,
+    startedAtIso: new Date().toISOString(),
+    startedAtMs: nowMs(),
+  };
+  logApiPerfStart(perfContext);
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
-  const response = await fetch(buildUrl(path, query), {
+  const response = await fetch(url, {
     method,
     headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: formData,
     signal,
   });
+  logApiPerfEnd(perfContext, response);
 
   if (!response.ok) {
     let detail = `Request failed (${response.status} ${response.statusText})`;
@@ -201,10 +363,19 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
   return (await response.json()) as T;
 }
 
-let accountsCache: TimedCache<AccountInfo[]> | null = null;
-let inFlightAccountsRequest: Promise<AccountInfo[]> | null = null;
-let selectableAccountsCache: TimedCache<AccountInfo[]> | null = null;
-let inFlightSelectableAccountsRequest: Promise<AccountInfo[]> | null = null;
+const accountsCacheByQuery = new Map<string, TimedCache<AccountInfo[]>>();
+const inFlightAccountsByQuery = new Map<string, Promise<AccountInfo[]>>();
+const accountTradesCacheByQuery = new Map<string, TimedCache<AccountTrade[]>>();
+const inFlightAccountTradesByQuery = new Map<string, Promise<AccountTrade[]>>();
+const accountSummaryCacheByQuery = new Map<string, TimedCache<AccountSummary>>();
+const inFlightAccountSummaryByQuery = new Map<string, Promise<AccountSummary>>();
+const accountSummaryWithPointBasesCacheByQuery = new Map<string, TimedCache<AccountSummaryWithPointBases>>();
+const inFlightAccountSummaryWithPointBasesByQuery = new Map<string, Promise<AccountSummaryWithPointBases>>();
+const accountPnlCalendarCacheByQuery = new Map<string, TimedCache<AccountPnlCalendarDay[]>>();
+const inFlightAccountPnlCalendarByQuery = new Map<string, Promise<AccountPnlCalendarDay[]>>();
+const accountJournalDaysCacheByQuery = new Map<string, TimedCache<JournalDaysResponse>>();
+const inFlightAccountJournalDaysByQuery = new Map<string, Promise<JournalDaysResponse>>();
+const accountCacheVersionById = new Map<number, number>();
 
 interface GetAccountsOptions {
   showInactive?: boolean;
@@ -223,45 +394,97 @@ function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | bo
   };
 }
 
-function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
-  const options = resolveGetAccountsOptions(optionsOrOnlyActive);
-  const useDefaultFilterCache = !options.showInactive && !options.showMissing;
+function accountsQueryCacheKey(options: Required<GetAccountsOptions>) {
+  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
+}
 
-  if (!useDefaultFilterCache) {
-    return requestJson<AccountInfo[]>("/api/accounts", {
-      query: {
-        show_inactive: options.showInactive,
-        show_missing: options.showMissing,
-      },
-    });
+function getAccountCacheVersion(accountId: number) {
+  return accountCacheVersionById.get(accountId) ?? 0;
+}
+
+function accountReadQueryCacheKey(accountId: number, query?: Record<string, QueryValue>) {
+  const version = getAccountCacheVersion(accountId);
+  const serializedQuery = toSortedQueryCacheKey(query);
+  return serializedQuery.length > 0
+    ? `account|${accountId}|v${version}|${serializedQuery}`
+    : `account|${accountId}|v${version}`;
+}
+
+function clearMapByAccountPrefix<T>(map: Map<string, T>, accountId: number) {
+  const prefix = `account|${accountId}|`;
+  for (const key of map.keys()) {
+    if (key.startsWith(prefix)) {
+      map.delete(key);
+    }
+  }
+}
+
+function invalidateAccountReadCaches(accountId?: number) {
+  if (typeof accountId !== "number") {
+    accountCacheVersionById.clear();
+    accountTradesCacheByQuery.clear();
+    inFlightAccountTradesByQuery.clear();
+    accountSummaryCacheByQuery.clear();
+    inFlightAccountSummaryByQuery.clear();
+    accountSummaryWithPointBasesCacheByQuery.clear();
+    inFlightAccountSummaryWithPointBasesByQuery.clear();
+    accountPnlCalendarCacheByQuery.clear();
+    inFlightAccountPnlCalendarByQuery.clear();
+    accountJournalDaysCacheByQuery.clear();
+    inFlightAccountJournalDaysByQuery.clear();
+    return;
   }
 
+  accountCacheVersionById.set(accountId, getAccountCacheVersion(accountId) + 1);
+  clearMapByAccountPrefix(accountTradesCacheByQuery, accountId);
+  clearMapByAccountPrefix(inFlightAccountTradesByQuery, accountId);
+  clearMapByAccountPrefix(accountSummaryCacheByQuery, accountId);
+  clearMapByAccountPrefix(inFlightAccountSummaryByQuery, accountId);
+  clearMapByAccountPrefix(accountSummaryWithPointBasesCacheByQuery, accountId);
+  clearMapByAccountPrefix(inFlightAccountSummaryWithPointBasesByQuery, accountId);
+  clearMapByAccountPrefix(accountPnlCalendarCacheByQuery, accountId);
+  clearMapByAccountPrefix(inFlightAccountPnlCalendarByQuery, accountId);
+  clearMapByAccountPrefix(accountJournalDaysCacheByQuery, accountId);
+  clearMapByAccountPrefix(inFlightAccountJournalDaysByQuery, accountId);
+}
+
+function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
+  const cacheKey = accountsQueryCacheKey(options);
   const now = Date.now();
-  if (accountsCache && accountsCache.expiresAtMs > now) {
-    return Promise.resolve(accountsCache.value);
-  }
-  if (inFlightAccountsRequest) {
-    return inFlightAccountsRequest;
+  const cached = accountsCacheByQuery.get(cacheKey);
+  if (cached && cached.expiresAtMs > now) {
+    return Promise.resolve(cached.value);
   }
 
-  inFlightAccountsRequest = requestJson<AccountInfo[]>("/api/accounts", {
+  const inFlight = inFlightAccountsByQuery.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const request = requestJson<AccountInfo[]>("/api/accounts", {
     query: {
-      show_inactive: false,
-      show_missing: false,
+      show_inactive: options.showInactive,
+      show_missing: options.showMissing,
     },
   })
     .then((accounts) => {
-      accountsCache = {
+      accountsCacheByQuery.set(cacheKey, {
         value: accounts,
         expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
-      };
+      });
       return accounts;
     })
     .finally(() => {
-      inFlightAccountsRequest = null;
+      inFlightAccountsByQuery.delete(cacheKey);
     });
 
-  return inFlightAccountsRequest;
+  inFlightAccountsByQuery.set(cacheKey, request);
+  return request;
+}
+
+function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
+  const options = resolveGetAccountsOptions(optionsOrOnlyActive);
+  return getAccountsFromApi(options);
 }
 
 function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boolean {
@@ -269,33 +492,9 @@ function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boole
 }
 
 function getSelectableAccounts(): Promise<AccountInfo[]> {
-  const now = Date.now();
-  if (selectableAccountsCache && selectableAccountsCache.expiresAtMs > now) {
-    return Promise.resolve(selectableAccountsCache.value);
-  }
-  if (inFlightSelectableAccountsRequest) {
-    return inFlightSelectableAccountsRequest;
-  }
-
-  inFlightSelectableAccountsRequest = requestJson<AccountInfo[]>("/api/accounts", {
-    query: {
-      show_inactive: true,
-      show_missing: false,
-    },
-  })
-    .then((accounts) => accounts.filter((account) => isSelectableAccount(account)))
-    .then((accounts) => {
-      selectableAccountsCache = {
-        value: accounts,
-        expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
-      };
-      return accounts;
-    })
-    .finally(() => {
-      inFlightSelectableAccountsRequest = null;
-    });
-
-  return inFlightSelectableAccountsRequest;
+  return getAccountsFromApi({ showInactive: true, showMissing: false }).then((accounts) =>
+    accounts.filter((account) => isSelectableAccount(account)),
+  );
 }
 
 export const metricsApi = {
@@ -353,8 +552,9 @@ export const accountsApi = {
     requestJson<AccountMainUpdateResult>(`/api/accounts/${accountId}/main`, {
       method: "POST",
     }).then((payload) => {
-      accountsCache = null;
-      selectableAccountsCache = null;
+      accountsCacheByQuery.clear();
+      inFlightAccountsByQuery.clear();
+      invalidateAccountReadCaches();
       return payload;
     }),
   getLastTrade: (accountId: number, refresh = false) =>
@@ -363,34 +563,102 @@ export const accountsApi = {
         refresh,
       },
     }),
-  getTrades: (accountId: number, query: AccountTradesQuery = {}) =>
-    requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
-      query: {
-        limit: query.limit ?? 200,
-        start: query.start,
-        end: query.end,
-        symbol: query.symbol,
-        refresh: query.refresh,
-      },
-    }),
-  getSummary: (accountId: number, query: AccountSummaryQuery = {}) =>
-    requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
-      query: {
-        start: query.start,
-        end: query.end,
-        refresh: query.refresh,
-        pointsBasis: query.pointsBasis,
-      },
-    }),
-  getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}) =>
-    requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
-      query: {
-        start: query.start,
-        end: query.end,
-        all_time: query.all_time,
-        refresh: query.refresh,
-      },
-    }),
+  getTrades: (accountId: number, query: AccountTradesQuery = {}) => {
+    const requestQuery = {
+      limit: query.limit ?? 200,
+      start: query.start,
+      end: query.end,
+      symbol: query.symbol,
+      refresh: query.refresh,
+    };
+    const cacheKey = accountReadQueryCacheKey(accountId, {
+      limit: requestQuery.limit,
+      start: requestQuery.start,
+      end: requestQuery.end,
+      symbol: requestQuery.symbol,
+    });
+    return getTimedCachedRequest({
+      cache: accountTradesCacheByQuery,
+      inFlight: inFlightAccountTradesByQuery,
+      cacheKey,
+      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
+      bypassCache: Boolean(query.refresh),
+      load: () =>
+        requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
+          query: requestQuery,
+        }),
+    });
+  },
+  getSummary: (accountId: number, query: AccountSummaryQuery = {}) => {
+    const requestQuery = {
+      start: query.start,
+      end: query.end,
+      refresh: query.refresh,
+      pointsBasis: query.pointsBasis,
+    };
+    const cacheKey = accountReadQueryCacheKey(accountId, {
+      start: requestQuery.start,
+      end: requestQuery.end,
+      pointsBasis: requestQuery.pointsBasis,
+    });
+    return getTimedCachedRequest({
+      cache: accountSummaryCacheByQuery,
+      inFlight: inFlightAccountSummaryByQuery,
+      cacheKey,
+      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
+      bypassCache: Boolean(query.refresh),
+      load: () =>
+        requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
+          query: requestQuery,
+        }),
+    });
+  },
+  getSummaryWithPointBases: (accountId: number, query: Pick<AccountSummaryQuery, "start" | "end" | "refresh"> = {}) => {
+    const requestQuery = {
+      start: query.start,
+      end: query.end,
+      refresh: query.refresh,
+    };
+    const cacheKey = accountReadQueryCacheKey(accountId, {
+      start: requestQuery.start,
+      end: requestQuery.end,
+    });
+    return getTimedCachedRequest({
+      cache: accountSummaryWithPointBasesCacheByQuery,
+      inFlight: inFlightAccountSummaryWithPointBasesByQuery,
+      cacheKey,
+      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
+      bypassCache: Boolean(query.refresh),
+      load: () =>
+        requestJson<AccountSummaryWithPointBases>(`/api/accounts/${accountId}/summary-with-point-bases`, {
+          query: requestQuery,
+        }),
+    });
+  },
+  getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}) => {
+    const requestQuery = {
+      start: query.start,
+      end: query.end,
+      all_time: query.all_time,
+      refresh: query.refresh,
+    };
+    const cacheKey = accountReadQueryCacheKey(accountId, {
+      start: requestQuery.start,
+      end: requestQuery.end,
+      all_time: requestQuery.all_time,
+    });
+    return getTimedCachedRequest({
+      cache: accountPnlCalendarCacheByQuery,
+      inFlight: inFlightAccountPnlCalendarByQuery,
+      cacheKey,
+      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
+      bypassCache: Boolean(query.refresh),
+      load: () =>
+        requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
+          query: requestQuery,
+        }),
+    });
+  },
   refreshTrades: (accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) =>
     requestJson<AccountTradeRefreshResult>(`/api/accounts/${accountId}/trades/refresh`, {
       method: "POST",
@@ -398,6 +666,9 @@ export const accountsApi = {
         start: query.start,
         end: query.end,
       },
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
   getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}) =>
     requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
@@ -415,24 +686,43 @@ export const accountsApi = {
     requestJson<JournalEntryCreateResult>(`/api/accounts/${accountId}/journal`, {
       method: "POST",
       body,
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
   updateJournalEntry: (accountId: number, entryId: number, body: JournalEntryUpdateInput) =>
     requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "PATCH",
       body,
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
   deleteJournalEntry: (accountId: number, entryId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "DELETE",
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
-  getJournalDays: (accountId: number, query: JournalDaysQuery) =>
-    requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
-      query: {
-        start_date: query.start_date,
-        end_date: query.end_date,
-        include_archived: query.include_archived,
-      },
-    }),
+  getJournalDays: (accountId: number, query: JournalDaysQuery) => {
+    const requestQuery = {
+      start_date: query.start_date,
+      end_date: query.end_date,
+      include_archived: query.include_archived,
+    };
+    const cacheKey = accountReadQueryCacheKey(accountId, requestQuery);
+    return getTimedCachedRequest({
+      cache: accountJournalDaysCacheByQuery,
+      inFlight: inFlightAccountJournalDaysByQuery,
+      cacheKey,
+      ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
+      load: () =>
+        requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
+          query: requestQuery,
+        }),
+    });
+  },
   uploadJournalImage: (accountId: number, entryId: number, file: File | Blob, filename?: string) => {
     const formData = new FormData();
     const fallbackName =
@@ -449,11 +739,17 @@ export const accountsApi = {
   deleteJournalImage: (accountId: number, entryId: number, imageId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}/images/${imageId}`, {
       method: "DELETE",
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
   pullJournalTradeStats: (accountId: number, entryId: number, body: JournalPullTradeStatsInput = {}) =>
     requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}/pull-trade-stats`, {
       method: "POST",
       body,
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      return result;
     }),
 };
 

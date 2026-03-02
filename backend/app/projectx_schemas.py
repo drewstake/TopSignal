@@ -83,6 +83,16 @@ class ProjectXTradeSummaryOut(BaseModel):
     pointsBasisUsed: str
 
 
+class ProjectXPointPayoffOut(BaseModel):
+    avgPointGain: float | None = None
+    avgPointLoss: float | None = None
+
+
+class ProjectXTradeSummaryWithPointBasesOut(BaseModel):
+    summary: ProjectXTradeSummaryOut
+    point_payoff_by_basis: dict[str, ProjectXPointPayoffOut]
+
+
 class ProjectXTradeRefreshOut(BaseModel):
     fetched_count: int
     inserted_count: int

@@ -158,6 +158,18 @@ export interface AccountSummary {
   pointsBasisUsed: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
 }
 
+export type PointsBasis = "MNQ" | "MES" | "MGC" | "SIL";
+
+export interface PointPayoffSummary {
+  avgPointGain: number | null;
+  avgPointLoss: number | null;
+}
+
+export interface AccountSummaryWithPointBases {
+  summary: AccountSummary;
+  point_payoff_by_basis: Record<PointsBasis, PointPayoffSummary>;
+}
+
 export interface AccountTradeRefreshResult {
   fetched_count: number;
   inserted_count: number;

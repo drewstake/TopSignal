@@ -11,7 +11,11 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.main as main_module
 from app.db import Base
-from app.main import get_projectx_account_summary, list_projectx_account_trades
+from app.main import (
+    get_projectx_account_summary,
+    get_projectx_account_summary_with_point_bases,
+    list_projectx_account_trades,
+)
 from app.models import Account, ProjectXTradeEvent
 from app.services.projectx_client import ProjectXClientError
 
@@ -93,3 +97,15 @@ def test_trades_endpoint_falls_back_to_local_for_missing_account_on_provider_404
 
     assert len(payload) == 1
     assert payload[0]["account_id"] == 7303
+
+
+def test_summary_with_point_bases_returns_all_point_basis_payloads(db_session):
+    db_session.add(Account(provider="projectx", external_id="7304", account_state="ACTIVE", is_main=True))
+    _add_trade_event(db_session, event_id=4, account_id=7304, pnl=125.0, fees=2.0)
+    db_session.commit()
+
+    payload = get_projectx_account_summary_with_point_bases(account_id=7304, refresh=False, db=db_session)
+
+    assert payload["summary"]["trade_count"] == 1
+    assert payload["summary"]["net_pnl"] == 121.0
+    assert set(payload["point_payoff_by_basis"].keys()) == {"MNQ", "MES", "MGC", "SIL"}

@@ -587,6 +587,46 @@ def summarize_trade_events(
     )
 
 
+def summarize_trade_events_with_point_bases(
+    db: Session,
+    account_id: int,
+    *,
+    user_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    point_bases: list[str],
+) -> tuple[dict[str, float | int | None | str], dict[str, dict[str, float | None]]]:
+    samples = _load_trade_metric_samples(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        start=start,
+        end=end,
+    )
+    instrument_specs = load_instrument_specs(db)
+    point_value_lookup = build_point_value_lookup(instrument_specs)
+
+    summary = compute_trade_summary(
+        samples,
+        points_basis="auto",
+        point_value_by_symbol=point_value_lookup,
+    )
+
+    point_payoff_by_basis: dict[str, dict[str, float | None]] = {}
+    for basis in point_bases:
+        basis_summary = compute_trade_summary(
+            samples,
+            points_basis=basis,
+            point_value_by_symbol=point_value_lookup,
+        )
+        point_payoff_by_basis[basis] = {
+            "avgPointGain": basis_summary["avgPointGain"],
+            "avgPointLoss": basis_summary["avgPointLoss"],
+        }
+
+    return summary, point_payoff_by_basis
+
+
 def get_trade_event_pnl_calendar(
     db: Session,
     account_id: int,
