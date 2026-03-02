@@ -21,20 +21,33 @@ from .db import Base
 class Account(Base):
     __tablename__ = "accounts"
 
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     provider = Column(Text, nullable=False)
     external_id = Column(Text, nullable=False)
     name = Column(Text, nullable=True)
+    account_state = Column(Text, nullable=False, server_default="ACTIVE")
+    can_trade = Column(Boolean, nullable=True)
+    is_visible = Column(Boolean, nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_missing_at = Column(DateTime(timezone=True), nullable=True)
+    is_main = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
+        CheckConstraint(
+            "account_state in ('ACTIVE','LOCKED_OUT','HIDDEN','MISSING')",
+            name="accounts_account_state_check",
+        ),
         UniqueConstraint("provider", "external_id", name="uq_accounts_provider_external_id"),
+        Index("idx_accounts_is_main", "is_main"),
+        Index("idx_accounts_account_state", "account_state"),
     )
 
 class Trade(Base):
     __tablename__ = "trades"
 
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     account_id = Column(BigInteger, ForeignKey("accounts.id"), nullable=False)
 
     symbol = Column(Text, nullable=False)
@@ -63,7 +76,7 @@ class Trade(Base):
 class ProjectXTradeEvent(Base):
     __tablename__ = "projectx_trade_events"
 
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     account_id = Column(BigInteger, nullable=False)
     contract_id = Column(Text, nullable=False)
     symbol = Column(Text, nullable=True)
@@ -98,7 +111,7 @@ class ProjectXTradeEvent(Base):
 class ProjectXTradeDaySync(Base):
     __tablename__ = "projectx_trade_day_syncs"
 
-    id = Column(BigInteger, primary_key=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
     account_id = Column(BigInteger, nullable=False)
     trade_date = Column(Date, nullable=False)
     sync_status = Column(Text, nullable=False, server_default="partial")

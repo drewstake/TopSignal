@@ -10,9 +10,11 @@ import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
   readStoredAccountId,
+  readStoredMainAccountId,
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import type { AccountInfo, JournalEntry, JournalEntryImage, JournalEntryUpdateInput } from "../../lib/types";
 import { DebouncedAutosaveQueue, type JournalSaveState } from "./journalAutosave";
 import { JournalEditor } from "./components/JournalEditor";
@@ -164,28 +166,42 @@ export function JournalPage() {
     void loadAccounts();
   }, [loadAccounts]);
 
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+
   useEffect(() => {
-    if (accounts.length === 0) {
+    if (orderedAccounts.length === 0) {
       return;
     }
 
-    if (accountFromQuery && accounts.some((account) => account.id === accountFromQuery)) {
+    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
       writeStoredAccountId(accountFromQuery);
       return;
     }
 
+    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+    if (persistedMainAccountId) {
+      setActiveAccount(persistedMainAccountId);
+      return;
+    }
+
+    const storedMainAccountId = readStoredMainAccountId();
+    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
+      setActiveAccount(storedMainAccountId);
+      return;
+    }
+
     const storedAccountId = readStoredAccountId();
-    if (storedAccountId && accounts.some((account) => account.id === storedAccountId)) {
+    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
       setActiveAccount(storedAccountId);
       return;
     }
 
-    setActiveAccount(accounts[0].id);
-  }, [accounts, accountFromQuery, setActiveAccount]);
+    setActiveAccount(orderedAccounts[0].id);
+  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
 
   const selectedAccount = useMemo(
-    () => accounts.find((account) => account.id === accountFromQuery) ?? null,
-    [accounts, accountFromQuery],
+    () => orderedAccounts.find((account) => account.id === accountFromQuery) ?? null,
+    [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   selectedAccountIdRef.current = selectedAccountId;

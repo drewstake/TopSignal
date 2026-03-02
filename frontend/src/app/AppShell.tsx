@@ -4,8 +4,16 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
 import { Tabs } from "../components/ui/Tabs";
-import { ACCOUNT_QUERY_PARAM, parseAccountId, readStoredAccountId, writeStoredAccountId } from "../lib/accountSelection";
+import {
+  ACCOUNT_QUERY_PARAM,
+  MAIN_ACCOUNT_UPDATED_EVENT,
+  parseAccountId,
+  readStoredAccountId,
+  readStoredMainAccountId,
+  writeStoredAccountId,
+} from "../lib/accountSelection";
 import { accountsApi } from "../lib/api";
+import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
 
@@ -45,28 +53,45 @@ export function AppShell() {
     }
 
     void loadAccounts();
+    function handleMainAccountUpdated() {
+      void loadAccounts();
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
+    }
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
+      }
     };
   }, []);
 
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
-  const activeAccountId = queryAccountId ?? readStoredAccountId();
-
-  const accountSuffix = activeAccountId ? `?${ACCOUNT_QUERY_PARAM}=${activeAccountId}` : "";
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+  const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+  const mainAccountId = readStoredMainAccountId();
+  const storedActiveAccountId = readStoredAccountId();
   const selectedAccountValue = useMemo(() => {
-    if (queryAccountId && accounts.some((account) => account.id === queryAccountId)) {
+    if (queryAccountId && orderedAccounts.some((account) => account.id === queryAccountId)) {
       return String(queryAccountId);
     }
-    if (activeAccountId && accounts.some((account) => account.id === activeAccountId)) {
-      return String(activeAccountId);
+    if (persistedMainAccountId && orderedAccounts.some((account) => account.id === persistedMainAccountId)) {
+      return String(persistedMainAccountId);
     }
-    if (accounts.length > 0) {
-      return String(accounts[0].id);
+    if (mainAccountId && orderedAccounts.some((account) => account.id === mainAccountId)) {
+      return String(mainAccountId);
+    }
+    if (storedActiveAccountId && orderedAccounts.some((account) => account.id === storedActiveAccountId)) {
+      return String(storedActiveAccountId);
+    }
+    if (orderedAccounts.length > 0) {
+      return String(orderedAccounts[0].id);
     }
     return "";
-  }, [accounts, activeAccountId, queryAccountId]);
+  }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
+  const accountSuffix = selectedAccountId ? `?${ACCOUNT_QUERY_PARAM}=${selectedAccountId}` : "";
 
   function handleAccountChange(rawValue: string) {
     const nextAccountId = parseAccountId(rawValue);
@@ -144,11 +169,11 @@ export function AppShell() {
                     className="h-9 min-w-[220px]"
                     value={selectedAccountValue}
                     onChange={(event) => handleAccountChange(event.target.value)}
-                    disabled={accountsLoading || accounts.length === 0}
+                    disabled={accountsLoading || orderedAccounts.length === 0}
                   >
                     {accountsLoading ? <option>Loading accounts...</option> : null}
-                    {!accountsLoading && accounts.length === 0 ? <option>No accounts</option> : null}
-                    {accounts.map((account) => (
+                    {!accountsLoading && orderedAccounts.length === 0 ? <option>No accounts</option> : null}
+                    {orderedAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {account.name} ({account.id})
                       </option>

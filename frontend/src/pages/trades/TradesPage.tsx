@@ -11,9 +11,12 @@ import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
   readStoredAccountId,
+  readStoredMainAccountId,
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
 
@@ -147,28 +150,42 @@ export function TradesPage() {
     void loadAccounts();
   }, [loadAccounts]);
 
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+
   useEffect(() => {
-    if (accounts.length === 0) {
+    if (orderedAccounts.length === 0) {
       return;
     }
 
-    if (accountFromQuery && accounts.some((account) => account.id === accountFromQuery)) {
+    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
       writeStoredAccountId(accountFromQuery);
       return;
     }
 
+    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+    if (persistedMainAccountId) {
+      setActiveAccount(persistedMainAccountId);
+      return;
+    }
+
+    const storedMainAccountId = readStoredMainAccountId();
+    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
+      setActiveAccount(storedMainAccountId);
+      return;
+    }
+
     const storedAccountId = readStoredAccountId();
-    if (storedAccountId && accounts.some((account) => account.id === storedAccountId)) {
+    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
       setActiveAccount(storedAccountId);
       return;
     }
 
-    setActiveAccount(accounts[0].id);
-  }, [accounts, accountFromQuery, setActiveAccount]);
+    setActiveAccount(orderedAccounts[0].id);
+  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
 
   const selectedAccount = useMemo(
-    () => accounts.find((account) => account.id === accountFromQuery) ?? null,
-    [accounts, accountFromQuery],
+    () => orderedAccounts.find((account) => account.id === accountFromQuery) ?? null,
+    [orderedAccounts, accountFromQuery],
   );
 
   const loadTradesAndSummary = useCallback(async () => {
@@ -309,6 +326,14 @@ export function TradesPage() {
         </CardContent>
       </Card>
 
+      {selectedAccount?.account_state === "MISSING" ? (
+        <Card className="border-amber-400/40 bg-amber-500/10 p-4">
+          <p className="text-sm text-amber-100">
+            This account is missing from ProjectX. Trade metrics are shown from locally stored data when live sync is unavailable.
+          </p>
+        </Card>
+      ) : null}
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {summaryLoading ? (
           Array.from({ length: 6 }).map((_, index) => <Skeleton key={`summary-skeleton-${index}`} className="h-24" />)
@@ -342,7 +367,7 @@ export function TradesPage() {
                 <tr>
                   <th className="px-3 py-3 text-left font-medium">Timestamp (UTC)</th>
                   <th className="px-3 py-3 text-left font-medium">Symbol</th>
-                  <th className="px-3 py-3 text-left font-medium">Side</th>
+                  <th className="px-3 py-3 text-left font-medium">Direction</th>
                   <th className="px-3 py-3 text-right font-medium">Size</th>
                   <th className="px-3 py-3 text-right font-medium">Price</th>
                   <th className="px-3 py-3 text-right font-medium">Fees</th>
@@ -374,6 +399,7 @@ export function TradesPage() {
                 ) : (
                   pagedTrades.map((trade) => {
                     const pnlValue = trade.pnl ?? 0;
+                    const direction = formatTradeDirection(trade.side);
                     return (
                       <tr key={trade.id} className="transition hover:bg-slate-900/65">
                         <td className="px-3 py-3 text-left text-slate-300">
@@ -383,7 +409,7 @@ export function TradesPage() {
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                         </td>
                         <td className="px-3 py-3 text-left">
-                          <Badge variant={trade.side === "BUY" ? "accent" : "warning"}>{trade.side}</Badge>
+                          <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
                         <td className="px-3 py-3 text-right text-slate-200">{trade.size.toFixed(2)}</td>
                         <td className="px-3 py-3 text-right font-mono text-slate-200">

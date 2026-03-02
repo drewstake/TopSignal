@@ -7,7 +7,16 @@ class ProjectXAccountOut(BaseModel):
     name: str
     balance: float
     status: str
+    account_state: str
+    is_main: bool
+    can_trade: bool | None = None
+    is_visible: bool | None = None
     last_trade_at: datetime | None = None
+
+
+class ProjectXAccountMainOut(BaseModel):
+    account_id: int
+    is_main: bool
 
 
 class ProjectXAccountLastTradeOut(BaseModel):

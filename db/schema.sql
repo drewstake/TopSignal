@@ -27,6 +27,22 @@ create table if not exists accounts (
   -- Friendly name you can show in the UI (optional)
   name text,
 
+  -- Derived TopSignal lifecycle state from ProjectX account flags.
+  account_state text not null default 'ACTIVE'
+    check (account_state in ('ACTIVE','LOCKED_OUT','HIDDEN','MISSING')),
+
+  -- Last known account capability flags from ProjectX.
+  can_trade boolean,
+  is_visible boolean,
+
+  -- Visibility timeline metadata for state transitions.
+  first_seen_at timestamptz,
+  last_seen_at timestamptz,
+  last_missing_at timestamptz,
+
+  -- Exactly one account can be marked as user's MAIN account.
+  is_main boolean not null default false,
+
   -- When this row was created
   created_at timestamptz not null default now(),
 
@@ -34,6 +50,12 @@ create table if not exists accounts (
   -- You cannot have two rows with the same provider + external_id
   unique (provider, external_id)
 );
+
+create index if not exists idx_accounts_is_main
+  on accounts (is_main);
+
+create index if not exists idx_accounts_account_state
+  on accounts (account_state);
 
 
 -- ============================================

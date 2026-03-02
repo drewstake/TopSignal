@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -10,8 +10,12 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.main as main_module
 from app.db import Base
-from app.main import get_projectx_account_last_trade, list_projectx_accounts
-from app.models import ProjectXTradeEvent
+from app.main import (
+    get_projectx_account_last_trade,
+    list_projectx_accounts,
+    set_projectx_main_account,
+)
+from app.models import Account, ProjectXTradeEvent
 
 
 @pytest.fixture()
@@ -21,76 +25,118 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[ProjectXTradeEvent.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__])
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__])
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__, Account.__table__])
         engine.dispose()
 
 
-def test_accounts_route_includes_last_trade_timestamp_from_local_events(db_session, monkeypatch):
+def test_accounts_route_default_view_shows_active_plus_main_with_state_sync(db_session, monkeypatch):
     class StubClient:
         def list_accounts(self, *, only_active_accounts=True):
             assert only_active_accounts is False
             return [
-                {"id": 7001, "name": "Alpha", "balance": 25000.0, "status": "INACTIVE"},
-                {"id": 7002, "name": "Bravo", "balance": 50000.0, "status": "ACTIVE"},
+                {"id": 7001, "name": "Alpha", "balance": 25000.0, "can_trade": False, "is_visible": True},
+                {"id": 7002, "name": "Bravo", "balance": 50000.0, "can_trade": True, "is_visible": True},
             ]
 
-    client = StubClient()
-    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: client)
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
 
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7999",
+            name="Main Legacy",
+            account_state="ACTIVE",
+            is_main=True,
+            first_seen_at=datetime.now(timezone.utc) - timedelta(days=7),
+            last_seen_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    db_session.commit()
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+    by_id = {int(account["id"]): account for account in payload}
+
+    assert sorted(by_id.keys()) == [7002, 7999]
+    assert by_id[7002]["account_state"] == "ACTIVE"
+    assert by_id[7002]["is_main"] is False
+    assert by_id[7999]["account_state"] == "MISSING"
+    assert by_id[7999]["is_main"] is True
+
+    locked_out_row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7001")
+        .one()
+    )
+    assert locked_out_row.account_state == "LOCKED_OUT"
+    assert locked_out_row.first_seen_at is not None
+    assert locked_out_row.last_seen_at is not None
+
+
+def test_accounts_route_filters_inactive_and_missing_states(db_session, monkeypatch):
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            assert only_active_accounts is False
+            return [
+                {"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True},
+                {"id": 7102, "name": "Locked", "balance": 20000.0, "can_trade": False, "is_visible": True},
+                {"id": 7103, "name": "Hidden", "balance": 30000.0, "can_trade": True, "is_visible": False},
+            ]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7199",
+            name="Missing",
+            account_state="ACTIVE",
+            first_seen_at=datetime.now(timezone.utc) - timedelta(days=3),
+            last_seen_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    db_session.commit()
+
+    with_inactive = list_projectx_accounts(show_inactive=True, show_missing=False, db=db_session)
+    ids_with_inactive = sorted(int(row["id"]) for row in with_inactive)
+    assert ids_with_inactive == [7101, 7102, 7103]
+
+    with_missing = list_projectx_accounts(show_inactive=False, show_missing=True, db=db_session)
+    ids_with_missing = sorted(int(row["id"]) for row in with_missing)
+    assert ids_with_missing == [7101, 7199]
+
+    by_id = {int(row["id"]): row for row in with_missing}
+    assert by_id[7199]["account_state"] == "MISSING"
+
+
+def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
     db_session.add_all(
         [
-            ProjectXTradeEvent(
-                id=1,
-                account_id=7001,
-                contract_id="CON.F.US.MES.H26",
-                symbol="MES",
-                side="BUY",
-                size=1.0,
-                price=6000.0,
-                trade_timestamp=datetime(2026, 2, 1, 14, 0, tzinfo=timezone.utc),
-                fees=1.2,
-                order_id="A-1",
-            ),
-            ProjectXTradeEvent(
-                id=2,
-                account_id=7001,
-                contract_id="CON.F.US.MES.H26",
-                symbol="MES",
-                side="SELL",
-                size=1.0,
-                price=5990.0,
-                trade_timestamp=datetime(2026, 2, 3, 20, 30, tzinfo=timezone.utc),
-                fees=1.2,
-                order_id="A-2",
-            ),
-            ProjectXTradeEvent(
-                id=3,
-                account_id=9999,
-                contract_id="CON.F.US.MNQ.H26",
-                symbol="MNQ",
-                side="BUY",
-                size=1.0,
-                price=20500.0,
-                trade_timestamp=datetime(2026, 2, 2, 15, 0, tzinfo=timezone.utc),
-                fees=1.2,
-                order_id="IGNORED",
-            ),
+            Account(provider="projectx", external_id="7201", name="One", account_state="ACTIVE", is_main=False),
+            Account(provider="projectx", external_id="7202", name="Two", account_state="ACTIVE", is_main=False),
         ]
     )
     db_session.commit()
 
-    payload = list_projectx_accounts(only_active_accounts=False, db=db_session)
-    by_id = {int(account["id"]): account for account in payload}
+    first = set_projectx_main_account(account_id=7201, db=db_session)
+    second = set_projectx_main_account(account_id=7202, db=db_session)
 
-    assert by_id[7001]["last_trade_at"] == datetime(2026, 2, 3, 20, 30, tzinfo=timezone.utc)
-    assert by_id[7002]["last_trade_at"] is None
+    assert first == {"account_id": 7201, "is_main": True}
+    assert second == {"account_id": 7202, "is_main": True}
+
+    rows = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .order_by(Account.external_id.asc())
+        .all()
+    )
+    assert [bool(row.is_main) for row in rows] == [False, True]
 
 
 def test_account_last_trade_endpoint_returns_local_value_without_provider_call(db_session, monkeypatch):

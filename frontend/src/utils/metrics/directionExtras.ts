@@ -1,4 +1,5 @@
 import type { AccountTrade } from "../../lib/types";
+import { inferTradeDirection } from "../../lib/tradeDirection";
 import { EPSILON, average, metric, missingMetric, sum, type DerivedMetricValue } from "./shared";
 
 export type InferredDirection = "LONG" | "SHORT";
@@ -28,15 +29,7 @@ export interface DirectionExtrasMetrics {
 }
 
 export function inferDirectionFromSide(side: string): InferredDirection | null {
-  const normalized = side.trim().toUpperCase();
-  // Closed executions may use BUY/SELL; some feeds return LONG/SHORT directly.
-  if (normalized === "SELL" || normalized === "LONG") {
-    return "LONG";
-  }
-  if (normalized === "BUY" || normalized === "SHORT") {
-    return "SHORT";
-  }
-  return null;
+  return inferTradeDirection(side);
 }
 
 export function buildDirectionSamples(trades: AccountTrade[]): DirectionSample[] {

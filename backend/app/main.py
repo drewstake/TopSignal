@@ -44,6 +44,7 @@ from .metrics_schemas import (
 )
 from .models import Expense, ProjectXTradeEvent, Trade
 from .projectx_schemas import (
+    ProjectXAccountMainOut,
     ProjectXAccountOut,
     ProjectXAccountLastTradeOut,
     ProjectXPnlCalendarDayOut,
@@ -78,6 +79,16 @@ from .services.journal import (
     unarchive_journal_entry,
     update_journal_entry,
     validate_date_range as validate_journal_date_range,
+)
+from .services.projectx_accounts import (
+    ACCOUNT_STATE_ACTIVE,
+    ACCOUNT_STATE_MISSING,
+    account_id_from_external_id,
+    get_projectx_account_row,
+    get_projectx_account_rows,
+    set_main_projectx_account,
+    should_include_account,
+    sync_projectx_accounts,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.projectx_trades import (
@@ -380,26 +391,109 @@ def metrics_behavior(
 
 @app.get("/api/accounts", response_model=list[ProjectXAccountOut])
 def list_projectx_accounts(
-    only_active_accounts: bool = True,
+    show_inactive: bool = False,
+    show_missing: bool = False,
+    only_active_accounts: bool | None = None,
     db: Session = Depends(get_db),
 ):
+    if only_active_accounts is not None:
+        show_inactive = not only_active_accounts
+        show_missing = not only_active_accounts
+
+    provider_accounts: list[dict[str, object]] = []
     try:
         client = ProjectXClient.from_env()
-        accounts = client.list_accounts(only_active_accounts=only_active_accounts)
-        if not accounts:
-            return accounts
-
-        last_trade_by_account_id = _load_last_trade_timestamps(
+        provider_accounts = client.list_accounts(only_active_accounts=False)
+        sync_projectx_accounts(
             db,
-            account_ids=[int(account["id"]) for account in accounts],
+            provider_accounts,
+            missing_buffer=timedelta(
+                seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
+            ),
+        )
+        db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    provider_by_external_id = {
+        str(account["id"]): account
+        for account in provider_accounts
+        if isinstance(account, dict) and account.get("id") is not None
+    }
+    rows = get_projectx_account_rows(db)
+    visible_rows = [
+        row
+        for row in rows
+        if should_include_account(
+            row,
+            show_inactive=show_inactive,
+            show_missing=show_missing,
+        )
+    ]
+
+    account_ids = [
+        account_id
+        for account_id in (account_id_from_external_id(row.external_id) for row in visible_rows)
+        if account_id is not None
+    ]
+    last_trade_by_account_id = _load_last_trade_timestamps(db, account_ids=account_ids)
+
+    payload: list[dict[str, object]] = []
+    for row in visible_rows:
+        account_id = account_id_from_external_id(row.external_id)
+        if account_id is None:
+            continue
+
+        provider_payload = provider_by_external_id.get(row.external_id, {})
+        provider_name = provider_payload.get("name") if isinstance(provider_payload, dict) else None
+        provider_balance = provider_payload.get("balance") if isinstance(provider_payload, dict) else None
+        provider_can_trade = provider_payload.get("can_trade") if isinstance(provider_payload, dict) else None
+        provider_is_visible = provider_payload.get("is_visible") if isinstance(provider_payload, dict) else None
+
+        account_state = row.account_state or ACCOUNT_STATE_ACTIVE
+        can_trade = provider_can_trade if isinstance(provider_can_trade, bool) else row.can_trade
+        is_visible = provider_is_visible if isinstance(provider_is_visible, bool) else row.is_visible
+
+        payload.append(
+            {
+                "id": account_id,
+                "name": str(provider_name or row.name or f"Account {account_id}"),
+                "balance": float(provider_balance) if provider_balance is not None else 0.0,
+                "status": account_state,
+                "account_state": account_state,
+                "is_main": bool(row.is_main),
+                "can_trade": can_trade,
+                "is_visible": is_visible,
+                "last_trade_at": last_trade_by_account_id.get(account_id),
+            }
         )
 
-        for account in accounts:
-            account["last_trade_at"] = last_trade_by_account_id.get(int(account["id"]))
+    payload.sort(key=lambda row: (-int(bool(row["is_main"])), int(row["id"])))
+    return payload
 
-        return accounts
-    except ProjectXClientError as exc:
-        raise _to_http_exception(exc) from exc
+
+@app.post("/api/accounts/{account_id}/main", response_model=ProjectXAccountMainOut)
+def set_projectx_main_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+):
+    _validate_account_id(account_id)
+
+    try:
+        set_main_projectx_account(db, account_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "account_id": account_id,
+        "is_main": True,
+    }
 
 
 @app.get("/api/accounts/{account_id}/last-trade", response_model=ProjectXAccountLastTradeOut)
@@ -764,25 +858,33 @@ def refresh_projectx_account_trades(
 @app.get("/api/accounts/{account_id}/trades", response_model=list[ProjectXTradeOut])
 def list_projectx_account_trades(
     account_id: int,
-    limit: int = Query(default=200, ge=1, le=1000),
+    limit: int = 200,
     start: datetime | None = None,
     end: datetime | None = None,
-    symbol: str | None = Query(default=None, max_length=50),
+    symbol: str | None = None,
     refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     _validate_account_id(account_id)
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
+    if symbol is not None and len(symbol) > 50:
+        raise HTTPException(status_code=400, detail="symbol must be <= 50 characters")
     _validate_time_range(start=start, end=end)
 
     try:
-        ensure_trade_cache_for_request(
-            db,
-            account_id=account_id,
-            start=start,
-            end=end,
-            refresh=refresh,
-            client_factory=ProjectXClient.from_env,
-        )
+        try:
+            ensure_trade_cache_for_request(
+                db,
+                account_id=account_id,
+                start=start,
+                end=end,
+                refresh=refresh,
+                client_factory=ProjectXClient.from_env,
+            )
+        except ProjectXClientError as exc:
+            if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+                raise
 
         rows = list_trade_events(
             db,
@@ -811,7 +913,11 @@ def get_projectx_account_summary(
     try:
         if refresh or not has_local_trades(db, account_id):
             client = ProjectXClient.from_env()
-            refresh_account_trades(db, client, account_id=account_id, start=start, end=end)
+            try:
+                refresh_account_trades(db, client, account_id=account_id, start=start, end=end)
+            except ProjectXClientError as exc:
+                if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+                    raise
 
         return summarize_trade_events(db, account_id=account_id, start=start, end=end)
     except ProjectXClientError as exc:
@@ -849,13 +955,17 @@ def get_projectx_account_pnl_calendar(
         needs_sync = refresh or not has_local_trades(db, account_id)
         if needs_sync:
             client = ProjectXClient.from_env()
-            refresh_account_trades(
-                db,
-                client,
-                account_id=account_id,
-                start=effective_start,
-                end=effective_end,
-            )
+            try:
+                refresh_account_trades(
+                    db,
+                    client,
+                    account_id=account_id,
+                    start=effective_start,
+                    end=effective_end,
+                )
+            except ProjectXClientError as exc:
+                if not _should_fallback_to_local_metrics(db, account_id=account_id, exc=exc):
+                    raise
 
         return get_trade_event_pnl_calendar(
             db,
@@ -1004,6 +1114,22 @@ def _load_last_trade_timestamps(db: Session, *, account_ids: list[int]) -> dict[
             continue
         output[int(row.account_id)] = _as_utc(row.last_trade_at)
     return output
+
+
+def _should_fallback_to_local_metrics(
+    db: Session,
+    *,
+    account_id: int,
+    exc: ProjectXClientError,
+) -> bool:
+    if exc.status_code not in {403, 404}:
+        return False
+
+    account = get_projectx_account_row(db, account_id)
+    if account is None:
+        return False
+
+    return account.account_state == ACCOUNT_STATE_MISSING
 
 
 def _read_int_env(name: str, default: int) -> int:

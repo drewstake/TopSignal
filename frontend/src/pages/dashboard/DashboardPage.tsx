@@ -16,9 +16,12 @@ import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
   readStoredAccountId,
+  readStoredMainAccountId,
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
@@ -176,17 +179,6 @@ function sustainabilityFillClass(score: number) {
     return "bg-amber-300/80";
   }
   return "bg-rose-300/80";
-}
-
-function sideVariant(side: string) {
-  const normalized = side.toUpperCase();
-  if (normalized === "BUY") {
-    return "accent" as const;
-  }
-  if (normalized === "SELL") {
-    return "warning" as const;
-  }
-  return "neutral" as const;
 }
 
 function parseUtcDay(value: string) {
@@ -352,28 +344,42 @@ export function DashboardPage() {
     void loadAccounts();
   }, [loadAccounts]);
 
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+
   useEffect(() => {
-    if (accounts.length === 0) {
+    if (orderedAccounts.length === 0) {
       return;
     }
 
-    if (accountFromQuery && accounts.some((account) => account.id === accountFromQuery)) {
+    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
       writeStoredAccountId(accountFromQuery);
       return;
     }
 
+    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+    if (persistedMainAccountId) {
+      setActiveAccount(persistedMainAccountId);
+      return;
+    }
+
+    const storedMainAccountId = readStoredMainAccountId();
+    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
+      setActiveAccount(storedMainAccountId);
+      return;
+    }
+
     const storedAccountId = readStoredAccountId();
-    if (storedAccountId && accounts.some((account) => account.id === storedAccountId)) {
+    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
       setActiveAccount(storedAccountId);
       return;
     }
 
-    setActiveAccount(accounts[0].id);
-  }, [accounts, accountFromQuery, setActiveAccount]);
+    setActiveAccount(orderedAccounts[0].id);
+  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
 
   const selectedAccount = useMemo(
-    () => accounts.find((account) => account.id === accountFromQuery) ?? null,
-    [accounts, accountFromQuery],
+    () => orderedAccounts.find((account) => account.id === accountFromQuery) ?? null,
+    [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
@@ -723,6 +729,14 @@ export function DashboardPage() {
           {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
         </CardHeader>
       </Card>
+
+      {selectedAccount?.account_state === "MISSING" ? (
+        <Card className="border-amber-400/40 bg-amber-500/10 p-4">
+          <p className="text-sm text-amber-100">
+            This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
+          </p>
+        </Card>
+      ) : null}
 
       <MasonryGrid>
         {summaryLoading ? (
@@ -1219,7 +1233,7 @@ export function DashboardPage() {
                 <tr>
                   <th className="px-3 py-3 text-left font-medium">Timestamp (UTC)</th>
                   <th className="px-3 py-3 text-left font-medium">Symbol</th>
-                  <th className="px-3 py-3 text-left font-medium">Side</th>
+                  <th className="px-3 py-3 text-left font-medium">Direction</th>
                   <th className="px-3 py-3 text-right font-medium">Size</th>
                   <th className="px-3 py-3 text-right font-medium">Price</th>
                   <th className="px-3 py-3 text-right font-medium">Fees</th>
@@ -1249,6 +1263,7 @@ export function DashboardPage() {
                 ) : (
                   trades.map((trade) => {
                     const pnlValue = trade.pnl ?? 0;
+                    const direction = formatTradeDirection(trade.side);
                     return (
                       <tr key={trade.id} className="transition hover:bg-slate-900/65">
                         <td className="px-3 py-3 text-left text-slate-300">
@@ -1258,7 +1273,7 @@ export function DashboardPage() {
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                         </td>
                         <td className="px-3 py-3 text-left">
-                          <Badge variant={sideVariant(trade.side)}>{trade.side}</Badge>
+                          <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
                         <td className="px-3 py-3 text-right text-slate-200">{trade.size.toFixed(2)}</td>
                         <td className="px-3 py-3 text-right font-mono text-slate-200">

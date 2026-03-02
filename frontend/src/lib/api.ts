@@ -1,4 +1,5 @@
 import type {
+  AccountMainUpdateResult,
   AccountInfo,
   AccountLastTradeInfo,
   JournalEntry,
@@ -174,10 +175,33 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
 let accountsCache: TimedCache<AccountInfo[]> | null = null;
 let inFlightAccountsRequest: Promise<AccountInfo[]> | null = null;
 
-function getAccountsCached(onlyActiveAccounts: boolean): Promise<AccountInfo[]> {
-  if (!onlyActiveAccounts) {
+interface GetAccountsOptions {
+  showInactive?: boolean;
+  showMissing?: boolean;
+}
+
+function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | boolean): Required<GetAccountsOptions> {
+  if (typeof optionsOrOnlyActive === "boolean") {
+    return optionsOrOnlyActive
+      ? { showInactive: false, showMissing: false }
+      : { showInactive: true, showMissing: true };
+  }
+  return {
+    showInactive: optionsOrOnlyActive?.showInactive ?? false,
+    showMissing: optionsOrOnlyActive?.showMissing ?? false,
+  };
+}
+
+function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
+  const options = resolveGetAccountsOptions(optionsOrOnlyActive);
+  const useDefaultFilterCache = !options.showInactive && !options.showMissing;
+
+  if (!useDefaultFilterCache) {
     return requestJson<AccountInfo[]>("/api/accounts", {
-      query: { only_active_accounts: false },
+      query: {
+        show_inactive: options.showInactive,
+        show_missing: options.showMissing,
+      },
     });
   }
 
@@ -190,7 +214,10 @@ function getAccountsCached(onlyActiveAccounts: boolean): Promise<AccountInfo[]> 
   }
 
   inFlightAccountsRequest = requestJson<AccountInfo[]>("/api/accounts", {
-    query: { only_active_accounts: true },
+    query: {
+      show_inactive: false,
+      show_missing: false,
+    },
   })
     .then((accounts) => {
       accountsCache = {
@@ -242,7 +269,14 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 }
 
 export const accountsApi = {
-  getAccounts: (onlyActiveAccounts = true) => getAccountsCached(onlyActiveAccounts),
+  getAccounts: (optionsOrOnlyActive?: GetAccountsOptions | boolean) => getAccountsCached(optionsOrOnlyActive),
+  setMainAccount: (accountId: number) =>
+    requestJson<AccountMainUpdateResult>(`/api/accounts/${accountId}/main`, {
+      method: "POST",
+    }).then((payload) => {
+      accountsCache = null;
+      return payload;
+    }),
   getLastTrade: (accountId: number, refresh = false) =>
     requestJson<AccountLastTradeInfo>(`/api/accounts/${accountId}/last-trade`, {
       query: {

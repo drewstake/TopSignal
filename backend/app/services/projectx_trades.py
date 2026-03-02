@@ -7,6 +7,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
@@ -103,8 +105,18 @@ def refresh_account_trades(
                     end=chunk_end,
                 )
                 fetched_count += len(events)
-                inserted_count += store_trade_events(db, events)
-                db.commit()
+                try:
+                    inserted_count += store_trade_events(db, events)
+                    db.commit()
+                except IntegrityError:
+                    db.rollback()
+                    logger.warning(
+                        "[trades] duplicate event ingest skipped account=%s start=%s end=%s",
+                        account_id,
+                        chunk_start.isoformat(),
+                        chunk_end.isoformat(),
+                    )
+                    continue
     except Exception:
         db.rollback()
         raise
@@ -163,6 +175,28 @@ def store_trade_events(db: Session, events: list[dict[str, Any]]) -> int:
         key=lambda item: (_as_utc(item["timestamp"]), str(item.get("order_id") or "")),
     )
 
+    if _is_postgres_session(db):
+        return _store_trade_events_postgres(db, events_sorted)
+    return _store_trade_events_orm(db, events_sorted)
+
+
+def _is_postgres_session(db: Session) -> bool:
+    bind = db.get_bind()
+    return bind is not None and bind.dialect.name == "postgresql"
+
+
+def _store_trade_events_postgres(db: Session, events_sorted: list[dict[str, Any]]) -> int:
+    if not events_sorted:
+        return 0
+
+    values = [_event_to_insert_values(event) for event in events_sorted]
+    stmt = pg_insert(ProjectXTradeEvent).values(values)
+    stmt = stmt.on_conflict_do_nothing()
+    result = db.execute(stmt)
+    return int(result.rowcount or 0)
+
+
+def _store_trade_events_orm(db: Session, events_sorted: list[dict[str, Any]]) -> int:
     account_ids = sorted({int(event["account_id"]) for event in events_sorted})
     timestamps = [_as_utc(event["timestamp"]) for event in events_sorted]
     source_ids = sorted(
@@ -661,6 +695,26 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
     if status:
         row.status = status
     row.raw_payload = event.get("raw_payload")
+
+
+def _event_to_insert_values(event: dict[str, Any]) -> dict[str, Any]:
+    source_trade_id = _normalized_optional_text(event.get("source_trade_id"))
+    status = _normalized_optional_text(event.get("status"))
+    return {
+        "account_id": int(event["account_id"]),
+        "contract_id": str(event["contract_id"]),
+        "symbol": event.get("symbol"),
+        "side": str(event.get("side") or "UNKNOWN"),
+        "size": float(event.get("size") or 0.0),
+        "price": float(event.get("price") or 0.0),
+        "trade_timestamp": _as_utc(event["timestamp"]),
+        "fees": float(event.get("fees") or 0.0),
+        "pnl": float(event["pnl"]) if event.get("pnl") is not None else None,
+        "order_id": str(event["order_id"]),
+        "source_trade_id": source_trade_id,
+        "status": status,
+        "raw_payload": event.get("raw_payload"),
+    }
 
 
 def _normalized_optional_text(value: Any) -> str | None:

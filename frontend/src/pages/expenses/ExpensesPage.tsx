@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -7,14 +6,21 @@ import { Drawer } from "../../components/ui/Drawer";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
-import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
 import {
+  accountsApi,
   createExpense,
   deleteExpense,
   getExpenseTotals,
   isApiError,
   listExpenses,
 } from "../../lib/api";
+import {
+  decrementStandardActivationCount,
+  incrementStandardActivationCount,
+  markEvaluationExpensesSynced,
+  readCombineSpendSnapshot,
+  syncCombineSpendTracker,
+} from "../../lib/combineTracker";
 import {
   EXPENSE_ACCOUNT_TYPES,
   EXPENSE_PLAN_SIZES,
@@ -34,6 +40,13 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
 });
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+const trackerDateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
   day: "numeric",
@@ -73,6 +86,10 @@ function splitTags(input: string) {
     .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index);
 }
 
+function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
+  return expense.tags.includes("combine_tracker");
+}
+
 interface AddExpenseState {
   accountType: "no_activation" | "standard" | "practice";
   planSize: "50k" | "100k" | "150k";
@@ -98,13 +115,10 @@ function buildInitialAddExpenseState(accountId: string): AddExpenseState {
 }
 
 export function ExpensesPage() {
-  const [searchParams] = useSearchParams();
-  const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [category, setCategory] = useState<ExpenseCategory | "">("");
-  const [accountFilter, setAccountFilter] = useState(accountFromQuery ? String(accountFromQuery) : "");
+  const [accountFilter, setAccountFilter] = useState("");
 
   const [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
@@ -117,18 +131,15 @@ export function ExpensesPage() {
   const [totals, setTotals] = useState<ExpenseTotals | null>(null);
   const [totalsLoading, setTotalsLoading] = useState(false);
   const [totalsError, setTotalsError] = useState<string | null>(null);
+  const [combineSpendSnapshot, setCombineSpendSnapshot] = useState(readCombineSpendSnapshot);
+  const [combineTrackerLoading, setCombineTrackerLoading] = useState(false);
+  const [combineTrackerError, setCombineTrackerError] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [addState, setAddState] = useState<AddExpenseState>(buildInitialAddExpenseState(accountFilter));
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-
-  useEffect(() => {
-    if (!accountFromQuery) {
-      return;
-    }
-    setAccountFilter((current) => (current ? current : String(accountFromQuery)));
-  }, [accountFromQuery]);
+  const didInitialCombineSyncRef = useRef(false);
 
   const parsedAccountFilter = useMemo(() => parsePositiveInt(accountFilter), [accountFilter]);
 
@@ -182,6 +193,53 @@ export function ExpensesPage() {
     }
   }, [parsedAccountFilter]);
 
+  const syncCombineTracker = useCallback(async () => {
+    setCombineTrackerLoading(true);
+    setCombineTrackerError(null);
+    try {
+      const payload = await accountsApi.getAccounts(false);
+      const syncResult = syncCombineSpendTracker(payload);
+      let nextSnapshot = syncResult.snapshot;
+      const syncedAccountIds: number[] = [];
+      let failedCount = 0;
+
+      for (const purchase of syncResult.unsyncedEvaluationPurchases) {
+        try {
+          await createExpense({
+            expense_date: purchase.purchasedOn,
+            amount_cents: purchase.amountCents,
+            category: "evaluation_fee",
+            plan_size: purchase.planSize,
+            account_id: purchase.accountId,
+            description: `Auto tracked combine purchase (${purchase.planSize.toUpperCase()})`,
+            tags: ["combine_tracker", "auto"],
+          });
+          syncedAccountIds.push(purchase.accountId);
+        } catch (err) {
+          if (isApiError(err) && err.status === 409 && err.detail === "duplicate_expense") {
+            syncedAccountIds.push(purchase.accountId);
+          } else {
+            failedCount += 1;
+          }
+        }
+      }
+
+      if (syncedAccountIds.length > 0) {
+        nextSnapshot = markEvaluationExpensesSynced(syncedAccountIds);
+        await Promise.all([loadExpenses(), loadTotals()]);
+      }
+
+      if (failedCount > 0) {
+        setCombineTrackerError(`Failed to save ${failedCount} combine expense${failedCount === 1 ? "" : "s"}.`);
+      }
+      setCombineSpendSnapshot(nextSnapshot);
+    } catch (err) {
+      setCombineTrackerError(err instanceof Error ? err.message : "Failed to sync combine spend tracker");
+    } finally {
+      setCombineTrackerLoading(false);
+    }
+  }, [loadExpenses, loadTotals]);
+
   useEffect(() => {
     void loadExpenses();
   }, [loadExpenses]);
@@ -189,6 +247,14 @@ export function ExpensesPage() {
   useEffect(() => {
     void loadTotals();
   }, [loadTotals]);
+
+  useEffect(() => {
+    if (didInitialCombineSyncRef.current) {
+      return;
+    }
+    didInitialCombineSyncRef.current = true;
+    void syncCombineTracker();
+  }, [syncCombineTracker]);
 
   useEffect(() => {
     setOffset(0);
@@ -213,6 +279,10 @@ export function ExpensesPage() {
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
   const practiceBlocked = addState.accountType === "practice";
+  const combineTrackerTotalAmount = combineSpendSnapshot.totalCostCents / 100;
+  const trackerStartedOnLabel = trackerDateFormatter.format(
+    new Date(`${combineSpendSnapshot.startedOn}T00:00:00.000Z`),
+  );
 
   function resetAddForm() {
     setAddState(buildInitialAddExpenseState(accountFilter));
@@ -236,6 +306,16 @@ export function ExpensesPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete expense");
     }
+  }
+
+  function handleAddStandardActivation() {
+    setCombineSpendSnapshot(incrementStandardActivationCount(1));
+    setCombineTrackerError(null);
+  }
+
+  function handleRemoveStandardActivation() {
+    setCombineSpendSnapshot(decrementStandardActivationCount(1));
+    setCombineTrackerError(null);
   }
 
   async function handleSubmitNewExpense(event: FormEvent<HTMLFormElement>) {
@@ -289,7 +369,7 @@ export function ExpensesPage() {
   return (
     <div className="space-y-6 pb-10">
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card className="sm:col-span-2 xl:col-span-4">
+        <Card className="xl:col-span-2">
           <CardHeader className="mb-2">
             <CardDescription>All-time spend</CardDescription>
             <CardTitle className="text-2xl">
@@ -300,6 +380,42 @@ export function ExpensesPage() {
             <p className="text-xs text-slate-400">
               {totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardHeader className="mb-2">
+            <CardDescription>Combine spend tracker</CardDescription>
+            <CardTitle className="text-2xl">
+              {combineTrackerLoading ? "..." : currencyFormatter.format(combineTrackerTotalAmount)}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {combineTrackerError ? (
+              <p className="text-xs text-rose-300">{combineTrackerError}</p>
+            ) : (
+              <p className="text-xs text-slate-400">
+                {combineSpendSnapshot.totalTrackedCombines} combine purchase
+                {combineSpendSnapshot.totalTrackedCombines === 1 ? "" : "s"} since {trackerStartedOnLabel} (
+                {`50k: ${combineSpendSnapshot.countsByPlan["50k"]} | 100k: ${combineSpendSnapshot.countsByPlan["100k"]} | 150k: ${combineSpendSnapshot.countsByPlan["150k"]}`})
+              </p>
+            )}
+            <p className="text-xs text-slate-500">
+              Standard activations: {combineSpendSnapshot.standardActivationCount} (
+              {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}). Prefixes: 50KTC /
+              100KTC / 150KTC. Rates: $115 / $168 / $221.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={handleAddStandardActivation}>
+                Add Standard Activation (+$150)
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleRemoveStandardActivation}>
+                Remove Standard Activation (-$150)
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
+                {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </section>
@@ -411,9 +527,13 @@ export function ExpensesPage() {
                         {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" onClick={() => void handleDeleteExpense(expense)}>
-                          Delete
-                        </Button>
+                        {isAutoTrackedCombineExpense(expense) ? (
+                          <span className="text-xs text-slate-500">Auto-tracked</span>
+                        ) : (
+                          <Button variant="danger" size="sm" onClick={() => void handleDeleteExpense(expense)}>
+                            Delete
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))

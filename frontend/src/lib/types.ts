@@ -80,7 +80,16 @@ export interface AccountInfo {
   name: string;
   balance: number;
   status: string;
+  account_state: "ACTIVE" | "LOCKED_OUT" | "HIDDEN" | "MISSING";
+  is_main: boolean;
+  can_trade: boolean | null;
+  is_visible: boolean | null;
   last_trade_at: string | null;
+}
+
+export interface AccountMainUpdateResult {
+  account_id: number;
+  is_main: boolean;
 }
 
 export interface AccountLastTradeInfo {

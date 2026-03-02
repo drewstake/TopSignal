@@ -92,10 +92,6 @@ class ProjectXClient:
             if not isinstance(row, dict):
                 continue
 
-            # Keep this defensive filter for active-only requests.
-            if only_active_accounts and row.get("canTrade") is False:
-                continue
-
             account_id_raw = _first_value(row, ["id", "accountId", "account_id"])
             if account_id_raw is None:
                 continue
@@ -104,16 +100,13 @@ class ProjectXClient:
             if account_id is None:
                 continue
 
-            status_raw = _first_value(row, ["status", "state", "accountStatus"])
-            can_trade = row.get("canTrade")
-            if status_raw is not None:
-                status = str(status_raw)
-            elif can_trade is True:
-                status = "ACTIVE"
-            elif can_trade is False:
-                status = "INACTIVE"
-            else:
-                status = "UNKNOWN"
+            can_trade = _safe_bool(_first_value(row, ["canTrade", "can_trade"]))
+            is_visible = _safe_bool(_first_value(row, ["isVisible", "is_visible"]))
+            status = _account_status_from_flags(can_trade=can_trade, is_visible=is_visible)
+
+            # Keep this defensive filter for active-only requests.
+            if only_active_accounts and status != "ACTIVE":
+                continue
 
             output.append(
                 {
@@ -134,6 +127,8 @@ class ProjectXClient:
                         )
                     ),
                     "status": status,
+                    "can_trade": can_trade,
+                    "is_visible": is_visible,
                 }
             )
 
@@ -418,6 +413,30 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def _account_status_from_flags(*, can_trade: bool | None, is_visible: bool | None) -> str:
+    if is_visible is False:
+        return "HIDDEN"
+    if can_trade is False:
+        return "LOCKED_OUT"
+    return "ACTIVE"
 
 
 def _string_or_none(value: Any) -> str | None:

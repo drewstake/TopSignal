@@ -108,6 +108,8 @@ def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
             "name": "ACTIVE_5",
             "balance": 50000.0,
             "status": "ACTIVE",
+            "can_trade": True,
+            "is_visible": None,
         }
     ]
 
@@ -137,14 +139,48 @@ def test_list_accounts_can_request_all_accounts():
             "name": "ACTIVE_5",
             "balance": 50000.0,
             "status": "ACTIVE",
+            "can_trade": True,
+            "is_visible": None,
         },
         {
             "id": 6,
             "name": "NO_TRADE",
             "balance": 25000.0,
-            "status": "INACTIVE",
+            "status": "LOCKED_OUT",
+            "can_trade": False,
+            "is_visible": None,
         },
     ]
+
+
+def test_list_accounts_marks_hidden_when_is_visible_false():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            return {
+                "accounts": [
+                    {"id": 9, "name": "HIDDEN_9", "balance": 15000, "canTrade": True, "isVisible": False},
+                ]
+            }
+
+    client = StubClient()
+
+    rows_all = client.list_accounts(only_active_accounts=False)
+    rows_active = client.list_accounts(only_active_accounts=True)
+
+    assert rows_all == [
+        {
+            "id": 9,
+            "name": "HIDDEN_9",
+            "balance": 15000.0,
+            "status": "HIDDEN",
+            "can_trade": True,
+            "is_visible": False,
+        }
+    ]
+    assert rows_active == []
 
 
 def test_fetch_last_trade_timestamp_returns_latest_value():

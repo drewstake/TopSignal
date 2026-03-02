@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
@@ -9,9 +10,12 @@ import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
   readStoredAccountId,
+  readStoredMainAccountId,
   writeStoredAccountId,
+  writeStoredMainAccountId,
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
+import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import type { AccountInfo } from "../../lib/types";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
@@ -44,6 +48,29 @@ function formatLastTrade(lastTradeAt: string | null) {
   return `${lastTradeFormatter.format(parsed)} UTC`;
 }
 
+function formatAccountStateLabel(state: AccountInfo["account_state"]) {
+  if (state === "ACTIVE") {
+    return "Active";
+  }
+  if (state === "LOCKED_OUT") {
+    return "Locked out";
+  }
+  if (state === "HIDDEN") {
+    return "Hidden";
+  }
+  return "Missing (possible blown/closed)";
+}
+
+function accountStateBadgeVariant(state: AccountInfo["account_state"]) {
+  if (state === "ACTIVE") {
+    return "positive" as const;
+  }
+  if (state === "LOCKED_OUT" || state === "HIDDEN") {
+    return "warning" as const;
+  }
+  return "negative" as const;
+}
+
 export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
@@ -51,7 +78,9 @@ export function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState<string | null>(null);
-  const [includeInactiveAccounts, setIncludeInactiveAccounts] = useState(false);
+  const [showLockedHiddenAccounts, setShowLockedHiddenAccounts] = useState(false);
+  const [showMissingAccounts, setShowMissingAccounts] = useState(false);
+  const [settingMainAccountId, setSettingMainAccountId] = useState<number | null>(null);
   const [lastTradeOverridesById, setLastTradeOverridesById] = useState<Record<number, string | null>>({});
   const [lastTradeLoadingById, setLastTradeLoadingById] = useState<Record<number, boolean>>({});
   const [lastTradeResolvedById, setLastTradeResolvedById] = useState<Record<number, boolean>>({});
@@ -73,7 +102,10 @@ export function AccountsPage() {
     setLastTradeError(null);
 
     try {
-      const payload = await accountsApi.getAccounts(!includeInactiveAccounts);
+      const payload = await accountsApi.getAccounts({
+        showInactive: showLockedHiddenAccounts,
+        showMissing: showMissingAccounts,
+      });
       setAccounts(payload);
       setLastTradeOverridesById({});
       setLastTradeLoadingById({});
@@ -84,7 +116,7 @@ export function AccountsPage() {
     } finally {
       setAccountsLoading(false);
     }
-  }, [includeInactiveAccounts]);
+  }, [showLockedHiddenAccounts, showMissingAccounts]);
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
     if (lastTradeLoadingById[accountId]) {
@@ -104,28 +136,61 @@ export function AccountsPage() {
     }
   }, [lastTradeLoadingById]);
 
+  const setMainAccount = useCallback(
+    async (accountId: number) => {
+      setSettingMainAccountId(accountId);
+      setAccountsError(null);
+      try {
+        await accountsApi.setMainAccount(accountId);
+        writeStoredMainAccountId(accountId);
+        setActiveAccount(accountId);
+        await loadAccounts();
+      } catch (err) {
+        setAccountsError(err instanceof Error ? err.message : "Failed to update main account");
+      } finally {
+        setSettingMainAccountId(null);
+      }
+    },
+    [loadAccounts, setActiveAccount],
+  );
+
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
 
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+
   useEffect(() => {
-    if (accounts.length === 0) {
+    if (orderedAccounts.length === 0) {
       return;
     }
 
-    if (accountFromQuery && accounts.some((account) => account.id === accountFromQuery)) {
+    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
       writeStoredAccountId(accountFromQuery);
       return;
     }
 
+    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+    if (persistedMainAccountId) {
+      writeStoredMainAccountId(persistedMainAccountId);
+      setActiveAccount(persistedMainAccountId);
+      return;
+    }
+
     const storedAccountId = readStoredAccountId();
-    if (storedAccountId && accounts.some((account) => account.id === storedAccountId)) {
+    const storedMainAccountId = readStoredMainAccountId();
+    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
+      setActiveAccount(storedMainAccountId);
+      return;
+    }
+
+    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
       setActiveAccount(storedAccountId);
       return;
     }
 
-    setActiveAccount(accounts[0].id);
-  }, [accounts, accountFromQuery, setActiveAccount]);
+    setActiveAccount(orderedAccounts[0].id);
+  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === accountFromQuery) ?? null,
@@ -138,16 +203,24 @@ export function AccountsPage() {
         <Card>
           <CardHeader>
             <CardTitle>ProjectX Accounts</CardTitle>
-            <CardDescription>Select an account to make it active for the Trades view.</CardDescription>
+            <CardDescription>Select an account to make it active, or mark one as your default main account.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-end">
-              <Toggle
-                checked={includeInactiveAccounts}
-                onChange={setIncludeInactiveAccounts}
-                label="Show inactive accounts"
-                aria-label="Show inactive accounts"
-              />
+              <div className="flex flex-wrap items-center gap-3">
+                <Toggle
+                  checked={showLockedHiddenAccounts}
+                  onChange={setShowLockedHiddenAccounts}
+                  label="Show locked/hidden"
+                  aria-label="Show locked and hidden accounts"
+                />
+                <Toggle
+                  checked={showMissingAccounts}
+                  onChange={setShowMissingAccounts}
+                  label="Show missing"
+                  aria-label="Show missing accounts"
+                />
+              </div>
             </div>
             {lastTradeError ? <p className="text-xs text-amber-300">{lastTradeError}</p> : null}
             <div className="overflow-hidden rounded-xl border border-slate-800/80">
@@ -159,32 +232,34 @@ export function AccountsPage() {
                     <th className="px-3 py-3 text-right font-medium">Balance</th>
                     <th className="px-3 py-3 text-right font-medium">Last Trade</th>
                     <th className="px-3 py-3 text-right font-medium">Status</th>
+                    <th className="px-3 py-3 text-right font-medium">Main</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/70">
                   {accountsLoading ? (
                     Array.from({ length: 5 }).map((_, index) => (
                       <tr key={`accounts-loading-${index}`}>
-                        <td colSpan={5} className="px-3 py-3">
+                        <td colSpan={6} className="px-3 py-3">
                           <Skeleton className="h-6 w-full" />
                         </td>
                       </tr>
                     ))
                   ) : accountsError ? (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-rose-300">
+                      <td colSpan={6} className="px-3 py-6 text-center text-rose-300">
                         {accountsError}
                       </td>
                     </tr>
-                  ) : accounts.length === 0 ? (
+                  ) : orderedAccounts.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-slate-400">
+                      <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                         No accounts found.
                       </td>
                     </tr>
                   ) : (
-                    accounts.map((account) => {
+                    orderedAccounts.map((account) => {
                       const isActive = selectedAccount?.id === account.id;
+                      const isMainAccount = account.is_main;
                       const localLastTradeAt = account.last_trade_at;
                       const resolvedLastTradeAt =
                         lastTradeOverridesById[account.id] !== undefined
@@ -231,9 +306,26 @@ export function AccountsPage() {
                             )}
                           </td>
                           <td className="px-3 py-3 text-right">
-                            <Badge variant={account.status.toUpperCase() === "ACTIVE" ? "positive" : "neutral"}>
-                              {account.status}
+                            <Badge variant={accountStateBadgeVariant(account.account_state)}>
+                              {formatAccountStateLabel(account.account_state)}
                             </Badge>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            {isMainAccount ? (
+                              <Badge variant="accent">Main</Badge>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={settingMainAccountId === account.id}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void setMainAccount(account.id);
+                                }}
+                              >
+                                {settingMainAccountId === account.id ? "Saving..." : "Set Main"}
+                              </Button>
+                            )}
                           </td>
                         </tr>
                       );
