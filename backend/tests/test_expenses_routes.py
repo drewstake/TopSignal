@@ -1,5 +1,5 @@
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -204,6 +204,85 @@ def test_totals_week_month_ytd_all_time_with_fixed_dates(db_session, monkeypatch
     assert all_time["end_date"] == date(2026, 2, 27)
     assert all_time["total_amount_cents"] == 26300
     assert all_time["count"] == 5
+
+
+def test_totals_can_apply_custom_start_date(db_session, monkeypatch):
+    monkeypatch.setattr(main_module, "datetime", _FrozenDatetime)
+
+    create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 2, 24),
+            amount_cents=5100,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="50k",
+            account_id=123,
+        ),
+        db=db_session,
+    )
+    create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 2, 27),
+            amount_cents=16800,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="100k",
+            account_id=123,
+        ),
+        db=db_session,
+    )
+
+    totals = get_expense_totals(
+        range="all_time",
+        start_date=date(2026, 2, 27),
+        db=db_session,
+    )
+
+    assert totals["start_date"] == date(2026, 2, 27)
+    assert totals["end_date"] == date(2026, 2, 27)
+    assert totals["total_amount_cents"] == 16800
+    assert totals["count"] == 1
+
+
+def test_totals_can_apply_custom_created_at_start(db_session, monkeypatch):
+    monkeypatch.setattr(main_module, "datetime", _FrozenDatetime)
+
+    create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 2, 27),
+            amount_cents=5100,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="50k",
+            account_id=123,
+        ),
+        db=db_session,
+    )
+    create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 2, 27),
+            amount_cents=16800,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="100k",
+            account_id=123,
+        ),
+        db=db_session,
+    )
+
+    rows = db_session.query(Expense).order_by(Expense.id.asc()).all()
+    rows[0].created_at = datetime(2026, 2, 27, 14, 0, tzinfo=timezone.utc)
+    rows[1].created_at = datetime(2026, 2, 27, 14, 30, tzinfo=timezone.utc)
+    db_session.commit()
+
+    totals = get_expense_totals(
+        range="all_time",
+        start_created_at=datetime(2026, 2, 27, 14, 15, tzinfo=timezone.utc),
+        db=db_session,
+    )
+
+    assert totals["total_amount_cents"] == 16800
+    assert totals["count"] == 1
 
 
 def test_duplicate_insert_returns_conflict(db_session):

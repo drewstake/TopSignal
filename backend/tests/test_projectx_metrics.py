@@ -304,17 +304,18 @@ def test_compute_trade_summary_points_basis_auto_uses_trade_symbol_point_value()
     assert summary["pointsBasisUsed"] == "auto"
 
 
-def test_compute_trade_summary_points_basis_normalizes_all_trades_to_requested_symbol():
+def test_compute_trade_summary_points_basis_filters_to_requested_symbol():
     samples = [
         TradeMetricSample(timestamp=_dt(9, 0), pnl=10.0, fees=0.0, symbol="MNQ", size=1.0),
-        TradeMetricSample(timestamp=_dt(9, 1), pnl=-15.0, fees=0.0, symbol="MGC", size=3.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=-20.0, fees=0.0, symbol="MES", size=2.0),
+        TradeMetricSample(timestamp=_dt(9, 2), pnl=15.0, fees=0.0, symbol="MES", size=1.0),
     ]
 
     summary = compute_trade_summary(samples, points_basis="MES")
 
-    # Normalize both to MES point value = 5.
-    # Gain: 10/(1*5) = 2.0 points
-    # Loss: abs(-15/(3*5)) = 1.0 points
-    assert summary["avgPointGain"] == 2.0
-    assert summary["avgPointLoss"] == 1.0
+    # MES basis uses only MES trades:
+    # Gain: 15/(1*5) = 3.0 points
+    # Loss: abs(-20/(2*5)) = 2.0 points
+    assert summary["avgPointGain"] == 3.0
+    assert summary["avgPointLoss"] == 2.0
     assert summary["pointsBasisUsed"] == "MES"

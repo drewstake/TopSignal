@@ -12,6 +12,9 @@ Apply migration updates (if schema already exists):
   Get-Content .\db\migrations\20260220_add_rule_break_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260220_add_projectx_trade_events.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260221_add_projectx_trade_day_syncs.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+  Get-Content .\db\migrations\20260221_add_journal_entries.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+  Get-Content .\db\migrations\20260222_journal_entry_images_and_versioning.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+  Get-Content .\db\migrations\20260226_add_expenses.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260301_add_account_state_fields.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
   Get-Content .\db\migrations\20260302_add_instrument_metadata_and_position_lifecycles.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 

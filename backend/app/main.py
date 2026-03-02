@@ -93,6 +93,7 @@ from .services.projectx_accounts import (
 from .services.projectx_client import ProjectXClient, ProjectXClientError
 from .services.instruments import normalize_points_basis
 from .services.projectx_trades import (
+    derive_trade_execution_lifecycles,
     ensure_trade_cache_for_request,
     get_trade_event_pnl_calendar,
     has_local_trades,
@@ -230,16 +231,33 @@ def get_expense_totals(
     range: ExpenseRange = Query(...),
     account_id: int | None = None,
     week_start: WeekStart = Query(default="monday"),
+    start_date: date | None = None,
+    end_date: date | None = None,
+    start_created_at: datetime | None = None,
+    end_created_at: datetime | None = None,
     db: Session = Depends(get_db),
 ):
     if account_id is not None:
         _validate_account_id(account_id)
 
-    start_date, end_date = _resolve_expense_range_dates(range=range, week_start=week_start)
+    if start_date is not None or end_date is not None:
+        if start_date and end_date and start_date > end_date:
+            raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+        effective_start_date = start_date
+        effective_end_date = end_date or datetime.now(_NEW_YORK_TZ).date()
+    else:
+        effective_start_date, effective_end_date = _resolve_expense_range_dates(range=range, week_start=week_start)
 
-    query = db.query(Expense).filter(Expense.expense_date <= end_date)
-    if start_date is not None:
-        query = query.filter(Expense.expense_date >= start_date)
+    if start_created_at and end_created_at and start_created_at > end_created_at:
+        raise HTTPException(status_code=400, detail="start_created_at must be before or equal to end_created_at")
+
+    query = db.query(Expense).filter(Expense.expense_date <= effective_end_date)
+    if effective_start_date is not None:
+        query = query.filter(Expense.expense_date >= effective_start_date)
+    if start_created_at is not None:
+        query = query.filter(Expense.created_at >= _as_utc(start_created_at))
+    if end_created_at is not None:
+        query = query.filter(Expense.created_at <= _as_utc(end_created_at))
     if account_id is not None:
         query = query.filter(Expense.account_id == account_id)
 
@@ -265,8 +283,8 @@ def get_expense_totals(
 
     return {
         "range": range,
-        "start_date": start_date,
-        "end_date": end_date,
+        "start_date": effective_start_date,
+        "end_date": effective_end_date,
         "total_amount": _cents_to_dollars(total_amount_cents),
         "total_amount_cents": int(total_amount_cents),
         "by_category": by_category,
@@ -902,7 +920,18 @@ def list_projectx_account_trades(
             end=end,
             symbol_query=symbol,
         )
-        return [serialize_trade_event(row) for row in rows]
+        lifecycle_by_trade_id = derive_trade_execution_lifecycles(
+            db,
+            account_id=account_id,
+            closed_rows=rows,
+        )
+        return [
+            serialize_trade_event(
+                row,
+                lifecycle=lifecycle_by_trade_id.get(int(row.id)),
+            )
+            for row in rows
+        ]
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
 

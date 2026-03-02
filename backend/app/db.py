@@ -21,6 +21,7 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     _ensure_accounts_schema_compatibility()
+    _ensure_journal_schema_compatibility()
     _ensure_default_instrument_metadata()
 
 
@@ -60,6 +61,89 @@ def _ensure_accounts_schema_compatibility() -> None:
         conn.execute(text("update accounts set is_main = false where is_main is null"))
         conn.execute(text("create index if not exists idx_accounts_is_main on accounts (is_main)"))
         conn.execute(text("create index if not exists idx_accounts_account_state on accounts (account_state)"))
+
+
+def _ensure_journal_schema_compatibility() -> None:
+    # Existing dev databases may predate journal versioning/image support columns.
+    # Apply a safe schema compatibility patch on startup for Postgres.
+    if engine.dialect.name != "postgresql":
+        return
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        table_names = set(inspector.get_table_names())
+        if "journal_entries" not in table_names:
+            return
+
+        column_names = {column["name"] for column in inspector.get_columns("journal_entries")}
+        if "version" not in column_names:
+            conn.execute(text("alter table journal_entries add column if not exists version integer"))
+        if "stats_source" not in column_names:
+            conn.execute(text("alter table journal_entries add column if not exists stats_source text"))
+        if "stats_json" not in column_names:
+            conn.execute(text("alter table journal_entries add column if not exists stats_json jsonb"))
+        if "stats_pulled_at" not in column_names:
+            conn.execute(text("alter table journal_entries add column if not exists stats_pulled_at timestamptz"))
+
+        conn.execute(text("update journal_entries set version = 1 where version is null"))
+        conn.execute(
+            text(
+                """
+                alter table journal_entries
+                  alter column version set default 1,
+                  alter column version set not null
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "create unique index if not exists uq_journal_entries_account_entry_date on journal_entries (account_id, entry_date)"
+            )
+        )
+        conn.execute(
+            text(
+                """
+                create index if not exists idx_journal_entries_account_archived_date_updated
+                  on journal_entries (account_id, is_archived, entry_date desc, updated_at desc)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                create index if not exists idx_journal_entries_account_mood_date
+                  on journal_entries (account_id, mood, entry_date desc)
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                create table if not exists journal_entry_images (
+                  id bigserial primary key,
+                  journal_entry_id bigint not null references journal_entries(id) on delete cascade,
+                  account_id bigint not null,
+                  entry_date date not null,
+                  filename text not null,
+                  mime_type text not null,
+                  byte_size integer not null,
+                  width integer,
+                  height integer,
+                  created_at timestamptz not null default now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "create index if not exists idx_journal_entry_images_account_date on journal_entry_images (account_id, entry_date)"
+            )
+        )
+        conn.execute(
+            text(
+                "create index if not exists idx_journal_entry_images_journal_entry on journal_entry_images (journal_entry_id)"
+            )
+        )
 
 
 def _ensure_default_instrument_metadata() -> None:

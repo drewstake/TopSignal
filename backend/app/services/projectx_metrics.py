@@ -11,6 +11,7 @@ from .instruments import (
     build_point_value_lookup,
     normalize_points_basis,
     resolve_point_value,
+    symbol_candidates,
 )
 
 
@@ -303,6 +304,9 @@ def _compute_point_metrics(
         if qty <= epsilon:
             continue
 
+        if basis_point_value is not None and not _trade_matches_points_basis(trade=trade, points_basis=points_basis):
+            continue
+
         point_value = (
             basis_point_value
             if basis_point_value is not None
@@ -325,6 +329,10 @@ def _compute_point_metrics(
         "avg_point_gain": _mean(winners) if winners else None,
         "avg_point_loss": _mean(losers) if losers else None,
     }
+
+
+def _trade_matches_points_basis(*, trade: TradeMetricSample, points_basis: str) -> bool:
+    return points_basis in symbol_candidates(symbol=trade.symbol, contract_id=trade.contract_id)
 
 
 def _compute_daily_net_values(trades: list[TradeMetricSample], net_values: list[float]) -> dict[str, float]:

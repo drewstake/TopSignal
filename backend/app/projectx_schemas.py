@@ -34,6 +34,11 @@ class ProjectXTradeOut(BaseModel):
     size: float
     price: float
     timestamp: datetime
+    entry_time: datetime | None = None
+    exit_time: datetime
+    duration_minutes: float | None = None
+    entry_price: float | None = None
+    exit_price: float
     fees: float
     pnl: float | None = None
     order_id: str

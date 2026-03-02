@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import logging
 import os
 from dataclasses import dataclass
@@ -34,6 +35,28 @@ class _DayFetchResult:
     page_count: int
     is_truncated: bool
     truncation_count: int
+
+
+@dataclass(frozen=True)
+class TradeExecutionLifecycle:
+    entry_timestamp: datetime | None
+    exit_timestamp: datetime
+    duration_minutes: float | None
+    entry_price: float | None
+    exit_price: float
+
+
+@dataclass
+class _PositionLot:
+    qty: float
+    timestamp: datetime
+    price: float
+
+
+@dataclass
+class _PositionMatchState:
+    position: float
+    lots: deque[_PositionLot]
 
 
 def ensure_trade_cache_for_request(
@@ -324,6 +347,177 @@ def list_trade_events(
     )
 
 
+def derive_trade_execution_lifecycles(
+    db: Session,
+    *,
+    account_id: int,
+    closed_rows: list[ProjectXTradeEvent],
+) -> dict[int, TradeExecutionLifecycle]:
+    if not closed_rows:
+        return {}
+
+    target_ids = {int(row.id) for row in closed_rows}
+    if not target_ids:
+        return {}
+
+    contract_ids = sorted({str(row.contract_id) for row in closed_rows if row.contract_id})
+    latest_close_ts = max(_as_utc(row.trade_timestamp) for row in closed_rows)
+
+    base_query = (
+        db.query(ProjectXTradeEvent)
+        .options(
+            load_only(
+                ProjectXTradeEvent.id,
+                ProjectXTradeEvent.contract_id,
+                ProjectXTradeEvent.symbol,
+                ProjectXTradeEvent.side,
+                ProjectXTradeEvent.size,
+                ProjectXTradeEvent.price,
+                ProjectXTradeEvent.trade_timestamp,
+                ProjectXTradeEvent.pnl,
+            )
+        )
+        .filter(ProjectXTradeEvent.account_id == account_id)
+        .filter(_non_voided_trade_event_expr())
+        .filter(ProjectXTradeEvent.trade_timestamp <= latest_close_ts)
+    )
+    if contract_ids:
+        base_query = base_query.filter(ProjectXTradeEvent.contract_id.in_(contract_ids))
+
+    context_limit = max(len(closed_rows) * 25, 5000)
+    max_context_limit = max(context_limit, 100000)
+    current_limit = context_limit
+    context_rows: list[ProjectXTradeEvent] = []
+    while True:
+        context_rows = (
+            base_query.order_by(ProjectXTradeEvent.trade_timestamp.desc(), ProjectXTradeEvent.id.desc())
+            .limit(current_limit)
+            .all()
+        )
+        context_ids = {int(row.id) for row in context_rows if row.id is not None}
+        has_all_targets = target_ids.issubset(context_ids)
+        if has_all_targets or len(context_rows) < current_limit or current_limit >= max_context_limit:
+            break
+        current_limit = min(current_limit * 2, max_context_limit)
+
+    context_rows.reverse()
+
+    epsilon = 1e-9
+    states: dict[str, _PositionMatchState] = {}
+    lifecycle_by_id: dict[int, TradeExecutionLifecycle] = {}
+
+    for row in context_rows:
+        if row.id is None:
+            continue
+
+        trade_id = int(row.id)
+        trade_ts = _as_utc(row.trade_timestamp)
+        trade_price = float(row.price) if row.price is not None else 0.0
+        qty = abs(float(row.size) if row.size is not None else 0.0)
+        side_sign = _trade_side_sign(row.side)
+
+        if qty <= epsilon or side_sign == 0:
+            if row.pnl is not None and trade_id in target_ids:
+                lifecycle_by_id[trade_id] = TradeExecutionLifecycle(
+                    entry_timestamp=None,
+                    exit_timestamp=trade_ts,
+                    duration_minutes=None,
+                    entry_price=None,
+                    exit_price=trade_price,
+                )
+            continue
+
+        key = row.contract_id or row.symbol or "__UNKNOWN__"
+        state = states.setdefault(key, _PositionMatchState(position=0.0, lots=deque()))
+        remaining = side_sign * qty
+
+        closed_qty = 0.0
+        weighted_entry_epoch = 0.0
+        weighted_entry_price = 0.0
+
+        while (
+            abs(remaining) > epsilon
+            and abs(state.position) > epsilon
+            and _sign(remaining) != _sign(state.position)
+        ):
+            if not state.lots:
+                state.position = 0.0
+                break
+
+            # Match oldest lots first so row-level attribution follows FIFO closes.
+            lot = state.lots[0]
+            close_qty = min(abs(remaining), abs(lot.qty))
+            closed_qty += close_qty
+            weighted_entry_epoch += lot.timestamp.timestamp() * close_qty
+            weighted_entry_price += lot.price * close_qty
+
+            next_lot_qty = lot.qty - (_sign(lot.qty) * close_qty)
+            if abs(next_lot_qty) <= epsilon:
+                state.lots.popleft()
+            else:
+                state.lots[0] = _PositionLot(
+                    qty=next_lot_qty,
+                    timestamp=lot.timestamp,
+                    price=lot.price,
+                )
+
+            signed_close_qty = _sign(remaining) * close_qty
+            remaining -= signed_close_qty
+            state.position += signed_close_qty
+
+        if row.pnl is not None and trade_id in target_ids:
+            entry_timestamp: datetime | None = None
+            duration_minutes: float | None = None
+            entry_price: float | None = None
+            if closed_qty > epsilon:
+                avg_entry_epoch = weighted_entry_epoch / closed_qty
+                entry_timestamp = datetime.fromtimestamp(avg_entry_epoch, tz=timezone.utc)
+                duration_minutes = max((trade_ts - entry_timestamp).total_seconds() / 60.0, 0.0)
+                entry_price = weighted_entry_price / closed_qty
+
+            lifecycle_by_id[trade_id] = TradeExecutionLifecycle(
+                entry_timestamp=entry_timestamp,
+                exit_timestamp=trade_ts,
+                duration_minutes=duration_minutes,
+                entry_price=entry_price,
+                exit_price=trade_price,
+            )
+
+        if abs(remaining) > epsilon:
+            # Avoid creating synthetic opens from close-only rows when the
+            # local context is incomplete.
+            if row.pnl is not None and closed_qty <= epsilon:
+                continue
+            state.lots.append(
+                _PositionLot(
+                    qty=remaining,
+                    timestamp=trade_ts,
+                    price=trade_price,
+                )
+            )
+            state.position += remaining
+
+        if abs(state.position) <= epsilon:
+            state.position = 0.0
+            state.lots.clear()
+
+    for row in closed_rows:
+        if row.id is None:
+            continue
+        trade_id = int(row.id)
+        if trade_id in lifecycle_by_id:
+            continue
+        lifecycle_by_id[trade_id] = TradeExecutionLifecycle(
+            entry_timestamp=None,
+            exit_timestamp=_as_utc(row.trade_timestamp),
+            duration_minutes=None,
+            entry_price=None,
+            exit_price=float(row.price) if row.price is not None else 0.0,
+        )
+
+    return lifecycle_by_id
+
+
 def summarize_trade_events(
     db: Session,
     account_id: int,
@@ -353,9 +547,18 @@ def get_trade_event_pnl_calendar(
     return compute_daily_pnl_calendar(samples)
 
 
-def serialize_trade_event(row: ProjectXTradeEvent) -> dict[str, Any]:
+def serialize_trade_event(
+    row: ProjectXTradeEvent,
+    *,
+    lifecycle: TradeExecutionLifecycle | None = None,
+) -> dict[str, Any]:
     symbol = row.symbol or row.contract_id
     fees = _normalized_trade_fees(row)
+    exit_timestamp = lifecycle.exit_timestamp if lifecycle is not None else _as_utc(row.trade_timestamp)
+    exit_price = lifecycle.exit_price if lifecycle is not None else float(row.price)
+    entry_timestamp = lifecycle.entry_timestamp if lifecycle is not None else None
+    entry_price = lifecycle.entry_price if lifecycle is not None else None
+    duration_minutes = lifecycle.duration_minutes if lifecycle is not None else None
     return {
         "id": int(row.id),
         "account_id": int(row.account_id),
@@ -365,6 +568,11 @@ def serialize_trade_event(row: ProjectXTradeEvent) -> dict[str, Any]:
         "size": float(row.size),
         "price": float(row.price),
         "timestamp": _as_utc(row.trade_timestamp),
+        "entry_time": entry_timestamp,
+        "exit_time": exit_timestamp,
+        "duration_minutes": duration_minutes,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
         "fees": fees,
         "pnl": float(row.pnl) if row.pnl is not None else None,
         "order_id": row.order_id,
@@ -730,6 +938,23 @@ def _normalized_optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def _trade_side_sign(side: str | None) -> int:
+    normalized = (side or "").strip().upper()
+    if normalized == "BUY":
+        return 1
+    if normalized == "SELL":
+        return -1
+    return 0
+
+
+def _sign(value: float) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
 
 
 def _as_utc(value: datetime) -> datetime:

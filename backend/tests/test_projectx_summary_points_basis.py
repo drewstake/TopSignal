@@ -27,7 +27,7 @@ def _make_session():
     return engine, SessionLocal()
 
 
-def test_summarize_trade_events_supports_points_basis_conversion():
+def test_summarize_trade_events_filters_points_metrics_to_requested_symbol():
     engine, db = _make_session()
     try:
         db.add_all(
@@ -69,10 +69,9 @@ def test_summarize_trade_events_supports_points_basis_conversion():
         assert summary_auto["avgPointLoss"] == 1.0
         assert summary_auto["pointsBasisUsed"] == "auto"
 
-        # MNQ basis normalizes both trades by MNQ point value (2):
-        # Gain: 8/(2*2)=2.0, Loss: abs(-5/(1*2))=2.5
+        # MNQ basis uses only MNQ trades.
         assert summary_mnq["avgPointGain"] == 2.0
-        assert summary_mnq["avgPointLoss"] == 2.5
+        assert summary_mnq["avgPointLoss"] is None
         assert summary_mnq["pointsBasisUsed"] == "MNQ"
 
         # Existing dollar metrics stay unchanged.
