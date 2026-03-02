@@ -22,7 +22,7 @@ from .auth import (
     get_authenticated_user_or_default,
     reset_authenticated_user,
 )
-from .db import get_db, init_db
+from .db import get_db, guard_against_local_database_url, init_db, log_runtime_connection_targets
 from .expense_schemas import (
     ExpenseCategory,
     ExpenseCreateIn,
@@ -177,6 +177,8 @@ async def api_auth_middleware(request: Request, call_next):
 
 @app.on_event("startup")
 def on_startup():
+    guard_against_local_database_url()
+    log_runtime_connection_targets()
     init_db()
     _start_streaming_runtime_if_enabled()
 

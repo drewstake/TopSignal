@@ -1,18 +1,76 @@
+import logging
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set. Put it in backend/.env")
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_LOCAL_SUPABASE_URLS = {
+    "http://127.0.0.1:54321",
+    "http://localhost:54321",
+}
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def resolve_database_host_mode() -> tuple[str, Literal["local", "cloud"]]:
+    parsed = make_url(DATABASE_URL)
+    backend_name = parsed.get_backend_name()
+    if backend_name == "sqlite":
+        return "sqlite", "local"
+
+    host = (parsed.host or "").strip().strip("[]")
+    if not host:
+        return "unknown", "local"
+
+    mode: Literal["local", "cloud"] = "local" if host.lower() in _LOCAL_HOSTS else "cloud"
+    if parsed.port is None:
+        return host, mode
+    return f"{host}:{parsed.port}", mode
+
+
+def guard_against_local_database_url() -> None:
+    parsed = make_url(DATABASE_URL)
+    if parsed.get_backend_name() == "sqlite":
+        return
+
+    host = (parsed.host or "").strip().strip("[]").lower()
+    if host in _LOCAL_HOSTS:
+        message = "You are in local DB mode; start Docker or switch DATABASE_URL to Supabase Cloud."
+        logger.error("%s Current DATABASE_URL host: %s", message, host)
+        raise RuntimeError(message)
+
+
+def resolve_supabase_mode() -> Literal["disabled", "local", "cloud"]:
+    configured = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    if not configured:
+        return "disabled"
+    if configured in _LOCAL_SUPABASE_URLS:
+        return "local"
+    return "cloud"
+
+
+def log_runtime_connection_targets() -> None:
+    db_host, db_mode = resolve_database_host_mode()
+    supabase_mode = resolve_supabase_mode()
+    logger.info("Database target resolved: host=%s mode=%s", db_host, db_mode)
+    logger.info(
+        "Supabase mode resolved from SUPABASE_URL: mode=%s (local mode only when SUPABASE_URL is 127.0.0.1:54321)",
+        supabase_mode,
+    )
 
 
 def init_db():
