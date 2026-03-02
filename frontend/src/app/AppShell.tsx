@@ -16,6 +16,7 @@ import { accountsApi } from "../lib/api";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
+import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
 
 export function AppShell() {
   const location = useLocation();
@@ -92,6 +93,7 @@ export function AppShell() {
   }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
   const accountSuffix = selectedAccountId ? `?${ACCOUNT_QUERY_PARAM}=${selectedAccountId}` : "";
+  const currentUserEmail = getCurrentUserEmailSync();
 
   function handleAccountChange(rawValue: string) {
     const nextAccountId = parseAccountId(rawValue);
@@ -190,6 +192,20 @@ export function AppShell() {
             <div className="text-right">
               <p className="text-lg font-semibold tracking-tight text-slate-100">TopSignal</p>
               <p className="text-xs text-slate-400">ProjectX Account + Trade Dashboard</p>
+              {hasSupabaseConfig ? (
+                <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-400">
+                  <span>{currentUserEmail ?? "Signed in"}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      void signOutSupabase();
+                    }}
+                  >
+                    Sign out
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
 

@@ -2,6 +2,7 @@ import type {
   AccountMainUpdateResult,
   AccountInfo,
   AccountLastTradeInfo,
+  AuthMe,
   JournalEntry,
   JournalEntryCreateResult,
   JournalEntryCreateInput,
@@ -30,7 +31,10 @@ import type {
   SummaryMetrics,
   SymbolPnlPoint,
   TradeRecord,
+  ProjectXCredentialsInput,
+  ProjectXCredentialsStatus,
 } from "./types";
+import { getAccessToken, getAccessTokenSync } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const ACCOUNTS_CACHE_TTL_MS = 30_000;
@@ -38,7 +42,7 @@ const ACCOUNTS_CACHE_TTL_MS = 30_000;
 type QueryValue = string | number | boolean | null | undefined;
 
 interface RequestJsonOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
@@ -97,17 +101,36 @@ function toAbsoluteApiUrl(path: string) {
 }
 
 function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
+  const absoluteUrl = toAbsoluteApiUrl(image.url);
+  const token = getAccessTokenSync();
+  if (!token || !image.url.startsWith("/api/journal-images/")) {
+    return {
+      ...image,
+      url: absoluteUrl,
+    };
+  }
+
+  const url = new URL(absoluteUrl);
+  url.searchParams.set("access_token", token);
   return {
     ...image,
-    url: toAbsoluteApiUrl(image.url),
+    url: url.toString(),
   };
 }
 
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal } = options;
+  const accessToken = await getAccessToken();
+  const headers: Record<string, string> = {};
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
   const response = await fetch(buildUrl(path, query), {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
@@ -142,8 +165,14 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
 
 async function requestMultipart<T>(path: string, options: RequestMultipartOptions): Promise<T> {
   const { method = "POST", query, formData, signal } = options;
+  const accessToken = await getAccessToken();
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
   const response = await fetch(buildUrl(path, query), {
     method,
+    headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: formData,
     signal,
   });
@@ -308,6 +337,18 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 export const accountsApi = {
   getAccounts: (optionsOrOnlyActive?: GetAccountsOptions | boolean) => getAccountsCached(optionsOrOnlyActive),
   getSelectableAccounts: () => getSelectableAccounts(),
+  getAuthMe: () => requestJson<AuthMe>("/api/auth/me"),
+  getProjectXCredentialsStatus: () =>
+    requestJson<ProjectXCredentialsStatus>("/api/me/providers/projectx/credentials/status"),
+  putProjectXCredentials: (payload: ProjectXCredentialsInput) =>
+    requestJson<void>("/api/me/providers/projectx/credentials", {
+      method: "PUT",
+      body: payload,
+    }),
+  deleteProjectXCredentials: () =>
+    requestJson<void>("/api/me/providers/projectx/credentials", {
+      method: "DELETE",
+    }),
   setMainAccount: (accountId: number) =>
     requestJson<AccountMainUpdateResult>(`/api/accounts/${accountId}/main`, {
       method: "POST",

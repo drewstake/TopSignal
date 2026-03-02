@@ -347,3 +347,17 @@ export interface JournalPullTradeStatsInput {
   trade_ids?: number[];
   entry_date?: string;
 }
+
+export interface AuthMe {
+  user_id: string;
+  email: string | null;
+}
+
+export interface ProjectXCredentialsInput {
+  username: string;
+  api_key: string;
+}
+
+export interface ProjectXCredentialsStatus {
+  configured: boolean;
+}

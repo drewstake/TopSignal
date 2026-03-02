@@ -10,7 +10,10 @@ interface Payload {
 describe("DebouncedAutosaveQueue", () => {
   it("debounces burst edits into a single save", async () => {
     vi.useFakeTimers();
-    const save = vi.fn(async (_payload: Payload) => undefined);
+    const save = vi.fn(async (payload: Payload) => {
+      void payload;
+      return undefined;
+    });
     const queue = new DebouncedAutosaveQueue<Payload>({
       delayMs: JOURNAL_AUTOSAVE_DELAY_MS,
       save,
