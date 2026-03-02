@@ -160,7 +160,7 @@ export function TradesPage() {
 
   const loadAccounts = useCallback(async () => {
     try {
-      const payload = await accountsApi.getAccounts();
+      const payload = await accountsApi.getSelectableAccounts();
       setAccounts(payload);
     } catch {
       setAccounts([]);

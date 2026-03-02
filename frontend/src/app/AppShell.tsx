@@ -34,7 +34,7 @@ export function AppShell() {
       setAccountsError(null);
 
       try {
-        const payload = await accountsApi.getAccounts();
+        const payload = await accountsApi.getSelectableAccounts();
         if (!isMounted) {
           return;
         }

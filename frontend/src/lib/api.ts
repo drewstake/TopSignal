@@ -174,6 +174,8 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
 
 let accountsCache: TimedCache<AccountInfo[]> | null = null;
 let inFlightAccountsRequest: Promise<AccountInfo[]> | null = null;
+let selectableAccountsCache: TimedCache<AccountInfo[]> | null = null;
+let inFlightSelectableAccountsRequest: Promise<AccountInfo[]> | null = null;
 
 interface GetAccountsOptions {
   showInactive?: boolean;
@@ -233,6 +235,40 @@ function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): 
   return inFlightAccountsRequest;
 }
 
+function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boolean {
+  return account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT";
+}
+
+function getSelectableAccounts(): Promise<AccountInfo[]> {
+  const now = Date.now();
+  if (selectableAccountsCache && selectableAccountsCache.expiresAtMs > now) {
+    return Promise.resolve(selectableAccountsCache.value);
+  }
+  if (inFlightSelectableAccountsRequest) {
+    return inFlightSelectableAccountsRequest;
+  }
+
+  inFlightSelectableAccountsRequest = requestJson<AccountInfo[]>("/api/accounts", {
+    query: {
+      show_inactive: true,
+      show_missing: false,
+    },
+  })
+    .then((accounts) => accounts.filter((account) => isSelectableAccount(account)))
+    .then((accounts) => {
+      selectableAccountsCache = {
+        value: accounts,
+        expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
+      };
+      return accounts;
+    })
+    .finally(() => {
+      inFlightSelectableAccountsRequest = null;
+    });
+
+  return inFlightSelectableAccountsRequest;
+}
+
 export const metricsApi = {
   getSummary: (accountId?: number) =>
     requestJson<SummaryMetrics>("/metrics/summary", { query: { account_id: accountId } }),
@@ -271,11 +307,13 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 
 export const accountsApi = {
   getAccounts: (optionsOrOnlyActive?: GetAccountsOptions | boolean) => getAccountsCached(optionsOrOnlyActive),
+  getSelectableAccounts: () => getSelectableAccounts(),
   setMainAccount: (accountId: number) =>
     requestJson<AccountMainUpdateResult>(`/api/accounts/${accountId}/main`, {
       method: "POST",
     }).then((payload) => {
       accountsCache = null;
+      selectableAccountsCache = null;
       return payload;
     }),
   getLastTrade: (accountId: number, refresh = false) =>

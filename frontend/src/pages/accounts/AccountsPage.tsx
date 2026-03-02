@@ -78,7 +78,7 @@ export function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState<string | null>(null);
-  const [showLockedHiddenAccounts, setShowLockedHiddenAccounts] = useState(false);
+  const [showHiddenAccounts, setShowHiddenAccounts] = useState(false);
   const [showMissingAccounts, setShowMissingAccounts] = useState(false);
   const [settingMainAccountId, setSettingMainAccountId] = useState<number | null>(null);
   const [lastTradeOverridesById, setLastTradeOverridesById] = useState<Record<number, string | null>>({});
@@ -103,10 +103,10 @@ export function AccountsPage() {
 
     try {
       const payload = await accountsApi.getAccounts({
-        showInactive: showLockedHiddenAccounts,
+        showInactive: true,
         showMissing: showMissingAccounts,
       });
-      setAccounts(payload);
+      setAccounts(payload.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
       setLastTradeOverridesById({});
       setLastTradeLoadingById({});
       setLastTradeResolvedById({});
@@ -116,7 +116,7 @@ export function AccountsPage() {
     } finally {
       setAccountsLoading(false);
     }
-  }, [showLockedHiddenAccounts, showMissingAccounts]);
+  }, [showHiddenAccounts, showMissingAccounts]);
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
     if (lastTradeLoadingById[accountId]) {
@@ -209,10 +209,10 @@ export function AccountsPage() {
             <div className="flex items-center justify-end">
               <div className="flex flex-wrap items-center gap-3">
                 <Toggle
-                  checked={showLockedHiddenAccounts}
-                  onChange={setShowLockedHiddenAccounts}
-                  label="Show locked/hidden"
-                  aria-label="Show locked and hidden accounts"
+                  checked={showHiddenAccounts}
+                  onChange={setShowHiddenAccounts}
+                  label="Show hidden"
+                  aria-label="Show hidden accounts"
                 />
                 <Toggle
                   checked={showMissingAccounts}
