@@ -1,5 +1,6 @@
 import calendar
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
@@ -141,6 +142,8 @@ _ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 _ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
+_EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, Content-Length"
+_ALLOW_ORIGIN_PATTERN = re.compile(_ALLOW_ORIGIN_REGEX) if _ALLOW_ORIGIN_REGEX else None
 
 app.add_middleware(
     CORSMiddleware,
@@ -149,8 +152,39 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Server-Timing", "X-Server-Time-Ms", "Content-Length"],
+    expose_headers=[header.strip() for header in _EXPOSE_HEADERS.split(",")],
 )
+
+
+def _origin_is_allowed(origin: str) -> bool:
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    if _ALLOW_ORIGIN_PATTERN is not None and _ALLOW_ORIGIN_PATTERN.fullmatch(origin):
+        return True
+    return False
+
+
+def _append_vary_origin_header(response: Response) -> None:
+    existing_vary = response.headers.get("Vary")
+    if not existing_vary:
+        response.headers["Vary"] = "Origin"
+        return
+    values = [value.strip().lower() for value in existing_vary.split(",") if value.strip()]
+    if "origin" in values:
+        return
+    response.headers["Vary"] = f"{existing_vary}, Origin"
+
+
+def _apply_cors_headers(request: Request, response: Response) -> Response:
+    origin = request.headers.get("origin")
+    if not origin or not _origin_is_allowed(origin):
+        return response
+
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Expose-Headers"] = _EXPOSE_HEADERS
+    _append_vary_origin_header(response)
+    return response
 
 
 @app.middleware("http")
@@ -183,9 +217,11 @@ async def api_auth_middleware(request: Request, call_next):
         try:
             user = authenticate_request_token(token)
         except AuthError as exc:
-            return _with_timing_headers(JSONResponse(status_code=401, content={"detail": str(exc)}))
+            response = JSONResponse(status_code=401, content={"detail": str(exc)})
+            return _with_timing_headers(_apply_cors_headers(request, response))
     elif should_require_auth:
-        return _with_timing_headers(JSONResponse(status_code=401, content={"detail": "missing_bearer_token"}))
+        response = JSONResponse(status_code=401, content={"detail": "missing_bearer_token"})
+        return _with_timing_headers(_apply_cors_headers(request, response))
     else:
         user = get_authenticated_user_or_default()
 
