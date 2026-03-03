@@ -270,7 +270,7 @@ export function ExpensesPage() {
       const expenseIdsToDelete = new Set<number>();
       for (const expense of existingAutoTrackedExpenses) {
         const accountId = expense.account_id;
-        if (accountId === null || !activeCombineByAccountId.has(accountId)) {
+        if (accountId === null) {
           expenseIdsToDelete.add(expense.id);
           continue;
         }
@@ -282,7 +282,7 @@ export function ExpensesPage() {
         }
       }
 
-      // Keep at most one auto-tracked evaluation expense per active combine account.
+      // Keep at most one auto-tracked evaluation expense per combine account ID.
       for (const rows of existingAutoTrackedByAccountId.values()) {
         if (rows.length <= 1) {
           continue;

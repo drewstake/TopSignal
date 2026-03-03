@@ -40,7 +40,7 @@ describe("evolveCombineSpendLedger", () => {
     vi.useRealTimers();
   });
 
-  it("tracks active and locked-out combines, and drops missing ones", () => {
+  it("tracks active and locked-out combines, and keeps historical purchases after transitions", () => {
     const start = createEmptyCombineSpendLedger();
     const first = evolveCombineSpendLedger(start, [
       { id: 1, name: "50KTC-1", status: "ACTIVE" },
@@ -61,11 +61,18 @@ describe("evolveCombineSpendLedger", () => {
 
     const second = evolveCombineSpendLedger(first, [
       { id: 1, name: "50KTC-1", status: "LOCKED_OUT" },
+      { id: 2, name: "XFA-2", status: "ACTIVE" },
       { id: 5, name: "150KTC-5", status: "ACTIVE" },
     ]);
 
+    expect(second.knownCombineAccountIds).toEqual({
+      "1": true,
+      "2": true,
+      "5": true,
+    });
     expect(second.purchasesByAccountId).toEqual({
       "1": { planSize: "50k", purchasedOn: "2026-03-01" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01" },
       "5": { planSize: "150k", purchasedOn: "2026-03-01" },
     });
   });
@@ -232,5 +239,12 @@ describe("storage-backed helpers", () => {
 
     expect(lockedSync.snapshot.totalTrackedCombines).toBe(2);
     expect(lockedSync.unsyncedEvaluationPurchases).toEqual([]);
+
+    const xfaSync = syncCombineSpendTracker([
+      { id: 8101, name: "50KTC-8101", status: "ACTIVE" },
+      { id: 8102, name: "XFA-8102", status: "ACTIVE" },
+    ]);
+    expect(xfaSync.snapshot.totalTrackedCombines).toBe(2);
+    expect(xfaSync.unsyncedEvaluationPurchases).toEqual([]);
   });
 });

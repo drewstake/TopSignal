@@ -125,8 +125,6 @@ export function evolveCombineSpendLedger(
     syncedEvaluationExpenseAccountIds: { ...ledger.syncedEvaluationExpenseAccountIds },
   };
 
-  const activeCombineAccountIds = new Set<string>();
-
   for (const account of accounts) {
     // Keep temporarily locked combines tracked as still-active purchases.
     if (!isTrackableCombineTrackerAccount(account)) {
@@ -137,7 +135,6 @@ export function evolveCombineSpendLedger(
       continue;
     }
     const accountId = String(account.id);
-    activeCombineAccountIds.add(accountId);
     nextLedger.knownCombineAccountIds[accountId] = true;
 
     const existingPurchase = nextLedger.purchasesByAccountId[accountId];
@@ -155,14 +152,6 @@ export function evolveCombineSpendLedger(
         planSize,
       };
     }
-  }
-
-  for (const accountId of Object.keys(nextLedger.purchasesByAccountId)) {
-    if (activeCombineAccountIds.has(accountId)) {
-      continue;
-    }
-    delete nextLedger.purchasesByAccountId[accountId];
-    delete nextLedger.syncedEvaluationExpenseAccountIds[accountId];
   }
 
   nextLedger.baselineCaptured = true;
