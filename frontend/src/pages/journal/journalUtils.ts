@@ -143,6 +143,17 @@ export function getTodayTradingDateIso(now: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+export function getYesterdayTradingDateIso(now: Date = new Date()): string {
+  const today = getTodayTradingDateIso(now);
+  const [yearText, monthText, dayText] = today.split("-");
+  const year = Number.parseInt(yearText, 10);
+  const month = Number.parseInt(monthText, 10);
+  const day = Number.parseInt(dayText, 10);
+  const priorDateUtc = new Date(Date.UTC(year, month - 1, day));
+  priorDateUtc.setUTCDate(priorDateUtc.getUTCDate() - 1);
+  return priorDateUtc.toISOString().slice(0, 10);
+}
+
 export function journalPayloadEquals(a: JournalEntryUpdateInput, b: JournalEntryUpdateInput): boolean {
   if (a.title !== b.title || a.mood !== b.mood || a.body !== b.body || a.is_archived !== b.is_archived) {
     return false;

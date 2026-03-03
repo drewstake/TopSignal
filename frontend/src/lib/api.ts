@@ -38,8 +38,8 @@ import type {
 import { getAccessToken, getAccessTokenSync } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-const ACCOUNTS_CACHE_TTL_MS = 30_000;
-const ACCOUNT_READ_CACHE_TTL_MS = 30_000;
+const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
+const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 

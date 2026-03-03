@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
 from typing import Iterable, Mapping, Optional
-from zoneinfo import ZoneInfo
 
 from .instruments import (
     DEFAULT_INSTRUMENT_SPECS,
@@ -13,9 +12,7 @@ from .instruments import (
     resolve_point_value,
     symbol_candidates,
 )
-
-
-_TRADING_TZ = ZoneInfo("America/New_York")
+from .trading_day import trading_day_key
 
 
 @dataclass(frozen=True)
@@ -164,7 +161,7 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
             # Calendar trade counts should reflect closed trades only.
             continue
 
-        day_key = _pnl_calendar_day_key(trade.timestamp)
+        day_key = trading_day_key(trade.timestamp)
         fees = _effective_fee(trade)
         bucket = buckets.setdefault(
             day_key,
@@ -338,7 +335,7 @@ def _trade_matches_points_basis(*, trade: TradeMetricSample, points_basis: str) 
 def _compute_daily_net_values(trades: list[TradeMetricSample], net_values: list[float]) -> dict[str, float]:
     daily_net: dict[str, float] = {}
     for trade, net in zip(trades, net_values):
-        day_key = _trading_day_key(trade.timestamp)
+        day_key = trading_day_key(trade.timestamp)
         daily_net[day_key] = daily_net.get(day_key, 0.0) + net
     return daily_net
 
@@ -425,7 +422,7 @@ def _compute_active_hours(trades: list[TradeMetricSample]) -> float:
     last_by_day: dict[str, datetime] = {}
     for trade in trades:
         ts = _as_utc(trade.timestamp)
-        day_key = _trading_day_key(ts)
+        day_key = trading_day_key(ts)
         if day_key not in first_by_day or ts < first_by_day[day_key]:
             first_by_day[day_key] = ts
         if day_key not in last_by_day or ts > last_by_day[day_key]:
@@ -579,19 +576,3 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _trading_day_date(value: datetime):
-    return _as_utc(value).astimezone(_TRADING_TZ).date()
-
-
-def _pnl_calendar_day_key(value: datetime) -> str:
-    trading_day = _trading_day_date(value)
-    # Broker activity can post on Sunday evening ET for Monday's session.
-    if trading_day.weekday() == 6:
-        trading_day = trading_day + timedelta(days=1)
-    return trading_day.isoformat()
-
-
-def _trading_day_key(value: datetime) -> str:
-    return _trading_day_date(value).isoformat()

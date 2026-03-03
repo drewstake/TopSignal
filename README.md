@@ -152,10 +152,10 @@ How the app starts
 4. Backend calls ProjectX `POST /api/Account/search` with `{ "onlyActiveAccounts": true }`.
 5. Client normalization maps account fields and filters `canTrade === false`.
 6. Response returned as `[{ id, name, balance, status }]`.
-7. Frontend caches this list for 30 seconds (`ACCOUNTS_CACHE_TTL_MS`) and stores active account id in:
+7. Frontend caches this list for 10 minutes (`ACCOUNTS_CACHE_TTL_MS`) and stores active account id in:
    - URL query: `?account=<id>`
    - `localStorage`: `topsignal.activeAccountId`
-8. Frontend also keeps a 30-second account-scoped read cache (`ACCOUNT_READ_CACHE_TTL_MS`) for:
+8. Frontend also keeps a 10-minute account-scoped read cache (`ACCOUNT_READ_CACHE_TTL_MS`) for:
    - `GET /api/accounts/{id}/trades`
    - `GET /api/accounts/{id}/summary`
    - `GET /api/accounts/{id}/summary-with-point-bases`
@@ -403,8 +403,8 @@ Persisted vs temporary
   - in-memory frontend cache and component state.
 
 Caching strategy and invalidation
-- Frontend account list cache: 30s TTL + in-flight request dedupe.
-- Frontend account-scoped read cache: 30s TTL + in-flight request dedupe for `trades`, `summary`, `summary-with-point-bases`, `pnl-calendar`, and `journal-days`.
+- Frontend account list cache: 10m TTL + in-flight request dedupe.
+- Frontend account-scoped read cache: 10m TTL + in-flight request dedupe for `trades`, `summary`, `summary-with-point-bases`, `pnl-calendar`, and `journal-days`.
 - Frontend account-scoped read cache invalidation:
   - account-level invalidation after `POST /api/accounts/{id}/trades/refresh`.
   - global invalidation when main account is changed.

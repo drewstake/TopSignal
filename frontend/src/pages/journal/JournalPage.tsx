@@ -30,6 +30,7 @@ import {
   buildJournalQuery,
   entryToDraft,
   getTodayTradingDateIso,
+  getYesterdayTradingDateIso,
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
   parseTagsInput,
@@ -117,6 +118,7 @@ export function JournalPage() {
   const [totalEntries, setTotalEntries] = useState(0);
   const [loadingEntries, setLoadingEntries] = useState(false);
   const [entriesError, setEntriesError] = useState<string | null>(null);
+  const [entriesInfo, setEntriesInfo] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draft, setDraft] = useState<JournalDraft | null>(null);
@@ -148,6 +150,7 @@ export function JournalPage() {
   const draftEntryIdRef = useRef<number | null>(null);
   const includeArchivedRef = useRef(includeArchived);
   const handledDateKeyRef = useRef<string | null>(null);
+  const entriesRequestVersionRef = useRef(0);
 
   includeArchivedRef.current = includeArchived;
 
@@ -246,6 +249,8 @@ export function JournalPage() {
   }, []);
 
   const loadEntries = useCallback(async () => {
+    const requestVersion = entriesRequestVersionRef.current + 1;
+    entriesRequestVersionRef.current = requestVersion;
     if (!selectedAccountId) {
       setEntries([]);
       setTotalEntries(0);
@@ -260,6 +265,9 @@ export function JournalPage() {
     try {
       await flushAutosave();
       const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery);
+      if (requestVersion !== entriesRequestVersionRef.current) {
+        return;
+      }
       setEntries(payload.items);
       setTotalEntries(payload.total);
       setSelectedId((currentSelectedId) => {
@@ -275,12 +283,17 @@ export function JournalPage() {
         return payload.items[0]?.id ?? null;
       });
     } catch (err) {
+      if (requestVersion !== entriesRequestVersionRef.current) {
+        return;
+      }
       setEntries([]);
       setTotalEntries(0);
       setSelectedId(null);
       setEntriesError(err instanceof Error ? err.message : "Failed to load journal entries");
     } finally {
-      setLoadingEntries(false);
+      if (requestVersion === entriesRequestVersionRef.current) {
+        setLoadingEntries(false);
+      }
     }
   }, [dateFromQuery, flushAutosave, listQuery, selectedAccountId]);
 
@@ -455,6 +468,7 @@ export function JournalPage() {
 
       setCreatingEntry(true);
       setEntriesError(null);
+      setEntriesInfo(null);
       try {
         await flushAutosave();
         const created = await accountsApi.createJournalEntry(selectedAccountId, {
@@ -464,18 +478,26 @@ export function JournalPage() {
           tags: [],
           body: "",
         });
+        // Invalidate any pending entry-list response started before this mutation.
+        entriesRequestVersionRef.current += 1;
+        setLoadingEntries(false);
         setEntries((currentEntries) => upsertEntry(currentEntries, created));
         setTotalEntries((currentTotal) => (created.already_existed ? currentTotal : currentTotal + 1));
         setPage(1);
         setSelectedId(created.id);
         setConflictServerEntry(null);
+        setEntriesInfo(created.already_existed ? `An entry already exists for ${created.entry_date}. Opened that entry.` : null);
+        if (currentPage === 1) {
+          void loadEntries();
+        }
       } catch (err) {
+        setEntriesInfo(null);
         setEntriesError(err instanceof Error ? err.message : "Failed to create journal entry");
       } finally {
         setCreatingEntry(false);
       }
     },
-    [flushAutosave, selectedAccountId],
+    [currentPage, flushAutosave, loadEntries, selectedAccountId],
   );
 
   useEffect(() => {
@@ -720,6 +742,13 @@ export function JournalPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Toggle checked={includeArchived} onChange={setIncludeArchived} label="Include archived entries" />
             <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => void handleCreateEntry(getYesterdayTradingDateIso())}
+                disabled={creatingEntry || !selectedAccountId}
+              >
+                Yesterday
+              </Button>
               <Button onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
                 {creatingEntry ? "Creating..." : "New Entry"}
               </Button>
@@ -727,6 +756,7 @@ export function JournalPage() {
           </div>
 
           {entriesError ? <p className="text-sm text-rose-300">{entriesError}</p> : null}
+          {entriesInfo ? <p className="text-sm text-amber-200">{entriesInfo}</p> : null}
         </CardContent>
       </Card>
 

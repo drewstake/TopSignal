@@ -169,6 +169,36 @@ def test_compute_daily_pnl_calendar_rolls_sunday_trades_into_monday_bucket():
     ]
 
 
+def test_compute_daily_pnl_calendar_rolls_after_6pm_et_to_next_day():
+    samples = [
+        # 5:59 PM ET Monday -> Monday trading day bucket.
+        TradeMetricSample(timestamp=datetime(2026, 3, 2, 22, 59, tzinfo=timezone.utc), pnl=10.0, fees=1.0),
+        # 6:00 PM ET Monday -> Tuesday trading day bucket.
+        TradeMetricSample(timestamp=datetime(2026, 3, 2, 23, 0, tzinfo=timezone.utc), pnl=20.0, fees=1.0),
+        # Reported case (trade id 2211911285): Monday 6:09 PM ET -> Tuesday bucket.
+        TradeMetricSample(timestamp=datetime(2026, 3, 2, 23, 9, tzinfo=timezone.utc), pnl=30.0, fees=1.0),
+    ]
+
+    calendar = compute_daily_pnl_calendar(samples)
+
+    assert calendar == [
+        {
+            "date": "2026-03-02",
+            "trade_count": 1,
+            "gross_pnl": 10.0,
+            "fees": 1.0,
+            "net_pnl": 9.0,
+        },
+        {
+            "date": "2026-03-03",
+            "trade_count": 2,
+            "gross_pnl": 50.0,
+            "fees": 2.0,
+            "net_pnl": 48.0,
+        },
+    ]
+
+
 def test_compute_daily_pnl_calendar_ignores_rows_without_broker_pnl():
     samples = [
         TradeMetricSample(timestamp=_dt(11, 0), pnl=None, fees=1.5, symbol="NQ", side="BUY", size=1.0, price=100.0),

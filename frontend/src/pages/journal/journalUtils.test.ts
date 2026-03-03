@@ -5,6 +5,7 @@ import {
   buildJournalQuery,
   draftToUpdatePayload,
   getTodayTradingDateIso,
+  getYesterdayTradingDateIso,
   parseTagsInput,
   reconcileDraftWithServerEntry,
 } from "./journalUtils";
@@ -60,6 +61,13 @@ describe("getTodayTradingDateIso", () => {
   it("uses New York calendar day boundaries", () => {
     expect(getTodayTradingDateIso(new Date("2026-03-02T03:30:00.000Z"))).toBe("2026-03-01");
     expect(getTodayTradingDateIso(new Date("2026-03-02T14:00:00.000Z"))).toBe("2026-03-02");
+  });
+});
+
+describe("getYesterdayTradingDateIso", () => {
+  it("returns the prior New York calendar day", () => {
+    expect(getYesterdayTradingDateIso(new Date("2026-03-02T14:00:00.000Z"))).toBe("2026-03-01");
+    expect(getYesterdayTradingDateIso(new Date("2026-03-02T03:30:00.000Z"))).toBe("2026-02-28");
   });
 });
 

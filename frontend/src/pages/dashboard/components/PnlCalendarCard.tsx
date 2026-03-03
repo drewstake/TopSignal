@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { Skeleton } from "../../../components/ui/Skeleton";
+import { formatIsoDateUtc } from "../../../lib/tradingDay";
 import type { AccountPnlCalendarDay } from "../../../lib/types";
 
 interface PnlCalendarCardProps {
@@ -61,10 +62,6 @@ function addUtcMonths(date: Date, delta: number) {
 
 function parseIsoDate(value: string) {
   return new Date(`${value}T00:00:00Z`);
-}
-
-function toIsoDate(value: Date) {
-  return value.toISOString().slice(0, 10);
 }
 
 function formatPnlCompact(value: number) {
@@ -150,7 +147,7 @@ export function PnlCalendarCard({
     }
     const start = monthStartUtc(visibleMonth);
     const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
-    onVisibleRangeChange(toIsoDate(start), toIsoDate(end));
+    onVisibleRangeChange(formatIsoDateUtc(start), formatIsoDateUtc(end));
   }, [onVisibleRangeChange, visibleMonth]);
 
   const calendarCells = useMemo(() => {
@@ -166,7 +163,7 @@ export function PnlCalendarCard({
 
     for (let day = 1; day <= dayCount; day += 1) {
       const dayDate = new Date(Date.UTC(year, month, day));
-      const isoDate = toIsoDate(dayDate);
+      const isoDate = formatIsoDateUtc(dayDate);
       cells.push({
         key: isoDate,
         dayNumber: day,

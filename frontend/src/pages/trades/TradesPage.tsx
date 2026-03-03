@@ -383,40 +383,40 @@ export function TradesPage() {
         </CardHeader>
         <CardContent className="space-y-0">
           <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800/80">
-            <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <table className="w-full min-w-[1320px] table-fixed border-collapse text-sm whitespace-nowrap">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="px-3 py-3 text-left font-medium">Entry Time (ET)</th>
-                  <th className="px-3 py-3 text-left font-medium">Exit Time (ET)</th>
-                  <th className="px-3 py-3 text-right font-medium">Duration</th>
-                  <th className="px-3 py-3 text-left font-medium">Symbol</th>
-                  <th className="px-3 py-3 text-left font-medium">Direction</th>
-                  <th className="px-3 py-3 text-right font-medium">Size</th>
-                  <th className="px-3 py-3 text-right font-medium">Entry Price</th>
-                  <th className="px-3 py-3 text-right font-medium">Exit Price</th>
-                  <th className="px-3 py-3 text-right font-medium">Fees</th>
-                  <th className="px-3 py-3 text-right font-medium">PnL</th>
-                  <th className="px-3 py-3 text-right font-medium">Trade ID</th>
+                  <th className="px-2 py-2 text-left font-medium">Entry Time (ET)</th>
+                  <th className="px-2 py-2 text-left font-medium">Exit Time (ET)</th>
+                  <th className="px-2 py-2 text-right font-medium">Duration</th>
+                  <th className="px-2 py-2 text-left font-medium">Symbol</th>
+                  <th className="w-[92px] px-2 py-2 text-center font-medium">Direction</th>
+                  <th className="w-[72px] px-2 py-2 text-center font-medium">Size</th>
+                  <th className="px-2 py-2 text-right font-medium">Entry Price</th>
+                  <th className="px-2 py-2 text-right font-medium">Exit Price</th>
+                  <th className="px-2 py-2 text-right font-medium">Fees</th>
+                  <th className="px-2 py-2 text-right font-medium">PnL</th>
+                  <th className="px-2 py-2 text-right font-medium">Trade ID</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70">
                 {tradesLoading ? (
                   Array.from({ length: 12 }).map((_, index) => (
                     <tr key={`trades-skeleton-${index}`}>
-                      <td colSpan={11} className="px-3 py-3">
+                      <td colSpan={11} className="px-2 py-2">
                         <Skeleton className="h-6 w-full" />
                       </td>
                     </tr>
                   ))
                 ) : tradesError ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-rose-300">
+                    <td colSpan={11} className="px-2 py-4 text-center text-rose-300">
                       {tradesError}
                     </td>
                   </tr>
                 ) : pagedTrades.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={11} className="px-2 py-4 text-center text-slate-400">
                       No trades match your filters.
                     </td>
                   </tr>
@@ -430,31 +430,31 @@ export function TradesPage() {
                     const exitPrice = trade.exit_price ?? trade.price;
                     return (
                       <tr key={trade.id} className="transition hover:bg-slate-900/65">
-                        <td className="px-3 py-3 text-left text-slate-300">
+                        <td className="px-2 py-2 text-left text-slate-300">
                           {entryTime ? timestampFormatter.format(new Date(entryTime)) : "-"}
                         </td>
-                        <td className="px-3 py-3 text-left text-slate-300">
+                        <td className="px-2 py-2 text-left text-slate-300">
                           {timestampFormatter.format(new Date(exitTime))}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">
+                        <td className="px-2 py-2 text-right text-slate-300">
                           {formatDurationCompact(trade.duration_minutes)}
                         </td>
-                        <td className="px-3 py-3 text-left font-medium text-slate-100">
+                        <td className="px-2 py-2 text-left font-medium text-slate-100">
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                         </td>
-                        <td className="px-3 py-3 text-left">
+                        <td className="px-2 py-2 text-center">
                           <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-200">{Math.round(trade.size).toLocaleString("en-US")}</td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-center text-slate-200">{Math.round(trade.size).toLocaleString("en-US")}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-200">
                           {entryPrice == null ? "-" : entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-right font-mono text-slate-200">
                           {exitPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">{formatFee(trade.fees)}</td>
-                        <td className={`px-3 py-3 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-400">
+                        <td className="px-2 py-2 text-right text-slate-300">{formatFee(trade.fees)}</td>
+                        <td className={`px-2 py-2 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">
                           {trade.source_trade_id ?? trade.order_id}
                         </td>
                       </tr>

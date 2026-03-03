@@ -21,6 +21,7 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
@@ -123,10 +124,6 @@ function createEmptyPointPayoffByBasis(): PointPayoffByBasis {
   };
 }
 
-function formatFee(value: number) {
-  return formatCurrency(-Math.abs(value));
-}
-
 function formatDurationCompact(minutes: number) {
   const safeMinutes = Number.isFinite(minutes) ? Math.max(0, minutes) : 0;
   const totalSeconds = Math.round(safeMinutes * 60);
@@ -218,19 +215,6 @@ function sustainabilityFillClass(score: number) {
   return "bg-rose-300/80";
 }
 
-const EASTERN_TIME_ZONE = "America/New_York";
-
-const easternDateTimePartsFormatter = new Intl.DateTimeFormat("en-US", {
-  timeZone: EASTERN_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
-
 function parseIsoDay(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
 }
@@ -260,82 +244,6 @@ interface CustomDateRange {
   endDate: string;
 }
 
-function parseDateInput(value: string) {
-  const [yearText, monthText, dayText] = value.split("-");
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-    return null;
-  }
-  return { year, month, day };
-}
-
-function getEasternOffsetMs(utcInstant: Date) {
-  const parts = easternDateTimePartsFormatter.formatToParts(utcInstant);
-  const readPart = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? "0");
-  const year = readPart("year");
-  const month = readPart("month");
-  const day = readPart("day");
-  const hour = readPart("hour");
-  const minute = readPart("minute");
-  const second = readPart("second");
-  const asUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
-  return asUtcMs - utcInstant.getTime();
-}
-
-function easternMidnightUtc(value: string) {
-  const parsed = parseDateInput(value);
-  if (!parsed) {
-    return null;
-  }
-  const localMidnightAsUtcMs = Date.UTC(parsed.year, parsed.month - 1, parsed.day, 0, 0, 0, 0);
-  let utcMs = localMidnightAsUtcMs;
-  // Iterate to account for DST transitions when converting ET local midnight to UTC.
-  for (let index = 0; index < 3; index += 1) {
-    const offsetMs = getEasternOffsetMs(new Date(utcMs));
-    const nextUtcMs = localMidnightAsUtcMs - offsetMs;
-    if (nextUtcMs === utcMs) {
-      break;
-    }
-    utcMs = nextUtcMs;
-  }
-  return new Date(utcMs);
-}
-
-function addIsoDays(value: string, days: number) {
-  const parsed = parseDateInput(value);
-  if (!parsed) {
-    return null;
-  }
-  const next = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day + days, 0, 0, 0, 0));
-  return next.toISOString().slice(0, 10);
-}
-
-function getEasternDayRange(value: string) {
-  const start = easternMidnightUtc(value);
-  const nextDate = addIsoDays(value, 1);
-  if (!start || !nextDate) {
-    return null;
-  }
-  const nextStart = easternMidnightUtc(nextDate);
-  if (!nextStart) {
-    return null;
-  }
-  return {
-    start: start.toISOString(),
-    end: new Date(nextStart.getTime() - 1).toISOString(),
-  };
-}
-
-function toTradingBoundaryIso(value: string, endOfDay: boolean) {
-  const range = getEasternDayRange(value);
-  if (!range) {
-    return null;
-  }
-  return endOfDay ? range.end : range.start;
-}
-
 function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
@@ -344,8 +252,8 @@ function buildMetricsRangeQuery(
     if (!customRange) {
       return { allTime: true };
     }
-    const start = toTradingBoundaryIso(customRange.startDate, false);
-    const end = toTradingBoundaryIso(customRange.endDate, true);
+    const start = getTradingDayBoundaryIso(customRange.startDate, false);
+    const end = getTradingDayBoundaryIso(customRange.endDate, true);
     if (!start || !end) {
       return { allTime: true };
     }
@@ -361,7 +269,15 @@ function buildMetricsRangeQuery(
 
   switch (range) {
     case "1D":
-      start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+      {
+        const currentTradingDay = tradingDayKey(end);
+        const currentTradingDayRange = getTradingDayRange(currentTradingDay);
+        if (currentTradingDayRange) {
+          start = new Date(currentTradingDayRange.start);
+        } else {
+          start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+        }
+      }
       break;
     case "1W":
       start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -570,7 +486,7 @@ export function DashboardPage() {
     setTradesError(null);
 
     try {
-      const selectedRange = selectedTradeDate ? getEasternDayRange(selectedTradeDate) : null;
+      const selectedRange = selectedTradeDate ? getTradingDayRange(selectedTradeDate) : null;
       const query = selectedRange ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange } : { limit: TRADE_LIMIT };
       const nextTrades = await accountsApi.getTrades(selectedAccountId, query);
       setTrades(nextTrades);
@@ -1435,38 +1351,37 @@ export function DashboardPage() {
         </CardHeader>
         <CardContent className="space-y-0">
           <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800/80">
-            <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <table className="w-full min-w-[1100px] table-fixed border-collapse text-sm whitespace-nowrap">
               <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
                 <tr>
-                  <th className="px-3 py-3 text-left font-medium">Entry Time (ET)</th>
-                  <th className="px-3 py-3 text-left font-medium">Exit Time (ET)</th>
-                  <th className="px-3 py-3 text-right font-medium">Duration</th>
-                  <th className="px-3 py-3 text-left font-medium">Symbol</th>
-                  <th className="px-3 py-3 text-left font-medium">Direction</th>
-                  <th className="px-3 py-3 text-right font-medium">Size</th>
-                  <th className="px-3 py-3 text-right font-medium">Entry Price</th>
-                  <th className="px-3 py-3 text-right font-medium">Exit Price</th>
-                  <th className="px-3 py-3 text-right font-medium">Fees</th>
-                  <th className="px-3 py-3 text-right font-medium">PnL</th>
-                  <th className="px-3 py-3 text-right font-medium">Trade ID</th>
+                  <th className="w-[10%] px-2 py-2 text-left font-medium">Entry Time (ET)</th>
+                  <th className="w-[10%] px-2 py-2 text-left font-medium">Exit Time (ET)</th>
+                  <th className="w-[10%] px-2 py-2 text-center font-medium">Duration</th>
+                  <th className="w-[10%] px-2 py-2 text-center font-medium">Symbol</th>
+                  <th className="w-[10%] px-2 py-2 text-center font-medium">Direction</th>
+                  <th className="w-[10%] px-2 py-2 text-center font-medium">Size</th>
+                  <th className="w-[10%] px-2 py-2 text-right font-medium">Entry Price</th>
+                  <th className="w-[10%] px-2 py-2 text-right font-medium">Exit Price</th>
+                  <th className="w-[10%] px-2 py-2 text-right font-medium">PnL</th>
+                  <th className="w-[10%] px-2 py-2 text-right font-medium">Trade ID</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70">
                 {tradesLoading ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
                       Loading trades...
                     </td>
                   </tr>
                 ) : tradesError ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-rose-300">
+                    <td colSpan={10} className="px-2 py-4 text-center text-rose-300">
                       {tradesError}
                     </td>
                   </tr>
                 ) : trades.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
                       No trades available.
                     </td>
                   </tr>
@@ -1480,31 +1395,30 @@ export function DashboardPage() {
                     const exitPrice = trade.exit_price ?? trade.price;
                     return (
                       <tr key={trade.id} className="transition hover:bg-slate-900/65">
-                        <td className="px-3 py-3 text-left text-slate-300">
+                        <td className="px-2 py-2 text-left text-slate-300">
                           {entryTime ? timestampFormatter.format(new Date(entryTime)) : "-"}
                         </td>
-                        <td className="px-3 py-3 text-left text-slate-300">
+                        <td className="px-2 py-2 text-left text-slate-300">
                           {timestampFormatter.format(new Date(exitTime))}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">
+                        <td className="px-2 py-2 text-center text-slate-300">
                           {formatTradeDuration(trade.duration_minutes)}
                         </td>
-                        <td className="px-3 py-3 text-left font-medium text-slate-100">
+                        <td className="px-2 py-2 text-center font-medium text-slate-100">
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                         </td>
-                        <td className="px-3 py-3 text-left">
+                        <td className="px-2 py-2 text-center">
                           <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-200">{formatInteger(trade.size)}</td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-center text-slate-200">{formatInteger(trade.size)}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-200">
                           {entryPrice == null ? "-" : entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-right font-mono text-slate-200">
                           {exitPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-3 py-3 text-right text-slate-300">{formatFee(trade.fees)}</td>
-                        <td className={`px-3 py-3 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
-                        <td className="px-3 py-3 text-right font-mono text-slate-400">
+                        <td className={`px-2 py-2 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">
                           {trade.source_trade_id ?? trade.order_id}
                         </td>
                       </tr>
