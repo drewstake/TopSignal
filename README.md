@@ -178,8 +178,8 @@ How the app starts
    - side, size, price, timestamp, fees, pnl, order/source ids.
    - voided rows are excluded.
 6. Deduping/upsert:
-   - first by `(account_id, source_trade_id)` when available.
-   - fallback by `(account_id, order_id, trade_timestamp)`.
+   - first by `(user_id, account_id, source_trade_id)` when available.
+   - fallback by `(user_id, account_id, order_id, trade_timestamp)`.
    - DB constraints enforce uniqueness.
 7. Query returns rows from `projectx_trade_events` where `pnl IS NOT NULL` (closed rows only), sorted newest first.
 8. Frontend renders trades table.
@@ -400,10 +400,16 @@ Status code notes
 - `502`: upstream ProjectX/API gateway errors.
 
 ## 9) Data Storage and Persistence
+Interview talk track (DB + Supabase)
+- Supabase is the infrastructure layer: managed Postgres for durable app data, Supabase Auth for user identity, and optional Supabase Storage for journal images.
+- Runtime supports both Supabase Cloud and local Supabase CLI (`supabase start`) with the same backend codepath.
+- Tenant isolation is currently enforced at the application/query layer via `user_id` scoping plus composite unique indexes.
+- Trade ingestion is idempotent by design: service-level dedupe + DB uniqueness constraints.
+
 Where data is stored
 | Location | Data | Persisted? | Keying |
 |---|---|---|---|
-| Postgres `projectx_trade_events` | normalized trade events + raw upstream payload | yes | user + account + source trade id and/or order+timestamp |
+| Postgres `projectx_trade_events` | normalized trade events + raw upstream payload | yes | `(user_id, account_id, source_trade_id)` and `(user_id, account_id, order_id, trade_timestamp)` |
 | Postgres `projectx_trade_day_syncs` | per-account per-day sync completeness | yes | `(user_id, account_id, trade_date)` |
 | Postgres `journal_entries` | account journal records | yes | `id`; unique per `(user_id, account_id, entry_date)` |
 | Postgres `journal_entry_images` | journal image metadata | yes | `id`, `journal_entry_id`, `account_id`, `user_id` |
@@ -439,14 +445,15 @@ Dedupe/upsert behavior
 - Existing rows looked up by source trade id first, fallback key second.
 - Existing row gets updated; missing row inserted.
 - DB constraints guard duplicates:
-  - unique `(account_id, source_trade_id)`
-  - unique `(account_id, order_id, trade_timestamp)`
+  - unique `(user_id, account_id, source_trade_id)`
+  - unique `(user_id, account_id, order_id, trade_timestamp)`
 
 ## 10) Data Models / Types / Schema
 ### Database model: `projectx_trade_events` (active analytics source)
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigserial | local PK | DB | internal |
+| `user_id` | uuid | tenant/user scope | auth context | included in dedupe unique keys |
 | `account_id` | bigint | upstream account id | ProjectX | required |
 | `contract_id` | text | contract identifier | ProjectX | required |
 | `symbol` | text nullable | symbol text | ProjectX | falls back to `contract_id` in serializers |
@@ -457,7 +464,7 @@ Dedupe/upsert behavior
 | `fees` | numeric(18,6) | per-row fee value | ProjectX | serialized as round-trip for rows with PnL |
 | `pnl` | numeric(18,6) nullable | broker realized PnL | ProjectX | null usually means open/half-turn row |
 | `order_id` | text | order id | ProjectX | required |
-| `source_trade_id` | text nullable | broker trade/execution id | ProjectX | preferred dedupe key |
+| `source_trade_id` | text nullable | broker trade/execution id | ProjectX | preferred dedupe key with `user_id+account_id` |
 | `status` | text nullable | upstream status | ProjectX | optional |
 | `raw_payload` | jsonb | original upstream row | ProjectX | used for voided filtering and debugging |
 | `created_at` | timestamptz | row insertion time | DB | default `now()` |
@@ -466,6 +473,7 @@ Dedupe/upsert behavior
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigserial | local PK | DB | internal |
+| `user_id` | uuid | tenant/user scope | auth context | part of unique key with account/day |
 | `account_id` | bigint | account | app | required |
 | `trade_date` | date | UTC trade day | app | required |
 | `sync_status` | text | `partial` or `complete` | app | cache completeness flag |
@@ -513,8 +521,9 @@ Dedupe/upsert behavior
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigint | account PK | DB | unique row id |
+| `user_id` | uuid | tenant/user scope | auth context | unique with provider+external_id |
 | `provider` | text | broker/provider name | app | required |
-| `external_id` | text | provider account id | app | unique with provider |
+| `external_id` | text | provider account id | app | unique with `user_id+provider` |
 | `name` | text nullable | display name | app | optional |
 | `created_at` | timestamptz | created time | DB | default |
 
@@ -522,6 +531,7 @@ Dedupe/upsert behavior
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigint | trade PK | DB | internal |
+| `user_id` | uuid | tenant/user scope | auth context | used for scoped reads and dedupe index |
 | `account_id` | bigint FK | account link | app | required |
 | `symbol` | text | instrument | app | required |
 | `side` | text | `LONG/SHORT` | app | check constraint |
@@ -706,6 +716,13 @@ Use [.env.example](.env.example) as the source-of-truth template for two profile
 Runtime behavior in code:
 - Backend logs the resolved DB host and local/cloud mode at startup (`backend/app/db.py`).
 - Local Supabase mode is only selected when `SUPABASE_URL` is `http://127.0.0.1:54321` (or `http://localhost:54321`).
+- When `DATABASE_URL` points at a Supabase transaction pooler host (`*.pooler.supabase.com`) with `psycopg`, backend disables prepared statements and uses `NullPool` to avoid pooler/prepared-statement conflicts.
+
+Supabase responsibility map (what to say in interviews)
+- Auth: frontend gets Supabase access tokens and backend validates JWTs (JWKS/issuer/optional audience), then scopes every query by `user_id`.
+- Database: Supabase Postgres stores trade events, sync status, journaling, expenses, and encrypted provider credentials.
+- Storage: journal image binaries can be stored either on local disk (`local`) or Supabase Storage (`supabase`) via env switch.
+- Current boundary: multi-tenant safety is app-enforced (`user_id` filters + composite keys); RLS policies are a planned hardening step.
 
 ### Backend env vars
 | Variable | Required | Default | Description | Consumed in |
@@ -995,7 +1012,7 @@ How to improve for scale
    **A:** The backend calls `/api/Trade/search`, normalizes rows, filters voided events, dedupes/upserts into `projectx_trade_events`, then summary/trades/calendar routes query Postgres and return typed payloads to React pages.
 
 3. **Q: How do you prevent duplicate trade events?**  
-   **A:** I use service-level dedupe keyed by `(account_id, source_trade_id)` with fallback `(account_id, order_id, timestamp)` plus DB unique constraints on both patterns.
+   **A:** I use service-level dedupe keyed by `(user_id, account_id, source_trade_id)` with fallback `(user_id, account_id, order_id, timestamp)` plus DB unique constraints on both patterns.
 
 4. **Q: How do you handle stale vs fresh data?**  
    **A:** Manual refresh is always available. On read, backend can sync when local data is empty. For single-day queries, I track day completeness in `projectx_trade_day_syncs` and refresh today/yesterday using explicit rules.
@@ -1022,7 +1039,7 @@ How to improve for scale
     **A:** Simplicity and local reliability over distributed scale. I intentionally chose manual refresh and local DB caching instead of a complex streaming architecture.
 
 12. **Q: What would you improve first if this became production-facing?**  
-    **A:** Add auth and user isolation, migration tooling, background sync workers, and observability. Then I'd unify metrics pipelines and add MFE/MAE persistence for fuller analytics.
+    **A:** Harden auth/tenant boundaries (including DB-level RLS), add migration tooling, background sync workers, and observability. Then I'd unify metrics pipelines and add MFE/MAE persistence for fuller analytics.
 
 13. **Q: How do you handle timezone correctness for daily metrics?**  
     **A:** The system is UTC-normalized end-to-end: date inputs convert to UTC boundaries, backend comparisons are in UTC, and calendar grouping is by UTC day.
