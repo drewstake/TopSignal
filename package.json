@@ -1,0 +1,13 @@
+{
+  "name": "topsignal",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n BACKEND,FRONTEND \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "node -e \"const { spawn } = require('node:child_process'); const isWin = process.platform === 'win32'; const python = isWin ? '.venv\\\\Scripts\\\\python.exe' : './.venv/bin/python'; const child = spawn(python, ['-m', 'uvicorn', 'app.main:app', '--reload', '--port', '8000'], { cwd: 'backend', stdio: 'inherit', shell: isWin }); child.on('exit', (code) => process.exit(code ?? 1));\"",
+    "dev:frontend": "npm --prefix frontend run dev"
+  }
+}

@@ -76,10 +76,16 @@ def guard_against_local_database_url() -> None:
         return
 
     host = (parsed.host or "").strip().strip("[]").lower()
-    if host in _LOCAL_HOSTS:
+    if host not in _LOCAL_HOSTS:
+        return
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("select 1"))
+    except Exception as exc:
         message = "You are in local DB mode; start Docker or switch DATABASE_URL to Supabase Cloud."
         logger.error("%s Current DATABASE_URL host: %s", message, host)
-        raise RuntimeError(message)
+        raise RuntimeError(message) from exc
 
 
 def resolve_supabase_mode() -> Literal["disabled", "local", "cloud"]:
