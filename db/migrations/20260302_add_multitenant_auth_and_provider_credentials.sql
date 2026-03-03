@@ -17,6 +17,11 @@ alter table if exists journal_entry_images
 alter table if exists expenses
   add column if not exists user_id uuid not null default '00000000-0000-0000-0000-000000000000';
 
+-- Legacy schema used an unnamed unique constraint:
+--   unique (provider, external_id)
+-- which PostgreSQL auto-named accounts_provider_external_id_key.
+alter table if exists accounts drop constraint if exists accounts_provider_external_id_key;
+drop index if exists accounts_provider_external_id_key;
 alter table if exists accounts drop constraint if exists uq_accounts_provider_external_id;
 drop index if exists uq_accounts_provider_external_id;
 create unique index if not exists uq_accounts_provider_external_id

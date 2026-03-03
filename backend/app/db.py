@@ -287,6 +287,10 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
                 )
             )
 
+        # Legacy schema created an unnamed unique constraint on (provider, external_id).
+        # PostgreSQL auto-named it accounts_provider_external_id_key.
+        conn.execute(text("alter table accounts drop constraint if exists accounts_provider_external_id_key"))
+        conn.execute(text("drop index if exists accounts_provider_external_id_key"))
         conn.execute(text("alter table accounts drop constraint if exists uq_accounts_provider_external_id"))
         conn.execute(text("drop index if exists uq_accounts_provider_external_id"))
         conn.execute(
