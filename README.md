@@ -20,10 +20,14 @@ Main use case
 
 Core features
 - ProjectX active account discovery (`GET /api/accounts`).
+- Auth identity + ProjectX credential management (`GET /api/auth/me`, `/api/me/providers/projectx/credentials*`).
 - Manual + automatic trade sync (`POST /api/accounts/{id}/trades/refresh` and cache-on-read behavior).
 - Account summary analytics (`GET /api/accounts/{id}/summary`).
+- Account summary comparison payload (`GET /api/accounts/{id}/summary-with-point-bases`).
 - Daily PnL calendar (`GET /api/accounts/{id}/pnl-calendar`).
 - Trade event list with date range filtering (`GET /api/accounts/{id}/trades`).
+- Main account selection + last-trade lookup (`POST /api/accounts/{id}/main`, `GET /api/accounts/{id}/last-trade`).
+- Expense CRUD + totals rollups (`/api/expenses*`).
 - Journal CRUD with autosave and archive toggle (`/api/accounts/{id}/journal*`).
 
 Typical user workflow
@@ -274,20 +278,32 @@ Route table
 | GET | `/metrics/pnl-by-symbol` | legacy symbol metrics | `account_id` | `SymbolPnlOut[]` | not used | legacy pipeline |
 | GET | `/metrics/streaks` | legacy streak stats | `account_id` | `StreakMetricsOut` | not used | legacy pipeline |
 | GET | `/metrics/behavior` | legacy behavior stats | `account_id` | `BehaviorMetricsOut` | not used | legacy pipeline |
-| GET | `/api/accounts` | list ProjectX accounts | none | `ProjectXAccountOut[]` | AppShell + all routed pages | upstream call |
+| GET | `/api/auth/me` | current auth identity | none | `AuthMeOut` | API client helper | returns default local user when auth is not required |
+| GET | `/api/me/providers/projectx/credentials/status` | check if ProjectX credentials are configured | none | `ProjectXCredentialsStatusOut` | API client helper | user-scoped |
+| PUT | `/api/me/providers/projectx/credentials` | upsert ProjectX credentials | body: `username`, `api_key` | `204` | API client helper | validates required credential fields |
+| DELETE | `/api/me/providers/projectx/credentials` | delete ProjectX credentials | none | `204` | API client helper | user-scoped delete |
+| POST | `/api/expenses` | create expense record | body: `ExpenseCreateIn` | `ExpenseOut` | ExpensesPage | validates amount/practice rules |
+| GET | `/api/expenses` | list expense records | `start_date`, `end_date`, `account_id`, `category`, `limit`, `offset` | `{ items, total }` | ExpensesPage | user-scoped list with pagination |
+| GET | `/api/expenses/totals` | aggregate expense totals | required `range`; optional `account_id`, `week_start`, `start_date`, `end_date`, `start_created_at`, `end_created_at` | `ExpenseTotalsOut` | ExpensesPage | supports predefined ranges or explicit date windows |
+| PATCH | `/api/expenses/{expense_id}` | update expense record | body: partial `ExpenseUpdateIn` | `ExpenseOut` | ExpensesPage | requires at least one mutable field |
+| DELETE | `/api/expenses/{expense_id}` | delete expense record | none | `204` | ExpensesPage | user-scoped delete |
+| GET | `/api/accounts` | list ProjectX accounts | `show_inactive`, `show_missing`, `only_active_accounts` | `ProjectXAccountOut[]` | AppShell + all routed pages | syncs provider accounts then returns normalized + local account metadata |
+| POST | `/api/accounts/{account_id}/main` | mark account as main | none | `ProjectXAccountMainOut` | AccountsPage | invalidates account-scoped frontend caches |
+| GET | `/api/accounts/{account_id}/last-trade` | get latest trade timestamp | `refresh` | `ProjectXAccountLastTradeOut` | AccountsPage | provider lookup can fall back to local data |
 | GET | `/api/accounts/{account_id}/journal` | list journal entries | `start_date`, `end_date`, `mood`, `q`, `include_archived`, `limit`, `offset` | `{ items, total }` | JournalPage | `limit` 1..200, `offset>=0` |
-| GET | `/api/accounts/{account_id}/journal/days` | list dates with entries | `start_date`, `end_date`, `include_archived` | `{ days: string[] }` | Dashboard calendar + JournalPage | range query for month indicators |
+| GET | `/api/accounts/{account_id}/journal/days` | list dates with entries | `start_date`, `end_date`, `include_archived` | `{ days: string[] }` | Dashboard calendar | range query for month indicators |
 | POST | `/api/accounts/{account_id}/journal` | create-or-return daily journal entry | body: `entry_date`, `title`, `mood`, `tags`, `body` | `JournalEntryCreateOut` | JournalPage, Dashboard day action | returns existing row with `already_existed=true` if same day already exists |
 | PATCH | `/api/accounts/{account_id}/journal/{entry_id}` | update/archive journal entry | body requires `version` + partial fields | `JournalEntryOut` | JournalPage autosave | stale version returns `409 {detail:\"version_conflict\", server}` |
 | DELETE | `/api/accounts/{account_id}/journal/{entry_id}` | hard delete journal entry | none | `204` | JournalPage | cascades to `journal_entry_images` |
-| POST | `/api/accounts/{account_id}/journal/{entry_id}/pull-trade-stats` | snapshot local trade stats into entry | optional body: `trade_ids` or `entry_date` | `JournalEntryOut` | JournalPage | uses locally cached `projectx_trade_events` |
-| POST | `/api/accounts/{account_id}/journal/{entry_id}/images` | upload journal image | multipart form file (`png/jpg/jpeg/webp`, max 10MB) | `JournalImageOut` | JournalEditor | stored on local disk under backend `storage/journal_images` |
+| POST | `/api/accounts/{account_id}/journal/{entry_id}/pull-trade-stats` | snapshot trade stats into entry | optional body: `trade_ids`, `entry_date`, `start_date`, `end_date` | `JournalEntryOut` | JournalPage | defaults to entry date window if no filters are provided; can sync the selected window before snapshotting |
+| POST | `/api/accounts/{account_id}/journal/{entry_id}/images` | upload journal image | multipart form file (`png/jpg/jpeg/webp`, max 10MB) | `JournalImageOut` | JournalEditor | local disk backend by default (`backend/storage/journal_images`), optional Supabase Storage backend via env |
 | GET | `/api/accounts/{account_id}/journal/{entry_id}/images` | list journal images for entry | none | `JournalImageOut[]` | JournalEditor | includes direct image URL |
 | GET | `/api/journal-images/{image_id}` | serve image binary | optional `account_id` | file response | JournalEditor | account-scoped validation when `account_id` provided |
 | DELETE | `/api/accounts/{account_id}/journal/{entry_id}/images/{image_id}` | delete image metadata + file | none | `204` | JournalEditor | removes DB row and local file |
 | POST | `/api/accounts/{account_id}/trades/refresh` | force sync from ProjectX | `start`, `end` | `{ fetched_count, inserted_count }` | AppShell, TradesPage | validates range |
 | GET | `/api/accounts/{account_id}/trades` | list local trade events | `limit`, `start`, `end`, `symbol`, `refresh` | `ProjectXTradeOut[]` | Dashboard, TradesPage | returns closed rows (`pnl != null`) |
-| GET | `/api/accounts/{account_id}/summary` | summary metrics from local events | `start`, `end`, `refresh` | `ProjectXTradeSummaryOut` | Dashboard, TradesPage | auto-sync if local empty |
+| GET | `/api/accounts/{account_id}/summary` | summary metrics from local events | `start`, `end`, `refresh`, `pointsBasis` | `ProjectXTradeSummaryOut` | Dashboard, TradesPage | auto-sync if local empty |
+| GET | `/api/accounts/{account_id}/summary-with-point-bases` | summary + point payoff across supported bases | `start`, `end`, `refresh` | `ProjectXTradeSummaryWithPointBasesOut` | Dashboard | returns `summary` and `point_payoff_by_basis` |
 | GET | `/api/accounts/{account_id}/pnl-calendar` | day buckets from local events | `start`, `end`, `all_time`, `refresh` | `ProjectXPnlCalendarDayOut[]` | Dashboard | default window is last 6 months if no dates and `all_time=false` |
 
 Example requests/responses
@@ -375,10 +391,11 @@ Error response examples
 ```
 
 Status code notes
-- `200`: successful reads/updates.
-- `201`: journal entry creation.
+- `200`: successful reads/updates, and create-or-return journal calls when an entry already exists for that day.
+- `201`: new journal entry creation.
 - `400`: validation failures (range checks, empty update payload, invalid ids).
 - `404`: journal entry not found for account.
+- `409`: optimistic concurrency conflict on journal update (`detail="version_conflict"`).
 - `500`: missing local server config (for example missing env vars).
 - `502`: upstream ProjectX/API gateway errors.
 
@@ -386,18 +403,20 @@ Status code notes
 Where data is stored
 | Location | Data | Persisted? | Keying |
 |---|---|---|---|
-| Postgres `projectx_trade_events` | normalized trade events + raw upstream payload | yes | account + source trade id and/or order+timestamp |
-| Postgres `projectx_trade_day_syncs` | per-account per-day sync completeness | yes | `(account_id, trade_date)` |
-| Postgres `journal_entries` | account journal records | yes | `id`, `account_id` |
-| Postgres `accounts` | legacy account registry | yes | `(provider, external_id)` |
-| Postgres `trades` | legacy app trade table | yes | `id` + `account_id` |
+| Postgres `projectx_trade_events` | normalized trade events + raw upstream payload | yes | user + account + source trade id and/or order+timestamp |
+| Postgres `projectx_trade_day_syncs` | per-account per-day sync completeness | yes | `(user_id, account_id, trade_date)` |
+| Postgres `journal_entries` | account journal records | yes | `id`; unique per `(user_id, account_id, entry_date)` |
+| Postgres `journal_entry_images` | journal image metadata | yes | `id`, `journal_entry_id`, `account_id`, `user_id` |
+| Local disk or Supabase Storage | journal image objects (`filename`) | yes | object key path stored in `journal_entry_images.filename` |
+| Postgres `accounts` | legacy account registry | yes | `(user_id, provider, external_id)` |
+| Postgres `trades` | legacy app trade table | yes | `id` + `user_id` + `account_id` |
 | Backend process memory | ProjectX bearer token cache | no | single in-process cache |
 | Frontend process memory | accounts API TTL cache + account-scoped read TTL cache + component state | no | request lifecycle |
 | Browser `localStorage` | `topsignal.activeAccountId` | yes (browser) | account id string |
 
 Persisted vs temporary
 - Persisted:
-  - event rows, day-sync rows, journal entries, legacy tables.
+  - event rows, day-sync rows, journal entries/image metadata, journal image objects, legacy tables.
 - Temporary:
   - auth token cache in backend process.
   - in-memory frontend cache and component state.
@@ -459,6 +478,7 @@ Dedupe/upsert behavior
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigserial | entry id | DB | internal |
+| `user_id` | uuid | tenant/user scope | auth context | part of unique key with account/date |
 | `account_id` | bigint | account scope | app | required |
 | `entry_date` | date | journal date | client payload | required |
 | `title` | text | entry title | client payload | required, max 160 chars (service-level) |
@@ -477,6 +497,7 @@ Dedupe/upsert behavior
 | Field | Type | Meaning | Source | Notes |
 |---|---|---|---|---|
 | `id` | bigserial | image id | DB | internal |
+| `user_id` | uuid | tenant/user scope | auth context | used for scoped image queries |
 | `journal_entry_id` | bigint FK | parent journal entry | app | `on delete cascade` |
 | `account_id` | bigint | account scope | app | used for scoped image queries |
 | `entry_date` | date | denormalized entry date | app | month/day calendar lookups |
@@ -524,6 +545,11 @@ Dedupe/upsert behavior
 | `name` | string | display name | backend | fallback to `Account <id>` if needed |
 | `balance` | number | account balance/equity | backend normalized upstream fields | can come from different upstream keys |
 | `status` | string | account status text | backend normalized | derived from upstream status/canTrade |
+| `account_state` | `"ACTIVE" \| "LOCKED_OUT" \| "HIDDEN" \| "MISSING"` | normalized lifecycle state | backend account sync logic | used for account visibility/health semantics |
+| `is_main` | boolean | account pinned as main | backend `/api/accounts/{id}/main` + `/api/accounts` | main account sorts first in payload |
+| `can_trade` | boolean \| null | provider tradability flag | backend/provider | may be null if provider omits field |
+| `is_visible` | boolean \| null | provider visibility flag | backend/provider | may be null if provider omits field |
+| `last_trade_at` | ISO datetime string \| null | latest known trade timestamp | backend local cache/provider | used by Accounts page stale-data hints |
 
 `AccountTrade`
 | Field | Type | Meaning | Source | Notes |
@@ -556,8 +582,14 @@ Dedupe/upsert behavior
 | `mood` | union | Focused/Neutral/Frustrated/Confident | backend validation | |
 | `tags` | string[] | normalized tags | backend | deduped/lowercased |
 | `body` | string | free text | backend | |
+| `version` | number | optimistic concurrency version | backend | required by PATCH updates |
+| `stats_source` | string \| null | stats snapshot source | backend | currently `trade_snapshot` when pulled |
+| `stats_json` | object \| null | snapshot metrics payload | backend | includes trade_count/win_rate/net/gross/fees stats |
+| `stats_pulled_at` | ISO datetime \| null | stats snapshot timestamp | backend | null until pull action |
 | `is_archived` | boolean | soft archive state | backend | |
 | `created_at`/`updated_at` | ISO datetime | timestamps | backend | |
+
+`JournalEntryCreateOut` extends `JournalEntry` with `already_existed: boolean`.
 
 ## 11) Metrics and Trading Analytics Logic (Very Detailed)
 This project has three metric layers:
@@ -788,6 +820,11 @@ psql $env:DATABASE_URL -f .\db\migrations\20260220_add_projectx_trade_events.sql
 psql $env:DATABASE_URL -f .\db\migrations\20260221_add_projectx_trade_day_syncs.sql
 psql $env:DATABASE_URL -f .\db\migrations\20260221_add_journal_entries.sql
 psql $env:DATABASE_URL -f .\db\migrations\20260222_journal_entry_images_and_versioning.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260226_add_expenses.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260301_add_account_state_fields.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260302_add_instrument_metadata_and_position_lifecycles.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260302_add_multitenant_auth_and_provider_credentials.sql
+psql $env:DATABASE_URL -f .\db\migrations\20260302_add_projectx_trade_events_perf_indexes.sql
 ```
 
 Run backend only
@@ -844,6 +881,8 @@ Current test status from repo inspection
    - filter by date/mood/text/archived.
    - create new entry.
    - edit title/mood/tags/body with debounced autosave.
+   - upload/delete images (file picker or clipboard paste).
+   - pull trade stats snapshot for selected entry/day or filtered date range.
    - archive/unarchive selected entry.
 
 How to view active accounts only
@@ -879,7 +918,7 @@ If data looks wrong
 | Stale cache data | day-sync table + refresh heuristics for today/yesterday + manual refresh endpoint | no global scheduler |
 | Invalid account IDs | `400` for `account_id <= 0` | positive but nonexistent account ids can still trigger upstream errors/empty data |
 | Backend unavailable | frontend fetch throws and surfaces readable message in page UI | no offline queue/retry UX |
-| Journal invalid payload | service validation returns `400`; missing entry returns `404` | no server-side conflict resolution |
+| Journal invalid payload / stale version | validation returns `400`; missing entry returns `404`; stale version returns `409` with server payload | optimistic concurrency is enforced via `version` |
 
 ## 16) Performance and Design Decisions
 Why split frontend/backend
@@ -932,7 +971,7 @@ How to improve for scale
 - MFE/MAE-dependent payoff metrics exist in frontend formulas but backend does not currently provide MFE/MAE fields.
 - Direction/payoff extras rely on at most `METRIC_TRADE_LIMIT=1000` rows from frontend fetch; large ranges can show missing directional extras.
 - CORS is local-only oriented (`localhost`/`127.0.0.1` regex + explicit `http://localhost:5173`).
-- No application auth or user isolation; account id is selected client-side.
+- Auth can be optional in local mode (`AUTH_REQUIRED` auto-false without `SUPABASE_URL`), so local-only testing may miss strict-auth behavior.
 - Upstream rate limits are not explicitly modeled with backoff/circuit-breaker logic.
 - Backend tests report deprecation warnings (`FastAPI on_event`, Pydantic class config style).
 
@@ -944,7 +983,7 @@ How to improve for scale
 5. Persist and serve MFE/MAE so capture/containment metrics become fully usable.
 6. Unify legacy and active metric pipelines (or remove legacy endpoints).
 7. Add server-side pagination and richer trade queries to reduce client-side filtering limits.
-8. Add authentication and per-user account isolation.
+8. Tighten auth posture (strict-mode defaults, clearer environment profiles, and stronger tenant guardrails).
 9. Add observability: structured logging, sync latency metrics, and endpoint metrics.
 10. Expand test suite to true API integration tests with TestClient + DB fixtures.
 
