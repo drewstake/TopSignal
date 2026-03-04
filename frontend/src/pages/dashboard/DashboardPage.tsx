@@ -34,6 +34,7 @@ import {
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
+import { DailyAccountBalanceCard } from "./components/DailyAccountBalanceCard";
 import { PnlCalendarCard } from "./components/PnlCalendarCard";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
@@ -707,23 +708,24 @@ export function DashboardPage() {
     () => computeStabilityScoreFromWorstDayPercent(derivedMetrics.stability.worstDayPercentOfNet.value),
     [derivedMetrics.stability.worstDayPercentOfNet.value],
   );
+  const sustainabilityDailyNetPnl = useMemo(
+    () =>
+      pnlCalendarDays
+        .map((day) => day.net_pnl)
+        .filter((value) => Number.isFinite(value)),
+    [pnlCalendarDays],
+  );
   const sustainability = useMemo(
     () =>
       computeSustainability({
-        netPnl: summary.net_pnl,
-        profitPerDay: summary.profit_per_day,
+        dailyNetPnl: sustainabilityDailyNetPnl,
         maxDrawdown: summary.max_drawdown,
-        bestDay: derivedMetrics.stability.bestDay.value ?? 0,
-        worstDay: derivedMetrics.stability.worstDay.value ?? 0,
-        dailyPnlVolatility: derivedMetrics.stability.dailyPnlVolatility.value ?? 0,
+        equityBase: selectedAccount?.balance ?? null,
       }),
     [
-      derivedMetrics.stability.bestDay.value,
-      derivedMetrics.stability.dailyPnlVolatility.value,
-      derivedMetrics.stability.worstDay.value,
+      selectedAccount?.balance,
+      sustainabilityDailyNetPnl,
       summary.max_drawdown,
-      summary.net_pnl,
-      summary.profit_per_day,
     ],
   );
 
@@ -906,35 +908,58 @@ export function DashboardPage() {
             <MetricCard
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
+              primaryClassName="bg-gradient-to-r from-violet-200 via-cyan-100 to-indigo-200 bg-clip-text text-transparent"
               subtitle="Daily PnL volatility ($)."
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
-              accentClassName="bg-gradient-to-r from-indigo-300/65 via-cyan-200/20 to-transparent"
-              className="p-3 sm:col-span-2 md:col-span-2 md:row-start-2 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-2 lg:min-h-[440px]"
+              accentClassName="bg-gradient-to-r from-violet-300/80 via-cyan-200/30 to-indigo-300/80"
+              className="relative overflow-hidden p-3 sm:col-span-2 md:col-span-2 md:row-start-2 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-2 lg:min-h-[440px]"
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <MiniStatList
-                items={[
-                  {
-                    label: "Best Day",
-                    value: `${formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)} (${formatMetricValue(
-                      derivedMetrics.stability.bestDayPercentOfNet,
-                      (value) => formatPercent(value, 1),
-                    )})`,
-                    valueClassName: metricPnlClass(derivedMetrics.stability.bestDay),
-                  },
-                  {
-                    label: "Worst Day",
-                    value: `${formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)} (${formatMetricValue(
-                      derivedMetrics.stability.worstDayPercentOfNet,
-                      (value) => formatPercent(value, 1),
-                    )})`,
-                    valueClassName: metricPnlClass(derivedMetrics.stability.worstDay),
-                  },
-                  { label: "Median Day", value: formatMetricValue(derivedMetrics.stability.medianDayPnl, formatPnl) },
-                  { label: "Avg Green", value: formatMetricValue(derivedMetrics.stability.avgGreenDay, formatPnl) },
-                  { label: "Avg Red", value: formatMetricValue(derivedMetrics.stability.avgRedDay, formatPnl) },
-                  { label: "Red Day %", value: formatMetricValue(derivedMetrics.stability.redDayPercent, (value) => formatPercent(value, 1)) },
-                ]}
-              />
+              <div className="relative overflow-hidden rounded-xl border border-cyan-500/20 bg-[radial-gradient(120%_130%_at_8%_0%,rgba(129,140,248,0.16),rgba(15,23,42,0.28)_42%,rgba(15,23,42,0.78)_100%)] p-3">
+                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-violet-300/20 blur-2xl" />
+                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-cyan-300/14 blur-2xl" />
+                <div className="relative space-y-3">
+                  <SplitBar
+                    className="rounded-md border border-slate-700/70 bg-slate-950/35 p-2"
+                    leftLabel="Best Day"
+                    rightLabel="Worst Day"
+                    leftValue={formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)}
+                    rightValue={formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)}
+                    leftMagnitude={Math.abs(derivedMetrics.stability.bestDay.value ?? 0)}
+                    rightMagnitude={Math.abs(derivedMetrics.stability.worstDay.value ?? 0)}
+                    leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-cyan-300/80"
+                    rightBarClassName="bg-gradient-to-l from-rose-300/90 to-amber-300/75"
+                  />
+                  <MiniStatList
+                    className="gap-2"
+                    items={[
+                      {
+                        label: "Best Day",
+                        value: `${formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)} (${formatMetricValue(
+                          derivedMetrics.stability.bestDayPercentOfNet,
+                          (value) => formatPercent(value, 1),
+                        )})`,
+                        valueClassName: metricPnlClass(derivedMetrics.stability.bestDay),
+                      },
+                      {
+                        label: "Worst Day",
+                        value: `${formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)} (${formatMetricValue(
+                          derivedMetrics.stability.worstDayPercentOfNet,
+                          (value) => formatPercent(value, 1),
+                        )})`,
+                        valueClassName: metricPnlClass(derivedMetrics.stability.worstDay),
+                      },
+                      { label: "Median Day", value: formatMetricValue(derivedMetrics.stability.medianDayPnl, formatPnl) },
+                      { label: "Avg Green", value: formatMetricValue(derivedMetrics.stability.avgGreenDay, formatPnl) },
+                      { label: "Avg Red", value: formatMetricValue(derivedMetrics.stability.avgRedDay, formatPnl) },
+                      {
+                        label: "Red Day %",
+                        value: formatMetricValue(derivedMetrics.stability.redDayPercent, (value) => formatPercent(value, 1)),
+                      },
+                    ]}
+                  />
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Chip
                   label="Worst Day Impact"
@@ -945,23 +970,25 @@ export function DashboardPage() {
                   }
                   className={
                     derivedMetrics.stability.nukeRatio.value !== null && derivedMetrics.stability.nukeRatio.value >= 10
-                      ? "border-rose-400/35 bg-rose-500/10 text-rose-100"
-                      : "border-cyan-400/30 bg-cyan-500/10 text-cyan-100"
+                      ? "border-rose-300/40 bg-rose-500/15 text-rose-100"
+                      : "border-cyan-300/40 bg-cyan-500/15 text-cyan-100"
                   }
                 />
                 <Chip
                   label="G/R Size Ratio"
                   value={formatMetricValueWithNote(derivedMetrics.stability.greenRedDaySizeRatio, (value) => `${formatNumber(value)}x`)}
+                  className="border-violet-400/30 bg-violet-500/10 text-violet-100"
                 />
               </div>
               <GaugeBar
                 label="Stability"
                 value={stabilityScore.value}
                 valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
-                className="space-y-1"
+                className="space-y-1.5 rounded-md border border-slate-700/70 bg-slate-950/35 p-2"
+                fillClassName="bg-gradient-to-r from-cyan-300/85 via-indigo-300/80 to-violet-300/80"
               />
-              <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
-                <span className="font-semibold text-slate-200">Insight:</span> {derivedMetrics.stability.insight}
+              <p className="rounded-md border border-indigo-400/30 bg-[linear-gradient(120deg,rgba(129,140,248,0.15),rgba(15,23,42,0.48)_45%,rgba(56,189,248,0.12)_100%)] px-2 py-1 text-[11px] text-slate-200">
+                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.stability.insight}
               </p>
             </MetricCard>
 
@@ -982,134 +1009,151 @@ export function DashboardPage() {
             <MetricCard
               title="Direction"
               primaryValue={directionPrimaryValue}
+              primaryClassName="bg-gradient-to-r from-emerald-200 via-cyan-100 to-rose-200 bg-clip-text text-transparent"
               subtitle={
                 directionSplit.longPercent.value === null
                   ? directionSplit.longPercent.missingReason ?? "Needs directional trade history."
                   : "Long vs short trade mix."
               }
               info="Long % is long trades divided by total directional trades for this range."
-              accentClassName="bg-gradient-to-r from-teal-300/65 via-cyan-200/20 to-transparent"
-              className="flex flex-col md:col-span-2 md:row-start-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2"
-              contentClassName="mt-3 flex flex-col gap-3 space-y-0"
+              accentClassName="bg-gradient-to-r from-emerald-300/80 via-cyan-200/25 to-rose-300/80"
+              className="relative flex flex-col overflow-hidden md:col-span-2 md:row-start-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2"
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                <DonutRing
-                  className="lg:items-start"
-                  segments={[
-                    {
-                      label: "Long",
-                      value: directionSplit.longPercent.value,
-                      valueLabel: formatMetricValue(directionSplit.longPercent, (value) => formatPercent(value, 0)),
-                      color: "rgba(16,185,129,0.9)",
-                    },
-                    {
-                      label: "Short",
-                      value: directionSplit.shortPercent.value,
-                      valueLabel: formatMetricValue(directionSplit.shortPercent, (value) => formatPercent(value, 0)),
-                      color: "rgba(248,113,113,0.92)",
-                    },
-                  ]}
-                  centerLabel={directionPrimaryValue}
-                  centerSubLabel="Direction"
-                />
-                <div className="space-y-2">
-                  <div className="overflow-hidden rounded-md border border-slate-800/70 bg-slate-950/35">
-                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] bg-slate-900/75 px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-slate-500">
-                      <span>Side Comparison</span>
-                      <span className="text-right">Long</span>
-                      <span className="text-right">Short</span>
-                    </div>
-                    {[
+              <div className="relative overflow-hidden rounded-xl border border-cyan-500/20 bg-[radial-gradient(120%_130%_at_6%_0%,rgba(16,185,129,0.16),rgba(15,23,42,0.25)_42%,rgba(15,23,42,0.75)_100%)] p-3">
+                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-emerald-300/18 blur-2xl" />
+                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-rose-300/14 blur-2xl" />
+                <div className="relative grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                  <DonutRing
+                    className="lg:items-start"
+                    segments={[
                       {
-                        label: "Trades",
-                        long: formatMetricValue(derivedMetrics.direction.longTrades, formatInteger),
-                        short: formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger),
+                        label: "Long",
+                        value: directionSplit.longPercent.value,
+                        valueLabel: formatMetricValue(directionSplit.longPercent, (value) => formatPercent(value, 0)),
+                        color: "rgba(16,185,129,0.95)",
                       },
                       {
-                        label: "WR",
-                        long: formatMetricValue(derivedMetrics.direction.longWinRate, (value) => formatPercent(value, 1)),
-                        short: formatMetricValue(derivedMetrics.direction.shortWinRate, (value) => formatPercent(value, 1)),
+                        label: "Short",
+                        value: directionSplit.shortPercent.value,
+                        valueLabel: formatMetricValue(directionSplit.shortPercent, (value) => formatPercent(value, 0)),
+                        color: "rgba(248,113,113,0.95)",
                       },
-                      {
-                        label: "Expectancy",
-                        long: formatMetricValue(derivedMetrics.direction.longExpectancy, formatPnl),
-                        short: formatMetricValue(derivedMetrics.direction.shortExpectancy, formatPnl),
-                      },
-                      {
-                        label: "PF",
-                        long: formatMetricValue(derivedMetrics.direction.longProfitFactor, (value) => `${formatNumber(value)}x`),
-                        short: formatMetricValue(derivedMetrics.direction.shortProfitFactor, (value) => `${formatNumber(value)}x`),
-                      },
-                      {
-                        label: "Avg Win / Loss",
-                        long: `${formatMetricValue(derivedMetrics.direction.longAvgWin, formatPnl)} / ${formatMetricValue(
-                          derivedMetrics.direction.longAvgLoss,
-                          formatPnl,
-                        )}`,
-                        short: `${formatMetricValue(derivedMetrics.direction.shortAvgWin, formatPnl)} / ${formatMetricValue(
-                          derivedMetrics.direction.shortAvgLoss,
-                          formatPnl,
-                        )}`,
-                      },
-                      {
-                        label: "Large Loss %",
-                        long: formatMetricValueWithNote(derivedMetrics.direction.longLargeLossRate, (value) => formatPercent(value, 1)),
-                        short: formatMetricValueWithNote(derivedMetrics.direction.shortLargeLossRate, (value) => formatPercent(value, 1)),
-                      },
-                      {
-                        label: "PnL Share",
-                        long: `${formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)} (${formatMetricValueWithNote(
-                          derivedMetrics.direction.longPnlShare,
-                          (value) => formatPercent(value, 1),
-                        )})`,
-                        short: `${formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)} (${formatMetricValueWithNote(
-                          derivedMetrics.direction.shortPnlShare,
-                          (value) => formatPercent(value, 1),
-                        )})`,
-                      },
-                    ].map((row) => (
-                      <div
-                        key={row.label}
-                        className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-t border-slate-800/65 px-2 py-1 text-[11px]"
-                      >
-                        <span className="text-slate-400">{row.label}</span>
-                        <span className="text-right text-slate-200">{row.long}</span>
-                        <span className="text-right text-slate-200">{row.short}</span>
+                    ]}
+                    centerLabel={directionPrimaryValue}
+                    centerSubLabel="Direction"
+                  />
+                  <div className="space-y-2">
+                    <div className="overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/45 shadow-[inset_0_1px_0_rgba(148,163,184,0.07)]">
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-b border-slate-700/65 bg-slate-900/90 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                        <span>Side Comparison</span>
+                        <span className="text-right text-emerald-300">Long</span>
+                        <span className="text-right text-rose-300">Short</span>
                       </div>
-                    ))}
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
-                      <span>PnL Share Split</span>
-                      <span>
-                        {formatMetricValueWithNote(derivedMetrics.direction.longPnlShare, (value) => `Long ${formatPercent(value, 1)}`)} /{" "}
-                        {formatMetricValueWithNote(derivedMetrics.direction.shortPnlShare, (value) => `Short ${formatPercent(value, 1)}`)}
-                      </span>
+                      {[
+                        {
+                          label: "Trades",
+                          long: formatMetricValue(derivedMetrics.direction.longTrades, formatInteger),
+                          short: formatMetricValue(derivedMetrics.direction.shortTrades, formatInteger),
+                        },
+                        {
+                          label: "WR",
+                          long: formatMetricValue(derivedMetrics.direction.longWinRate, (value) => formatPercent(value, 1)),
+                          short: formatMetricValue(derivedMetrics.direction.shortWinRate, (value) => formatPercent(value, 1)),
+                        },
+                        {
+                          label: "Expectancy",
+                          long: formatMetricValue(derivedMetrics.direction.longExpectancy, formatPnl),
+                          short: formatMetricValue(derivedMetrics.direction.shortExpectancy, formatPnl),
+                        },
+                        {
+                          label: "PF",
+                          long: formatMetricValue(derivedMetrics.direction.longProfitFactor, (value) => `${formatNumber(value)}x`),
+                          short: formatMetricValue(derivedMetrics.direction.shortProfitFactor, (value) => `${formatNumber(value)}x`),
+                        },
+                        {
+                          label: "Avg Win / Loss",
+                          long: `${formatMetricValue(derivedMetrics.direction.longAvgWin, formatPnl)} / ${formatMetricValue(
+                            derivedMetrics.direction.longAvgLoss,
+                            formatPnl,
+                          )}`,
+                          short: `${formatMetricValue(derivedMetrics.direction.shortAvgWin, formatPnl)} / ${formatMetricValue(
+                            derivedMetrics.direction.shortAvgLoss,
+                            formatPnl,
+                          )}`,
+                        },
+                        {
+                          label: "Large Loss %",
+                          long: formatMetricValueWithNote(derivedMetrics.direction.longLargeLossRate, (value) => formatPercent(value, 1)),
+                          short: formatMetricValueWithNote(derivedMetrics.direction.shortLargeLossRate, (value) => formatPercent(value, 1)),
+                        },
+                        {
+                          label: "PnL Share",
+                          long: `${formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)} (${formatMetricValueWithNote(
+                            derivedMetrics.direction.longPnlShare,
+                            (value) => formatPercent(value, 1),
+                          )})`,
+                          short: `${formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)} (${formatMetricValueWithNote(
+                            derivedMetrics.direction.shortPnlShare,
+                            (value) => formatPercent(value, 1),
+                          )})`,
+                        },
+                      ].map((row, rowIndex) => (
+                        <div
+                          key={row.label}
+                          className={`grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-t border-slate-800/65 px-2.5 py-1.5 text-[11px] ${
+                            rowIndex % 2 === 0 ? "bg-slate-950/30" : "bg-slate-900/45"
+                          }`}
+                        >
+                          <span className="text-slate-300">{row.label}</span>
+                          <span className="text-right font-medium text-emerald-100">{row.long}</span>
+                          <span className="text-right font-medium text-rose-100">{row.short}</span>
+                        </div>
+                      ))}
                     </div>
-                    <div className="relative h-1.5 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
-                      <div className="h-full bg-emerald-400/80" style={{ width: `${longPnlShareWidth}%` }} aria-hidden="true" />
-                      <div
-                        className="absolute right-0 top-0 h-full bg-rose-400/75"
-                        style={{ width: `${shortPnlShareWidth}%` }}
-                        aria-hidden="true"
-                      />
+                    <div className="space-y-1.5 rounded-md border border-slate-700/70 bg-slate-950/45 p-2">
+                      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                        <span>PnL Share Split</span>
+                        <span className="text-slate-300">
+                          <span className="text-emerald-200">
+                            {formatMetricValueWithNote(derivedMetrics.direction.longPnlShare, (value) => `Long ${formatPercent(value, 1)}`)}
+                          </span>{" "}
+                          /{" "}
+                          <span className="text-rose-200">
+                            {formatMetricValueWithNote(derivedMetrics.direction.shortPnlShare, (value) => `Short ${formatPercent(value, 1)}`)}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/90">
+                        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(16,185,129,0.18)_0%,rgba(15,23,42,0)_50%,rgba(248,113,113,0.18)_100%)]" />
+                        <div
+                          className="relative h-full bg-gradient-to-r from-emerald-300/90 to-emerald-400/80"
+                          style={{ width: `${longPnlShareWidth}%` }}
+                          aria-hidden="true"
+                        />
+                        <div
+                          className="absolute right-0 top-0 h-full bg-gradient-to-l from-rose-300/85 to-rose-400/75"
+                          style={{ width: `${shortPnlShareWidth}%` }}
+                          aria-hidden="true"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
               <SplitBar
-                className="mt-auto"
+                className="mt-auto rounded-md border border-slate-700/70 bg-slate-950/35 p-2"
                 leftLabel="Long PnL"
                 rightLabel="Short PnL"
                 leftValue={formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)}
                 rightValue={formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)}
                 leftMagnitude={Math.abs(derivedMetrics.direction.longPnl.value ?? 0)}
                 rightMagnitude={Math.abs(derivedMetrics.direction.shortPnl.value ?? 0)}
-                leftBarClassName="bg-emerald-400/80"
-                rightBarClassName="bg-rose-400/75"
+                leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-emerald-400/80"
+                rightBarClassName="bg-gradient-to-l from-rose-300/90 to-rose-400/80"
               />
-              <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
-                <span className="font-semibold text-slate-200">Insight:</span> {derivedMetrics.direction.insight}
+              <p className="rounded-md border border-cyan-500/20 bg-[linear-gradient(120deg,rgba(16,185,129,0.12),rgba(15,23,42,0.48)_48%,rgba(248,113,113,0.1)_100%)] px-2 py-1 text-[11px] text-slate-200">
+                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.direction.insight}
               </p>
             </MetricCard>
 
@@ -1242,8 +1286,8 @@ export function DashboardPage() {
             <MetricCard
               title="Sustainability"
               primaryValue={`${formatInteger(sustainability.score)}/100`}
-              subtitle="Composite score from Swing, Outliers, and Risk."
-              info="Sustainability combines swing ratio, outlier dependence, and drawdown efficiency into one score."
+              subtitle="Composite score from Risk, Consistency, and Edge."
+              info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
               accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
               className="self-start p-3 sm:col-span-2 md:col-span-2 md:row-start-3 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-3"
             >
@@ -1254,16 +1298,16 @@ export function DashboardPage() {
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Swing</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.swingScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Outliers</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.outlierScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
                   <span className="text-slate-300">Risk</span>
                   <span className="font-semibold text-slate-100">{formatNumber(sustainability.riskScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Consistency</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.consistencyScore, 1)}/100</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
+                  <span className="text-slate-300">Edge</span>
+                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.edgeScore, 1)}/100</span>
                 </div>
               </div>
 
@@ -1319,6 +1363,13 @@ export function DashboardPage() {
           </>
         )}
       </MasonryGrid>
+
+      <DailyAccountBalanceCard
+        days={pnlCalendarDays}
+        loading={pnlCalendarLoading}
+        error={pnlCalendarError}
+        currentBalance={selectedAccount?.balance ?? null}
+      />
 
       <PnlCalendarCard
         days={pnlCalendarDays}

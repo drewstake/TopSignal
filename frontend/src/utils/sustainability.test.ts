@@ -3,82 +3,95 @@ import { describe, expect, it } from "vitest";
 import { computeSustainability, getSustainabilityLabel } from "./sustainability";
 
 describe("computeSustainability", () => {
-  it("computes sustainability score and subscores from the requested formulas", () => {
+  it("scores smooth profitable performance as healthy", () => {
+    const dailyNetPnl = Array.from({ length: 30 }, (_, index) => [100, 110, 90, 105, 95][index % 5]);
     const result = computeSustainability({
-      netPnl: 10_000,
-      profitPerDay: 500,
-      maxDrawdown: -1_200,
-      bestDay: 900,
-      worstDay: -600,
-      dailyPnlVolatility: 650,
+      dailyNetPnl,
+      maxDrawdown: -600,
+      equityBase: 50_000,
     });
 
-    expect(result.debug.swingRatio).toBeCloseTo(1.3);
-    expect(result.debug.bestDayPct).toBeCloseTo(0.09);
-    expect(result.debug.worstDayPct).toBeCloseTo(0.06);
-    expect(result.debug.ddRatio).toBeCloseTo(0.12);
-    expect(result.swingScore).toBeCloseTo(89.5);
-    expect(result.outlierScore).toBeCloseTo(88.3);
-    expect(result.riskScore).toBeCloseTo(85.6);
-    expect(result.score).toBe(88);
+    expect(result.score).toBeGreaterThanOrEqual(80);
     expect(result.label).toBe("Healthy");
+    expect(result.riskScore).toBeGreaterThanOrEqual(90);
+    expect(result.consistencyScore).toBeGreaterThanOrEqual(90);
+    expect(result.edgeScore).toBeGreaterThanOrEqual(90);
   });
 
-  it("returns zero subscores and N/A ratios when net pnl is zero", () => {
+  it("drops meaningfully when drawdown is near 10% of equity base", () => {
+    const dailyNetPnl = [...Array.from({ length: 29 }, () => 100), -5_000];
     const result = computeSustainability({
-      netPnl: 0,
-      profitPerDay: 250,
-      maxDrawdown: -500,
-      bestDay: 300,
-      worstDay: -200,
-      dailyPnlVolatility: 300,
+      dailyNetPnl,
+      maxDrawdown: -5_000,
+      equityBase: 50_000,
+    });
+
+    expect(result.score).toBeLessThan(70);
+    expect(result.riskScore).toBeLessThan(70);
+  });
+
+  it("keeps breakeven low-risk performance in a mid range and below healthy", () => {
+    const result = computeSustainability({
+      dailyNetPnl: [20, -19, 18, -18, 21, -20, 19, -19, 20, -20],
+      maxDrawdown: -40,
+      equityBase: 50_000,
+    });
+
+    expect(result.score).toBeGreaterThanOrEqual(40);
+    expect(result.score).toBeLessThan(80);
+    expect(result.label).not.toBe("Healthy");
+  });
+
+  it("scores losing performance as unsustainable", () => {
+    const result = computeSustainability({
+      dailyNetPnl: Array.from({ length: 30 }, (_, index) => [-300, -250, -350, -280, -320, -260][index % 6]),
+      maxDrawdown: -9_000,
+      equityBase: 50_000,
+    });
+
+    expect(result.score).toBeLessThan(40);
+    expect(result.label).toBe("Unsustainable");
+  });
+
+  it("returns zero score when there are no trading days", () => {
+    const result = computeSustainability({
+      dailyNetPnl: [],
+      maxDrawdown: 0,
+      equityBase: 50_000,
     });
 
     expect(result.score).toBe(0);
     expect(result.label).toBe("Unsustainable");
-    expect(result.swingScore).toBe(0);
-    expect(result.outlierScore).toBe(0);
     expect(result.riskScore).toBe(0);
-    expect(result.debug.swingRatio).toBe("N/A");
-    expect(result.debug.bestDayPct).toBe("N/A");
-    expect(result.debug.worstDayPct).toBe("N/A");
-    expect(result.debug.ddRatio).toBe("N/A");
+    expect(result.consistencyScore).toBe(0);
+    expect(result.edgeScore).toBe(0);
   });
 
-  it("returns zero subscores and N/A ratios when profit/day is zero", () => {
+  it("keeps profit factor finite when there are no positive days", () => {
     const result = computeSustainability({
-      netPnl: 5_000,
-      profitPerDay: 0,
-      maxDrawdown: -500,
-      bestDay: 600,
-      worstDay: -350,
-      dailyPnlVolatility: 320,
+      dailyNetPnl: [-100, -120, -80, -90],
+      maxDrawdown: -390,
+      equityBase: 50_000,
     });
 
-    expect(result.score).toBe(0);
-    expect(result.label).toBe("Unsustainable");
-    expect(result.swingScore).toBe(0);
-    expect(result.outlierScore).toBe(0);
-    expect(result.riskScore).toBe(0);
-    expect(result.debug.swingRatio).toBe("N/A");
-    expect(result.debug.bestDayPct).toBe("N/A");
-    expect(result.debug.worstDayPct).toBe("N/A");
-    expect(result.debug.ddRatio).toBe("N/A");
+    expect(Number.isFinite(result.debug.profitFactor)).toBe(true);
+    expect(result.debug.profitFactor).toBe(0);
+    expect(Number.isFinite(result.score)).toBe(true);
   });
 
-  it("uses abs(netPnl) for ratios when net pnl is negative", () => {
+  it("falls back to peak equity when equity base is non-positive and never returns NaN", () => {
     const result = computeSustainability({
-      netPnl: -2_000,
-      profitPerDay: 100,
-      maxDrawdown: -500,
-      bestDay: 200,
-      worstDay: -300,
-      dailyPnlVolatility: 200,
+      dailyNetPnl: [200, -50, 180, -40, 160],
+      maxDrawdown: Number.NaN,
+      equityBase: 0,
     });
 
-    expect(result.debug.bestDayPct).toBeCloseTo(0.1);
-    expect(result.debug.worstDayPct).toBeCloseTo(0.15);
-    expect(result.debug.ddRatio).toBeCloseTo(0.25);
+    expect(result.debug.peakEquityFallback).toBeGreaterThan(0);
+    expect(result.debug.effectiveEquityBase).toBe(result.debug.peakEquityFallback);
+    expect(Number.isFinite(result.score)).toBe(true);
+    expect(Number.isFinite(result.riskScore)).toBe(true);
+    expect(Number.isFinite(result.consistencyScore)).toBe(true);
+    expect(Number.isFinite(result.edgeScore)).toBe(true);
   });
 });
 

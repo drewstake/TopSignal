@@ -21,8 +21,8 @@ interface NormalizedSegment extends DonutRingSegment {
   offset: number;
 }
 
-const SIZE = 120;
-const STROKE_WIDTH = 14;
+const SIZE = 132;
+const STROKE_WIDTH = 12;
 const RADIUS = (SIZE - STROKE_WIDTH) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
@@ -36,6 +36,7 @@ function safeValue(value: number | null) {
 export function DonutRing({ segments, centerLabel, centerSubLabel, className }: DonutRingProps) {
   const titleId = useId();
   const descId = useId();
+  const centerGradientId = useMemo(() => `donut-center-${titleId.replace(/[^a-zA-Z0-9_-]/g, "") || "x"}`, [titleId]);
 
   const normalizedSegments = useMemo<NormalizedSegment[]>(() => {
     const total = segments.reduce((sum, segment) => sum + safeValue(segment.value), 0);
@@ -62,11 +63,26 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
 
   return (
     <div className={cn("flex items-center gap-3", className)}>
-      <div className="relative h-[120px] w-[120px] shrink-0">
-        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-labelledby={`${titleId} ${descId}`} className="h-full w-full">
+      <div className="relative h-[128px] w-[128px] shrink-0">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-full bg-[conic-gradient(from_180deg,rgba(16,185,129,0.3),rgba(56,189,248,0.18),rgba(248,113,113,0.28),rgba(16,185,129,0.3))] blur-xl"
+        />
+        <svg
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          role="img"
+          aria-labelledby={`${titleId} ${descId}`}
+          className="relative h-full w-full drop-shadow-[0_12px_24px_rgba(15,23,42,0.45)]"
+        >
           <title id={titleId}>Directional split</title>
           <desc id={descId}>{descriptionText}</desc>
-          <circle cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} fill="none" stroke="rgba(51,65,85,0.62)" strokeWidth={STROKE_WIDTH} />
+          <defs>
+            <radialGradient id={centerGradientId} cx="50%" cy="45%" r="75%">
+              <stop offset="0%" stopColor="rgba(15,23,42,0.95)" />
+              <stop offset="100%" stopColor="rgba(15,23,42,0.78)" />
+            </radialGradient>
+          </defs>
+          <circle cx={SIZE / 2} cy={SIZE / 2} r={RADIUS} fill="none" stroke="rgba(51,65,85,0.7)" strokeWidth={STROKE_WIDTH} />
           <g transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}>
             {normalizedSegments.map((segment) => {
               const length = segment.share * CIRCUMFERENCE;
@@ -84,24 +100,40 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
                   strokeDasharray={strokeDasharray}
                   strokeDashoffset={strokeDashoffset}
                   strokeLinecap="round"
+                  className="transition-all duration-500"
                 />
               );
             })}
           </g>
+          <circle
+            cx={SIZE / 2}
+            cy={SIZE / 2}
+            r={RADIUS - STROKE_WIDTH / 2 - 1}
+            fill={`url(#${centerGradientId})`}
+            stroke="rgba(148,163,184,0.18)"
+            strokeWidth="1"
+          />
         </svg>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-2 text-center">
-          <p className="text-sm font-semibold text-slate-100">{centerLabel}</p>
-          {centerSubLabel ? <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{centerSubLabel}</p> : null}
+          <p className="text-sm font-semibold text-slate-100 drop-shadow-[0_2px_10px_rgba(15,23,42,0.55)]">{centerLabel}</p>
+          {centerSubLabel ? <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-200/75">{centerSubLabel}</p> : null}
         </div>
       </div>
-      <div className="min-w-0 flex-1 space-y-1.5">
+      <div className="min-w-0 flex-1 space-y-2">
         {segments.map((segment) => (
-          <div key={segment.label} className="flex items-center justify-between gap-2 rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px]">
-            <span className="inline-flex items-center gap-1.5 text-slate-300">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: segment.color }} aria-hidden="true" />
+          <div
+            key={segment.label}
+            className="flex items-center justify-between gap-2 rounded-lg border border-slate-700/75 bg-slate-950/45 px-2.5 py-1.5 text-[11px] shadow-[inset_0_1px_0_rgba(148,163,184,0.08)]"
+          >
+            <span className="inline-flex items-center gap-2 text-slate-200">
+              <span
+                className="h-2.5 w-2.5 rounded-full ring-2 ring-slate-950/70"
+                style={{ backgroundColor: segment.color }}
+                aria-hidden="true"
+              />
               {segment.label}
             </span>
-            <span className="font-semibold text-slate-100">{segment.valueLabel}</span>
+            <span className="rounded-md bg-slate-900/80 px-1.5 py-0.5 font-semibold text-slate-100">{segment.valueLabel}</span>
           </div>
         ))}
       </div>
