@@ -31,11 +31,38 @@ describe("computeDirectionExtras", () => {
       buildTrade(6, "BUY", -20),
     ];
     const samples = buildDirectionSamples(trades);
-    const result = computeDirectionExtras(samples, 220);
+    const result = computeDirectionExtras(samples);
 
     expect(result.long.expectancy.value).toBeCloseTo(66.666, 2);
     expect(result.short.expectancy.value).toBeCloseTo(6.666, 2);
     expect(result.long.profitFactor.value).toBeCloseTo(5);
     expect(result.short.profitFactor.value).toBeCloseTo(1.333, 2);
+  });
+
+  it("keeps pnl share split bounded and normalized", () => {
+    const trades: AccountTrade[] = [
+      buildTrade(1, "SELL", 120),
+      buildTrade(2, "BUY", -30),
+    ];
+    const samples = buildDirectionSamples(trades);
+    const result = computeDirectionExtras(samples);
+
+    expect(result.longPnlShare.value).toBeCloseTo(80, 4);
+    expect(result.shortPnlShare.value).toBeCloseTo(20, 4);
+    expect((result.longPnlShare.value ?? 0) + (result.shortPnlShare.value ?? 0)).toBeCloseTo(100, 8);
+  });
+
+  it("returns missing pnl share split when directional pnl is zero", () => {
+    const trades: AccountTrade[] = [
+      buildTrade(1, "SELL", 0),
+      buildTrade(2, "BUY", 0),
+    ];
+    const samples = buildDirectionSamples(trades);
+    const result = computeDirectionExtras(samples);
+
+    expect(result.longPnlShare.value).toBeNull();
+    expect(result.shortPnlShare.value).toBeNull();
+    expect(result.longPnlShare.missingReason).toBe("needs non-zero directional PnL");
+    expect(result.shortPnlShare.missingReason).toBe("needs non-zero directional PnL");
   });
 });

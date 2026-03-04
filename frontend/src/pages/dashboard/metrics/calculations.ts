@@ -57,7 +57,7 @@ function computeDirectionMetrics(input: DashboardMetricsInput): DirectionMetrics
     return missingDirectionMetrics("needs closed trades with BUY/SELL or LONG/SHORT side values");
   }
 
-  const extras = computeDirectionExtras(directionalSamples, input.summary.net_pnl);
+  const extras = computeDirectionExtras(directionalSamples);
   const longTrades = extras.long.trades.value;
   const shortTrades = extras.short.trades.value;
   const totalDirectionalTrades =
@@ -248,8 +248,8 @@ function emptyDirectionMetrics(reason: string): DirectionMetrics {
     shortAvgLoss: missingMetric(reason),
     longLargeLossRate: missingMetric(reason),
     shortLargeLossRate: missingMetric(reason),
-    longPnlShare: missingMetric("needs non-zero net PnL"),
-    shortPnlShare: missingMetric("needs non-zero net PnL"),
+    longPnlShare: missingMetric("needs non-zero directional PnL"),
+    shortPnlShare: missingMetric("needs non-zero directional PnL"),
     insight: `N/A (${reason})`,
   };
 }

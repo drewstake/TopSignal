@@ -42,22 +42,21 @@ export function buildDirectionSamples(trades: AccountTrade[]): DirectionSample[]
   });
 }
 
-export function computeDirectionExtras(samples: DirectionSample[], netPnl: number): DirectionExtrasMetrics {
+export function computeDirectionExtras(samples: DirectionSample[]): DirectionExtrasMetrics {
   const longSamples = samples.filter((sample) => sample.direction === "LONG");
   const shortSamples = samples.filter((sample) => sample.direction === "SHORT");
 
   const long = computeDirectionSideMetrics(longSamples, "long");
   const short = computeDirectionSideMetrics(shortSamples, "short");
 
-  const pnlDenominator = Math.abs(netPnl);
+  // Share split should always be a bounded 0..100 distribution.
+  const longPnlMagnitude = Math.abs(long.pnl.value ?? 0);
+  const shortPnlMagnitude = Math.abs(short.pnl.value ?? 0);
+  const pnlDenominator = longPnlMagnitude + shortPnlMagnitude;
   const longPnlShare =
-    pnlDenominator <= EPSILON || long.pnl.value === null
-      ? missingMetric("needs non-zero net PnL")
-      : metric((long.pnl.value / pnlDenominator) * 100);
+    pnlDenominator <= EPSILON ? missingMetric("needs non-zero directional PnL") : metric((longPnlMagnitude / pnlDenominator) * 100);
   const shortPnlShare =
-    pnlDenominator <= EPSILON || short.pnl.value === null
-      ? missingMetric("needs non-zero net PnL")
-      : metric((short.pnl.value / pnlDenominator) * 100);
+    pnlDenominator <= EPSILON ? missingMetric("needs non-zero directional PnL") : metric(100 - (longPnlMagnitude / pnlDenominator) * 100);
 
   return {
     long,
