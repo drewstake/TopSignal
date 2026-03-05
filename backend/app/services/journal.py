@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from ..auth import get_authenticated_user_id
 from ..journal_schemas import JournalMood
@@ -473,39 +473,80 @@ def pull_journal_entry_trade_stats(
     if row is None:
         raise LookupError("journal entry not found")
 
-    query = (
-        db.query(ProjectXTradeEvent.pnl, ProjectXTradeEvent.fees)
+    base_trade_query = (
+        db.query(ProjectXTradeEvent)
+        .options(
+            load_only(
+                ProjectXTradeEvent.id,
+                ProjectXTradeEvent.contract_id,
+                ProjectXTradeEvent.symbol,
+                ProjectXTradeEvent.side,
+                ProjectXTradeEvent.size,
+                ProjectXTradeEvent.trade_timestamp,
+                ProjectXTradeEvent.fees,
+                ProjectXTradeEvent.pnl,
+            )
+        )
         .filter(ProjectXTradeEvent.user_id == resolved_user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
-        .filter(ProjectXTradeEvent.pnl.isnot(None))
     )
+    closed_query = base_trade_query.filter(ProjectXTradeEvent.pnl.isnot(None))
+    window_start: datetime | None = None
+    window_end: datetime | None = None
 
     normalized_trade_ids = _normalize_trade_ids(trade_ids)
     if normalized_trade_ids:
-        query = query.filter(ProjectXTradeEvent.id.in_(normalized_trade_ids))
+        closed_query = closed_query.filter(ProjectXTradeEvent.id.in_(normalized_trade_ids))
     elif start_date is not None or end_date is not None:
         validate_date_range(start_date=start_date, end_date=end_date)
-        start_dt: datetime | None = None
-        end_dt: datetime | None = None
         if start_date is not None:
-            start_dt, _ = _trading_day_bounds(start_date)
-            query = query.filter(ProjectXTradeEvent.trade_timestamp >= start_dt)
+            window_start, _ = _trading_day_bounds(start_date)
+            closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp >= window_start)
         if end_date is not None:
-            _, end_dt = _trading_day_bounds(end_date)
-            query = query.filter(ProjectXTradeEvent.trade_timestamp <= end_dt)
+            _, window_end = _trading_day_bounds(end_date)
+            closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp <= window_end)
         if before_query_sync is not None:
-            before_query_sync(start_dt, end_dt)
+            before_query_sync(window_start, window_end)
     else:
         effective_date = entry_date or row.entry_date
-        day_start, day_end = _trading_day_bounds(effective_date)
+        window_start, window_end = _trading_day_bounds(effective_date)
         if before_query_sync is not None:
-            before_query_sync(day_start, day_end)
-        query = query.filter(ProjectXTradeEvent.trade_timestamp >= day_start)
-        query = query.filter(ProjectXTradeEvent.trade_timestamp <= day_end)
+            before_query_sync(window_start, window_end)
+        closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp >= window_start)
+        closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp <= window_end)
 
-    trade_rows = query.all()
-    snapshot = _compute_trade_stats_snapshot(trade_rows)
+    closed_rows = (
+        closed_query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
+    )
+
+    if normalized_trade_ids and closed_rows:
+        window_start = min(_as_utc(trade.trade_timestamp) for trade in closed_rows)
+        window_end = max(_as_utc(trade.trade_timestamp) for trade in closed_rows)
+
+    largest_position_size = 0.0
+    if window_end is not None:
+        window_event_query = base_trade_query.filter(ProjectXTradeEvent.trade_timestamp <= window_end)
+        if window_start is not None:
+            window_event_query = window_event_query.filter(ProjectXTradeEvent.trade_timestamp >= window_start)
+        window_events = (
+            window_event_query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
+        )
+        contract_ids = sorted({str(trade.contract_id) for trade in window_events if trade.contract_id})
+        if contract_ids:
+            context_rows = (
+                base_trade_query.filter(ProjectXTradeEvent.contract_id.in_(contract_ids))
+                .filter(ProjectXTradeEvent.trade_timestamp <= window_end)
+                .order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc())
+                .all()
+            )
+            largest_position_size = _compute_largest_position_size_from_events(
+                context_rows,
+                window_start=window_start,
+                window_end=window_end,
+            )
+
+    snapshot = _compute_trade_stats_snapshot(closed_rows, largest_position_size=largest_position_size)
 
     now = _utcnow()
     row.stats_source = "trade_snapshot"
@@ -690,10 +731,15 @@ def _effective_trade_fee(*, pnl: float | None, fees: float | None) -> float:
     return raw_fees * 2
 
 
-def _compute_trade_stats_snapshot(rows: Iterable[Any]) -> dict[str, Any]:
+def _compute_trade_stats_snapshot(
+    rows: Iterable[Any],
+    *,
+    largest_position_size: float | None = None,
+) -> dict[str, Any]:
     pnls: list[float] = []
     fees: list[float] = []
     net_values: list[float] = []
+    position_sizes: list[float] = []
     for row in rows:
         pnl_value = float(row.pnl) if row.pnl is not None else None
         if pnl_value is None:
@@ -702,6 +748,8 @@ def _compute_trade_stats_snapshot(rows: Iterable[Any]) -> dict[str, Any]:
         fee_value = _effective_trade_fee(pnl=pnl_value, fees=float(row.fees) if row.fees is not None else 0.0)
         fees.append(fee_value)
         net_values.append(pnl_value - fee_value)
+        size_value = abs(float(row.size)) if getattr(row, "size", None) is not None else 0.0
+        position_sizes.append(size_value)
 
     trade_count = len(net_values)
     gross = sum(pnls)
@@ -724,14 +772,77 @@ def _compute_trade_stats_snapshot(rows: Iterable[Any]) -> dict[str, Any]:
         "avg_loss": _round(avg_loss),
         "largest_win": _round(max(wins) if wins else 0.0),
         "largest_loss": _round(min(losses) if losses else 0.0),
+        "largest_position_size": _round(
+            largest_position_size if largest_position_size is not None else max(position_sizes) if position_sizes else 0.0,
+            4,
+        ),
         "gross": _round(gross),
         "net": _round(net),
         "net_realized_pnl": _round(net),
     }
 
 
+def _compute_largest_position_size_from_events(
+    rows: Iterable[ProjectXTradeEvent],
+    *,
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> float:
+    epsilon = 1e-9
+    positions_by_contract: dict[str, float] = {}
+    largest = 0.0
+    window_started = window_start is None
+
+    for row in rows:
+        trade_ts = _as_utc(row.trade_timestamp)
+        if window_end is not None and trade_ts > window_end:
+            break
+
+        if not window_started and window_start is not None and trade_ts >= window_start:
+            largest = max(largest, _max_abs_position(positions_by_contract))
+            window_started = True
+
+        qty = abs(float(row.size)) if row.size is not None else 0.0
+        side_sign = _trade_side_sign(row.side)
+        if qty <= epsilon or side_sign == 0:
+            continue
+
+        contract_key = str(row.contract_id or row.symbol or "__UNKNOWN__")
+        next_position = positions_by_contract.get(contract_key, 0.0) + (side_sign * qty)
+        if abs(next_position) <= epsilon:
+            positions_by_contract.pop(contract_key, None)
+        else:
+            positions_by_contract[contract_key] = next_position
+
+        if window_started:
+            largest = max(largest, abs(next_position))
+
+    return _round(largest, 4)
+
+
+def _max_abs_position(positions_by_contract: dict[str, float]) -> float:
+    if not positions_by_contract:
+        return 0.0
+    return max(abs(position) for position in positions_by_contract.values())
+
+
+def _trade_side_sign(side: str | None) -> int:
+    normalized = (side or "").strip().upper()
+    if normalized == "BUY":
+        return 1
+    if normalized == "SELL":
+        return -1
+    return 0
+
+
 def _round(value: float, digits: int = 2) -> float:
     return round(float(value), digits)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _non_voided_trade_event_expr():

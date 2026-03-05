@@ -144,8 +144,8 @@ def test_update_journal_entry_enforces_account_scoping(db_session):
 
 def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():
     rows = [
-        SimpleNamespace(pnl=100.0, fees=1.0),
-        SimpleNamespace(pnl=50.0, fees=30.0),
+        SimpleNamespace(pnl=100.0, fees=1.0, size=3.0),
+        SimpleNamespace(pnl=50.0, fees=30.0, size=5.0),
     ]
 
     snapshot = _compute_trade_stats_snapshot(rows)
@@ -160,6 +160,7 @@ def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():
     assert snapshot["avg_loss"] == -10.0
     assert snapshot["largest_win"] == 98.0
     assert snapshot["largest_loss"] == -10.0
+    assert snapshot["largest_position_size"] == 5.0
 
 
 def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session):
@@ -282,6 +283,127 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     assert entry.stats_json["win_rate"] == 100.0
     assert entry.stats_json["avg_win"] == 297.54
     assert entry.stats_json["avg_loss"] == 0.0
+
+
+def test_pull_journal_entry_trade_stats_uses_combined_position_size_from_execution_history(db_session):
+    user_id = "test-user-position-size"
+    entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=1000,
+        entry_date=date(2026, 3, 5),
+        title="Combined size test",
+        mood=JournalMood.NEUTRAL,
+        tags=[],
+        body="",
+    )
+
+    rows = [
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="SELL",
+            size=15,
+            price=25068,
+            trade_timestamp=datetime(2026, 3, 5, 14, 44, 0, tzinfo=timezone.utc),
+            fees=0,
+            pnl=None,
+            order_id="open-1",
+            source_trade_id="open-s-1",
+            raw_payload={},
+        ),
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="SELL",
+            size=15,
+            price=25067.5,
+            trade_timestamp=datetime(2026, 3, 5, 14, 44, 1, tzinfo=timezone.utc),
+            fees=0,
+            pnl=None,
+            order_id="open-2",
+            source_trade_id="open-s-2",
+            raw_payload={},
+        ),
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="SELL",
+            size=15,
+            price=25067.75,
+            trade_timestamp=datetime(2026, 3, 5, 14, 44, 2, tzinfo=timezone.utc),
+            fees=0,
+            pnl=None,
+            order_id="open-3",
+            source_trade_id="open-s-3",
+            raw_payload={},
+        ),
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="BUY",
+            size=15,
+            price=25038.25,
+            trade_timestamp=datetime(2026, 3, 5, 14, 45, 0, tzinfo=timezone.utc),
+            fees=1,
+            pnl=892.5,
+            order_id="close-1",
+            source_trade_id="close-s-1",
+            raw_payload={},
+        ),
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="BUY",
+            size=15,
+            price=25038.25,
+            trade_timestamp=datetime(2026, 3, 5, 14, 45, 1, tzinfo=timezone.utc),
+            fees=1,
+            pnl=877.5,
+            order_id="close-2",
+            source_trade_id="close-s-2",
+            raw_payload={},
+        ),
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=1000,
+            contract_id="MNQH6",
+            symbol="MNQ",
+            side="BUY",
+            size=15,
+            price=25038.25,
+            trade_timestamp=datetime(2026, 3, 5, 14, 45, 2, tzinfo=timezone.utc),
+            fees=1,
+            pnl=885.0,
+            order_id="close-3",
+            source_trade_id="close-s-3",
+            raw_payload={},
+        ),
+    ]
+    db_session.add_all(rows)
+    db_session.commit()
+
+    pull_journal_entry_trade_stats(
+        db_session,
+        user_id=user_id,
+        account_id=1000,
+        entry_id=int(entry.id),
+        entry_date=date(2026, 3, 5),
+    )
+    db_session.refresh(entry)
+
+    assert entry.stats_json is not None
+    assert entry.stats_json["largest_position_size"] == 45.0
 
 
 def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db_session):
