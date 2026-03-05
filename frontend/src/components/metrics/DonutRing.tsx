@@ -21,8 +21,8 @@ interface NormalizedSegment extends DonutRingSegment {
   offset: number;
 }
 
-const SIZE = 132;
-const STROKE_WIDTH = 12;
+const SIZE = 118;
+const STROKE_WIDTH = 10;
 const RADIUS = (SIZE - STROKE_WIDTH) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
@@ -62,8 +62,8 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
       : normalizedSegments.map((segment) => `${segment.label} ${segment.valueLabel}`).join(", ");
 
   return (
-    <div className={cn("flex items-center gap-3", className)}>
-      <div className="relative h-[128px] w-[128px] shrink-0">
+    <div className={cn("flex items-center gap-2.5", className)}>
+      <div className="relative h-[112px] w-[112px] shrink-0">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 rounded-full bg-[conic-gradient(from_180deg,rgba(16,185,129,0.3),rgba(56,189,248,0.18),rgba(248,113,113,0.28),rgba(16,185,129,0.3))] blur-xl"
@@ -115,19 +115,19 @@ export function DonutRing({ segments, centerLabel, centerSubLabel, className }: 
           />
         </svg>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-2 text-center">
-          <p className="text-sm font-semibold text-slate-100 drop-shadow-[0_2px_10px_rgba(15,23,42,0.55)]">{centerLabel}</p>
-          {centerSubLabel ? <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-200/75">{centerSubLabel}</p> : null}
+          <p className="text-xs font-semibold text-slate-100 drop-shadow-[0_2px_10px_rgba(15,23,42,0.55)]">{centerLabel}</p>
+          {centerSubLabel ? <p className="text-[9px] uppercase tracking-[0.12em] text-cyan-200/75">{centerSubLabel}</p> : null}
         </div>
       </div>
-      <div className="min-w-0 flex-1 space-y-2">
+      <div className="min-w-0 flex-1 space-y-1.5">
         {segments.map((segment) => (
           <div
             key={segment.label}
-            className="flex items-center justify-between gap-2 rounded-lg border border-slate-700/75 bg-slate-950/45 px-2.5 py-1.5 text-[11px] shadow-[inset_0_1px_0_rgba(148,163,184,0.08)]"
+            className="flex items-center justify-between gap-1.5 rounded-lg border border-slate-700/75 bg-slate-950/45 px-2 py-1 text-[10px] shadow-[inset_0_1px_0_rgba(148,163,184,0.08)]"
           >
             <span className="inline-flex items-center gap-2 text-slate-200">
               <span
-                className="h-2.5 w-2.5 rounded-full ring-2 ring-slate-950/70"
+                className="h-2 w-2 shrink-0 rounded-full ring-2 ring-slate-950/70"
                 style={{ backgroundColor: segment.color }}
                 aria-hidden="true"
               />

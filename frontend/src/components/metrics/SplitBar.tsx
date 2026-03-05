@@ -38,12 +38,12 @@ export function SplitBar({
   const rightPercent = total > 0 ? (right / total) * 100 : 50;
 
   return (
-    <div className={cn("space-y-2", className)}>
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
+    <div className={cn("space-y-1.5", className)}>
+      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.12em] text-slate-500">
         <span>{leftLabel}</span>
         <span>{rightLabel}</span>
       </div>
-      <div className={cn("relative h-2.5 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85", trackClassName)}>
+      <div className={cn("relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85", trackClassName)}>
         <div
           className={cn("h-full bg-emerald-400/80 transition-all duration-300", leftBarClassName)}
           style={{ width: `${leftPercent}%` }}
@@ -55,7 +55,7 @@ export function SplitBar({
           aria-hidden="true"
         />
       </div>
-      <div className={cn("flex items-center justify-between text-[11px] font-medium", valueClassName)}>
+      <div className={cn("flex items-center justify-between text-[10px] font-medium", valueClassName)}>
         <span className="text-emerald-200">{leftValue}</span>
         <span className="text-rose-200">{rightValue}</span>
       </div>

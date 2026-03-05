@@ -25,6 +25,15 @@ export function computeDrawdownPercentOfNetPnl(maxDrawdown: number, netPnl: numb
   return metric(percent);
 }
 
+export function computeDrawdownPercentOfEquityBase(maxDrawdown: number, equityBase: number | null | undefined): DerivedMetricValue {
+  if (equityBase === null || equityBase === undefined || !Number.isFinite(equityBase) || equityBase <= EPSILON) {
+    return missingMetric("Needs positive equity base.");
+  }
+  // Drawdown % of Equity Base = abs(Max Drawdown) / Equity Base.
+  const percent = (Math.abs(maxDrawdown) / equityBase) * 100;
+  return metric(percent);
+}
+
 export function computeBreakevenWinRate(avgWin: number, avgLoss: number): DerivedMetricValue {
   const winMagnitude = Math.abs(avgWin);
   const lossMagnitude = Math.abs(avgLoss);

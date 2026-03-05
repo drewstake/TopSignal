@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   computeBreakevenWinRate,
+  computeDrawdownPercentOfEquityBase,
   computeDirectionPercentages,
   computeDrawdownPercentOfNetPnl,
 } from "./metrics";
@@ -16,6 +17,19 @@ describe("computeDrawdownPercentOfNetPnl", () => {
     const result = computeDrawdownPercentOfNetPnl(-500, 0);
     expect(result.value).toBeNull();
     expect(result.missingReason).toContain("non-zero net PnL");
+  });
+});
+
+describe("computeDrawdownPercentOfEquityBase", () => {
+  it("computes abs(max drawdown) as a percent of equity base", () => {
+    const result = computeDrawdownPercentOfEquityBase(-1_664.4, 50_000);
+    expect(result.value).toBeCloseTo(3.3288, 4);
+  });
+
+  it("returns missing when equity base is not positive", () => {
+    const result = computeDrawdownPercentOfEquityBase(-500, 0);
+    expect(result.value).toBeNull();
+    expect(result.missingReason).toContain("positive equity base");
   });
 });
 
@@ -46,4 +60,3 @@ describe("computeDirectionPercentages", () => {
     expect(result.longPercent.missingReason).toContain("directional trade");
   });
 });
-

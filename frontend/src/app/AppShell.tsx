@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
 import { Tabs } from "../components/ui/Tabs";
+import { cn } from "../components/ui/cn";
 import {
   ACCOUNT_QUERY_PARAM,
   MAIN_ACCOUNT_UPDATED_EVENT,
@@ -94,6 +95,7 @@ export function AppShell() {
   const selectedAccountId = parseAccountId(selectedAccountValue);
   const accountSuffix = selectedAccountId ? `?${ACCOUNT_QUERY_PARAM}=${selectedAccountId}` : "";
   const currentUserEmail = getCurrentUserEmailSync();
+  const isTradesRoute = location.pathname.startsWith("/trades");
 
   function handleAccountChange(rawValue: string) {
     const nextAccountId = parseAccountId(rawValue);
@@ -153,7 +155,7 @@ export function AppShell() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/95 backdrop-blur">
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -220,7 +222,12 @@ export function AppShell() {
           />
         </div>
       </header>
-      <main className="mx-auto w-full max-w-[1400px] px-4 py-6 lg:px-8">
+      <main
+        className={cn(
+          "mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 lg:px-8",
+          isTradesRoute ? "lg:flex lg:min-h-0 lg:overflow-hidden" : "",
+        )}
+      >
         <Outlet />
       </main>
     </div>
