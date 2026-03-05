@@ -11,6 +11,7 @@ import { SplitBar } from "../../components/metrics/SplitBar";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
 import {
   ACCOUNT_QUERY_PARAM,
@@ -148,12 +149,6 @@ function formatTradeDuration(minutes: number | null | undefined) {
 
 function pnlClass(value: number) {
   return value >= 0 ? "text-emerald-300" : "text-rose-300";
-}
-
-function pnlChipClass(value: number) {
-  return value >= 0
-    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
-    : "border-rose-400/35 bg-rose-500/10 text-rose-100";
 }
 
 function formatMetricValue(metric: MetricValue, formatter: (value: number) => string) {
@@ -677,11 +672,155 @@ export function DashboardPage() {
   const efficiencyPerHourMetric: MetricValue = { value: summary.efficiency_per_hour };
   const expectancyPerTradeMetric: MetricValue = { value: summary.expectancy_per_trade };
   const maxDrawdownMetric: MetricValue = { value: summary.max_drawdown };
+  const performanceSignalVariant = summary.net_pnl > 0 ? "positive" : summary.net_pnl < 0 ? "negative" : "neutral";
+  const performanceSignalLabel = summary.net_pnl > 0 ? "Positive Flow" : summary.net_pnl < 0 ? "Negative Drift" : "Flat Session";
+  const performanceAccentClassName =
+    summary.net_pnl > 0
+      ? "bg-gradient-to-r from-emerald-300/80 via-cyan-200/30 to-transparent"
+      : summary.net_pnl < 0
+        ? "bg-gradient-to-r from-rose-300/80 via-orange-200/35 to-transparent"
+        : "bg-gradient-to-r from-cyan-300/70 via-sky-200/25 to-transparent";
+  const performancePrimaryClassName =
+    summary.net_pnl > 0
+      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
+      : summary.net_pnl < 0
+        ? "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent"
+        : "text-cyan-100";
+  const performanceCardClassName =
+    summary.net_pnl > 0
+      ? "border-emerald-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.24),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]"
+      : summary.net_pnl < 0
+        ? "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.22),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]"
+        : "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.2),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]";
+  const performanceGlowClassName =
+    summary.net_pnl > 0 ? "bg-emerald-300/24" : summary.net_pnl < 0 ? "bg-rose-300/24" : "bg-cyan-300/22";
+  const edgeSignalVariant = summary.expectancy_per_trade > 0 ? "positive" : summary.expectancy_per_trade < 0 ? "negative" : "neutral";
+  const edgeSignalLabel = summary.expectancy_per_trade > 0 ? "Positive Expectancy" : summary.expectancy_per_trade < 0 ? "Negative Expectancy" : "Flat Expectancy";
+  const edgeAccentClassName =
+    summary.expectancy_per_trade > 0
+      ? "bg-gradient-to-r from-cyan-300/80 via-emerald-200/25 to-transparent"
+      : summary.expectancy_per_trade < 0
+        ? "bg-gradient-to-r from-rose-300/80 via-orange-200/28 to-transparent"
+        : "bg-gradient-to-r from-sky-300/75 via-cyan-200/20 to-transparent";
+  const edgePrimaryClassName =
+    summary.expectancy_per_trade > 0
+      ? "bg-gradient-to-r from-cyan-100 via-emerald-100 to-cyan-200 bg-clip-text text-transparent"
+      : summary.expectancy_per_trade < 0
+        ? "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent"
+        : "text-cyan-100";
+  const edgeCardClassName =
+    summary.expectancy_per_trade > 0
+      ? "border-cyan-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.22),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]"
+      : summary.expectancy_per_trade < 0
+        ? "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]"
+        : "border-sky-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.18),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]";
+  const edgeGlowClassName =
+    summary.expectancy_per_trade > 0 ? "bg-cyan-300/20" : summary.expectancy_per_trade < 0 ? "bg-rose-300/20" : "bg-sky-300/20";
+  const edgeOutcomeTotal = summary.win_count + summary.loss_count + summary.breakeven_count;
+  const edgeWinShare = edgeOutcomeTotal > 0 ? (summary.win_count / edgeOutcomeTotal) * 100 : 0;
+  const edgeLossShare = edgeOutcomeTotal > 0 ? (summary.loss_count / edgeOutcomeTotal) * 100 : 0;
+  const edgeBreakevenShare = edgeOutcomeTotal > 0 ? (summary.breakeven_count / edgeOutcomeTotal) * 100 : 0;
+  const payoffSignalVariant =
+    derivedMetrics.winLossRatio.value === null
+      ? "neutral"
+      : derivedMetrics.winLossRatio.value >= 1.5
+        ? "positive"
+        : derivedMetrics.winLossRatio.value >= 1
+          ? "accent"
+          : "negative";
+  const payoffSignalLabel =
+    derivedMetrics.winLossRatio.value === null
+      ? "Awaiting Payoff Data"
+      : derivedMetrics.winLossRatio.value >= 1.5
+        ? "Strong Asymmetry"
+        : derivedMetrics.winLossRatio.value >= 1
+          ? "Balanced Asymmetry"
+          : "Weak Asymmetry";
+  const payoffAccentClassName =
+    derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
+      ? "bg-gradient-to-r from-emerald-300/70 via-cyan-200/18 to-transparent"
+      : "bg-gradient-to-r from-rose-300/75 via-orange-200/20 to-transparent";
+  const payoffPrimaryClassName =
+    derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
+      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+  const payoffCardClassName =
+    derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
+      ? "border-emerald-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+      : "border-rose-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+  const holdTimeSignalVariant =
+    derivedMetrics.winDurationOverLossDuration.value === null
+      ? "neutral"
+      : derivedMetrics.winDurationOverLossDuration.value >= 1.2
+        ? "positive"
+        : derivedMetrics.winDurationOverLossDuration.value >= 0.9
+          ? "warning"
+          : "negative";
+  const holdTimeSignalLabel =
+    derivedMetrics.winDurationOverLossDuration.value === null
+      ? "Awaiting Duration Data"
+      : derivedMetrics.winDurationOverLossDuration.value >= 1.2
+        ? "Winners Breathe"
+        : derivedMetrics.winDurationOverLossDuration.value >= 0.9
+          ? "Balanced Holds"
+          : "Cut Winners Early";
+  const holdTimeAccentClassName =
+    derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
+      ? "bg-gradient-to-r from-cyan-300/70 via-amber-200/25 to-transparent"
+      : "bg-gradient-to-r from-amber-300/70 via-rose-200/22 to-transparent";
+  const holdTimePrimaryClassName =
+    derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
+      ? "bg-gradient-to-r from-cyan-100 via-amber-100 to-cyan-200 bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-amber-100 via-rose-100 to-orange-200 bg-clip-text text-transparent";
+  const holdTimeCardClassName =
+    derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
+      ? "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+      : "border-amber-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
 
   const drawdownPercentOfNet = useMemo(
     () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, summary.net_pnl),
     [summary.max_drawdown, summary.net_pnl],
   );
+  const riskSignalVariant =
+    drawdownPercentOfNet.value === null
+      ? "neutral"
+      : drawdownPercentOfNet.value <= 35
+        ? "positive"
+        : drawdownPercentOfNet.value <= 65
+          ? "accent"
+          : drawdownPercentOfNet.value <= 100
+            ? "warning"
+            : "negative";
+  const riskSignalLabel =
+    drawdownPercentOfNet.value === null
+      ? "Awaiting Drawdown Context"
+      : drawdownPercentOfNet.value <= 35
+        ? "Controlled Drawdown"
+        : drawdownPercentOfNet.value <= 65
+          ? "Moderate Pressure"
+          : drawdownPercentOfNet.value <= 100
+            ? "Elevated Pressure"
+            : "Critical Pressure";
+  const riskAccentClassName =
+    drawdownPercentOfNet.value === null || drawdownPercentOfNet.value <= 65
+      ? "bg-gradient-to-r from-cyan-300/70 via-emerald-200/22 to-transparent"
+      : drawdownPercentOfNet.value <= 100
+        ? "bg-gradient-to-r from-amber-300/70 via-orange-200/22 to-transparent"
+        : "bg-gradient-to-r from-rose-300/75 via-orange-200/25 to-transparent";
+  const riskPrimaryClassName =
+    drawdownPercentOfNet.value === null || drawdownPercentOfNet.value <= 65
+      ? "bg-gradient-to-r from-cyan-100 via-emerald-100 to-cyan-200 bg-clip-text text-transparent"
+      : drawdownPercentOfNet.value <= 100
+        ? "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent"
+        : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+  const riskCardClassName =
+    drawdownPercentOfNet.value === null || drawdownPercentOfNet.value <= 65
+      ? "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.16),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]"
+      : drawdownPercentOfNet.value <= 100
+        ? "border-amber-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]"
+        : "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]";
+  const riskPressurePercent =
+    drawdownPercentOfNet.value === null ? 0 : Math.min(100, Math.max(0, drawdownPercentOfNet.value));
 
   const directionSplit = useMemo(() => {
     const longTrades = derivedMetrics.direction.longTrades.value;
@@ -728,6 +867,30 @@ export function DashboardPage() {
       summary.max_drawdown,
     ],
   );
+  const sustainabilityAccentClassName =
+    sustainability.score >= 80
+      ? "bg-gradient-to-r from-emerald-300/75 via-cyan-200/22 to-transparent"
+      : sustainability.score >= 60
+        ? "bg-gradient-to-r from-cyan-300/75 via-indigo-200/22 to-transparent"
+        : sustainability.score >= 40
+          ? "bg-gradient-to-r from-amber-300/75 via-orange-200/25 to-transparent"
+          : "bg-gradient-to-r from-rose-300/80 via-orange-200/25 to-transparent";
+  const sustainabilityPrimaryClassName =
+    sustainability.score >= 80
+      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
+      : sustainability.score >= 60
+        ? "bg-gradient-to-r from-cyan-100 via-indigo-100 to-cyan-200 bg-clip-text text-transparent"
+        : sustainability.score >= 40
+          ? "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent"
+          : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+  const sustainabilityCardClassName =
+    sustainability.score >= 80
+      ? "border-emerald-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+      : sustainability.score >= 60
+        ? "border-cyan-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+        : sustainability.score >= 40
+          ? "border-amber-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+          : "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
 
   const directionPrimaryValue =
     directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
@@ -747,6 +910,36 @@ export function DashboardPage() {
       }),
     [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays, summary.active_days, summary.trade_count],
   );
+  const activitySignalVariant =
+    activityMetrics.tradesPerWeek === null
+      ? "neutral"
+      : activityMetrics.tradesPerWeek >= 30
+        ? "warning"
+        : activityMetrics.tradesPerWeek >= 15
+          ? "accent"
+          : "positive";
+  const activitySignalLabel =
+    activityMetrics.tradesPerWeek === null
+      ? "Awaiting Pace Data"
+      : activityMetrics.tradesPerWeek >= 30
+        ? "High Tempo"
+        : activityMetrics.tradesPerWeek >= 15
+          ? "Balanced Tempo"
+          : "Selective Tempo";
+  const activityAccentClassName =
+    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+      ? "bg-gradient-to-r from-slate-300/58 via-cyan-200/20 to-transparent"
+      : "bg-gradient-to-r from-amber-300/70 via-orange-200/22 to-transparent";
+  const activityPrimaryClassName =
+    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+      ? "bg-gradient-to-r from-cyan-100 via-slate-100 to-cyan-200 bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent";
+  const activityCardClassName =
+    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+      ? "border-slate-600/60 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(148,163,184,0.16),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+      : "border-amber-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.15),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+  const activityPacePercent =
+    activityMetrics.tradesPerWeek === null ? 0 : Math.min(100, Math.max(0, (activityMetrics.tradesPerWeek / 30) * 100));
 
   const openJournalForDate = useCallback(
     async (date: string) => {
@@ -866,43 +1059,100 @@ export function DashboardPage() {
             <MetricCard
               title="Performance"
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
-              primaryClassName={metricPnlClass(netPnlMetric)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", performancePrimaryClassName)}
               subtitle="Net realized PnL after fees."
               info="Realized net profit and loss after fees in the selected range."
-              accentClassName="bg-gradient-to-r from-cyan-300/70 via-sky-200/25 to-transparent"
-              className="sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1"
+              accentClassName={performanceAccentClassName}
+              className={cn(
+                "isolate sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1",
+                performanceCardClassName,
+              )}
+              contentClassName="relative mt-3 space-y-3"
             >
-              <div className="flex flex-wrap gap-2">
-                <Chip
-                  label="Profit/Day"
-                  value={formatMetricValue(profitPerDayMetric, formatPnl)}
-                  className={pnlChipClass(summary.profit_per_day)}
-                />
-                <Chip
-                  label="Efficiency/Hour"
-                  value={formatMetricValue(efficiencyPerHourMetric, formatPnl)}
-                  className={pnlChipClass(summary.efficiency_per_hour)}
-                />
+              <div aria-hidden="true" className={cn("pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full blur-2xl", performanceGlowClassName)} />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
+                  <Badge variant="accent">{`${formatInteger(summary.trade_count)} Trades`}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    {`Win ${formatPercent(summary.win_rate, 1)}`}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Profit / Day</p>
+                    <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.profit_per_day))}>
+                      {formatMetricValue(profitPerDayMetric, formatPnl)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Efficiency / Hour</p>
+                    <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.efficiency_per_hour))}>
+                      {formatMetricValue(efficiencyPerHourMetric, formatPnl)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center justify-between rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-1.5 text-[11px] text-slate-300">
+                  <span>{`Gross ${formatPnl(summary.gross_pnl)}`}</span>
+                  <span>{`Fees ${formatCurrency(summary.fees)}`}</span>
+                </div>
               </div>
             </MetricCard>
 
             <MetricCard
               title="Edge"
               primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
-              primaryClassName={metricPnlClass(expectancyPerTradeMetric)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", edgePrimaryClassName)}
               subtitle="Expected net result per trade."
               info="Expectancy combines your win rate and payoff profile into average dollars per trade."
-              accentClassName="bg-gradient-to-r from-sky-300/65 via-cyan-200/20 to-transparent"
-              className="sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-3 lg:col-span-6 lg:row-start-1 lg:col-start-4"
+              accentClassName={edgeAccentClassName}
+              className={cn(
+                "relative isolate sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-3 lg:col-span-6 lg:row-start-1 lg:col-start-4",
+                edgeCardClassName,
+              )}
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <div className="flex flex-wrap gap-2">
-                <Chip label="PF" value={formatNumber(summary.profit_factor)} />
-                <Chip label="Win Rate" value={formatPercent(summary.win_rate)} />
-                <Chip label="W/L Ratio" value={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)} />
+              <div
+                aria-hidden="true"
+                className={cn("pointer-events-none absolute -right-14 -top-12 h-28 w-28 rounded-full blur-3xl", edgeGlowClassName)}
+              />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
+                  <Badge variant="accent">{`PF ${formatNumber(summary.profit_factor)}`}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Profit Factor</p>
+                    <p className="mt-1 text-sm font-semibold text-cyan-100">{formatNumber(summary.profit_factor)}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Win Rate</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-100">{formatPercent(summary.win_rate, 1)}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">W/L Ratio</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-100">
+                      {formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    <span>Outcome Mix</span>
+                    <span>{`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}</span>
+                  </div>
+                  <div className="relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-300/95 to-emerald-400/85" style={{ width: `${edgeWinShare}%` }} />
+                    <div
+                      className="absolute inset-y-0 bg-gradient-to-r from-amber-300/85 to-slate-300/75"
+                      style={{ left: `${edgeWinShare}%`, width: `${edgeBreakevenShare}%` }}
+                    />
+                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-rose-300/95 to-rose-400/85" style={{ width: `${edgeLossShare}%` }} />
+                  </div>
+                </div>
               </div>
-              <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
-                {`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}
-              </p>
             </MetricCard>
 
             <MetricCard
@@ -995,15 +1245,50 @@ export function DashboardPage() {
             <MetricCard
               title="Risk"
               primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
-              primaryClassName={metricPnlClass(maxDrawdownMetric)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", riskPrimaryClassName)}
               subtitle="Peak-to-trough drop."
               info="Maximum realized drawdown over the selected period."
-              accentClassName="bg-gradient-to-r from-rose-300/70 via-amber-200/20 to-transparent"
-              className="self-start sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-5 lg:col-span-3 lg:row-start-1 lg:col-start-10"
+              accentClassName={riskAccentClassName}
+              className={cn(
+                "self-start sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-5 lg:col-span-3 lg:row-start-1 lg:col-start-10",
+                riskCardClassName,
+              )}
+              contentClassName="mt-3 space-y-3"
             >
-              <div className="flex flex-wrap gap-2">
-                <Chip label="DD % of Net PnL" value={formatMetricValue(drawdownPercentOfNet, formatPercent)} />
+              <div className="rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={riskSignalVariant}>{riskSignalLabel}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">Drawdown Context</span>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    <span>DD % of Net PnL</span>
+                    <span className="font-semibold text-slate-200">{formatMetricValue(drawdownPercentOfNet, formatPercent)}</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                    <div
+                      aria-hidden="true"
+                      className={cn(
+                        "h-full transition-all duration-500",
+                        drawdownPercentOfNet.value === null || drawdownPercentOfNet.value <= 65
+                          ? "bg-gradient-to-r from-cyan-300/90 to-emerald-300/80"
+                          : drawdownPercentOfNet.value <= 100
+                            ? "bg-gradient-to-r from-amber-300/90 to-orange-300/80"
+                            : "bg-gradient-to-r from-rose-300/95 to-orange-300/85",
+                      )}
+                      style={{ width: `${riskPressurePercent}%` }}
+                    />
+                  </div>
+                </div>
               </div>
+              <MiniStatList
+                items={[
+                  { label: "DD % of Net PnL", value: formatMetricValue(drawdownPercentOfNet, formatPercent) },
+                  { label: "Avg Drawdown", value: formatPnl(summary.average_drawdown), valueClassName: metricPnlClass({ value: summary.average_drawdown }) },
+                  { label: "DD Length", value: `${formatNumber(summary.max_drawdown_length_hours, 1)} h` },
+                  { label: "Recovery", value: `${formatNumber(summary.recovery_time_hours, 1)} h` },
+                ]}
+              />
             </MetricCard>
 
             <MetricCard
@@ -1160,63 +1445,80 @@ export function DashboardPage() {
             <MetricCard
               title="Payoff"
               primaryValue={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", payoffPrimaryClassName)}
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
-              accentClassName="bg-gradient-to-r from-emerald-300/65 via-rose-200/20 to-transparent"
-              className="md:col-span-2 md:row-start-2 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-2"
+              accentClassName={payoffAccentClassName}
+              className={cn("relative isolate md:col-span-2 md:row-start-2 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-2", payoffCardClassName)}
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <div className="flex flex-wrap gap-2">
-                <Chip label="W/L Ratio" value={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)} />
+              <div
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute -right-10 -top-10 h-24 w-24 rounded-full blur-3xl",
+                  derivedMetrics.winLossRatio.value !== null && derivedMetrics.winLossRatio.value < 1 ? "bg-rose-300/22" : "bg-emerald-300/20",
+                )}
+              />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={payoffSignalVariant}>{payoffSignalLabel}</Badge>
+                  <Badge variant="accent">{`W/L ${formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}`}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    {`Capture ${formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1))}`}
+                  </span>
+                </div>
+                <SplitBar
+                  className="mt-3 rounded-md border border-slate-700/70 bg-slate-950/45 p-2"
+                  leftLabel="Avg Win"
+                  rightLabel="Avg Loss"
+                  leftValue={formatMetricValue(derivedMetrics.payoff.averageWin, formatPnl)}
+                  rightValue={formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl)}
+                  leftMagnitude={Math.abs(derivedMetrics.payoff.averageWin.value ?? 0)}
+                  rightMagnitude={Math.abs(derivedMetrics.payoff.averageLoss.value ?? 0)}
+                  leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-cyan-300/80"
+                  rightBarClassName="bg-gradient-to-l from-rose-300/90 to-orange-300/80"
+                />
+                <MiniStatList
+                  className="mt-3 gap-2"
+                  items={[
+                    {
+                      label: "Avg Win",
+                      value: formatMetricValue(derivedMetrics.payoff.averageWin, formatPnl),
+                      valueClassName: metricPnlClass(derivedMetrics.payoff.averageWin),
+                    },
+                    {
+                      label: "Avg Loss",
+                      value: formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl),
+                      valueClassName: metricPnlClass(derivedMetrics.payoff.averageLoss),
+                    },
+                    { label: "Breakeven WR", value: formatMetricValue(derivedMetrics.payoff.breakevenWinRate, (value) => formatPercent(value, 1)) },
+                    { label: "Current WR", value: formatMetricValue(derivedMetrics.payoff.currentWinRate, (value) => formatPercent(value, 1)) },
+                    { label: "WR Cushion", value: formatMetricValueWithNote(derivedMetrics.payoff.wrCushion, formatPoints) },
+                    {
+                      label: "Large Loss Rate",
+                      value:
+                        derivedMetrics.payoff.largeLossRate.value === null
+                          ? formatMetricValueWithNote(derivedMetrics.payoff.largeLossRate, (value) => formatPercent(value, 1))
+                          : `${formatPercent(derivedMetrics.payoff.largeLossRate.value, 1)} (<= ${formatMetricValue(
+                              {
+                                value:
+                                  derivedMetrics.payoff.largeLossThreshold.value === null
+                                    ? null
+                                    : -Math.abs(derivedMetrics.payoff.largeLossThreshold.value),
+                                missingReason: derivedMetrics.payoff.largeLossThreshold.missingReason,
+                              },
+                              formatPnl,
+                            )})`,
+                    },
+                    { label: "P95 Loss", value: formatMetricValueWithNote(derivedMetrics.payoff.p95Loss, formatPnl) },
+                    {
+                      label: "Capture",
+                      value: formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1)),
+                    },
+                  ]}
+                />
               </div>
-              <SplitBar
-                leftLabel="Avg Win"
-                rightLabel="Avg Loss"
-                leftValue={formatMetricValue(derivedMetrics.payoff.averageWin, formatPnl)}
-                rightValue={formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl)}
-                leftMagnitude={Math.abs(derivedMetrics.payoff.averageWin.value ?? 0)}
-                rightMagnitude={Math.abs(derivedMetrics.payoff.averageLoss.value ?? 0)}
-                leftBarClassName="bg-emerald-400/80"
-                rightBarClassName="bg-rose-400/75"
-              />
-              <MiniStatList
-                items={[
-                  {
-                    label: "Avg Win",
-                    value: formatMetricValue(derivedMetrics.payoff.averageWin, formatPnl),
-                    valueClassName: metricPnlClass(derivedMetrics.payoff.averageWin),
-                  },
-                  {
-                    label: "Avg Loss",
-                    value: formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl),
-                    valueClassName: metricPnlClass(derivedMetrics.payoff.averageLoss),
-                  },
-                  { label: "Breakeven WR", value: formatMetricValue(derivedMetrics.payoff.breakevenWinRate, (value) => formatPercent(value, 1)) },
-                  { label: "Current WR", value: formatMetricValue(derivedMetrics.payoff.currentWinRate, (value) => formatPercent(value, 1)) },
-                  { label: "WR Cushion", value: formatMetricValueWithNote(derivedMetrics.payoff.wrCushion, formatPoints) },
-                  {
-                    label: "Large Loss Rate",
-                    value:
-                      derivedMetrics.payoff.largeLossRate.value === null
-                        ? formatMetricValueWithNote(derivedMetrics.payoff.largeLossRate, (value) => formatPercent(value, 1))
-                        : `${formatPercent(derivedMetrics.payoff.largeLossRate.value, 1)} (<= ${formatMetricValue(
-                            {
-                              value:
-                                derivedMetrics.payoff.largeLossThreshold.value === null
-                                  ? null
-                                  : -Math.abs(derivedMetrics.payoff.largeLossThreshold.value),
-                              missingReason: derivedMetrics.payoff.largeLossThreshold.missingReason,
-                            },
-                            formatPnl,
-                          )})`,
-                  },
-                  { label: "P95 Loss", value: formatMetricValueWithNote(derivedMetrics.payoff.p95Loss, formatPnl) },
-                  {
-                    label: "Capture",
-                    value: formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1)),
-                  },
-                ]}
-              />
-              <div className="space-y-1">
+              <div className="space-y-1 rounded-xl border border-slate-700/70 bg-slate-950/35 p-2.5">
                 <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Points Payoff By Basis</p>
                 <div className="overflow-hidden rounded-md border border-slate-800/70 bg-slate-950/25">
                   <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-slate-500">
@@ -1236,24 +1538,62 @@ export function DashboardPage() {
                   ))}
                 </div>
               </div>
-              <p className="rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[11px] text-slate-300">
-                <span className="font-semibold text-slate-200">Insight:</span> {derivedMetrics.payoff.insight}
+              <p className="rounded-md border border-cyan-500/25 bg-[linear-gradient(120deg,rgba(16,185,129,0.12),rgba(15,23,42,0.48)_48%,rgba(248,113,113,0.1)_100%)] px-2 py-1 text-[11px] text-slate-200">
+                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.payoff.insight}
               </p>
             </MetricCard>
 
             <MetricCard
               title="Activity"
               primaryValue={formatInteger(summary.trade_count)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", activityPrimaryClassName)}
               subtitle="Closed trades in this range."
               info="Activity normalizes execution count by active trading days."
-              accentClassName="bg-gradient-to-r from-slate-300/55 via-cyan-200/15 to-transparent"
-              className="md:col-span-2 md:row-start-3 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-3 lg:p-3"
+              accentClassName={activityAccentClassName}
+              className={cn(
+                "relative isolate md:col-span-2 md:row-start-3 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-3 lg:p-3",
+                activityCardClassName,
+              )}
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <div className="flex flex-wrap gap-2">
-                <Chip label="Avg Trades/Day" value={formatNumber(summary.avg_trades_per_day)} />
-                <Chip label="Active Days" value={formatInteger(summary.active_days)} />
+              <div
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute -right-10 -top-8 h-24 w-24 rounded-full blur-3xl",
+                  activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30 ? "bg-amber-300/20" : "bg-cyan-300/18",
+                )}
+              />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>
+                  <Badge variant="accent">{`${formatInteger(summary.active_days)} Active Days`}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    {`Avg ${formatNumber(summary.avg_trades_per_day, 1)} / day`}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    <span>Pacing vs 30 Trades/Week</span>
+                    <span className="font-semibold text-slate-200">
+                      {activityMetrics.tradesPerWeek === null ? "N/A" : formatNumber(activityMetrics.tradesPerWeek, 1)}
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                    <div
+                      aria-hidden="true"
+                      className={cn(
+                        "h-full transition-all duration-500",
+                        activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30
+                          ? "bg-gradient-to-r from-amber-300/90 to-orange-300/80"
+                          : "bg-gradient-to-r from-cyan-300/90 to-emerald-300/80",
+                      )}
+                      style={{ width: `${activityPacePercent}%` }}
+                    />
+                  </div>
+                </div>
               </div>
               <MiniStatList
+                className="gap-2"
                 items={[
                   {
                     label: "Median/day",
@@ -1277,41 +1617,74 @@ export function DashboardPage() {
                   },
                 ]}
               />
-              <p className="text-[10px] text-slate-500">Weekly pacing uses elapsed range days; partial days round up.</p>
+              <p className="rounded-md border border-slate-700/70 bg-slate-950/35 px-2 py-1 text-[10px] text-slate-400">
+                Weekly pacing uses elapsed range days; partial days round up.
+              </p>
               {activityMetrics.tradesPerActiveHour === null ? (
-                <p className="text-[10px] text-slate-500">Trades/active hour needs active hours tracking.</p>
+                <p className="rounded-md border border-slate-700/70 bg-slate-950/35 px-2 py-1 text-[10px] text-slate-400">
+                  Trades/active hour needs active hours tracking.
+                </p>
               ) : null}
             </MetricCard>
 
             <MetricCard
               title="Sustainability"
               primaryValue={`${formatInteger(sustainability.score)}/100`}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", sustainabilityPrimaryClassName)}
               subtitle="Composite score from Risk, Consistency, and Edge."
               info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
-              accentClassName="bg-gradient-to-r from-emerald-300/70 via-cyan-200/20 to-transparent"
-              className="self-start p-3 sm:col-span-2 md:col-span-2 md:row-start-3 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-3"
+              accentClassName={sustainabilityAccentClassName}
+              className={cn(
+                "relative isolate self-start p-3 sm:col-span-2 md:col-span-2 md:row-start-3 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-3",
+                sustainabilityCardClassName,
+              )}
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
-                <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
+              <div
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute -right-14 -top-10 h-28 w-28 rounded-full blur-3xl",
+                  sustainability.score >= 70 ? "bg-emerald-300/18" : sustainability.score >= 45 ? "bg-cyan-300/18" : "bg-rose-300/20",
+                )}
+              />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
+                  <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  {[
+                    {
+                      label: "Risk",
+                      value: sustainability.riskScore,
+                      fillClassName: "bg-gradient-to-r from-rose-300/90 to-amber-300/75",
+                    },
+                    {
+                      label: "Consistency",
+                      value: sustainability.consistencyScore,
+                      fillClassName: "bg-gradient-to-r from-cyan-300/90 to-indigo-300/80",
+                    },
+                    {
+                      label: "Edge",
+                      value: sustainability.edgeScore,
+                      fillClassName: "bg-gradient-to-r from-emerald-300/90 to-cyan-300/80",
+                    },
+                  ].map((item) => (
+                    <div key={item.label} className="space-y-1 rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-300">{item.label}</span>
+                        <span className="font-semibold text-slate-100">{formatNumber(item.value, 1)}/100</span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                        <div className={cn("h-full", item.fillClassName)} style={{ width: `${Math.max(0, Math.min(100, item.value))}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <div className="space-y-1">
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Risk</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.riskScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Consistency</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.consistencyScore, 1)}/100</span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1 text-xs">
-                  <span className="text-slate-300">Edge</span>
-                  <span className="font-semibold text-slate-100">{formatNumber(sustainability.edgeScore, 1)}/100</span>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 rounded-xl border border-slate-700/70 bg-slate-950/35 p-3">
                 <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
                   <span>Score Gauge</span>
                   <span className="font-semibold text-slate-300">{formatInteger(sustainability.score)}/100</span>
@@ -1337,22 +1710,43 @@ export function DashboardPage() {
             <MetricCard
               title="Hold Time"
               primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", holdTimePrimaryClassName)}
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
-              accentClassName="bg-gradient-to-r from-amber-300/65 via-cyan-200/20 to-transparent"
-              className="md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3"
+              accentClassName={holdTimeAccentClassName}
+              className={cn("relative isolate md:col-span-2 md:row-start-3 md:col-start-5 lg:col-span-3 lg:col-start-10 lg:row-start-3", holdTimeCardClassName)}
+              contentClassName="relative mt-3 flex flex-col gap-3 space-y-0"
             >
-              <SplitBar
-                leftLabel="Avg Win Duration"
-                rightLabel="Avg Loss Duration"
-                leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
-                rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
-                leftMagnitude={summary.avg_win_duration_minutes}
-                rightMagnitude={summary.avg_loss_duration_minutes}
-                leftBarClassName="bg-cyan-300/80"
-                rightBarClassName="bg-amber-300/75"
+              <div
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute -right-10 -top-8 h-24 w-24 rounded-full blur-3xl",
+                  derivedMetrics.winDurationOverLossDuration.value !== null && derivedMetrics.winDurationOverLossDuration.value < 1
+                    ? "bg-amber-300/20"
+                    : "bg-cyan-300/20",
+                )}
               />
+              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-3 backdrop-blur-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={holdTimeSignalVariant}>{holdTimeSignalLabel}</Badge>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    {`Ratio ${formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}`}
+                  </span>
+                </div>
+                <SplitBar
+                  className="mt-3 rounded-md border border-slate-700/70 bg-slate-950/45 p-2"
+                  leftLabel="Avg Win Duration"
+                  rightLabel="Avg Loss Duration"
+                  leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
+                  rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
+                  leftMagnitude={summary.avg_win_duration_minutes}
+                  rightMagnitude={summary.avg_loss_duration_minutes}
+                  leftBarClassName="bg-gradient-to-r from-cyan-300/90 to-emerald-300/80"
+                  rightBarClassName="bg-gradient-to-l from-amber-300/90 to-orange-300/80"
+                />
+              </div>
               <MiniStatList
+                className="gap-2"
                 columns={1}
                 items={[
                   { label: "Avg Win Duration", value: formatMinutes(summary.avg_win_duration_minutes) },
