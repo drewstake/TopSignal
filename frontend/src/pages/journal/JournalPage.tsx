@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
@@ -106,6 +107,80 @@ function upsertEntry(entries: JournalEntry[], nextEntry: JournalEntry): JournalE
     return [nextEntry, ...entries];
   }
   return entries.map((entry) => (entry.id === nextEntry.id ? nextEntry : entry));
+}
+
+const journalDateFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+function formatJournalDate(value: string) {
+  return journalDateFormatter.format(new Date(`${value}T00:00:00.000Z`));
+}
+
+function OverviewTile({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-800/80 bg-slate-950/40 px-4 py-3 shadow-panel">
+      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className="mt-2 text-sm font-semibold text-slate-100">{value}</p>
+      <p className="mt-1 text-xs text-slate-400">{detail}</p>
+    </div>
+  );
+}
+
+function FilterField({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="block space-y-2">
+      <span className="text-xs uppercase tracking-[0.14em] text-slate-500">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function InlineMessage({ tone, children }: { tone: "error" | "info"; children: ReactNode }) {
+  const classes =
+    tone === "error"
+      ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
+      : "border-amber-500/35 bg-amber-500/10 text-amber-200";
+
+  return (
+    <div className={`rounded-2xl border px-4 py-3 text-sm ${classes}`} role={tone === "error" ? "alert" : "status"}>
+      {children}
+    </div>
+  );
+}
+
+function JournalListSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Journal Entries</CardTitle>
+        <CardDescription>Loading your recent entries and filters.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div
+            key={index}
+            className="rounded-2xl border border-slate-800/80 bg-slate-950/40 px-4 py-4"
+            aria-hidden="true"
+          >
+            <div className="h-3 w-24 rounded bg-slate-800/80" />
+            <div className="mt-3 h-4 w-2/3 rounded bg-slate-800/80" />
+            <div className="mt-4 h-3 w-full rounded bg-slate-800/70" />
+            <div className="mt-2 h-3 w-5/6 rounded bg-slate-800/60" />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function JournalPage() {
@@ -234,6 +309,10 @@ export function JournalPage() {
       }),
     [endDate, includeArchived, moodFilter, offset, queryText, startDate],
   );
+
+  useEffect(() => {
+    setPage(1);
+  }, [startDate, endDate, moodFilter, queryText, includeArchived]);
 
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedId) ?? null,
@@ -690,37 +769,115 @@ export function JournalPage() {
 
   const canGoPrev = currentPage > 1;
   const canGoNext = currentPage < totalPages;
+  const hasSearchQuery = queryText.trim().length > 0;
+  const hasActiveFilters = startDate !== "" || endDate !== "" || moodFilter !== "ALL" || hasSearchQuery || includeArchived;
+  const activeFilters = [
+    startDate ? `From ${formatJournalDate(startDate)}` : null,
+    endDate ? `To ${formatJournalDate(endDate)}` : null,
+    moodFilter !== "ALL" ? moodFilter : null,
+    hasSearchQuery ? `Search: ${queryText.trim()}` : null,
+    includeArchived ? "Archived included" : null,
+  ].filter((value): value is string => Boolean(value));
+  const entriesWithSnapshotsCount = entries.filter((entry) => entry.stats_json !== null).length;
+  const visibleRangeStart = totalEntries === 0 ? 0 : offset + 1;
+  const visibleRangeEnd = totalEntries === 0 ? 0 : offset + entries.length;
+
+  const handleClearFilters = () => {
+    setStartDate("");
+    setEndDate("");
+    setMoodFilter("ALL");
+    setQueryText("");
+    setIncludeArchived(false);
+    setPage(1);
+  };
 
   if (!selectedAccountId && !loadingEntries) {
     return (
-      <Card>
+      <Card className="max-w-2xl">
         <CardHeader>
-          <CardTitle>Journal</CardTitle>
+          <CardTitle>Trading Journal</CardTitle>
           <CardDescription>Select an active account to start journaling.</CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="rounded-2xl border border-dashed border-slate-700/80 bg-slate-950/35 px-4 py-8 text-center">
+            <p className="text-sm font-medium text-slate-200">No active account selected.</p>
+            <p className="mt-2 text-sm text-slate-400">
+              Choose an account from the header to create and review journal entries.
+            </p>
+          </div>
+        </CardContent>
       </Card>
     );
   }
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-5 pb-10">
+      <section className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="accent">Journal</Badge>
+            {selectedAccount ? (
+              <span className="rounded-full border border-slate-800/80 bg-slate-950/45 px-3 py-1 text-xs text-slate-300">
+                {selectedAccount.name}
+              </span>
+            ) : null}
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-50">Trading Journal</h1>
+            <p className="mt-2 max-w-3xl text-sm text-slate-400">
+              Capture execution notes, emotional context, and trade snapshots in a clean review workflow for the
+              active account.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[460px]">
+          <OverviewTile
+            label="Matches"
+            value={`${totalEntries}`}
+            detail={totalEntries === 0 ? "No entries match the current filters." : `Page ${currentPage} of ${totalPages}`}
+          />
+          <OverviewTile
+            label="Selected"
+            value={selectedEntry?.title || "No selection"}
+            detail={selectedEntry ? formatJournalDate(selectedEntry.entry_date) : "Pick an entry to start reviewing."}
+          />
+          <OverviewTile
+            label="Snapshots"
+            value={`${entriesWithSnapshotsCount}/${entries.length}`}
+            detail="Entries on this page with saved trade stats."
+          />
+        </div>
+      </section>
+
       <Card>
-        <CardHeader>
-          <CardTitle>Trading Journal</CardTitle>
-          <CardDescription>Capture structured notes for the active account and review patterns over time.</CardDescription>
+        <CardHeader className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <CardTitle>Filters and Quick Actions</CardTitle>
+            <CardDescription>Refine the list, jump between dates, and create new journal entries quickly.</CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => void handleCreateEntry(getYesterdayTradingDateIso())}
+              disabled={creatingEntry || !selectedAccountId}
+            >
+              New Yesterday
+            </Button>
+            <Button onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
+              {creatingEntry ? "Creating..." : "New Today"}
+            </Button>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))]">
+            <FilterField label="Start Date">
               <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">End Date</label>
+            </FilterField>
+            <FilterField label="End Date">
               <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Mood</label>
+            </FilterField>
+            <FilterField label="Mood">
               <Select value={moodFilter} onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}>
                 {moodOptions.map((option) => (
                   <option key={option} value={option}>
@@ -728,57 +885,89 @@ export function JournalPage() {
                   </option>
                 ))}
               </Select>
-            </div>
-            <div className="xl:col-span-2">
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Search</label>
+            </FilterField>
+            <FilterField label="Search">
               <Input
                 value={queryText}
                 onChange={(event) => setQueryText(event.target.value)}
-                placeholder="Search title, body, or tags"
+                placeholder="Search notes, titles, or tags"
               />
+            </FilterField>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800/80 bg-slate-950/35 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Active Filters</p>
+                <div className="flex flex-wrap gap-2">
+                  {activeFilters.length > 0 ? (
+                    activeFilters.map((filter) => (
+                      <span
+                        key={filter}
+                        className="rounded-full border border-slate-700/80 bg-slate-900/70 px-3 py-1 text-xs text-slate-300"
+                      >
+                        {filter}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-slate-400">No filters applied. Showing the most recent entries.</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Toggle checked={includeArchived} onChange={setIncludeArchived} label="Include archived" />
+                <Button variant="ghost" size="sm" onClick={handleClearFilters} disabled={!hasActiveFilters}>
+                  Clear Filters
+                </Button>
+              </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <Toggle checked={includeArchived} onChange={setIncludeArchived} label="Include archived entries" />
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                onClick={() => void handleCreateEntry(getYesterdayTradingDateIso())}
-                disabled={creatingEntry || !selectedAccountId}
-              >
-                Yesterday
-              </Button>
-              <Button onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
-                {creatingEntry ? "Creating..." : "New Entry"}
-              </Button>
-            </div>
-          </div>
-
-          {entriesError ? <p className="text-sm text-rose-300">{entriesError}</p> : null}
-          {entriesInfo ? <p className="text-sm text-amber-200">{entriesInfo}</p> : null}
+          {entriesError ? <InlineMessage tone="error">{entriesError}</InlineMessage> : null}
+          {entriesInfo ? <InlineMessage tone="info">{entriesInfo}</InlineMessage> : null}
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <div className="space-y-3 xl:col-span-1">
+      <div className="grid gap-5 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]">
+        <div className="space-y-4 xl:sticky xl:top-24 xl:self-start">
           {loadingEntries ? (
-            <Card>
-              <CardContent className="py-6 text-sm text-slate-400">Loading journal entries...</CardContent>
-            </Card>
+            <JournalListSkeleton />
           ) : (
-            <JournalList entries={entries} selectedId={selectedId} onSelect={(id) => void handleSelectEntry(id)} />
+            <JournalList
+              entries={entries}
+              selectedId={selectedId}
+              totalEntries={totalEntries}
+              onSelect={(id) => void handleSelectEntry(id)}
+            />
           )}
+
           <Card>
-            <CardContent className="flex items-center justify-between py-3 text-xs text-slate-400">
-              <p>
-                Page {currentPage} of {totalPages} ({totalEntries} total)
-              </p>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={!canGoPrev}>
-                  Prev
+            <CardContent className="space-y-4 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Results Window</p>
+                  <p className="mt-1 text-sm font-medium text-slate-100">
+                    {totalEntries === 0 ? "No entries to show" : `Showing ${visibleRangeStart}-${visibleRangeEnd} of ${totalEntries}`}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-800/80 bg-slate-950/45 px-3 py-2 text-xs text-slate-400">
+                  Page {currentPage} / {totalPages}
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  disabled={!canGoPrev}
+                >
+                  Previous
                 </Button>
                 <Button
+                  className="flex-1"
                   variant="ghost"
                   size="sm"
                   onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
@@ -791,7 +980,7 @@ export function JournalPage() {
           </Card>
         </div>
 
-        <div className="xl:col-span-2">
+        <div className="min-w-0">
           <JournalEditor
             entry={selectedEntry}
             draft={draft}

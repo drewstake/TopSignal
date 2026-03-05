@@ -273,6 +273,7 @@ export interface JournalStatsSnapshot {
   avg_loss: number;
   largest_win: number;
   largest_loss: number;
+  largest_position_size?: number;
   gross: number;
   net: number;
   net_realized_pnl?: number;
