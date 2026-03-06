@@ -1204,16 +1204,16 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-5 pb-8">
-      <Card className="!bg-transparent !shadow-none border-0 p-0 md:p-0">
-        <CardHeader className="mb-0 space-y-1">
-          <div className="w-fit max-w-full self-start overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/35 px-1.5 py-1">
-            <div className="flex min-w-max items-center gap-1">
+      <div className="space-y-1.5">
+        <div className="max-w-full overflow-x-auto pb-1">
+          <div className="inline-flex min-w-max items-center gap-1 rounded-xl border border-slate-800/80 bg-slate-950/45 p-1 shadow-none">
+            <div className="flex items-center gap-1">
               <Input
                 type="date"
                 value={customStartDate}
                 max={customEndDate || undefined}
                 onChange={(event) => setCustomStartDate(event.target.value)}
-                className="h-8 w-[140px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
+                className="h-8 w-[124px] shrink-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px]"
                 aria-label="Custom start date"
               />
               <Input
@@ -1229,9 +1229,11 @@ export function DashboardPage() {
                     setSelectedTradeDate(null);
                   }
                 }}
-                className="h-8 w-[140px] rounded-lg border-slate-700/80 bg-slate-900/55 px-2 text-xs"
+                className="h-8 w-[124px] shrink-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px]"
                 aria-label="Custom end date"
               />
+            </div>
+            <div className="flex items-center gap-1">
               {METRICS_RANGE_OPTIONS.map((option) => {
                 const active = option.key === metricsRange;
                 return (
@@ -1241,24 +1243,27 @@ export function DashboardPage() {
                     size="sm"
                     aria-pressed={active}
                     onClick={() => setMetricsRange(option.key)}
-                    className={active ? "ring-1 ring-cyan-300/60" : undefined}
+                    className={cn(
+                      "shrink-0 rounded-lg border border-slate-700/80 px-2.5 text-[11px]",
+                      active ? "border-cyan-300/40 ring-1 ring-cyan-300/60" : undefined,
+                    )}
                   >
                     {option.label}
                   </Button>
                 );
               })}
-              <span aria-hidden="true" className="mx-0.5 h-5 w-px shrink-0 bg-slate-700/70" />
-              <CopyFullStatsButton
-                metrics={copyFullStatsMetrics}
-                rangeLabel={fullStatsRangeLabel}
-                calendarDays={pnlCalendarDays}
-                disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
-              />
             </div>
+            <CopyFullStatsButton
+              metrics={copyFullStatsMetrics}
+              rangeLabel={fullStatsRangeLabel}
+              calendarDays={pnlCalendarDays}
+              disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
+              className="h-8 rounded-lg px-2.5 text-[11px]"
+            />
           </div>
-          {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
-        </CardHeader>
-      </Card>
+        </div>
+        {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
+      </div>
 
       {selectedAccount?.account_state === "MISSING" ? (
         <Card className="border-amber-400/40 bg-amber-500/10 p-4">
