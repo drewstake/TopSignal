@@ -26,6 +26,11 @@ import { JournalEditor } from "./components/JournalEditor";
 import { JournalList } from "./components/JournalList";
 import { getVersionConflictServerEntry } from "./journalConflict";
 import {
+  buildJournalImageMarkdown,
+  insertJournalImageMarkdown,
+  removeJournalImageMarkdown,
+} from "./journalImages";
+import {
   buildJournalQuery,
   entryToDraft,
   getTodayTradingDateIso,
@@ -109,13 +114,15 @@ function upsertEntry(entries: JournalEntry[], nextEntry: JournalEntry): JournalE
 function FilterField({
   label,
   children,
+  className,
 }: {
   label: string;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <label className="block space-y-1.5">
-      <span className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</span>
+    <label className={`flex min-w-0 items-center gap-1 whitespace-nowrap ${className ?? ""}`}>
+      <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-slate-500">{label}</span>
       {children}
     </label>
   );
@@ -136,12 +143,12 @@ function InlineMessage({ tone, children }: { tone: "error" | "info"; children: R
 
 function JournalListSkeleton() {
   return (
-    <Card>
+    <Card className="h-full xl:flex xl:min-h-0 xl:flex-col">
       <CardHeader>
         <CardTitle>Journal Entries</CardTitle>
         <CardDescription>Loading your recent entries and filters.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 xl:flex-1 xl:overflow-hidden">
         {Array.from({ length: 5 }).map((_, index) => (
           <div
             key={index}
@@ -187,7 +194,6 @@ export function JournalPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [moodFilter, setMoodFilter] = useState<JournalMoodFilter>("ALL");
-  const [queryText, setQueryText] = useState("");
   const [includeArchived] = useState(false);
   const [page, setPage] = useState(1);
 
@@ -276,17 +282,17 @@ export function JournalPage() {
         startDate,
         endDate,
         mood: moodFilter,
-        queryText,
+        queryText: "",
         includeArchived,
         limit: JOURNAL_PAGE_SIZE,
         offset,
       }),
-    [endDate, includeArchived, moodFilter, offset, queryText, startDate],
+    [endDate, includeArchived, moodFilter, offset, startDate],
   );
 
   useEffect(() => {
     setPage(1);
-  }, [startDate, endDate, moodFilter, queryText, includeArchived]);
+  }, [startDate, endDate, moodFilter, includeArchived]);
 
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedId) ?? null,
@@ -492,7 +498,7 @@ export function JournalPage() {
     void loadEntryImages();
   }, [loadEntryImages]);
 
-  const handleDraftChange = useCallback((nextDraft: JournalDraft) => {
+  const commitDraft = useCallback((nextDraft: JournalDraft) => {
     setDraft(nextDraft);
     draftRef.current = nextDraft;
 
@@ -504,6 +510,13 @@ export function JournalPage() {
 
     autosaveRef.current?.queue(toQueuedJournalSave(accountId, entryId, nextDraft));
   }, []);
+
+  const handleDraftChange = useCallback(
+    (nextDraft: JournalDraft) => {
+      commitDraft(nextDraft);
+    },
+    [commitDraft],
+  );
 
   const handleSelectEntry = useCallback(
     async (entryId: number) => {
@@ -627,40 +640,86 @@ export function JournalPage() {
     setConflictServerEntry(null);
   }, [conflictServerEntry, selectedAccountId]);
 
-  const handleUploadImage = useCallback(
-    async (file: File | Blob) => {
-      if (!selectedAccountId || !selectedEntry) {
-        return;
+  const uploadJournalImageFile = useCallback(
+    async (file: File | Blob, context: { accountId: number; entryId: number }): Promise<JournalEntryImage | null> => {
+      const { accountId, entryId } = context;
+      if (!accountId || !entryId) {
+        return null;
       }
 
       setUploadingImage(true);
       setImagesError(null);
       try {
-        const uploaded = await accountsApi.uploadJournalImage(selectedAccountId, selectedEntry.id, file);
-        setImages((current) => [...current, uploaded]);
+        const uploaded = await accountsApi.uploadJournalImage(accountId, entryId, file);
+        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
+          setImages((current) => [...current, uploaded]);
+        }
+        return uploaded;
       } catch (err) {
         setImagesError(err instanceof Error ? err.message : "Failed to upload image");
+        return null;
       } finally {
         setUploadingImage(false);
       }
     },
-    [selectedAccountId, selectedEntry],
+    [],
+  );
+
+  const handlePasteImage = useCallback(
+    async (file: File, selection: { start: number; end: number }) => {
+      const accountId = selectedAccountIdRef.current;
+      const entryId = selectedEntryIdRef.current;
+      if (!accountId || !entryId) {
+        return;
+      }
+
+      const initialBody = draftRef.current?.body ?? "";
+      const uploaded = await uploadJournalImageFile(file, { accountId, entryId });
+      if (!uploaded || !entryId || draftEntryIdRef.current !== entryId || !draftRef.current) {
+        return;
+      }
+
+      const nextDraft = draftRef.current;
+      const useOriginalSelection = nextDraft.body === initialBody;
+      const insertion = insertJournalImageMarkdown(
+        nextDraft.body,
+        buildJournalImageMarkdown(uploaded.id),
+        useOriginalSelection ? selection.start : nextDraft.body.length,
+        useOriginalSelection ? selection.end : nextDraft.body.length,
+      );
+
+      commitDraft({
+        ...nextDraft,
+        body: insertion.body,
+      });
+    },
+    [commitDraft, uploadJournalImageFile],
   );
 
   const handleDeleteImage = useCallback(
     async (imageId: number) => {
-      if (!selectedAccountId || !selectedEntry) {
+      const accountId = selectedAccountIdRef.current;
+      const entryId = selectedEntryIdRef.current;
+      if (!accountId || !entryId) {
         return;
       }
 
       try {
-        await accountsApi.deleteJournalImage(selectedAccountId, selectedEntry.id, imageId);
-        setImages((current) => current.filter((image) => image.id !== imageId));
+        await accountsApi.deleteJournalImage(accountId, entryId, imageId);
+        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
+          setImages((current) => current.filter((image) => image.id !== imageId));
+        }
+        if (draftEntryIdRef.current === entryId && draftRef.current) {
+          commitDraft({
+            ...draftRef.current,
+            body: removeJournalImageMarkdown(draftRef.current.body, imageId),
+          });
+        }
       } catch (err) {
         setImagesError(err instanceof Error ? err.message : "Failed to delete image");
       }
     },
-    [selectedAccountId, selectedEntry],
+    [commitDraft],
   );
 
   const handleDeleteEntry = useCallback(async () => {
@@ -702,6 +761,7 @@ export function JournalPage() {
   const savingDisabled = saveState === "saving" || !selectedEntry;
 
   const moodOptions: Array<JournalMoodFilter> = ["ALL", "Focused", "Neutral", "Frustrated", "Confident"];
+  const hasFilterStatusMessage = entriesError !== null || entriesInfo !== null;
 
   if (!selectedAccountId && !loadingEntries) {
     return (
@@ -742,55 +802,60 @@ export function JournalPage() {
         </div>
       </section>
 
-      <Card>
-        <CardHeader className="mb-3 flex items-center justify-between gap-3 space-y-0">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <CardTitle>Filters and Quick Actions</CardTitle>
-              <CardDescription className="text-[11px] leading-5">
-                Refine entries and create new ones.
-              </CardDescription>
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <Button size="sm" onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
-              {creatingEntry ? "Creating..." : "New Today"}
+        <Card className="px-2 py-1.5 md:px-2.5 md:py-2">
+          <CardHeader className="mb-0 py-0">
+            <div className="flex flex-wrap items-center gap-1.5 lg:flex-nowrap">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 lg:flex-nowrap">
+                <FilterField label="Start" className="flex-[0_1_176px]">
+                  <Input
+                    type="date"
+                    value={startDate}
+                    onChange={(event) => setStartDate(event.target.value)}
+                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  />
+                </FilterField>
+                <FilterField label="End" className="flex-[0_1_176px]">
+                  <Input
+                    type="date"
+                    value={endDate}
+                    onChange={(event) => setEndDate(event.target.value)}
+                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  />
+                </FilterField>
+                <FilterField label="Mood" className="flex-[0_1_148px]">
+                  <Select
+                    value={moodFilter}
+                    onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}
+                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  >
+                    {moodOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option === "ALL" ? "All moods" : option}
+                      </option>
+                    ))}
+                  </Select>
+                </FilterField>
+              </div>
+            <Button
+              size="sm"
+              className="ml-auto h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
+              onClick={() => void handleCreateEntry()}
+              disabled={creatingEntry || !selectedAccountId}
+            >
+              {creatingEntry ? "Creating..." : "New Entry"}
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[150px_150px_160px_minmax(220px,1fr)]">
-            <FilterField label="Start Date">
-              <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-            </FilterField>
-            <FilterField label="End Date">
-              <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-            </FilterField>
-            <FilterField label="Mood">
-              <Select value={moodFilter} onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}>
-                {moodOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option === "ALL" ? "All moods" : option}
-                  </option>
-                ))}
-              </Select>
-            </FilterField>
-            <FilterField label="Search">
-              <Input
-                value={queryText}
-                onChange={(event) => setQueryText(event.target.value)}
-                placeholder="Search notes, titles, or tags"
-              />
-            </FilterField>
-          </div>
-
-          {entriesError ? <InlineMessage tone="error">{entriesError}</InlineMessage> : null}
-          {entriesInfo ? <InlineMessage tone="info">{entriesInfo}</InlineMessage> : null}
-        </CardContent>
+        {hasFilterStatusMessage ? (
+          <CardContent className="space-y-2 pt-2">
+            {entriesError ? <InlineMessage tone="error">{entriesError}</InlineMessage> : null}
+            {entriesInfo ? <InlineMessage tone="info">{entriesInfo}</InlineMessage> : null}
+          </CardContent>
+        ) : null}
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]">
-        <div className="space-y-4 xl:sticky xl:top-24 xl:self-start">
+        <div className="min-h-0 space-y-4">
           {loadingEntries ? (
             <JournalListSkeleton />
           ) : (
@@ -819,7 +884,7 @@ export function JournalPage() {
             onArchiveToggle={() => void handleArchiveToggle()}
             onRetrySave={() => void handleRetrySave()}
             onReloadServerVersion={handleReloadServerVersion}
-            onUploadImage={(file) => void handleUploadImage(file)}
+            onPasteImage={(file, selection) => void handlePasteImage(file, selection)}
             onDeleteImage={(imageId) => void handleDeleteImage(imageId)}
             onDeleteEntry={() => void handleDeleteEntry()}
           />

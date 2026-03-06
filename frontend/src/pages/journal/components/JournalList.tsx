@@ -1,7 +1,8 @@
 import { Badge } from "../../../components/ui/Badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import type { JournalEntry } from "../../../lib/types";
+import { stripJournalImageMarkdown } from "../journalImages";
 
 export interface JournalListProps {
   entries: JournalEntry[];
@@ -37,37 +38,32 @@ function formatCurrency(value: number) {
 }
 
 function buildPreview(body: string) {
-  const normalized = body.replace(/\s+/g, " ").trim();
+  const normalized = stripJournalImageMarkdown(body).replace(/\s+/g, " ").trim();
   if (!normalized) {
     return "No notes added yet.";
   }
-  return normalized.length > 96 ? `${normalized.slice(0, 96).trimEnd()}...` : normalized;
+  return normalized;
 }
 
 export function JournalList({ entries, selectedId, totalEntries, onSelect }: JournalListProps) {
   return (
-    <Card className="h-full">
+    <Card className="h-full xl:flex xl:min-h-0 xl:flex-col">
       <CardHeader className="mb-3 flex items-center justify-between gap-3 space-y-0">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <CardTitle className="shrink-0">Journal Entries</CardTitle>
-            <CardDescription className="truncate text-[11px] leading-5">
-              Review notes, mood, tags, and snapshots.
-            </CardDescription>
-          </div>
+          <CardTitle className="shrink-0">Journal Entries</CardTitle>
         </div>
         <div className="shrink-0 rounded-full border border-slate-800/80 bg-slate-950/45 px-2.5 py-1 text-[11px] text-slate-400">
           Matches <span className="ml-1 font-semibold text-slate-100">{totalEntries}</span>
         </div>
       </CardHeader>
-      <CardContent className="space-y-0">
+      <CardContent className="space-y-0 xl:flex-1 xl:min-h-0 xl:overflow-hidden">
         {entries.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-700/80 bg-slate-950/35 px-4 py-8 text-center">
+          <div className="rounded-2xl border border-dashed border-slate-700/80 bg-slate-950/35 px-4 py-8 text-center xl:flex xl:h-full xl:flex-col xl:justify-center">
             <p className="text-sm font-medium text-slate-200">No entries match these filters.</p>
             <p className="mt-2 text-sm text-slate-400">Adjust the search or date range, or create a new journal entry.</p>
           </div>
         ) : (
-          <div className="space-y-2.5 xl:max-h-[calc(100vh-24rem)] xl:overflow-y-auto xl:pr-1">
+          <div className="space-y-2.5 xl:h-full xl:overflow-y-auto xl:pr-1">
             {entries.map((entry) => {
               const isActive = selectedId === entry.id;
               const preview = buildPreview(entry.body);
@@ -82,7 +78,7 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
                   key={entry.id}
                   onClick={() => onSelect(entry.id)}
                   className={cn(
-                    "group w-full rounded-xl border px-3 py-2.5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60",
+                    "group flex h-[220px] w-full flex-col rounded-xl border px-3 py-2.5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60",
                     isActive
                       ? "border-cyan-400/60 bg-cyan-500/10 shadow-[0_12px_30px_-24px_rgba(34,211,238,0.9)]"
                       : "border-slate-800/90 bg-slate-950/35 hover:border-slate-700 hover:bg-slate-900/70",
@@ -118,7 +114,9 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
                     </div>
                   </div>
 
-                  <p className="mt-2 text-xs leading-5 text-slate-300">{preview}</p>
+                  <div className="mt-2 flex-1 overflow-hidden">
+                    <p className="text-xs leading-5 text-slate-300">{preview}</p>
+                  </div>
 
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     {visibleTags.map((tag) => (

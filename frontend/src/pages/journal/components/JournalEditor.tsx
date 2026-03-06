@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ClipboardEvent, type ReactNode, useRef } from "react";
+import { type ClipboardEvent } from "react";
 
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
@@ -6,11 +6,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
 import { Textarea } from "../../../components/ui/Textarea";
-import { cn } from "../../../components/ui/cn";
 import type { JournalEntry, JournalEntryImage, JournalMood } from "../../../lib/types";
-import { handleClipboardImagePaste } from "../journalClipboard";
+import { getClipboardImageFile } from "../journalClipboard";
+import { extractPersistedJournalImageIds } from "../journalImages";
 import type { JournalSaveState } from "../journalAutosave";
-import { parseTagsInput, type JournalDraft } from "../journalUtils";
+import type { JournalDraft } from "../journalUtils";
 
 export interface JournalEditorProps {
   entry: JournalEntry | null;
@@ -27,7 +27,7 @@ export interface JournalEditorProps {
   onArchiveToggle: () => void;
   onRetrySave: () => void;
   onReloadServerVersion: () => void;
-  onUploadImage: (file: File | Blob) => void;
+  onPasteImage: (file: File, selection: { start: number; end: number }) => void;
   onDeleteImage: (imageId: number) => void;
   onDeleteEntry: () => void;
 }
@@ -101,96 +101,21 @@ function formatFileSize(value: number) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function SectionBlock({
-  title,
-  description,
-  action,
-  children,
-  className,
-  contentClassName,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-  children: ReactNode;
-  className?: string;
-  contentClassName?: string;
-}) {
-  return (
-    <section
-      className={cn(
-        "overflow-hidden rounded-[22px] border border-slate-800/80 bg-gradient-to-b from-slate-950/80 via-slate-950/45 to-slate-950/30 shadow-panel",
-        className,
-      )}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800/70 px-4 py-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-100">{title}</h3>
-          <p className="mt-1 text-[11px] text-slate-400">{description}</p>
-        </div>
-        {action}
-      </div>
-      <div className={cn("space-y-3 px-4 py-4", contentClassName)}>{children}</div>
-    </section>
-  );
-}
-
-function FieldShell({
-  label,
-  hint,
-  meta,
-  children,
-  className,
-}: {
-  label: string;
-  hint?: string;
-  meta?: ReactNode;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <label className={cn("block rounded-xl border border-slate-800/75 bg-slate-950/45 p-3.5", className)}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">{label}</span>
-          {hint ? <p className="mt-1 text-[11px] text-slate-400">{hint}</p> : null}
-        </div>
-        {meta ? <div className="text-[11px] text-slate-500">{meta}</div> : null}
-      </div>
-      <div className="mt-2.5 space-y-2.5">{children}</div>
-    </label>
-  );
-}
-
-function MetaRow({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-800/70 bg-slate-950/45 px-3 py-2.5">
-      <span className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</span>
-      <span className={cn("text-right text-xs text-slate-200 sm:text-sm", valueClassName)}>{value}</span>
-    </div>
-  );
-}
-
-export function JournalEditor({
-  entry,
-  draft,
-  saveState,
-  savingDisabled,
-  conflictServerEntry,
-  images,
-  imagesLoading,
-  imagesError,
-  uploadingImage,
-  deletingEntry,
-  onDraftChange,
-  onArchiveToggle,
-  onRetrySave,
-  onReloadServerVersion,
-  onUploadImage,
-  onDeleteImage,
-  onDeleteEntry,
-}: JournalEditorProps) {
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+export function JournalEditor(props: JournalEditorProps) {
+  const {
+    entry,
+    draft,
+    saveState,
+    conflictServerEntry,
+    images,
+    imagesLoading,
+    imagesError,
+    uploadingImage,
+    onDraftChange,
+    onReloadServerVersion,
+    onPasteImage,
+    onDeleteImage,
+  } = props;
 
   if (!entry || !draft) {
     return (
@@ -203,7 +128,7 @@ export function JournalEditor({
           <div className="rounded-2xl border border-dashed border-slate-700/80 bg-slate-950/35 px-4 py-10 text-center">
             <p className="text-sm font-medium text-slate-200">No entry selected.</p>
             <p className="mt-2 text-sm text-slate-400">
-              Pick a journal entry to edit notes, review trade stats, and manage attachments.
+              Pick a journal entry to edit notes, review trade stats, and revisit pasted charts.
             </p>
           </div>
         </CardContent>
@@ -211,45 +136,86 @@ export function JournalEditor({
     );
   }
 
-  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    handleClipboardImagePaste(event, onUploadImage);
-  };
-
-  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
+  const handleNotesPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFile = getClipboardImageFile(event.clipboardData?.items);
+    if (!imageFile) {
       return;
     }
-    onUploadImage(file);
-    event.target.value = "";
+
+    event.preventDefault();
+    onPasteImage(imageFile, {
+      start: event.currentTarget.selectionStart ?? draft.body.length,
+      end: event.currentTarget.selectionEnd ?? draft.body.length,
+    });
   };
 
   const saveStateDisplay = saveStateMeta[saveState];
-  const normalizedTags = parseTagsInput(draft.tagsInput);
   const notesCharacterCount = draft.body.length;
-  const titleCharacterCount = draft.title.length;
-  const draftTitleDisplay = draft.title.trim() || "Untitled entry";
   const imageSummary = `${images.length} ${images.length === 1 ? "image" : "images"}`;
+  const embeddedImageIds = extractPersistedJournalImageIds(draft.body);
+  const embeddedImageIdSet = new Set(embeddedImageIds);
+  const embeddedImages = embeddedImageIds
+    .map((imageId) => images.find((image) => image.id === imageId) ?? null)
+    .filter((image): image is JournalEntryImage => image !== null);
+  const unreferencedImages = images.filter((image) => !embeddedImageIdSet.has(image.id));
+  const visibleImages = [...embeddedImages, ...unreferencedImages];
+  const showImagePanel = imagesLoading || imagesError || uploadingImage || visibleImages.length > 0;
 
   return (
-    <Card className="h-full overflow-hidden">
-      <CardHeader className="space-y-4 border-b border-slate-800/70 pb-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{formatEntryDate(entry.entry_date)}</p>
-            <CardTitle className="mt-1.5 text-xl md:text-2xl">{draftTitleDisplay}</CardTitle>
-            <CardDescription className="mt-2 max-w-2xl text-sm">{saveStateDisplay.description}</CardDescription>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+      <CardHeader className="space-y-2.5 border-b border-slate-800/70 pb-2.5 pt-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle className="text-sm font-semibold tracking-[0.02em] text-slate-200">
+            {formatEntryDate(entry.entry_date)}
+          </CardTitle>
+          <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant={saveStateDisplay.variant}>{saveStateDisplay.label}</Badge>
             <Badge variant={moodVariant[draft.mood]}>{draft.mood}</Badge>
             {draft.is_archived ? <Badge variant="neutral">Archived</Badge> : <Badge variant="accent">Active</Badge>}
           </div>
         </div>
+
+        <div className="grid gap-2 rounded-xl border border-slate-800/75 bg-slate-950/35 p-2.5 md:grid-cols-[minmax(0,1.35fr)_150px_minmax(0,1fr)] md:items-end">
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Title</span>
+            <Input
+              value={draft.title}
+              maxLength={160}
+              placeholder="Summarize the session in one line"
+              className="h-9 text-sm"
+              onChange={(event) => onDraftChange({ ...draft, title: event.target.value })}
+            />
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Mood</span>
+            <Select
+              value={draft.mood}
+              className="h-9 text-sm"
+              onChange={(event) => onDraftChange({ ...draft, mood: event.target.value as JournalMood })}
+            >
+              {moodOptions.map((mood) => (
+                <option key={mood} value={mood}>
+                  {mood}
+                </option>
+              ))}
+            </Select>
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Tags</span>
+            <Input
+              value={draft.tagsInput}
+              maxLength={1024}
+              placeholder="nq, open-drive, patience, execution"
+              className="h-9 text-sm"
+              onChange={(event) => onDraftChange({ ...draft, tagsInput: event.target.value })}
+            />
+          </label>
+        </div>
       </CardHeader>
 
-      <CardContent className="space-y-5 pt-5" onPaste={handlePaste}>
+      <CardContent className="flex min-h-0 flex-1 flex-col space-y-3 pt-3">
         {conflictServerEntry ? (
           <div className="rounded-2xl border border-amber-500/45 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
             <p className="font-medium">This entry changed somewhere else before your latest autosave completed.</p>
@@ -261,165 +227,54 @@ export function JournalEditor({
           </div>
         ) : null}
 
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.42fr)_minmax(320px,0.9fr)]">
-          <div className="space-y-5">
-            <SectionBlock
-              title="Entry Details"
-              description="Title, mood, and tags."
-              contentClassName="space-y-2.5"
-            >
-              <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_180px_minmax(260px,1fr)] xl:items-end">
-                <label className="block space-y-1.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Title</span>
-                    <span className="text-[11px] text-slate-500">{titleCharacterCount}/160</span>
-                  </div>
-                  <Input
-                    value={draft.title}
-                    maxLength={160}
-                    placeholder="Summarize the session in one line"
-                    className="text-sm"
-                    onChange={(event) => onDraftChange({ ...draft, title: event.target.value })}
-                  />
-                </label>
-
-                <label className="block space-y-1.5">
-                  <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Mood</span>
-                  <Select
-                    value={draft.mood}
-                    onChange={(event) => onDraftChange({ ...draft, mood: event.target.value as JournalMood })}
-                  >
-                    {moodOptions.map((mood) => (
-                      <option key={mood} value={mood}>
-                        {mood}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-
-                <label className="block space-y-1.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Tags</span>
-                    {normalizedTags.length > 0 ? (
-                      <span className="text-[11px] text-slate-500">{normalizedTags.length} total</span>
-                    ) : null}
-                  </div>
-                  <Input
-                    value={draft.tagsInput}
-                    maxLength={1024}
-                    placeholder="nq, open-drive, patience, execution"
-                    onChange={(event) => onDraftChange({ ...draft, tagsInput: event.target.value })}
-                  />
-                </label>
-              </div>
-
-              {normalizedTags.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {normalizedTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full border border-slate-700/80 bg-slate-900/70 px-2 py-0.5 text-[10px] text-slate-300"
-                    >
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[11px] text-slate-500">No tags added yet.</p>
-              )}
-            </SectionBlock>
-
-            <SectionBlock
-              title="Notes"
-              description="Write your review, execution notes, and follow-up observations for this trading day."
-            >
-              <FieldShell
-                label="Journal Entry"
-                hint="Capture market context, execution choices, mistakes, and what you want to repeat next time."
-                meta={`${notesCharacterCount}/20,000 characters`}
-                className="bg-slate-950/35"
-              >
-                <Textarea
-                  value={draft.body}
-                  maxLength={20000}
-                  className="min-h-[280px] resize-y border-slate-800 bg-slate-950/70 leading-6"
-                  placeholder="What did the market do, how did you respond, what should you repeat or correct next time?"
-                  onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
-                />
-              </FieldShell>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800/70 bg-slate-950/45 px-3 py-2 text-[11px] text-slate-400">
-                <span>Autosave runs while you type.</span>
-                <span>Paste an image in the editor to upload it.</span>
-              </div>
-            </SectionBlock>
+        <section className="flex min-h-0 flex-1 flex-col space-y-2.5 overflow-hidden rounded-[20px] border border-slate-800/80 bg-gradient-to-b from-slate-950/80 via-slate-950/45 to-slate-950/30 px-3 py-3 shadow-panel">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Journal Entry</span>
+            <span className="text-[11px] text-slate-500">{notesCharacterCount}/20,000</span>
           </div>
+          <label className="block min-h-0 flex-1">
+            <Textarea
+              value={draft.body}
+              maxLength={20000}
+              className="h-full min-h-[360px] resize-none overflow-y-auto border-slate-800 bg-slate-950/70 leading-6"
+              placeholder="What did the market do, how did you respond, what should you repeat or correct next time?"
+              onPaste={handleNotesPaste}
+              onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
+            />
+          </label>
 
-          <div className="space-y-5">
-            <SectionBlock title="Entry Status" description="Timestamps and actions." contentClassName="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <MetaRow label="Created" value={formatTimestamp(entry.created_at)} />
-                <MetaRow label="Updated" value={formatTimestamp(entry.updated_at)} />
-              </div>
+          {uploadingImage ? (
+            <div className="rounded-xl border border-slate-800/70 bg-slate-950/45 px-3 py-2 text-[11px] text-slate-400">
+              Uploading pasted image...
+            </div>
+          ) : null}
 
-              <div className="rounded-xl border border-slate-800/75 bg-slate-950/45 px-3 py-2.5">
-                <div className="flex flex-wrap gap-2">
-                  {saveState === "error" ? (
-                    <Button size="sm" variant="secondary" onClick={onRetrySave} disabled={savingDisabled}>
-                      Retry Save
-                    </Button>
-                  ) : null}
-                  <Button size="sm" variant="ghost" onClick={onArchiveToggle} disabled={savingDisabled}>
-                    {draft.is_archived ? "Unarchive Entry" : "Archive Entry"}
-                  </Button>
-                  <Button size="sm" variant="danger" onClick={onDeleteEntry} disabled={deletingEntry || savingDisabled}>
-                    {deletingEntry ? "Deleting..." : "Delete Entry"}
-                  </Button>
-                </div>
-              </div>
-            </SectionBlock>
+          {imagesError ? (
+            <p className="rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              {imagesError}
+            </p>
+          ) : null}
 
-            <SectionBlock
-              title="Attachments"
-              description="Screenshots and review images."
-              action={
-                <div className="flex flex-wrap items-center gap-2">
+          {showImagePanel ? (
+            <div className="space-y-3 rounded-[20px] border border-slate-800/75 bg-slate-950/35 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Entry Images</p>
+                {visibleImages.length > 0 ? (
                   <span className="rounded-full border border-slate-700/80 bg-slate-900/60 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-300">
                     {imageSummary}
                   </span>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="hidden"
-                    onChange={handleFileInput}
-                  />
-                  <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={uploadingImage}>
-                    {uploadingImage ? "Uploading..." : "Choose Image"}
-                  </Button>
-                </div>
-              }
-            >
-              <p className="text-[11px] text-slate-400">Paste into notes or use the file picker.</p>
+                ) : null}
+              </div>
 
-              {imagesError ? (
-                <p className="rounded-xl border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
-                  {imagesError}
-                </p>
-              ) : null}
-
-              {imagesLoading ? (
-                <div className="rounded-2xl border border-slate-800/70 bg-slate-950/45 px-4 py-8 text-center text-sm text-slate-400">
+              {imagesLoading && visibleImages.length === 0 ? (
+                <div className="rounded-2xl border border-slate-800/70 bg-slate-950/45 px-4 py-6 text-center text-sm text-slate-400">
                   Loading images...
                 </div>
-              ) : images.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-700/80 bg-slate-950/35 px-4 py-6 text-center">
-                  <p className="text-sm font-medium text-slate-200">No attachments yet.</p>
-                  <p className="mt-1 text-sm text-slate-400">Upload or paste a chart image here.</p>
-                </div>
-              ) : (
+              ) : null}
+
+              {visibleImages.length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {images.map((image) => (
+                  {visibleImages.map((image) => (
                     <div key={image.id} className="overflow-hidden rounded-[20px] border border-slate-800/80 bg-slate-950/55">
                       <div className="relative">
                         <img src={image.url} alt="Journal upload" className="h-36 w-full object-cover" loading="lazy" />
@@ -444,10 +299,10 @@ export function JournalEditor({
                     </div>
                   ))}
                 </div>
-              )}
-            </SectionBlock>
-          </div>
-        </div>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
       </CardContent>
     </Card>
   );
