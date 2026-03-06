@@ -68,6 +68,9 @@ def extract_access_token(request: Request) -> str | None:
         if scheme.lower() == "bearer" and value.strip():
             return value.strip()
 
+    if not _allow_query_bearer_tokens():
+        return None
+
     query_token = request.query_params.get("access_token")
     if query_token:
         normalized = query_token.strip()
@@ -172,3 +175,7 @@ def _read_bool_env(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _allow_query_bearer_tokens() -> bool:
+    return _read_bool_env("ALLOW_QUERY_BEARER_TOKENS", False)

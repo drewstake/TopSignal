@@ -35,7 +35,7 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
 } from "./types";
-import { getAccessToken, getAccessTokenSync } from "./supabase";
+import { getAccessToken } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
@@ -54,6 +54,10 @@ interface RequestMultipartOptions {
   method?: "POST";
   query?: Record<string, QueryValue>;
   formData: FormData;
+  signal?: AbortSignal;
+}
+
+interface RequestBlobOptions {
   signal?: AbortSignal;
 }
 
@@ -243,20 +247,9 @@ function logApiPerfEnd(context: RequestPerfContext, response: Response) {
 }
 
 function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
-  const absoluteUrl = toAbsoluteApiUrl(image.url);
-  const token = getAccessTokenSync();
-  if (!token || !image.url.startsWith("/api/journal-images/")) {
-    return {
-      ...image,
-      url: absoluteUrl,
-    };
-  }
-
-  const url = new URL(absoluteUrl);
-  url.searchParams.set("access_token", token);
   return {
     ...image,
-    url: url.toString(),
+    url: toAbsoluteApiUrl(image.url),
   };
 }
 
@@ -361,6 +354,55 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
   }
 
   return (await response.json()) as T;
+}
+
+export async function requestBlob(path: string, options: RequestBlobOptions = {}): Promise<Blob> {
+  const { signal } = options;
+  const accessToken = await getAccessToken();
+  const url = toAbsoluteApiUrl(path);
+  const perfContext: RequestPerfContext = {
+    method: "GET",
+    path,
+    url,
+    startedAtIso: new Date().toISOString(),
+    startedAtMs: nowMs(),
+  };
+  logApiPerfStart(perfContext);
+
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: Object.keys(headers).length === 0 ? undefined : headers,
+    signal,
+  });
+  logApiPerfEnd(perfContext, response);
+
+  if (!response.ok) {
+    let detail = `Request failed (${response.status} ${response.statusText})`;
+    let errorBody: unknown = null;
+    let detailValue: unknown = undefined;
+
+    try {
+      errorBody = (await response.json()) as { detail?: unknown };
+      const parsed = errorBody as { detail?: unknown };
+      detailValue = parsed.detail;
+      if (typeof parsed.detail === "string") {
+        detail = parsed.detail;
+      } else if (parsed.detail !== undefined) {
+        detail = JSON.stringify(parsed.detail);
+      }
+    } catch {
+      // Keep default fallback error text.
+    }
+
+    throw new ApiError(detail, response.status, errorBody, detailValue);
+  }
+
+  return await response.blob();
 }
 
 const accountsCacheByQuery = new Map<string, TimedCache<AccountInfo[]>>();

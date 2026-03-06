@@ -678,7 +678,8 @@ export function JournalPage() {
   );
 
   const handlePasteImage = useCallback(
-    async (file: File, _selection: { start: number; end: number }) => {
+    async (file: File, selection: { start: number; end: number }) => {
+      void selection;
       const accountId = selectedAccountIdRef.current;
       const entryId = selectedEntryIdRef.current;
       if (!accountId || !entryId) {

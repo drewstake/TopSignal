@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
 import { Textarea } from "../../../components/ui/Textarea";
+import { requestBlob } from "../../../lib/api";
 import type { JournalEntry, JournalEntryImage, JournalMood } from "../../../lib/types";
 import { getClipboardImageFile } from "../journalClipboard";
 import type { JournalSaveState } from "../journalAutosave";
@@ -74,6 +75,79 @@ function formatEntryDate(value: string) {
   return entryDateFormatter.format(new Date(`${value}T00:00:00.000Z`));
 }
 
+function SecureJournalImage({ src, alt }: { src: string; alt: string }) {
+  const [imageState, setImageState] = useState<{
+    src: string;
+    objectUrl: string | null;
+    loadFailed: boolean;
+  }>({
+    src,
+    objectUrl: null,
+    loadFailed: false,
+  });
+
+  useEffect(() => {
+    let nextObjectUrl: string | null = null;
+    const controller = new AbortController();
+
+    void requestBlob(src, { signal: controller.signal })
+      .then((blob) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        nextObjectUrl = URL.createObjectURL(blob);
+        setImageState({
+          src,
+          objectUrl: nextObjectUrl,
+          loadFailed: false,
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setImageState({
+          src,
+          objectUrl: null,
+          loadFailed: true,
+        });
+      });
+
+    return () => {
+      controller.abort();
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [src]);
+
+  const isCurrentSrcState = imageState.src === src;
+  if (isCurrentSrcState && imageState.loadFailed) {
+    return (
+      <div className="flex h-36 w-full items-center justify-center bg-slate-900/80 text-xs text-slate-400">
+        Image unavailable
+      </div>
+    );
+  }
+
+  if (!isCurrentSrcState || !imageState.objectUrl) {
+    return <div className="h-36 w-full animate-pulse bg-slate-800/70" aria-hidden="true" />;
+  }
+
+  return (
+    <img
+      src={imageState.objectUrl}
+      alt={alt}
+      className="block h-auto w-full bg-slate-950/55"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+    />
+  );
+}
+
 export function JournalEditor(props: JournalEditorProps) {
   const {
     entry,
@@ -90,16 +164,7 @@ export function JournalEditor(props: JournalEditorProps) {
     onDeleteImage,
   } = props;
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
-
-  useEffect(() => {
-    setSelectedImageId(null);
-  }, [entry?.id]);
-
-  useEffect(() => {
-    if (selectedImageId !== null && !images.some((image) => image.id === selectedImageId)) {
-      setSelectedImageId(null);
-    }
-  }, [images, selectedImageId]);
+  const activeSelectedImageId = images.some((image) => image.id === selectedImageId) ? selectedImageId : null;
 
   if (!entry || !draft) {
     return (
@@ -251,7 +316,7 @@ export function JournalEditor(props: JournalEditorProps) {
               {images.length > 0 ? (
                 <div className="space-y-3">
                   {images.map((image, index) => {
-                    const isSelected = selectedImageId === image.id;
+                    const isSelected = activeSelectedImageId === image.id;
 
                     return (
                       <button
@@ -267,12 +332,7 @@ export function JournalEditor(props: JournalEditorProps) {
                         onFocus={() => setSelectedImageId(image.id)}
                         onKeyDown={(event) => handleImageKeyDown(event, image.id)}
                       >
-                        <img
-                          src={image.url}
-                          alt="Journal upload"
-                          className="block h-auto w-full bg-slate-950/55"
-                          loading="lazy"
-                        />
+                        <SecureJournalImage src={image.url} alt="Journal upload" />
                       </button>
                     );
                   })}

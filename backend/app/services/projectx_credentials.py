@@ -4,6 +4,7 @@ import base64
 import hashlib
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
@@ -114,8 +115,34 @@ def _fernet() -> Fernet:
         normalized_key = key.strip().encode("utf-8")
         return Fernet(normalized_key)
 
-    # Local/dev fallback so existing tests and local setups still run.
-    # Production should always set CREDENTIALS_ENCRYPTION_KEY.
+    if not _allow_insecure_local_credentials_key():
+        raise RuntimeError("CREDENTIALS_ENCRYPTION_KEY is required for non-local credential storage")
+
+    # Local/dev fallback so existing tests and localhost setups still run.
     digest = hashlib.sha256(b"topsignal-local-dev-credentials-key").digest()
     fallback = base64.urlsafe_b64encode(digest)
     return Fernet(fallback)
+
+
+def _allow_insecure_local_credentials_key() -> bool:
+    raw = os.getenv("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY")
+    if raw is not None:
+        return _read_bool_env(raw, False)
+
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        return True
+    if database_url.startswith("sqlite"):
+        return True
+
+    parsed = urlparse(database_url)
+    return (parsed.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def _read_bool_env(raw: str, default: bool) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default

@@ -25,7 +25,13 @@ from .auth import (
     get_authenticated_user_or_default,
     reset_authenticated_user,
 )
-from .db import get_db, guard_against_local_database_url, init_db, log_runtime_connection_targets
+from .db import (
+    get_db,
+    guard_against_local_database_url,
+    init_db,
+    log_runtime_connection_targets,
+    resolve_supabase_mode,
+)
 from .expense_schemas import (
     ExpenseCategory,
     ExpenseCreateIn,
@@ -189,10 +195,14 @@ def _apply_cors_headers(request: Request, response: Response) -> Response:
     return response
 
 
+def _is_authenticated_route(path: str) -> bool:
+    return path.startswith("/api/") or path.startswith("/metrics/") or path == "/trades"
+
+
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
-    should_time_request = path.startswith("/api/")
+    should_time_request = _is_authenticated_route(path)
     started_at = perf_counter() if should_time_request else None
 
     def _with_timing_headers(response: Response) -> Response:
@@ -204,7 +214,7 @@ async def api_auth_middleware(request: Request, call_next):
         response.headers["X-Server-Time-Ms"] = duration_text
         return response
 
-    if not path.startswith("/api/"):
+    if not _is_authenticated_route(path):
         response = await call_next(request)
         return _with_timing_headers(response)
     if request.method.upper() == "OPTIONS":
@@ -1342,7 +1352,7 @@ def get_projectx_account_pnl_calendar(
 
 
 def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
-    allow_legacy_env = _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", True)
+    allow_legacy_env = _allow_legacy_projectx_env_credentials()
     try:
         credentials = get_projectx_credentials(db, user_id=user_id)
     except OperationalError:
@@ -1371,6 +1381,32 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
         username=credentials.username,
         api_key=credentials.api_key,
     )
+
+
+def _allow_legacy_projectx_env_credentials() -> bool:
+    if os.getenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS") is not None:
+        return _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", True)
+    if not auth_required():
+        return True
+    if _uses_local_only_allowed_origins():
+        return True
+    return resolve_supabase_mode() == "local"
+
+
+def _uses_local_only_allowed_origins() -> bool:
+    allow_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
+    if allow_origin_regex and allow_origin_regex != _LOCAL_ORIGIN_REGEX:
+        return False
+    allowed_origins = [
+        origin.strip()
+        for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+        if origin.strip()
+    ]
+    return all(_is_local_origin(origin) for origin in allowed_origins)
+
+
+def _is_local_origin(origin: str) -> bool:
+    return bool(re.fullmatch(_LOCAL_ORIGIN_REGEX, origin))
 
 
 def _resolve_amount_cents(amount_cents: int | None) -> int:

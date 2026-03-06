@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -15,7 +16,7 @@ from app.main import (
     list_projectx_accounts,
     set_projectx_main_account,
 )
-from app.models import Account, ProjectXTradeEvent
+from app.models import Account, ProjectXTradeEvent, ProviderCredential
 
 
 @pytest.fixture()
@@ -34,6 +35,11 @@ def db_session():
         session.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__, Account.__table__])
         engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def allow_legacy_env_projectx_credentials(monkeypatch):
+    monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")
 
 
 def test_accounts_route_default_view_shows_active_plus_main_with_state_sync(db_session, monkeypatch):
@@ -185,3 +191,42 @@ def test_account_last_trade_endpoint_uses_provider_when_local_missing(db_session
     assert payload["last_trade_at"] == datetime(2026, 1, 29, 17, 5, tzinfo=timezone.utc)
     assert payload["source"] == "provider"
     assert client.calls == [(7020, 3650)]
+
+
+def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_session, monkeypatch):
+    Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
+    monkeypatch.delenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", raising=False)
+    monkeypatch.delenv("AUTH_REQUIRED", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("ALLOWED_ORIGIN_REGEX", "")
+    monkeypatch.setattr(
+        main_module.ProjectXClient,
+        "from_env",
+        lambda: (_ for _ in ()).throw(AssertionError("shared env credentials should not be used")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "projectx_credentials_not_configured"
+
+
+def test_local_only_origins_still_allow_legacy_env_credentials_in_authenticated_dev(db_session, monkeypatch):
+    Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
+    monkeypatch.delenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", raising=False)
+    monkeypatch.delenv("AUTH_REQUIRED", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.setenv("ALLOWED_ORIGIN_REGEX", main_module._LOCAL_ORIGIN_REGEX)
+
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            return [{"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True}]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert [int(row["id"]) for row in payload] == [7101]
