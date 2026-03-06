@@ -1,6 +1,7 @@
 import type {
   JournalEntriesQuery,
   JournalEntry,
+  JournalEntrySaveResult,
   JournalEntryUpdateInput,
   JournalMood,
 } from "../../lib/types";
@@ -165,4 +166,40 @@ export function journalPayloadEquals(a: JournalEntryUpdateInput, b: JournalEntry
     return false;
   }
   return left.every((tag, index) => tag === right[index]);
+}
+
+export function applyJournalSaveResultToEntry(params: {
+  entry: JournalEntry;
+  patch: Omit<JournalEntryUpdateInput, "version">;
+  result: JournalEntrySaveResult;
+}): JournalEntry {
+  const { entry, patch, result } = params;
+  return {
+    ...entry,
+    entry_date: result.entry_date,
+    title: result.title,
+    mood: result.mood,
+    tags: result.tags,
+    body: patch.body ?? entry.body,
+    version: result.version,
+    is_archived: result.is_archived,
+    updated_at: result.updated_at,
+  };
+}
+
+export function applyJournalSaveResultToDraft(params: {
+  draft: JournalDraft;
+  patch: Omit<JournalEntryUpdateInput, "version">;
+  result: JournalEntrySaveResult;
+}): JournalDraft {
+  const { draft, patch, result } = params;
+  return {
+    ...draft,
+    title: result.title,
+    mood: result.mood,
+    tagsInput: result.tags.join(", "),
+    body: patch.body ?? draft.body,
+    version: result.version,
+    is_archived: result.is_archived,
+  };
 }

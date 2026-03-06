@@ -35,6 +35,18 @@ class JournalEntryCreateOut(JournalEntryOut):
     already_existed: bool = False
 
 
+class JournalEntrySaveOut(BaseModel):
+    id: int
+    account_id: int
+    entry_date: date
+    title: str
+    mood: JournalMood
+    tags: list[str]
+    version: int
+    is_archived: bool
+    updated_at: datetime
+
+
 class JournalEntryCreateIn(BaseModel):
     entry_date: date
     title: str

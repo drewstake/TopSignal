@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { Badge } from "../../../components/ui/Badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
@@ -45,7 +47,7 @@ function buildPreview(body: string) {
   return normalized;
 }
 
-export function JournalList({ entries, selectedId, totalEntries, onSelect }: JournalListProps) {
+function JournalListInner({ entries, selectedId, totalEntries, onSelect }: JournalListProps) {
   return (
     <Card className="h-full xl:flex xl:min-h-0 xl:flex-col">
       <CardHeader className="mb-3 flex items-center justify-between gap-3 space-y-0">
@@ -146,3 +148,5 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
     </Card>
   );
 }
+
+export const JournalList = memo(JournalListInner);

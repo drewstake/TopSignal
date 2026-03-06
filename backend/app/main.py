@@ -48,6 +48,7 @@ from .journal_schemas import (
     JournalEntryListOut,
     JournalDaysOut,
     JournalImageOut,
+    JournalEntrySaveOut,
     JournalEntryUpdateIn,
     JournalEntryOut,
     JournalMood,
@@ -100,6 +101,7 @@ from .services.journal import (
     list_journal_entries,
     pull_journal_entry_trade_stats,
     serialize_journal_entry,
+    serialize_journal_entry_save,
     serialize_journal_entry_image,
     unarchive_journal_entry,
     update_journal_entry,
@@ -854,7 +856,7 @@ def list_projectx_account_journal_days(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.patch("/api/accounts/{account_id}/journal/{entry_id}", response_model=JournalEntryOut)
+@app.patch("/api/accounts/{account_id}/journal/{entry_id}", response_model=JournalEntrySaveOut)
 def update_projectx_account_journal_entry(
     account_id: int,
     entry_id: int,
@@ -900,7 +902,7 @@ def update_projectx_account_journal_entry(
                 body=payload.body,
                 is_archived=payload.is_archived,
             )
-        return serialize_journal_entry(row)
+        return serialize_journal_entry_save(row)
     except VersionConflictError as exc:
         return JSONResponse(
             status_code=409,

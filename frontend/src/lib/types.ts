@@ -300,6 +300,18 @@ export interface JournalEntryCreateResult extends JournalEntry {
   already_existed: boolean;
 }
 
+export interface JournalEntrySaveResult {
+  id: number;
+  account_id: number;
+  entry_date: string;
+  title: string;
+  mood: JournalMood;
+  tags: string[];
+  version: number;
+  is_archived: boolean;
+  updated_at: string;
+}
+
 export interface JournalEntriesResponse {
   items: JournalEntry[];
   total: number;

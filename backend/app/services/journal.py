@@ -205,31 +205,45 @@ def update_journal_entry(
     if row is None:
         raise LookupError("journal entry not found")
 
+    normalized_updates: dict[str, Any] = {}
+    if entry_date is not None:
+        if entry_date != row.entry_date:
+            existing = _get_entry_for_account_and_date(
+                db,
+                user_id=resolved_user_id,
+                account_id=account_id,
+                entry_date=entry_date,
+            )
+            if existing is not None and int(existing.id) != int(row.id):
+                raise ValueError("journal entry already exists for this account and date")
+        normalized_updates["entry_date"] = entry_date
+    if title is not None:
+        normalized_updates["title"] = normalize_title(title)
+    if mood is not None:
+        normalized_updates["mood"] = _normalize_mood(mood)
+    if tags is not None:
+        normalized_updates["tags"] = normalize_tags(tags)
+    if body is not None:
+        normalized_updates["body"] = normalize_body(body)
+    if is_archived is not None:
+        normalized_updates["is_archived"] = bool(is_archived)
+
     expected_version = int(version)
     current_version = int(row.version or 1)
     if expected_version != current_version:
+        if _journal_entry_matches_updates(row, normalized_updates):
+            return row
         raise VersionConflictError(row)
 
-    if entry_date is not None and entry_date != row.entry_date:
-        existing = _get_entry_for_account_and_date(
-            db,
-            user_id=resolved_user_id,
-            account_id=account_id,
-            entry_date=entry_date,
-        )
-        if existing is not None and int(existing.id) != int(row.id):
-            raise ValueError("journal entry already exists for this account and date")
-        row.entry_date = entry_date
-    if title is not None:
-        row.title = normalize_title(title)
-    if mood is not None:
-        row.mood = _normalize_mood(mood)
-    if tags is not None:
-        row.tags = normalize_tags(tags)
-    if body is not None:
-        row.body = normalize_body(body)
-    if is_archived is not None:
-        row.is_archived = bool(is_archived)
+    has_changes = False
+    for field_name, next_value in normalized_updates.items():
+        if _journal_entry_field_value(row, field_name) == next_value:
+            continue
+        setattr(row, field_name, next_value)
+        has_changes = True
+
+    if not has_changes:
+        return row
 
     row.version = current_version + 1
     row.updated_at = _utcnow()
@@ -603,6 +617,22 @@ def serialize_journal_entry(row: JournalEntry) -> dict[str, Any]:
     }
 
 
+def serialize_journal_entry_save(row: JournalEntry) -> dict[str, Any]:
+    raw_tags = row.tags if isinstance(row.tags, list) else []
+    tags = [str(tag) for tag in raw_tags]
+    return {
+        "id": int(row.id),
+        "account_id": int(row.account_id),
+        "entry_date": row.entry_date,
+        "title": row.title,
+        "mood": row.mood,
+        "tags": tags,
+        "version": int(row.version or 1),
+        "is_archived": bool(row.is_archived),
+        "updated_at": row.updated_at,
+    }
+
+
 def serialize_journal_entry_image(row: JournalEntryImage, *, url: str) -> dict[str, Any]:
     return {
         "id": int(row.id),
@@ -668,6 +698,18 @@ def _normalize_search_query(value: str | None) -> str | None:
         return None
     normalized = value.strip().lower()
     return normalized if normalized else None
+
+
+def _journal_entry_field_value(row: JournalEntry, field_name: str) -> Any:
+    value = getattr(row, field_name)
+    if field_name == "tags":
+        raw_tags = value if isinstance(value, list) else []
+        return [str(tag) for tag in raw_tags]
+    return value
+
+
+def _journal_entry_matches_updates(row: JournalEntry, updates: dict[str, Any]) -> bool:
+    return all(_journal_entry_field_value(row, field_name) == next_value for field_name, next_value in updates.items())
 
 
 def _normalize_mood(value: JournalMood | str) -> str:

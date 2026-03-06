@@ -118,6 +118,38 @@ def test_patch_with_stale_version_returns_409_conflict_payload(db_session):
     assert payload["server"]["version"] == updated["version"]
 
 
+def test_patch_with_stale_duplicate_payload_returns_current_save_state(db_session):
+    created = create_projectx_account_journal_entry(
+        account_id=13012,
+        payload=JournalEntryCreateIn(
+            entry_date=date(2026, 2, 21),
+            title="Versioned entry",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="Body",
+        ),
+        response=Response(),
+        db=db_session,
+    )
+
+    updated = update_projectx_account_journal_entry(
+        account_id=13012,
+        entry_id=created["id"],
+        payload=JournalEntryUpdateIn(version=created["version"], body="Updated once"),
+        db=db_session,
+    )
+
+    duplicate = update_projectx_account_journal_entry(
+        account_id=13012,
+        entry_id=created["id"],
+        payload=JournalEntryUpdateIn(version=created["version"], body="Updated once"),
+        db=db_session,
+    )
+
+    assert duplicate["id"] == created["id"]
+    assert duplicate["version"] == updated["version"]
+
+
 def test_delete_entry_cascades_journal_images(db_session):
     created = create_projectx_account_journal_entry(
         account_id=13013,

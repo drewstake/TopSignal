@@ -7,6 +7,7 @@ import type {
   JournalEntryCreateResult,
   JournalEntryCreateInput,
   JournalEntryImage,
+  JournalEntrySaveResult,
   JournalEntryUpdateInput,
   JournalEntriesQuery,
   JournalEntriesResponse,
@@ -418,6 +419,11 @@ const inFlightAccountPnlCalendarByQuery = new Map<string, Promise<AccountPnlCale
 const accountJournalDaysCacheByQuery = new Map<string, TimedCache<JournalDaysResponse>>();
 const inFlightAccountJournalDaysByQuery = new Map<string, Promise<JournalDaysResponse>>();
 const accountCacheVersionById = new Map<number, number>();
+const accountJournalCacheVersionById = new Map<number, number>();
+
+interface RequestSignalOptions {
+  signal?: AbortSignal;
+}
 
 interface GetAccountsOptions {
   showInactive?: boolean;
@@ -444,6 +450,10 @@ function getAccountCacheVersion(accountId: number) {
   return accountCacheVersionById.get(accountId) ?? 0;
 }
 
+function getAccountJournalCacheVersion(accountId: number) {
+  return accountJournalCacheVersionById.get(accountId) ?? 0;
+}
+
 function accountReadQueryCacheKey(accountId: number, query?: Record<string, QueryValue>) {
   const version = getAccountCacheVersion(accountId);
   const serializedQuery = toSortedQueryCacheKey(query);
@@ -452,8 +462,24 @@ function accountReadQueryCacheKey(accountId: number, query?: Record<string, Quer
     : `account|${accountId}|v${version}`;
 }
 
+function accountJournalReadQueryCacheKey(accountId: number, query?: Record<string, QueryValue>) {
+  const version = getAccountJournalCacheVersion(accountId);
+  const serializedQuery = toSortedQueryCacheKey(query);
+  return serializedQuery.length > 0
+    ? `account-journal|${accountId}|v${version}|${serializedQuery}`
+    : `account-journal|${accountId}|v${version}`;
+}
+
 function clearMapByAccountPrefix<T>(map: Map<string, T>, accountId: number) {
   const prefix = `account|${accountId}|`;
+  for (const key of map.keys()) {
+    if (key.startsWith(prefix)) {
+      map.delete(key);
+    }
+  }
+}
+
+function clearMapByPrefix<T>(map: Map<string, T>, prefix: string) {
   for (const key of map.keys()) {
     if (key.startsWith(prefix)) {
       map.delete(key);
@@ -472,8 +498,7 @@ function invalidateAccountReadCaches(accountId?: number) {
     inFlightAccountSummaryWithPointBasesByQuery.clear();
     accountPnlCalendarCacheByQuery.clear();
     inFlightAccountPnlCalendarByQuery.clear();
-    accountJournalDaysCacheByQuery.clear();
-    inFlightAccountJournalDaysByQuery.clear();
+    invalidateAccountJournalCaches();
     return;
   }
 
@@ -486,8 +511,19 @@ function invalidateAccountReadCaches(accountId?: number) {
   clearMapByAccountPrefix(inFlightAccountSummaryWithPointBasesByQuery, accountId);
   clearMapByAccountPrefix(accountPnlCalendarCacheByQuery, accountId);
   clearMapByAccountPrefix(inFlightAccountPnlCalendarByQuery, accountId);
-  clearMapByAccountPrefix(accountJournalDaysCacheByQuery, accountId);
-  clearMapByAccountPrefix(inFlightAccountJournalDaysByQuery, accountId);
+}
+
+function invalidateAccountJournalCaches(accountId?: number) {
+  if (typeof accountId !== "number") {
+    accountJournalCacheVersionById.clear();
+    accountJournalDaysCacheByQuery.clear();
+    inFlightAccountJournalDaysByQuery.clear();
+    return;
+  }
+
+  accountJournalCacheVersionById.set(accountId, getAccountJournalCacheVersion(accountId) + 1);
+  clearMapByPrefix(accountJournalDaysCacheByQuery, `account-journal|${accountId}|`);
+  clearMapByPrefix(inFlightAccountJournalDaysByQuery, `account-journal|${accountId}|`);
 }
 
 function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
@@ -712,7 +748,7 @@ export const accountsApi = {
       invalidateAccountReadCaches(accountId);
       return result;
     }),
-  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}) =>
+  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: RequestSignalOptions = {}) =>
     requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
       query: {
         start_date: query.start_date,
@@ -723,28 +759,29 @@ export const accountsApi = {
         limit: query.limit ?? 20,
         offset: query.offset ?? 0,
       },
+      signal: options.signal,
     }),
   createJournalEntry: (accountId: number, body: JournalEntryCreateInput) =>
     requestJson<JournalEntryCreateResult>(`/api/accounts/${accountId}/journal`, {
       method: "POST",
       body,
     }).then((result) => {
-      invalidateAccountReadCaches(accountId);
+      invalidateAccountJournalCaches(accountId);
       return result;
     }),
   updateJournalEntry: (accountId: number, entryId: number, body: JournalEntryUpdateInput) =>
-    requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}`, {
+    requestJson<JournalEntrySaveResult>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "PATCH",
       body,
     }).then((result) => {
-      invalidateAccountReadCaches(accountId);
+      invalidateAccountJournalCaches(accountId);
       return result;
     }),
   deleteJournalEntry: (accountId: number, entryId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "DELETE",
     }).then((result) => {
-      invalidateAccountReadCaches(accountId);
+      invalidateAccountJournalCaches(accountId);
       return result;
     }),
   getJournalDays: (accountId: number, query: JournalDaysQuery) => {
@@ -753,7 +790,7 @@ export const accountsApi = {
       end_date: query.end_date,
       include_archived: query.include_archived,
     };
-    const cacheKey = accountReadQueryCacheKey(accountId, requestQuery);
+    const cacheKey = accountJournalReadQueryCacheKey(accountId, requestQuery);
     return getTimedCachedRequest({
       cache: accountJournalDaysCacheByQuery,
       inFlight: inFlightAccountJournalDaysByQuery,
@@ -774,23 +811,22 @@ export const accountsApi = {
       formData,
     }).then((image) => normalizeJournalImage(image));
   },
-  listJournalImages: (accountId: number, entryId: number) =>
-    requestJson<JournalEntryImage[]>(`/api/accounts/${accountId}/journal/${entryId}/images`).then((images) =>
+  listJournalImages: (accountId: number, entryId: number, options: RequestSignalOptions = {}) =>
+    requestJson<JournalEntryImage[]>(`/api/accounts/${accountId}/journal/${entryId}/images`, {
+      signal: options.signal,
+    }).then((images) =>
       images.map((image) => normalizeJournalImage(image)),
     ),
   deleteJournalImage: (accountId: number, entryId: number, imageId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}/images/${imageId}`, {
       method: "DELETE",
-    }).then((result) => {
-      invalidateAccountReadCaches(accountId);
-      return result;
     }),
   pullJournalTradeStats: (accountId: number, entryId: number, body: JournalPullTradeStatsInput = {}) =>
     requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}/pull-trade-stats`, {
       method: "POST",
       body,
     }).then((result) => {
-      invalidateAccountReadCaches(accountId);
+      invalidateAccountJournalCaches(accountId);
       return result;
     }),
 };

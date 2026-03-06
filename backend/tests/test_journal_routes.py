@@ -93,8 +93,8 @@ def test_patch_updates_fields_and_updated_at(db_session):
     )
 
     assert updated["title"] == "Updated title"
-    assert updated["body"] == "Updated body."
     assert updated["tags"] == ["review", "nq"]
+    assert updated["version"] == created["version"] + 1
     assert updated["updated_at"] >= created["updated_at"]
 
 

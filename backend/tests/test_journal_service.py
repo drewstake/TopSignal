@@ -142,6 +142,68 @@ def test_update_journal_entry_enforces_account_scoping(db_session):
         )
 
 
+def test_update_journal_entry_keeps_version_when_no_fields_change(db_session):
+    row, _ = create_journal_entry(
+        db_session,
+        account_id=555,
+        entry_date=date(2026, 2, 20),
+        title="Scoped entry",
+        mood=JournalMood.NEUTRAL,
+        tags=["plan"],
+        body="Body",
+    )
+
+    updated = update_journal_entry(
+        db_session,
+        account_id=555,
+        entry_id=int(row.id),
+        version=1,
+        title="Scoped entry",
+        mood=JournalMood.NEUTRAL,
+        tags=["plan"],
+        body="Body",
+    )
+
+    assert int(updated.version) == 1
+
+
+def test_update_journal_entry_accepts_stale_duplicate_payload_when_server_already_matches(db_session):
+    row, _ = create_journal_entry(
+        db_session,
+        account_id=555,
+        entry_date=date(2026, 2, 20),
+        title="Scoped entry",
+        mood=JournalMood.NEUTRAL,
+        tags=["plan"],
+        body="Body",
+    )
+
+    first_update = update_journal_entry(
+        db_session,
+        account_id=555,
+        entry_id=int(row.id),
+        version=1,
+        title="Updated title",
+        tags=["review", "nq"],
+        body="Updated body",
+    )
+
+    duplicate_update = update_journal_entry(
+        db_session,
+        account_id=555,
+        entry_id=int(row.id),
+        version=1,
+        title="Updated title",
+        tags=["review", "nq"],
+        body="Updated body",
+    )
+
+    assert int(first_update.version) == 2
+    assert int(duplicate_update.version) == 2
+    assert duplicate_update.title == "Updated title"
+    assert duplicate_update.body == "Updated body"
+
+
 def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():
     rows = [
         SimpleNamespace(pnl=100.0, fees=1.0, size=3.0),

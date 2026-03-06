@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { JournalEntry } from "../../lib/types";
 import {
+  applyJournalSaveResultToDraft,
+  applyJournalSaveResultToEntry,
   buildJournalQuery,
   entryToDraft,
   draftToUpdatePayload,
@@ -150,5 +152,118 @@ describe("reconcileDraftWithServerEntry", () => {
     expect(result.replaceBaseline).toBe(true);
     expect(result.nextDraft.version).toBe(5);
     expect(result.nextDraft.body).toBe("first save");
+  });
+});
+
+describe("applyJournalSaveResultToEntry", () => {
+  it("merges the lean save response into the existing entry without losing the saved body", () => {
+    const entry = {
+      id: 21,
+      account_id: 13001,
+      entry_date: "2026-03-02",
+      title: "Session",
+      mood: "Neutral",
+      tags: ["nq"],
+      body: "before save",
+      version: 5,
+      stats_source: "trade_snapshot",
+      stats_json: {
+        trade_count: 1,
+        total_pnl: 10,
+        total_fees: 2,
+        win_rate: 100,
+        avg_win: 8,
+        avg_loss: 0,
+        largest_win: 8,
+        largest_loss: 0,
+        gross: 10,
+        net: 8,
+        net_realized_pnl: 8,
+      },
+      stats_pulled_at: "2026-03-02T10:02:00.000Z",
+      is_archived: false,
+      created_at: "2026-03-02T10:00:00.000Z",
+      updated_at: "2026-03-02T10:01:00.000Z",
+    } satisfies JournalEntry;
+
+    const nextEntry = applyJournalSaveResultToEntry({
+      entry,
+      patch: {
+        title: "Trimmed title",
+        mood: "Focused",
+        tags: ["nq", "discipline"],
+        body: "latest body",
+        is_archived: false,
+      },
+      result: {
+        id: 21,
+        account_id: 13001,
+        entry_date: "2026-03-02",
+        title: "Trimmed title",
+        mood: "Focused",
+        tags: ["nq", "discipline"],
+        version: 6,
+        is_archived: false,
+        updated_at: "2026-03-02T10:03:00.000Z",
+      },
+    });
+
+    expect(nextEntry.body).toBe("latest body");
+    expect(nextEntry.stats_json).toEqual({
+      trade_count: 1,
+      total_pnl: 10,
+      total_fees: 2,
+      win_rate: 100,
+      avg_win: 8,
+      avg_loss: 0,
+      largest_win: 8,
+      largest_loss: 0,
+      gross: 10,
+      net: 8,
+      net_realized_pnl: 8,
+    });
+    expect(nextEntry.version).toBe(6);
+  });
+});
+
+describe("applyJournalSaveResultToDraft", () => {
+  it("updates the local draft version from the lean save response", () => {
+    const nextDraft = applyJournalSaveResultToDraft({
+      draft: {
+        title: "Session",
+        mood: "Neutral",
+        tagsInput: "nq",
+        body: "latest body",
+        version: 5,
+        is_archived: false,
+      },
+      patch: {
+        title: "Trimmed title",
+        mood: "Focused",
+        tags: ["nq", "discipline"],
+        body: "latest body",
+        is_archived: false,
+      },
+      result: {
+        id: 21,
+        account_id: 13001,
+        entry_date: "2026-03-02",
+        title: "Trimmed title",
+        mood: "Focused",
+        tags: ["nq", "discipline"],
+        version: 6,
+        is_archived: false,
+        updated_at: "2026-03-02T10:03:00.000Z",
+      },
+    });
+
+    expect(nextDraft).toEqual({
+      title: "Trimmed title",
+      mood: "Focused",
+      tagsInput: "nq, discipline",
+      body: "latest body",
+      version: 6,
+      is_archived: false,
+    });
   });
 });

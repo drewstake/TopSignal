@@ -26,6 +26,8 @@ import { JournalEditor } from "./components/JournalEditor";
 import { JournalList } from "./components/JournalList";
 import { getVersionConflictServerEntry } from "./journalConflict";
 import {
+  applyJournalSaveResultToDraft,
+  applyJournalSaveResultToEntry,
   buildJournalQuery,
   draftToUpdatePayload,
   entryToDraft,
@@ -53,6 +55,10 @@ function parseJournalDateParam(value: string | null): string | null {
     return null;
   }
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function draftToAutosavePatch(draft: JournalDraft): JournalAutosavePatch {
@@ -217,6 +223,7 @@ export function JournalPage() {
   const includeArchivedRef = useRef(includeArchived);
   const handledDateKeyRef = useRef<string | null>(null);
   const entriesRequestVersionRef = useRef(0);
+  const imagesRequestVersionRef = useRef(0);
 
   imagesRef.current = images;
   includeArchivedRef.current = includeArchived;
@@ -319,12 +326,13 @@ export function JournalPage() {
     await autosaveRef.current.flush();
   }, []);
 
-  const loadEntries = useCallback(async () => {
+  const loadEntries = useCallback(async (signal?: AbortSignal) => {
     const requestVersion = entriesRequestVersionRef.current + 1;
     entriesRequestVersionRef.current = requestVersion;
     if (!selectedAccountId) {
       setEntries([]);
       setTotalEntries(0);
+      setLoadingEntries(false);
       setEntriesError(null);
       setSelectedId(null);
       return;
@@ -335,7 +343,10 @@ export function JournalPage() {
 
     try {
       await flushAutosave();
-      const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery);
+      if (signal?.aborted || requestVersion !== entriesRequestVersionRef.current) {
+        return;
+      }
+      const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery, { signal });
       if (requestVersion !== entriesRequestVersionRef.current) {
         return;
       }
@@ -354,6 +365,9 @@ export function JournalPage() {
         return payload.items[0]?.id ?? null;
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
       if (requestVersion !== entriesRequestVersionRef.current) {
         return;
       }
@@ -369,7 +383,11 @@ export function JournalPage() {
   }, [dateFromQuery, flushAutosave, listQuery, selectedAccountId]);
 
   useEffect(() => {
-    void loadEntries();
+    const controller = new AbortController();
+    void loadEntries(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [loadEntries]);
 
   useEffect(() => {
@@ -397,20 +415,33 @@ export function JournalPage() {
 
         setConflictServerEntry(null);
         setEntries((currentEntries) => {
-          const hasEntry = currentEntries.some((entry) => entry.id === updated.id);
-          if (!hasEntry) {
-            return currentEntries;
-          }
           if (updated.is_archived && !includeArchivedRef.current) {
             return currentEntries.filter((entry) => entry.id !== updated.id);
           }
-          return currentEntries.map((entry) => (entry.id === updated.id ? updated : entry));
+          let changed = false;
+          const nextEntries = currentEntries.map((entry) => {
+            if (entry.id !== updated.id) {
+              return entry;
+            }
+            changed = true;
+            return applyJournalSaveResultToEntry({
+              entry,
+              patch: payload.patch,
+              result: updated,
+            });
+          });
+          return changed ? nextEntries : currentEntries;
         });
         setTotalEntries((currentTotal) =>
           updated.is_archived && !includeArchivedRef.current ? Math.max(0, currentTotal - 1) : currentTotal,
         );
 
-        selectedEntryVersionRef.current = updated.version;
+        if (
+          selectedAccountIdRef.current === updated.account_id &&
+          selectedEntryIdRef.current === updated.id
+        ) {
+          selectedEntryVersionRef.current = updated.version;
+        }
 
         const currentDraft = draftRef.current;
         if (!currentDraft) {
@@ -419,7 +450,11 @@ export function JournalPage() {
 
         const currentPatch = draftToAutosavePatch(currentDraft);
         if (journalAutosavePatchEquals(currentPatch, payload.patch)) {
-          const normalizedDraft = entryToDraft(updated);
+          const normalizedDraft = applyJournalSaveResultToDraft({
+            draft: currentDraft,
+            patch: payload.patch,
+            result: updated,
+          });
           setDraft(normalizedDraft);
           draftRef.current = normalizedDraft;
           return;
@@ -485,9 +520,12 @@ export function JournalPage() {
     };
   }, [flushAutosave, selectedAccountId]);
 
-  const loadEntryImages = useCallback(async () => {
+  const loadEntryImages = useCallback(async (signal?: AbortSignal) => {
+    const requestVersion = imagesRequestVersionRef.current + 1;
+    imagesRequestVersionRef.current = requestVersion;
     if (!selectedAccountId || !selectedEntry?.id) {
       setImages([]);
+      setImagesLoading(false);
       setImagesError(null);
       return;
     }
@@ -496,18 +534,33 @@ export function JournalPage() {
     setImagesError(null);
 
     try {
-      const rows = await accountsApi.listJournalImages(selectedAccountId, selectedEntry.id);
+      const rows = await accountsApi.listJournalImages(selectedAccountId, selectedEntry.id, { signal });
+      if (requestVersion !== imagesRequestVersionRef.current) {
+        return;
+      }
       setImages(rows);
     } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
+      if (requestVersion !== imagesRequestVersionRef.current) {
+        return;
+      }
       setImages([]);
       setImagesError(err instanceof Error ? err.message : "Failed to load images");
     } finally {
-      setImagesLoading(false);
+      if (requestVersion === imagesRequestVersionRef.current) {
+        setImagesLoading(false);
+      }
     }
   }, [selectedAccountId, selectedEntry?.id]);
 
   useEffect(() => {
-    void loadEntryImages();
+    const controller = new AbortController();
+    void loadEntryImages(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [loadEntryImages]);
 
   const commitDraft = useCallback((nextDraft: JournalDraft) => {
