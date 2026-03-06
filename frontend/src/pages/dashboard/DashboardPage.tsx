@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { CopyFullStatsButton, type CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
+import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
 import { Chip } from "../../components/metrics/Chip";
 import { DonutRing } from "../../components/metrics/DonutRing";
 import { GaugeBar } from "../../components/metrics/GaugeBar";
@@ -14,6 +14,7 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
+import { Skeleton } from "../../components/ui/Skeleton";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -37,10 +38,18 @@ import {
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
-import { DailyAccountBalanceCard } from "./components/DailyAccountBalanceCard";
-import { PnlCalendarCard } from "./components/PnlCalendarCard";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
+
+const CopyFullStatsButton = lazy(() =>
+  import("../../components/dashboard/CopyFullStatsButton").then((module) => ({ default: module.CopyFullStatsButton })),
+);
+const DailyAccountBalanceCard = lazy(() =>
+  import("./components/DailyAccountBalanceCard").then((module) => ({ default: module.DailyAccountBalanceCard })),
+);
+const PnlCalendarCard = lazy(() =>
+  import("./components/PnlCalendarCard").then((module) => ({ default: module.PnlCalendarCard })),
+);
 
 const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
@@ -250,6 +259,28 @@ function formatFullStatsRangeLabel(startDay: string, endDay: string) {
   return `${startWithYear} to ${endWithYear}`;
 }
 
+function DeferredDashboardCardSkeleton({
+  title,
+  description,
+  bodyHeightClassName,
+}: {
+  title: string;
+  description: string;
+  bodyHeightClassName: string;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Skeleton className={cn("w-full", bodyHeightClassName)} />
+      </CardContent>
+    </Card>
+  );
+}
+
 function subtractUtcMonths(value: Date, months: number) {
   const monthIndex = value.getUTCFullYear() * 12 + value.getUTCMonth() - months;
   const targetYear = Math.floor(monthIndex / 12);
@@ -425,6 +456,7 @@ export function DashboardPage() {
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
+  const canReuseMetricsTradesForRecentTrades = selectedTradeDate === null && metricsRangeQuery.allTime;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
   const dashboardLoadPerfRef = useRef<{
     accountId: number;
@@ -513,6 +545,13 @@ export function DashboardPage() {
       return;
     }
 
+    if (canReuseMetricsTradesForRecentTrades) {
+      setTrades([]);
+      setTradesError(null);
+      setTradesLoading(false);
+      return;
+    }
+
     setTradesLoading(true);
     setTradesError(null);
 
@@ -528,7 +567,7 @@ export function DashboardPage() {
     } finally {
       setTradesLoading(false);
     }
-  }, [selectedAccountId, selectedTradeDate]);
+  }, [canReuseMetricsTradesForRecentTrades, selectedAccountId, selectedTradeDate]);
 
   const loadJournalDays = useCallback(async () => {
     if (!selectedAccountId || !calendarVisibleRange) {
@@ -1019,6 +1058,10 @@ export function DashboardPage() {
 
     return "selected range";
   }, [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays]);
+  const recentTrades = canReuseMetricsTradesForRecentTrades ? metricsTrades.slice(0, TRADE_LIMIT) : trades;
+  const recentTradesLoading = canReuseMetricsTradesForRecentTrades ? metricsTradesLoading : tradesLoading;
+  const recentTradesError =
+    canReuseMetricsTradesForRecentTrades && metricsTradesError !== null ? "Failed to load recent trade events." : tradesError;
   const copyFullStatsMetrics = useMemo<CopyFullStatsMetrics>(
     () => ({
       summary,
@@ -1254,13 +1297,15 @@ export function DashboardPage() {
                 );
               })}
             </div>
-            <CopyFullStatsButton
-              metrics={copyFullStatsMetrics}
-              rangeLabel={fullStatsRangeLabel}
-              calendarDays={pnlCalendarDays}
-              disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
-              className="h-8 rounded-lg px-2.5 text-[11px]"
-            />
+            <Suspense fallback={<Skeleton className="h-8 w-32 rounded-lg" />}>
+              <CopyFullStatsButton
+                metrics={copyFullStatsMetrics}
+                rangeLabel={fullStatsRangeLabel}
+                calendarDays={pnlCalendarDays}
+                disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
+                className="h-8 rounded-lg px-2.5 text-[11px]"
+              />
+            </Suspense>
           </div>
         </div>
         {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
@@ -1984,25 +2029,45 @@ export function DashboardPage() {
         )}
       </MasonryGrid>
 
-      <DailyAccountBalanceCard
-        days={pnlCalendarDays}
-        loading={pnlCalendarLoading}
-        error={pnlCalendarError}
-        currentBalance={selectedAccount?.balance ?? null}
-      />
+      <Suspense
+        fallback={
+          <DeferredDashboardCardSkeleton
+            title="Account Balance"
+            description="Loading the daily balance view."
+            bodyHeightClassName="h-[360px]"
+          />
+        }
+      >
+        <DailyAccountBalanceCard
+          days={pnlCalendarDays}
+          loading={pnlCalendarLoading}
+          error={pnlCalendarError}
+          currentBalance={selectedAccount?.balance ?? null}
+        />
+      </Suspense>
 
-      <PnlCalendarCard
-        days={pnlCalendarDays}
-        loading={pnlCalendarLoading}
-        error={pnlCalendarError}
-        journalDays={journalDays}
-        journalDaysLoading={journalDaysLoading}
-        selectedDate={selectedTradeDate}
-        onDaySelect={setSelectedTradeDate}
-        onJournalDayOpen={openJournalForDate}
-        onAddJournalForSelectedDay={openJournalForDate}
-        onVisibleRangeChange={handleCalendarVisibleRangeChange}
-      />
+      <Suspense
+        fallback={
+          <DeferredDashboardCardSkeleton
+            title="PnL Calendar"
+            description="Loading calendar performance and journal markers."
+            bodyHeightClassName="h-[520px]"
+          />
+        }
+      >
+        <PnlCalendarCard
+          days={pnlCalendarDays}
+          loading={pnlCalendarLoading}
+          error={pnlCalendarError}
+          journalDays={journalDays}
+          journalDaysLoading={journalDaysLoading}
+          selectedDate={selectedTradeDate}
+          onDaySelect={setSelectedTradeDate}
+          onJournalDayOpen={openJournalForDate}
+          onAddJournalForSelectedDay={openJournalForDate}
+          onVisibleRangeChange={handleCalendarVisibleRangeChange}
+        />
+      </Suspense>
 
       <Card>
         <CardHeader className="flex flex-wrap items-start justify-between gap-3">
@@ -2038,26 +2103,26 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70">
-                {tradesLoading ? (
+                {recentTradesLoading ? (
                   <tr>
                     <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
                       Loading trades...
                     </td>
                   </tr>
-                ) : tradesError ? (
+                ) : recentTradesError ? (
                   <tr>
                     <td colSpan={10} className="px-2 py-4 text-center text-rose-300">
-                      {tradesError}
+                      {recentTradesError}
                     </td>
                   </tr>
-                ) : trades.length === 0 ? (
+                ) : recentTrades.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
                       No trades available.
                     </td>
                   </tr>
                 ) : (
-                  trades.map((trade) => {
+                  recentTrades.map((trade) => {
                     const pnlValue = trade.pnl ?? 0;
                     const direction = formatTradeDirection(trade.side);
                     const entryTime = trade.entry_time;

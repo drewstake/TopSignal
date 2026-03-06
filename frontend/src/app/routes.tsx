@@ -1,10 +1,22 @@
+import { lazy } from "react";
 import { Navigate, createBrowserRouter } from "react-router-dom";
 import { AppShell } from "./AppShell";
-import { AccountsPage } from "../pages/accounts/AccountsPage";
-import { DashboardPage } from "../pages/dashboard/DashboardPage";
-import { ExpensesPage } from "../pages/expenses/ExpensesPage";
-import { JournalPage } from "../pages/journal/JournalPage";
-import { TradesPage } from "../pages/trades/TradesPage";
+
+const DashboardPage = lazy(() =>
+  import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
+);
+const AccountsPage = lazy(() =>
+  import("../pages/accounts/AccountsPage").then((module) => ({ default: module.AccountsPage })),
+);
+const TradesPage = lazy(() =>
+  import("../pages/trades/TradesPage").then((module) => ({ default: module.TradesPage })),
+);
+const ExpensesPage = lazy(() =>
+  import("../pages/expenses/ExpensesPage").then((module) => ({ default: module.ExpensesPage })),
+);
+const JournalPage = lazy(() =>
+  import("../pages/journal/JournalPage").then((module) => ({ default: module.JournalPage })),
+);
 
 export const router = createBrowserRouter([
   {

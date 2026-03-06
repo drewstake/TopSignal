@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
+import { Skeleton } from "../components/ui/Skeleton";
 import { Tabs } from "../components/ui/Tabs";
 import { cn } from "../components/ui/cn";
 import {
@@ -18,6 +19,22 @@ import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
+
+function AppShellRouteFallback() {
+  return (
+    <div className="space-y-5 pb-8">
+      <div className="space-y-2">
+        <Skeleton className="h-9 w-full max-w-[520px]" />
+        <Skeleton className="h-4 w-56" />
+      </div>
+      <div className="grid gap-5 lg:grid-cols-3">
+        <Skeleton className="h-56 w-full" />
+        <Skeleton className="h-56 w-full lg:col-span-2" />
+      </div>
+      <Skeleton className="h-80 w-full" />
+    </div>
+  );
+}
 
 export function AppShell() {
   const location = useLocation();
@@ -228,7 +245,9 @@ export function AppShell() {
           isTradesRoute ? "lg:flex lg:min-h-0 lg:overflow-hidden" : "",
         )}
       >
-        <Outlet />
+        <Suspense fallback={<AppShellRouteFallback />}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   );
