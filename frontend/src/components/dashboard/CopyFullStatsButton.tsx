@@ -39,6 +39,7 @@ const moneyFormatter = new Intl.NumberFormat("en-US", {
 const decimalFormatterByDigits = new Map<number, Intl.NumberFormat>();
 
 const POINT_BASES = ["MNQ", "MES", "MGC", "SIL"] as const;
+const DISPLAY_POINT_BASES = ["MNQ", "MES"] as const;
 
 type PointBasis = (typeof POINT_BASES)[number];
 
@@ -528,7 +529,7 @@ export function buildFullStatsText({ metrics, rangeLabel, calendarDays = [] }: B
     ),
     "",
     "Points Payoff By Basis",
-    ...POINT_BASES.map((basis) =>
+    ...DISPLAY_POINT_BASES.map((basis) =>
       buildLine(
         basis,
         `Avg Point Gain ${formatPointValue(metrics.payoff.pointPayoffByBasis[basis].avgPointGain, basis)} | Avg Point Loss ${formatPointValue(

@@ -237,8 +237,6 @@ PAYOFF
 Points Payoff By Basis
 • MNQ: Avg Point Gain 31.76 pts | Avg Point Loss 14.87 pts
 • MES: Avg Point Gain N/A | Avg Point Loss N/A
-• MGC: Avg Point Gain N/A | Avg Point Loss N/A
-• SIL: Avg Point Gain N/A | Avg Point Loss N/A
 
 ACTIVITY
 • Active Days: 3

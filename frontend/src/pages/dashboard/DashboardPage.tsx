@@ -49,6 +49,7 @@ type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
 type PointsBasis = "auto" | "MNQ" | "MES" | "MGC" | "SIL";
 type ConcretePointsBasis = Exclude<PointsBasis, "auto">;
 const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "MGC", "SIL"];
+const DISPLAY_PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES"];
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -1762,7 +1763,7 @@ export function DashboardPage() {
                     <span className="text-right">Avg Point Gain</span>
                     <span className="text-right">Avg Point Loss</span>
                   </div>
-                  {PAYOFF_POINTS_BASES.map((basis) => (
+                  {DISPLAY_PAYOFF_POINTS_BASES.map((basis) => (
                     <div
                       key={basis}
                       className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] border-t border-slate-800/65 px-2 py-1 text-[10px]"
