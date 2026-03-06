@@ -6,7 +6,6 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
-import { Toggle } from "../../components/ui/Toggle";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -21,7 +20,6 @@ import type {
   JournalEntry,
   JournalEntryImage,
   JournalEntryUpdateInput,
-  JournalPullTradeStatsInput,
 } from "../../lib/types";
 import { DebouncedAutosaveQueue, type JournalSaveState } from "./journalAutosave";
 import { JournalEditor } from "./components/JournalEditor";
@@ -31,7 +29,6 @@ import {
   buildJournalQuery,
   entryToDraft,
   getTodayTradingDateIso,
-  getYesterdayTradingDateIso,
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
   parseTagsInput,
@@ -109,27 +106,6 @@ function upsertEntry(entries: JournalEntry[], nextEntry: JournalEntry): JournalE
   return entries.map((entry) => (entry.id === nextEntry.id ? nextEntry : entry));
 }
 
-const journalDateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-});
-
-function formatJournalDate(value: string) {
-  return journalDateFormatter.format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function OverviewTile({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="rounded-2xl border border-slate-800/80 bg-slate-950/40 px-4 py-3 shadow-panel">
-      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
-      <p className="mt-2 text-sm font-semibold text-slate-100">{value}</p>
-      <p className="mt-1 text-xs text-slate-400">{detail}</p>
-    </div>
-  );
-}
-
 function FilterField({
   label,
   children,
@@ -138,8 +114,8 @@ function FilterField({
   children: ReactNode;
 }) {
   return (
-    <label className="block space-y-2">
-      <span className="text-xs uppercase tracking-[0.14em] text-slate-500">{label}</span>
+    <label className="block space-y-1.5">
+      <span className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</span>
       {children}
     </label>
   );
@@ -206,15 +182,13 @@ export function JournalPage() {
   const [imagesError, setImagesError] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
 
-  const [pullingStats, setPullingStats] = useState(false);
-  const [pullStatsError, setPullStatsError] = useState<string | null>(null);
   const [conflictServerEntry, setConflictServerEntry] = useState<JournalEntry | null>(null);
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [moodFilter, setMoodFilter] = useState<JournalMoodFilter>("ALL");
   const [queryText, setQueryText] = useState("");
-  const [includeArchived, setIncludeArchived] = useState(false);
+  const [includeArchived] = useState(false);
   const [page, setPage] = useState(1);
 
   const autosaveRef = useRef<DebouncedAutosaveQueue<QueuedJournalSave> | null>(null);
@@ -689,44 +663,6 @@ export function JournalPage() {
     [selectedAccountId, selectedEntry],
   );
 
-  const handlePullTradeStats = useCallback(async () => {
-    if (!selectedAccountId || !selectedEntry) {
-      return;
-    }
-
-    setPullingStats(true);
-    setPullStatsError(null);
-
-    try {
-      await flushAutosave();
-      const payload: JournalPullTradeStatsInput = {};
-      if (startDate) {
-        payload.start_date = startDate;
-      }
-      if (endDate) {
-        payload.end_date = endDate;
-      }
-      if (!payload.start_date && !payload.end_date) {
-        payload.entry_date = selectedEntry.entry_date;
-      }
-
-      const updated = await accountsApi.pullJournalTradeStats(selectedAccountId, selectedEntry.id, payload);
-
-      setEntries((currentEntries) => currentEntries.map((entry) => (entry.id === updated.id ? updated : entry)));
-      selectedEntryVersionRef.current = updated.version;
-
-      const nextDraft = entryToDraft(updated);
-      setDraft(nextDraft);
-      draftRef.current = nextDraft;
-      autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, updated.id, nextDraft));
-      setConflictServerEntry(null);
-    } catch (err) {
-      setPullStatsError(err instanceof Error ? err.message : "Failed to pull trade stats");
-    } finally {
-      setPullingStats(false);
-    }
-  }, [endDate, flushAutosave, selectedAccountId, selectedEntry, startDate]);
-
   const handleDeleteEntry = useCallback(async () => {
     if (!selectedAccountId || !selectedEntry) {
       return;
@@ -767,30 +703,6 @@ export function JournalPage() {
 
   const moodOptions: Array<JournalMoodFilter> = ["ALL", "Focused", "Neutral", "Frustrated", "Confident"];
 
-  const canGoPrev = currentPage > 1;
-  const canGoNext = currentPage < totalPages;
-  const hasSearchQuery = queryText.trim().length > 0;
-  const hasActiveFilters = startDate !== "" || endDate !== "" || moodFilter !== "ALL" || hasSearchQuery || includeArchived;
-  const activeFilters = [
-    startDate ? `From ${formatJournalDate(startDate)}` : null,
-    endDate ? `To ${formatJournalDate(endDate)}` : null,
-    moodFilter !== "ALL" ? moodFilter : null,
-    hasSearchQuery ? `Search: ${queryText.trim()}` : null,
-    includeArchived ? "Archived included" : null,
-  ].filter((value): value is string => Boolean(value));
-  const entriesWithSnapshotsCount = entries.filter((entry) => entry.stats_json !== null).length;
-  const visibleRangeStart = totalEntries === 0 ? 0 : offset + 1;
-  const visibleRangeEnd = totalEntries === 0 ? 0 : offset + entries.length;
-
-  const handleClearFilters = () => {
-    setStartDate("");
-    setEndDate("");
-    setMoodFilter("ALL");
-    setQueryText("");
-    setIncludeArchived(false);
-    setPage(1);
-  };
-
   if (!selectedAccountId && !loadingEntries) {
     return (
       <Card className="max-w-2xl">
@@ -812,65 +724,42 @@ export function JournalPage() {
 
   return (
     <div className="space-y-5 pb-10">
-      <section className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="accent">Journal</Badge>
-            {selectedAccount ? (
-              <span className="rounded-full border border-slate-800/80 bg-slate-950/45 px-3 py-1 text-xs text-slate-300">
-                {selectedAccount.name}
-              </span>
-            ) : null}
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-50">Trading Journal</h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-400">
-              Capture execution notes, emotional context, and trade snapshots in a clean review workflow for the
-              active account.
-            </p>
-          </div>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="accent">Journal</Badge>
+          {selectedAccount ? (
+            <span className="rounded-full border border-slate-800/80 bg-slate-950/45 px-3 py-1 text-xs text-slate-300">
+              {selectedAccount.name}
+            </span>
+          ) : null}
         </div>
-
-        <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[460px]">
-          <OverviewTile
-            label="Matches"
-            value={`${totalEntries}`}
-            detail={totalEntries === 0 ? "No entries match the current filters." : `Page ${currentPage} of ${totalPages}`}
-          />
-          <OverviewTile
-            label="Selected"
-            value={selectedEntry?.title || "No selection"}
-            detail={selectedEntry ? formatJournalDate(selectedEntry.entry_date) : "Pick an entry to start reviewing."}
-          />
-          <OverviewTile
-            label="Snapshots"
-            value={`${entriesWithSnapshotsCount}/${entries.length}`}
-            detail="Entries on this page with saved trade stats."
-          />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-50">Trading Journal</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-400">
+            Capture execution notes, emotional context, and trade snapshots in a clean review workflow for the
+            active account.
+          </p>
         </div>
       </section>
 
       <Card>
-        <CardHeader className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div>
-            <CardTitle>Filters and Quick Actions</CardTitle>
-            <CardDescription>Refine the list, jump between dates, and create new journal entries quickly.</CardDescription>
+        <CardHeader className="mb-3 flex items-center justify-between gap-3 space-y-0">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <CardTitle>Filters and Quick Actions</CardTitle>
+              <CardDescription className="text-[11px] leading-5">
+                Refine entries and create new ones.
+              </CardDescription>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => void handleCreateEntry(getYesterdayTradingDateIso())}
-              disabled={creatingEntry || !selectedAccountId}
-            >
-              New Yesterday
-            </Button>
-            <Button onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button size="sm" onClick={() => void handleCreateEntry()} disabled={creatingEntry || !selectedAccountId}>
               {creatingEntry ? "Creating..." : "New Today"}
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))]">
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[150px_150px_160px_minmax(220px,1fr)]">
             <FilterField label="Start Date">
               <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
             </FilterField>
@@ -895,35 +784,6 @@ export function JournalPage() {
             </FilterField>
           </div>
 
-          <div className="rounded-2xl border border-slate-800/80 bg-slate-950/35 p-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Active Filters</p>
-                <div className="flex flex-wrap gap-2">
-                  {activeFilters.length > 0 ? (
-                    activeFilters.map((filter) => (
-                      <span
-                        key={filter}
-                        className="rounded-full border border-slate-700/80 bg-slate-900/70 px-3 py-1 text-xs text-slate-300"
-                      >
-                        {filter}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-slate-400">No filters applied. Showing the most recent entries.</span>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <Toggle checked={includeArchived} onChange={setIncludeArchived} label="Include archived" />
-                <Button variant="ghost" size="sm" onClick={handleClearFilters} disabled={!hasActiveFilters}>
-                  Clear Filters
-                </Button>
-              </div>
-            </div>
-          </div>
-
           {entriesError ? <InlineMessage tone="error">{entriesError}</InlineMessage> : null}
           {entriesInfo ? <InlineMessage tone="info">{entriesInfo}</InlineMessage> : null}
         </CardContent>
@@ -941,43 +801,6 @@ export function JournalPage() {
               onSelect={(id) => void handleSelectEntry(id)}
             />
           )}
-
-          <Card>
-            <CardContent className="space-y-4 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Results Window</p>
-                  <p className="mt-1 text-sm font-medium text-slate-100">
-                    {totalEntries === 0 ? "No entries to show" : `Showing ${visibleRangeStart}-${visibleRangeEnd} of ${totalEntries}`}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-slate-800/80 bg-slate-950/45 px-3 py-2 text-xs text-slate-400">
-                  Page {currentPage} / {totalPages}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <Button
-                  className="flex-1"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                  disabled={!canGoPrev}
-                >
-                  Previous
-                </Button>
-                <Button
-                  className="flex-1"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-                  disabled={!canGoNext}
-                >
-                  Next
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
         </div>
 
         <div className="min-w-0">
@@ -991,8 +814,6 @@ export function JournalPage() {
             imagesLoading={imagesLoading}
             imagesError={imagesError}
             uploadingImage={uploadingImage}
-            pullingStats={pullingStats}
-            pullStatsError={pullStatsError}
             deletingEntry={deletingEntry}
             onDraftChange={handleDraftChange}
             onArchiveToggle={() => void handleArchiveToggle()}
@@ -1000,7 +821,6 @@ export function JournalPage() {
             onReloadServerVersion={handleReloadServerVersion}
             onUploadImage={(file) => void handleUploadImage(file)}
             onDeleteImage={(imageId) => void handleDeleteImage(imageId)}
-            onPullTradeStats={() => void handlePullTradeStats()}
             onDeleteEntry={() => void handleDeleteEntry()}
           />
         </div>

@@ -41,20 +41,23 @@ function buildPreview(body: string) {
   if (!normalized) {
     return "No notes added yet.";
   }
-  return normalized.length > 140 ? `${normalized.slice(0, 140).trimEnd()}...` : normalized;
+  return normalized.length > 96 ? `${normalized.slice(0, 96).trimEnd()}...` : normalized;
 }
 
 export function JournalList({ entries, selectedId, totalEntries, onSelect }: JournalListProps) {
   return (
     <Card className="h-full">
-      <CardHeader className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <CardTitle>Journal Entries</CardTitle>
-          <CardDescription>Review session notes, mood, tags, and saved trade snapshots.</CardDescription>
+      <CardHeader className="mb-3 flex items-center justify-between gap-3 space-y-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <CardTitle className="shrink-0">Journal Entries</CardTitle>
+            <CardDescription className="truncate text-[11px] leading-5">
+              Review notes, mood, tags, and snapshots.
+            </CardDescription>
+          </div>
         </div>
-        <div className="rounded-xl border border-slate-800/80 bg-slate-950/45 px-3 py-2 text-right">
-          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Matches</p>
-          <p className="text-lg font-semibold text-slate-100">{totalEntries}</p>
+        <div className="shrink-0 rounded-full border border-slate-800/80 bg-slate-950/45 px-2.5 py-1 text-[11px] text-slate-400">
+          Matches <span className="ml-1 font-semibold text-slate-100">{totalEntries}</span>
         </div>
       </CardHeader>
       <CardContent className="space-y-0">
@@ -64,7 +67,7 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
             <p className="mt-2 text-sm text-slate-400">Adjust the search or date range, or create a new journal entry.</p>
           </div>
         ) : (
-          <div className="space-y-3 xl:max-h-[calc(100vh-24rem)] xl:overflow-y-auto xl:pr-1">
+          <div className="space-y-2.5 xl:max-h-[calc(100vh-24rem)] xl:overflow-y-auto xl:pr-1">
             {entries.map((entry) => {
               const isActive = selectedId === entry.id;
               const preview = buildPreview(entry.body);
@@ -79,19 +82,35 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
                   key={entry.id}
                   onClick={() => onSelect(entry.id)}
                   className={cn(
-                    "group w-full rounded-2xl border px-4 py-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60",
+                    "group w-full rounded-xl border px-3 py-2.5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60",
                     isActive
                       ? "border-cyan-400/60 bg-cyan-500/10 shadow-[0_12px_30px_-24px_rgba(34,211,238,0.9)]"
                       : "border-slate-800/90 bg-slate-950/35 hover:border-slate-700 hover:bg-slate-900/70",
                   )}
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0 space-y-1.5">
                       <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-500">
                         <span>{formatEntryDate(entry.entry_date)}</span>
-                        {stats ? <span className="text-cyan-300/80">Snapshot saved</span> : null}
                       </div>
-                      <p className="truncate text-sm font-semibold text-slate-100">{entry.title || "Untitled entry"}</p>
+                      <p className="truncate text-[13px] font-semibold text-slate-100">{entry.title || "Untitled entry"}</p>
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <span className="rounded-full border border-slate-700/80 bg-slate-950/45 px-2 py-0.5 text-slate-400">
+                          {stats?.trade_count ?? 0} trades
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 font-medium",
+                            statsNet === null
+                              ? "border-slate-700/80 bg-slate-950/45 text-slate-300"
+                              : statsNet >= 0
+                                ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                                : "border-rose-400/30 bg-rose-500/10 text-rose-300",
+                          )}
+                        >
+                          {statsNet === null ? "Not pulled" : `${statsNet > 0 ? "+" : ""}${formatCurrency(statsNet)}`}
+                        </span>
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       <Badge variant={moodVariant[entry.mood]}>{entry.mood}</Badge>
@@ -99,43 +118,27 @@ export function JournalList({ entries, selectedId, totalEntries, onSelect }: Jou
                     </div>
                   </div>
 
-                  <p className="mt-3 text-sm leading-6 text-slate-300">{preview}</p>
+                  <p className="mt-2 text-xs leading-5 text-slate-300">{preview}</p>
 
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     {visibleTags.map((tag) => (
                       <span
                         key={tag}
-                        className="rounded-full border border-slate-700/80 bg-slate-900/70 px-2.5 py-1 text-[11px] text-slate-300"
+                        className="rounded-full border border-slate-700/80 bg-slate-900/70 px-2 py-0.5 text-[10px] text-slate-300"
                       >
                         #{tag}
                       </span>
                     ))}
                     {hiddenTagCount > 0 ? (
-                      <span className="rounded-full border border-slate-700/80 bg-slate-900/50 px-2.5 py-1 text-[11px] text-slate-400">
+                      <span className="rounded-full border border-slate-700/80 bg-slate-900/50 px-2 py-0.5 text-[10px] text-slate-400">
                         +{hiddenTagCount} more
                       </span>
                     ) : null}
                     {entry.tags.length === 0 ? (
-                      <span className="text-[11px] text-slate-500">No tags</span>
+                      <span className="text-[10px] text-slate-500">No tags</span>
                     ) : null}
                   </div>
 
-                  <div className="mt-3 grid gap-2 rounded-xl border border-slate-800/80 bg-slate-950/45 px-3 py-2 text-xs text-slate-400 sm:grid-cols-3">
-                    <div>
-                      <p className="uppercase tracking-[0.14em] text-slate-500">Updated</p>
-                      <p className="mt-1 text-sm text-slate-200">{new Date(entry.updated_at).toLocaleDateString("en-US")}</p>
-                    </div>
-                    <div>
-                      <p className="uppercase tracking-[0.14em] text-slate-500">Trades</p>
-                      <p className="mt-1 text-sm text-slate-200">{stats?.trade_count ?? 0}</p>
-                    </div>
-                    <div>
-                      <p className="uppercase tracking-[0.14em] text-slate-500">Net PnL</p>
-                      <p className={cn("mt-1 text-sm font-medium", statsNet === null ? "text-slate-300" : statsNet >= 0 ? "text-emerald-300" : "text-rose-300")}>
-                        {statsNet === null ? "Not pulled" : `${statsNet > 0 ? "+" : ""}${formatCurrency(statsNet)}`}
-                      </p>
-                    </div>
-                  </div>
                 </button>
               );
             })}
