@@ -3,7 +3,7 @@ import os
 from datetime import date
 
 import pytest
-from fastapi import Response
+from fastapi import BackgroundTasks, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -16,15 +16,17 @@ from app.journal_schemas import JournalEntryCreateIn, JournalEntryUpdateIn, Jour
 from app.main import (
     create_projectx_account_journal_entry,
     delete_projectx_account_journal_entry,
+    delete_projectx_account_journal_image,
     update_projectx_account_journal_entry,
 )
 from app.models import JournalEntry, JournalEntryImage
-from app.services.journal import create_journal_entry_image
+from app.services.journal import create_journal_entry_image, get_journal_image_file_path
 
 
 @pytest.fixture()
 def db_session(tmp_path, monkeypatch):
     monkeypatch.setenv("JOURNAL_IMAGE_STORAGE_DIR", str(tmp_path / "journal-images"))
+    monkeypatch.setenv("JOURNAL_IMAGE_STORAGE_BACKEND", "local")
 
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -178,3 +180,47 @@ def test_image_upload_validation_rejects_invalid_mime_and_large_files(db_session
             file_bytes=b"0" * (10 * 1024 * 1024 + 1),
             mime_type="image/png",
         )
+
+
+def test_delete_image_route_queues_file_cleanup_in_background(db_session):
+    created = create_projectx_account_journal_entry(
+        account_id=13015,
+        payload=JournalEntryCreateIn(
+            entry_date=date(2026, 2, 22),
+            title="Delete image",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="Body",
+        ),
+        response=Response(),
+        db=db_session,
+    )
+
+    image = create_journal_entry_image(
+        db_session,
+        account_id=13015,
+        entry_id=created["id"],
+        file_bytes=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+        mime_type="image/png",
+    )
+    stored_path = get_journal_image_file_path(image.filename)
+    assert stored_path.exists()
+
+    background_tasks = BackgroundTasks()
+    response = delete_projectx_account_journal_image(
+        account_id=13015,
+        entry_id=created["id"],
+        image_id=int(image.id),
+        background_tasks=background_tasks,
+        db=db_session,
+    )
+
+    assert response.status_code == 204
+    assert db_session.query(JournalEntryImage).count() == 0
+    assert stored_path.exists()
+    assert len(background_tasks.tasks) == 1
+
+    task = background_tasks.tasks[0]
+    task.func(*task.args, **task.kwargs)
+
+    assert not stored_path.exists()

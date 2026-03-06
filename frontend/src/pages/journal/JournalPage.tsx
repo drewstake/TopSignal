@@ -26,12 +26,8 @@ import { JournalEditor } from "./components/JournalEditor";
 import { JournalList } from "./components/JournalList";
 import { getVersionConflictServerEntry } from "./journalConflict";
 import {
-  buildJournalImageMarkdown,
-  insertJournalImageMarkdown,
-  removeJournalImageMarkdown,
-} from "./journalImages";
-import {
   buildJournalQuery,
+  draftToUpdatePayload,
   entryToDraft,
   getTodayTradingDateIso,
   JOURNAL_AUTOSAVE_DELAY_MS,
@@ -64,7 +60,7 @@ function draftToAutosavePatch(draft: JournalDraft): JournalAutosavePatch {
     title: draft.title,
     mood: draft.mood,
     tags: parseTagsInput(draft.tagsInput),
-    body: draft.body,
+    body: draftToUpdatePayload(draft).body,
     is_archived: draft.is_archived,
   };
 }
@@ -109,6 +105,20 @@ function upsertEntry(entries: JournalEntry[], nextEntry: JournalEntry): JournalE
     return [nextEntry, ...entries];
   }
   return entries.map((entry) => (entry.id === nextEntry.id ? nextEntry : entry));
+}
+
+function restoreImageAtIndex(
+  images: JournalEntryImage[],
+  image: JournalEntryImage,
+  targetIndex: number,
+): JournalEntryImage[] {
+  if (images.some((currentImage) => currentImage.id === image.id)) {
+    return images;
+  }
+
+  const nextImages = images.slice();
+  nextImages.splice(Math.min(targetIndex, nextImages.length), 0, image);
+  return nextImages;
 }
 
 function FilterField({
@@ -203,10 +213,12 @@ export function JournalPage() {
   const selectedEntryVersionRef = useRef<number | null>(null);
   const draftRef = useRef<JournalDraft | null>(null);
   const draftEntryIdRef = useRef<number | null>(null);
+  const imagesRef = useRef<JournalEntryImage[]>([]);
   const includeArchivedRef = useRef(includeArchived);
   const handledDateKeyRef = useRef<string | null>(null);
   const entriesRequestVersionRef = useRef(0);
 
+  imagesRef.current = images;
   includeArchivedRef.current = includeArchived;
 
   const setActiveAccount = useCallback(
@@ -666,34 +678,19 @@ export function JournalPage() {
   );
 
   const handlePasteImage = useCallback(
-    async (file: File, selection: { start: number; end: number }) => {
+    async (file: File, _selection: { start: number; end: number }) => {
       const accountId = selectedAccountIdRef.current;
       const entryId = selectedEntryIdRef.current;
       if (!accountId || !entryId) {
         return;
       }
 
-      const initialBody = draftRef.current?.body ?? "";
       const uploaded = await uploadJournalImageFile(file, { accountId, entryId });
       if (!uploaded || !entryId || draftEntryIdRef.current !== entryId || !draftRef.current) {
         return;
       }
-
-      const nextDraft = draftRef.current;
-      const useOriginalSelection = nextDraft.body === initialBody;
-      const insertion = insertJournalImageMarkdown(
-        nextDraft.body,
-        buildJournalImageMarkdown(uploaded.id),
-        useOriginalSelection ? selection.start : nextDraft.body.length,
-        useOriginalSelection ? selection.end : nextDraft.body.length,
-      );
-
-      commitDraft({
-        ...nextDraft,
-        body: insertion.body,
-      });
     },
-    [commitDraft, uploadJournalImageFile],
+    [uploadJournalImageFile],
   );
 
   const handleDeleteImage = useCallback(
@@ -704,22 +701,25 @@ export function JournalPage() {
         return;
       }
 
+      const imageIndex = imagesRef.current.findIndex((image) => image.id === imageId);
+      if (imageIndex === -1) {
+        return;
+      }
+
+      const imageToDelete = imagesRef.current[imageIndex];
+      setImagesError(null);
+      setImages((current) => current.filter((image) => image.id !== imageId));
+
       try {
         await accountsApi.deleteJournalImage(accountId, entryId, imageId);
-        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
-          setImages((current) => current.filter((image) => image.id !== imageId));
-        }
-        if (draftEntryIdRef.current === entryId && draftRef.current) {
-          commitDraft({
-            ...draftRef.current,
-            body: removeJournalImageMarkdown(draftRef.current.body, imageId),
-          });
-        }
       } catch (err) {
+        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
+          setImages((current) => restoreImageAtIndex(current, imageToDelete, imageIndex));
+        }
         setImagesError(err instanceof Error ? err.message : "Failed to delete image");
       }
     },
-    [commitDraft],
+    [],
   );
 
   const handleDeleteEntry = useCallback(async () => {

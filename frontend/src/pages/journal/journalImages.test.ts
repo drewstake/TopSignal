@@ -1,21 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildJournalImageMarkdown,
-  extractPersistedJournalImageIds,
-  insertJournalImageMarkdown,
-  removeJournalImageMarkdown,
-  stripJournalImageMarkdown,
-} from "./journalImages";
-
-describe("insertJournalImageMarkdown", () => {
-  it("inserts image markdown on its own line when pasting into text", () => {
-    const result = insertJournalImageMarkdown("First lineSecond line", buildJournalImageMarkdown(12), 10, 10);
-
-    expect(result.body).toBe("First line\n![Journal image](journal-image://12)\nSecond line");
-    expect(result.selectionStart).toBe(result.selectionEnd);
-  });
-});
+import { extractPersistedJournalImageIds, sanitizeJournalBody, stripJournalImageMarkdown } from "./journalImages";
 
 describe("extractPersistedJournalImageIds", () => {
   it("returns unique image ids in body order", () => {
@@ -31,8 +16,14 @@ describe("extractPersistedJournalImageIds", () => {
   });
 });
 
-describe("removeJournalImageMarkdown", () => {
-  it("replaces removed image references with a placeholder", () => {
+describe("stripJournalImageMarkdown", () => {
+  it("removes inline journal image refs from note text", () => {
+    const body = "A setup screenshot ![Journal image](journal-image://12) with context.";
+
+    expect(stripJournalImageMarkdown(body)).toBe("A setup screenshot with context.");
+  });
+
+  it("collapses blank lines left behind by removed journal image refs", () => {
     const body = [
       "Setup notes",
       "![Journal image](journal-image://12)",
@@ -40,14 +31,18 @@ describe("removeJournalImageMarkdown", () => {
       "Follow-through",
     ].join("\n");
 
-    expect(removeJournalImageMarkdown(body, 12)).toBe(["Setup notes", "[removed image]", "", "Follow-through"].join("\n"));
+    expect(stripJournalImageMarkdown(body)).toBe(["Setup notes", "", "Follow-through"].join("\n"));
   });
 });
 
-describe("stripJournalImageMarkdown", () => {
-  it("removes inline image refs from list previews", () => {
-    const body = "A setup screenshot ![Journal image](journal-image://12) with context.";
+describe("sanitizeJournalBody", () => {
+  it("keeps external image markdown as a placeholder while removing journal image refs", () => {
+    const body = [
+      "Review",
+      "![Journal image](journal-image://12)",
+      "![External](https://example.com/chart.png)",
+    ].join("\n");
 
-    expect(stripJournalImageMarkdown(body)).toBe("A setup screenshot [image] with context.");
+    expect(sanitizeJournalBody(body)).toBe(["Review", "[external image]"].join("\n"));
   });
 });

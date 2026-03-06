@@ -1,4 +1,5 @@
 import calendar
+import logging
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -6,7 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,7 +85,7 @@ from .services.journal import (
     create_journal_entry_image,
     create_journal_entry,
     delete_journal_entry,
-    delete_journal_entry_image,
+    delete_journal_entry_image_record,
     get_journal_entry_image,
     get_journal_image_bytes,
     get_journal_image_file_path,
@@ -98,7 +99,7 @@ from .services.journal import (
     update_journal_entry,
     validate_date_range as validate_journal_date_range,
 )
-from .services.journal_storage import journal_storage_backend
+from .services.journal_storage import delete_journal_image as delete_journal_image_file, journal_storage_backend
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
     ACCOUNT_STATE_MISSING,
@@ -130,6 +131,7 @@ from .services.projectx_trades import (
 )
 
 app = FastAPI(title="TopSignal API")
+logger = logging.getLogger(__name__)
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
@@ -1018,6 +1020,7 @@ def delete_projectx_account_journal_image(
     account_id: int,
     entry_id: int,
     image_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -1028,7 +1031,7 @@ def delete_projectx_account_journal_image(
         raise HTTPException(status_code=400, detail="image_id must be a positive integer")
 
     try:
-        delete_journal_entry_image(
+        filename = delete_journal_entry_image_record(
             db,
             user_id=user_id,
             account_id=account_id,
@@ -1038,6 +1041,7 @@ def delete_projectx_account_journal_image(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    background_tasks.add_task(_delete_journal_image_file_safely, object_key=filename)
     return Response(status_code=204)
 
 
@@ -1617,6 +1621,13 @@ def _subtract_utc_months(value: datetime, months: int) -> datetime:
     month = zero_based_month + 1
     day = min(current.day, calendar.monthrange(year, month)[1])
     return current.replace(year=year, month=month, day=day)
+
+
+def _delete_journal_image_file_safely(*, object_key: str) -> None:
+    try:
+        delete_journal_image_file(object_key=object_key)
+    except Exception:
+        logger.exception("journal_image_background_delete_failed", extra={"object_key": object_key})
 
 
 def _journal_image_url(*, image_id: int, account_id: int) -> str:

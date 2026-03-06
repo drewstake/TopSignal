@@ -4,6 +4,7 @@ import type {
   JournalEntryUpdateInput,
   JournalMood,
 } from "../../lib/types";
+import { sanitizeJournalBody } from "./journalImages";
 
 export const JOURNAL_PAGE_SIZE = 20;
 export const JOURNAL_AUTOSAVE_DELAY_MS = 800;
@@ -35,7 +36,7 @@ export function entryToDraft(entry: JournalEntry): JournalDraft {
     title: entry.title,
     mood: entry.mood,
     tagsInput: entry.tags.join(", "),
-    body: entry.body,
+    body: sanitizeJournalBody(entry.body),
     version: entry.version,
     is_archived: entry.is_archived,
   };
@@ -47,7 +48,7 @@ export function draftToUpdatePayload(draft: JournalDraft, versionOverride?: numb
     title: draft.title,
     mood: draft.mood,
     tags: parseTagsInput(draft.tagsInput),
-    body: draft.body,
+    body: sanitizeJournalBody(draft.body),
     is_archived: draft.is_archived,
   };
 }

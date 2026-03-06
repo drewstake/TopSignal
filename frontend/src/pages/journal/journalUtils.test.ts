@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "../../lib/types";
 import {
   buildJournalQuery,
+  entryToDraft,
   draftToUpdatePayload,
   getTodayTradingDateIso,
   getYesterdayTradingDateIso,
@@ -48,12 +49,36 @@ describe("draftToUpdatePayload", () => {
       title: "Session notes",
       mood: "Neutral",
       tagsInput: "nq, discipline",
-      body: "Kept risk tight.",
+      body: "Kept risk tight.\n![Journal image](journal-image://7)",
       version: 7,
       is_archived: false,
     });
 
     expect(payload.version).toBe(7);
+    expect(payload.body).toBe("Kept risk tight.");
+  });
+});
+
+describe("entryToDraft", () => {
+  it("removes persisted journal image refs before showing body text", () => {
+    const draft = entryToDraft({
+      id: 22,
+      account_id: 13001,
+      entry_date: "2026-03-02",
+      title: "Session",
+      mood: "Neutral",
+      tags: ["nq"],
+      body: "Review\n![Journal image](journal-image://12)\nFollow-through",
+      version: 5,
+      stats_source: null,
+      stats_json: null,
+      stats_pulled_at: null,
+      is_archived: false,
+      created_at: "2026-03-02T10:00:00.000Z",
+      updated_at: "2026-03-02T10:01:00.000Z",
+    });
+
+    expect(draft.body).toBe(["Review", "Follow-through"].join("\n"));
   });
 });
 

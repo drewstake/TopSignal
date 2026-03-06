@@ -1,4 +1,4 @@
-import { type ClipboardEvent } from "react";
+import { type ClipboardEvent, type KeyboardEvent, useEffect, useState } from "react";
 
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
@@ -8,7 +8,6 @@ import { Select } from "../../../components/ui/Select";
 import { Textarea } from "../../../components/ui/Textarea";
 import type { JournalEntry, JournalEntryImage, JournalMood } from "../../../lib/types";
 import { getClipboardImageFile } from "../journalClipboard";
-import { extractPersistedJournalImageIds } from "../journalImages";
 import type { JournalSaveState } from "../journalAutosave";
 import type { JournalDraft } from "../journalUtils";
 
@@ -71,34 +70,8 @@ const entryDateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
-const timestampFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  timeZone: "America/New_York",
-});
-
 function formatEntryDate(value: string) {
   return entryDateFormatter.format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function formatTimestamp(value: string | null) {
-  if (!value) {
-    return "Not available";
-  }
-  return timestampFormatter.format(new Date(value));
-}
-
-function formatFileSize(value: number) {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  if (value < 1024 * 1024) {
-    return `${Math.round(value / 1024)} KB`;
-  }
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function JournalEditor(props: JournalEditorProps) {
@@ -116,6 +89,17 @@ export function JournalEditor(props: JournalEditorProps) {
     onPasteImage,
     onDeleteImage,
   } = props;
+  const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedImageId(null);
+  }, [entry?.id]);
+
+  useEffect(() => {
+    if (selectedImageId !== null && !images.some((image) => image.id === selectedImageId)) {
+      setSelectedImageId(null);
+    }
+  }, [images, selectedImageId]);
 
   if (!entry || !draft) {
     return (
@@ -151,15 +135,16 @@ export function JournalEditor(props: JournalEditorProps) {
 
   const saveStateDisplay = saveStateMeta[saveState];
   const notesCharacterCount = draft.body.length;
-  const imageSummary = `${images.length} ${images.length === 1 ? "image" : "images"}`;
-  const embeddedImageIds = extractPersistedJournalImageIds(draft.body);
-  const embeddedImageIdSet = new Set(embeddedImageIds);
-  const embeddedImages = embeddedImageIds
-    .map((imageId) => images.find((image) => image.id === imageId) ?? null)
-    .filter((image): image is JournalEntryImage => image !== null);
-  const unreferencedImages = images.filter((image) => !embeddedImageIdSet.has(image.id));
-  const visibleImages = [...embeddedImages, ...unreferencedImages];
-  const showImagePanel = imagesLoading || imagesError || uploadingImage || visibleImages.length > 0;
+  const showImagePanel = imagesLoading || imagesError || uploadingImage || images.length > 0;
+
+  const handleImageKeyDown = (event: KeyboardEvent<HTMLButtonElement>, imageId: number) => {
+    if (event.key !== "Backspace" && event.key !== "Delete") {
+      return;
+    }
+
+    event.preventDefault();
+    onDeleteImage(imageId);
+  };
 
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -257,47 +242,40 @@ export function JournalEditor(props: JournalEditorProps) {
 
           {showImagePanel ? (
             <div className="space-y-3 rounded-[20px] border border-slate-800/75 bg-slate-950/35 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Entry Images</p>
-                {visibleImages.length > 0 ? (
-                  <span className="rounded-full border border-slate-700/80 bg-slate-900/60 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-300">
-                    {imageSummary}
-                  </span>
-                ) : null}
-              </div>
-
-              {imagesLoading && visibleImages.length === 0 ? (
+              {imagesLoading && images.length === 0 ? (
                 <div className="rounded-2xl border border-slate-800/70 bg-slate-950/45 px-4 py-6 text-center text-sm text-slate-400">
                   Loading images...
                 </div>
               ) : null}
 
-              {visibleImages.length > 0 ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {visibleImages.map((image) => (
-                    <div key={image.id} className="overflow-hidden rounded-[20px] border border-slate-800/80 bg-slate-950/55">
-                      <div className="relative">
-                        <img src={image.url} alt="Journal upload" className="h-36 w-full object-cover" loading="lazy" />
-                        <span className="absolute left-3 top-3 rounded-full border border-black/20 bg-slate-950/85 px-2.5 py-1 text-[11px] text-slate-200">
-                          {formatFileSize(image.byte_size)}
-                        </span>
-                      </div>
-                      <div className="space-y-2.5 border-t border-slate-800/70 px-3 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="min-w-0 truncate text-sm text-slate-200">{image.filename}</p>
-                          <Button size="sm" variant="ghost" onClick={() => onDeleteImage(image.id)}>
-                            Delete
-                          </Button>
-                        </div>
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                          <span>{formatTimestamp(image.created_at)}</span>
-                          <span>
-                            {image.width && image.height ? `${image.width} x ${image.height}` : "Dimensions unavailable"}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+              {images.length > 0 ? (
+                <div className="space-y-3">
+                  {images.map((image, index) => {
+                    const isSelected = selectedImageId === image.id;
+
+                    return (
+                      <button
+                        key={image.id}
+                        type="button"
+                        className={`overflow-hidden rounded-[20px] border bg-slate-950/55 text-left transition ${
+                          isSelected
+                            ? "border-cyan-400/80 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
+                            : "border-slate-800/80 hover:border-slate-700/80"
+                        } focus-visible:border-cyan-400/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/40`}
+                        aria-label={`Journal image ${index + 1}. Press Backspace or Delete to remove it.`}
+                        onClick={() => setSelectedImageId(image.id)}
+                        onFocus={() => setSelectedImageId(image.id)}
+                        onKeyDown={(event) => handleImageKeyDown(event, image.id)}
+                      >
+                        <img
+                          src={image.url}
+                          alt="Journal upload"
+                          className="block h-auto w-full bg-slate-950/55"
+                          loading="lazy"
+                        />
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>

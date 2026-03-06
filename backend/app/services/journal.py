@@ -424,6 +424,24 @@ def delete_journal_entry_image(
     entry_id: int,
     image_id: int,
 ) -> None:
+    filename = delete_journal_entry_image_record(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+        image_id=image_id,
+    )
+    delete_journal_image(object_key=filename)
+
+
+def delete_journal_entry_image_record(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    entry_id: int,
+    image_id: int,
+) -> str:
     resolved_user_id = _resolve_user_id(user_id)
     entry = _get_entry_for_account(
         db,
@@ -448,7 +466,7 @@ def delete_journal_entry_image(
     filename = row.filename
     db.delete(row)
     db.commit()
-    delete_journal_image(object_key=filename)
+    return filename
 
 
 def pull_journal_entry_trade_stats(

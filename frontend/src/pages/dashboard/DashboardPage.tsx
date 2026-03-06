@@ -1518,7 +1518,6 @@ export function DashboardPage() {
                   { label: "Basis", value: drawdownEquityBase.label },
                   { label: "Avg Drawdown", value: formatPnl(summary.average_drawdown), valueClassName: metricPnlClass({ value: summary.average_drawdown }) },
                   { label: "DD Length", value: `${formatNumber(summary.max_drawdown_length_hours, 1)} h` },
-                  { label: "Recovery", value: `${formatNumber(summary.recovery_time_hours, 1)} h` },
                 ]}
               />
             </MetricCard>
@@ -1770,9 +1769,6 @@ export function DashboardPage() {
                   ))}
                 </div>
               </div>
-              <p className="rounded-md border border-cyan-500/25 bg-[linear-gradient(120deg,rgba(16,185,129,0.12),rgba(15,23,42,0.48)_48%,rgba(248,113,113,0.1)_100%)] px-2 py-1 text-[10px] text-slate-200">
-                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.payoff.insight}
-              </p>
             </MetricCard>
 
             <MetricCard
@@ -1849,14 +1845,6 @@ export function DashboardPage() {
                   },
                 ]}
               />
-              <p className="rounded-md border border-slate-700/70 bg-slate-950/35 px-2 py-1 text-[10px] text-slate-400">
-                Weekly pacing uses elapsed range days; partial days round up.
-              </p>
-              {activityMetrics.tradesPerActiveHour === null ? (
-                <p className="rounded-md border border-slate-700/70 bg-slate-950/35 px-2 py-1 text-[10px] text-slate-400">
-                  Trades/active hour needs active hours tracking.
-                </p>
-              ) : null}
             </MetricCard>
 
             <MetricCard
