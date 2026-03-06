@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { Badge } from "../../components/ui/Badge";
@@ -261,6 +261,7 @@ export function TradesPage() {
   const [page, setPage] = useState(1);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const deferredSymbolQuery = useDeferredValue(symbolQuery);
 
   const startIso = startDate ? toStartIso(startDate) : undefined;
   const endIso = endDate ? toEndIso(endDate) : undefined;
@@ -408,7 +409,7 @@ export function TradesPage() {
   }, [loadTradesAndSummary, selectedAccountId]);
 
   const filteredTrades = useMemo(() => {
-    const normalizedQuery = symbolQuery.trim().toLowerCase();
+    const normalizedQuery = deferredSymbolQuery.trim().toLowerCase();
     if (!normalizedQuery) {
       return trades;
     }
@@ -417,7 +418,7 @@ export function TradesPage() {
       const symbol = buildTradeSymbolSearchText(trade.symbol, trade.contract_id);
       return symbol.includes(normalizedQuery);
     });
-  }, [symbolQuery, trades]);
+  }, [deferredSymbolQuery, trades]);
 
   const filteredTradeStats = useMemo<FilteredTradeStats>(() => {
     let netPnl = 0;
@@ -859,7 +860,7 @@ export function TradesPage() {
                 <div className="flex min-h-0 flex-1 overflow-hidden rounded-[22px] border border-slate-800/80 bg-slate-950/45">
                   <div className="min-h-0 flex-1 overflow-auto">
                     <table className="w-full min-w-[1260px] table-fixed border-collapse text-[11px] leading-tight">
-                      <thead className="sticky top-0 z-10 bg-slate-950/95 text-xs uppercase tracking-[0.16em] text-slate-400 backdrop-blur">
+                      <thead className="sticky top-0 z-10 bg-slate-950/95 text-xs uppercase tracking-[0.16em] text-slate-400">
                         <tr>
                           <th className="px-3 py-2 text-left font-medium">Entry Time (ET)</th>
                           <th className="px-3 py-2 text-left font-medium">Exit Time (ET)</th>

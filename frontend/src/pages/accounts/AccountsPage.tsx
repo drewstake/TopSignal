@@ -14,6 +14,7 @@ import {
   writeStoredAccountId,
   writeStoredMainAccountId,
 } from "../../lib/accountSelection";
+import { logPerfInfo } from "../../lib/perf";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import type { AccountInfo } from "../../lib/types";
@@ -99,7 +100,7 @@ export function AccountsPage() {
   const loadAccounts = useCallback(async () => {
     const startedAtIso = new Date().toISOString();
     const startedAtMs = performance.now();
-    console.info("[perf][accounts] load-start", {
+    logPerfInfo("[perf][accounts] load-start", {
       started_at: startedAtIso,
       show_hidden: showHiddenAccounts,
       show_missing: showMissingAccounts,
@@ -122,7 +123,7 @@ export function AccountsPage() {
       setAccounts([]);
     } finally {
       const totalMs = Math.max(performance.now() - startedAtMs, 0);
-      console.info("[perf][accounts] load-end", {
+      logPerfInfo("[perf][accounts] load-end", {
         started_at: startedAtIso,
         finished_at: new Date().toISOString(),
         total_ms: Number(totalMs.toFixed(2)),

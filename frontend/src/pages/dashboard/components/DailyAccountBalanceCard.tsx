@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, useId, useMemo, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { Skeleton } from "../../../components/ui/Skeleton";
@@ -38,6 +38,8 @@ const width = 980;
 const height = 280;
 const yLabelX = 8;
 const chartPadding = { top: 20, right: 24, bottom: 36, left: 90 };
+const plotWidth = width - chartPadding.left - chartPadding.right;
+const plotHeight = height - chartPadding.top - chartPadding.bottom;
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -138,6 +140,8 @@ function createMarkerIndexes(length: number) {
 export function DailyAccountBalanceCard({ days, loading, error, currentBalance }: DailyAccountBalanceCardProps) {
   const chartSeed = useId().replace(/:/g, "");
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+  const hoverAnimationFrameRef = useRef<number | null>(null);
+  const pendingHoveredPointIndexRef = useRef<number | null>(null);
   const series = useMemo(() => buildBalanceSeries(days, currentBalance), [currentBalance, days]);
   const firstPoint = series[0] ?? null;
   const lastPoint = series[series.length - 1] ?? null;
@@ -207,8 +211,6 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     const yMin = minBalance - padding;
     const yMax = maxBalance + padding;
     const yRange = Math.max(yMax - yMin, 1);
-    const plotWidth = width - chartPadding.left - chartPadding.right;
-    const plotHeight = height - chartPadding.top - chartPadding.bottom;
     const baselineY = height - chartPadding.bottom;
 
     const points: ChartPoint[] = series.map((point, index) => {
@@ -304,23 +306,38 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     }
 
     const normalizedX = ((event.clientX - bounds.left) / bounds.width) * width;
-    let nearestIndex = 0;
-    let nearestDistance = Number.POSITIVE_INFINITY;
+    const clampedRatio = Math.max(0, Math.min(1, (normalizedX - chartPadding.left) / plotWidth));
+    const nearestIndex =
+      chartData.points.length === 1 ? 0 : Math.round(clampedRatio * (chartData.points.length - 1));
 
-    chartData.points.forEach((point, index) => {
-      const distance = Math.abs(point.x - normalizedX);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestIndex = index;
-      }
+    pendingHoveredPointIndexRef.current = nearestIndex;
+    if (hoverAnimationFrameRef.current !== null) {
+      return;
+    }
+
+    hoverAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      hoverAnimationFrameRef.current = null;
+      const pendingIndex = pendingHoveredPointIndexRef.current;
+      setHoveredPointIndex((current) => (current === pendingIndex ? current : pendingIndex));
     });
-
-    setHoveredPointIndex((current) => (current === nearestIndex ? current : nearestIndex));
   };
 
   const handleChartMouseLeave = () => {
+    pendingHoveredPointIndexRef.current = null;
+    if (hoverAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(hoverAnimationFrameRef.current);
+      hoverAnimationFrameRef.current = null;
+    }
     setHoveredPointIndex(null);
   };
+
+  useEffect(() => {
+    return () => {
+      if (hoverAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(hoverAnimationFrameRef.current);
+      }
+    };
+  }, []);
 
   return (
     <Card className="relative overflow-hidden">

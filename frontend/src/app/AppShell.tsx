@@ -14,7 +14,7 @@ import {
   readStoredMainAccountId,
   writeStoredAccountId,
 } from "../lib/accountSelection";
-import { accountsApi } from "../lib/api";
+import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
@@ -53,7 +53,7 @@ export function AppShell() {
       setAccountsError(null);
 
       try {
-        const payload = await accountsApi.getSelectableAccounts();
+        const payload = await getSelectableAccounts();
         if (!isMounted) {
           return;
         }
@@ -142,7 +142,7 @@ export function AppShell() {
     setSyncMessage(null);
 
     try {
-      const result = await accountsApi.refreshTrades(selectedAccountId);
+      const result = await refreshTrades(selectedAccountId);
       setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
       window.dispatchEvent(
         new CustomEvent<AccountTradesSyncedDetail>(ACCOUNT_TRADES_SYNCED_EVENT, {
@@ -173,7 +173,7 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/95 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/95">
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="space-y-1">

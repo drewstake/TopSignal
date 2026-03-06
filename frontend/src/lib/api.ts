@@ -36,6 +36,7 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
 } from "./types";
+import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -161,8 +162,6 @@ function toAbsoluteApiUrl(path: string) {
   return new URL(path, API_BASE_URL).toString();
 }
 
-const ENABLE_PERF_LOGS = import.meta.env.DEV || String(import.meta.env.VITE_PERF_LOGS ?? "").toLowerCase() === "true";
-
 interface RequestPerfContext {
   method: string;
   path: string;
@@ -218,7 +217,7 @@ function logApiPerfStart(context: RequestPerfContext) {
   if (!ENABLE_PERF_LOGS) {
     return;
   }
-  console.info("[perf][api] start", {
+  logPerfInfo("[perf][api] start", {
     method: context.method,
     path: context.path,
     url: context.url,
@@ -234,7 +233,7 @@ function logApiPerfEnd(context: RequestPerfContext, response: Response) {
   const totalMs = Math.max(finishedAtMs - context.startedAtMs, 0);
   const serverMs = parseServerTimeMs(response);
   const networkMs = serverMs !== null ? Math.max(totalMs - serverMs, 0) : null;
-  console.info("[perf][api] end", {
+  logPerfInfo("[perf][api] end", {
     method: context.method,
     path: context.path,
     status: response.status,
@@ -569,10 +568,31 @@ function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boole
   return account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT";
 }
 
-function getSelectableAccounts(): Promise<AccountInfo[]> {
+function getSelectableAccountsFromApi(): Promise<AccountInfo[]> {
   return getAccountsFromApi({ showInactive: true, showMissing: false }).then((accounts) =>
     accounts.filter((account) => isSelectableAccount(account)),
   );
+}
+
+export function getAccounts(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
+  return getAccountsCached(optionsOrOnlyActive);
+}
+
+export function getSelectableAccounts(): Promise<AccountInfo[]> {
+  return getSelectableAccountsFromApi();
+}
+
+export function refreshTrades(accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) {
+  return requestJson<AccountTradeRefreshResult>(`/api/accounts/${accountId}/trades/refresh`, {
+    method: "POST",
+    query: {
+      start: query.start,
+      end: query.end,
+    },
+  }).then((result) => {
+    invalidateAccountReadCaches(accountId);
+    return result;
+  });
 }
 
 export const metricsApi = {
@@ -612,8 +632,8 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 }
 
 export const accountsApi = {
-  getAccounts: (optionsOrOnlyActive?: GetAccountsOptions | boolean) => getAccountsCached(optionsOrOnlyActive),
-  getSelectableAccounts: () => getSelectableAccounts(),
+  getAccounts,
+  getSelectableAccounts,
   getAuthMe: () => requestJson<AuthMe>("/api/auth/me"),
   getProjectXCredentialsStatus: () =>
     requestJson<ProjectXCredentialsStatus>("/api/me/providers/projectx/credentials/status"),
@@ -737,17 +757,7 @@ export const accountsApi = {
         }),
     });
   },
-  refreshTrades: (accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) =>
-    requestJson<AccountTradeRefreshResult>(`/api/accounts/${accountId}/trades/refresh`, {
-      method: "POST",
-      query: {
-        start: query.start,
-        end: query.end,
-      },
-    }).then((result) => {
-      invalidateAccountReadCaches(accountId);
-      return result;
-    }),
+  refreshTrades,
   getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: RequestSignalOptions = {}) =>
     requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
       query: {

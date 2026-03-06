@@ -29,6 +29,7 @@ import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/trad
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
+import { logPerfInfo } from "../../lib/perf";
 import { formatCurrency, formatInteger, formatMinutes, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { computeActivityMetrics } from "../../utils/activityMetrics";
 import {
@@ -652,7 +653,7 @@ export function DashboardPage() {
         startedAtIso,
       };
       dashboardWasLoadingRef.current = true;
-      console.info("[perf][dashboard] load-start", {
+      logPerfInfo("[perf][dashboard] load-start", {
         account_id: selectedAccountId,
         started_at: startedAtIso,
       });
@@ -669,7 +670,7 @@ export function DashboardPage() {
       return;
     }
     const totalMs = Math.max(performance.now() - loadPerf.startedAtMs, 0);
-    console.info("[perf][dashboard] load-end", {
+    logPerfInfo("[perf][dashboard] load-end", {
       account_id: selectedAccountId,
       started_at: loadPerf.startedAtIso,
       finished_at: new Date().toISOString(),
