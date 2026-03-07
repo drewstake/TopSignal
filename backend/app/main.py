@@ -3,6 +3,7 @@ import logging
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from time import perf_counter
 from zoneinfo import ZoneInfo
@@ -62,7 +63,8 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Expense, ProjectXTradeEvent, Trade
+from .models import Expense, Payout, ProjectXTradeEvent, Trade
+from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut
 from .projectx_schemas import (
     AuthMeOut,
     ProjectXAccountMainOut,
@@ -546,6 +548,118 @@ def delete_expense(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
+
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.post("/api/payouts", response_model=PayoutOut, status_code=201)
+def create_payout(
+    payload: PayoutCreateIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    amount_cents = _resolve_amount_cents(payload.amount_cents)
+    notes = _normalize_payout_notes(payload.notes)
+
+    _validate_payout_amount(amount_cents)
+
+    row = Payout(
+        user_id=user_id,
+        payout_date=payload.payout_date,
+        amount_cents=amount_cents,
+        currency=payload.currency,
+        notes=notes,
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _to_payout_integrity_http_exception(exc) from exc
+
+    db.refresh(row)
+    return PayoutOut.model_validate(row)
+
+
+@app.get("/api/payouts", response_model=PayoutListOut)
+def list_payouts(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+
+    query = db.query(Payout).filter(Payout.user_id == user_id)
+    if start_date is not None:
+        query = query.filter(Payout.payout_date >= start_date)
+    if end_date is not None:
+        query = query.filter(Payout.payout_date <= end_date)
+
+    total = query.count()
+    rows = query.order_by(Payout.payout_date.desc(), Payout.id.desc()).offset(offset).limit(limit).all()
+    return {
+        "items": [PayoutOut.model_validate(row) for row in rows],
+        "total": total,
+    }
+
+
+@app.get("/api/payouts/totals", response_model=PayoutTotalsOut)
+def get_payout_totals(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+
+    query = db.query(Payout).filter(Payout.user_id == user_id)
+    if start_date is not None:
+        query = query.filter(Payout.payout_date >= start_date)
+    if end_date is not None:
+        query = query.filter(Payout.payout_date <= end_date)
+
+    total_amount_cents, count = query.with_entities(
+        func.coalesce(func.sum(Payout.amount_cents), 0),
+        func.count(Payout.id),
+    ).one()
+
+    total_amount_cents = int(total_amount_cents)
+    count = int(count)
+    average_amount_cents = _calculate_average_amount_cents(total_amount_cents, count)
+
+    return {
+        "total_amount": _cents_to_dollars(total_amount_cents),
+        "total_amount_cents": total_amount_cents,
+        "average_amount": _cents_to_dollars(average_amount_cents),
+        "average_amount_cents": average_amount_cents,
+        "count": count,
+    }
+
+
+@app.delete("/api/payouts/{payout_id}", status_code=204)
+def delete_payout(
+    payout_id: int,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if payout_id <= 0:
+        raise HTTPException(status_code=400, detail="payout_id must be a positive integer")
+
+    row = (
+        db.query(Payout)
+        .filter(Payout.user_id == user_id)
+        .filter(Payout.id == payout_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="payout not found")
 
     db.delete(row)
     db.commit()
@@ -1424,6 +1538,13 @@ def _normalize_expense_description(value: str | None) -> str | None:
     return normalized or None
 
 
+def _normalize_payout_notes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def _normalize_expense_tags(values: list[str] | None) -> list[str]:
     if not values:
         return []
@@ -1481,6 +1602,13 @@ def _validate_expense_amount(*, amount_cents: int | None, category: str | None) 
         raise HTTPException(status_code=400, detail="amount_cents must be > 0 for non-other categories")
 
 
+def _validate_payout_amount(amount_cents: int | None) -> None:
+    if amount_cents is None:
+        raise HTTPException(status_code=400, detail="amount_cents is required")
+    if amount_cents <= 0:
+        raise HTTPException(status_code=400, detail="amount_cents must be > 0")
+
+
 def _resolve_expense_range_dates(*, range: ExpenseRange, week_start: WeekStart) -> tuple[date | None, date]:
     today_local = datetime.now(_NEW_YORK_TZ).date()
     end_date = today_local
@@ -1503,11 +1631,21 @@ def _cents_to_dollars(amount_cents: int) -> float:
     return round(int(amount_cents) / 100, 2)
 
 
+def _calculate_average_amount_cents(total_amount_cents: int, count: int) -> int:
+    if count <= 0:
+        return 0
+    return int((Decimal(total_amount_cents) / Decimal(count)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def _to_expense_integrity_http_exception(exc: IntegrityError) -> HTTPException:
     message = str(exc.orig).lower() if exc.orig is not None else str(exc).lower()
     if "uq_expenses_dedupe" in message or "unique constraint" in message:
         return HTTPException(status_code=409, detail="duplicate_expense")
     return HTTPException(status_code=400, detail="invalid_expense_payload")
+
+
+def _to_payout_integrity_http_exception(exc: IntegrityError) -> HTTPException:
+    return HTTPException(status_code=400, detail="invalid_payout_payload")
 
 
 def _first_nonempty_env(*names: str) -> str | None:

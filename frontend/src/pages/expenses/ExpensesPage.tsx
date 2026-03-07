@@ -6,12 +6,17 @@ import { Drawer } from "../../components/ui/Drawer";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
+import { Textarea } from "../../components/ui/Textarea";
 import {
   accountsApi,
+  createPayout,
   createExpense,
+  deletePayout,
   deleteExpense,
   getExpenseTotals,
+  getPayoutTotals,
   isApiError,
+  listPayouts,
   listExpenses,
 } from "../../lib/api";
 import {
@@ -29,11 +34,12 @@ import {
   getExpensePresetAmountCents,
   type ExpenseStage,
 } from "../../lib/expensePresets";
-import type { ExpenseCategory, ExpenseRecord, ExpenseTotals } from "../../lib/types";
+import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
 
 const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const AUTO_TRACKED_COMBINE_EXPENSE_PAGE_SIZE = 200;
+const PAYOUT_PAGE_SIZE = 50;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -144,6 +150,20 @@ function buildInitialAddExpenseState(accountId: string): AddExpenseState {
   };
 }
 
+interface AddPayoutState {
+  payoutDate: string;
+  amount: string;
+  notes: string;
+}
+
+function buildInitialAddPayoutState(): AddPayoutState {
+  return {
+    payoutDate: getTodayLocalIsoDate(),
+    amount: "",
+    notes: "",
+  };
+}
+
 export function ExpensesPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -169,6 +189,18 @@ export function ExpensesPage() {
   const [addState, setAddState] = useState<AddExpenseState>(buildInitialAddExpenseState(accountFilter));
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [payoutItems, setPayoutItems] = useState<PayoutRecord[]>([]);
+  const [payoutTotal, setPayoutTotal] = useState(0);
+  const [payoutOffset, setPayoutOffset] = useState(0);
+  const [payoutLoading, setPayoutLoading] = useState(false);
+  const [payoutError, setPayoutError] = useState<string | null>(null);
+  const [payoutTotals, setPayoutTotals] = useState<PayoutTotals | null>(null);
+  const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(false);
+  const [payoutTotalsError, setPayoutTotalsError] = useState<string | null>(null);
+  const [addPayoutOpen, setAddPayoutOpen] = useState(false);
+  const [addPayoutState, setAddPayoutState] = useState<AddPayoutState>(buildInitialAddPayoutState());
+  const [addPayoutError, setAddPayoutError] = useState<string | null>(null);
+  const [addingPayout, setAddingPayout] = useState(false);
   const didInitialCombineSyncRef = useRef(false);
 
   const parsedAccountFilter = useMemo(() => parsePositiveInt(accountFilter), [accountFilter]);
@@ -225,6 +257,39 @@ export function ExpensesPage() {
       setTotalsLoading(false);
     }
   }, [combineSpendSnapshot.startedAt, parsedAccountFilter]);
+
+  const loadPayouts = useCallback(async () => {
+    setPayoutLoading(true);
+    setPayoutError(null);
+    try {
+      const payload = await listPayouts({
+        limit: PAYOUT_PAGE_SIZE,
+        offset: payoutOffset,
+      });
+      setPayoutItems(payload.items);
+      setPayoutTotal(payload.total);
+    } catch (err) {
+      setPayoutItems([]);
+      setPayoutTotal(0);
+      setPayoutError(err instanceof Error ? err.message : "Failed to load payouts");
+    } finally {
+      setPayoutLoading(false);
+    }
+  }, [payoutOffset]);
+
+  const loadPayoutTotals = useCallback(async () => {
+    setPayoutTotalsLoading(true);
+    setPayoutTotalsError(null);
+    try {
+      const response = await getPayoutTotals();
+      setPayoutTotals(response);
+    } catch (err) {
+      setPayoutTotals(null);
+      setPayoutTotalsError(err instanceof Error ? err.message : "Failed to load payout totals");
+    } finally {
+      setPayoutTotalsLoading(false);
+    }
+  }, []);
 
   const listAllAutoTrackedCombineExpenses = useCallback(async () => {
     const rows: ExpenseRecord[] = [];
@@ -387,6 +452,14 @@ export function ExpensesPage() {
   }, [loadTotals]);
 
   useEffect(() => {
+    void loadPayouts();
+  }, [loadPayouts]);
+
+  useEffect(() => {
+    void loadPayoutTotals();
+  }, [loadPayoutTotals]);
+
+  useEffect(() => {
     if (didInitialCombineSyncRef.current) {
       return;
     }
@@ -416,6 +489,8 @@ export function ExpensesPage() {
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
+  const payoutTotalPages = Math.max(1, Math.ceil(payoutTotal / PAYOUT_PAGE_SIZE));
+  const payoutCurrentPage = Math.floor(payoutOffset / PAYOUT_PAGE_SIZE) + 1;
   const practiceBlocked = addState.accountType === "practice";
   const combineTrackerTotalAmount = combineSpendSnapshot.totalCostCents / 100;
   const trackerStartedOnLabel = trackerDateFormatter.format(new Date(combineSpendSnapshot.startedAt));
@@ -425,9 +500,19 @@ export function ExpensesPage() {
     setAddError(null);
   }
 
+  function resetAddPayoutForm() {
+    setAddPayoutState(buildInitialAddPayoutState());
+    setAddPayoutError(null);
+  }
+
   function handleOpenAdd() {
     resetAddForm();
     setAddOpen(true);
+  }
+
+  function handleOpenAddPayout() {
+    resetAddPayoutForm();
+    setAddPayoutOpen(true);
   }
 
   async function handleDeleteExpense(expense: ExpenseRecord) {
@@ -441,6 +526,20 @@ export function ExpensesPage() {
       await Promise.all([loadExpenses(), loadTotals()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete expense");
+    }
+  }
+
+  async function handleDeletePayout(payout: PayoutRecord) {
+    const confirmed = window.confirm(`Delete payout #${payout.id} for ${currencyFormatter.format(payout.amount)}?`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await deletePayout(payout.id);
+      await Promise.all([loadPayouts(), loadPayoutTotals()]);
+    } catch (err) {
+      setPayoutError(err instanceof Error ? err.message : "Failed to delete payout");
     }
   }
 
@@ -499,6 +598,43 @@ export function ExpensesPage() {
       }
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function handleSubmitNewPayout(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAddPayoutError(null);
+
+    if (!addPayoutState.payoutDate) {
+      setAddPayoutError("Payout date is required.");
+      return;
+    }
+
+    const amount = Number.parseFloat(addPayoutState.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setAddPayoutError("Amount must be greater than 0.");
+      return;
+    }
+
+    setAddingPayout(true);
+    try {
+      await createPayout({
+        payout_date: addPayoutState.payoutDate,
+        amount,
+        notes: addPayoutState.notes.trim() || undefined,
+      });
+
+      setAddPayoutOpen(false);
+      if (payoutOffset !== 0) {
+        setPayoutOffset(0);
+        await loadPayoutTotals();
+      } else {
+        await Promise.all([loadPayouts(), loadPayoutTotals()]);
+      }
+    } catch (err) {
+      setAddPayoutError(err instanceof Error ? err.message : "Failed to create payout");
+    } finally {
+      setAddingPayout(false);
     }
   }
 
@@ -703,6 +839,182 @@ export function ExpensesPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Payouts</CardTitle>
+              <CardDescription>Log the final payouts you receive after the profit split.</CardDescription>
+            </div>
+            <Button onClick={handleOpenAddPayout}>Add Payout</Button>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Total Payouts</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-100">
+                {payoutTotalsLoading ? "..." : currencyFormatter.format(payoutTotals?.total_amount ?? 0)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Number of Payouts</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-100">
+                {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0).toLocaleString("en-US")}
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Average Payout</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-100">
+                {payoutTotalsLoading ? "..." : currencyFormatter.format(payoutTotals?.average_amount ?? 0)}
+              </p>
+            </div>
+          </div>
+
+          {payoutTotalsError ? <p className="mt-4 text-sm text-rose-300">{payoutTotalsError}</p> : null}
+
+          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
+            <Table className="min-w-[720px]">
+              <TableHeader>
+                <tr>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Notes</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </tr>
+              </TableHeader>
+              <TableBody>
+                {payoutLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-slate-400">
+                      Loading payouts...
+                    </TableCell>
+                  </TableRow>
+                ) : payoutError ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-rose-300">
+                      {payoutError}
+                    </TableCell>
+                  </TableRow>
+                ) : payoutItems.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-slate-400">
+                      No payouts found.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  payoutItems.map((payout) => (
+                    <TableRow key={payout.id}>
+                      <TableCell>{dateFormatter.format(new Date(`${payout.payout_date}T00:00:00.000Z`))}</TableCell>
+                      <TableCell className="text-right font-mono">{currencyFormatter.format(payout.amount)}</TableCell>
+                      <TableCell className="max-w-[360px] truncate" title={payout.notes ?? undefined}>
+                        {payout.notes ?? "-"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="danger" size="sm" onClick={() => void handleDeletePayout(payout)}>
+                          Delete
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-xs text-slate-400">
+              Page {Math.min(payoutCurrentPage, payoutTotalPages)} of {payoutTotalPages} ({payoutTotal} total)
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={payoutOffset === 0 || payoutLoading}
+                onClick={() => setPayoutOffset((current) => Math.max(0, current - PAYOUT_PAGE_SIZE))}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={payoutOffset + PAYOUT_PAGE_SIZE >= payoutTotal || payoutLoading}
+                onClick={() => setPayoutOffset((current) => current + PAYOUT_PAGE_SIZE)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Drawer
+        open={addPayoutOpen}
+        onClose={() => setAddPayoutOpen(false)}
+        title="Add Payout"
+        description="Log the final payout amount you received after the profit split."
+      >
+        <form className="space-y-3" onSubmit={(event) => void handleSubmitNewPayout(event)}>
+          <div>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Payout Date</label>
+            <Input
+              type="date"
+              value={addPayoutState.payoutDate}
+              onChange={(event) =>
+                setAddPayoutState((current) => ({
+                  ...current,
+                  payoutDate: event.target.value,
+                }))
+              }
+              required
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
+            <Input
+              value={addPayoutState.amount}
+              onChange={(event) =>
+                setAddPayoutState((current) => ({
+                  ...current,
+                  amount: event.target.value,
+                }))
+              }
+              inputMode="decimal"
+              placeholder="2500.00"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Notes (Optional)</label>
+            <Textarea
+              value={addPayoutState.notes}
+              onChange={(event) =>
+                setAddPayoutState((current) => ({
+                  ...current,
+                  notes: event.target.value,
+                }))
+              }
+              className="min-h-[120px]"
+              placeholder="March payout after split"
+            />
+          </div>
+
+          {addPayoutError ? <p className="text-sm text-rose-300">{addPayoutError}</p> : null}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setAddPayoutOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={addingPayout}>
+              {addingPayout ? "Saving..." : "Save Payout"}
+            </Button>
+          </div>
+        </form>
+      </Drawer>
 
       <Drawer
         open={addOpen}

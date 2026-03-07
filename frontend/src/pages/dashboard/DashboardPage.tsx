@@ -1250,15 +1250,15 @@ export function DashboardPage() {
   return (
     <div className="space-y-5 pb-8">
       <div className="space-y-1.5">
-        <div className="max-w-full overflow-x-auto pb-1">
-          <div className="inline-flex min-w-max items-center gap-1 rounded-xl border border-slate-800/80 bg-slate-950/45 p-1 shadow-none">
-            <div className="flex items-center gap-1">
+        <div className="max-w-full pb-1">
+          <div className="flex flex-col gap-1 rounded-xl border border-slate-800/80 bg-slate-950/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="flex flex-col gap-1 sm:flex-row">
               <Input
                 type="date"
                 value={customStartDate}
                 max={customEndDate || undefined}
                 onChange={(event) => setCustomStartDate(event.target.value)}
-                className="h-8 w-[124px] shrink-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px]"
+                className="h-8 w-full min-w-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px] sm:w-[140px]"
                 aria-label="Custom start date"
               />
               <Input
@@ -1274,11 +1274,11 @@ export function DashboardPage() {
                     setSelectedTradeDate(null);
                   }
                 }}
-                className="h-8 w-[124px] shrink-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px]"
+                className="h-8 w-full min-w-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px] sm:w-[140px]"
                 aria-label="Custom end date"
               />
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               {METRICS_RANGE_OPTIONS.map((option) => {
                 const active = option.key === metricsRange;
                 return (
@@ -1289,7 +1289,7 @@ export function DashboardPage() {
                     aria-pressed={active}
                     onClick={() => setMetricsRange(option.key)}
                     className={cn(
-                      "shrink-0 rounded-lg border border-slate-700/80 px-2.5 text-[11px]",
+                      "min-w-[44px] flex-1 rounded-lg border border-slate-700/80 px-2.5 text-[11px] sm:flex-none",
                       active ? "border-cyan-300/40 ring-1 ring-cyan-300/60" : undefined,
                     )}
                   >
@@ -1298,13 +1298,13 @@ export function DashboardPage() {
                 );
               })}
             </div>
-            <Suspense fallback={<Skeleton className="h-8 w-32 rounded-lg" />}>
+            <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
                 rangeLabel={fullStatsRangeLabel}
                 calendarDays={pnlCalendarDays}
                 disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
-                className="h-8 rounded-lg px-2.5 text-[11px]"
+                className="h-8 w-full rounded-lg px-2.5 text-[11px] sm:w-auto"
               />
             </Suspense>
           </div>

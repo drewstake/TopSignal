@@ -126,8 +126,32 @@ export function getTradingDayRange(value: string): { start: string; end: string 
   };
 }
 
+export function getCalendarDayRange(value: string): { start: string; end: string } | null {
+  const parsed = parseIsoDateInput(value);
+  const nextDate = addIsoDays(value, 1);
+  const parsedNext = nextDate ? parseIsoDateInput(nextDate) : null;
+  if (!parsed || !parsedNext) {
+    return null;
+  }
+
+  const start = easternLocalDateTimeToUtc(parsed.year, parsed.month, parsed.day, 0, 0, 0, 0);
+  const nextBoundary = easternLocalDateTimeToUtc(parsedNext.year, parsedNext.month, parsedNext.day, 0, 0, 0, 0);
+  return {
+    start: start.toISOString(),
+    end: new Date(nextBoundary.getTime() - 1).toISOString(),
+  };
+}
+
 export function getTradingDayBoundaryIso(value: string, endOfDay: boolean): string | null {
   const range = getTradingDayRange(value);
+  if (!range) {
+    return null;
+  }
+  return endOfDay ? range.end : range.start;
+}
+
+export function getCalendarDayBoundaryIso(value: string, endOfDay: boolean): string | null {
+  const range = getCalendarDayRange(value);
   if (!range) {
     return null;
   }

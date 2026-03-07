@@ -28,6 +28,11 @@ import type {
   ExpenseRecord,
   ExpenseTotals,
   ExpenseUpdateInput,
+  PayoutCreateInput,
+  PayoutListQuery,
+  PayoutListResponse,
+  PayoutRecord,
+  PayoutTotals,
   HourPnlPoint,
   StreakMetrics,
   SummaryMetrics,
@@ -889,6 +894,42 @@ export function getExpenseTotals(range: ExpenseRange, options: ExpenseTotalsQuer
       end_date: options.endDate,
       start_created_at: options.startCreatedAt,
       end_created_at: options.endCreatedAt,
+    },
+  });
+}
+
+export function listPayouts(params: PayoutListQuery = {}) {
+  return requestJson<PayoutListResponse>("/api/payouts", {
+    query: {
+      start_date: params.start_date,
+      end_date: params.end_date,
+      limit: params.limit ?? 200,
+      offset: params.offset ?? 0,
+    },
+  });
+}
+
+export function createPayout(payload: PayoutCreateInput) {
+  return requestJson<PayoutRecord>("/api/payouts", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function deletePayout(id: number) {
+  return requestJson<void>(`/api/payouts/${id}`, { method: "DELETE" });
+}
+
+interface PayoutTotalsQuery {
+  startDate?: string;
+  endDate?: string;
+}
+
+export function getPayoutTotals(options: PayoutTotalsQuery = {}) {
+  return requestJson<PayoutTotals>("/api/payouts/totals", {
+    query: {
+      start_date: options.startDate,
+      end_date: options.endDate,
     },
   });
 }

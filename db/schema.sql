@@ -372,3 +372,64 @@ create table if not exists provider_credentials (
 
 create index if not exists idx_provider_credentials_user_provider
   on provider_credentials (user_id, provider);
+
+
+-- ============================================
+-- TABLE: expenses
+-- Account fees and operational costs.
+-- ============================================
+create table if not exists expenses (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  account_id bigint,
+  provider text not null default 'topstep',
+  expense_date date not null,
+  amount_cents integer not null check (amount_cents >= 0),
+  currency text not null default 'USD',
+  category text not null check (category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other')),
+  account_type text check (account_type in ('no_activation', 'standard', 'practice')),
+  plan_size text check (plan_size in ('50k', '100k', '150k')),
+  description text,
+  tags text[] not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_expenses_expense_date
+  on expenses (user_id, expense_date);
+
+create index if not exists idx_expenses_account_id
+  on expenses (user_id, account_id);
+
+create index if not exists idx_expenses_category
+  on expenses (user_id, category);
+
+create unique index if not exists uq_expenses_dedupe
+  on expenses (
+    user_id,
+    expense_date,
+    category,
+    coalesce(account_type, ''),
+    coalesce(plan_size, ''),
+    coalesce(account_id, 0),
+    amount_cents
+  );
+
+
+-- ============================================
+-- TABLE: payouts
+-- Final payout deposits received after profit split.
+-- ============================================
+create table if not exists payouts (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  payout_date date not null,
+  amount_cents integer not null check (amount_cents > 0),
+  currency text not null default 'USD',
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_payouts_payout_date
+  on payouts (user_id, payout_date desc);

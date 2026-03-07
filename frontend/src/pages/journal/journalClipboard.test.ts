@@ -1,6 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getClipboardImageFile, handleClipboardImagePaste } from "./journalClipboard";
+import { copyTextToClipboard, getClipboardImageFile, handleClipboardImagePaste } from "./journalClipboard";
+
+const originalNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+
+afterEach(() => {
+  if (originalNavigatorDescriptor) {
+    Object.defineProperty(globalThis, "navigator", originalNavigatorDescriptor);
+  } else {
+    Reflect.deleteProperty(globalThis, "navigator");
+  }
+});
 
 describe("getClipboardImageFile", () => {
   it("returns the first image file from clipboard items", () => {
@@ -74,5 +84,28 @@ describe("handleClipboardImagePaste", () => {
     expect(handled).toBe(false);
     expect(preventDefault).not.toHaveBeenCalled();
     expect(onFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("copyTextToClipboard", () => {
+  it("uses the Clipboard API when available", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText,
+        },
+      },
+    });
+
+    await expect(copyTextToClipboard("Journal notes")).resolves.toBe(true);
+    expect(writeText).toHaveBeenCalledWith("Journal notes");
+  });
+
+  it("returns false when no clipboard implementation is available", async () => {
+    Reflect.deleteProperty(globalThis, "navigator");
+
+    await expect(copyTextToClipboard("Journal notes")).resolves.toBe(false);
   });
 });

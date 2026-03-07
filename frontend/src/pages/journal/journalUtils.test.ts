@@ -9,6 +9,7 @@ import {
   draftToUpdatePayload,
   getTodayTradingDateIso,
   getYesterdayTradingDateIso,
+  hasJournalTradeStatsSnapshot,
   parseTagsInput,
   reconcileDraftWithServerEntry,
 } from "./journalUtils";
@@ -81,6 +82,32 @@ describe("entryToDraft", () => {
     });
 
     expect(draft.body).toBe(["Review", "Follow-through"].join("\n"));
+  });
+});
+
+describe("hasJournalTradeStatsSnapshot", () => {
+  it("treats entries with a saved stats payload as hydrated", () => {
+    expect(
+      hasJournalTradeStatsSnapshot({
+        stats_json: {
+          trade_count: 0,
+          total_pnl: 0,
+          total_fees: 0,
+          win_rate: 0,
+          avg_win: 0,
+          avg_loss: 0,
+          largest_win: 0,
+          largest_loss: 0,
+          gross: 0,
+          net: 0,
+          net_realized_pnl: 0,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("treats entries without a saved stats payload as missing snapshots", () => {
+    expect(hasJournalTradeStatsSnapshot({ stats_json: null })).toBe(false);
   });
 });
 

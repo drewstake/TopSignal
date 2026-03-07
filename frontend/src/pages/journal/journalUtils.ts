@@ -43,6 +43,10 @@ export function entryToDraft(entry: JournalEntry): JournalDraft {
   };
 }
 
+export function hasJournalTradeStatsSnapshot(entry: Pick<JournalEntry, "stats_json">): boolean {
+  return entry.stats_json !== null;
+}
+
 export function draftToUpdatePayload(draft: JournalDraft, versionOverride?: number): JournalEntryUpdateInput {
   return {
     version: versionOverride ?? draft.version,

@@ -15,6 +15,7 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { getCalendarDayBoundaryIso } from "../../lib/tradingDay";
 import type {
   AccountInfo,
   JournalEntry,
@@ -22,7 +23,10 @@ import type {
   JournalEntryUpdateInput,
 } from "../../lib/types";
 import { DebouncedAutosaveQueue, type JournalSaveState } from "./journalAutosave";
+import { copyTextToClipboard } from "./journalClipboard";
+import { buildJournalCopyText, buildJournalCopyTradeStats, getCopyEntry, type JournalCopyTradeStats } from "./journalCopy";
 import { JournalEditor } from "./components/JournalEditor";
+import { JournalCopyActions, type JournalCopyAction } from "./components/JournalCopyActions";
 import { JournalList } from "./components/JournalList";
 import { getVersionConflictServerEntry } from "./journalConflict";
 import {
@@ -32,6 +36,7 @@ import {
   draftToUpdatePayload,
   entryToDraft,
   getTodayTradingDateIso,
+  hasJournalTradeStatsSnapshot,
   JOURNAL_AUTOSAVE_DELAY_MS,
   JOURNAL_PAGE_SIZE,
   parseTagsInput,
@@ -41,6 +46,7 @@ import {
 } from "./journalUtils";
 
 const JOURNAL_DATE_QUERY_PARAM = "date";
+const COPY_TOAST_DURATION_MS = 2600;
 
 type JournalAutosavePatch = Omit<JournalEntryUpdateInput, "version">;
 
@@ -48,6 +54,12 @@ interface QueuedJournalSave {
   accountId: number;
   entryId: number;
   patch: JournalAutosavePatch;
+}
+
+interface JournalToastState {
+  id: number;
+  message: string;
+  tone: "success" | "error";
 }
 
 function parseJournalDateParam(value: string | null): string | null {
@@ -182,6 +194,46 @@ function JournalListSkeleton() {
   );
 }
 
+function CopyToast({ toast }: { toast: JournalToastState }) {
+  const classes =
+    toast.tone === "error"
+      ? "border-rose-500/45 bg-slate-950/95 text-rose-100"
+      : "border-cyan-400/45 bg-slate-950/95 text-slate-50";
+
+  return (
+    <div
+      className={`pointer-events-auto fixed bottom-6 right-6 z-30 max-w-sm rounded-2xl border px-4 py-3 text-sm shadow-lg ${classes}`}
+      role={toast.tone === "error" ? "alert" : "status"}
+      aria-live={toast.tone === "error" ? "assertive" : "polite"}
+    >
+      {toast.message}
+    </div>
+  );
+}
+
+function applyDraftToEntry(entry: JournalEntry, selectedId: number | null, draft: JournalDraft | null): JournalEntry {
+  if (!draft || selectedId === null || entry.id !== selectedId) {
+    return entry;
+  }
+
+  return {
+    ...entry,
+    title: draft.title,
+    mood: draft.mood,
+    tags: parseTagsInput(draft.tagsInput),
+    body: draft.body,
+    version: draft.version,
+    is_archived: draft.is_archived,
+  };
+}
+
+function getCopyFailureMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Couldn't copy journal text. Please try again.";
+}
+
 export function JournalPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
@@ -206,6 +258,8 @@ export function JournalPage() {
   const [uploadingImage, setUploadingImage] = useState(false);
 
   const [conflictServerEntry, setConflictServerEntry] = useState<JournalEntry | null>(null);
+  const [copyAction, setCopyAction] = useState<JournalCopyAction | null>(null);
+  const [copyToast, setCopyToast] = useState<JournalToastState | null>(null);
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -224,6 +278,8 @@ export function JournalPage() {
   const handledDateKeyRef = useRef<string | null>(null);
   const entriesRequestVersionRef = useRef(0);
   const imagesRequestVersionRef = useRef(0);
+  const copyStatsByDateRef = useRef<Map<string, Promise<JournalCopyTradeStats | null>>>(new Map());
+  const statsPullInFlightRef = useRef<Set<string>>(new Set());
 
   imagesRef.current = images;
   includeArchivedRef.current = includeArchived;
@@ -318,6 +374,36 @@ export function JournalPage() {
     [entries, selectedId],
   );
   selectedEntryIdRef.current = selectedEntry?.id ?? null;
+
+  const showCopyToast = useCallback((tone: JournalToastState["tone"], message: string) => {
+    setCopyToast({
+      id: Date.now(),
+      tone,
+      message,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!copyToast) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCopyToast((currentToast) => (currentToast?.id === copyToast.id ? null : currentToast));
+    }, COPY_TOAST_DURATION_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [copyToast]);
+
+  useEffect(() => {
+    copyStatsByDateRef.current.clear();
+  }, [selectedAccountId]);
+
+  useEffect(() => {
+    statsPullInFlightRef.current.clear();
+  }, [selectedAccountId]);
 
   const flushAutosave = useCallback(async () => {
     if (!autosaveRef.current) {
@@ -512,6 +598,35 @@ export function JournalPage() {
       return;
     }
     autosaveRef.current?.setBaseline(toQueuedJournalSave(selectedAccountId, selectedEntry.id, nextDraft));
+  }, [selectedAccountId, selectedEntry]);
+
+  useEffect(() => {
+    if (!selectedAccountId || !selectedEntry || hasJournalTradeStatsSnapshot(selectedEntry)) {
+      return;
+    }
+
+    const requestKey = `${selectedAccountId}:${selectedEntry.id}`;
+    if (statsPullInFlightRef.current.has(requestKey)) {
+      return;
+    }
+
+    statsPullInFlightRef.current.add(requestKey);
+
+    void accountsApi
+      .pullJournalTradeStats(selectedAccountId, selectedEntry.id)
+      .then((updatedEntry) => {
+        setEntries((currentEntries) =>
+          currentEntries.some((entry) => entry.id === updatedEntry.id)
+            ? currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry))
+            : currentEntries,
+        );
+      })
+      .catch(() => {
+        // Keep the entry visible as-is when the snapshot request fails.
+      })
+      .finally(() => {
+        statsPullInFlightRef.current.delete(requestKey);
+      });
   }, [selectedAccountId, selectedEntry]);
 
   useEffect(() => {
@@ -812,7 +927,137 @@ export function JournalPage() {
     }
   }, [entries, flushAutosave, selectedAccountId, selectedEntry]);
 
+  const loadCopyTradeStatsForDay = useCallback(
+    (entry: JournalEntry) => {
+      if (!selectedAccountId) {
+        return Promise.resolve(buildJournalCopyTradeStats({ entry }));
+      }
+
+      const dayStart = getCalendarDayBoundaryIso(entry.entry_date, false);
+      const dayEnd = getCalendarDayBoundaryIso(entry.entry_date, true);
+      if (!dayStart || !dayEnd) {
+        return Promise.resolve(buildJournalCopyTradeStats({ entry }));
+      }
+
+      const cacheKey = `${selectedAccountId}:${entry.entry_date}`;
+      const cached = copyStatsByDateRef.current.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const request = Promise.allSettled([
+        accountsApi.getSummary(selectedAccountId, {
+          start: dayStart,
+          end: dayEnd,
+        }),
+        accountsApi.getTrades(selectedAccountId, {
+          limit: 1000,
+          start: dayStart,
+          end: dayEnd,
+        }),
+      ]).then(([summaryResult, tradesResult]) =>
+        buildJournalCopyTradeStats({
+          entry,
+          summary: summaryResult.status === "fulfilled" ? summaryResult.value : null,
+          trades: tradesResult.status === "fulfilled" ? tradesResult.value : [],
+        }),
+      );
+
+      copyStatsByDateRef.current.set(cacheKey, request);
+      return request;
+    },
+    [selectedAccountId],
+  );
+
+  const loadTradeStatsByDate = useCallback(
+    async (entriesToCopy: JournalEntry[]) => {
+      const uniqueEntriesByDate = new Map(entriesToCopy.map((entry) => [entry.entry_date, entry]));
+      const statsEntries = await Promise.all(
+        Array.from(uniqueEntriesByDate.entries()).map(async ([entryDate, entry]) => [
+          entryDate,
+          await loadCopyTradeStatsForDay(entry),
+        ] as const),
+      );
+      return new Map(statsEntries);
+    },
+    [loadCopyTradeStatsForDay],
+  );
+
+  const handleCopyPayload = useCallback(
+    async (
+      action: JournalCopyAction,
+      resolveEntries: () => Promise<JournalEntry[]>,
+      successMessage: string,
+      emptyMessage: string,
+    ) => {
+      if (!selectedAccountId) {
+        showCopyToast("error", "Select an account before copying journal entries.");
+        return;
+      }
+
+      setCopyAction(action);
+      try {
+        const sourceEntries = await resolveEntries();
+        const entriesToCopy = sourceEntries.map((entry) => applyDraftToEntry(entry, selectedId, draft));
+        if (entriesToCopy.length === 0) {
+          showCopyToast("error", emptyMessage);
+          return;
+        }
+
+        const tradeStatsByDate = await loadTradeStatsByDate(entriesToCopy);
+        const text = buildJournalCopyText(entriesToCopy, tradeStatsByDate);
+        const copied = await copyTextToClipboard(text);
+        if (!copied) {
+          throw new Error("Couldn't copy journal text. Check clipboard permissions and try again.");
+        }
+
+        showCopyToast("success", successMessage);
+      } catch (error) {
+        showCopyToast("error", getCopyFailureMessage(error));
+      } finally {
+        setCopyAction(null);
+      }
+    },
+    [draft, loadTradeStatsByDate, selectedAccountId, selectedId, showCopyToast],
+  );
+
+  const handleCopyEntry = useCallback(() => {
+    void handleCopyPayload(
+      "entry",
+      async () => {
+        const entry = getCopyEntry(entries, selectedId);
+        return entry ? [entry] : [];
+      },
+      "Copied current entry",
+      "No journal entry is available to copy.",
+    );
+  }, [entries, handleCopyPayload, selectedId]);
+
+  const handleCopyRecent = useCallback(
+    (count: 7 | 30) => {
+      void handleCopyPayload(
+        count === 7 ? "recent-7" : "recent-30",
+        async () => {
+          if (!selectedAccountId) {
+            return [];
+          }
+
+          const payload = await accountsApi.getJournalEntries(selectedAccountId, {
+            ...listQuery,
+            limit: count,
+            offset: 0,
+          });
+          return payload.items;
+        },
+        count === 7 ? "Copied 7 recent entries" : "Copied 30 recent entries",
+        "No journal entries are available to copy.",
+      );
+    },
+    [handleCopyPayload, listQuery, selectedAccountId],
+  );
+
   const savingDisabled = saveState === "saving" || !selectedEntry;
+  const copyDisabled = loadingEntries || !selectedAccountId || totalEntries === 0;
 
   const moodOptions: Array<JournalMoodFilter> = ["ALL", "Focused", "Neutral", "Frustrated", "Confident"];
   const hasFilterStatusMessage = entriesError !== null || entriesInfo !== null;
@@ -856,48 +1101,56 @@ export function JournalPage() {
         </div>
       </section>
 
-        <Card className="px-2 py-1.5 md:px-2.5 md:py-2">
-          <CardHeader className="mb-0 py-0">
-            <div className="flex flex-wrap items-center gap-1.5 lg:flex-nowrap">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 lg:flex-nowrap">
-                <FilterField label="Start" className="flex-[0_1_176px]">
-                  <Input
-                    type="date"
-                    value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
-                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
-                  />
-                </FilterField>
-                <FilterField label="End" className="flex-[0_1_176px]">
-                  <Input
-                    type="date"
-                    value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
-                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
-                  />
-                </FilterField>
-                <FilterField label="Mood" className="flex-[0_1_148px]">
-                  <Select
-                    value={moodFilter}
-                    onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}
-                    className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
-                  >
-                    {moodOptions.map((option) => (
-                      <option key={option} value={option}>
-                        {option === "ALL" ? "All moods" : option}
-                      </option>
-                    ))}
-                  </Select>
-                </FilterField>
-              </div>
-            <Button
-              size="sm"
-              className="ml-auto h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
-              onClick={() => void handleCreateEntry()}
-              disabled={creatingEntry || !selectedAccountId}
-            >
-              {creatingEntry ? "Creating..." : "New Entry"}
-            </Button>
+      <Card className="px-2 py-1.5 md:px-2.5 md:py-2">
+        <CardHeader className="mb-0 py-0">
+          <div className="flex flex-wrap items-center gap-1.5 lg:flex-nowrap">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 lg:flex-nowrap">
+              <FilterField label="Start" className="flex-[0_1_176px]">
+                <Input
+                  type="date"
+                  value={startDate}
+                  onChange={(event) => setStartDate(event.target.value)}
+                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                />
+              </FilterField>
+              <FilterField label="End" className="flex-[0_1_176px]">
+                <Input
+                  type="date"
+                  value={endDate}
+                  onChange={(event) => setEndDate(event.target.value)}
+                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                />
+              </FilterField>
+              <FilterField label="Mood" className="flex-[0_1_148px]">
+                <Select
+                  value={moodFilter}
+                  onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}
+                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                >
+                  {moodOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option === "ALL" ? "All moods" : option}
+                    </option>
+                  ))}
+                </Select>
+              </FilterField>
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <JournalCopyActions
+                disabled={copyDisabled}
+                activeAction={copyAction}
+                onCopyEntry={handleCopyEntry}
+                onCopyRecent={handleCopyRecent}
+              />
+              <Button
+                size="sm"
+                className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
+                onClick={() => void handleCreateEntry()}
+                disabled={creatingEntry || !selectedAccountId}
+              >
+                {creatingEntry ? "Creating..." : "New Entry"}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         {hasFilterStatusMessage ? (
@@ -944,6 +1197,7 @@ export function JournalPage() {
           />
         </div>
       </div>
+      {copyToast ? <CopyToast toast={copyToast} /> : null}
     </div>
   );
 }

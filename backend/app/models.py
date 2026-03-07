@@ -343,3 +343,25 @@ class Expense(Base):
             unique=True,
         ),
     )
+
+
+class Payout(Base):
+    __tablename__ = "payouts"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    payout_date = Column(Date, nullable=False)
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(Text, nullable=False, server_default="USD")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("amount_cents > 0", name="payouts_amount_cents_positive_check"),
+        Index("idx_payouts_payout_date", "user_id", "payout_date"),
+    )

@@ -262,6 +262,45 @@ export interface ExpenseTotals {
   count: number;
 }
 
+export interface PayoutRecord {
+  id: number;
+  payout_date: string;
+  amount_cents: number;
+  amount: number;
+  currency: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayoutCreateInput {
+  payout_date: string;
+  amount?: number;
+  amount_cents?: number;
+  notes?: string;
+  currency?: string;
+}
+
+export interface PayoutListQuery {
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PayoutListResponse {
+  items: PayoutRecord[];
+  total: number;
+}
+
+export interface PayoutTotals {
+  total_amount: number;
+  total_amount_cents: number;
+  average_amount: number;
+  average_amount_cents: number;
+  count: number;
+}
+
 export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";
 
 export interface JournalStatsSnapshot {
