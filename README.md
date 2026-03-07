@@ -57,6 +57,22 @@ The dashboard is the main account analytics surface. It is account-scoped and sh
 - a daily account-balance curve derived from the calendar
 - a recent trade-event feed
 
+Dashboard overview:
+
+![Dashboard performance, edge, risk, and sustainability panels](images/metrics.png)
+
+Calendar drill-down:
+
+![Trading-day PnL calendar with journal markers](images/PnL_Calender.png)
+
+Balance curve derived from the selected trading range:
+
+![Daily account balance curve](images/daily_account_bal.png)
+
+Recent execution review feed:
+
+![Recent trade events table](images/recent_trade_events.png)
+
 Important dashboard behaviors:
 
 - The active account comes from the global account picker in the app shell.
@@ -77,6 +93,10 @@ A user can:
 - mark one account as the main account
 - set the active account used across the rest of the app
 - resolve the last trade timestamp from the provider when local data is stale or absent
+
+Accounts page:
+
+![Accounts management page](images/accounts.png)
 
 TopSignal tracks four account states:
 
@@ -133,6 +153,10 @@ A user can:
 - archive or unarchive entries
 - paste images into the entry workspace
 - pull a trade-stat snapshot into the journal entry
+
+Journal workspace:
+
+![Trading journal page](images/journal.png)
 
 Notable journal behavior:
 
