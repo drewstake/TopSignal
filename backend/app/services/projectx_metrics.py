@@ -58,8 +58,7 @@ SizingBenchmarkLabel = Literal[
 ]
 TradeSummaryValue = float | int | None | str | dict[str, float | None | str]
 
-FIXED_SIZING_BENCHMARK_MODE = "fixed_5_micros"
-FIXED_SIZING_BENCHMARK_SIZE = 5.0
+FIXED_AVERAGE_SIZING_BENCHMARK_MODE = "fixed_average_size"
 _BENCHMARK_NEAR_ZERO_DOLLARS_BASE = 25.0
 _BENCHMARK_NEAR_ZERO_DOLLARS_PER_TRADE = 5.0
 _BENCHMARK_INLINE_DIFF_DOLLARS_BASE = 50.0
@@ -127,10 +126,12 @@ def compute_trade_summary(
         points_basis=normalized_points_basis,
         point_value_lookup=point_value_lookup,
     )
+    position_size_stats = _compute_position_size_stats(trades)
     sizing_benchmark = _compute_sizing_benchmark(
         trades=trades,
         trade_count=trade_count,
         actual_net_pnl=net_pnl,
+        benchmark_size=position_size_stats["averagePositionSize"],
         point_value_lookup=point_value_lookup,
     )
 
@@ -167,6 +168,9 @@ def compute_trade_summary(
         "active_days": active_days,
         "efficiency_per_hour": _round((net_pnl / active_hours), 2) if active_hours > 0 else 0.0,
         "profit_per_day": _round((net_pnl / active_days), 2) if active_days else 0.0,
+        "averagePositionSize": position_size_stats["averagePositionSize"],
+        "medianPositionSize": position_size_stats["medianPositionSize"],
+        "tradeCountUsedForSizingStats": position_size_stats["tradeCountUsedForSizingStats"],
         "avgPointGain": _round(point_metrics["avg_point_gain"], 4) if point_metrics["avg_point_gain"] is not None else None,
         "avgPointLoss": _round(point_metrics["avg_point_loss"], 4) if point_metrics["avg_point_loss"] is not None else None,
         "pointsBasisUsed": normalized_points_basis,
@@ -268,6 +272,9 @@ def _empty_trade_summary(*, points_basis: str) -> dict[str, TradeSummaryValue]:
         "active_days": 0,
         "efficiency_per_hour": 0.0,
         "profit_per_day": 0.0,
+        "averagePositionSize": 0.0,
+        "medianPositionSize": 0.0,
+        "tradeCountUsedForSizingStats": 0,
         "avgPointGain": None,
         "avgPointLoss": None,
         "pointsBasisUsed": points_basis,
@@ -296,13 +303,48 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
 def _round(value: float, digits: int = 2) -> float:
     return round(float(value), digits)
 
 
+def _compute_position_size_stats(trades: list[TradeMetricSample]) -> dict[str, float | int]:
+    sizes: list[float] = []
+    for trade in trades:
+        if trade.pnl is None:
+            continue
+        size = abs(_safe_float(trade.size))
+        if not math.isfinite(size) or size <= 0:
+            continue
+        sizes.append(size)
+
+    if not sizes:
+        return {
+            "averagePositionSize": 0.0,
+            "medianPositionSize": 0.0,
+            "tradeCountUsedForSizingStats": 0,
+        }
+
+    return {
+        "averagePositionSize": _round(_mean(sizes), 4),
+        "medianPositionSize": _round(_median(sizes), 4),
+        "tradeCountUsedForSizingStats": len(sizes),
+    }
+
+
 def _empty_sizing_benchmark() -> dict[str, float | None | str]:
     return {
-        "benchmarkMode": FIXED_SIZING_BENCHMARK_MODE,
+        "benchmarkMode": FIXED_AVERAGE_SIZING_BENCHMARK_MODE,
+        "benchmarkSizeUsed": 0.0,
         "benchmarkGrossPnl": 0.0,
         "benchmarkNetPnl": 0.0,
         "benchmarkDiff": 0.0,
@@ -320,11 +362,13 @@ def _compute_sizing_benchmark(
     trades: list[TradeMetricSample],
     trade_count: int,
     actual_net_pnl: float,
+    benchmark_size: float,
     point_value_lookup: Mapping[str, float],
 ) -> dict[str, float | None | str]:
     benchmark_gross_pnl = 0.0
     benchmark_fees = 0.0
     epsilon = 1e-9
+    constant_benchmark_size = benchmark_size if math.isfinite(benchmark_size) and benchmark_size > epsilon else 0.0
 
     for trade in trades:
         if trade.pnl is None:
@@ -335,6 +379,7 @@ def _compute_sizing_benchmark(
             continue
 
         actual_gross_pnl = _safe_float(trade.pnl)
+        size_ratio = constant_benchmark_size / qty
         point_value = resolve_point_value(
             symbol=trade.symbol,
             contract_id=trade.contract_id,
@@ -343,11 +388,11 @@ def _compute_sizing_benchmark(
 
         if point_value is not None and point_value > epsilon:
             equivalent_points = actual_gross_pnl / (qty * point_value)
-            benchmark_gross_pnl += equivalent_points * FIXED_SIZING_BENCHMARK_SIZE * point_value
+            benchmark_gross_pnl += equivalent_points * constant_benchmark_size * point_value
         else:
-            benchmark_gross_pnl += actual_gross_pnl * (FIXED_SIZING_BENCHMARK_SIZE / qty)
+            benchmark_gross_pnl += actual_gross_pnl * size_ratio
 
-        benchmark_fees += _effective_fee(trade) * (FIXED_SIZING_BENCHMARK_SIZE / qty)
+        benchmark_fees += _effective_fee(trade) * size_ratio
 
     benchmark_net_pnl = benchmark_gross_pnl - benchmark_fees
     benchmark_diff = actual_net_pnl - benchmark_net_pnl
@@ -359,7 +404,8 @@ def _compute_sizing_benchmark(
     )
 
     return {
-        "benchmarkMode": FIXED_SIZING_BENCHMARK_MODE,
+        "benchmarkMode": FIXED_AVERAGE_SIZING_BENCHMARK_MODE,
+        "benchmarkSizeUsed": _round(constant_benchmark_size, 4),
         "benchmarkGrossPnl": _round(benchmark_gross_pnl),
         "benchmarkNetPnl": _round(benchmark_net_pnl),
         "benchmarkDiff": _round(benchmark_diff),

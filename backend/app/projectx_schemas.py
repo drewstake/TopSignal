@@ -61,7 +61,8 @@ class ProjectXTradeOut(BaseModel):
 
 
 class ProjectXSizingBenchmarkOut(BaseModel):
-    benchmarkMode: Literal["fixed_5_micros"]
+    benchmarkMode: Literal["fixed_average_size"]
+    benchmarkSizeUsed: float
     benchmarkGrossPnl: float
     benchmarkNetPnl: float
     benchmarkDiff: float
@@ -108,6 +109,9 @@ class ProjectXTradeSummaryOut(BaseModel):
     active_days: int
     efficiency_per_hour: float
     profit_per_day: float
+    averagePositionSize: float
+    medianPositionSize: float
+    tradeCountUsedForSizingStats: int
     avgPointGain: float | None = None
     avgPointLoss: float | None = None
     pointsBasisUsed: str

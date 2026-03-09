@@ -137,7 +137,8 @@ export type SizingBenchmarkLabel =
   | "Far Above Benchmark";
 
 export interface AccountSizingBenchmark {
-  benchmarkMode: "fixed_5_micros";
+  benchmarkMode: "fixed_average_size";
+  benchmarkSizeUsed: number;
   benchmarkGrossPnl: number;
   benchmarkNetPnl: number;
   benchmarkDiff: number;
@@ -178,6 +179,9 @@ export interface AccountSummary {
   active_days: number;
   efficiency_per_hour: number;
   profit_per_day: number;
+  averagePositionSize: number;
+  medianPositionSize: number;
+  tradeCountUsedForSizingStats: number;
   avgPointGain: number | null;
   avgPointLoss: number | null;
   pointsBasisUsed: "auto" | "MNQ" | "MES" | "MGC" | "SIL";

@@ -132,11 +132,15 @@ const emptySummary: AccountSummary = {
   active_days: 0,
   efficiency_per_hour: 0,
   profit_per_day: 0,
+  averagePositionSize: 0,
+  medianPositionSize: 0,
+  tradeCountUsedForSizingStats: 0,
   avgPointGain: null,
   avgPointLoss: null,
   pointsBasisUsed: "auto",
   sizingBenchmark: {
-    benchmarkMode: "fixed_5_micros",
+    benchmarkMode: "fixed_average_size",
+    benchmarkSizeUsed: 0,
     benchmarkGrossPnl: 0,
     benchmarkNetPnl: 0,
     benchmarkDiff: 0,
@@ -166,32 +170,35 @@ const sizingBenchmarkTooltipContent = (
     <div>
       <p className="font-semibold text-slate-50">Sizing Benchmark</p>
       <p className="mt-1 text-slate-200">
-        Replays the same trades, entries, and exits at a constant size of 5 micros and recalculates fees with the app's fee model.
+        This compares your actual results to a fixed-size benchmark using the same trades, same entries, and same exits,
+        but with a constant size equal to your average position size in the selected range.
       </p>
     </div>
     <div>
       <p className="font-semibold text-rose-200">Far Below Benchmark</p>
-      <p className="text-slate-200">Sizing hurt results by a lot.</p>
+      <p className="text-slate-200">
+        You made much less than the average-size benchmark, or your sizing reduced performance.
+      </p>
     </div>
     <div>
       <p className="font-semibold text-amber-200">Below Benchmark</p>
-      <p className="text-slate-200">Sizing trailed fixed 5 micros.</p>
+      <p className="text-slate-200">You trailed the benchmark by a meaningful amount.</p>
     </div>
     <div>
       <p className="font-semibold text-slate-100">In Line With Benchmark</p>
-      <p className="text-slate-200">Sizing was roughly the same as fixed 5 micros.</p>
+      <p className="text-slate-200">Your dynamic sizing performed about the same as a fixed average-size approach.</p>
     </div>
     <div>
       <p className="font-semibold text-cyan-100">Above Benchmark</p>
-      <p className="text-slate-200">Sizing helped results.</p>
+      <p className="text-slate-200">Your sizing improved results over the benchmark.</p>
     </div>
     <div>
       <p className="font-semibold text-emerald-200">Far Above Benchmark</p>
-      <p className="text-slate-200">Sizing added clear value.</p>
+      <p className="text-slate-200">Your sizing clearly added strong value versus a fixed average-size approach.</p>
     </div>
     <div className="border-t border-slate-800/80 pt-1.5 text-slate-300">
-      <p>Positive benchmark: label uses actual net vs benchmark net.</p>
-      <p className="mt-0.5">Flat or negative benchmark: label uses dollar difference.</p>
+      <p>When the benchmark is positive, the label is based on your actual net PnL compared to benchmark net PnL.</p>
+      <p className="mt-0.5">When the benchmark is flat or negative, fall back to dollar difference so the label stays meaningful.</p>
     </div>
   </div>
 );
@@ -215,6 +222,18 @@ function formatTradeDuration(minutes: number | null | undefined) {
     return "-";
   }
   return formatDurationCompact(minutes);
+}
+
+function formatMicroPositionSize(size: number, tradeCountUsed: number) {
+  if (tradeCountUsed <= 0 || !Number.isFinite(size) || size <= 0) {
+    return "N/A";
+  }
+  return `${formatNumber(size, 1)} micros`;
+}
+
+function formatSizingBenchmarkSubtitle(size: number, tradeCountUsed: number) {
+  const formattedSize = formatMicroPositionSize(size, tradeCountUsed);
+  return formattedSize === "N/A" ? "vs Avg Size" : `vs Avg Size (${formattedSize})`;
 }
 
 function pnlClass(value: number) {
@@ -285,7 +304,7 @@ function sizingBenchmarkComparisonLabel(benchmark: AccountSizingBenchmark) {
     if (Math.abs(benchmark.benchmarkDiff) < 0.01) {
       return "In line on dollar difference";
     }
-    return benchmark.benchmarkNetPnl <= 0 ? "Benchmark <= 0, using $ diff" : "Benchmark near 0, using $ diff";
+    return benchmark.benchmarkNetPnl <= 0 ? "Benchmark flat/negative, using $ diff" : "Benchmark near 0, using $ diff";
   }
 
   const ratioDeltaPercent = (benchmark.benchmarkRatio - 1) * 100;
@@ -1472,8 +1491,19 @@ export function DashboardPage() {
                     >
                       {summary.sizingBenchmark.benchmarkLabel}
                     </Badge>
-                    <span className="text-[10px] text-slate-400">vs Fixed 5 Micros</span>
+                    <span className="text-[10px] text-slate-400">
+                      {formatSizingBenchmarkSubtitle(
+                        summary.sizingBenchmark.benchmarkSizeUsed,
+                        summary.tradeCountUsedForSizingStats,
+                      )}
+                    </span>
                   </div>
+                  {formatMicroPositionSize(summary.sizingBenchmark.benchmarkSizeUsed, summary.tradeCountUsedForSizingStats) !== "N/A" ? (
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Benchmark Size:{" "}
+                      {formatMicroPositionSize(summary.sizingBenchmark.benchmarkSizeUsed, summary.tradeCountUsedForSizingStats)}
+                    </p>
+                  ) : null}
                   <div className="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-t border-slate-700/70 pt-2.5">
                     <div className="min-w-0">
                       <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">
@@ -1705,6 +1735,14 @@ export function DashboardPage() {
                   { label: "Profit Giveback", value: formatMetricValue(drawdownPercentOfNet, formatPercent) },
                   { label: "Equity Base", value: drawdownEquityBase.value === null ? "N/A" : formatCurrency(drawdownEquityBase.value) },
                   { label: "Basis", value: drawdownEquityBase.label },
+                  {
+                    label: "Avg Size Used",
+                    value: formatMicroPositionSize(summary.averagePositionSize, summary.tradeCountUsedForSizingStats),
+                  },
+                  {
+                    label: "Median Size Used",
+                    value: formatMicroPositionSize(summary.medianPositionSize, summary.tradeCountUsedForSizingStats),
+                  },
                   { label: "Avg Drawdown", value: formatPnl(summary.average_drawdown), valueClassName: metricPnlClass({ value: summary.average_drawdown }) },
                   { label: "DD Length", value: `${formatNumber(summary.max_drawdown_length_hours, 1)} h` },
                 ]}
