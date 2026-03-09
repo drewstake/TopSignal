@@ -35,8 +35,14 @@ function killProcessTree(pid) {
   timeout.unref();
 }
 
-// Uvicorn reload uses console control events on Windows. A separate process
-// group keeps those restarts from spilling into the frontend watcher.
+// Keep the backend attached to the terminal by default so `npm run dev`
+// does not spawn a second console window on Windows. If reload control
+// events ever interfere with sibling watchers, the old isolated behavior
+// can still be enabled explicitly.
+const detachBackend =
+  process.platform === "win32" &&
+  process.env.TOPSIGNAL_DEV_BACKEND_DETACHED === "1";
+
 const child = spawn(
   pythonPath,
   ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
@@ -44,7 +50,7 @@ const child = spawn(
     cwd: backendDir,
     env: process.env,
     stdio: ["inherit", "pipe", "pipe"],
-    detached: process.platform === "win32",
+    detached: detachBackend,
     windowsHide: true,
   },
 );
