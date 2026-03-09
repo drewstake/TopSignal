@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Literal, Mapping, Optional
 
 from .instruments import (
     DEFAULT_INSTRUMENT_SPECS,
@@ -49,12 +49,31 @@ class SymbolPositionState:
     lots: list[PositionLot]
 
 
+SizingBenchmarkLabel = Literal[
+    "Far Below Benchmark",
+    "Below Benchmark",
+    "In Line With Benchmark",
+    "Above Benchmark",
+    "Far Above Benchmark",
+]
+TradeSummaryValue = float | int | None | str | dict[str, float | None | str]
+
+FIXED_SIZING_BENCHMARK_MODE = "fixed_5_micros"
+FIXED_SIZING_BENCHMARK_SIZE = 5.0
+_BENCHMARK_NEAR_ZERO_DOLLARS_BASE = 25.0
+_BENCHMARK_NEAR_ZERO_DOLLARS_PER_TRADE = 5.0
+_BENCHMARK_INLINE_DIFF_DOLLARS_BASE = 50.0
+_BENCHMARK_INLINE_DIFF_DOLLARS_PER_TRADE = 10.0
+_BENCHMARK_FAR_DIFF_DOLLARS_BASE = 150.0
+_BENCHMARK_FAR_DIFF_DOLLARS_PER_TRADE = 25.0
+
+
 def compute_trade_summary(
     samples: Iterable[TradeMetricSample],
     *,
     points_basis: str = "auto",
     point_value_by_symbol: Mapping[str, float] | None = None,
-) -> dict[str, float | int | None | str]:
+) -> dict[str, TradeSummaryValue]:
     normalized_points_basis = normalize_points_basis(points_basis)
     point_value_lookup = dict(point_value_by_symbol or _default_point_value_lookup())
     trades = sorted(samples, key=lambda sample: sample.timestamp)
@@ -108,6 +127,12 @@ def compute_trade_summary(
         points_basis=normalized_points_basis,
         point_value_lookup=point_value_lookup,
     )
+    sizing_benchmark = _compute_sizing_benchmark(
+        trades=trades,
+        trade_count=trade_count,
+        actual_net_pnl=net_pnl,
+        point_value_lookup=point_value_lookup,
+    )
 
     return {
         "realized_pnl": _round(gross_pnl),
@@ -145,6 +170,7 @@ def compute_trade_summary(
         "avgPointGain": _round(point_metrics["avg_point_gain"], 4) if point_metrics["avg_point_gain"] is not None else None,
         "avgPointLoss": _round(point_metrics["avg_point_loss"], 4) if point_metrics["avg_point_loss"] is not None else None,
         "pointsBasisUsed": normalized_points_basis,
+        "sizingBenchmark": sizing_benchmark,
     }
 
 
@@ -208,7 +234,7 @@ def _compute_realized_values(trades: list[TradeMetricSample]) -> tuple[list[floa
     return realized_values, closed_pnls
 
 
-def _empty_trade_summary(*, points_basis: str) -> dict[str, float | int | None | str]:
+def _empty_trade_summary(*, points_basis: str) -> dict[str, TradeSummaryValue]:
     return {
         "realized_pnl": 0.0,
         "gross_pnl": 0.0,
@@ -245,6 +271,7 @@ def _empty_trade_summary(*, points_basis: str) -> dict[str, float | int | None |
         "avgPointGain": None,
         "avgPointLoss": None,
         "pointsBasisUsed": points_basis,
+        "sizingBenchmark": _empty_sizing_benchmark(),
     }
 
 
@@ -273,8 +300,116 @@ def _round(value: float, digits: int = 2) -> float:
     return round(float(value), digits)
 
 
+def _empty_sizing_benchmark() -> dict[str, float | None | str]:
+    return {
+        "benchmarkMode": FIXED_SIZING_BENCHMARK_MODE,
+        "benchmarkGrossPnl": 0.0,
+        "benchmarkNetPnl": 0.0,
+        "benchmarkDiff": 0.0,
+        "benchmarkRatio": None,
+        "benchmarkLabel": "In Line With Benchmark",
+    }
+
+
 def _default_point_value_lookup() -> dict[str, float]:
     return build_point_value_lookup(DEFAULT_INSTRUMENT_SPECS)
+
+
+def _compute_sizing_benchmark(
+    *,
+    trades: list[TradeMetricSample],
+    trade_count: int,
+    actual_net_pnl: float,
+    point_value_lookup: Mapping[str, float],
+) -> dict[str, float | None | str]:
+    benchmark_gross_pnl = 0.0
+    benchmark_fees = 0.0
+    epsilon = 1e-9
+
+    for trade in trades:
+        if trade.pnl is None:
+            continue
+
+        qty = abs(_safe_float(trade.size))
+        if qty <= epsilon:
+            continue
+
+        actual_gross_pnl = _safe_float(trade.pnl)
+        point_value = resolve_point_value(
+            symbol=trade.symbol,
+            contract_id=trade.contract_id,
+            point_value_by_symbol=point_value_lookup,
+        )
+
+        if point_value is not None and point_value > epsilon:
+            equivalent_points = actual_gross_pnl / (qty * point_value)
+            benchmark_gross_pnl += equivalent_points * FIXED_SIZING_BENCHMARK_SIZE * point_value
+        else:
+            benchmark_gross_pnl += actual_gross_pnl * (FIXED_SIZING_BENCHMARK_SIZE / qty)
+
+        benchmark_fees += _effective_fee(trade) * (FIXED_SIZING_BENCHMARK_SIZE / qty)
+
+    benchmark_net_pnl = benchmark_gross_pnl - benchmark_fees
+    benchmark_diff = actual_net_pnl - benchmark_net_pnl
+    benchmark_label, benchmark_ratio = _classify_sizing_benchmark(
+        actual_net_pnl=actual_net_pnl,
+        benchmark_net_pnl=benchmark_net_pnl,
+        benchmark_diff=benchmark_diff,
+        trade_count=trade_count,
+    )
+
+    return {
+        "benchmarkMode": FIXED_SIZING_BENCHMARK_MODE,
+        "benchmarkGrossPnl": _round(benchmark_gross_pnl),
+        "benchmarkNetPnl": _round(benchmark_net_pnl),
+        "benchmarkDiff": _round(benchmark_diff),
+        "benchmarkRatio": _round(benchmark_ratio, 4) if benchmark_ratio is not None else None,
+        "benchmarkLabel": benchmark_label,
+    }
+
+
+def _classify_sizing_benchmark(
+    *,
+    actual_net_pnl: float,
+    benchmark_net_pnl: float,
+    benchmark_diff: float,
+    trade_count: int,
+) -> tuple[SizingBenchmarkLabel, float | None]:
+    effective_trade_count = max(trade_count, 1)
+    near_zero_threshold = max(
+        _BENCHMARK_NEAR_ZERO_DOLLARS_BASE,
+        effective_trade_count * _BENCHMARK_NEAR_ZERO_DOLLARS_PER_TRADE,
+    )
+    if benchmark_net_pnl > near_zero_threshold:
+        ratio = actual_net_pnl / benchmark_net_pnl
+        if ratio < 0.50:
+            return "Far Below Benchmark", ratio
+        if ratio < 0.90:
+            return "Below Benchmark", ratio
+        if ratio <= 1.10:
+            return "In Line With Benchmark", ratio
+        if ratio <= 1.50:
+            return "Above Benchmark", ratio
+        return "Far Above Benchmark", ratio
+
+    inline_diff_threshold = max(
+        _BENCHMARK_INLINE_DIFF_DOLLARS_BASE,
+        effective_trade_count * _BENCHMARK_INLINE_DIFF_DOLLARS_PER_TRADE,
+    )
+    far_diff_threshold = max(
+        _BENCHMARK_FAR_DIFF_DOLLARS_BASE,
+        effective_trade_count * _BENCHMARK_FAR_DIFF_DOLLARS_PER_TRADE,
+    )
+
+    if benchmark_diff < -far_diff_threshold:
+        return "Far Below Benchmark", None
+    if benchmark_diff < -inline_diff_threshold:
+        return "Below Benchmark", None
+    if benchmark_diff <= inline_diff_threshold:
+        return "In Line With Benchmark", None
+    if benchmark_diff <= far_diff_threshold:
+        return "Above Benchmark", None
+    return "Far Above Benchmark", None
 
 
 def _compute_point_metrics(

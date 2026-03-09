@@ -68,6 +68,14 @@ const sampleSummary: AccountSummary = {
   avgPointGain: null,
   avgPointLoss: null,
   pointsBasisUsed: "auto",
+  sizingBenchmark: {
+    benchmarkMode: "fixed_5_micros",
+    benchmarkGrossPnl: 415.4,
+    benchmarkNetPnl: 405.2,
+    benchmarkDiff: 15.3,
+    benchmarkRatio: 1.0378,
+    benchmarkLabel: "In Line With Benchmark",
+  },
 };
 
 const sampleTrades: AccountTrade[] = [

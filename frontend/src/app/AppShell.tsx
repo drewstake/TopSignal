@@ -8,6 +8,7 @@ import { Tabs } from "../components/ui/Tabs";
 import { cn } from "../components/ui/cn";
 import {
   ACCOUNT_QUERY_PARAM,
+  ACCOUNT_DISPLAY_NAME_UPDATED_EVENT,
   MAIN_ACCOUNT_UPDATED_EVENT,
   parseAccountId,
   readStoredAccountId,
@@ -75,13 +76,18 @@ export function AppShell() {
     function handleMainAccountUpdated() {
       void loadAccounts();
     }
+    function handleAccountDisplayNameUpdated() {
+      void loadAccounts();
+    }
     if (typeof window !== "undefined") {
       window.addEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
+      window.addEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
     }
     return () => {
       isMounted = false;
       if (typeof window !== "undefined") {
         window.removeEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
+        window.removeEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
       }
     };
   }, []);

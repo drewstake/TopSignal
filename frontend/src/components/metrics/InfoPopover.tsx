@@ -1,18 +1,21 @@
+import type { ReactNode } from "react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { cn } from "../ui/cn";
 
 interface InfoPopoverProps {
-  content: string;
+  content: ReactNode;
   label?: string;
   className?: string;
   panelClassName?: string;
 }
 
 export function InfoPopover({ content, label = "Metric definition", className, panelClassName }: InfoPopoverProps) {
-  const [open, setOpen] = useState(false);
+  const [clickedOpen, setClickedOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
+  const open = clickedOpen || hovered;
 
   useEffect(() => {
     if (!open) {
@@ -21,13 +24,14 @@ export function InfoPopover({ content, label = "Metric definition", className, p
 
     function onDocumentMouseDown(event: MouseEvent) {
       if (!containerRef.current?.contains(event.target as Node)) {
-        setOpen(false);
+        setClickedOpen(false);
       }
     }
 
     function onDocumentKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setOpen(false);
+        setClickedOpen(false);
+        setHovered(false);
       }
     }
 
@@ -41,14 +45,25 @@ export function InfoPopover({ content, label = "Metric definition", className, p
   }, [open]);
 
   return (
-    <div ref={containerRef} className={cn("relative inline-flex", className)}>
+    <div
+      ref={containerRef}
+      className={cn("relative inline-flex", className)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setHovered(true)}
+      onBlurCapture={(event) => {
+        if (!containerRef.current?.contains(event.relatedTarget as Node | null)) {
+          setHovered(false);
+        }
+      }}
+    >
       <button
         type="button"
         aria-label={label}
         aria-expanded={open}
         aria-controls={panelId}
         aria-haspopup="dialog"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setClickedOpen((value) => !value)}
         className={cn(
           "inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-[10px] font-semibold text-slate-400 transition",
           open ? "border-cyan-300/70 text-cyan-100" : "hover:border-cyan-300/65 hover:text-cyan-200",
@@ -71,4 +86,3 @@ export function InfoPopover({ content, label = "Metric definition", className, p
     </div>
   );
 }
-

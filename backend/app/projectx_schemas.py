@@ -1,10 +1,14 @@
 from datetime import date, datetime
+from typing import Literal
+
 from pydantic import BaseModel
 
 
 class ProjectXAccountOut(BaseModel):
     id: int
     name: str
+    provider_name: str
+    custom_display_name: str | None = None
     balance: float
     status: str
     account_state: str
@@ -17,6 +21,17 @@ class ProjectXAccountOut(BaseModel):
 class ProjectXAccountMainOut(BaseModel):
     account_id: int
     is_main: bool
+
+
+class ProjectXAccountRenameIn(BaseModel):
+    display_name: str
+
+
+class ProjectXAccountRenameOut(BaseModel):
+    account_id: int
+    name: str
+    provider_name: str
+    custom_display_name: str | None = None
 
 
 class ProjectXAccountLastTradeOut(BaseModel):
@@ -43,6 +58,21 @@ class ProjectXTradeOut(BaseModel):
     pnl: float | None = None
     order_id: str
     source_trade_id: str | None = None
+
+
+class ProjectXSizingBenchmarkOut(BaseModel):
+    benchmarkMode: Literal["fixed_5_micros"]
+    benchmarkGrossPnl: float
+    benchmarkNetPnl: float
+    benchmarkDiff: float
+    benchmarkRatio: float | None = None
+    benchmarkLabel: Literal[
+        "Far Below Benchmark",
+        "Below Benchmark",
+        "In Line With Benchmark",
+        "Above Benchmark",
+        "Far Above Benchmark",
+    ]
 
 
 class ProjectXTradeSummaryOut(BaseModel):
@@ -81,6 +111,7 @@ class ProjectXTradeSummaryOut(BaseModel):
     avgPointGain: float | None = None
     avgPointLoss: float | None = None
     pointsBasisUsed: str
+    sizingBenchmark: ProjectXSizingBenchmarkOut
 
 
 class ProjectXPointPayoffOut(BaseModel):

@@ -23,4 +23,13 @@ describe("sortAccountsForSelection", () => {
 
     expect(sorted.map((account) => account.id)).toEqual([8001, 8002]);
   });
+
+  it("uses the provider name to preserve combine grouping after local renames", () => {
+    const sorted = sortAccountsForSelection([
+      { id: 9002, name: "Desk B", provider_name: "Account 9002", is_main: false },
+      { id: 9001, name: "Primary Eval", provider_name: "50KTC-9001", is_main: false },
+    ]);
+
+    expect(sorted.map((account) => account.id)).toEqual([9001, 9002]);
+  });
 });

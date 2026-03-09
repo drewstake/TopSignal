@@ -5,6 +5,7 @@ import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullSt
 import { Chip } from "../../components/metrics/Chip";
 import { DonutRing } from "../../components/metrics/DonutRing";
 import { GaugeBar } from "../../components/metrics/GaugeBar";
+import { InfoPopover } from "../../components/metrics/InfoPopover";
 import { MasonryGrid } from "../../components/metrics/MasonryGrid";
 import { MetricCard } from "../../components/metrics/MetricCard";
 import { MiniStatList } from "../../components/metrics/MiniStatList";
@@ -28,7 +29,7 @@ import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
-import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
+import type { AccountInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountTrade } from "../../lib/types";
 import { logPerfInfo } from "../../lib/perf";
 import { formatCurrency, formatInteger, formatMinutes, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { computeActivityMetrics } from "../../utils/activityMetrics";
@@ -134,6 +135,14 @@ const emptySummary: AccountSummary = {
   avgPointGain: null,
   avgPointLoss: null,
   pointsBasisUsed: "auto",
+  sizingBenchmark: {
+    benchmarkMode: "fixed_5_micros",
+    benchmarkGrossPnl: 0,
+    benchmarkNetPnl: 0,
+    benchmarkDiff: 0,
+    benchmarkRatio: null,
+    benchmarkLabel: "In Line With Benchmark",
+  },
 };
 
 interface PointPayoffStats {
@@ -151,6 +160,41 @@ function createEmptyPointPayoffByBasis(): PointPayoffByBasis {
     SIL: { avgPointGain: null, avgPointLoss: null },
   };
 }
+
+const sizingBenchmarkTooltipContent = (
+  <div className="space-y-1.5">
+    <div>
+      <p className="font-semibold text-slate-50">Sizing Benchmark</p>
+      <p className="mt-1 text-slate-200">
+        Replays the same trades, entries, and exits at a constant size of 5 micros and recalculates fees with the app's fee model.
+      </p>
+    </div>
+    <div>
+      <p className="font-semibold text-rose-200">Far Below Benchmark</p>
+      <p className="text-slate-200">Sizing hurt results by a lot.</p>
+    </div>
+    <div>
+      <p className="font-semibold text-amber-200">Below Benchmark</p>
+      <p className="text-slate-200">Sizing trailed fixed 5 micros.</p>
+    </div>
+    <div>
+      <p className="font-semibold text-slate-100">In Line With Benchmark</p>
+      <p className="text-slate-200">Sizing was roughly the same as fixed 5 micros.</p>
+    </div>
+    <div>
+      <p className="font-semibold text-cyan-100">Above Benchmark</p>
+      <p className="text-slate-200">Sizing helped results.</p>
+    </div>
+    <div>
+      <p className="font-semibold text-emerald-200">Far Above Benchmark</p>
+      <p className="text-slate-200">Sizing added clear value.</p>
+    </div>
+    <div className="border-t border-slate-800/80 pt-1.5 text-slate-300">
+      <p>Positive benchmark: label uses actual net vs benchmark net.</p>
+      <p className="mt-0.5">Flat or negative benchmark: label uses dollar difference.</p>
+    </div>
+  </div>
+);
 
 function formatDurationCompact(minutes: number) {
   const safeMinutes = Number.isFinite(minutes) ? Math.max(0, minutes) : 0;
@@ -209,6 +253,46 @@ function metricPnlClass(metric: MetricValue) {
     return undefined;
   }
   return pnlClass(metric.value);
+}
+
+function sizingBenchmarkBadgeVariant(label: AccountSizingBenchmark["benchmarkLabel"]) {
+  switch (label) {
+    case "Far Below Benchmark":
+      return "negative" as const;
+    case "Below Benchmark":
+      return "warning" as const;
+    case "Above Benchmark":
+      return "accent" as const;
+    case "Far Above Benchmark":
+      return "positive" as const;
+    default:
+      return "neutral" as const;
+  }
+}
+
+function sizingBenchmarkDeltaLabel(diff: number) {
+  if (diff > 0) {
+    return "Sizing Edge";
+  }
+  if (diff < 0) {
+    return "Sizing Drag";
+  }
+  return "Sizing Match";
+}
+
+function sizingBenchmarkComparisonLabel(benchmark: AccountSizingBenchmark) {
+  if (benchmark.benchmarkRatio === null) {
+    if (Math.abs(benchmark.benchmarkDiff) < 0.01) {
+      return "In line on dollar difference";
+    }
+    return benchmark.benchmarkNetPnl <= 0 ? "Benchmark <= 0, using $ diff" : "Benchmark near 0, using $ diff";
+  }
+
+  const ratioDeltaPercent = (benchmark.benchmarkRatio - 1) * 100;
+  if (Math.abs(ratioDeltaPercent) < 0.1) {
+    return "In line vs benchmark";
+  }
+  return `${ratioDeltaPercent > 0 ? "+" : ""}${formatNumber(ratioDeltaPercent, 1)}% vs benchmark`;
 }
 
 function sustainabilityBadgeVariant(label: SustainabilityLabel) {
@@ -1344,7 +1428,7 @@ export function DashboardPage() {
               info="Realized net profit and loss after fees in the selected range."
               accentClassName={performanceAccentClassName}
               className={cn(
-                "isolate sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1",
+                "z-20 isolate overflow-visible sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1",
                 performanceCardClassName,
               )}
               contentClassName="relative mt-2.5 space-y-2.5"
@@ -1372,9 +1456,62 @@ export function DashboardPage() {
                     </p>
                   </div>
                 </div>
-                <div className="mt-2.5 flex items-center justify-between rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1 text-[10px] text-slate-300">
-                  <span>{`Gross ${formatPnl(summary.gross_pnl)}`}</span>
-                  <span>{`Fees ${formatCurrency(summary.fees)}`}</span>
+                <div className="mt-2.5 rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    <span>Sizing Benchmark</span>
+                    <InfoPopover
+                      content={sizingBenchmarkTooltipContent}
+                      label="Sizing Benchmark"
+                      panelClassName="left-0 right-auto ml-1 w-64 max-w-[calc(100vw-2.5rem)] text-[10px] leading-snug"
+                    />
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant={sizingBenchmarkBadgeVariant(summary.sizingBenchmark.benchmarkLabel)}
+                      className="max-w-full normal-case tracking-normal"
+                    >
+                      {summary.sizingBenchmark.benchmarkLabel}
+                    </Badge>
+                    <span className="text-[10px] text-slate-400">vs Fixed 5 Micros</span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-t border-slate-700/70 pt-2.5">
+                    <div className="min-w-0">
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">
+                        {sizingBenchmarkDeltaLabel(summary.sizingBenchmark.benchmarkDiff)}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                        <p className={cn("text-lg font-semibold tracking-tight", pnlClass(summary.sizingBenchmark.benchmarkDiff))}>
+                          {formatPnl(summary.sizingBenchmark.benchmarkDiff)}
+                        </p>
+                        <p
+                          className={cn(
+                            "pb-0.5 text-[11px] font-medium",
+                            summary.sizingBenchmark.benchmarkDiff > 0
+                              ? "text-emerald-200"
+                              : summary.sizingBenchmark.benchmarkDiff < 0
+                                ? "text-rose-200"
+                                : "text-slate-300",
+                          )}
+                        >
+                          {sizingBenchmarkComparisonLabel(summary.sizingBenchmark)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-700/70 pt-2.5">
+                    <div className="min-w-0">
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">Benchmark Net</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.sizingBenchmark.benchmarkNetPnl))}>
+                        {formatPnl(summary.sizingBenchmark.benchmarkNetPnl)}
+                      </p>
+                    </div>
+                    <div className="min-w-0 text-right">
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">Actual Net</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.net_pnl))}>
+                        {formatPnl(summary.net_pnl)}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </MetricCard>

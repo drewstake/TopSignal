@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Input";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
@@ -72,6 +73,36 @@ function accountStateBadgeVariant(state: AccountInfo["account_state"]) {
   return "negative" as const;
 }
 
+function PencilIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="M12 20h9" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden="true">
+      <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function XIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className} aria-hidden="true">
+      <path d="M18 6 6 18" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m6 6 12 12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function AccountsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
@@ -86,6 +117,11 @@ export function AccountsPage() {
   const [lastTradeLoadingById, setLastTradeLoadingById] = useState<Record<number, boolean>>({});
   const [lastTradeResolvedById, setLastTradeResolvedById] = useState<Record<number, boolean>>({});
   const [lastTradeError, setLastTradeError] = useState<string | null>(null);
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [renamingAccountId, setRenamingAccountId] = useState<number | null>(null);
+  const [renameErrorById, setRenameErrorById] = useState<Record<number, string | null>>({});
+  const editInputRef = useRef<HTMLInputElement | null>(null);
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -115,6 +151,9 @@ export function AccountsPage() {
         showMissing: showMissingAccounts,
       });
       setAccounts(payload.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
+      setEditingAccountId(null);
+      setEditingName("");
+      setRenameErrorById({});
       setLastTradeOverridesById({});
       setLastTradeLoadingById({});
       setLastTradeResolvedById({});
@@ -170,9 +209,73 @@ export function AccountsPage() {
     [loadAccounts, setActiveAccount],
   );
 
+  const startEditingAccountName = useCallback((account: AccountInfo) => {
+    setAccountsError(null);
+    setRenameErrorById((prev) => ({ ...prev, [account.id]: null }));
+    setEditingAccountId(account.id);
+    setEditingName(account.name);
+  }, []);
+
+  const cancelEditingAccountName = useCallback(() => {
+    setEditingAccountId(null);
+    setEditingName("");
+  }, []);
+
+  const saveAccountName = useCallback(
+    async (account: AccountInfo) => {
+      const trimmedName = editingName.trim();
+      if (trimmedName.length === 0) {
+        setRenameErrorById((prev) => ({
+          ...prev,
+          [account.id]: "Account name cannot be empty.",
+        }));
+        return;
+      }
+
+      setRenamingAccountId(account.id);
+      setAccountsError(null);
+      setRenameErrorById((prev) => ({ ...prev, [account.id]: null }));
+      try {
+        const payload = await accountsApi.renameAccountDisplayName(account.id, trimmedName);
+        setAccounts((prev) =>
+          prev.map((candidate) =>
+            candidate.id === account.id
+              ? {
+                  ...candidate,
+                  name: payload.name,
+                  provider_name: payload.provider_name,
+                  custom_display_name: payload.custom_display_name,
+                }
+              : candidate,
+          ),
+        );
+        setEditingAccountId(null);
+        setEditingName("");
+      } catch (err) {
+        setRenameErrorById((prev) => ({
+          ...prev,
+          [account.id]: err instanceof Error ? err.message : "Failed to update account name.",
+        }));
+        setEditingAccountId(null);
+        setEditingName("");
+      } finally {
+        setRenamingAccountId(null);
+      }
+    },
+    [editingName],
+  );
+
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
+
+  useEffect(() => {
+    if (editingAccountId === null) {
+      return;
+    }
+    editInputRef.current?.focus();
+    editInputRef.current?.select();
+  }, [editingAccountId]);
 
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
 
@@ -276,6 +379,9 @@ export function AccountsPage() {
                     orderedAccounts.map((account) => {
                       const isActive = selectedAccount?.id === account.id;
                       const isMainAccount = account.is_main;
+                      const isEditingName = editingAccountId === account.id;
+                      const renameErrorMessage = renameErrorById[account.id];
+                      const savingName = renamingAccountId === account.id;
                       const localLastTradeAt = account.last_trade_at;
                       const resolvedLastTradeAt =
                         lastTradeOverridesById[account.id] !== undefined
@@ -296,7 +402,85 @@ export function AccountsPage() {
                             }
                           }}
                         >
-                          <td className="px-3 py-3 text-left font-medium text-slate-100">{account.name}</td>
+                          <td className="px-3 py-3 text-left font-medium text-slate-100">
+                            {isEditingName ? (
+                              <div
+                                className="flex min-w-0 items-start gap-2"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                }}
+                              >
+                                <Input
+                                  ref={editInputRef}
+                                  value={editingName}
+                                  onChange={(event) => setEditingName(event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                      event.preventDefault();
+                                      void saveAccountName(account);
+                                      return;
+                                    }
+                                    if (event.key === "Escape") {
+                                      event.preventDefault();
+                                      cancelEditingAccountName();
+                                    }
+                                  }}
+                                  disabled={savingName}
+                                  aria-label={`Edit account name for ${account.provider_name}`}
+                                  className="h-8 min-w-0 flex-1 px-2.5"
+                                />
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 w-7 rounded-lg px-0 text-emerald-300 hover:text-emerald-200"
+                                    disabled={savingName}
+                                    aria-label={`Save account name for ${account.provider_name}`}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void saveAccountName(account);
+                                    }}
+                                  >
+                                    <CheckIcon />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 w-7 rounded-lg px-0 text-slate-400 hover:text-slate-200"
+                                    disabled={savingName}
+                                    aria-label={`Cancel editing account name for ${account.provider_name}`}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      cancelEditingAccountName();
+                                    }}
+                                  >
+                                    <XIcon />
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex min-w-0 items-center gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 w-7 shrink-0 rounded-lg px-0 text-slate-400 hover:text-slate-100"
+                                  disabled={renamingAccountId !== null}
+                                  aria-label={`Edit account name for ${account.name}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    startEditingAccountName(account);
+                                  }}
+                                >
+                                  <PencilIcon />
+                                </Button>
+                                <span className="truncate">{account.name}</span>
+                              </div>
+                            )}
+                            {savingName ? <p className="mt-1 text-[11px] font-normal text-slate-500">Saving...</p> : null}
+                            {renameErrorMessage ? (
+                              <p className="mt-1 text-[11px] font-normal text-rose-300">{renameErrorMessage}</p>
+                            ) : null}
+                          </td>
                           <td className="px-3 py-3 text-right text-slate-300">{account.id}</td>
                           <td className="px-3 py-3 text-right font-mono text-slate-200">
                             {currencyFormatter.format(account.balance)}

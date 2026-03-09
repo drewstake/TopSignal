@@ -43,6 +43,14 @@ const sampleMetrics: CopyFullStatsMetrics = {
     avgPointGain: 31.76,
     avgPointLoss: 14.87,
     pointsBasisUsed: "MNQ",
+    sizingBenchmark: {
+      benchmarkMode: "fixed_5_micros",
+      benchmarkGrossPnl: 5120,
+      benchmarkNetPnl: 4980.4,
+      benchmarkDiff: 477.9,
+      benchmarkRatio: 1.0959,
+      benchmarkLabel: "In Line With Benchmark",
+    },
   },
   performance: {
     netPnl: metric(5458.3),

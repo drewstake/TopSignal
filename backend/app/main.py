@@ -68,6 +68,8 @@ from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTota
 from .projectx_schemas import (
     AuthMeOut,
     ProjectXAccountMainOut,
+    ProjectXAccountRenameIn,
+    ProjectXAccountRenameOut,
     ProjectXAccountOut,
     ProjectXCredentialsStatusOut,
     ProjectXPointPayoffOut,
@@ -116,6 +118,9 @@ from .services.projectx_accounts import (
     account_id_from_external_id,
     get_projectx_account_row,
     get_projectx_account_rows,
+    resolve_projectx_account_effective_name,
+    resolve_projectx_account_provider_name,
+    set_projectx_account_display_name,
     set_main_projectx_account,
     should_include_account,
     sync_projectx_accounts,
@@ -776,11 +781,15 @@ def list_projectx_accounts(
             continue
 
         provider_payload = provider_by_external_id.get(row.external_id, {})
-        provider_name = provider_payload.get("name") if isinstance(provider_payload, dict) else None
         provider_balance = provider_payload.get("balance") if isinstance(provider_payload, dict) else None
         provider_can_trade = provider_payload.get("can_trade") if isinstance(provider_payload, dict) else None
         provider_is_visible = provider_payload.get("is_visible") if isinstance(provider_payload, dict) else None
 
+        provider_name = resolve_projectx_account_provider_name(row.name, account_id=account_id)
+        effective_name = resolve_projectx_account_effective_name(
+            provider_name=provider_name,
+            display_name=row.display_name,
+        )
         account_state = row.account_state or ACCOUNT_STATE_ACTIVE
         can_trade = provider_can_trade if isinstance(provider_can_trade, bool) else row.can_trade
         is_visible = provider_is_visible if isinstance(provider_is_visible, bool) else row.is_visible
@@ -788,7 +797,9 @@ def list_projectx_accounts(
         payload.append(
             {
                 "id": account_id,
-                "name": str(provider_name or row.name or f"Account {account_id}"),
+                "name": effective_name,
+                "provider_name": provider_name,
+                "custom_display_name": row.display_name,
                 "balance": float(provider_balance) if provider_balance is not None else 0.0,
                 "status": account_state,
                 "account_state": account_state,
@@ -801,6 +812,46 @@ def list_projectx_accounts(
 
     payload.sort(key=lambda row: (-int(bool(row["is_main"])), int(row["id"])))
     return payload
+
+
+@app.patch("/api/accounts/{account_id}/display-name", response_model=ProjectXAccountRenameOut)
+def rename_projectx_account(
+    account_id: int,
+    payload: ProjectXAccountRenameIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+
+    try:
+        account_row = set_projectx_account_display_name(
+            db,
+            account_id,
+            payload.display_name,
+            user_id=user_id,
+        )
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found.") from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    provider_name = resolve_projectx_account_provider_name(account_row.name, account_id=account_id)
+    effective_name = resolve_projectx_account_effective_name(
+        provider_name=provider_name,
+        display_name=account_row.display_name,
+    )
+    return {
+        "account_id": account_id,
+        "name": effective_name,
+        "provider_name": provider_name,
+        "custom_display_name": account_row.display_name,
+    }
 
 
 @app.post("/api/accounts/{account_id}/main", response_model=ProjectXAccountMainOut)

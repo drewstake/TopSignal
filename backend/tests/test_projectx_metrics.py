@@ -46,6 +46,14 @@ def test_compute_trade_summary_empty_payload():
         "avgPointGain": None,
         "avgPointLoss": None,
         "pointsBasisUsed": "auto",
+        "sizingBenchmark": {
+            "benchmarkMode": "fixed_5_micros",
+            "benchmarkGrossPnl": 0.0,
+            "benchmarkNetPnl": 0.0,
+            "benchmarkDiff": 0.0,
+            "benchmarkRatio": None,
+            "benchmarkLabel": "In Line With Benchmark",
+        },
     }
 
 
@@ -349,3 +357,105 @@ def test_compute_trade_summary_points_basis_filters_to_requested_symbol():
     assert summary["avgPointGain"] == 3.0
     assert summary["avgPointLoss"] == 2.0
     assert summary["pointsBasisUsed"] == "MES"
+
+
+def test_compute_trade_summary_sizes_mes_benchmark_at_fixed_five_micros():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=20.0, fees=4.0, symbol="MES", size=2.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkMode"] == "fixed_5_micros"
+    assert benchmark["benchmarkGrossPnl"] == 50.0
+    assert benchmark["benchmarkNetPnl"] == 40.0
+    assert benchmark["benchmarkDiff"] == -24.0
+    assert benchmark["benchmarkRatio"] == 0.4
+    assert benchmark["benchmarkLabel"] == "Far Below Benchmark"
+
+
+def test_compute_trade_summary_sizes_mnq_benchmark_at_fixed_five_micros():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=32.0, fees=8.0, symbol="MNQ", size=4.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkGrossPnl"] == 40.0
+    assert benchmark["benchmarkNetPnl"] == 30.0
+    assert benchmark["benchmarkDiff"] == -6.0
+    assert benchmark["benchmarkRatio"] == 0.8
+    assert benchmark["benchmarkLabel"] == "Below Benchmark"
+
+
+def test_compute_trade_summary_recalculates_benchmark_fees_for_fixed_size():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=50.0, fees=20.0, symbol="MES", size=10.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkGrossPnl"] == 25.0
+    assert benchmark["benchmarkNetPnl"] == 15.0
+    assert benchmark["benchmarkDiff"] == 15.0
+
+
+def test_compute_trade_summary_assigns_positive_benchmark_ratio_labels():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=72.0, fees=12.0, symbol="MNQ", size=6.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkNetPnl"] == 50.0
+    assert benchmark["benchmarkRatio"] == 1.2
+    assert benchmark["benchmarkLabel"] == "Above Benchmark"
+
+
+def test_compute_trade_summary_uses_diff_fallback_when_benchmark_is_near_zero():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=20.0, fees=10.0, symbol="MNQ", size=10.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkNetPnl"] == 5.0
+    assert benchmark["benchmarkRatio"] is None
+    assert benchmark["benchmarkDiff"] == 5.0
+    assert benchmark["benchmarkLabel"] == "In Line With Benchmark"
+
+
+def test_compute_trade_summary_uses_diff_fallback_when_benchmark_is_negative():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=100.0, fees=10.0, symbol="MNQ", size=10.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=-50.0, fees=2.0, symbol="MNQ", size=1.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkNetPnl"] == -215.0
+    assert benchmark["benchmarkRatio"] is None
+    assert benchmark["benchmarkDiff"] == 253.0
+    assert benchmark["benchmarkLabel"] == "Far Above Benchmark"
+
+
+def test_compute_trade_summary_combines_mes_and_mnq_benchmarks_in_mixed_periods():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=20.0, fees=4.0, symbol="MES", size=2.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=32.0, fees=8.0, symbol="MNQ", size=4.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+    benchmark = summary["sizingBenchmark"]
+
+    assert benchmark["benchmarkGrossPnl"] == 90.0
+    assert benchmark["benchmarkNetPnl"] == 70.0
+    assert benchmark["benchmarkDiff"] == -30.0
+    assert benchmark["benchmarkRatio"] == 0.5714
+    assert benchmark["benchmarkLabel"] == "Below Benchmark"

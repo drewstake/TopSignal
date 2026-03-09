@@ -59,6 +59,7 @@ export interface CombineTrackerSyncResult {
 export interface CombineTrackerAccount {
   id: number;
   name: string;
+  provider_name?: string;
   status?: string;
   account_state?: string;
 }
@@ -71,6 +72,10 @@ function normalizeCombineTrackerAccountState(account: CombineTrackerAccount): st
 function isTrackableCombineTrackerAccount(account: CombineTrackerAccount): boolean {
   const state = normalizeCombineTrackerAccountState(account);
   return state === "ACTIVE" || state === "LOCKED_OUT";
+}
+
+function getProviderBackedAccountName(account: Pick<CombineTrackerAccount, "name" | "provider_name">): string {
+  return account.provider_name ?? account.name;
 }
 
 export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize | null {
@@ -130,7 +135,7 @@ export function evolveCombineSpendLedger(
     if (!isTrackableCombineTrackerAccount(account)) {
       continue;
     }
-    const planSize = getCombinePlanSizeFromAccountName(account.name);
+    const planSize = getCombinePlanSizeFromAccountName(getProviderBackedAccountName(account));
     if (planSize === null) {
       continue;
     }
@@ -355,7 +360,7 @@ function listUnsyncedEvaluationExpensePurchases(
     if (!isTrackableCombineTrackerAccount(account)) {
       continue;
     }
-    if (getCombinePlanSizeFromAccountName(account.name) === null) {
+    if (getCombinePlanSizeFromAccountName(getProviderBackedAccountName(account)) === null) {
       continue;
     }
     activeCombineAccountIds.add(String(account.id));

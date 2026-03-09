@@ -34,6 +34,7 @@ class Account(Base):
     provider = Column(Text, nullable=False)
     external_id = Column(Text, nullable=False)
     name = Column(Text, nullable=True)
+    display_name = Column(Text, nullable=True)
     account_state = Column(Text, nullable=False, server_default="ACTIVE")
     can_trade = Column(Boolean, nullable=True)
     is_visible = Column(Boolean, nullable=True)

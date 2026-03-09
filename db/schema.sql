@@ -28,7 +28,11 @@ create table if not exists accounts (
   external_id text not null,
 
   -- Friendly name you can show in the UI (optional)
+  -- This stores the original provider account name from ProjectX.
   name text,
+
+  -- Optional local-only display name override used in the app UI.
+  display_name text,
 
   -- Derived TopSignal lifecycle state from ProjectX account flags.
   account_state text not null default 'ACTIVE'

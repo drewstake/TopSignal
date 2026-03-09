@@ -570,7 +570,7 @@ def summarize_trade_events(
     start: datetime | None = None,
     end: datetime | None = None,
     points_basis: str = "auto",
-) -> dict[str, float | int | None | str]:
+) -> dict[str, object]:
     samples = _load_trade_metric_samples(
         db,
         user_id=user_id,
@@ -595,7 +595,7 @@ def summarize_trade_events_with_point_bases(
     start: datetime | None = None,
     end: datetime | None = None,
     point_bases: list[str],
-) -> tuple[dict[str, float | int | None | str], dict[str, dict[str, float | None]]]:
+) -> tuple[dict[str, object], dict[str, dict[str, float | None]]]:
     samples = _load_trade_metric_samples(
         db,
         user_id=user_id,

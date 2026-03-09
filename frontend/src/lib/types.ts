@@ -78,6 +78,8 @@ export interface BehaviorMetrics {
 export interface AccountInfo {
   id: number;
   name: string;
+  provider_name: string;
+  custom_display_name: string | null;
   balance: number;
   status: string;
   account_state: "ACTIVE" | "LOCKED_OUT" | "HIDDEN" | "MISSING";
@@ -90,6 +92,13 @@ export interface AccountInfo {
 export interface AccountMainUpdateResult {
   account_id: number;
   is_main: boolean;
+}
+
+export interface AccountRenameResult {
+  account_id: number;
+  name: string;
+  provider_name: string;
+  custom_display_name: string | null;
 }
 
 export interface AccountLastTradeInfo {
@@ -118,6 +127,22 @@ export interface AccountTrade {
   mae?: number | null;
   order_id: string;
   source_trade_id: string | null;
+}
+
+export type SizingBenchmarkLabel =
+  | "Far Below Benchmark"
+  | "Below Benchmark"
+  | "In Line With Benchmark"
+  | "Above Benchmark"
+  | "Far Above Benchmark";
+
+export interface AccountSizingBenchmark {
+  benchmarkMode: "fixed_5_micros";
+  benchmarkGrossPnl: number;
+  benchmarkNetPnl: number;
+  benchmarkDiff: number;
+  benchmarkRatio: number | null;
+  benchmarkLabel: SizingBenchmarkLabel;
 }
 
 export interface AccountSummary {
@@ -156,6 +181,7 @@ export interface AccountSummary {
   avgPointGain: number | null;
   avgPointLoss: number | null;
   pointsBasisUsed: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
+  sizingBenchmark: AccountSizingBenchmark;
 }
 
 export type PointsBasis = "MNQ" | "MES" | "MGC" | "SIL";

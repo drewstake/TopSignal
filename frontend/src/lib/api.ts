@@ -2,6 +2,7 @@ import type {
   AccountMainUpdateResult,
   AccountInfo,
   AccountLastTradeInfo,
+  AccountRenameResult,
   AuthMe,
   JournalEntry,
   JournalEntryCreateResult,
@@ -41,6 +42,7 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
 } from "./types";
+import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
 
@@ -530,6 +532,11 @@ function invalidateAccountJournalCaches(accountId?: number) {
   clearMapByPrefix(inFlightAccountJournalDaysByQuery, `account-journal|${accountId}|`);
 }
 
+function invalidateAccountsListCaches() {
+  accountsCacheByQuery.clear();
+  inFlightAccountsByQuery.clear();
+}
+
 function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
   const cacheKey = accountsQueryCacheKey(options);
   const now = Date.now();
@@ -655,9 +662,19 @@ export const accountsApi = {
     requestJson<AccountMainUpdateResult>(`/api/accounts/${accountId}/main`, {
       method: "POST",
     }).then((payload) => {
-      accountsCacheByQuery.clear();
-      inFlightAccountsByQuery.clear();
+      invalidateAccountsListCaches();
       invalidateAccountReadCaches();
+      return payload;
+    }),
+  renameAccountDisplayName: (accountId: number, displayName: string) =>
+    requestJson<AccountRenameResult>(`/api/accounts/${accountId}/display-name`, {
+      method: "PATCH",
+      body: {
+        display_name: displayName,
+      },
+    }).then((payload) => {
+      invalidateAccountsListCaches();
+      dispatchAccountDisplayNameUpdated(accountId);
       return payload;
     }),
   getLastTrade: (accountId: number, refresh = false) =>

@@ -247,4 +247,19 @@ describe("storage-backed helpers", () => {
     expect(xfaSync.snapshot.totalTrackedCombines).toBe(2);
     expect(xfaSync.unsyncedEvaluationPurchases).toEqual([]);
   });
+
+  it("keeps using provider names when local display names are customized", () => {
+    const sync = syncCombineSpendTracker([
+      { id: 8201, name: "Main Desk", provider_name: "50KTC-8201", status: "ACTIVE" },
+    ]);
+
+    expect(sync.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 8201,
+        planSize: "50k",
+        purchasedOn: "2026-03-01",
+        amountCents: 11_500,
+      },
+    ]);
+  });
 });

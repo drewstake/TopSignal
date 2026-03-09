@@ -82,6 +82,14 @@ const emptySummary: AccountSummary = {
   avgPointGain: null,
   avgPointLoss: null,
   pointsBasisUsed: "auto",
+  sizingBenchmark: {
+    benchmarkMode: "fixed_5_micros",
+    benchmarkGrossPnl: 0,
+    benchmarkNetPnl: 0,
+    benchmarkDiff: 0,
+    benchmarkRatio: null,
+    benchmarkLabel: "In Line With Benchmark",
+  },
 };
 
 interface FilteredTradeStats {

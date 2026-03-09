@@ -138,6 +138,8 @@ def _ensure_accounts_schema_compatibility() -> None:
                     "alter table accounts add column if not exists account_state text not null default 'ACTIVE'"
                 )
             )
+        if "display_name" not in column_names:
+            conn.execute(text("alter table accounts add column if not exists display_name text"))
         if "can_trade" not in column_names:
             conn.execute(text("alter table accounts add column if not exists can_trade boolean"))
         if "is_visible" not in column_names:

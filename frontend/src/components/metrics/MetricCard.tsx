@@ -9,7 +9,7 @@ interface MetricCardProps {
   primaryValue: string;
   primaryClassName?: string;
   subtitle?: ReactNode;
-  info?: string;
+  info?: ReactNode;
   accentClassName?: string;
   className?: string;
   contentClassName?: string;

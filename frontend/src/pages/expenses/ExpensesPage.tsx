@@ -106,7 +106,7 @@ interface ActiveCombineAccount {
 }
 
 function collectActiveCombineAccounts(
-  accounts: Array<{ id: number; name: string; status?: string; account_state?: string }>,
+  accounts: Array<{ id: number; name: string; provider_name?: string; status?: string; account_state?: string }>,
 ): ActiveCombineAccount[] {
   const output: ActiveCombineAccount[] = [];
   for (const account of accounts) {
@@ -114,7 +114,7 @@ function collectActiveCombineAccounts(
     if (rawState !== "ACTIVE" && rawState !== "LOCKED_OUT") {
       continue;
     }
-    const planSize = getCombinePlanSizeFromAccountName(account.name);
+    const planSize = getCombinePlanSizeFromAccountName(account.provider_name ?? account.name);
     if (planSize === null) {
       continue;
     }

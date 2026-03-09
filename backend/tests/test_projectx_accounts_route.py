@@ -14,9 +14,11 @@ from app.db import Base
 from app.main import (
     get_projectx_account_last_trade,
     list_projectx_accounts,
+    rename_projectx_account,
     set_projectx_main_account,
 )
 from app.models import Account, ProjectXTradeEvent, ProviderCredential
+from app.projectx_schemas import ProjectXAccountRenameIn
 
 
 @pytest.fixture()
@@ -121,6 +123,51 @@ def test_accounts_route_filters_inactive_and_missing_states(db_session, monkeypa
     assert by_id[7199]["account_state"] == "MISSING"
 
 
+def test_accounts_route_returns_provider_and_custom_display_names(db_session, monkeypatch):
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            assert only_active_accounts is False
+            return [
+                {
+                    "id": 7301,
+                    "name": "50KTC-7301",
+                    "balance": 12500.0,
+                    "can_trade": True,
+                    "is_visible": True,
+                }
+            ]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7301",
+            name="Old Provider Name",
+            display_name="Personal Account",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert payload == [
+        {
+            "id": 7301,
+            "name": "Personal Account",
+            "provider_name": "50KTC-7301",
+            "custom_display_name": "Personal Account",
+            "balance": 12500.0,
+            "status": "ACTIVE",
+            "account_state": "ACTIVE",
+            "is_main": False,
+            "can_trade": True,
+            "is_visible": True,
+            "last_trade_at": None,
+        }
+    ]
+
+
 def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
     db_session.add_all(
         [
@@ -143,6 +190,72 @@ def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
         .all()
     )
     assert [bool(row.is_main) for row in rows] == [False, True]
+
+
+def test_rename_account_endpoint_trims_and_persists_custom_display_name(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7302",
+            name="Provider Alpha",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    payload = rename_projectx_account(
+        account_id=7302,
+        payload=ProjectXAccountRenameIn(display_name="  My Alpha  "),
+        db=db_session,
+    )
+
+    assert payload == {
+        "account_id": 7302,
+        "name": "My Alpha",
+        "provider_name": "Provider Alpha",
+        "custom_display_name": "My Alpha",
+    }
+
+    row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7302")
+        .one()
+    )
+    assert row.name == "Provider Alpha"
+    assert row.display_name == "My Alpha"
+
+
+def test_rename_account_endpoint_rejects_blank_names(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7303",
+            name="Provider Bravo",
+            display_name="Keep Me",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        rename_projectx_account(
+            account_id=7303,
+            payload=ProjectXAccountRenameIn(display_name="   "),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Account name cannot be empty."
+
+    row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7303")
+        .one()
+    )
+    assert row.name == "Provider Bravo"
+    assert row.display_name == "Keep Me"
 
 
 def test_account_last_trade_endpoint_returns_local_value_without_provider_call(db_session, monkeypatch):

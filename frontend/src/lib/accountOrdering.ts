@@ -22,11 +22,15 @@ function getSelectionGroup(name: string): number {
   return 1;
 }
 
+function getGroupingName(account: Pick<AccountInfo, "name"> & Partial<Pick<AccountInfo, "provider_name">>): string {
+  return account.provider_name ?? account.name;
+}
+
 export function compareAccountsForSelection(
-  left: Pick<AccountInfo, "id" | "name" | "is_main">,
-  right: Pick<AccountInfo, "id" | "name" | "is_main">,
+  left: Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
+  right: Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
 ): number {
-  const groupDifference = getSelectionGroup(left.name) - getSelectionGroup(right.name);
+  const groupDifference = getSelectionGroup(getGroupingName(left)) - getSelectionGroup(getGroupingName(right));
   if (groupDifference !== 0) {
     return groupDifference;
   }
@@ -47,7 +51,9 @@ export function compareAccountsForSelection(
   return left.id - right.id;
 }
 
-export function sortAccountsForSelection<T extends Pick<AccountInfo, "id" | "name" | "is_main">>(
+export function sortAccountsForSelection<
+  T extends Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
+>(
   accounts: readonly T[],
 ): T[] {
   return [...accounts].sort(compareAccountsForSelection);

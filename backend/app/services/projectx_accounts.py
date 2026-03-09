@@ -151,6 +151,26 @@ def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | No
     target.is_main = True
 
 
+def set_projectx_account_display_name(
+    db: Session,
+    account_id: int,
+    display_name: str,
+    *,
+    user_id: str | None = None,
+) -> Account:
+    target = get_projectx_account_row(db, account_id, user_id=user_id)
+    if target is None:
+        raise LookupError("projectx_account_not_found")
+
+    normalized_display_name = _normalize_optional_text(display_name)
+    if normalized_display_name is None:
+        raise ValueError("Account name cannot be empty.")
+
+    provider_name = resolve_projectx_account_provider_name(target.name, account_id=account_id)
+    target.display_name = None if normalized_display_name == provider_name else normalized_display_name
+    return target
+
+
 def should_include_account(
     row: Account,
     *,
@@ -176,6 +196,20 @@ def account_id_from_external_id(external_id: str) -> int | None:
     if value <= 0:
         return None
     return value
+
+
+def resolve_projectx_account_provider_name(name: Any, *, account_id: int) -> str:
+    normalized = _normalize_optional_text(name)
+    if normalized is not None:
+        return normalized
+    return f"Account {account_id}"
+
+
+def resolve_projectx_account_effective_name(*, provider_name: str, display_name: Any) -> str:
+    normalized_display_name = _normalize_optional_text(display_name)
+    if normalized_display_name is not None:
+        return normalized_display_name
+    return provider_name
 
 
 def _normalize_provider_account(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -204,3 +238,10 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
