@@ -245,9 +245,9 @@ def _store_trade_events_postgres(
 
     values = [_event_to_insert_values(event, user_id=user_id) for event in events_sorted]
     stmt = pg_insert(ProjectXTradeEvent).values(values)
-    stmt = stmt.on_conflict_do_nothing()
+    stmt = stmt.on_conflict_do_nothing().returning(ProjectXTradeEvent.id)
     result = db.execute(stmt)
-    return int(result.rowcount or 0)
+    return len(result.scalars().all())
 
 
 def _store_trade_events_orm(
