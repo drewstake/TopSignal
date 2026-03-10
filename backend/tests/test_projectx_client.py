@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
-from app.services.projectx_client import ProjectXClient, _parse_datetime
+import pytest
+
+from app.services.projectx_client import ProjectXClient, ProjectXClientError, _extract_error_message, _parse_datetime
 
 
 def test_parse_datetime_supports_variable_fraction_precision():
@@ -19,6 +21,67 @@ def test_parse_datetime_supports_offsets_without_colon():
     parsed = _parse_datetime("2026-02-05T19:49:57.22185+0000")
 
     assert parsed == datetime(2026, 2, 5, 19, 49, 57, 221850, tzinfo=timezone.utc)
+
+
+def test_extract_error_message_formats_validation_error_maps():
+    payload = {
+        "success": False,
+        "title": "One or more validation errors occurred.",
+        "errors": {
+            "contractId": ["The contractId field is required."],
+            "accountId": ["The accountId field must be greater than 0."],
+        },
+    }
+
+    assert _extract_error_message(payload) == (
+        "contractId: The contractId field is required.; "
+        "accountId: The accountId field must be greater than 0."
+    )
+
+
+def test_extract_error_message_reads_nested_provider_messages():
+    payload = {
+        "responseStatus": {
+            "errorCode": "SESSION_INVALID",
+            "message": "Session invalid",
+        }
+    }
+
+    assert _extract_error_message(payload) == "Session invalid"
+
+
+def test_extract_error_message_falls_back_to_error_code_when_message_missing():
+    payload = {
+        "success": False,
+        "responseStatus": {
+            "errorCode": 40123,
+            "errorMessage": None,
+        },
+    }
+
+    assert _extract_error_message(payload) == "Error code 40123"
+
+
+def test_request_once_marks_success_false_payloads_as_gateway_errors(monkeypatch):
+    class StubResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"success": false, "responseStatus": {"message": "Session invalid"}}'
+
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", lambda *args, **kwargs: StubResponse())
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 502
+    assert str(exc_info.value) == "ProjectX error: Session invalid"
 
 
 def test_fetch_trade_history_skips_voided_rows():

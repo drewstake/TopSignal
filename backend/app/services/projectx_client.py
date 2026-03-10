@@ -321,7 +321,10 @@ class ProjectXClient:
                 status_code=exc.code,
             ) from exc
         except error.URLError as exc:
-            raise ProjectXClientError(f"ProjectX network error: {exc.reason}") from exc
+            raise ProjectXClientError(
+                f"ProjectX network error: {exc.reason}",
+                status_code=502,
+            ) from exc
 
         if raw.strip() == "":
             return {}
@@ -329,11 +332,17 @@ class ProjectXClient:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ProjectXClientError("ProjectX returned a non-JSON response.") from exc
+            raise ProjectXClientError(
+                "ProjectX returned a non-JSON response.",
+                status_code=502,
+            ) from exc
 
         if isinstance(parsed, dict) and parsed.get("success") is False:
             message = _extract_error_message(parsed)
-            raise ProjectXClientError(f"ProjectX error: {message}")
+            raise ProjectXClientError(
+                f"ProjectX error: {message}",
+                status_code=502,
+            )
 
         return parsed
 
@@ -354,11 +363,17 @@ class ProjectXClient:
         }
         data = self._request_once("POST", "/api/Auth/loginKey", payload=payload, with_auth=False)
         if not isinstance(data, dict):
-            raise ProjectXClientError("ProjectX auth response format was invalid.")
+            raise ProjectXClientError(
+                "ProjectX auth response format was invalid.",
+                status_code=502,
+            )
 
         token = _string_or_none(_first_value(data, ["token", "accessToken", "jwt", "jwtToken"]))
         if not token:
-            raise ProjectXClientError("ProjectX auth succeeded but no token was returned.")
+            raise ProjectXClientError(
+                "ProjectX auth succeeded but no token was returned.",
+                status_code=502,
+            )
 
         expires_at = _parse_token_expiry(data)
 
@@ -551,29 +566,130 @@ def _parse_token_expiry(payload: dict[str, Any]) -> datetime:
 
 
 def _extract_error_message(raw: Any) -> str:
+    message = _extract_nested_error_message(raw)
+    return message or "Unknown error"
+
+
+def _extract_error_message_from_mapping(payload: dict[str, Any]) -> str | None:
+    validation_message = _format_error_collection(payload.get("errors"))
+    if validation_message:
+        return validation_message
+
+    for key in ["detail", "errorMessage", "message", "title", "error", "reason", "error_description"]:
+        if key not in payload:
+            continue
+        message = _extract_nested_error_message(payload.get(key))
+        if message:
+            return message
+
+    for key in ["responseStatus", "response_status", "innerError", "inner_error"]:
+        if key not in payload:
+            continue
+        message = _extract_nested_error_message(payload.get(key))
+        if message:
+            return message
+
+    error_code = _extract_error_code(payload)
+    if error_code:
+        return f"Error code {error_code}"
+
+    return None
+
+
+def _extract_error_code(payload: dict[str, Any]) -> str | None:
+    for key in ["errorCode", "error_code", "code", "statusCode", "status_code"]:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = _string_or_none(value)
+        if text:
+            return text
+    return None
+
+
+def _extract_nested_error_message(raw: Any) -> str | None:
     if isinstance(raw, dict):
-        for key in ["detail", "errorMessage", "message", "title", "error", "errors"]:
-            value = raw.get(key)
-            if value is None:
+        direct_message = _extract_error_message_from_mapping(raw)
+        if direct_message:
+            return direct_message
+
+        for key, value in raw.items():
+            if key in {
+                "detail",
+                "errorMessage",
+                "message",
+                "title",
+                "error",
+                "errors",
+                "reason",
+                "error_description",
+                "responseStatus",
+                "response_status",
+                "innerError",
+                "inner_error",
+                "errorCode",
+                "error_code",
+                "code",
+                "statusCode",
+                "status_code",
+            }:
                 continue
-            if isinstance(value, str):
-                return value
-            if isinstance(value, list):
-                return "; ".join(str(item) for item in value)
-            return str(value)
-        return "Unknown error"
+            message = _extract_nested_error_message(value)
+            if message:
+                return message
+        return None
+
+    if isinstance(raw, list):
+        parts = [_extract_nested_error_message(item) for item in raw]
+        return _join_error_messages(parts)
 
     if isinstance(raw, str):
         text = raw.strip()
         if text == "":
-            return "Unknown error"
+            return None
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             return text
-        return _extract_error_message(parsed)
+        return _extract_nested_error_message(parsed)
 
-    return "Unknown error"
+    return None
+
+
+def _format_error_collection(raw: Any) -> str | None:
+    if isinstance(raw, dict):
+        parts: list[str | None] = []
+        for key, value in raw.items():
+            label = _string_or_none(key)
+            message = _extract_nested_error_message(value)
+            if not message:
+                continue
+            if label and label not in {"__all__", "non_field_errors"}:
+                parts.append(f"{label}: {message}")
+            else:
+                parts.append(message)
+        return _join_error_messages(parts)
+
+    if isinstance(raw, list):
+        return _join_error_messages(_extract_nested_error_message(item) for item in raw)
+
+    return _extract_nested_error_message(raw)
+
+
+def _join_error_messages(parts: list[str | None] | Iterator[str | None]) -> str | None:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if part is None:
+            continue
+        text = part.strip()
+        if text == "" or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    if not cleaned:
+        return None
+    return "; ".join(cleaned)
 
 
 def _normalize_iso_datetime(raw: str) -> str:
