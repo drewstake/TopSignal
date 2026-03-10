@@ -151,7 +151,7 @@ export function MergeJournalCard({
               <option value="">Select new account</option>
               {destinationAccounts.length === 0 ? (
                 <option value="" disabled>
-                  No active accounts available
+                  No active or locked-out accounts available
                 </option>
               ) : (
                 destinationAccounts.map((account) => (

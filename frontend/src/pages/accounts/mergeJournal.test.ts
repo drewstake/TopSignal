@@ -38,6 +38,19 @@ const baseAccounts: AccountInfo[] = [
   },
   {
     id: 7003,
+    name: "Locked XFA",
+    provider_name: "Locked XFA",
+    custom_display_name: null,
+    balance: 0,
+    status: "LOCKED_OUT",
+    account_state: "LOCKED_OUT",
+    is_main: false,
+    can_trade: false,
+    is_visible: true,
+    last_trade_at: null,
+  },
+  {
+    id: 7004,
     name: "Hidden XFA",
     provider_name: "Hidden XFA",
     custom_display_name: null,
@@ -53,14 +66,14 @@ const baseAccounts: AccountInfo[] = [
 
 describe("filterMergeSourceAccounts", () => {
   it("matches old accounts by name or id", () => {
-    expect(filterMergeSourceAccounts(baseAccounts, "hidden").map((account) => account.id)).toEqual([7003]);
+    expect(filterMergeSourceAccounts(baseAccounts, "hidden").map((account) => account.id)).toEqual([7004]);
     expect(filterMergeSourceAccounts(baseAccounts, "7001").map((account) => account.id)).toEqual([7001]);
   });
 });
 
 describe("getMergeDestinationAccounts", () => {
-  it("keeps only active destination accounts", () => {
-    expect(getMergeDestinationAccounts(baseAccounts).map((account) => account.id)).toEqual([7002]);
+  it("keeps active and locked-out destination accounts while excluding hidden ones", () => {
+    expect(getMergeDestinationAccounts(baseAccounts).map((account) => account.id)).toEqual([7002, 7003]);
   });
 });
 

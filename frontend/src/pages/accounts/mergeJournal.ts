@@ -37,7 +37,9 @@ export function filterMergeSourceAccounts<
 export function getMergeDestinationAccounts<T extends Pick<AccountInfo, "account_state">>(
   accounts: readonly T[],
 ): T[] {
-  return accounts.filter((account) => account.account_state === "ACTIVE");
+  return accounts.filter(
+    (account) => account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT",
+  );
 }
 
 export function reconcileMergeJournalForm(

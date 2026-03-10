@@ -34,6 +34,19 @@ const accounts: AccountInfo[] = [
   },
   {
     id: 8103,
+    name: "Locked Combine",
+    provider_name: "Locked Combine",
+    custom_display_name: null,
+    balance: 0,
+    status: "LOCKED_OUT",
+    account_state: "LOCKED_OUT",
+    is_main: false,
+    can_trade: false,
+    is_visible: true,
+    last_trade_at: null,
+  },
+  {
+    id: 8104,
     name: "Hidden Combine",
     provider_name: "Hidden Combine",
     custom_display_name: null,
@@ -68,7 +81,7 @@ describe("MergeJournalCard", () => {
     const markup = renderToStaticMarkup(
       <MergeJournalCard
         sourceAccounts={accounts}
-        destinationAccounts={[accounts[1]]}
+        destinationAccounts={[accounts[1], accounts[2]]}
         form={form}
         oldAccountSearch="old"
         loading={false}
@@ -90,14 +103,15 @@ describe("MergeJournalCard", () => {
     expect(markup).toContain("Merged 7 entries from Old Combine into New Combine.");
     expect(markup).toContain("Transferred 7, skipped 0, overwritten 0, images 4.");
     expect(markup).toContain("Search by account name or ID");
-    expect(markup.split("Hidden Combine (#8103) - Hidden")).toHaveLength(2);
+    expect(markup).toContain("Locked Combine (#8103) - Locked out");
+    expect(markup.split("Hidden Combine (#8104) - Hidden")).toHaveLength(2);
   });
 
   it("renders an error status message", () => {
     const markup = renderToStaticMarkup(
       <MergeJournalCard
         sourceAccounts={accounts}
-        destinationAccounts={[accounts[1]]}
+        destinationAccounts={[accounts[1], accounts[2]]}
         form={form}
         oldAccountSearch=""
         loading={false}
