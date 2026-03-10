@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
+import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
 import { Toggle } from "../../../components/ui/Toggle";
 import type {
@@ -13,14 +14,17 @@ import type { MergeJournalFormState } from "../mergeJournal";
 import { buildMergeJournalSummaryLine } from "../mergeJournal";
 
 interface MergeJournalCardProps {
-  accounts: readonly AccountInfo[];
+  sourceAccounts: readonly AccountInfo[];
+  destinationAccounts: readonly AccountInfo[];
   form: MergeJournalFormState;
+  oldAccountSearch: string;
   loading: boolean;
   submitDisabled: boolean;
   validationMessage: string | null;
   errorMessage: string | null;
   successMessage: string | null;
   successResult: JournalMergeResult | null;
+  onOldAccountSearchChange: (value: string) => void;
   onFromAccountChange: (value: string) => void;
   onToAccountChange: (value: string) => void;
   onConflictChange: (value: JournalMergeConflictStrategy) => void;
@@ -74,14 +78,17 @@ function MergeJournalMessage({
 }
 
 export function MergeJournalCard({
-  accounts,
+  sourceAccounts,
+  destinationAccounts,
   form,
+  oldAccountSearch,
   loading,
   submitDisabled,
   validationMessage,
   errorMessage,
   successMessage,
   successResult,
+  onOldAccountSearchChange,
   onFromAccountChange,
   onToAccountChange,
   onConflictChange,
@@ -102,21 +109,38 @@ export function MergeJournalCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="space-y-1">
-            <span className="text-xs uppercase tracking-[0.12em] text-slate-500">Old account</span>
-            <Select
-              value={form.fromAccountId}
-              onChange={(event) => onFromAccountChange(event.target.value)}
-              aria-label="Old account"
-            >
-              <option value="">Select old account</option>
-              {accounts.map((account) => (
-                <option key={`from-${account.id}`} value={String(account.id)}>
-                  {formatMergeAccountLabel(account)}
-                </option>
-              ))}
-            </Select>
-          </label>
+          <div className="space-y-3">
+            <label className="space-y-1">
+              <span className="text-xs uppercase tracking-[0.12em] text-slate-500">Find old account</span>
+              <Input
+                value={oldAccountSearch}
+                onChange={(event) => onOldAccountSearchChange(event.target.value)}
+                placeholder="Search by account name or ID"
+                aria-label="Search old accounts"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs uppercase tracking-[0.12em] text-slate-500">Old account</span>
+              <Select
+                value={form.fromAccountId}
+                onChange={(event) => onFromAccountChange(event.target.value)}
+                aria-label="Old account"
+              >
+                <option value="">Select old account</option>
+                {sourceAccounts.length === 0 ? (
+                  <option value="" disabled>
+                    No matching old accounts
+                  </option>
+                ) : (
+                  sourceAccounts.map((account) => (
+                    <option key={`from-${account.id}`} value={String(account.id)}>
+                      {formatMergeAccountLabel(account)}
+                    </option>
+                  ))
+                )}
+              </Select>
+            </label>
+          </div>
           <label className="space-y-1">
             <span className="text-xs uppercase tracking-[0.12em] text-slate-500">New account</span>
             <Select
@@ -125,11 +149,17 @@ export function MergeJournalCard({
               aria-label="New account"
             >
               <option value="">Select new account</option>
-              {accounts.map((account) => (
-                <option key={`to-${account.id}`} value={String(account.id)}>
-                  {formatMergeAccountLabel(account)}
+              {destinationAccounts.length === 0 ? (
+                <option value="" disabled>
+                  No active accounts available
                 </option>
-              ))}
+              ) : (
+                destinationAccounts.map((account) => (
+                  <option key={`to-${account.id}`} value={String(account.id)}>
+                    {formatMergeAccountLabel(account)}
+                  </option>
+                ))
+              )}
             </Select>
           </label>
         </div>

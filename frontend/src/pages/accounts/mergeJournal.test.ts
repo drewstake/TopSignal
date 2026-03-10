@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
 import {
   buildMergeJournalSuccessMessage,
+  filterMergeSourceAccounts,
+  getMergeDestinationAccounts,
   reconcileMergeJournalForm,
   validateMergeJournalForm,
 } from "./mergeJournal";
@@ -34,7 +36,33 @@ const baseAccounts: AccountInfo[] = [
     is_visible: true,
     last_trade_at: null,
   },
+  {
+    id: 7003,
+    name: "Hidden XFA",
+    provider_name: "Hidden XFA",
+    custom_display_name: null,
+    balance: 0,
+    status: "HIDDEN",
+    account_state: "HIDDEN",
+    is_main: false,
+    can_trade: true,
+    is_visible: false,
+    last_trade_at: null,
+  },
 ];
+
+describe("filterMergeSourceAccounts", () => {
+  it("matches old accounts by name or id", () => {
+    expect(filterMergeSourceAccounts(baseAccounts, "hidden").map((account) => account.id)).toEqual([7003]);
+    expect(filterMergeSourceAccounts(baseAccounts, "7001").map((account) => account.id)).toEqual([7001]);
+  });
+});
+
+describe("getMergeDestinationAccounts", () => {
+  it("keeps only active destination accounts", () => {
+    expect(getMergeDestinationAccounts(baseAccounts).map((account) => account.id)).toEqual([7002]);
+  });
+});
 
 describe("reconcileMergeJournalForm", () => {
   it("defaults the destination to the preferred account and picks a different source account", () => {
@@ -46,6 +74,7 @@ describe("reconcileMergeJournalForm", () => {
         includeImages: true,
       },
       baseAccounts,
+      getMergeDestinationAccounts(baseAccounts),
       7002,
     );
 

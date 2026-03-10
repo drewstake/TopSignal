@@ -23,6 +23,8 @@ import { MergeJournalCard } from "./components/MergeJournalCard";
 import {
   type MergeJournalFormState,
   buildMergeJournalSuccessMessage,
+  filterMergeSourceAccounts,
+  getMergeDestinationAccounts,
   reconcileMergeJournalForm,
   validateMergeJournalForm,
 } from "./mergeJournal";
@@ -139,6 +141,7 @@ export function AccountsPage() {
   const [mergeJournalError, setMergeJournalError] = useState<string | null>(null);
   const [mergeJournalSuccess, setMergeJournalSuccess] = useState<string | null>(null);
   const [mergeJournalResult, setMergeJournalResult] = useState<JournalMergeResult | null>(null);
+  const [mergeOldAccountSearch, setMergeOldAccountSearch] = useState("");
   const editInputRef = useRef<HTMLInputElement | null>(null);
 
   const setActiveAccount = useCallback(
@@ -305,6 +308,14 @@ export function AccountsPage() {
 
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
   const orderedMergeAccounts = useMemo(() => sortAccountsForSelection(mergeAccounts), [mergeAccounts]);
+  const orderedMergeDestinationAccounts = useMemo(
+    () => sortAccountsForSelection(getMergeDestinationAccounts(mergeAccounts)),
+    [mergeAccounts],
+  );
+  const filteredMergeSourceAccounts = useMemo(
+    () => filterMergeSourceAccounts(orderedMergeAccounts, mergeOldAccountSearch),
+    [mergeOldAccountSearch, orderedMergeAccounts],
+  );
 
   useEffect(() => {
     if (orderedAccounts.length === 0) {
@@ -351,9 +362,14 @@ export function AccountsPage() {
 
   useEffect(() => {
     setMergeForm((current) =>
-      reconcileMergeJournalForm(current, orderedMergeAccounts, selectedAccount?.id ?? null),
+      reconcileMergeJournalForm(
+        current,
+        orderedMergeAccounts,
+        orderedMergeDestinationAccounts,
+        selectedAccount?.id ?? null,
+      ),
     );
-  }, [orderedMergeAccounts, selectedAccount?.id]);
+  }, [orderedMergeAccounts, orderedMergeDestinationAccounts, selectedAccount?.id]);
 
   const updateMergeForm = useCallback((updater: (current: MergeJournalFormState) => MergeJournalFormState) => {
     setMergeForm((current) => updater(current));
@@ -615,14 +631,17 @@ export function AccountsPage() {
       </section>
       <section>
         <MergeJournalCard
-          accounts={orderedMergeAccounts}
+          sourceAccounts={filteredMergeSourceAccounts}
+          destinationAccounts={orderedMergeDestinationAccounts}
           form={mergeForm}
+          oldAccountSearch={mergeOldAccountSearch}
           loading={mergeJournalLoading}
           submitDisabled={mergeSubmitDisabled}
           validationMessage={mergeValidationMessage}
           errorMessage={mergeJournalError}
           successMessage={mergeJournalSuccess}
           successResult={mergeJournalResult}
+          onOldAccountSearchChange={(value) => setMergeOldAccountSearch(value)}
           onFromAccountChange={(value) =>
             updateMergeForm((current) => ({
               ...current,

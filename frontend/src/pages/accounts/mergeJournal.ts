@@ -11,32 +11,63 @@ export interface MergeJournalFormState {
   includeImages: boolean;
 }
 
+export function filterMergeSourceAccounts<
+  T extends Pick<AccountInfo, "id" | "name"> & Partial<Pick<AccountInfo, "provider_name">>,
+>(
+  accounts: readonly T[],
+  query: string,
+): T[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return [...accounts];
+  }
+
+  return accounts.filter((account) => {
+    const idText = String(account.id);
+    const nameText = account.name.toLowerCase();
+    const providerNameText = (account.provider_name ?? "").toLowerCase();
+    return (
+      idText.includes(normalizedQuery) ||
+      nameText.includes(normalizedQuery) ||
+      providerNameText.includes(normalizedQuery)
+    );
+  });
+}
+
+export function getMergeDestinationAccounts<T extends Pick<AccountInfo, "account_state">>(
+  accounts: readonly T[],
+): T[] {
+  return accounts.filter((account) => account.account_state === "ACTIVE");
+}
+
 export function reconcileMergeJournalForm(
   current: MergeJournalFormState,
-  accounts: readonly Pick<AccountInfo, "id">[],
+  sourceAccounts: readonly Pick<AccountInfo, "id">[],
+  destinationAccounts: readonly Pick<AccountInfo, "id">[],
   preferredDestinationAccountId: number | null,
 ): MergeJournalFormState {
-  const availableIds = new Set(accounts.map((account) => String(account.id)));
+  const sourceIds = new Set(sourceAccounts.map((account) => String(account.id)));
+  const destinationIds = new Set(destinationAccounts.map((account) => String(account.id)));
   const preferredDestinationId =
     preferredDestinationAccountId !== null ? String(preferredDestinationAccountId) : "";
 
   let toAccountId =
-    current.toAccountId && availableIds.has(current.toAccountId)
+    current.toAccountId && destinationIds.has(current.toAccountId)
       ? current.toAccountId
-      : preferredDestinationId && availableIds.has(preferredDestinationId)
+      : preferredDestinationId && destinationIds.has(preferredDestinationId)
         ? preferredDestinationId
-        : accounts[0]
-          ? String(accounts[0].id)
+        : destinationAccounts[0]
+          ? String(destinationAccounts[0].id)
           : "";
 
   let fromAccountId =
-    current.fromAccountId && availableIds.has(current.fromAccountId) ? current.fromAccountId : "";
+    current.fromAccountId && sourceIds.has(current.fromAccountId) ? current.fromAccountId : "";
   if (!fromAccountId || fromAccountId === toAccountId) {
-    fromAccountId = accounts.find((account) => String(account.id) !== toAccountId)?.id?.toString() ?? "";
+    fromAccountId = sourceAccounts.find((account) => String(account.id) !== toAccountId)?.id?.toString() ?? "";
   }
 
   if (!toAccountId && fromAccountId) {
-    toAccountId = accounts.find((account) => String(account.id) !== fromAccountId)?.id?.toString() ?? "";
+    toAccountId = destinationAccounts.find((account) => String(account.id) !== fromAccountId)?.id?.toString() ?? "";
   }
 
   return {

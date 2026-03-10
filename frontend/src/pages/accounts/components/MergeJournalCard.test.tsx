@@ -32,6 +32,19 @@ const accounts: AccountInfo[] = [
     is_visible: true,
     last_trade_at: null,
   },
+  {
+    id: 8103,
+    name: "Hidden Combine",
+    provider_name: "Hidden Combine",
+    custom_display_name: null,
+    balance: 0,
+    status: "HIDDEN",
+    account_state: "HIDDEN",
+    is_main: false,
+    can_trade: true,
+    is_visible: false,
+    last_trade_at: null,
+  },
 ];
 
 const form: MergeJournalFormState = {
@@ -54,14 +67,17 @@ describe("MergeJournalCard", () => {
   it("renders a success status message", () => {
     const markup = renderToStaticMarkup(
       <MergeJournalCard
-        accounts={accounts}
+        sourceAccounts={accounts}
+        destinationAccounts={[accounts[1]]}
         form={form}
+        oldAccountSearch="old"
         loading={false}
         submitDisabled={false}
         validationMessage={null}
         errorMessage={null}
         successMessage="Merged 7 entries from Old Combine into New Combine."
         successResult={successResult}
+        onOldAccountSearchChange={() => undefined}
         onFromAccountChange={() => undefined}
         onToAccountChange={() => undefined}
         onConflictChange={() => undefined}
@@ -73,19 +89,24 @@ describe("MergeJournalCard", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain("Merged 7 entries from Old Combine into New Combine.");
     expect(markup).toContain("Transferred 7, skipped 0, overwritten 0, images 4.");
+    expect(markup).toContain("Search by account name or ID");
+    expect(markup.split("Hidden Combine (#8103) - Hidden")).toHaveLength(2);
   });
 
   it("renders an error status message", () => {
     const markup = renderToStaticMarkup(
       <MergeJournalCard
-        accounts={accounts}
+        sourceAccounts={accounts}
+        destinationAccounts={[accounts[1]]}
         form={form}
+        oldAccountSearch=""
         loading={false}
         submitDisabled={true}
         validationMessage={null}
         errorMessage="Destination account not found."
         successMessage={null}
         successResult={null}
+        onOldAccountSearchChange={() => undefined}
         onFromAccountChange={() => undefined}
         onToAccountChange={() => undefined}
         onConflictChange={() => undefined}
