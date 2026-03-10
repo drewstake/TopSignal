@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -11,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
 from ..auth import get_authenticated_user_id
-from ..journal_schemas import JournalMood
+from ..journal_schemas import JournalMergeConflictStrategy, JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
 
@@ -27,6 +29,7 @@ _ALLOWED_JOURNAL_IMAGE_MIME_TYPES = {
     "image/webp": "webp",
 }
 _TRADING_TZ = ZoneInfo("America/New_York")
+logger = logging.getLogger(__name__)
 
 
 class VersionConflictError(Exception):
@@ -179,6 +182,142 @@ def create_journal_entry(
 
     db.refresh(row)
     return row, False
+
+
+def merge_journal_entries(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    from_account_id: int,
+    to_account_id: int,
+    on_conflict: JournalMergeConflictStrategy | str = JournalMergeConflictStrategy.SKIP,
+    include_images: bool = True,
+) -> dict[str, int]:
+    resolved_user_id = _resolve_user_id(user_id)
+    if from_account_id == to_account_id:
+        raise ValueError("from_account_id and to_account_id must be different")
+
+    normalized_conflict = _normalize_merge_conflict_strategy(on_conflict)
+    source_rows = (
+        db.query(JournalEntry)
+        .filter(JournalEntry.user_id == resolved_user_id)
+        .filter(JournalEntry.account_id == from_account_id)
+        .order_by(JournalEntry.entry_date.asc(), JournalEntry.id.asc())
+        .all()
+    )
+
+    summary = {
+        "from_account_id": int(from_account_id),
+        "to_account_id": int(to_account_id),
+        "transferred_count": 0,
+        "skipped_count": 0,
+        "overwritten_count": 0,
+        "image_count": 0,
+    }
+    if not source_rows:
+        return summary
+
+    source_dates = [row.entry_date for row in source_rows]
+    existing_dest_rows = (
+        db.query(JournalEntry)
+        .filter(JournalEntry.user_id == resolved_user_id)
+        .filter(JournalEntry.account_id == to_account_id)
+        .filter(JournalEntry.entry_date.in_(source_dates))
+        .all()
+    )
+    dest_by_date = {row.entry_date: row for row in existing_dest_rows}
+
+    source_images_by_entry_id: dict[int, list[JournalEntryImage]] = {}
+    if include_images:
+        source_entry_ids = [int(row.id) for row in source_rows]
+        source_image_rows = (
+            db.query(JournalEntryImage)
+            .filter(JournalEntryImage.user_id == resolved_user_id)
+            .filter(JournalEntryImage.journal_entry_id.in_(source_entry_ids))
+            .order_by(JournalEntryImage.created_at.asc(), JournalEntryImage.id.asc())
+            .all()
+        )
+        for image_row in source_image_rows:
+            source_images_by_entry_id.setdefault(int(image_row.journal_entry_id), []).append(image_row)
+
+    created_filenames: list[str] = []
+    filenames_to_delete_after_commit: list[str] = []
+    try:
+        for source_row in source_rows:
+            source_entry_id = int(source_row.id)
+            existing_dest_row = dest_by_date.get(source_row.entry_date)
+            source_images = source_images_by_entry_id.get(source_entry_id, [])
+
+            if existing_dest_row is None:
+                next_row = JournalEntry(
+                    user_id=resolved_user_id,
+                    account_id=to_account_id,
+                    entry_date=source_row.entry_date,
+                    title=source_row.title,
+                    mood=source_row.mood,
+                    tags=_copy_tags(source_row.tags),
+                    body=source_row.body,
+                    version=max(int(source_row.version or 1), 1),
+                    stats_source=source_row.stats_source,
+                    stats_json=_copy_stats_json(source_row.stats_json),
+                    stats_pulled_at=source_row.stats_pulled_at,
+                    is_archived=bool(source_row.is_archived),
+                    created_at=source_row.created_at,
+                    updated_at=source_row.updated_at,
+                )
+                db.add(next_row)
+                db.flush()
+                dest_by_date[source_row.entry_date] = next_row
+                summary["transferred_count"] += 1
+                if include_images:
+                    summary["image_count"] += _copy_journal_entry_images(
+                        db,
+                        user_id=resolved_user_id,
+                        account_id=to_account_id,
+                        destination_entry=next_row,
+                        source_images=source_images,
+                        created_filenames=created_filenames,
+                    )
+                continue
+
+            if normalized_conflict == JournalMergeConflictStrategy.SKIP.value:
+                summary["skipped_count"] += 1
+                continue
+
+            _overwrite_journal_entry(destination=existing_dest_row, source=source_row)
+            summary["transferred_count"] += 1
+            summary["overwritten_count"] += 1
+
+            if include_images:
+                for existing_image in _list_images_for_entry(
+                    db,
+                    user_id=resolved_user_id,
+                    account_id=to_account_id,
+                    entry_id=int(existing_dest_row.id),
+                ):
+                    filenames_to_delete_after_commit.append(existing_image.filename)
+                    db.delete(existing_image)
+                db.flush()
+                summary["image_count"] += _copy_journal_entry_images(
+                    db,
+                    user_id=resolved_user_id,
+                    account_id=to_account_id,
+                    destination_entry=existing_dest_row,
+                    source_images=source_images,
+                    created_filenames=created_filenames,
+                )
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        for filename in created_filenames:
+            _delete_journal_image_quietly(filename)
+        raise
+
+    for filename in filenames_to_delete_after_commit:
+        _delete_journal_image_quietly(filename)
+
+    return summary
 
 
 def update_journal_entry(
@@ -353,8 +492,12 @@ def create_journal_entry_image(
         raise ValueError("image file exceeds 10MB limit")
 
     normalized_mime = _normalize_image_mime_type(mime_type)
-    extension = _ALLOWED_JOURNAL_IMAGE_MIME_TYPES[normalized_mime]
-    filename = f"{resolved_user_id}/{account_id}/{entry_id}/{uuid4().hex}.{extension}"
+    filename = _build_journal_image_filename(
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+        mime_type=normalized_mime,
+    )
     save_journal_image(object_key=filename, file_bytes=file_bytes, mime_type=normalized_mime)
 
     row = JournalEntryImage(
@@ -700,6 +843,19 @@ def _normalize_search_query(value: str | None) -> str | None:
     return normalized if normalized else None
 
 
+def _normalize_merge_conflict_strategy(value: JournalMergeConflictStrategy | str) -> str:
+    if isinstance(value, JournalMergeConflictStrategy):
+        return value.value
+
+    normalized = str(value).strip().lower()
+    if normalized in {
+        JournalMergeConflictStrategy.SKIP.value,
+        JournalMergeConflictStrategy.OVERWRITE.value,
+    }:
+        return normalized
+    raise ValueError("on_conflict is invalid")
+
+
 def _journal_entry_field_value(row: JournalEntry, field_name: str) -> Any:
     value = getattr(row, field_name)
     if field_name == "tags":
@@ -771,6 +927,103 @@ def _normalize_image_mime_type(value: str | None) -> str:
     if normalized not in _ALLOWED_JOURNAL_IMAGE_MIME_TYPES:
         raise ValueError("unsupported image type")
     return normalized
+
+
+def _build_journal_image_filename(*, user_id: str, account_id: int, entry_id: int, mime_type: str) -> str:
+    extension = _ALLOWED_JOURNAL_IMAGE_MIME_TYPES[mime_type]
+    return f"{user_id}/{account_id}/{entry_id}/{uuid4().hex}.{extension}"
+
+
+def _copy_tags(value: Any) -> list[str]:
+    raw_tags = value if isinstance(value, list) else []
+    return [str(tag) for tag in raw_tags]
+
+
+def _copy_stats_json(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return deepcopy(value)
+
+
+def _overwrite_journal_entry(*, destination: JournalEntry, source: JournalEntry) -> None:
+    destination.title = source.title
+    destination.mood = source.mood
+    destination.tags = _copy_tags(source.tags)
+    destination.body = source.body
+    destination.stats_source = source.stats_source
+    destination.stats_json = _copy_stats_json(source.stats_json)
+    destination.stats_pulled_at = source.stats_pulled_at
+    destination.is_archived = bool(source.is_archived)
+    destination.version = max(int(destination.version or 1), int(source.version or 1)) + 1
+    destination.updated_at = _utcnow()
+
+
+def _copy_journal_entry_images(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    destination_entry: JournalEntry,
+    source_images: list[JournalEntryImage],
+    created_filenames: list[str],
+) -> int:
+    copied_count = 0
+    destination_entry_id = int(destination_entry.id)
+    for source_image in source_images:
+        file_bytes = load_journal_image(object_key=source_image.filename)
+        normalized_mime = _normalize_image_mime_type(source_image.mime_type)
+        filename = _build_journal_image_filename(
+            user_id=user_id,
+            account_id=account_id,
+            entry_id=destination_entry_id,
+            mime_type=normalized_mime,
+        )
+        save_journal_image(object_key=filename, file_bytes=file_bytes, mime_type=normalized_mime)
+        created_filenames.append(filename)
+
+        db.add(
+            JournalEntryImage(
+                user_id=user_id,
+                journal_entry_id=destination_entry_id,
+                account_id=account_id,
+                entry_date=destination_entry.entry_date,
+                filename=filename,
+                mime_type=normalized_mime,
+                byte_size=int(source_image.byte_size),
+                width=source_image.width,
+                height=source_image.height,
+                created_at=source_image.created_at,
+            )
+        )
+        copied_count += 1
+
+    if copied_count > 0:
+        db.flush()
+    return copied_count
+
+
+def _list_images_for_entry(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    entry_id: int,
+) -> list[JournalEntryImage]:
+    return (
+        db.query(JournalEntryImage)
+        .filter(JournalEntryImage.user_id == user_id)
+        .filter(JournalEntryImage.account_id == account_id)
+        .filter(JournalEntryImage.journal_entry_id == entry_id)
+        .order_by(JournalEntryImage.created_at.asc(), JournalEntryImage.id.asc())
+        .all()
+    )
+
+
+def _delete_journal_image_quietly(object_key: str) -> None:
+    try:
+        delete_journal_image(object_key=object_key)
+    except Exception:
+        logger.exception("journal_image_delete_failed", extra={"object_key": object_key})
 
 
 def _utcnow() -> datetime:

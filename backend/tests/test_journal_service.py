@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,11 +12,14 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
 from app.journal_schemas import JournalMood
-from app.models import JournalEntry, ProjectXTradeEvent
+from app.models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from app.services.journal import (
     _compute_trade_stats_snapshot,
     create_journal_entry,
+    create_journal_entry_image,
     list_journal_entries,
+    list_journal_entry_images,
+    merge_journal_entries,
     normalize_tags,
     normalize_title,
     pull_journal_entry_trade_stats,
@@ -31,15 +35,28 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[JournalEntry.__table__, ProjectXTradeEvent.__table__])
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[JournalEntry.__table__, JournalEntryImage.__table__, ProjectXTradeEvent.__table__],
+    )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__, JournalEntry.__table__])
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeEvent.__table__, JournalEntryImage.__table__, JournalEntry.__table__],
+        )
         engine.dispose()
+
+
+@pytest.fixture()
+def journal_storage_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("JOURNAL_IMAGE_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("JOURNAL_IMAGE_STORAGE_DIR", str(tmp_path))
+    return tmp_path
 
 
 def test_normalize_tags_trims_lowercases_and_deduplicates():
@@ -202,6 +219,255 @@ def test_update_journal_entry_accepts_stale_duplicate_payload_when_server_alread
     assert int(duplicate_update.version) == 2
     assert duplicate_update.title == "Updated title"
     assert duplicate_update.body == "Updated body"
+
+
+def test_merge_journal_entries_copies_missing_days_into_destination_without_touching_source(db_session):
+    user_id = "merge-success-user"
+    create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4101,
+        entry_date=date(2026, 2, 1),
+        title="Day one",
+        mood=JournalMood.FOCUSED,
+        tags=["discipline"],
+        body="First source entry",
+    )
+    source_second, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4101,
+        entry_date=date(2026, 2, 2),
+        title="Day two",
+        mood=JournalMood.CONFIDENT,
+        tags=["review"],
+        body="Second source entry",
+    )
+    source_second.stats_source = "trade_snapshot"
+    source_second.stats_json = {"trade_count": 3, "net": 175.5}
+    source_second.stats_pulled_at = datetime(2026, 2, 2, 18, 15, tzinfo=timezone.utc)
+    db_session.add(source_second)
+
+    destination_existing, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4202,
+        entry_date=date(2026, 2, 4),
+        title="Destination keeps this",
+        mood=JournalMood.NEUTRAL,
+        tags=["existing"],
+        body="Already on the new account",
+    )
+    db_session.commit()
+
+    summary = merge_journal_entries(
+        db_session,
+        user_id=user_id,
+        from_account_id=4101,
+        to_account_id=4202,
+        on_conflict="skip",
+        include_images=False,
+    )
+
+    source_rows, source_total = list_journal_entries(db_session, user_id=user_id, account_id=4101, limit=10, offset=0)
+    destination_rows, destination_total = list_journal_entries(
+        db_session,
+        user_id=user_id,
+        account_id=4202,
+        limit=10,
+        offset=0,
+    )
+
+    assert summary == {
+        "from_account_id": 4101,
+        "to_account_id": 4202,
+        "transferred_count": 2,
+        "skipped_count": 0,
+        "overwritten_count": 0,
+        "image_count": 0,
+    }
+    assert source_total == 2
+    assert destination_total == 3
+    assert [row.entry_date for row in source_rows] == [date(2026, 2, 2), date(2026, 2, 1)]
+    assert destination_existing.id in {row.id for row in destination_rows}
+    merged_by_date = {row.entry_date: row for row in destination_rows}
+    assert merged_by_date[date(2026, 2, 1)].title == "Day one"
+    assert merged_by_date[date(2026, 2, 2)].stats_json == {"trade_count": 3, "net": 175.5}
+
+
+def test_merge_journal_entries_skip_conflict_preserves_destination_entry(db_session, journal_storage_dir: Path):
+    user_id = "merge-skip-user"
+    source_entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4301,
+        entry_date=date(2026, 2, 6),
+        title="Old account day",
+        mood=JournalMood.FRUSTRATED,
+        tags=["old"],
+        body="Should be skipped",
+    )
+    destination_entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4302,
+        entry_date=date(2026, 2, 6),
+        title="New account day",
+        mood=JournalMood.FOCUSED,
+        tags=["keep"],
+        body="Keep the destination entry",
+    )
+    create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=4301,
+        entry_id=int(source_entry.id),
+        file_bytes=b"source-image",
+        mime_type="image/png",
+    )
+    destination_image = create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=4302,
+        entry_id=int(destination_entry.id),
+        file_bytes=b"destination-image",
+        mime_type="image/png",
+    )
+
+    summary = merge_journal_entries(
+        db_session,
+        user_id=user_id,
+        from_account_id=4301,
+        to_account_id=4302,
+        on_conflict="skip",
+        include_images=True,
+    )
+
+    db_session.refresh(destination_entry)
+    destination_images = list_journal_entry_images(
+        db_session,
+        user_id=user_id,
+        account_id=4302,
+        entry_id=int(destination_entry.id),
+    )
+
+    assert summary == {
+        "from_account_id": 4301,
+        "to_account_id": 4302,
+        "transferred_count": 0,
+        "skipped_count": 1,
+        "overwritten_count": 0,
+        "image_count": 0,
+    }
+    assert destination_entry.title == "New account day"
+    assert destination_entry.body == "Keep the destination entry"
+    assert [image.id for image in destination_images] == [int(destination_image.id)]
+    assert (journal_storage_dir / destination_image.filename).exists()
+
+
+def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_images(
+    db_session,
+    journal_storage_dir: Path,
+):
+    user_id = "merge-overwrite-user"
+    source_entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4401,
+        entry_date=date(2026, 2, 8),
+        title="Recovered review",
+        mood=JournalMood.CONFIDENT,
+        tags=["merge", "review"],
+        body="Use the old account review instead.",
+    )
+    source_entry.version = 5
+    source_entry.stats_source = "trade_snapshot"
+    source_entry.stats_json = {"trade_count": 2, "net": 412.0}
+    source_entry.stats_pulled_at = datetime(2026, 2, 8, 19, 5, tzinfo=timezone.utc)
+    source_entry.is_archived = True
+    db_session.add(source_entry)
+    db_session.commit()
+
+    source_image_one = create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=4401,
+        entry_id=int(source_entry.id),
+        file_bytes=b"source-image-one",
+        mime_type="image/png",
+    )
+    source_image_two = create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=4401,
+        entry_id=int(source_entry.id),
+        file_bytes=b"source-image-two",
+        mime_type="image/jpeg",
+    )
+
+    destination_entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=4402,
+        entry_date=date(2026, 2, 8),
+        title="Keep no more",
+        mood=JournalMood.NEUTRAL,
+        tags=["stale"],
+        body="This should be replaced",
+    )
+    destination_entry.version = 2
+    db_session.add(destination_entry)
+    db_session.commit()
+
+    destination_old_image = create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=4402,
+        entry_id=int(destination_entry.id),
+        file_bytes=b"destination-old-image",
+        mime_type="image/png",
+    )
+    old_image_path = journal_storage_dir / destination_old_image.filename
+
+    summary = merge_journal_entries(
+        db_session,
+        user_id=user_id,
+        from_account_id=4401,
+        to_account_id=4402,
+        on_conflict="overwrite",
+        include_images=True,
+    )
+
+    db_session.refresh(destination_entry)
+    destination_images = list_journal_entry_images(
+        db_session,
+        user_id=user_id,
+        account_id=4402,
+        entry_id=int(destination_entry.id),
+    )
+
+    assert summary == {
+        "from_account_id": 4401,
+        "to_account_id": 4402,
+        "transferred_count": 1,
+        "skipped_count": 0,
+        "overwritten_count": 1,
+        "image_count": 2,
+    }
+    assert destination_entry.title == "Recovered review"
+    assert destination_entry.mood == JournalMood.CONFIDENT.value
+    assert destination_entry.tags == ["merge", "review"]
+    assert destination_entry.body == "Use the old account review instead."
+    assert destination_entry.stats_json == {"trade_count": 2, "net": 412.0}
+    assert destination_entry.is_archived is True
+    assert int(destination_entry.version) == 6
+    assert len(destination_images) == 2
+    assert sorted(image.mime_type for image in destination_images) == ["image/jpeg", "image/png"]
+    assert all(image.filename != destination_old_image.filename for image in destination_images)
+    assert all((journal_storage_dir / image.filename).exists() for image in destination_images)
+    assert not old_image_path.exists()
+    assert (journal_storage_dir / source_image_one.filename).exists()
+    assert (journal_storage_dir / source_image_two.filename).exists()
 
 
 def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():

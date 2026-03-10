@@ -49,6 +49,8 @@ from .journal_schemas import (
     JournalEntryListOut,
     JournalDaysOut,
     JournalImageOut,
+    JournalMergeIn,
+    JournalMergeOut,
     JournalEntrySaveOut,
     JournalEntryUpdateIn,
     JournalEntryOut,
@@ -103,6 +105,7 @@ from .services.journal import (
     list_journal_days,
     list_journal_entry_images,
     list_journal_entries,
+    merge_journal_entries,
     pull_journal_entry_trade_stats,
     serialize_journal_entry,
     serialize_journal_entry_save,
@@ -995,6 +998,38 @@ def create_projectx_account_journal_entry(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/journal/merge", response_model=JournalMergeOut)
+def merge_projectx_account_journal_entries(
+    payload: JournalMergeIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=payload.from_account_id,
+        error_detail="Source account not found.",
+    )
+    _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=payload.to_account_id,
+        error_detail="Destination account not found.",
+    )
+
+    try:
+        return merge_journal_entries(
+            db,
+            user_id=user_id,
+            from_account_id=payload.from_account_id,
+            to_account_id=payload.to_account_id,
+            on_conflict=payload.on_conflict,
+            include_images=payload.include_images,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/accounts/{account_id}/journal/days", response_model=JournalDaysOut)
 def list_projectx_account_journal_days(
     account_id: int,
@@ -1746,6 +1781,19 @@ def _load_last_trade_timestamps(db: Session, *, user_id: str, account_ids: list[
             continue
         output[int(row.account_id)] = _as_utc(row.last_trade_at)
     return output
+
+
+def _require_owned_projectx_account(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    error_detail: str = "Account not found.",
+):
+    account = get_projectx_account_row(db, account_id, user_id=user_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=error_detail)
+    return account
 
 
 def _should_fallback_to_local_metrics(

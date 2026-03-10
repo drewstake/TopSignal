@@ -93,3 +93,24 @@ class PullTradeStatsIn(BaseModel):
     entry_date: date | None = None
     start_date: date | None = None
     end_date: date | None = None
+
+
+class JournalMergeConflictStrategy(str, Enum):
+    SKIP = "skip"
+    OVERWRITE = "overwrite"
+
+
+class JournalMergeIn(BaseModel):
+    from_account_id: int = Field(ge=1)
+    to_account_id: int = Field(ge=1)
+    on_conflict: JournalMergeConflictStrategy = JournalMergeConflictStrategy.SKIP
+    include_images: bool = True
+
+
+class JournalMergeOut(BaseModel):
+    from_account_id: int
+    to_account_id: int
+    transferred_count: int
+    skipped_count: int
+    overwritten_count: int
+    image_count: int
