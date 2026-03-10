@@ -445,6 +445,24 @@ export interface JournalPullTradeStatsInput {
   end_date?: string;
 }
 
+export type JournalMergeConflictStrategy = "skip" | "overwrite";
+
+export interface JournalMergeInput {
+  from_account_id: number;
+  to_account_id: number;
+  on_conflict: JournalMergeConflictStrategy;
+  include_images: boolean;
+}
+
+export interface JournalMergeResult {
+  from_account_id: number;
+  to_account_id: number;
+  transferred_count: number;
+  skipped_count: number;
+  overwritten_count: number;
+  image_count: number;
+}
+
 export interface AuthMe {
   user_id: string;
   email: string | null;

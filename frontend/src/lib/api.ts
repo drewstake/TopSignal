@@ -14,6 +14,8 @@ import type {
   JournalEntriesResponse,
   JournalDaysQuery,
   JournalDaysResponse,
+  JournalMergeInput,
+  JournalMergeResult,
   JournalPullTradeStatsInput,
   AccountPnlCalendarDay,
   AccountSummary,
@@ -859,6 +861,18 @@ export const accountsApi = {
       body,
     }).then((result) => {
       invalidateAccountJournalCaches(accountId);
+      return result;
+    }),
+  mergeJournalEntries: (body: JournalMergeInput) =>
+    requestJson<JournalMergeResult>("/api/journal/merge", {
+      method: "POST",
+      body,
+    }).then((result) => {
+      invalidateAccountsListCaches();
+      invalidateAccountReadCaches(body.from_account_id);
+      invalidateAccountReadCaches(body.to_account_id);
+      invalidateAccountJournalCaches(body.from_account_id);
+      invalidateAccountJournalCaches(body.to_account_id);
       return result;
     }),
 };

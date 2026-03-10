@@ -18,7 +18,14 @@ import {
 import { logPerfInfo } from "../../lib/perf";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
-import type { AccountInfo } from "../../lib/types";
+import type { AccountInfo, JournalMergeResult } from "../../lib/types";
+import { MergeJournalCard } from "./components/MergeJournalCard";
+import {
+  type MergeJournalFormState,
+  buildMergeJournalSuccessMessage,
+  reconcileMergeJournalForm,
+  validateMergeJournalForm,
+} from "./mergeJournal";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -108,6 +115,7 @@ export function AccountsPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [mergeAccounts, setMergeAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [showHiddenAccounts, setShowHiddenAccounts] = useState(false);
@@ -121,6 +129,16 @@ export function AccountsPage() {
   const [editingName, setEditingName] = useState("");
   const [renamingAccountId, setRenamingAccountId] = useState<number | null>(null);
   const [renameErrorById, setRenameErrorById] = useState<Record<number, string | null>>({});
+  const [mergeForm, setMergeForm] = useState<MergeJournalFormState>({
+    fromAccountId: "",
+    toAccountId: "",
+    onConflict: "skip",
+    includeImages: true,
+  });
+  const [mergeJournalLoading, setMergeJournalLoading] = useState(false);
+  const [mergeJournalError, setMergeJournalError] = useState<string | null>(null);
+  const [mergeJournalSuccess, setMergeJournalSuccess] = useState<string | null>(null);
+  const [mergeJournalResult, setMergeJournalResult] = useState<JournalMergeResult | null>(null);
   const editInputRef = useRef<HTMLInputElement | null>(null);
 
   const setActiveAccount = useCallback(
@@ -146,11 +164,18 @@ export function AccountsPage() {
     setLastTradeError(null);
 
     try {
-      const payload = await accountsApi.getAccounts({
-        showInactive: true,
-        showMissing: showMissingAccounts,
-      });
-      setAccounts(payload.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
+      const [visibleAccounts, mergeableAccounts] = await Promise.all([
+        accountsApi.getAccounts({
+          showInactive: true,
+          showMissing: showMissingAccounts,
+        }),
+        accountsApi.getAccounts({
+          showInactive: true,
+          showMissing: true,
+        }),
+      ]);
+      setAccounts(visibleAccounts.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
+      setMergeAccounts(mergeableAccounts);
       setEditingAccountId(null);
       setEditingName("");
       setRenameErrorById({});
@@ -160,6 +185,7 @@ export function AccountsPage() {
     } catch (err) {
       setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
       setAccounts([]);
+      setMergeAccounts([]);
     } finally {
       const totalMs = Math.max(performance.now() - startedAtMs, 0);
       logPerfInfo("[perf][accounts] load-end", {
@@ -278,6 +304,7 @@ export function AccountsPage() {
   }, [editingAccountId]);
 
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+  const orderedMergeAccounts = useMemo(() => sortAccountsForSelection(mergeAccounts), [mergeAccounts]);
 
   useEffect(() => {
     if (orderedAccounts.length === 0) {
@@ -315,6 +342,55 @@ export function AccountsPage() {
     () => accounts.find((account) => account.id === accountFromQuery) ?? null,
     [accounts, accountFromQuery],
   );
+  const mergeAccountNamesById = useMemo(
+    () => new Map(orderedMergeAccounts.map((account) => [account.id, account.name] as const)),
+    [orderedMergeAccounts],
+  );
+  const mergeValidationMessage = useMemo(() => validateMergeJournalForm(mergeForm), [mergeForm]);
+  const mergeSubmitDisabled = mergeJournalLoading || mergeValidationMessage !== null;
+
+  useEffect(() => {
+    setMergeForm((current) =>
+      reconcileMergeJournalForm(current, orderedMergeAccounts, selectedAccount?.id ?? null),
+    );
+  }, [orderedMergeAccounts, selectedAccount?.id]);
+
+  const updateMergeForm = useCallback((updater: (current: MergeJournalFormState) => MergeJournalFormState) => {
+    setMergeForm((current) => updater(current));
+    setMergeJournalError(null);
+    setMergeJournalSuccess(null);
+    setMergeJournalResult(null);
+  }, []);
+
+  const handleMergeJournal = useCallback(async () => {
+    const validationMessage = validateMergeJournalForm(mergeForm);
+    if (validationMessage) {
+      return;
+    }
+
+    const fromAccountId = Number.parseInt(mergeForm.fromAccountId, 10);
+    const toAccountId = Number.parseInt(mergeForm.toAccountId, 10);
+
+    setMergeJournalLoading(true);
+    setMergeJournalError(null);
+    setMergeJournalSuccess(null);
+    setMergeJournalResult(null);
+    try {
+      const result = await accountsApi.mergeJournalEntries({
+        from_account_id: fromAccountId,
+        to_account_id: toAccountId,
+        on_conflict: mergeForm.onConflict,
+        include_images: mergeForm.includeImages,
+      });
+      setMergeJournalResult(result);
+      setMergeJournalSuccess(buildMergeJournalSuccessMessage(result, mergeAccountNamesById));
+      await loadAccounts();
+    } catch (err) {
+      setMergeJournalError(err instanceof Error ? err.message : "Failed to merge journal history.");
+    } finally {
+      setMergeJournalLoading(false);
+    }
+  }, [loadAccounts, mergeAccountNamesById, mergeForm]);
 
   return (
     <div className="space-y-6 pb-10">
@@ -536,6 +612,43 @@ export function AccountsPage() {
             </div>
           </CardContent>
         </Card>
+      </section>
+      <section>
+        <MergeJournalCard
+          accounts={orderedMergeAccounts}
+          form={mergeForm}
+          loading={mergeJournalLoading}
+          submitDisabled={mergeSubmitDisabled}
+          validationMessage={mergeValidationMessage}
+          errorMessage={mergeJournalError}
+          successMessage={mergeJournalSuccess}
+          successResult={mergeJournalResult}
+          onFromAccountChange={(value) =>
+            updateMergeForm((current) => ({
+              ...current,
+              fromAccountId: value,
+            }))
+          }
+          onToAccountChange={(value) =>
+            updateMergeForm((current) => ({
+              ...current,
+              toAccountId: value,
+            }))
+          }
+          onConflictChange={(value) =>
+            updateMergeForm((current) => ({
+              ...current,
+              onConflict: value,
+            }))
+          }
+          onIncludeImagesChange={(value) =>
+            updateMergeForm((current) => ({
+              ...current,
+              includeImages: value,
+            }))
+          }
+          onSubmit={() => void handleMergeJournal()}
+        />
       </section>
     </div>
   );

@@ -92,6 +92,7 @@ A user can:
 - toggle hidden and missing accounts into view
 - mark one account as the main account
 - set the active account used across the rest of the app
+- merge journal history from an older account into a replacement account
 - resolve the last trade timestamp from the provider when local data is stale or absent
 
 Accounts page:
@@ -153,6 +154,7 @@ A user can:
 - archive or unarchive entries
 - paste images into the entry workspace
 - pull a trade-stat snapshot into the journal entry
+- merge one account's journal history into another account without deleting the source account history
 
 Journal workspace:
 
@@ -164,6 +166,8 @@ Notable journal behavior:
 - If a stale save collides with newer server state, the API returns `409 version_conflict` and the UI can reload the server version.
 - Journal images are stored either locally on disk or in Supabase Storage, depending on configuration.
 - Trade stats can be pulled by explicit trade IDs, explicit date range, or the entry's trading day.
+- Journal merge matches entries by `entry_date`. `skip` keeps the destination entry for that date; `overwrite` replaces the destination entry content with the source entry.
+- Journal merge copies entries into the destination account and leaves the source account untouched. When image copying is enabled, new destination image records and files are created so source images are not orphaned or shared.
 
 ### Not Currently Routed
 
@@ -354,6 +358,15 @@ Trade-stat snapshot flow:
 3. it computes a snapshot from closed trades in the selected window
 4. it stores that snapshot in `journal_entries.stats_json`
 
+Journal merge flow:
+
+1. the user chooses an old account and a new account from the Accounts page
+2. the frontend submits `POST /api/journal/merge` with `skip` or `overwrite`
+3. the backend validates that both accounts belong to the current user
+4. it copies source entries into the destination account by `entry_date`
+5. if `include_images=true`, it copies image files and creates new `journal_entry_images` rows for the destination entry
+6. it returns a merge summary with transferred, skipped, overwritten, and copied-image counts
+
 ### 5. Expense Flow
 
 Expenses are straightforward CRUD records in the `expenses` table. Totals are aggregated server-side by date range, category, and account.
@@ -442,6 +455,7 @@ Important business logic:
 
 | Method | Route | Purpose | Inputs | Response | Auth |
 | --- | --- | --- | --- | --- | --- |
+| `POST` | `/api/journal/merge` | Copy journal history from one account into another | body: `{ from_account_id, to_account_id, on_conflict, include_images }` | `{ from_account_id, to_account_id, transferred_count, skipped_count, overwritten_count, image_count }` | conditional |
 | `GET` | `/api/accounts/{account_id}/journal` | List journal entries | path: `account_id`, query: `start_date`, `end_date`, `mood`, `q`, `include_archived`, `limit`, `offset` | `{ items, total }` | conditional |
 | `POST` | `/api/accounts/{account_id}/journal` | Create an entry for a date | path: `account_id`, body: `{ entry_date, title, mood, tags, body }` | entry object plus `already_existed` | conditional |
 | `GET` | `/api/accounts/{account_id}/journal/days` | List dates that already have entries | path: `account_id`, query: `start_date`, `end_date`, `include_archived` | `{ days: [...] }` | conditional |
@@ -456,6 +470,9 @@ Important business logic:
 Important business logic:
 
 - one journal entry per `(user_id, account_id, entry_date)`
+- merge conflicts are matched on `entry_date`
+- `skip` preserves the destination entry for matching dates
+- `overwrite` replaces the destination entry content for matching dates and, when enabled, replaces its copied image set with copies from the source entry
 - image uploads support `png`, `jpeg`, and `webp`
 - image size limit is `10 MB`
 - updates use optimistic concurrency via `version`
