@@ -258,9 +258,10 @@ def merge_journal_entries(
                     tags=_copy_tags(source_row.tags),
                     body=source_row.body,
                     version=max(int(source_row.version or 1), 1),
-                    stats_source=source_row.stats_source,
-                    stats_json=_copy_stats_json(source_row.stats_json),
-                    stats_pulled_at=source_row.stats_pulled_at,
+                    # Trade snapshots are account-specific and must be recomputed after a merge.
+                    stats_source=None,
+                    stats_json=None,
+                    stats_pulled_at=None,
                     is_archived=bool(source_row.is_archived),
                     created_at=source_row.created_at,
                     updated_at=source_row.updated_at,
@@ -950,9 +951,9 @@ def _overwrite_journal_entry(*, destination: JournalEntry, source: JournalEntry)
     destination.mood = source.mood
     destination.tags = _copy_tags(source.tags)
     destination.body = source.body
-    destination.stats_source = source.stats_source
-    destination.stats_json = _copy_stats_json(source.stats_json)
-    destination.stats_pulled_at = source.stats_pulled_at
+    destination.stats_source = None
+    destination.stats_json = None
+    destination.stats_pulled_at = None
     destination.is_archived = bool(source.is_archived)
     destination.version = max(int(destination.version or 1), int(source.version or 1)) + 1
     destination.updated_at = _utcnow()

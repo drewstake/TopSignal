@@ -292,7 +292,9 @@ def test_merge_journal_entries_copies_missing_days_into_destination_without_touc
     assert destination_existing.id in {row.id for row in destination_rows}
     merged_by_date = {row.entry_date: row for row in destination_rows}
     assert merged_by_date[date(2026, 2, 1)].title == "Day one"
-    assert merged_by_date[date(2026, 2, 2)].stats_json == {"trade_count": 3, "net": 175.5}
+    assert merged_by_date[date(2026, 2, 2)].stats_source is None
+    assert merged_by_date[date(2026, 2, 2)].stats_json is None
+    assert merged_by_date[date(2026, 2, 2)].stats_pulled_at is None
 
 
 def test_merge_journal_entries_skip_conflict_preserves_destination_entry(db_session, journal_storage_dir: Path):
@@ -458,7 +460,9 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
     assert destination_entry.mood == JournalMood.CONFIDENT.value
     assert destination_entry.tags == ["merge", "review"]
     assert destination_entry.body == "Use the old account review instead."
-    assert destination_entry.stats_json == {"trade_count": 2, "net": 412.0}
+    assert destination_entry.stats_source is None
+    assert destination_entry.stats_json is None
+    assert destination_entry.stats_pulled_at is None
     assert destination_entry.is_archived is True
     assert int(destination_entry.version) == 6
     assert len(destination_images) == 2
