@@ -1,4 +1,4 @@
-import type { ExpensePlanSize } from "./types";
+import type { ExpenseAccountType, ExpenseCategory, ExpensePlanSize } from "./types";
 
 type CombinePlanSize = Extract<ExpensePlanSize, "50k" | "100k" | "150k">;
 
@@ -18,6 +18,7 @@ export const COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
   "150k": 22_100,
 };
 
+type CombinePurchaseSource = "account" | "expense" | "account_and_expense";
 export interface CombineSpendLedger {
   startedOn: string;
   startedAt: string;
@@ -25,6 +26,7 @@ export interface CombineSpendLedger {
   knownCombineAccountIds: Record<string, true>;
   baselineCaptured: boolean;
   standardActivationCount: number;
+  loggedStandardActivationCount: number;
   syncedEvaluationExpenseAccountIds: Record<string, true>;
 }
 
@@ -42,6 +44,7 @@ export interface CombineSpendSnapshot {
 export interface CombinePurchaseEntry {
   planSize: CombinePlanSize;
   purchasedOn: string;
+  source?: CombinePurchaseSource;
 }
 
 export interface UnsyncedEvaluationExpensePurchase {
@@ -63,6 +66,20 @@ export interface CombineTrackerAccount {
   status?: string;
   account_state?: string;
 }
+
+export interface CombineTrackerExpense {
+  id: number;
+  account_id: number | null;
+  expense_date: string;
+  amount_cents: number;
+  category: ExpenseCategory;
+  account_type?: ExpenseAccountType | null;
+  plan_size?: ExpensePlanSize | null;
+  tags: string[];
+  created_at?: string;
+}
+
+const EXPENSE_DERIVED_PURCHASE_KEY_PREFIX = "expense:";
 
 function normalizeCombineTrackerAccountState(account: CombineTrackerAccount): string {
   const raw = account.status ?? account.account_state ?? "";
@@ -100,6 +117,7 @@ export function createEmptyCombineSpendLedger(): CombineSpendLedger {
     knownCombineAccountIds: {},
     baselineCaptured: false,
     standardActivationCount: 0,
+    loggedStandardActivationCount: 0,
     syncedEvaluationExpenseAccountIds: {},
   };
 }
@@ -127,6 +145,7 @@ export function evolveCombineSpendLedger(
     knownCombineAccountIds: { ...ledger.knownCombineAccountIds },
     baselineCaptured: ledger.baselineCaptured,
     standardActivationCount: ledger.standardActivationCount,
+    loggedStandardActivationCount: ledger.loggedStandardActivationCount,
     syncedEvaluationExpenseAccountIds: { ...ledger.syncedEvaluationExpenseAccountIds },
   };
 
@@ -147,16 +166,16 @@ export function evolveCombineSpendLedger(
       nextLedger.purchasesByAccountId[accountId] = {
         planSize,
         purchasedOn: getTodayLocalIsoDate(),
+        source: "account",
       };
       continue;
     }
 
-    if (existingPurchase.planSize !== planSize) {
-      nextLedger.purchasesByAccountId[accountId] = {
-        ...existingPurchase,
-        planSize,
-      };
-    }
+    nextLedger.purchasesByAccountId[accountId] = {
+      ...existingPurchase,
+      planSize,
+      source: addAccountSource(existingPurchase.source),
+    };
   }
 
   nextLedger.baselineCaptured = true;
@@ -179,7 +198,8 @@ export function computeCombineSpendSnapshotFromLedger(ledger: CombineSpendLedger
     countsByPlan["50k"] * COMBINE_PRICE_CENTS_BY_PLAN["50k"] +
     countsByPlan["100k"] * COMBINE_PRICE_CENTS_BY_PLAN["100k"] +
     countsByPlan["150k"] * COMBINE_PRICE_CENTS_BY_PLAN["150k"];
-  const standardActivationCostCents = ledger.standardActivationCount * STANDARD_ACTIVATION_FEE_CENTS;
+  const standardActivationCount = ledger.standardActivationCount + ledger.loggedStandardActivationCount;
+  const standardActivationCostCents = standardActivationCount * STANDARD_ACTIVATION_FEE_CENTS;
 
   return {
     startedOn: ledger.startedOn,
@@ -187,10 +207,220 @@ export function computeCombineSpendSnapshotFromLedger(ledger: CombineSpendLedger
     countsByPlan,
     totalTrackedCombines: countsByPlan["50k"] + countsByPlan["100k"] + countsByPlan["150k"],
     baseCombineCostCents,
-    standardActivationCount: ledger.standardActivationCount,
+    standardActivationCount,
     standardActivationCostCents,
     totalCostCents: baseCombineCostCents + standardActivationCostCents,
   };
+}
+
+function normalizeCombinePurchaseSource(value: unknown): CombinePurchaseSource {
+  if (value === "account" || value === "expense" || value === "account_and_expense") {
+    return value;
+  }
+  return "account";
+}
+
+function removeExpenseSource(source: CombinePurchaseSource): CombinePurchaseSource | null {
+  if (source === "expense") {
+    return null;
+  }
+  if (source === "account_and_expense") {
+    return "account";
+  }
+  return "account";
+}
+
+function addExpenseSource(source: CombinePurchaseSource | undefined): CombinePurchaseSource {
+  if (source === undefined) {
+    return "expense";
+  }
+  const normalized = normalizeCombinePurchaseSource(source);
+  if (normalized === "account") {
+    return "account_and_expense";
+  }
+  return normalized;
+}
+
+function addAccountSource(source: CombinePurchaseSource | undefined): CombinePurchaseSource {
+  if (source === undefined) {
+    return "account";
+  }
+  const normalized = normalizeCombinePurchaseSource(source);
+  if (normalized === "expense") {
+    return "account_and_expense";
+  }
+  return normalized;
+}
+
+function getExpenseDerivedPurchaseKey(expenseId: number): string {
+  return `${EXPENSE_DERIVED_PURCHASE_KEY_PREFIX}${expenseId}`;
+}
+
+function isExpenseDerivedPurchaseKey(value: string): boolean {
+  return value.startsWith(EXPENSE_DERIVED_PURCHASE_KEY_PREFIX);
+}
+
+function compareIsoDate(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+function getEarlierIsoDate(left: string, right: string): string {
+  return compareIsoDate(left, right) <= 0 ? left : right;
+}
+
+function getEarlierIsoDateTime(left: string, right: string): string {
+  return Date.parse(left) <= Date.parse(right) ? left : right;
+}
+
+function getExpenseCreatedAtOrFallback(expense: CombineTrackerExpense): string {
+  if (isIsoDateTime(expense.created_at)) {
+    return expense.created_at;
+  }
+  return `${expense.expense_date}T00:00:00.000Z`;
+}
+
+function isCombinePlanSize(value: ExpensePlanSize | null | undefined): value is CombinePlanSize {
+  return value === "50k" || value === "100k" || value === "150k";
+}
+
+export function isTrackedCombinePurchaseExpense(expense: CombineTrackerExpense): boolean {
+  if (expense.category !== "evaluation_fee") {
+    return false;
+  }
+  if (!isCombinePlanSize(expense.plan_size)) {
+    return false;
+  }
+  if (expense.tags.includes("combine_tracker")) {
+    return true;
+  }
+  if (expense.account_type === "no_activation") {
+    return true;
+  }
+  return expense.amount_cents === COMBINE_PRICE_CENTS_BY_PLAN[expense.plan_size];
+}
+
+export function isTrackedStandardActivationExpense(expense: CombineTrackerExpense): boolean {
+  if (expense.category !== "activation_fee") {
+    return false;
+  }
+  if (!isCombinePlanSize(expense.plan_size)) {
+    return false;
+  }
+  if (expense.account_type !== null && expense.account_type !== undefined && expense.account_type !== "standard") {
+    return false;
+  }
+  return expense.amount_cents === STANDARD_ACTIVATION_FEE_CENTS;
+}
+
+function reconcileCombineSpendLedgerWithExpenses(
+  ledger: CombineSpendLedger,
+  expenses: CombineTrackerExpense[],
+): CombineSpendLedger {
+  const nextLedger: CombineSpendLedger = {
+    startedOn: ledger.startedOn,
+    startedAt: ledger.startedAt,
+    purchasesByAccountId: {},
+    knownCombineAccountIds: { ...ledger.knownCombineAccountIds },
+    baselineCaptured: ledger.baselineCaptured,
+    standardActivationCount: ledger.standardActivationCount,
+    loggedStandardActivationCount: 0,
+    syncedEvaluationExpenseAccountIds: {},
+  };
+
+  for (const [purchaseKey, purchase] of Object.entries(ledger.purchasesByAccountId)) {
+    const nextSource = removeExpenseSource(normalizeCombinePurchaseSource(purchase.source));
+    if (nextSource === null) {
+      continue;
+    }
+    nextLedger.purchasesByAccountId[purchaseKey] = {
+      ...purchase,
+      source: nextSource,
+    };
+  }
+
+  const sortedExpenses = [...expenses].sort((left, right) => {
+    const expenseDateDiff = compareIsoDate(left.expense_date, right.expense_date);
+    if (expenseDateDiff !== 0) {
+      return expenseDateDiff;
+    }
+    const createdAtDiff = Date.parse(getExpenseCreatedAtOrFallback(left)) - Date.parse(getExpenseCreatedAtOrFallback(right));
+    if (createdAtDiff !== 0) {
+      return createdAtDiff;
+    }
+    return left.id - right.id;
+  });
+
+  let earliestRelevantExpenseDate: string | null = null;
+  let earliestRelevantExpenseCreatedAt: string | null = null;
+  let loggedStandardActivationCount = 0;
+
+  for (const expense of sortedExpenses) {
+    if (!isTrackedCombinePurchaseExpense(expense) && !isTrackedStandardActivationExpense(expense)) {
+      continue;
+    }
+
+    earliestRelevantExpenseDate =
+      earliestRelevantExpenseDate === null
+        ? expense.expense_date
+        : getEarlierIsoDate(earliestRelevantExpenseDate, expense.expense_date);
+    const createdAt = getExpenseCreatedAtOrFallback(expense);
+    earliestRelevantExpenseCreatedAt =
+      earliestRelevantExpenseCreatedAt === null
+        ? createdAt
+        : getEarlierIsoDateTime(earliestRelevantExpenseCreatedAt, createdAt);
+
+    if (isTrackedStandardActivationExpense(expense)) {
+      loggedStandardActivationCount += 1;
+      continue;
+    }
+
+    if (!isTrackedCombinePurchaseExpense(expense)) {
+      continue;
+    }
+
+    const planSize = expense.plan_size;
+    if (!isCombinePlanSize(planSize)) {
+      continue;
+    }
+
+    const purchaseKey =
+      expense.account_id === null ? getExpenseDerivedPurchaseKey(expense.id) : String(expense.account_id);
+    const existingPurchase = nextLedger.purchasesByAccountId[purchaseKey];
+
+    nextLedger.purchasesByAccountId[purchaseKey] = {
+      planSize,
+      purchasedOn:
+        existingPurchase === undefined
+          ? expense.expense_date
+          : getEarlierIsoDate(existingPurchase.purchasedOn, expense.expense_date),
+      source: addExpenseSource(existingPurchase?.source),
+    };
+
+    if (expense.account_id !== null) {
+      const accountId = String(expense.account_id);
+      nextLedger.knownCombineAccountIds[accountId] = true;
+      nextLedger.syncedEvaluationExpenseAccountIds[accountId] = true;
+    }
+  }
+
+  nextLedger.loggedStandardActivationCount = loggedStandardActivationCount;
+
+  if (earliestRelevantExpenseDate !== null) {
+    nextLedger.startedOn = getEarlierIsoDate(nextLedger.startedOn, earliestRelevantExpenseDate);
+  }
+  if (earliestRelevantExpenseCreatedAt !== null) {
+    nextLedger.startedAt = getEarlierIsoDateTime(nextLedger.startedAt, earliestRelevantExpenseCreatedAt);
+  }
+
+  if (
+    Object.keys(nextLedger.purchasesByAccountId).length > 0 ||
+    Object.keys(nextLedger.knownCombineAccountIds).length > 0 ||
+    loggedStandardActivationCount > 0
+  ) {
+    nextLedger.baselineCaptured = true;
+  }
+
+  return nextLedger;
 }
 
 function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
@@ -220,6 +450,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
       purchasesByAccountId[accountId] = {
         planSize: rawPurchase,
         purchasedOn: normalizedStartedOn ?? todayLocalIsoDate,
+        source: "account",
       };
       continue;
     }
@@ -235,6 +466,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     purchasesByAccountId[accountId] = {
       planSize: purchase.planSize,
       purchasedOn: isIsoDate(purchase.purchasedOn) ? purchase.purchasedOn : normalizedStartedOn ?? todayLocalIsoDate,
+      source: normalizeCombinePurchaseSource(purchase.source),
     };
   }
 
@@ -263,6 +495,11 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
   const standardActivationCount = Number.isFinite(standardActivationCountRaw)
     ? Math.max(0, standardActivationCountRaw)
     : 0;
+  const loggedStandardActivationCountRaw =
+    typeof candidate.loggedStandardActivationCount === "number" ? Math.floor(candidate.loggedStandardActivationCount) : 0;
+  const loggedStandardActivationCount = Number.isFinite(loggedStandardActivationCountRaw)
+    ? Math.max(0, loggedStandardActivationCountRaw)
+    : 0;
 
   const knownCombineAccountIdsRaw =
     candidate.knownCombineAccountIds && typeof candidate.knownCombineAccountIds === "object"
@@ -275,6 +512,9 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     }
   }
   for (const accountId of Object.keys(purchasesByAccountId)) {
+    if (isExpenseDerivedPurchaseKey(accountId)) {
+      continue;
+    }
     knownCombineAccountIds[accountId] = true;
   }
 
@@ -282,7 +522,9 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
   const baselineCaptured =
     typeof rawBaselineCaptured === "boolean"
       ? rawBaselineCaptured
-      : Object.keys(knownCombineAccountIds).length > 0 || Object.keys(purchasesByAccountId).length > 0;
+      : Object.keys(knownCombineAccountIds).length > 0 ||
+        Object.keys(purchasesByAccountId).length > 0 ||
+        loggedStandardActivationCount > 0;
 
   const syncedEvaluationExpenseAccountIdsRaw =
     candidate.syncedEvaluationExpenseAccountIds && typeof candidate.syncedEvaluationExpenseAccountIds === "object"
@@ -302,6 +544,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     knownCombineAccountIds,
     baselineCaptured,
     standardActivationCount,
+    loggedStandardActivationCount,
     syncedEvaluationExpenseAccountIds,
   };
 }
@@ -347,6 +590,13 @@ function writeCombineSpendLedger(ledger: CombineSpendLedger): void {
 
 export function readCombineSpendSnapshot(): CombineSpendSnapshot {
   return computeCombineSpendSnapshotFromLedger(readCombineSpendLedger());
+}
+
+export function syncCombineSpendTrackerFromExpenses(expenses: CombineTrackerExpense[]): CombineSpendSnapshot {
+  const current = readCombineSpendLedger();
+  const next = reconcileCombineSpendLedgerWithExpenses(current, expenses);
+  writeCombineSpendLedger(next);
+  return computeCombineSpendSnapshotFromLedger(next);
 }
 
 function listUnsyncedEvaluationExpensePurchases(

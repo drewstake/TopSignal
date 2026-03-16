@@ -90,6 +90,7 @@ describe("hasJournalTradeStatsSnapshot", () => {
     expect(
       hasJournalTradeStatsSnapshot({
         stats_json: {
+          snapshot_version: 2,
           trade_count: 0,
           total_pnl: 0,
           total_fees: 0,
@@ -108,6 +109,31 @@ describe("hasJournalTradeStatsSnapshot", () => {
 
   it("treats entries without a saved stats payload as missing snapshots", () => {
     expect(hasJournalTradeStatsSnapshot({ stats_json: null })).toBe(false);
+  });
+
+  it("treats legacy stats payloads as hydrated so merged history is preserved", () => {
+    expect(
+      hasJournalTradeStatsSnapshot({
+        stats_json: {
+          snapshot_version: 1,
+          trade_count: 0,
+          total_pnl: 0,
+          total_fees: 0,
+          win_rate: 0,
+          avg_win: 0,
+          avg_loss: 0,
+          largest_win: 0,
+          largest_loss: 0,
+          gross: 0,
+          net: 0,
+          net_realized_pnl: 0,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("treats invalid stats payloads as missing snapshots", () => {
+    expect(hasJournalTradeStatsSnapshot({ stats_json: {} as JournalEntry["stats_json"] })).toBe(false);
   });
 });
 
@@ -195,6 +221,7 @@ describe("applyJournalSaveResultToEntry", () => {
       version: 5,
       stats_source: "trade_snapshot",
       stats_json: {
+        snapshot_version: 2,
         trade_count: 1,
         total_pnl: 10,
         total_fees: 2,
@@ -237,6 +264,7 @@ describe("applyJournalSaveResultToEntry", () => {
 
     expect(nextEntry.body).toBe("latest body");
     expect(nextEntry.stats_json).toEqual({
+      snapshot_version: 2,
       trade_count: 1,
       total_pnl: 10,
       total_fees: 2,

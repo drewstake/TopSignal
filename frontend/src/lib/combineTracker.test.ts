@@ -11,6 +11,7 @@ import {
   readCombineSpendSnapshot,
   STANDARD_ACTIVATION_FEE_CENTS,
   syncCombineSpendTracker,
+  syncCombineSpendTrackerFromExpenses,
 } from "./combineTracker";
 
 describe("getCombinePlanSizeFromAccountName", () => {
@@ -55,8 +56,8 @@ describe("evolveCombineSpendLedger", () => {
       "2": true,
     });
     expect(first.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", source: "account" },
     });
 
     const second = evolveCombineSpendLedger(first, [
@@ -71,9 +72,9 @@ describe("evolveCombineSpendLedger", () => {
       "5": true,
     });
     expect(second.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01" },
-      "5": { planSize: "150k", purchasedOn: "2026-03-01" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", source: "account" },
+      "5": { planSize: "150k", purchasedOn: "2026-03-01", source: "account" },
     });
   });
 
@@ -83,7 +84,7 @@ describe("evolveCombineSpendLedger", () => {
     const next = evolveCombineSpendLedger(baseline, [{ id: 9, name: "150KTC-9", status: "LOCKED_OUT" }]);
 
     expect(next.purchasesByAccountId).toEqual({
-      "9": { planSize: "150k", purchasedOn: "2026-03-01" },
+      "9": { planSize: "150k", purchasedOn: "2026-03-01", source: "account" },
     });
   });
 });
@@ -105,6 +106,7 @@ describe("computeCombineSpendSnapshotFromLedger", () => {
       },
       baselineCaptured: true,
       standardActivationCount: 2,
+      loggedStandardActivationCount: 0,
       syncedEvaluationExpenseAccountIds: {},
     });
 
@@ -261,5 +263,80 @@ describe("storage-backed helpers", () => {
         amountCents: 11_500,
       },
     ]);
+  });
+
+  it("backfills combine purchases and logged activations from existing expenses", () => {
+    const snapshot = syncCombineSpendTrackerFromExpenses([
+      {
+        id: 1,
+        account_id: null,
+        expense_date: "2026-02-15",
+        created_at: "2026-02-20T15:00:00.000Z",
+        amount_cents: 11_500,
+        category: "evaluation_fee",
+        account_type: "no_activation",
+        plan_size: "50k",
+        tags: [],
+      },
+      {
+        id: 2,
+        account_id: null,
+        expense_date: "2026-02-16",
+        created_at: "2026-02-21T15:00:00.000Z",
+        amount_cents: 15_000,
+        category: "activation_fee",
+        account_type: "standard",
+        plan_size: "50k",
+        tags: [],
+      },
+    ]);
+
+    expect(snapshot.startedOn).toBe("2026-02-15");
+    expect(snapshot.startedAt).toBe("2026-02-20T15:00:00.000Z");
+    expect(snapshot.totalTrackedCombines).toBe(1);
+    expect(snapshot.standardActivationCount).toBe(1);
+    expect(snapshot.totalCostCents).toBe(26_500);
+  });
+
+  it("treats existing logged combine expenses as already synced for matching accounts", () => {
+    syncCombineSpendTrackerFromExpenses([
+      {
+        id: 10,
+        account_id: 9001,
+        expense_date: "2026-02-25",
+        created_at: "2026-02-25T12:00:00.000Z",
+        amount_cents: 11_500,
+        category: "evaluation_fee",
+        account_type: "no_activation",
+        plan_size: "50k",
+        tags: [],
+      },
+    ]);
+
+    const sync = syncCombineSpendTracker([{ id: 9001, name: "50KTC-9001", status: "ACTIVE" }]);
+
+    expect(sync.snapshot.totalTrackedCombines).toBe(1);
+    expect(sync.unsyncedEvaluationPurchases).toEqual([]);
+  });
+
+  it("adds logged activation expenses on top of manual activation button counts", () => {
+    incrementStandardActivationCount(1);
+
+    const snapshot = syncCombineSpendTrackerFromExpenses([
+      {
+        id: 20,
+        account_id: null,
+        expense_date: "2026-02-28",
+        created_at: "2026-02-28T12:00:00.000Z",
+        amount_cents: 15_000,
+        category: "activation_fee",
+        account_type: "standard",
+        plan_size: "100k",
+        tags: [],
+      },
+    ]);
+
+    expect(snapshot.standardActivationCount).toBe(2);
+    expect(snapshot.standardActivationCostCents).toBe(2 * STANDARD_ACTIVATION_FEE_CENTS);
   });
 });

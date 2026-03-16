@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui
 import { cn } from "../../../components/ui/cn";
 import type { JournalEntry } from "../../../lib/types";
 import { stripJournalImageMarkdown } from "../journalImages";
+import { hasJournalTradeStatsSnapshot } from "../journalUtils";
 
 export interface JournalListProps {
   entries: JournalEntry[];
@@ -69,7 +70,7 @@ function JournalListInner({ entries, selectedId, totalEntries, onSelect }: Journ
             {entries.map((entry) => {
               const isActive = selectedId === entry.id;
               const preview = buildPreview(entry.body);
-              const stats = entry.stats_json;
+              const stats = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json : null;
               const statsNet = stats?.net_realized_pnl ?? stats?.net ?? null;
               const visibleTags = entry.tags.slice(0, 3);
               const hiddenTagCount = Math.max(0, entry.tags.length - visibleTags.length);

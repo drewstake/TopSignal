@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +15,7 @@ from ..auth import get_authenticated_user_id
 from ..journal_schemas import JournalMergeConflictStrategy, JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
+from .trading_day import trading_day_bounds_utc
 
 _MAX_TITLE_LENGTH = 160
 _MAX_BODY_LENGTH = 20_000
@@ -28,7 +28,6 @@ _ALLOWED_JOURNAL_IMAGE_MIME_TYPES = {
     "image/jpg": "jpg",
     "image/webp": "webp",
 }
-_TRADING_TZ = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
 
@@ -258,10 +257,9 @@ def merge_journal_entries(
                     tags=_copy_tags(source_row.tags),
                     body=source_row.body,
                     version=max(int(source_row.version or 1), 1),
-                    # Trade snapshots are account-specific and must be recomputed after a merge.
-                    stats_source=None,
-                    stats_json=None,
-                    stats_pulled_at=None,
+                    stats_source=source_row.stats_source,
+                    stats_json=_copy_stats_json(source_row.stats_json),
+                    stats_pulled_at=source_row.stats_pulled_at,
                     is_archived=bool(source_row.is_archived),
                     created_at=source_row.created_at,
                     updated_at=source_row.updated_at,
@@ -951,9 +949,9 @@ def _overwrite_journal_entry(*, destination: JournalEntry, source: JournalEntry)
     destination.mood = source.mood
     destination.tags = _copy_tags(source.tags)
     destination.body = source.body
-    destination.stats_source = None
-    destination.stats_json = None
-    destination.stats_pulled_at = None
+    destination.stats_source = source.stats_source
+    destination.stats_json = _copy_stats_json(source.stats_json)
+    destination.stats_pulled_at = source.stats_pulled_at
     destination.is_archived = bool(source.is_archived)
     destination.version = max(int(destination.version or 1), int(source.version or 1)) + 1
     destination.updated_at = _utcnow()
@@ -1032,17 +1030,14 @@ def _utcnow() -> datetime:
 
 
 def _trading_day_bounds(value: date) -> tuple[datetime, datetime]:
-    # Keep date boundaries aligned with dashboard/trading views (America/New_York).
-    start_local = datetime.combine(value, time.min, tzinfo=_TRADING_TZ)
-    end_local = start_local + timedelta(days=1) - timedelta(microseconds=1)
-    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+    return trading_day_bounds_utc(value)
 
 
 def _effective_trade_fee(*, pnl: float | None, fees: float | None) -> float:
     if pnl is None:
         return 0.0
-    raw_fees = float(fees) if fees is not None else 0.0
-    return raw_fees * 2
+    # Closed ProjectX rows already carry the full fee amount for the realized trade.
+    return float(fees) if fees is not None else 0.0
 
 
 def _compute_trade_stats_snapshot(
@@ -1078,6 +1073,7 @@ def _compute_trade_stats_snapshot(
     win_rate = ((len(wins) / trade_count) * 100.0) if trade_count > 0 else 0.0
 
     return {
+        "snapshot_version": 2,
         "trade_count": trade_count,
         "total_pnl": _round(gross),
         "total_fees": _round(total_fees),

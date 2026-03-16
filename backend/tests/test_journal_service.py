@@ -292,9 +292,9 @@ def test_merge_journal_entries_copies_missing_days_into_destination_without_touc
     assert destination_existing.id in {row.id for row in destination_rows}
     merged_by_date = {row.entry_date: row for row in destination_rows}
     assert merged_by_date[date(2026, 2, 1)].title == "Day one"
-    assert merged_by_date[date(2026, 2, 2)].stats_source is None
-    assert merged_by_date[date(2026, 2, 2)].stats_json is None
-    assert merged_by_date[date(2026, 2, 2)].stats_pulled_at is None
+    assert merged_by_date[date(2026, 2, 2)].stats_source == "trade_snapshot"
+    assert merged_by_date[date(2026, 2, 2)].stats_json == {"trade_count": 3, "net": 175.5}
+    assert merged_by_date[date(2026, 2, 2)].stats_pulled_at == datetime(2026, 2, 2, 18, 15)
 
 
 def test_merge_journal_entries_skip_conflict_preserves_destination_entry(db_session, journal_storage_dir: Path):
@@ -460,9 +460,9 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
     assert destination_entry.mood == JournalMood.CONFIDENT.value
     assert destination_entry.tags == ["merge", "review"]
     assert destination_entry.body == "Use the old account review instead."
-    assert destination_entry.stats_source is None
-    assert destination_entry.stats_json is None
-    assert destination_entry.stats_pulled_at is None
+    assert destination_entry.stats_source == "trade_snapshot"
+    assert destination_entry.stats_json == {"trade_count": 2, "net": 412.0}
+    assert destination_entry.stats_pulled_at == datetime(2026, 2, 8, 19, 5)
     assert destination_entry.is_archived is True
     assert int(destination_entry.version) == 6
     assert len(destination_images) == 2
@@ -474,7 +474,7 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
     assert (journal_storage_dir / source_image_two.filename).exists()
 
 
-def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():
+def test_compute_trade_stats_snapshot_counts_broker_fees_once():
     rows = [
         SimpleNamespace(pnl=100.0, fees=1.0, size=3.0),
         SimpleNamespace(pnl=50.0, fees=30.0, size=5.0),
@@ -482,16 +482,17 @@ def test_compute_trade_stats_snapshot_uses_net_values_for_outcome_stats():
 
     snapshot = _compute_trade_stats_snapshot(rows)
 
+    assert snapshot["snapshot_version"] == 2
     assert snapshot["trade_count"] == 2
     assert snapshot["gross"] == 150.0
-    assert snapshot["total_fees"] == 62.0
-    assert snapshot["net"] == 88.0
-    assert snapshot["net_realized_pnl"] == 88.0
-    assert snapshot["win_rate"] == 50.0
-    assert snapshot["avg_win"] == 98.0
-    assert snapshot["avg_loss"] == -10.0
-    assert snapshot["largest_win"] == 98.0
-    assert snapshot["largest_loss"] == -10.0
+    assert snapshot["total_fees"] == 31.0
+    assert snapshot["net"] == 119.0
+    assert snapshot["net_realized_pnl"] == 119.0
+    assert snapshot["win_rate"] == 100.0
+    assert snapshot["avg_win"] == 59.5
+    assert snapshot["avg_loss"] == 0.0
+    assert snapshot["largest_win"] == 99.0
+    assert snapshot["largest_loss"] == 0.0
     assert snapshot["largest_position_size"] == 5.0
 
 
@@ -598,7 +599,7 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 2
-    assert entry.stats_json["net_realized_pnl"] == 405.92
+    assert entry.stats_json["net_realized_pnl"] == 407.96
 
     pull_journal_entry_trade_stats(
         db_session,
@@ -611,9 +612,9 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 5
-    assert entry.stats_json["net_realized_pnl"] == 1487.72
+    assert entry.stats_json["net_realized_pnl"] == 1492.76
     assert entry.stats_json["win_rate"] == 100.0
-    assert entry.stats_json["avg_win"] == 297.54
+    assert entry.stats_json["avg_win"] == 298.55
     assert entry.stats_json["avg_loss"] == 0.0
 
 
@@ -738,21 +739,21 @@ def test_pull_journal_entry_trade_stats_uses_combined_position_size_from_executi
     assert entry.stats_json["largest_position_size"] == 45.0
 
 
-def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db_session):
-    user_id = "test-user-ny-boundary"
+def test_pull_journal_entry_trade_stats_entry_date_uses_trading_day_rollover_boundary(db_session):
+    user_id = "test-user-trading-day-boundary"
     entry, _ = create_journal_entry(
         db_session,
         user_id=user_id,
         account_id=1001,
         entry_date=date(2026, 2, 27),
-        title="NY day boundary",
+        title="Trading day boundary",
         mood=JournalMood.NEUTRAL,
         tags=[],
         body="",
     )
 
     rows = [
-        # 2026-02-27 23:40 UTC -> 2026-02-27 18:40 ET
+        # 2026-02-27 21:40 UTC -> 2026-02-27 16:40 ET, still in the 2026-02-27 trading day.
         ProjectXTradeEvent(
             user_id=user_id,
             account_id=1001,
@@ -761,14 +762,14 @@ def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db
             side="BUY",
             size=1,
             price=20000,
-            trade_timestamp=datetime(2026, 2, 27, 23, 40, tzinfo=timezone.utc),
+            trade_timestamp=datetime(2026, 2, 27, 21, 40, tzinfo=timezone.utc),
             fees=1.0,
             pnl=100.0,
             order_id="ny-1",
             source_trade_id="ny-s-1",
             raw_payload={},
         ),
-        # 2026-02-28 00:20 UTC -> 2026-02-27 19:20 ET (same ET day)
+        # 2026-02-27 22:20 UTC -> 2026-02-27 17:20 ET, still in the 2026-02-27 trading day.
         ProjectXTradeEvent(
             user_id=user_id,
             account_id=1001,
@@ -777,14 +778,14 @@ def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db
             side="SELL",
             size=1,
             price=20010,
-            trade_timestamp=datetime(2026, 2, 28, 0, 20, tzinfo=timezone.utc),
+            trade_timestamp=datetime(2026, 2, 27, 22, 20, tzinfo=timezone.utc),
             fees=1.0,
             pnl=200.0,
             order_id="ny-2",
             source_trade_id="ny-s-2",
             raw_payload={},
         ),
-        # 2026-02-28 05:10 UTC -> 2026-02-28 00:10 ET (next ET day, excluded)
+        # 2026-02-27 23:10 UTC -> 2026-02-27 18:10 ET, rolled into the 2026-02-28 trading day.
         ProjectXTradeEvent(
             user_id=user_id,
             account_id=1001,
@@ -793,7 +794,7 @@ def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db
             side="BUY",
             size=1,
             price=20020,
-            trade_timestamp=datetime(2026, 2, 28, 5, 10, tzinfo=timezone.utc),
+            trade_timestamp=datetime(2026, 2, 27, 23, 10, tzinfo=timezone.utc),
             fees=1.0,
             pnl=300.0,
             order_id="ny-3",
@@ -814,7 +815,7 @@ def test_pull_journal_entry_trade_stats_entry_date_uses_new_york_day_boundary(db
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 2
-    assert entry.stats_json["net_realized_pnl"] == 296.0
+    assert entry.stats_json["net_realized_pnl"] == 298.0
 
 
 def test_pull_journal_entry_trade_stats_invokes_sync_callback_with_effective_bounds(db_session):
@@ -841,5 +842,5 @@ def test_pull_journal_entry_trade_stats_invokes_sync_callback_with_effective_bou
     )
 
     assert len(calls) == 1
-    assert calls[0][0] == datetime(2026, 2, 27, 5, 0, tzinfo=timezone.utc)
-    assert calls[0][1] == datetime(2026, 2, 28, 4, 59, 59, 999999, tzinfo=timezone.utc)
+    assert calls[0][0] == datetime(2026, 2, 26, 23, 0, tzinfo=timezone.utc)
+    assert calls[0][1] == datetime(2026, 2, 27, 22, 59, 59, 999999, tzinfo=timezone.utc)

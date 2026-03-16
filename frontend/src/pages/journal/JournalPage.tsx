@@ -15,7 +15,7 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
-import { getCalendarDayBoundaryIso } from "../../lib/tradingDay";
+import { getTradingDayBoundaryIso } from "../../lib/tradingDay";
 import type {
   AccountInfo,
   JournalEntry,
@@ -933,8 +933,8 @@ export function JournalPage() {
         return Promise.resolve(buildJournalCopyTradeStats({ entry }));
       }
 
-      const dayStart = getCalendarDayBoundaryIso(entry.entry_date, false);
-      const dayEnd = getCalendarDayBoundaryIso(entry.entry_date, true);
+      const dayStart = getTradingDayBoundaryIso(entry.entry_date, false);
+      const dayEnd = getTradingDayBoundaryIso(entry.entry_date, true);
       if (!dayStart || !dayEnd) {
         return Promise.resolve(buildJournalCopyTradeStats({ entry }));
       }

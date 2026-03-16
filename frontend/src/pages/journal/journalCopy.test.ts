@@ -14,6 +14,7 @@ const sampleEntry: JournalEntry = {
   version: 3,
   stats_source: "trade_snapshot",
   stats_json: {
+    snapshot_version: 2,
     trade_count: 3,
     total_pnl: 426.62,
     total_fees: 6.12,
@@ -190,6 +191,26 @@ describe("buildJournalCopyTradeStats", () => {
       winRate: 66.67,
       profitFactor: 1.85,
       expectancy: 140.17,
+      bestTrade: 305.5,
+      worstTrade: -95,
+    });
+  });
+
+  it("uses legacy snapshot payloads when live summary data is unavailable", () => {
+    expect(
+      buildJournalCopyTradeStats({
+        entry: {
+          ...sampleEntry,
+          stats_json: {
+            ...sampleEntry.stats_json,
+            snapshot_version: 1,
+          },
+        },
+      }),
+    ).toEqual({
+      netPnl: 420.5,
+      tradeCount: 3,
+      winRate: 66.67,
       bestTrade: 305.5,
       worstTrade: -95,
     });

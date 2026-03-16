@@ -9,6 +9,7 @@ import { sanitizeJournalBody } from "./journalImages";
 
 export const JOURNAL_PAGE_SIZE = 20;
 export const JOURNAL_AUTOSAVE_DELAY_MS = 800;
+export const CURRENT_JOURNAL_STATS_SNAPSHOT_VERSION = 2;
 
 export interface JournalDraft {
   title: string;
@@ -44,7 +45,17 @@ export function entryToDraft(entry: JournalEntry): JournalDraft {
 }
 
 export function hasJournalTradeStatsSnapshot(entry: Pick<JournalEntry, "stats_json">): boolean {
-  return entry.stats_json !== null;
+  const snapshot = entry.stats_json;
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+  if (snapshot.snapshot_version === CURRENT_JOURNAL_STATS_SNAPSHOT_VERSION) {
+    return true;
+  }
+
+  return [snapshot.trade_count, snapshot.net_realized_pnl, snapshot.net, snapshot.total_pnl, snapshot.gross].some(
+    (value) => typeof value === "number" && Number.isFinite(value),
+  );
 }
 
 export function draftToUpdatePayload(draft: JournalDraft, versionOverride?: number): JournalEntryUpdateInput {

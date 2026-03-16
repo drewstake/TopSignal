@@ -1,6 +1,7 @@
 import type { AccountSummary, AccountTrade, JournalEntry } from "../../lib/types";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { stripJournalImageMarkdown } from "./journalImages";
+import { hasJournalTradeStatsSnapshot } from "./journalUtils";
 
 const JOURNAL_COPY_DIVIDER = "=".repeat(50);
 const MAX_SYMBOL_COUNT = 4;
@@ -125,7 +126,7 @@ function getMainSymbolsTraded(trades: AccountTrade[]) {
 }
 
 function getSnapshotNetPnl(entry: JournalEntry) {
-  const snapshot = entry.stats_json;
+  const snapshot = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json : null;
   if (!snapshot) {
     return undefined;
   }
@@ -135,22 +136,22 @@ function getSnapshotNetPnl(entry: JournalEntry) {
 }
 
 function getSnapshotTradeCount(entry: JournalEntry) {
-  const tradeCount = entry.stats_json?.trade_count;
+  const tradeCount = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json.trade_count : undefined;
   return isFiniteNumber(tradeCount) && tradeCount > 0 ? Math.round(tradeCount) : undefined;
 }
 
 function getSnapshotWinRate(entry: JournalEntry) {
-  const winRate = entry.stats_json?.win_rate;
+  const winRate = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json.win_rate : undefined;
   return isFiniteNumber(winRate) ? winRate : undefined;
 }
 
 function getSnapshotBestTrade(entry: JournalEntry) {
-  const bestTrade = entry.stats_json?.largest_win;
+  const bestTrade = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json.largest_win : undefined;
   return isFiniteNumber(bestTrade) && bestTrade !== 0 ? bestTrade : undefined;
 }
 
 function getSnapshotWorstTrade(entry: JournalEntry) {
-  const worstTrade = entry.stats_json?.largest_loss;
+  const worstTrade = hasJournalTradeStatsSnapshot(entry) ? entry.stats_json.largest_loss : undefined;
   return isFiniteNumber(worstTrade) && worstTrade !== 0 ? worstTrade : undefined;
 }
 

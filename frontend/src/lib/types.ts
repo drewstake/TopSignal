@@ -334,6 +334,7 @@ export interface PayoutTotals {
 export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";
 
 export interface JournalStatsSnapshot {
+  snapshot_version?: number;
   trade_count: number;
   total_pnl: number;
   total_fees: number;
