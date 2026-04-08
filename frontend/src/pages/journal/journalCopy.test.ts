@@ -202,7 +202,7 @@ describe("buildJournalCopyTradeStats", () => {
         entry: {
           ...sampleEntry,
           stats_json: {
-            ...sampleEntry.stats_json,
+            ...sampleEntry.stats_json!,
             snapshot_version: 1,
           },
         },

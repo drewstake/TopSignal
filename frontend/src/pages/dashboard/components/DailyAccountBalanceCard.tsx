@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { Skeleton } from "../../../components/ui/Skeleton";
 import type { AccountPnlCalendarDay } from "../../../lib/types";
 import { formatCurrency } from "../../../utils/formatters";
+import { buildInterpolatedAreaPath, buildInterpolatedLinePath } from "./dailyBalanceChartPaths";
 
 interface DailyAccountBalanceCardProps {
   days: AccountPnlCalendarDay[];
@@ -88,40 +89,6 @@ function formatPnl(value: number) {
   return `${prefix}${formatCurrency(value)}`;
 }
 
-function buildSmoothLinePath(points: Array<{ x: number; y: number }>) {
-  if (points.length === 0) {
-    return "";
-  }
-  if (points.length === 1) {
-    return `M ${points[0].x} ${points[0].y}`;
-  }
-  if (points.length === 2) {
-    return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
-  }
-
-  const commands = [`M ${points[0].x} ${points[0].y}`];
-  for (let index = 1; index < points.length; index += 1) {
-    const prev = points[index - 1];
-    const current = points[index];
-    const midX = (prev.x + current.x) / 2;
-    const midY = (prev.y + current.y) / 2;
-    commands.push(`Q ${prev.x} ${prev.y} ${midX} ${midY}`);
-  }
-  const last = points[points.length - 1];
-  commands.push(`L ${last.x} ${last.y}`);
-  return commands.join(" ");
-}
-
-function buildSmoothAreaPath(points: Array<{ x: number; y: number }>, baselineY: number) {
-  const linePath = buildSmoothLinePath(points);
-  if (!linePath || points.length === 0) {
-    return "";
-  }
-  const first = points[0];
-  const last = points[points.length - 1];
-  return `${linePath} L ${last.x} ${baselineY} L ${first.x} ${baselineY} Z`;
-}
-
 function createMarkerIndexes(length: number) {
   const indexes = new Set<number>();
   if (length === 0) {
@@ -147,12 +114,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
   const lastPoint = series[series.length - 1] ?? null;
   const netPnlTotal = useMemo(() => series.reduce((sum, point) => sum + point.netPnl, 0), [series]);
   const hasAnchoredBalance = currentBalance !== null && Number.isFinite(currentBalance);
-  const netChange = firstPoint && lastPoint ? lastPoint.balance - firstPoint.balance : 0;
-  const isPositiveTrend = netChange >= 0;
-  const trendBadgeClass = isPositiveTrend
-    ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200"
-    : "border-rose-400/35 bg-rose-500/10 text-rose-200";
-  const trendValueClass = isPositiveTrend ? "text-emerald-300" : "text-rose-300";
+  const isPositiveTrend = (firstPoint && lastPoint ? lastPoint.balance - firstPoint.balance : 0) >= 0;
   const summaryTint = isPositiveTrend
     ? "linear-gradient(180deg, rgba(16, 185, 129, 0.16) 0%, rgba(15, 23, 42, 0) 100%)"
     : "linear-gradient(180deg, rgba(244, 63, 94, 0.16) 0%, rgba(15, 23, 42, 0) 100%)";
@@ -222,8 +184,8 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
       return { ...point, x, y };
     });
 
-    const linePath = buildSmoothLinePath(points);
-    const areaPath = buildSmoothAreaPath(points, baselineY);
+    const linePath = buildInterpolatedLinePath(points);
+    const areaPath = buildInterpolatedAreaPath(points, baselineY);
 
     const yTickCount = 5;
     const yTicks = Array.from({ length: yTickCount }, (_, index) => {
@@ -343,23 +305,9 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     <Card className="relative overflow-hidden">
       {series.length > 0 ? <div className="pointer-events-none absolute inset-x-0 top-0 h-20" style={{ background: summaryTint }} /> : null}
       <CardHeader className="relative space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="tracking-tight">Daily Account Balance</CardTitle>
-            <CardDescription>Daily balance curve built from calendar net PnL.</CardDescription>
-          </div>
-          {lastPoint ? (
-            <div className="rounded-lg border border-slate-700/75 bg-slate-950/60 px-3 py-2 text-right backdrop-blur-sm">
-              <p
-                className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${trendBadgeClass}`}
-              >
-                {isPositiveTrend ? "Uptrend" : "Drawdown"}
-              </p>
-              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Ending Balance</p>
-              <p className="text-base font-semibold text-slate-100">{formatCurrency(lastPoint.balance)}</p>
-              <p className={`text-xs font-medium ${trendValueClass}`}>{formatPnl(netChange)}</p>
-            </div>
-          ) : null}
+        <div>
+          <CardTitle className="tracking-tight">Daily Account Balance</CardTitle>
+          <CardDescription>Daily balance curve built from calendar net PnL.</CardDescription>
         </div>
         {stats ? (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
