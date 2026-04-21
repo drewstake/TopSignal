@@ -338,9 +338,8 @@ class ProjectXClient:
             ) from exc
 
         if isinstance(parsed, dict) and parsed.get("success") is False:
-            message = _extract_error_message(parsed)
             raise ProjectXClientError(
-                f"ProjectX error: {message}",
+                _format_provider_error(path=path, payload=parsed),
                 status_code=502,
             )
 
@@ -568,6 +567,37 @@ def _parse_token_expiry(payload: dict[str, Any]) -> datetime:
 def _extract_error_message(raw: Any) -> str:
     message = _extract_nested_error_message(raw)
     return message or "Unknown error"
+
+
+def _format_provider_error(*, path: str, payload: dict[str, Any]) -> str:
+    message = _extract_error_message(payload)
+    normalized_path = path.split("?", 1)[0].rstrip("/").lower()
+
+    if normalized_path == "/api/auth/loginkey":
+        return _format_login_key_error(message=message, payload=payload)
+
+    return f"ProjectX error: {message}"
+
+
+def _format_login_key_error(*, message: str, payload: dict[str, Any]) -> str:
+    prefix = "ProjectX authentication failed"
+    error_code = _extract_error_code(payload)
+    unhelpful_message = (
+        message == "Unknown error" or (error_code is not None and message == f"Error code {error_code}")
+    )
+
+    if not unhelpful_message and message:
+        return f"{prefix}: {message}"
+
+    if error_code == "3":
+        return (
+            f"{prefix}. Verify your TopstepX username and API key, and confirm "
+            "ProjectX API access is active and your account is linked. "
+            "(error code 3)"
+        )
+
+    suffix = f" (error code {error_code})" if error_code else ""
+    return f"{prefix}. Verify your TopstepX username and API key.{suffix}"
 
 
 def _extract_error_message_from_mapping(payload: dict[str, Any]) -> str | None:

@@ -81,7 +81,33 @@ def test_request_once_marks_success_false_payloads_as_gateway_errors(monkeypatch
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 502
-    assert str(exc_info.value) == "ProjectX error: Session invalid"
+    assert str(exc_info.value) == "ProjectX authentication failed: Session invalid"
+
+
+def test_request_once_maps_login_key_error_code_3_to_actionable_message(monkeypatch):
+    class StubResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"token": null, "success": false, "errorCode": 3, "errorMessage": null}'
+
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", lambda *args, **kwargs: StubResponse())
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 502
+    assert str(exc_info.value) == (
+        "ProjectX authentication failed. Verify your TopstepX username and API key, "
+        "and confirm ProjectX API access is active and your account is linked. "
+        "(error code 3)"
+    )
 
 
 def test_fetch_trade_history_skips_voided_rows():

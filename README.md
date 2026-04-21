@@ -707,10 +707,12 @@ Recommended minimum backend variables for local anonymous mode:
 ```dotenv
 DATABASE_URL=<postgres-connection-url>
 PROJECTX_API_BASE_URL=<projectx-base-url>
-PROJECTX_USERNAME=<projectx-username>
-PROJECTX_API_KEY=<projectx-api-key>
+PROJECTX_USERNAME=<topstepx-username>
+PROJECTX_API_KEY=<topstepx-api-key>
 AUTH_REQUIRED=false
 ```
+
+`PROJECTX_USERNAME` should be your TopstepX username. `PROJECTX_API_KEY` should be generated from TopstepX under `Settings -> API` after ProjectX linking and API Access subscription are completed.
 
 Recommended minimum frontend variables:
 
@@ -730,8 +732,8 @@ Only variable names are listed here. Do not commit real values.
 | --- | --- |
 | `DATABASE_URL` | SQLAlchemy database connection URL |
 | `PROJECTX_API_BASE_URL` | Base URL for ProjectX API |
-| `PROJECTX_USERNAME` | Legacy env-based ProjectX username |
-| `PROJECTX_API_KEY` | Legacy env-based ProjectX API key |
+| `PROJECTX_USERNAME` | Legacy env-based TopstepX username used for ProjectX API auth |
+| `PROJECTX_API_KEY` | Legacy env-based TopstepX API key generated from `Settings -> API` |
 | `AUTH_REQUIRED` | Forces API auth on or off |
 | `SUPABASE_URL` | Enables Supabase-aware auth and optional storage |
 | `SUPABASE_JWKS_URL` | Custom JWKS endpoint for JWT validation |
