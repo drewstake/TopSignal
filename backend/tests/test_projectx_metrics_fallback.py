@@ -109,3 +109,28 @@ def test_summary_with_point_bases_returns_all_point_basis_payloads(db_session):
     assert payload["summary"]["trade_count"] == 1
     assert payload["summary"]["net_pnl"] == 121.0
     assert set(payload["point_payoff_by_basis"].keys()) == {"MNQ", "MES", "MGC", "SIL"}
+
+
+def test_summary_fallback_adds_topstep_micro_commission_after_april_12_2026(db_session):
+    db_session.add(Account(provider="projectx", external_id="7305", account_state="MISSING", is_main=True))
+    db_session.add(
+        ProjectXTradeEvent(
+            id=5,
+            account_id=7305,
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            side="BUY",
+            size=1.0,
+            price=20500.0,
+            trade_timestamp=datetime(2026, 4, 13, 12, 0, tzinfo=timezone.utc),
+            fees=0.37,
+            pnl=100.0,
+            order_id="ORD-5",
+        )
+    )
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=7305, refresh=False, db=db_session)
+
+    assert payload["fees"] == 1.24
+    assert payload["net_pnl"] == 98.76

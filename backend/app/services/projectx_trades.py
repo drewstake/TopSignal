@@ -17,6 +17,7 @@ from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_trade_summary
+from .topstep_fees import effective_topstep_trade_fee
 
 logger = logging.getLogger(__name__)
 
@@ -1217,7 +1218,7 @@ def _to_metric_sample(row: Any) -> TradeMetricSample:
     return TradeMetricSample(
         timestamp=_as_utc(row.trade_timestamp),
         pnl=float(row.pnl) if row.pnl is not None else None,
-        fees=_normalized_trade_fees(row),
+        fees=_round_turn_trade_fees(row),
         order_id=row.order_id,
         symbol=row.symbol or row.contract_id,
         contract_id=row.contract_id,
@@ -1228,10 +1229,25 @@ def _to_metric_sample(row: Any) -> TradeMetricSample:
 
 
 def _normalized_trade_fees(row: ProjectXTradeEvent) -> float:
+    # Trade payloads should show the same closed-trade fee the user sees in
+    # Topstep: round-turn broker fees plus the Topstep commission that started
+    # on April 12, 2026.
+    return round(
+        effective_topstep_trade_fee(
+        trade_timestamp=_as_utc(row.trade_timestamp),
+        pnl=float(row.pnl) if row.pnl is not None else None,
+        fees=float(row.fees) if row.fees is not None else 0.0,
+        symbol=row.symbol,
+        contract_id=row.contract_id,
+        size=float(row.size) if row.size is not None else None,
+        raw_fee_is_per_side=True,
+        ),
+        2,
+    )
+
+
+def _round_turn_trade_fees(row: Any) -> float:
     fees = float(row.fees) if row.fees is not None else 0.0
-    # ProjectX Trade/search reports fees per fill leg. For rows with realized
-    # PnL (the closing leg), mirror Topstep's per-trade fee by including both
-    # entry and exit sides.
     if row.pnl is not None:
         fees *= 2
     return fees
