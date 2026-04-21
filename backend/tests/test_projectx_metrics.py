@@ -498,3 +498,54 @@ def test_compute_trade_summary_handles_missing_or_invalid_average_position_size_
     assert benchmark["benchmarkDiff"] == 135.0
     assert benchmark["benchmarkRatio"] is None
     assert benchmark["benchmarkLabel"] == "Above Benchmark"
+
+
+def test_compute_trade_summary_adds_topstep_micro_commission_after_april_12_2026():
+    samples = [
+        TradeMetricSample(
+            timestamp=datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc),
+            pnl=100.0,
+            fees=0.74,
+            symbol="MNQ",
+            size=1.0,
+        ),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["fees"] == 1.24
+    assert summary["net_pnl"] == 98.76
+
+
+def test_compute_trade_summary_adds_topstep_non_micro_commission_after_april_12_2026():
+    samples = [
+        TradeMetricSample(
+            timestamp=datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc),
+            pnl=100.0,
+            fees=2.8,
+            symbol="NQ",
+            size=1.0,
+        ),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["fees"] == 3.8
+    assert summary["net_pnl"] == 96.2
+
+
+def test_compute_trade_summary_scales_topstep_commission_by_contract_size():
+    samples = [
+        TradeMetricSample(
+            timestamp=datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc),
+            pnl=110.0,
+            fees=7.4,
+            symbol="MNQ",
+            size=10.0,
+        ),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["fees"] == 12.4
+    assert summary["net_pnl"] == 97.6

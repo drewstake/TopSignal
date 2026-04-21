@@ -12,6 +12,7 @@ from .instruments import (
     resolve_point_value,
     symbol_candidates,
 )
+from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import trading_day_key
 
 
@@ -283,12 +284,20 @@ def _empty_trade_summary(*, points_basis: str) -> dict[str, TradeSummaryValue]:
 
 
 def _effective_fee(trade: TradeMetricSample) -> float:
-    # Keep fee accounting aligned with Topstep's closed-trade PnL:
-    # rows without broker-reported realized PnL are open-leg events and should
-    # not reduce net PnL. Closing rows already carry round-trip fees.
+    # Open-leg rows should not reduce realized net PnL. Closed rows use the
+    # stored round-turn fee plus the Topstep commission introduced on
+    # April 12, 2026.
     if trade.pnl is None:
         return 0.0
-    return _safe_float(trade.fees)
+    return effective_topstep_trade_fee(
+        trade_timestamp=trade.timestamp,
+        pnl=trade.pnl,
+        fees=trade.fees,
+        symbol=trade.symbol,
+        contract_id=trade.contract_id,
+        size=trade.size,
+        raw_fee_is_per_side=False,
+    )
 
 
 def _safe_float(value: Optional[float]) -> float:

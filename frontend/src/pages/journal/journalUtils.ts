@@ -2,6 +2,7 @@ import type {
   JournalEntriesQuery,
   JournalEntry,
   JournalEntrySaveResult,
+  JournalStatsSnapshot,
   JournalEntryUpdateInput,
   JournalMood,
 } from "../../lib/types";
@@ -44,7 +45,9 @@ export function entryToDraft(entry: JournalEntry): JournalDraft {
   };
 }
 
-export function hasJournalTradeStatsSnapshot(entry: Pick<JournalEntry, "stats_json">): boolean {
+export function hasJournalTradeStatsSnapshot<T extends Pick<JournalEntry, "stats_json">>(
+  entry: T,
+): entry is T & { stats_json: JournalStatsSnapshot } {
   const snapshot = entry.stats_json;
   if (!snapshot || typeof snapshot !== "object") {
     return false;

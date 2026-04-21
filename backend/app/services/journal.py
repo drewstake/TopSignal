@@ -15,6 +15,7 @@ from ..auth import get_authenticated_user_id
 from ..journal_schemas import JournalMergeConflictStrategy, JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
+from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import trading_day_bounds_utc
 
 _MAX_TITLE_LENGTH = 160
@@ -1033,11 +1034,26 @@ def _trading_day_bounds(value: date) -> tuple[datetime, datetime]:
     return trading_day_bounds_utc(value)
 
 
-def _effective_trade_fee(*, pnl: float | None, fees: float | None) -> float:
+def _effective_trade_fee(
+    *,
+    trade_timestamp: datetime | None,
+    pnl: float | None,
+    fees: float | None,
+    symbol: str | None,
+    contract_id: str | None,
+    size: float | None,
+) -> float:
     if pnl is None:
         return 0.0
-    # Closed ProjectX rows already carry the full fee amount for the realized trade.
-    return float(fees) if fees is not None else 0.0
+    return effective_topstep_trade_fee(
+        trade_timestamp=trade_timestamp,
+        pnl=pnl,
+        fees=fees,
+        symbol=symbol,
+        contract_id=contract_id,
+        size=size,
+        raw_fee_is_per_side=False,
+    )
 
 
 def _compute_trade_stats_snapshot(
@@ -1054,7 +1070,14 @@ def _compute_trade_stats_snapshot(
         if pnl_value is None:
             continue
         pnls.append(pnl_value)
-        fee_value = _effective_trade_fee(pnl=pnl_value, fees=float(row.fees) if row.fees is not None else 0.0)
+        fee_value = _effective_trade_fee(
+            trade_timestamp=getattr(row, "trade_timestamp", None),
+            pnl=pnl_value,
+            fees=float(row.fees) if row.fees is not None else 0.0,
+            symbol=getattr(row, "symbol", None),
+            contract_id=getattr(row, "contract_id", None),
+            size=abs(float(row.size)) if getattr(row, "size", None) is not None else None,
+        )
         fees.append(fee_value)
         net_values.append(pnl_value - fee_value)
         size_value = abs(float(row.size)) if getattr(row, "size", None) is not None else 0.0
