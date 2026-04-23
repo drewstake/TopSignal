@@ -1,152 +1,169 @@
-# Dashboard + Accounts Performance Notes
+# Dashboard And Accounts Performance Notes
 
-## Scope
-- Date: 2026-03-02
+## Purpose
+
+This document records the main dashboard/accounts performance work that is reflected in the current codebase and explains the remaining bottleneck.
+
+## Measurement Context
+
+- Original capture date: `2026-03-02`
 - Environment: local dev (`http://localhost:5173` + `http://localhost:8000`)
-- Data profile: user `3af8acf1-a33e-4a0c-ae16-0b84d7c518cb` (646 accounts, 876 trade events)
-- Capture method: Playwright network timings (TTFB/total/size) + backend `Server-Timing` header (after instrumentation)
+- Capture method: browser network timings plus backend `Server-Timing` / `X-Server-Time-Ms`
 
-## Baseline (Before Fixes)
+Even though the measurements were taken in March, the optimizations described below are still present in the current repository.
 
-### Exact Requests Fired
+## Main Problem That Was Fixed
 
-#### Initial dashboard load (10 requests)
+The initial dashboard and accounts flows were doing too much duplicate work:
+
+- the dashboard fanned out multiple summary requests for different point bases
+- the accounts page re-requested the same expensive account list immediately after dashboard load
+- lightweight reads were getting queued behind the expensive `/api/accounts` sync path
+
+The biggest remaining cost was and still is ProjectX account sync inside `GET /api/accounts`.
+
+## Implemented Fixes
+
+### 1. Consolidated summary fan-out
+
+Added:
+
+- `GET /api/accounts/{account_id}/summary-with-point-bases`
+
+Effect:
+
+- replaces separate summary calls for multiple point bases with one request
+- reduces dashboard startup request count and backend work
+
+Relevant code:
+
+- `backend/app/main.py`
+- `backend/app/services/projectx_trades.py`
+- `backend/app/projectx_schemas.py`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/types.ts`
+- `frontend/src/pages/dashboard/DashboardPage.tsx`
+
+### 2. Added shared account-list caching and in-flight dedupe
+
+The frontend now caches `/api/accounts` by query options and deduplicates in-flight requests.
+
+Effect:
+
+- `getSelectableAccounts()` reuses the same cached data source
+- immediate dashboard -> accounts navigation avoids a second provider-backed fetch
+
+Relevant code:
+
+- `frontend/src/lib/api.ts`
+
+### 3. Added request instrumentation
+
+The backend now returns:
+
+- `Server-Timing: app;dur=...`
+- `X-Server-Time-Ms: ...`
+
+The frontend can log:
+
+- total request time
+- server time
+- network time
+- payload size
+
+Relevant code:
+
+- `backend/app/main.py`
+- `frontend/src/lib/api.ts`
+- `frontend/src/pages/dashboard/DashboardPage.tsx`
+- `frontend/src/pages/accounts/AccountsPage.tsx`
+
+### 4. Added targeted Postgres indexes
+
+Performance-specific indexes were added for the newer trade-event pipeline.
+
+Relevant migration:
+
+- `db/migrations/20260302_add_projectx_trade_events_perf_indexes.sql`
+
+## Request Shape After The Fixes
+
+### Initial dashboard load
+
+Typical startup flow is now:
+
 1. `GET /api/accounts?show_inactive=true&show_missing=false`
-2. `GET /api/accounts/19528587/summary`
-3. `GET /api/accounts/19528587/summary?pointsBasis=MNQ`
-4. `GET /api/accounts/19528587/summary?pointsBasis=MES`
-5. `GET /api/accounts/19528587/summary?pointsBasis=MGC`
-6. `GET /api/accounts/19528587/summary?pointsBasis=SIL`
-7. `GET /api/accounts/19528587/pnl-calendar?all_time=true`
-8. `GET /api/accounts/19528587/trades?limit=200`
-9. `GET /api/accounts/19528587/trades?limit=1000`
-10. `GET /api/accounts/19528587/journal/days?start_date=2026-03-01&end_date=2026-03-31`
+2. `GET /api/accounts/{id}/summary-with-point-bases`
+3. `GET /api/accounts/{id}/pnl-calendar?...`
+4. `GET /api/accounts/{id}/trades?limit=200`
+5. `GET /api/accounts/{id}/trades?limit=1000`
+6. `GET /api/accounts/{id}/journal/days?...`
 
-#### Accounts tab open (2 requests)
-1. `GET /api/accounts?show_inactive=true&show_missing=false`
-2. `GET /api/accounts?show_inactive=true&show_missing=false`
+### Accounts tab navigation after dashboard
 
-### Initial Dashboard Load: Slowest 3 Requests
+With the frontend cache hot:
 
-| Rank | Endpoint | Payload | Server vs Network | Row Count | Root Cause |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `GET /api/accounts?show_inactive=true&show_missing=false` | `119,282 B` | `TTFB 3239.5 ms`, download `1.4 ms` | `646` accounts | Endpoint always calls ProjectX `list_accounts()` + sync before responding; large overfetch for dashboard/selectable use case. |
-| 2 | `GET /api/accounts/19528587/journal/days?start_date=2026-03-01&end_date=2026-03-31` | `23 B` | `TTFB 3256.3 ms`, download `3.0 ms` | `1` day | Request itself is cheap, but queued behind concurrent dashboard fan-out (connection/thread contention). |
-| 3 | `GET /api/accounts/19528587/trades?limit=1000` | `2,063 B` | `TTFB 2942.9 ms`, download `1.8 ms` | `5` trades | Competes with 9 other startup requests; dashboard also does a second trades fetch (`limit=200`) in parallel. |
+- `0` additional network requests
 
-### Accounts Tab Open: Slowest Requests
+## What Still Dominates Latency
 
-| Rank | Endpoint | Payload | Server vs Network | Row Count | Root Cause |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `GET /api/accounts?show_inactive=true&show_missing=false` | `119,282 B` | `TTFB 6534.1 ms`, download `1.3 ms` | `646` accounts | Non-default accounts query path had no frontend cache; same expensive endpoint re-fetched. |
-| 2 | `GET /api/accounts?show_inactive=true&show_missing=false` | `119,282 B` | `TTFB 3288.6 ms`, download `1.6 ms` | `646` accounts | Duplicate in dev due effect re-run + uncached request. |
-| 3 | n/a | n/a | n/a | n/a | Only 2 requests were issued for this route transition. |
+The main remaining bottleneck is:
 
-## End-to-End Trace (Frontend -> Backend -> Query)
+- `GET /api/accounts`
 
-1. `GET /api/accounts?...`
-- Frontend call sites:
-  - `DashboardPage` / `AppShell` -> `accountsApi.getSelectableAccounts()`
-  - `AccountsPage` -> `accountsApi.getAccounts({ showInactive: true, showMissing: false })`
-- Backend route: `list_projectx_accounts()` in `backend/app/main.py`
-- Heavy path:
-  - `client.list_accounts()` (provider API call)
-  - `sync_projectx_accounts(...)`
-  - `_load_last_trade_timestamps(...)` aggregate query on `projectx_trade_events`
+Why it is slow:
 
-2. `GET /api/accounts/{id}/journal/days?...`
-- Frontend: `DashboardPage.loadJournalDays()`
-- Backend route: `list_projectx_account_journal_days()` in `backend/app/main.py`
-- Query: `list_journal_days()` in `backend/app/services/journal.py`
-  - `SELECT DISTINCT entry_date ... WHERE user_id/account_id/date range`
+- it always performs ProjectX account discovery and reconciliation before returning
+- it also loads local state such as `last_trade_at`
+- provider latency dominates server time
 
-3. `GET /api/accounts/{id}/trades?limit=1000`
-- Frontend: `DashboardPage.loadMetricsTrades()`
-- Backend route: `list_projectx_account_trades()` in `backend/app/main.py`
-- Query/service path:
-  - `list_trade_events()` in `backend/app/services/projectx_trades.py`
-  - `derive_trade_execution_lifecycles(...)` for returned rows
+This means:
 
-## Database Inspection (EXPLAIN ANALYZE)
+- the app is much better about avoiding duplicate fetches
+- first-load dashboard latency is still largely tied to ProjectX response time
 
-- `list_trade_events` query shape confirmed and indexed.
-- Added migration index now used by planner:
-  - `idx_projectx_trade_events_user_account_closed_ts_nonvoided`
-- Migration: `db/migrations/20260302_add_projectx_trade_events_perf_indexes.sql`
+## Current Code Behaviors That Matter For Perf
 
-## Fixes Implemented
+### Frontend caches
 
-1. Consolidated summary fan-out into one request
-- Added `GET /api/accounts/{account_id}/summary-with-point-bases`
-- Replaced 5 dashboard summary requests (`summary + 4 pointsBasis variants`) with 1
-- Files:
-  - `backend/app/main.py`
-  - `backend/app/services/projectx_trades.py`
-  - `backend/app/projectx_schemas.py`
-  - `frontend/src/lib/api.ts`
-  - `frontend/src/lib/types.ts`
-  - `frontend/src/pages/dashboard/DashboardPage.tsx`
+`frontend/src/lib/api.ts` currently caches:
 
-2. Added shared option-aware account caching + in-flight dedupe
-- Caches `/api/accounts` by `(showInactive, showMissing)` query key
-- `getSelectableAccounts()` now reuses the same cached dataset
-- Eliminates Accounts-tab re-fetch right after dashboard
-- File: `frontend/src/lib/api.ts`
+- account lists for 10 minutes
+- account-scoped summaries for 10 minutes
+- account-scoped trade lists for 10 minutes
+- PnL calendars for 10 minutes
+- journal day markers for 10 minutes
 
-3. Added lightweight regression instrumentation
-- Backend headers:
-  - `Server-Timing: app;dur=...`
-  - `X-Server-Time-Ms: ...`
-- Frontend perf logs:
-  - Request start/end in shared API client with total/server/network/bytes
-  - Dashboard and Accounts page load markers
-- Files:
-  - `backend/app/main.py`
-  - `frontend/src/lib/api.ts`
-  - `frontend/src/pages/dashboard/DashboardPage.tsx`
-  - `frontend/src/pages/accounts/AccountsPage.tsx`
+It also deduplicates duplicate in-flight reads.
 
-4. Added targeted Postgres indexes
-- File: `db/migrations/20260302_add_projectx_trade_events_perf_indexes.sql`
+### Trade sync behavior
 
-## After Fixes (Same Measurement Flow)
+The newer trade-event pipeline is local-first:
 
-### Exact Requests Fired
+- cached historical days can be reused
+- explicit refresh can force provider sync
+- empty caches still trigger first-load sync/backfill as needed
 
-#### Initial dashboard load (6 requests)
-1. `GET /api/accounts?show_inactive=true&show_missing=false`
-2. `GET /api/accounts/19528587/summary-with-point-bases`
-3. `GET /api/accounts/19528587/pnl-calendar?all_time=true`
-4. `GET /api/accounts/19528587/trades?limit=200`
-5. `GET /api/accounts/19528587/trades?limit=1000`
-6. `GET /api/accounts/19528587/journal/days?start_date=2026-03-01&end_date=2026-03-31`
+That behavior keeps normal navigation much cheaper than a provider-first design.
 
-#### Accounts tab open
-- `0` requests
+## Recommended Next Optimization
 
-### Initial Dashboard Load (top 3)
+If more performance work is needed, the next high-value target is still account sync.
 
-| Rank | Endpoint | Payload | Server vs Network | Row Count |
-| --- | --- | --- | --- | --- |
-| 1 | `GET /api/accounts?show_inactive=true&show_missing=false` | `119,282 B` | server `3265.1 ms`, network `2.9 ms` | `646` accounts |
-| 2 | `GET /api/accounts/19528587/summary-with-point-bases` | `985 B` | server `2512.9 ms`, network `2.7 ms` | summary `trade_count=5`, `4` point bases |
-| 3 | `GET /api/accounts/19528587/trades?limit=200` | `2,063 B` | server `1018.8 ms`, network `2.3 ms` | `5` trades |
+Most likely direction:
 
-### Accounts Tab Open (after)
+- move ProjectX account reconciliation off the hot path for normal account-list reads
 
-- `0` network requests (served from frontend cache)
+That could mean:
 
-## Before/After Delta
+- background refresh
+- a shorter-lived account-sync cache
+- splitting "read local account list" from "force provider reconciliation"
 
-| Metric | Before | After | Change |
-| --- | --- | --- | --- |
-| Dashboard API request count on initial load | 10 | 6 | `-40%` |
-| Summary API calls on dashboard initial load | 5 | 1 | `-80%` |
-| Trades metrics request (`/trades?limit=1000`) | 2944.7 ms | 1015.9 ms | `-65.5%` |
-| Accounts tab network requests on open | 2 | 0 | eliminated |
-| Accounts tab slowest request | 6535.4 ms | n/a | eliminated |
+## Related Files
 
-## Remaining Bottleneck
-
-- `GET /api/accounts?...` is still dominated by provider sync latency (~3.2s server time).  
-- This endpoint is now avoided on immediate Accounts tab navigation via cache, but initial dashboard still pays this sync cost.
+- `backend/app/main.py`
+- `backend/app/services/projectx_trades.py`
+- `frontend/src/lib/api.ts`
+- `frontend/src/pages/dashboard/DashboardPage.tsx`
+- `frontend/src/pages/accounts/AccountsPage.tsx`
