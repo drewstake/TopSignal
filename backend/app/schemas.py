@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class TradeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     account_id: int
     symbol: str
@@ -17,6 +19,3 @@ class TradeOut(BaseModel):
     notes: Optional[str] = None
     is_rule_break: bool = False
     rule_break_type: Optional[str] = None
-
-    class Config:
-        from_attributes = True

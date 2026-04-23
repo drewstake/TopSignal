@@ -2,7 +2,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.projectx_client import ProjectXClient, ProjectXClientError, _extract_error_message, _parse_datetime
+from app.services.projectx_client import (
+    ProjectXClient,
+    ProjectXClientError,
+    _clear_token_cache,
+    _extract_error_message,
+    _parse_datetime,
+)
 
 
 def test_parse_datetime_supports_variable_fraction_precision():
@@ -297,3 +303,70 @@ def test_fetch_last_trade_timestamp_returns_latest_value():
     assert account_id == 777
     assert limit == 1
     assert offset is None
+
+
+def test_fetch_last_trade_timestamp_uses_latest_row_when_provider_returns_multiple_rows():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
+            self.calls.append((account_id, start, end, limit, offset))
+            return [
+                {
+                    "account_id": account_id,
+                    "timestamp": datetime(2026, 2, 15, 18, 45, tzinfo=timezone.utc),
+                    "order_id": "A-1",
+                },
+                {
+                    "account_id": account_id,
+                    "timestamp": datetime(2026, 2, 16, 9, 30, tzinfo=timezone.utc),
+                    "order_id": "A-2",
+                },
+                {
+                    "account_id": account_id,
+                    "timestamp": datetime(2026, 2, 14, 12, 0, tzinfo=timezone.utc),
+                    "order_id": "A-0",
+                },
+            ]
+
+    client = StubClient()
+    timestamp = client.fetch_last_trade_timestamp(account_id=778, lookback_days=90)
+
+    assert timestamp == datetime(2026, 2, 16, 9, 30, tzinfo=timezone.utc)
+    assert len(client.calls) == 1
+    account_id, _start, _end, limit, offset = client.calls[0]
+    assert account_id == 778
+    assert limit == 1
+    assert offset is None
+
+
+def test_access_token_cache_is_invalidated_when_api_key_changes():
+    class StubClient(ProjectXClient):
+        def __init__(self, api_key: str, login_calls: list[str]):
+            super().__init__(base_url="https://example.test", username="demo", api_key=api_key)
+            self.login_calls = login_calls
+
+        def _request_once(self, method, path, *, payload=None, with_auth):
+            assert method == "POST"
+            assert path == "/api/Auth/loginKey"
+            assert with_auth is False
+            assert payload is not None
+            self.login_calls.append(str(payload["apiKey"]))
+            return {
+                "token": f"token-for-{payload['apiKey']}",
+                "expiresInSeconds": 3600,
+            }
+
+    login_calls: list[str] = []
+    _clear_token_cache()
+    try:
+        first_client = StubClient(api_key="key-one", login_calls=login_calls)
+        second_client = StubClient(api_key="key-two", login_calls=login_calls)
+
+        assert first_client.get_access_token() == "token-for-key-one"
+        assert second_client.get_access_token() == "token-for-key-two"
+        assert login_calls == ["key-one", "key-two"]
+    finally:
+        _clear_token_cache()

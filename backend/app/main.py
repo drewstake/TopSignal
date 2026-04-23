@@ -2,6 +2,7 @@ import calendar
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -148,7 +149,6 @@ from .services.projectx_trades import (
     summarize_trade_events_with_point_bases,
 )
 
-app = FastAPI(title="TopSignal API")
 logger = logging.getLogger(__name__)
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
@@ -164,6 +164,21 @@ _ALLOWED_ORIGINS = [
 _ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
 _EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, Content-Length"
 _ALLOW_ORIGIN_PATTERN = re.compile(_ALLOW_ORIGIN_REGEX) if _ALLOW_ORIGIN_REGEX else None
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    guard_against_local_database_url()
+    log_runtime_connection_targets()
+    init_db()
+    _start_streaming_runtime_if_enabled()
+    try:
+        yield
+    finally:
+        _stop_streaming_runtime()
+
+
+app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -255,20 +270,6 @@ async def api_auth_middleware(request: Request, call_next):
         return _with_timing_headers(response)
     finally:
         reset_authenticated_user(context_token)
-
-
-@app.on_event("startup")
-def on_startup():
-    guard_against_local_database_url()
-    log_runtime_connection_targets()
-    init_db()
-    _start_streaming_runtime_if_enabled()
-
-
-@app.on_event("shutdown")
-def on_shutdown():
-    _stop_streaming_runtime()
-
 
 @app.get("/health")
 def health():

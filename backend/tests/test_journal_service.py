@@ -17,6 +17,7 @@ from app.services.journal import (
     _compute_trade_stats_snapshot,
     create_journal_entry,
     create_journal_entry_image,
+    delete_journal_entry,
     list_journal_entries,
     list_journal_entry_images,
     merge_journal_entries,
@@ -494,6 +495,58 @@ def test_compute_trade_stats_snapshot_counts_broker_fees_once():
     assert snapshot["largest_win"] == 99.0
     assert snapshot["largest_loss"] == 0.0
     assert snapshot["largest_position_size"] == 5.0
+
+
+def test_delete_journal_entry_does_not_fail_when_image_cleanup_fails(
+    db_session,
+    journal_storage_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    user_id = "delete-journal-cleanup"
+    entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=5501,
+        entry_date=date(2026, 2, 18),
+        title="Delete me",
+        mood=JournalMood.NEUTRAL,
+        tags=[],
+        body="Body",
+    )
+    image = create_journal_entry_image(
+        db_session,
+        user_id=user_id,
+        account_id=5501,
+        entry_id=int(entry.id),
+        file_bytes=b"delete-image",
+        mime_type="image/png",
+    )
+
+    monkeypatch.setattr(
+        "app.services.journal.delete_journal_image",
+        lambda *, object_key: (_ for _ in ()).throw(RuntimeError(f"storage unavailable: {object_key}")),
+    )
+
+    delete_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=5501,
+        entry_id=int(entry.id),
+    )
+
+    assert (
+        db_session.query(JournalEntry)
+        .filter(JournalEntry.user_id == user_id)
+        .filter(JournalEntry.account_id == 5501)
+        .count()
+    ) == 0
+    assert (
+        db_session.query(JournalEntryImage)
+        .filter(JournalEntryImage.user_id == user_id)
+        .filter(JournalEntryImage.id == int(image.id))
+        .count()
+    ) == 0
+    assert (journal_storage_dir / image.filename).exists()
 
 
 def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -230,10 +231,15 @@ class ProjectXClient:
             end=end_utc,
             limit=1,
         )
-        if not rows:
+        timestamps = [
+            _as_utc(timestamp)
+            for timestamp in (row.get("timestamp") for row in rows if isinstance(row, dict))
+            if isinstance(timestamp, datetime)
+        ]
+        if not timestamps:
             return None
 
-        return _as_utc(rows[0]["timestamp"])
+        return max(timestamps)
 
     def stream_user_trades(
         self,
@@ -382,7 +388,8 @@ class ProjectXClient:
         return token
 
     def _token_cache_key(self) -> str:
-        return f"{self.base_url}|{self.username}"
+        api_key_fingerprint = hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()[:16]
+        return f"{self.base_url}|{self.username}|{api_key_fingerprint}"
 
 
 def _clear_token_cache(cache_key: str | None = None) -> None:

@@ -451,19 +451,24 @@ def delete_journal_entry(
     if row is None:
         raise LookupError("journal entry not found")
 
-    image_filenames = [
-        image_row.filename
-        for image_row in db.query(JournalEntryImage.filename)
+    image_rows = (
+        db.query(JournalEntryImage)
         .filter(JournalEntryImage.user_id == resolved_user_id)
+        .filter(JournalEntryImage.account_id == account_id)
         .filter(JournalEntryImage.journal_entry_id == entry_id)
         .all()
-    ]
+    )
+    image_filenames = [image_row.filename for image_row in image_rows]
+    for image_row in image_rows:
+        db.delete(image_row)
+    if image_rows:
+        db.flush()
 
     db.delete(row)
     db.commit()
 
     for filename in image_filenames:
-        delete_journal_image(object_key=filename)
+        _delete_journal_image_quietly(filename)
 
 
 def create_journal_entry_image(
@@ -517,7 +522,7 @@ def create_journal_entry_image(
         db.commit()
     except Exception:
         db.rollback()
-        delete_journal_image(object_key=filename)
+        _delete_journal_image_quietly(filename)
         raise
 
     db.refresh(row)
@@ -588,7 +593,7 @@ def delete_journal_entry_image(
         entry_id=entry_id,
         image_id=image_id,
     )
-    delete_journal_image(object_key=filename)
+    _delete_journal_image_quietly(filename)
 
 
 def delete_journal_entry_image_record(
