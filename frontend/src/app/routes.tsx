@@ -17,6 +17,9 @@ const ExpensesPage = lazy(() =>
 const JournalPage = lazy(() =>
   import("../pages/journal/JournalPage").then((module) => ({ default: module.JournalPage })),
 );
+const BotPage = lazy(() =>
+  import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -42,6 +45,10 @@ export const router = createBrowserRouter([
       {
         path: "journal",
         element: <JournalPage />,
+      },
+      {
+        path: "bot",
+        element: <BotPage />,
       },
     ],
   },

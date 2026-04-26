@@ -241,6 +241,7 @@ export function AppShell() {
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Journal", to: `/journal${accountSuffix}` },
+              { label: "Bot", to: `/bot${accountSuffix}` },
             ]}
           />
         </div>

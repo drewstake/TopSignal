@@ -224,6 +224,37 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
     return output
 
 
+def compute_point_payoff_by_basis(
+    samples: Iterable[TradeMetricSample],
+    *,
+    point_bases: Iterable[str],
+    point_value_by_symbol: Mapping[str, float] | None = None,
+) -> dict[str, dict[str, float | None]]:
+    point_value_lookup = dict(point_value_by_symbol or _default_point_value_lookup())
+    normalized_bases = [normalize_points_basis(basis) for basis in point_bases]
+    trades = sorted(samples, key=lambda sample: sample.timestamp)
+    if not trades:
+        return {basis: {"avgPointGain": None, "avgPointLoss": None} for basis in normalized_bases}
+
+    realized_values, _ = _compute_realized_values(trades)
+    fee_values = [_effective_fee(trade) for trade in trades]
+    net_values = [realized - fee for realized, fee in zip(realized_values, fee_values)]
+
+    output: dict[str, dict[str, float | None]] = {}
+    for basis in normalized_bases:
+        point_metrics = _compute_point_metrics(
+            trades=trades,
+            net_values=net_values,
+            points_basis=basis,
+            point_value_lookup=point_value_lookup,
+        )
+        output[basis] = {
+            "avgPointGain": _round(point_metrics["avg_point_gain"], 4) if point_metrics["avg_point_gain"] is not None else None,
+            "avgPointLoss": _round(point_metrics["avg_point_loss"], 4) if point_metrics["avg_point_loss"] is not None else None,
+        }
+    return output
+
+
 def _compute_realized_values(trades: list[TradeMetricSample]) -> tuple[list[float], list[float]]:
     realized_values: list[float] = []
     closed_pnls: list[float] = []

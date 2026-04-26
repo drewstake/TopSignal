@@ -116,6 +116,7 @@ def init_db():
     _ensure_accounts_schema_compatibility()
     _ensure_journal_schema_compatibility()
     _ensure_multi_tenant_schema_compatibility()
+    _ensure_bot_schema_compatibility()
     _ensure_default_instrument_metadata()
 
 
@@ -266,6 +267,12 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
         "trades",
         "projectx_trade_events",
         "projectx_trade_day_syncs",
+        "projectx_market_candles",
+        "bot_configs",
+        "bot_runs",
+        "bot_decisions",
+        "bot_order_attempts",
+        "bot_risk_events",
         "position_lifecycles",
         "journal_entries",
         "journal_entry_images",
@@ -462,6 +469,190 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
                 """
             )
         )
+
+
+def _ensure_bot_schema_compatibility() -> None:
+    # Early bot prototypes used narrower tables. create_all() will not add
+    # missing columns, so patch existing Postgres databases at startup.
+    if engine.dialect.name != "postgresql":
+        return
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        table_names = set(inspector.get_table_names())
+
+        if "projectx_market_candles" in table_names:
+            candle_columns = {column["name"] for column in inspector.get_columns("projectx_market_candles")}
+            _add_column(conn, "projectx_market_candles", candle_columns, "symbol", "text")
+            _add_column(conn, "projectx_market_candles", candle_columns, "live", "boolean not null default false")
+            _add_column(conn, "projectx_market_candles", candle_columns, "volume", "numeric(18,6) not null default 0")
+            _add_column(conn, "projectx_market_candles", candle_columns, "is_partial", "boolean not null default false")
+            _add_column(conn, "projectx_market_candles", candle_columns, "source", "text not null default 'projectx'")
+            _add_column(conn, "projectx_market_candles", candle_columns, "raw_payload", "jsonb")
+            _add_column(conn, "projectx_market_candles", candle_columns, "fetched_at", "timestamptz not null default now()")
+            conn.execute(
+                text(
+                    """
+                    create index if not exists idx_projectx_market_candles_contract_ts
+                    on projectx_market_candles (user_id, contract_id, live, unit, unit_number, candle_timestamp)
+                    """
+                )
+            )
+
+        if "bot_configs" in table_names:
+            config_columns = {column["name"] for column in inspector.get_columns("bot_configs")}
+
+            if "name" not in config_columns:
+                conn.execute(text("alter table bot_configs add column if not exists name text"))
+                if "strategy_name" in config_columns:
+                    conn.execute(text("update bot_configs set name = strategy_name where name is null and strategy_name is not null"))
+                conn.execute(text("update bot_configs set name = 'Trading Bot' where name is null or btrim(name) = ''"))
+                conn.execute(text("alter table bot_configs alter column name set default 'Trading Bot'"))
+                conn.execute(text("alter table bot_configs alter column name set not null"))
+                config_columns.add("name")
+
+            _add_column(conn, "bot_configs", config_columns, "provider", "text not null default 'projectx'")
+
+            if "enabled" not in config_columns:
+                conn.execute(text("alter table bot_configs add column if not exists enabled boolean"))
+                if "strategy_enabled" in config_columns:
+                    conn.execute(text("update bot_configs set enabled = strategy_enabled where enabled is null"))
+                conn.execute(text("update bot_configs set enabled = false where enabled is null"))
+                conn.execute(text("alter table bot_configs alter column enabled set default false"))
+                conn.execute(text("alter table bot_configs alter column enabled set not null"))
+                config_columns.add("enabled")
+
+            if "execution_mode" not in config_columns:
+                conn.execute(text("alter table bot_configs add column if not exists execution_mode text not null default 'dry_run'"))
+                config_columns.add("execution_mode")
+            conn.execute(text("alter table bot_configs drop constraint if exists bot_configs_execution_mode_check"))
+            conn.execute(
+                text(
+                    """
+                    update bot_configs
+                    set execution_mode = case
+                      when lower(coalesce(execution_mode, '')) in ('live', 'projectx_live', 'live_order', 'real')
+                        then 'live'
+                      else 'dry_run'
+                    end
+                    where execution_mode is null or execution_mode not in ('dry_run', 'live')
+                    """
+                )
+            )
+            conn.execute(text("alter table bot_configs alter column execution_mode set default 'dry_run'"))
+            conn.execute(text("alter table bot_configs alter column execution_mode set not null"))
+            conn.execute(
+                text(
+                    """
+                    alter table bot_configs
+                    add constraint bot_configs_execution_mode_check
+                    check (execution_mode in ('dry_run','live'))
+                    """
+                )
+            )
+
+            _add_column(conn, "bot_configs", config_columns, "strategy_type", "text not null default 'sma_cross'")
+            if "symbol" not in config_columns:
+                conn.execute(text("alter table bot_configs add column if not exists symbol text"))
+                conn.execute(text("update bot_configs set symbol = 'MNQ' where symbol is null or btrim(symbol) = ''"))
+                config_columns.add("symbol")
+
+            if "contract_id" not in config_columns:
+                conn.execute(text("alter table bot_configs add column if not exists contract_id text"))
+                conn.execute(text("update bot_configs set contract_id = coalesce(nullif(btrim(symbol), ''), 'MNQ') where contract_id is null or btrim(contract_id) = ''"))
+                conn.execute(text("alter table bot_configs alter column contract_id set default 'MNQ'"))
+                conn.execute(text("alter table bot_configs alter column contract_id set not null"))
+                config_columns.add("contract_id")
+
+            _add_column(conn, "bot_configs", config_columns, "timeframe_unit", "text not null default 'minute'")
+            _add_column(conn, "bot_configs", config_columns, "timeframe_unit_number", "integer not null default 5")
+            _add_column(conn, "bot_configs", config_columns, "lookback_bars", "integer not null default 200")
+            _add_column(conn, "bot_configs", config_columns, "fast_period", "integer not null default 9")
+            _add_column(conn, "bot_configs", config_columns, "slow_period", "integer not null default 21")
+            _add_column(conn, "bot_configs", config_columns, "order_size", "numeric(18,6) not null default 1")
+            _add_column(conn, "bot_configs", config_columns, "max_contracts", "numeric(18,6) not null default 1")
+            _add_column(conn, "bot_configs", config_columns, "max_daily_loss", "numeric(18,6) not null default 250")
+            _add_column(conn, "bot_configs", config_columns, "max_trades_per_day", "integer not null default 3")
+            _add_column(conn, "bot_configs", config_columns, "max_open_position", "numeric(18,6) not null default 1")
+            _add_column(conn, "bot_configs", config_columns, "allowed_contracts", "jsonb not null default '[]'::jsonb")
+            _add_column(conn, "bot_configs", config_columns, "trading_start_time", "text not null default '09:30'")
+            _add_column(conn, "bot_configs", config_columns, "trading_end_time", "text not null default '15:45'")
+            _add_column(conn, "bot_configs", config_columns, "cooldown_seconds", "integer not null default 300")
+            _add_column(conn, "bot_configs", config_columns, "max_data_staleness_seconds", "integer not null default 600")
+            _add_column(conn, "bot_configs", config_columns, "allow_market_depth", "boolean not null default false")
+            _add_column(conn, "bot_configs", config_columns, "created_at", "timestamptz not null default now()")
+            _add_column(conn, "bot_configs", config_columns, "updated_at", "timestamptz not null default now()")
+
+            conn.execute(text("update bot_configs set strategy_type = 'sma_cross' where strategy_type is null or strategy_type <> 'sma_cross'"))
+            conn.execute(text("update bot_configs set timeframe_unit = 'minute' where timeframe_unit is null or timeframe_unit not in ('second','minute','hour','day','week','month')"))
+            conn.execute(text("update bot_configs set timeframe_unit_number = 5 where timeframe_unit_number is null or timeframe_unit_number <= 0"))
+            conn.execute(text("update bot_configs set lookback_bars = 200 where lookback_bars is null or lookback_bars < 25"))
+            conn.execute(text("update bot_configs set fast_period = 9 where fast_period is null or fast_period <= 0"))
+            conn.execute(text("update bot_configs set slow_period = 21 where slow_period is null or slow_period <= fast_period"))
+            conn.execute(text("update bot_configs set order_size = 1 where order_size is null or order_size <= 0"))
+            conn.execute(text("update bot_configs set max_contracts = 1 where max_contracts is null or max_contracts <= 0"))
+            conn.execute(text("update bot_configs set max_daily_loss = 250 where max_daily_loss is null or max_daily_loss < 0"))
+            conn.execute(text("update bot_configs set max_trades_per_day = 3 where max_trades_per_day is null or max_trades_per_day < 0"))
+            conn.execute(text("update bot_configs set max_open_position = 1 where max_open_position is null or max_open_position <= 0"))
+            conn.execute(text("update bot_configs set trading_start_time = '09:30' where trading_start_time is null or btrim(trading_start_time) = ''"))
+            conn.execute(text("update bot_configs set trading_end_time = '15:45' where trading_end_time is null or btrim(trading_end_time) = ''"))
+            conn.execute(text("update bot_configs set cooldown_seconds = 300 where cooldown_seconds is null or cooldown_seconds < 0"))
+            conn.execute(text("update bot_configs set max_data_staleness_seconds = 600 where max_data_staleness_seconds is null or max_data_staleness_seconds <= 0"))
+            conn.execute(text("create index if not exists idx_bot_configs_user_account on bot_configs (user_id, account_id)"))
+            conn.execute(text("create index if not exists idx_bot_configs_user_enabled on bot_configs (user_id, enabled)"))
+
+        if "bot_runs" in table_names:
+            run_columns = {column["name"] for column in inspector.get_columns("bot_runs")}
+
+            if "status" not in run_columns:
+                conn.execute(text("alter table bot_runs add column if not exists status text"))
+                if "ended_at" in run_columns:
+                    conn.execute(text("update bot_runs set status = case when ended_at is null then 'running' else 'stopped' end where status is null"))
+                conn.execute(text("update bot_runs set status = 'running' where status is null or status not in ('running','stopped','blocked','error')"))
+                conn.execute(text("alter table bot_runs alter column status set default 'running'"))
+                conn.execute(text("alter table bot_runs alter column status set not null"))
+                run_columns.add("status")
+
+            if "dry_run" not in run_columns:
+                conn.execute(text("alter table bot_runs add column if not exists dry_run boolean"))
+                if "execution_mode" in run_columns:
+                    conn.execute(text("update bot_runs set dry_run = lower(coalesce(execution_mode, '')) not in ('live', 'projectx_live', 'live_order', 'real') where dry_run is null"))
+                conn.execute(text("update bot_runs set dry_run = true where dry_run is null"))
+                conn.execute(text("alter table bot_runs alter column dry_run set default true"))
+                conn.execute(text("alter table bot_runs alter column dry_run set not null"))
+                run_columns.add("dry_run")
+
+            if "stopped_at" not in run_columns:
+                conn.execute(text("alter table bot_runs add column if not exists stopped_at timestamptz"))
+                if "ended_at" in run_columns:
+                    conn.execute(text("update bot_runs set stopped_at = ended_at where stopped_at is null and ended_at is not null"))
+                run_columns.add("stopped_at")
+
+            if "stop_reason" not in run_columns:
+                conn.execute(text("alter table bot_runs add column if not exists stop_reason text"))
+                if "end_reason" in run_columns:
+                    conn.execute(text("update bot_runs set stop_reason = end_reason where stop_reason is null and end_reason is not null"))
+                run_columns.add("stop_reason")
+
+            _add_column(conn, "bot_runs", run_columns, "last_heartbeat_at", "timestamptz")
+            _add_column(conn, "bot_runs", run_columns, "raw_state", "jsonb")
+            conn.execute(text("create index if not exists idx_bot_runs_config_started on bot_runs (user_id, bot_config_id, started_at)"))
+            conn.execute(text("create index if not exists idx_bot_runs_account_status on bot_runs (user_id, account_id, status)"))
+
+        if "bot_decisions" in table_names:
+            conn.execute(text("create index if not exists idx_bot_decisions_config_created on bot_decisions (user_id, bot_config_id, created_at)"))
+        if "bot_order_attempts" in table_names:
+            conn.execute(text("create index if not exists idx_bot_order_attempts_config_created on bot_order_attempts (user_id, bot_config_id, created_at)"))
+            conn.execute(text("create index if not exists idx_bot_order_attempts_account_created on bot_order_attempts (user_id, account_id, created_at)"))
+        if "bot_risk_events" in table_names:
+            conn.execute(text("create index if not exists idx_bot_risk_events_config_created on bot_risk_events (user_id, bot_config_id, created_at)"))
+
+
+def _add_column(conn: Any, table_name: str, column_names: set[str], column_name: str, definition: str) -> None:
+    if column_name in column_names:
+        return
+    conn.execute(text(f"alter table {table_name} add column if not exists {column_name} {definition}"))
+    column_names.add(column_name)
 
 
 def _ensure_default_instrument_metadata() -> None:

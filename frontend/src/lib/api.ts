@@ -43,6 +43,15 @@ import type {
   TradeRecord,
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
+  BotActivity,
+  BotConfig,
+  BotConfigInput,
+  BotConfigListResponse,
+  BotConfigUpdateInput,
+  BotEvaluation,
+  BotTimeframeUnit,
+  ProjectXContract,
+  ProjectXMarketCandle,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
@@ -632,6 +641,7 @@ interface AccountTradesQuery {
   end?: string;
   symbol?: string;
   refresh?: boolean;
+  includeLifecycle?: boolean;
 }
 
 interface AccountSummaryQuery {
@@ -692,12 +702,14 @@ export const accountsApi = {
       end: query.end,
       symbol: query.symbol,
       refresh: query.refresh,
+      include_lifecycle: query.includeLifecycle,
     };
     const cacheKey = accountReadQueryCacheKey(accountId, {
       limit: requestQuery.limit,
       start: requestQuery.start,
       end: requestQuery.end,
       symbol: requestQuery.symbol,
+      include_lifecycle: requestQuery.include_lifecycle,
     });
     return getTimedCachedRequest({
       cache: accountTradesCacheByQuery,
@@ -874,6 +886,95 @@ export const accountsApi = {
       invalidateAccountJournalCaches(body.from_account_id);
       invalidateAccountJournalCaches(body.to_account_id);
       return result;
+  }),
+};
+
+interface ContractSearchQuery {
+  searchText: string;
+  live?: boolean;
+}
+
+interface CandleQuery {
+  contractId: string;
+  symbol?: string;
+  start?: string;
+  end?: string;
+  live?: boolean;
+  unit?: BotTimeframeUnit;
+  unitNumber?: number;
+  limit?: number;
+  includePartialBar?: boolean;
+}
+
+interface BotStartOptions {
+  dryRun?: boolean;
+  confirmLiveOrderRouting?: boolean;
+}
+
+function botStartPayload(options: BotStartOptions = {}) {
+  return {
+    dry_run: options.dryRun,
+    confirm_live_order_routing: options.confirmLiveOrderRouting ?? false,
+  };
+}
+
+export const botsApi = {
+  searchContracts: (query: ContractSearchQuery) =>
+    requestJson<ProjectXContract[]>("/api/projectx/contracts/search", {
+      query: {
+        search_text: query.searchText,
+        live: query.live ?? false,
+      },
+    }),
+  getCandles: (query: CandleQuery) =>
+    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
+      query: {
+        contract_id: query.contractId,
+        symbol: query.symbol,
+        start: query.start,
+        end: query.end,
+        live: query.live ?? false,
+        unit: query.unit ?? "minute",
+        unit_number: query.unitNumber ?? 5,
+        limit: query.limit ?? 500,
+        include_partial_bar: query.includePartialBar ?? false,
+      },
+    }),
+  listConfigs: (accountId?: number) =>
+    requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+    }),
+  createConfig: (payload: BotConfigInput) =>
+    requestJson<BotConfig>("/api/bots", {
+      method: "POST",
+      body: payload,
+    }),
+  updateConfig: (botConfigId: number, payload: BotConfigUpdateInput) =>
+    requestJson<BotConfig>(`/api/bots/${botConfigId}`, {
+      method: "PATCH",
+      body: payload,
+    }),
+  start: (botConfigId: number, options: BotStartOptions = {}) =>
+    requestJson<BotEvaluation>(`/api/bots/${botConfigId}/start`, {
+      method: "POST",
+      body: botStartPayload(options),
+    }),
+  evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }) =>
+    requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
+      method: "POST",
+      body: botStartPayload(options),
+    }),
+  stop: (botConfigId: number) =>
+    requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
+      method: "POST",
+    }),
+  getActivity: (botConfigId: number, limit = 50) =>
+    requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
+      query: {
+        limit,
+      },
     }),
 };
 
