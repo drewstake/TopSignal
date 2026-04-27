@@ -40,6 +40,30 @@ interface BuildLiveCandleFromPriceOptions {
   fetchedAt?: Date;
 }
 
+interface BuildCandlestickDataOptions {
+  bridgeConsecutiveGaps?: boolean;
+}
+
+interface BuildVwapDataOptions {
+  sessionStartTime?: string;
+  sessionTimeZone?: string;
+}
+
+interface ValidMarketCandle {
+  time: UTCTimestamp;
+  timestampSeconds: number;
+  candle: ProjectXMarketCandle;
+}
+
+interface VwapSessionDateTimeParts {
+  year: number;
+  month: number;
+  day: number;
+  minutesSinceMidnight: number;
+}
+
+const DEFAULT_VWAP_SESSION_TIME_ZONE = "America/New_York";
+
 export function toUtcTimestamp(value: string | null | undefined): UTCTimestamp | null {
   if (!value) {
     return null;
@@ -53,8 +77,11 @@ export function toUtcTimestamp(value: string | null | undefined): UTCTimestamp |
   return Math.floor(timestampMs / 1000) as UTCTimestamp;
 }
 
-export function buildCandlestickData(candles: ProjectXMarketCandle[]): CandlestickData<UTCTimestamp>[] {
-  const byTime = new Map<number, CandlestickData<UTCTimestamp>>();
+export function buildCandlestickData(
+  candles: ProjectXMarketCandle[],
+  options: BuildCandlestickDataOptions = {},
+): CandlestickData<UTCTimestamp>[] {
+  const byTime = new Map<number, ValidMarketCandle>();
 
   for (const candle of candles) {
     const time = toUtcTimestamp(candle.timestamp);
@@ -65,16 +92,24 @@ export function buildCandlestickData(candles: ProjectXMarketCandle[]): Candlesti
       continue;
     }
 
-    byTime.set(Number(time), {
+    const timestampSeconds = Number(time);
+    byTime.set(timestampSeconds, {
       time,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
+      timestampSeconds,
+      candle,
     });
   }
 
-  return Array.from(byTime.values()).sort((left, right) => Number(left.time) - Number(right.time));
+  const bridgeConsecutiveGaps = options.bridgeConsecutiveGaps ?? true;
+  const sortedCandles = Array.from(byTime.values()).sort((left, right) => left.timestampSeconds - right.timestampSeconds);
+  return sortedCandles.map((row, index) => {
+    const previous = index > 0 ? sortedCandles[index - 1] : null;
+    const open =
+      bridgeConsecutiveGaps && previous && areConsecutiveIntradayCandles(previous, row)
+        ? previous.candle.close
+        : row.candle.open;
+    return buildDisplayCandlestick(row, open);
+  });
 }
 
 export function buildSmaData(candles: CandlestickData<UTCTimestamp>[], period: number): LineData<UTCTimestamp>[] {
@@ -98,6 +133,60 @@ export function buildSmaData(candles: CandlestickData<UTCTimestamp>[], period: n
       });
     }
   });
+
+  return output;
+}
+
+export function buildVwapData(
+  candles: ProjectXMarketCandle[],
+  options: BuildVwapDataOptions = {},
+): LineData<UTCTimestamp>[] {
+  const sortedCandles = buildSortedVwapCandles(candles);
+  if (sortedCandles.length === 0) {
+    return [];
+  }
+
+  const sessionTimeZone = options.sessionTimeZone ?? DEFAULT_VWAP_SESSION_TIME_ZONE;
+  const sessionStartMinutes = parseSessionStartMinutes(options.sessionStartTime);
+  const sessionFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: sessionTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  const output: LineData<UTCTimestamp>[] = [];
+  let currentSessionKey: string | null = null;
+  let cumulativeVolume = 0;
+  let cumulativePriceVolume = 0;
+  let currentValue: number | null = null;
+
+  for (const row of sortedCandles) {
+    const sessionKey = buildVwapSessionKey(row.candle.timestamp, sessionFormatter, sessionStartMinutes);
+    if (sessionKey !== currentSessionKey) {
+      currentSessionKey = sessionKey;
+      cumulativeVolume = 0;
+      cumulativePriceVolume = 0;
+      currentValue = null;
+    }
+
+    if (Number.isFinite(row.candle.volume) && row.candle.volume > 0) {
+      const typicalPrice = (row.candle.high + row.candle.low + row.candle.close) / 3;
+      cumulativeVolume += row.candle.volume;
+      cumulativePriceVolume += typicalPrice * row.candle.volume;
+      currentValue = cumulativePriceVolume / cumulativeVolume;
+    }
+
+    if (currentValue !== null) {
+      output.push({
+        time: row.time,
+        value: currentValue,
+      });
+    }
+  }
 
   return output;
 }
@@ -171,9 +260,17 @@ export function buildLiveCandleFromPriceUpdate({
   const closedBase = closedCandles.find((candle) => Date.parse(candle.timestamp) === bucketTimestampMs) ?? null;
   const liveBase = currentLiveCandle && Date.parse(currentLiveCandle.timestamp) === bucketTimestampMs ? currentLiveCandle : null;
   const base = liveBase ?? closedBase;
-  const open = base?.open ?? price.price;
-  const high = Math.max(base?.high ?? price.price, price.price);
-  const low = Math.min(base?.low ?? price.price, price.price);
+  const previousClose =
+    base === null
+      ? findPreviousConsecutiveClose({
+          bucketTimestampMs,
+          closedCandles,
+          currentLiveCandle,
+        })
+      : null;
+  const open = base?.open ?? previousClose ?? price.price;
+  const high = Math.max(base?.high ?? open, open, price.price);
+  const low = Math.min(base?.low ?? open, open, price.price);
 
   return {
     id: closedBase?.id ?? null,
@@ -209,6 +306,163 @@ function buildTimeframeBucketTimestamp(timestamp: string, unit: BotTimeframeUnit
   const unitSeconds = UNIT_SECONDS_BY_NAME[unit];
   const bucketMs = unitSeconds * normalizedUnitNumber * 1000;
   return new Date(Math.floor(timestampMs / bucketMs) * bucketMs).toISOString();
+}
+
+function buildDisplayCandlestick(row: ValidMarketCandle, open: number): CandlestickData<UTCTimestamp> {
+  const { candle } = row;
+  const high = Math.max(open, candle.open, candle.high, candle.low, candle.close);
+  const low = Math.min(open, candle.open, candle.high, candle.low, candle.close);
+
+  return {
+    time: row.time,
+    open,
+    high,
+    low,
+    close: candle.close,
+  };
+}
+
+function areConsecutiveIntradayCandles(previous: ValidMarketCandle, current: ValidMarketCandle): boolean {
+  if (previous.candle.unit !== current.candle.unit || previous.candle.unit_number !== current.candle.unit_number) {
+    return false;
+  }
+
+  const intervalSeconds = intradayIntervalSeconds(current.candle);
+  return intervalSeconds !== null && current.timestampSeconds - previous.timestampSeconds === intervalSeconds;
+}
+
+function findPreviousConsecutiveClose(input: {
+  bucketTimestampMs: number;
+  closedCandles: ProjectXMarketCandle[];
+  currentLiveCandle: ProjectXMarketCandle | null;
+}): number | null {
+  let selectedTimestampMs = Number.NEGATIVE_INFINITY;
+  let selectedClose: number | null = null;
+
+  for (const candle of [...input.closedCandles, input.currentLiveCandle]) {
+    if (!candle || !Number.isFinite(candle.close)) {
+      continue;
+    }
+
+    const timestampMs = Date.parse(candle.timestamp);
+    if (!Number.isFinite(timestampMs) || timestampMs >= input.bucketTimestampMs) {
+      continue;
+    }
+
+    const intervalSeconds = intradayIntervalSeconds(candle);
+    const gapSeconds = (input.bucketTimestampMs - timestampMs) / 1000;
+    if (intervalSeconds === null || gapSeconds !== intervalSeconds || timestampMs <= selectedTimestampMs) {
+      continue;
+    }
+
+    selectedTimestampMs = timestampMs;
+    selectedClose = candle.close;
+  }
+
+  return selectedClose;
+}
+
+function intradayIntervalSeconds(candle: Pick<ProjectXMarketCandle, "unit" | "unit_number">): number | null {
+  if (candle.unit !== "second" && candle.unit !== "minute" && candle.unit !== "hour") {
+    return null;
+  }
+
+  return UNIT_SECONDS_BY_NAME[candle.unit] * Math.max(1, Math.trunc(candle.unit_number));
+}
+
+function buildSortedVwapCandles(candles: ProjectXMarketCandle[]): ValidMarketCandle[] {
+  const byTime = new Map<number, ValidMarketCandle>();
+
+  for (const candle of candles) {
+    const time = toUtcTimestamp(candle.timestamp);
+    if (time === null) {
+      continue;
+    }
+    if (![candle.high, candle.low, candle.close].every(Number.isFinite)) {
+      continue;
+    }
+
+    const timestampSeconds = Number(time);
+    byTime.set(timestampSeconds, {
+      time,
+      timestampSeconds,
+      candle,
+    });
+  }
+
+  return Array.from(byTime.values()).sort((left, right) => left.timestampSeconds - right.timestampSeconds);
+}
+
+function parseSessionStartMinutes(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})/.exec(value.trim());
+  if (!match) {
+    return 0;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return 0;
+  }
+
+  return hour * 60 + minute;
+}
+
+function buildVwapSessionKey(
+  timestamp: string,
+  formatter: Intl.DateTimeFormat,
+  sessionStartMinutes: number,
+): string {
+  const parts = vwapSessionDateTimeParts(timestamp, formatter);
+  if (!parts) {
+    return timestamp;
+  }
+
+  if (parts.minutesSinceMidnight >= sessionStartMinutes) {
+    return formatVwapDateKey(parts.year, parts.month, parts.day);
+  }
+
+  const previousDay = new Date(Date.UTC(parts.year, parts.month - 1, parts.day) - 24 * 60 * 60 * 1000);
+  return formatVwapDateKey(previousDay.getUTCFullYear(), previousDay.getUTCMonth() + 1, previousDay.getUTCDate());
+}
+
+function vwapSessionDateTimeParts(timestamp: string, formatter: Intl.DateTimeFormat): VwapSessionDateTimeParts | null {
+  const timestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(timestampMs)) {
+    return null;
+  }
+
+  const parsedParts: Partial<Record<Intl.DateTimeFormatPartTypes, number>> = {};
+  for (const part of formatter.formatToParts(new Date(timestampMs))) {
+    if (part.type === "year" || part.type === "month" || part.type === "day" || part.type === "hour" || part.type === "minute") {
+      parsedParts[part.type] = Number(part.value);
+    }
+  }
+
+  if (
+    parsedParts.year === undefined ||
+    parsedParts.month === undefined ||
+    parsedParts.day === undefined ||
+    parsedParts.hour === undefined ||
+    parsedParts.minute === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    year: parsedParts.year,
+    month: parsedParts.month,
+    day: parsedParts.day,
+    minutesSinceMidnight: parsedParts.hour * 60 + parsedParts.minute,
+  };
+}
+
+function formatVwapDateKey(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function findActiveBuySideLiquidity(

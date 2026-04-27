@@ -10,6 +10,7 @@ import {
   buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
   buildSmaData,
+  buildVwapData,
 } from "./botChartData";
 import type { BotConfig, BotDecision, ProjectXMarketCandle } from "../../lib/types";
 
@@ -98,6 +99,51 @@ describe("buildCandlestickData", () => {
     expect(rows.map((row) => row.close)).toEqual([101, 102]);
     expect(rows.map((row) => Number(row.time))).toEqual([1777210500, 1777210800]);
   });
+
+  it("bridges consecutive intraday opens to the previous candle close", () => {
+    const rows = buildCandlestickData([
+      candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
+      candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
+    ]);
+
+    expect(rows[1]).toMatchObject({
+      open: 100,
+      high: 126,
+      low: 100,
+      close: 125,
+    });
+  });
+
+  it("leaves missing intraday intervals as real gaps", () => {
+    const rows = buildCandlestickData([
+      candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
+      candle("2026-04-26T13:45:00Z", 125, { open: 122, high: 126, low: 121 }),
+    ]);
+
+    expect(rows[1]).toMatchObject({
+      open: 122,
+      high: 126,
+      low: 121,
+      close: 125,
+    });
+  });
+
+  it("can preserve raw opens for analytics that should not include display bridging", () => {
+    const rows = buildCandlestickData(
+      [
+        candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
+        candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
+      ],
+      { bridgeConsecutiveGaps: false },
+    );
+
+    expect(rows[1]).toMatchObject({
+      open: 122,
+      high: 126,
+      low: 121,
+      close: 125,
+    });
+  });
 });
 
 describe("buildSmaData", () => {
@@ -133,6 +179,34 @@ describe("buildSmaData", () => {
 
     expect(buildSmaData(candles, 0)).toEqual([]);
     expect(buildSmaData(candles, 3)).toEqual([]);
+  });
+});
+
+describe("buildVwapData", () => {
+  it("builds cumulative VWAP from typical price and volume", () => {
+    const rows = buildVwapData([
+      candle("2026-04-26T13:35:00Z", 10, { volume: 100 }),
+      candle("2026-04-26T13:40:00Z", 20, { volume: 300 }),
+      candle("2026-04-26T13:45:00Z", 30, { volume: 0 }),
+    ]);
+
+    expect(rows).toHaveLength(3);
+    expect(rows[0].value).toBe(10);
+    expect(rows[1].value).toBe(17.5);
+    expect(rows[2].value).toBe(17.5);
+  });
+
+  it("resets at the configured Eastern session start", () => {
+    const rows = buildVwapData(
+      [
+        candle("2026-04-26T13:25:00Z", 10, { volume: 100 }),
+        candle("2026-04-26T13:30:00Z", 20, { volume: 100 }),
+        candle("2026-04-26T13:35:00Z", 30, { volume: 100 }),
+      ],
+      { sessionStartTime: "09:30", sessionTimeZone: "America/New_York" },
+    );
+
+    expect(rows.map((row) => row.value)).toEqual([10, 20, 25]);
   });
 });
 
@@ -303,6 +377,36 @@ describe("buildLiveCandleFromPriceUpdate", () => {
       high: 18450.25,
       low: 18447.75,
       volume: 22,
+      close: 18450.25,
+    });
+  });
+
+  it("uses the previous consecutive close when a streamed candle starts a new bucket", () => {
+    const config = botConfig({ timeframe_unit: "minute", timeframe_unit_number: 5 });
+    const previous = candle("2026-04-26T14:00:00.000Z", 18440, {
+      open: 18439,
+      high: 18441,
+      low: 18438,
+    });
+
+    const live = buildLiveCandleFromPriceUpdate({
+      config,
+      price: {
+        contract_id: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        price: 18450.25,
+        timestamp: "2026-04-26T14:05:10Z",
+      },
+      closedCandles: [previous],
+      currentLiveCandle: null,
+      fetchedAt: new Date("2026-04-26T14:05:10Z"),
+    });
+
+    expect(live).toMatchObject({
+      timestamp: "2026-04-26T14:05:00.000Z",
+      open: 18440,
+      high: 18450.25,
+      low: 18440,
       close: 18450.25,
     });
   });

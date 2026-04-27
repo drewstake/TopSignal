@@ -92,6 +92,7 @@ def get_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> BotConfi
 
 def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
     _require_owned_account(db, user_id=user_id, account_id=payload.account_id)
+    name = _validate_unique_bot_name(db, user_id=user_id, name=payload.name)
     _validate_strategy_periods(payload.fast_period, payload.slow_period)
     _validate_session_time(payload.trading_start_time)
     _validate_session_time(payload.trading_end_time)
@@ -99,7 +100,7 @@ def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
     row = BotConfig(
         user_id=user_id,
         account_id=payload.account_id,
-        name=payload.name.strip(),
+        name=name,
         enabled=bool(payload.enabled),
         execution_mode=payload.execution_mode,
         strategy_type=payload.strategy_type,
@@ -136,7 +137,12 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
     if "account_id" in update_data:
         _require_owned_account(db, user_id=user_id, account_id=int(update_data["account_id"]))
     if "name" in update_data and update_data["name"] is not None:
-        update_data["name"] = str(update_data["name"]).strip()
+        update_data["name"] = _validate_unique_bot_name(
+            db,
+            user_id=user_id,
+            name=update_data["name"],
+            exclude_bot_config_id=bot_config_id,
+        )
     if "contract_id" in update_data and update_data["contract_id"] is not None:
         update_data["contract_id"] = str(update_data["contract_id"]).strip()
     if "symbol" in update_data:
@@ -155,6 +161,20 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
     row.updated_at = datetime.now(timezone.utc)
     db.flush()
     return row
+
+
+def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
+    row = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+    if row is None:
+        raise LookupError("bot_config_not_found")
+
+    filters = {"user_id": user_id, "bot_config_id": bot_config_id}
+    db.query(BotOrderAttempt).filter_by(**filters).delete(synchronize_session=False)
+    db.query(BotRiskEvent).filter_by(**filters).delete(synchronize_session=False)
+    db.query(BotDecision).filter_by(**filters).delete(synchronize_session=False)
+    db.query(BotRun).filter_by(**filters).delete(synchronize_session=False)
+    db.delete(row)
+    db.flush()
 
 
 def start_bot_run(
@@ -1135,6 +1155,29 @@ def _validate_strategy_periods(fast_period: int, slow_period: int) -> None:
         raise ValueError("fast_period must be positive")
     if int(slow_period) <= int(fast_period):
         raise ValueError("slow_period must be greater than fast_period")
+
+
+def _validate_unique_bot_name(
+    db: Session,
+    *,
+    user_id: str,
+    name: Any,
+    exclude_bot_config_id: int | None = None,
+) -> str:
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        raise ValueError("Bot name is required.")
+
+    query = (
+        db.query(BotConfig.id)
+        .filter(BotConfig.user_id == user_id)
+        .filter(func.lower(func.trim(BotConfig.name)) == normalized_name.lower())
+    )
+    if exclude_bot_config_id is not None:
+        query = query.filter(BotConfig.id != int(exclude_bot_config_id))
+    if query.first() is not None:
+        raise ValueError("A bot with this name already exists.")
+    return normalized_name
 
 
 def _looks_like_projectx_contract_id(value: str) -> bool:

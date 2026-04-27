@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -18,11 +19,15 @@ from app.models import (
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
+from app.bot_schemas import BotConfigCreateIn, BotConfigUpdateIn
 from app.services.bot_service import (
+    create_bot_config,
+    delete_bot_config,
     evaluate_bot_config,
     evaluate_sma_cross,
     fetch_and_store_market_candles,
     list_market_candles,
+    update_bot_config,
 )
 from app.services.projectx_client import ProjectXClientError
 import app.main as main_module
@@ -54,6 +59,30 @@ def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMark
 
 def _as_test_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _make_bot_create_payload(name: str = "Test Bot") -> BotConfigCreateIn:
+    return BotConfigCreateIn(
+        name=name,
+        account_id=9001,
+        contract_id="CON.F.US.MNQ.M26",
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=2,
+        slow_period=3,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=3,
+        max_open_position=1,
+        allowed_contracts=["CON.F.US.MNQ.M26"],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3600,
+    )
 
 
 def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
@@ -114,6 +143,221 @@ def test_list_market_candles_returns_cached_rows_sorted_with_limit():
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_create_bot_config_rejects_duplicate_name_for_user():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [Account.__table__, BotConfig.__table__]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        db.add(
+            Account(
+                user_id=user_id,
+                provider="projectx",
+                external_id="9001",
+                name="Practice 9001",
+                account_state="ACTIVE",
+                can_trade=True,
+                is_visible=True,
+            )
+        )
+        db.flush()
+        create_bot_config(db, user_id=user_id, payload=_make_bot_create_payload(name="Opening Drive"))
+        db.flush()
+
+        with pytest.raises(ValueError, match="already exists"):
+            create_bot_config(db, user_id=user_id, payload=_make_bot_create_payload(name=" opening drive "))
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=tables)
+        engine.dispose()
+
+
+def test_update_bot_config_rejects_duplicate_name_for_user():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [BotConfig.__table__]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        first = BotConfig(
+            user_id=user_id,
+            account_id=9001,
+            name="Opening Drive",
+            enabled=False,
+            execution_mode="dry_run",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=2,
+            slow_period=3,
+            order_size=1,
+            max_contracts=1,
+            max_daily_loss=250,
+            max_trades_per_day=3,
+            max_open_position=1,
+            allowed_contracts=["CON.F.US.MNQ.M26"],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3600,
+        )
+        second = BotConfig(
+            user_id=user_id,
+            account_id=9001,
+            name="Reversal",
+            enabled=False,
+            execution_mode="dry_run",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=2,
+            slow_period=3,
+            order_size=1,
+            max_contracts=1,
+            max_daily_loss=250,
+            max_trades_per_day=3,
+            max_open_position=1,
+            allowed_contracts=["CON.F.US.MNQ.M26"],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3600,
+        )
+        db.add_all([first, second])
+        db.flush()
+
+        with pytest.raises(ValueError, match="already exists"):
+            update_bot_config(
+                db,
+                user_id=user_id,
+                bot_config_id=second.id,
+                payload=BotConfigUpdateIn(name=" opening drive "),
+            )
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=tables)
+        engine.dispose()
+
+
+def test_delete_bot_config_removes_activity_rows():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [
+        BotConfig.__table__,
+        BotRun.__table__,
+        BotDecision.__table__,
+        BotOrderAttempt.__table__,
+        BotRiskEvent.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        config = BotConfig(
+            user_id=user_id,
+            account_id=9001,
+            name="Delete Me",
+            enabled=False,
+            execution_mode="dry_run",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=2,
+            slow_period=3,
+            order_size=1,
+            max_contracts=1,
+            max_daily_loss=250,
+            max_trades_per_day=3,
+            max_open_position=1,
+            allowed_contracts=["CON.F.US.MNQ.M26"],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3600,
+        )
+        db.add(config)
+        db.flush()
+        run = BotRun(user_id=user_id, bot_config_id=config.id, account_id=9001, dry_run=True, status="stopped")
+        db.add(run)
+        db.flush()
+        decision = BotDecision(
+            user_id=user_id,
+            bot_config_id=config.id,
+            bot_run_id=run.id,
+            account_id=9001,
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            decision_type="signal",
+            action="HOLD",
+            reason="test",
+        )
+        db.add(decision)
+        db.flush()
+        db.add(
+            BotOrderAttempt(
+                user_id=user_id,
+                bot_config_id=config.id,
+                bot_run_id=run.id,
+                bot_decision_id=decision.id,
+                account_id=9001,
+                contract_id="CON.F.US.MNQ.M26",
+                side="BUY",
+                order_type="market",
+                size=1,
+                status="dry_run",
+            )
+        )
+        db.add(
+            BotRiskEvent(
+                user_id=user_id,
+                bot_config_id=config.id,
+                bot_run_id=run.id,
+                account_id=9001,
+                severity="info",
+                code="test",
+                message="test",
+            )
+        )
+        db.commit()
+
+        delete_bot_config(db, user_id=user_id, bot_config_id=config.id)
+        db.commit()
+
+        assert db.query(BotConfig).count() == 0
+        assert db.query(BotRun).count() == 0
+        assert db.query(BotDecision).count() == 0
+        assert db.query(BotOrderAttempt).count() == 0
+        assert db.query(BotRiskEvent).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=tables)
         engine.dispose()
 
 

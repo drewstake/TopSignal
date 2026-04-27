@@ -1096,6 +1096,10 @@ export const botsApi = {
       method: "PATCH",
       body: payload,
     }),
+  deleteConfig: (botConfigId: number) =>
+    requestJson<void>(`/api/bots/${botConfigId}`, {
+      method: "DELETE",
+    }),
   start: (botConfigId: number, options: BotStartOptions = {}) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/start`, {
       method: "POST",

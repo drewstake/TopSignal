@@ -164,6 +164,7 @@ from .services.projectx_trades import (
 )
 from .services.bot_service import (
     create_bot_config,
+    delete_bot_config,
     evaluate_bot_config,
     fetch_and_store_market_candles,
     get_bot_activity,
@@ -1248,6 +1249,26 @@ def update_trading_bot(
         db.rollback()
         raise
     return serialize_bot_config(row)
+
+
+@app.delete("/api/bots/{bot_config_id}", status_code=204)
+def delete_trading_bot(
+    bot_config_id: int,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        delete_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return Response(status_code=204)
 
 
 @app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)

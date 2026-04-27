@@ -22,6 +22,7 @@ import type {
 import { BotSignalChart } from "./BotSignalChart";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
+const EASTERN_TIME_ZONE = "America/New_York";
 
 const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -29,7 +30,8 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
-  timeZone: "UTC",
+  hour12: true,
+  timeZone: EASTERN_TIME_ZONE,
 });
 
 interface BotFormState {
@@ -78,6 +80,30 @@ function buildInitialForm(accountId: number | null): BotFormState {
   };
 }
 
+function formFromBot(bot: BotConfig): BotFormState {
+  return {
+    name: bot.name,
+    accountId: String(bot.account_id),
+    contractSearch: bot.symbol ?? bot.contract_id,
+    contractId: bot.contract_id,
+    symbol: bot.symbol ?? "",
+    timeframeUnit: bot.timeframe_unit,
+    timeframeUnitNumber: String(bot.timeframe_unit_number),
+    lookbackBars: String(bot.lookback_bars),
+    fastPeriod: String(bot.fast_period),
+    slowPeriod: String(bot.slow_period),
+    orderSize: String(bot.order_size),
+    maxContracts: String(bot.max_contracts),
+    maxDailyLoss: String(bot.max_daily_loss),
+    maxTradesPerDay: String(bot.max_trades_per_day),
+    maxOpenPosition: String(bot.max_open_position),
+    tradingStartTime: bot.trading_start_time,
+    tradingEndTime: bot.trading_end_time,
+    cooldownSeconds: String(bot.cooldown_seconds),
+    maxDataStalenessSeconds: String(bot.max_data_staleness_seconds),
+  };
+}
+
 function parsePositiveNumber(value: string) {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -106,7 +132,7 @@ function formatDateTime(value: string | null) {
   if (Number.isNaN(date.getTime())) {
     return "Unknown";
   }
-  return `${dateTimeFormatter.format(date)} UTC`;
+  return `${dateTimeFormatter.format(date)} ET`;
 }
 
 function actionBadgeVariant(action: string) {
@@ -173,6 +199,7 @@ export function BotPage() {
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
+  const [editingBotId, setEditingBotId] = useState<number | null>(null);
 
   const selectedBot = useMemo(
     () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
@@ -235,6 +262,17 @@ export function BotPage() {
     void loadActivity(selectedBot?.id ?? null);
   }, [loadActivity, selectedBot?.id]);
 
+  useEffect(() => {
+    if (!selectedBot) {
+      return;
+    }
+
+    setEditingBotId(selectedBot.id);
+    setForm(formFromBot(selectedBot));
+    setContracts([]);
+    setFormError(null);
+  }, [selectedBot]);
+
   async function handleSearchContracts() {
     if (!form.contractSearch.trim()) {
       setFormError("Contract search is required.");
@@ -264,7 +302,55 @@ export function BotPage() {
     }));
   }
 
-  async function handleCreateBot(event: FormEvent<HTMLFormElement>) {
+  function handleEditSelectedBot() {
+    if (!selectedBot) {
+      return;
+    }
+
+    setEditingBotId(selectedBot.id);
+    setForm(formFromBot(selectedBot));
+    setContracts([]);
+    setFormError(null);
+  }
+
+  function handleCancelEdit() {
+    setEditingBotId(null);
+    setForm(buildInitialForm(accountFromQuery ?? accounts[0]?.id ?? null));
+    setContracts([]);
+    setFormError(null);
+  }
+
+  async function handleDeleteSelectedBot() {
+    if (!selectedBot) {
+      return;
+    }
+
+    const botName = selectedBot.name;
+    if (!window.confirm(`Delete "${botName}"? This will remove the strategy and its bot activity.`)) {
+      return;
+    }
+
+    const deletedBotId = selectedBot.id;
+    setActionLoading("delete");
+    setError(null);
+    try {
+      await botsApi.deleteConfig(deletedBotId);
+      if (editingBotId === deletedBotId) {
+        handleCancelEdit();
+      }
+      if (lastEvaluation?.config.id === deletedBotId) {
+        setLastEvaluation(null);
+      }
+      setActivity(null);
+      await loadConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete bot");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleSaveBot(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const accountId = parsePositiveInt(form.accountId);
     const timeframeUnitNumber = parsePositiveInt(form.timeframeUnitNumber);
@@ -278,7 +364,19 @@ export function BotPage() {
     const maxOpenPosition = parsePositiveNumber(form.maxOpenPosition);
     const cooldownSeconds = parseNonNegativeInt(form.cooldownSeconds);
     const maxDataStalenessSeconds = parsePositiveInt(form.maxDataStalenessSeconds);
+    const normalizedName = form.name.trim().toLowerCase();
+    const duplicateName = configs.some(
+      (config) => config.id !== editingBotId && config.name.trim().toLowerCase() === normalizedName,
+    );
 
+    if (!normalizedName) {
+      setFormError("Bot name is required.");
+      return;
+    }
+    if (duplicateName) {
+      setFormError("A bot with this name already exists.");
+      return;
+    }
     if (
       accountId === null ||
       timeframeUnitNumber === null ||
@@ -308,14 +406,11 @@ export function BotPage() {
     setSaving(true);
     setFormError(null);
     try {
-      const created = await botsApi.createConfig({
-        name: form.name,
+      const payload = {
+        name: form.name.trim(),
         account_id: accountId,
         contract_id: form.contractId,
         symbol: form.symbol || null,
-        enabled: false,
-        execution_mode: "dry_run",
-        strategy_type: "sma_cross",
         timeframe_unit: form.timeframeUnit,
         timeframe_unit_number: timeframeUnitNumber,
         lookback_bars: lookbackBars,
@@ -332,9 +427,19 @@ export function BotPage() {
         cooldown_seconds: cooldownSeconds,
         max_data_staleness_seconds: maxDataStalenessSeconds,
         allow_market_depth: false,
-      });
-      setSelectedBotId(created.id);
+      };
+
+      const saved = editingBotId
+        ? await botsApi.updateConfig(editingBotId, payload)
+        : await botsApi.createConfig({
+            ...payload,
+            enabled: false,
+            execution_mode: "dry_run",
+            strategy_type: "sma_cross",
+          });
+      setEditingBotId(null);
       await loadConfigs();
+      setSelectedBotId(saved.id);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Failed to save bot");
     } finally {
@@ -380,14 +485,14 @@ export function BotPage() {
     <div className="space-y-5 pb-8">
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px] xl:items-stretch">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
             <CardDescription>SMA cross, ProjectX candles, server-side audit trail</CardDescription>
           </CardHeader>
           <CardContent>
-            <form className="space-y-4" onSubmit={handleCreateBot}>
+            <form className="space-y-3.5" onSubmit={handleSaveBot}>
               <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                 <span>Name</span>
                 <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
@@ -435,7 +540,7 @@ export function BotPage() {
                 {form.contractId ? <p className="text-xs text-slate-500">{form.contractId}</p> : null}
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-3 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Unit</span>
                   <Select
@@ -459,7 +564,7 @@ export function BotPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Fast SMA</span>
                   <Input value={form.fastPeriod} onChange={(event) => setForm({ ...form, fastPeriod: event.target.value })} />
@@ -470,7 +575,7 @@ export function BotPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Order Size</span>
                   <Input value={form.orderSize} onChange={(event) => setForm({ ...form, orderSize: event.target.value })} />
@@ -496,7 +601,7 @@ export function BotPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Start ET</span>
                   <Input value={form.tradingStartTime} onChange={(event) => setForm({ ...form, tradingStartTime: event.target.value })} />
@@ -519,9 +624,16 @@ export function BotPage() {
               </div>
 
               {formError ? <p className="text-sm text-rose-300">{formError}</p> : null}
-              <Button className="w-full" type="submit" disabled={saving}>
-                {saving ? "Saving" : "Save Bot"}
-              </Button>
+              <div className="flex gap-2">
+                <Button className="flex-1" type="submit" disabled={saving}>
+                  {saving ? (editingBotId ? "Updating" : "Saving") : editingBotId ? "Update Bot" : "Save Bot"}
+                </Button>
+                {editingBotId ? (
+                  <Button type="button" variant="secondary" onClick={handleCancelEdit} disabled={saving}>
+                    Cancel
+                  </Button>
+                ) : null}
+              </div>
             </form>
           </CardContent>
         </Card>
@@ -543,18 +655,47 @@ export function BotPage() {
                   </div>
                 ) : null}
               </div>
-              <Select
-                className="w-full"
-                value={selectedBot?.id ? String(selectedBot.id) : ""}
-                onChange={(event) => setSelectedBotId(Number.parseInt(event.target.value, 10))}
-              >
-                {configs.length === 0 ? <option value="">No bots</option> : null}
-                {configs.map((config) => (
-                  <option key={config.id} value={config.id}>
-                    {config.name}
-                  </option>
-                ))}
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select
+                  className="min-w-0 flex-1"
+                  value={selectedBot?.id ? String(selectedBot.id) : ""}
+                  onChange={(event) => {
+                    const nextId = Number.parseInt(event.target.value, 10);
+                    setSelectedBotId(Number.isFinite(nextId) ? nextId : null);
+                  }}
+                >
+                  {configs.length === 0 ? <option value="">No bots</option> : null}
+                  {configs.map((config) => (
+                    <option key={config.id} value={config.id}>
+                      {config.name}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  aria-label={selectedBot ? `Edit ${selectedBot.name}` : "Edit selected strategy"}
+                  title="Edit strategy"
+                  disabled={!selectedBot || saving || actionLoading !== null}
+                  onClick={handleEditSelectedBot}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300 transition hover:border-cyan-400/50 hover:bg-slate-900 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <EditIcon />
+                </button>
+                <button
+                  type="button"
+                  aria-label={selectedBot ? `Delete ${selectedBot.name}` : "Delete selected strategy"}
+                  title="Delete strategy"
+                  disabled={!selectedBot || saving || actionLoading !== null}
+                  onClick={() => void handleDeleteSelectedBot()}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rose-400/30 bg-rose-500/10 text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-500/15 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/55 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionLoading === "delete" ? (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100" />
+                  ) : (
+                    <TrashIcon />
+                  )}
+                </button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-5">
@@ -681,6 +822,27 @@ export function BotPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M12 20h9" strokeLinecap="round" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M6 7h12" strokeLinecap="round" />
+      <path d="M9 7V5h6v2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 10v8" strokeLinecap="round" />
+      <path d="M15 10v8" strokeLinecap="round" />
+      <path d="M8 7l1 13h6l1-13" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 
