@@ -556,6 +556,9 @@ def _ensure_bot_schema_compatibility() -> None:
                 conn.execute(text("alter table bot_configs add column if not exists symbol text"))
                 conn.execute(text("update bot_configs set symbol = 'MNQ' where symbol is null or btrim(symbol) = ''"))
                 config_columns.add("symbol")
+            else:
+                conn.execute(text("alter table bot_configs alter column symbol drop not null"))
+            conn.execute(text("alter table bot_configs drop constraint if exists bot_configs_symbol_check"))
 
             if "contract_id" not in config_columns:
                 conn.execute(text("alter table bot_configs add column if not exists contract_id text"))
@@ -603,6 +606,33 @@ def _ensure_bot_schema_compatibility() -> None:
 
         if "bot_runs" in table_names:
             run_columns = {column["name"] for column in inspector.get_columns("bot_runs")}
+
+            # Older bot prototypes had required columns that the current run
+            # model no longer writes. Keep the data, but stop those legacy
+            # fields from blocking inserts.
+            if "execution_mode" in run_columns:
+                conn.execute(
+                    text(
+                        """
+                        update bot_runs
+                        set execution_mode = case
+                          when dry_run is false then 'live'
+                          else 'dry_run'
+                        end
+                        where execution_mode is null
+                        """
+                    )
+                )
+                conn.execute(text("alter table bot_runs alter column execution_mode set default 'dry_run'"))
+                conn.execute(text("alter table bot_runs alter column execution_mode drop not null"))
+            if "strategy_slug" in run_columns:
+                conn.execute(text("update bot_runs set strategy_slug = 'sma_cross' where strategy_slug is null or btrim(strategy_slug) = ''"))
+                conn.execute(text("alter table bot_runs alter column strategy_slug set default 'sma_cross'"))
+                conn.execute(text("alter table bot_runs alter column strategy_slug drop not null"))
+            if "parameter_snapshot" in run_columns:
+                conn.execute(text("alter table bot_runs alter column parameter_snapshot drop not null"))
+            if "risk_snapshot" in run_columns:
+                conn.execute(text("alter table bot_runs alter column risk_snapshot drop not null"))
 
             if "status" not in run_columns:
                 conn.execute(text("alter table bot_runs add column if not exists status text"))
