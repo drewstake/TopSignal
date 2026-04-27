@@ -52,6 +52,10 @@ def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMark
     return ProjectXMarketCandle(**values)
 
 
+def _as_test_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
     candles = [
         _make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10),
@@ -311,6 +315,90 @@ def test_candles_endpoint_returns_cached_rows_when_refresh_provider_fails(monkey
 
         assert len(payload) == 1
         assert payload[0]["close"] == 10.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_refresh_replaces_cached_window(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+
+    class StubClient:
+        def retrieve_bars(self, **_kwargs):
+            return [
+                {
+                    "timestamp": datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+                    "open": 11,
+                    "high": 12,
+                    "low": 10,
+                    "close": 11,
+                    "volume": 1,
+                },
+                {
+                    "timestamp": datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc),
+                    "open": 13,
+                    "high": 14,
+                    "low": 12,
+                    "close": 13,
+                    "volume": 1,
+                },
+            ]
+
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: StubClient())
+
+    try:
+        db.add_all(
+            [
+                _make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10),
+                _make_candle(datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc), 999),
+            ]
+        )
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 15, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            refresh=True,
+            db=db,
+        )
+
+        assert [row["timestamp"] for row in payload] == [
+            datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc),
+        ]
+        assert [row["close"] for row in payload] == [11.0, 13.0]
+
+        cached_rows = list_market_candles(
+            db,
+            user_id=user_id,
+            contract_id="CON.F.US.MNQ.M26",
+            live=False,
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 15, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+        )
+        assert [_as_test_utc(row.candle_timestamp) for row in cached_rows] == [
+            datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc),
+        ]
+        assert [row.close_price for row in cached_rows] == [11.0, 13.0]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])

@@ -172,6 +172,7 @@ from .services.bot_service import (
     list_bot_configs,
     market_candle_cache_needs_refresh,
     next_market_candle_fetch_start,
+    prune_market_candle_cache_range,
     resolve_market_contract,
     serialize_bot_config,
     serialize_bot_decision,
@@ -1101,6 +1102,18 @@ def get_projectx_market_candles(
             limit=limit,
             include_partial_bar=include_partial_bar,
         )
+        if refresh:
+            prune_market_candle_cache_range(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                keep_timestamps=[row.candle_timestamp for row in candles],
+            )
         db.commit()
         if cached_candles and not refresh:
             combined_candles = list_market_candles(

@@ -28,6 +28,7 @@ import {
   buildSignalMarkers,
   buildSmaData,
   type LiquidityLevel,
+  type LiquiditySide,
 } from "./botChartData";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -36,6 +37,7 @@ const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
 const LIVE_PRICE_STREAM_STALE_MS = 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
 const LIVE_PRICE_REQUEST_TIMEOUT_MS = 12_000;
+const LIQUIDITY_LINE_DRAG_HIT_RADIUS_PX = 8;
 const CHART_TIMEFRAME_OPTIONS = [
   { id: "5m", label: "5m", unit: "minute", unitNumber: 5 },
   { id: "15m", label: "15m", unit: "minute", unitNumber: 15 },
@@ -86,11 +88,21 @@ interface ChartTimeframeSelection {
   id: ChartTimeframeId;
 }
 
+type LiquidityPriceOverrides = Partial<Record<LiquiditySide, number>>;
+type LiquidityPriceLineMap = Partial<Record<LiquiditySide, IPriceLine>>;
+
+interface LiquidityDragState {
+  side: LiquiditySide;
+  pointerId: number;
+}
+
 export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: BotSignalChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
   const livePriceLineRef = useRef<IPriceLine | null>(null);
-  const liquidityPriceLinesRef = useRef<IPriceLine[]>([]);
+  const liquidityPriceLinesRef = useRef<LiquidityPriceLineMap>({});
+  const liquidityLevelsRef = useRef<LiquidityLevel[]>([]);
+  const liquidityDragStateRef = useRef<LiquidityDragState | null>(null);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
   const liveRequestSequenceRef = useRef(0);
@@ -106,6 +118,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const [error, setError] = useState<string | null>(null);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const [liquidityPriceOverrides, setLiquidityPriceOverrides] = useState<LiquidityPriceOverrides>({});
   const botTimeframeSelectionKey = buildBotTimeframeSelectionKey(bot);
   const [timeframeSelection, setTimeframeSelection] = useState<ChartTimeframeSelection>(() => ({
     key: buildBotTimeframeSelectionKey(bot),
@@ -131,6 +144,14 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const fastSma = useMemo(() => buildSmaData(chartCandles, bot?.fast_period ?? 0), [bot?.fast_period, chartCandles]);
   const slowSma = useMemo(() => buildSmaData(chartCandles, bot?.slow_period ?? 0), [bot?.slow_period, chartCandles]);
   const liquidityLevels = useMemo(() => buildLiquidityLevels(closedChartCandles), [closedChartCandles]);
+  const displayedLiquidityLevels = useMemo(
+    () =>
+      liquidityLevels.map((level) => ({
+        ...level,
+        price: liquidityPriceOverrides[level.side] ?? level.price,
+      })),
+    [liquidityLevels, liquidityPriceOverrides],
+  );
   const signalMarkers = useMemo(
     () =>
       buildSignalMarkers({
@@ -143,10 +164,26 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
     [activity, bot?.id, chartTimeframe, closedChartCandles, lastEvaluation],
   );
   const livePrice = liveCandle && Number.isFinite(liveCandle.close) ? liveCandle.close : null;
+  const liquidityDragContextKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
 
   useEffect(() => {
     candlesRef.current = candles;
   }, [candles]);
+
+  useEffect(() => {
+    liquidityLevelsRef.current = displayedLiquidityLevels;
+  }, [displayedLiquidityLevels]);
+
+  useEffect(() => {
+    setLiquidityPriceOverrides({});
+    if (liquidityDragStateRef.current) {
+      chartHandlesRef.current?.chart.applyOptions({ handleScroll: true, handleScale: true });
+      if (containerRef.current) {
+        containerRef.current.style.cursor = "";
+      }
+    }
+    liquidityDragStateRef.current = null;
+  }, [liquidityDragContextKey]);
 
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
@@ -417,7 +454,148 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       window.addEventListener("resize", resize);
     }
 
+    const applyDraggedLiquidityPrice = (side: LiquiditySide, rawPrice: number) => {
+      const price = normalizeDraggedLiquidityPrice(rawPrice);
+      const currentLevel = liquidityLevelsRef.current.find((level) => level.side === side);
+      if (!currentLevel) {
+        return;
+      }
+
+      liquidityPriceLinesRef.current[side]?.applyOptions(liquidityLevelToPriceLineOptions({ ...currentLevel, price }));
+      setLiquidityPriceOverrides((current) => (current[side] === price ? current : { ...current, [side]: price }));
+    };
+
+    const priceFromPointerEvent = (event: PointerEvent): number | null => {
+      const y = chartPaneYFromPointerEvent(event, container, chart);
+      if (y === null) {
+        return null;
+      }
+
+      const price = candleSeries.coordinateToPrice(y);
+      return typeof price === "number" && Number.isFinite(price) ? price : null;
+    };
+
+    const setDragCursor = (active: boolean) => {
+      container.style.cursor = active ? "ns-resize" : "";
+    };
+
+    const findLiquidityLineAtPointer = (event: PointerEvent): LiquiditySide | null => {
+      const y = chartPaneYFromPointerEvent(event, container, chart);
+      if (y === null) {
+        return null;
+      }
+
+      let closestSide: LiquiditySide | null = null;
+      let closestDistance = LIQUIDITY_LINE_DRAG_HIT_RADIUS_PX;
+      for (const level of liquidityLevelsRef.current) {
+        const lineY = candleSeries.priceToCoordinate(level.price);
+        if (lineY === null) {
+          continue;
+        }
+
+        const distance = Math.abs(lineY - y);
+        if (distance <= closestDistance) {
+          closestSide = level.side;
+          closestDistance = distance;
+        }
+      }
+
+      return closestSide;
+    };
+
+    const endLiquidityDrag = (event?: PointerEvent) => {
+      const dragState = liquidityDragStateRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      if (event && container.hasPointerCapture(event.pointerId)) {
+        container.releasePointerCapture(event.pointerId);
+      }
+      liquidityDragStateRef.current = null;
+      chart.applyOptions({ handleScroll: true, handleScale: true });
+      setDragCursor(false);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const side = findLiquidityLineAtPointer(event);
+      if (!side) {
+        return;
+      }
+
+      const price = priceFromPointerEvent(event);
+      if (price === null) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      container.setPointerCapture(event.pointerId);
+      liquidityDragStateRef.current = { side, pointerId: event.pointerId };
+      chart.applyOptions({ handleScroll: false, handleScale: false });
+      setDragCursor(true);
+      applyDraggedLiquidityPrice(side, price);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = liquidityDragStateRef.current;
+      if (!dragState) {
+        setDragCursor(findLiquidityLineAtPointer(event) !== null);
+        return;
+      }
+      if (event.pointerId !== dragState.pointerId) {
+        return;
+      }
+
+      const price = priceFromPointerEvent(event);
+      if (price === null) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      applyDraggedLiquidityPrice(dragState.side, price);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (liquidityDragStateRef.current?.pointerId !== event.pointerId) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      endLiquidityDrag(event);
+    };
+
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (liquidityDragStateRef.current?.pointerId === event.pointerId) {
+        endLiquidityDrag(event);
+      }
+    };
+
+    const handlePointerLeave = () => {
+      if (!liquidityDragStateRef.current) {
+        setDragCursor(false);
+      }
+    };
+
+    const pointerListenerOptions: AddEventListenerOptions = { capture: true };
+    container.addEventListener("pointerdown", handlePointerDown, pointerListenerOptions);
+    container.addEventListener("pointermove", handlePointerMove, pointerListenerOptions);
+    container.addEventListener("pointerup", handlePointerUp, pointerListenerOptions);
+    container.addEventListener("pointercancel", handlePointerCancel, pointerListenerOptions);
+    container.addEventListener("pointerleave", handlePointerLeave, pointerListenerOptions);
+
     return () => {
+      container.removeEventListener("pointerdown", handlePointerDown, pointerListenerOptions);
+      container.removeEventListener("pointermove", handlePointerMove, pointerListenerOptions);
+      container.removeEventListener("pointerup", handlePointerUp, pointerListenerOptions);
+      container.removeEventListener("pointercancel", handlePointerCancel, pointerListenerOptions);
+      container.removeEventListener("pointerleave", handlePointerLeave, pointerListenerOptions);
+      setDragCursor(false);
       resizeObserver?.disconnect();
       if (resizeObserver === null) {
         window.removeEventListener("resize", resize);
@@ -426,7 +604,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       chart.remove();
       chartHandlesRef.current = null;
       livePriceLineRef.current = null;
-      liquidityPriceLinesRef.current = [];
+      liquidityPriceLinesRef.current = {};
+      liquidityLevelsRef.current = [];
+      liquidityDragStateRef.current = null;
     };
   }, []);
 
@@ -453,13 +633,25 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       return;
     }
 
-    for (const priceLine of liquidityPriceLinesRef.current) {
-      handles.candleSeries.removePriceLine(priceLine);
+    const nextSides = new Set(displayedLiquidityLevels.map((level) => level.side));
+    for (const side of ["buy", "sell"] as const) {
+      const priceLine = liquidityPriceLinesRef.current[side];
+      if (priceLine && !nextSides.has(side)) {
+        handles.candleSeries.removePriceLine(priceLine);
+        delete liquidityPriceLinesRef.current[side];
+      }
     }
-    liquidityPriceLinesRef.current = liquidityLevels.map((level) =>
-      handles.candleSeries.createPriceLine(liquidityLevelToPriceLineOptions(level)),
-    );
-  }, [liquidityLevels]);
+
+    for (const level of displayedLiquidityLevels) {
+      const options = liquidityLevelToPriceLineOptions(level);
+      const existingLine = liquidityPriceLinesRef.current[level.side];
+      if (existingLine) {
+        existingLine.applyOptions(options);
+      } else {
+        liquidityPriceLinesRef.current[level.side] = handles.candleSeries.createPriceLine(options);
+      }
+    }
+  }, [displayedLiquidityLevels]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -596,6 +788,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const lastLoadedText = lastLoadedAt ? `Loaded ${lastLoadedFormatter.format(lastLoadedAt)}` : null;
   const livePriceText = livePrice !== null ? `${liveCandle?.is_partial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}` : null;
   const livePriceTitle = liveCandle ? `Price timestamp ${lastLoadedFormatter.format(new Date(liveCandle.timestamp))}` : undefined;
+  const computedLiquidityButtonTitle =
+    liquidityLevels.length > 0
+      ? "Move Buy liq and Sell liq to their computed swing liquidity levels"
+      : "No computed liquidity levels are available yet";
 
   return (
     <Card className="flex h-full min-h-[620px] flex-col">
@@ -639,6 +835,15 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
             </span>
           ) : null}
           {lastLoadedText ? <span className="text-xs text-slate-500">{lastLoadedText}</span> : null}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setLiquidityPriceOverrides({})}
+            disabled={!bot || loading || liquidityLevels.length === 0}
+            title={computedLiquidityButtonTitle}
+          >
+            Compute liq
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -708,6 +913,25 @@ function buildBotTimeframeSelectionKey(bot: BotConfig | null): string {
     return "none";
   }
   return `${bot.id}:${bot.timeframe_unit}:${Math.max(1, Math.trunc(bot.timeframe_unit_number))}`;
+}
+
+function chartPaneYFromPointerEvent(event: PointerEvent, container: HTMLDivElement, chart: IChartApi): number | null {
+  const paneHeight = chart.paneSize().height;
+  if (paneHeight <= 0) {
+    return null;
+  }
+
+  const y = event.clientY - container.getBoundingClientRect().top;
+  if (y < 0 || y > paneHeight) {
+    return null;
+  }
+
+  return y;
+}
+
+function normalizeDraggedLiquidityPrice(price: number): number {
+  const roundedPrice = Math.round(price * 10_000) / 10_000;
+  return Object.is(roundedPrice, -0) ? 0 : roundedPrice;
 }
 
 function buildChartSubtitle(bot: BotConfig, chartTimeframe: ChartTimeframeOption): string {

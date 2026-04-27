@@ -529,6 +529,44 @@ def list_market_candles(
     return rows
 
 
+def prune_market_candle_cache_range(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    keep_timestamps: Iterable[datetime],
+) -> int:
+    normalized_unit = str(unit).strip().lower()
+    if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
+        raise ValueError("unsupported candle unit")
+    if start > end:
+        raise ValueError("start must be before end")
+
+    query = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == contract_id)
+        .filter(ProjectXMarketCandle.live == bool(live))
+        .filter(ProjectXMarketCandle.unit == normalized_unit)
+        .filter(ProjectXMarketCandle.unit_number == unit_number)
+        .filter(ProjectXMarketCandle.candle_timestamp >= _as_utc(start))
+        .filter(ProjectXMarketCandle.candle_timestamp <= _as_utc(end))
+    )
+
+    timestamps_to_keep = [_as_utc(timestamp) for timestamp in keep_timestamps]
+    if timestamps_to_keep:
+        query = query.filter(ProjectXMarketCandle.candle_timestamp.notin_(timestamps_to_keep))
+
+    deleted = query.delete(synchronize_session=False)
+    db.flush()
+    return int(deleted or 0)
+
+
 def market_candle_cache_needs_refresh(
     cached_candles: list[ProjectXMarketCandle],
     *,
