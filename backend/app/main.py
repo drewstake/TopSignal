@@ -166,7 +166,11 @@ from .services.bot_service import (
     fetch_and_store_market_candles,
     get_bot_activity,
     get_bot_config,
+    list_market_candles,
     list_bot_configs,
+    market_candle_cache_needs_refresh,
+    next_market_candle_fetch_start,
+    resolve_market_contract,
     serialize_bot_config,
     serialize_bot_decision,
     serialize_bot_order_attempt,
@@ -999,6 +1003,7 @@ def get_projectx_market_candles(
     unit_number: int = Query(default=5, ge=1, le=1440),
     limit: int = Query(default=500, ge=1, le=20000),
     include_partial_bar: bool = False,
+    refresh: bool = False,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -1006,14 +1011,12 @@ def get_projectx_market_candles(
     start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
     _validate_time_range(start=start_utc, end=end_utc)
 
+    fallback_candles = []
     try:
-        client = _projectx_client_for_user(db, user_id=user_id)
-        candles = fetch_and_store_market_candles(
+        cached_candles = list_market_candles(
             db,
             user_id=user_id,
-            client=client,
             contract_id=contract_id,
-            symbol=symbol,
             live=live,
             start=start_utc,
             end=end_utc,
@@ -1022,9 +1025,100 @@ def get_projectx_market_candles(
             limit=limit,
             include_partial_bar=include_partial_bar,
         )
+        fallback_candles = cached_candles
+        if (
+            cached_candles
+            and not refresh
+            and not market_candle_cache_needs_refresh(
+                cached_candles,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                include_partial_bar=include_partial_bar,
+            )
+        ):
+            return [serialize_market_candle(row) for row in cached_candles]
+
+        client = _projectx_client_for_user(db, user_id=user_id)
+        resolved_contract_id, resolved_symbol = resolve_market_contract(
+            client,
+            contract_id=contract_id,
+            symbol=symbol,
+            live=live,
+        )
+        if resolved_contract_id != contract_id:
+            cached_candles = list_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            )
+            if cached_candles:
+                fallback_candles = cached_candles
+            if (
+                cached_candles
+                and not refresh
+                and not market_candle_cache_needs_refresh(
+                    cached_candles,
+                    end=end_utc,
+                    unit=unit,
+                    unit_number=unit_number,
+                    include_partial_bar=include_partial_bar,
+                )
+            ):
+                return [serialize_market_candle(row) for row in cached_candles]
+
+        fetch_start_utc = start_utc
+        if cached_candles and not refresh:
+            fetch_start_utc = next_market_candle_fetch_start(
+                cached_candles,
+                start=start_utc,
+                unit=unit,
+                unit_number=unit_number,
+            )
+            if fetch_start_utc > end_utc:
+                return [serialize_market_candle(row) for row in cached_candles]
+
+        candles = fetch_and_store_market_candles(
+            db,
+            user_id=user_id,
+            client=client,
+            contract_id=resolved_contract_id,
+            symbol=resolved_symbol,
+            live=live,
+            start=fetch_start_utc,
+            end=end_utc,
+            unit=unit,
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+        )
         db.commit()
+        if cached_candles and not refresh:
+            combined_candles = list_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            )
+            if combined_candles:
+                return [serialize_market_candle(row) for row in combined_candles]
     except ProjectXClientError as exc:
         db.rollback()
+        if fallback_candles:
+            return [serialize_market_candle(row) for row in fallback_candles]
         raise _to_http_exception(exc) from exc
     except ValueError as exc:
         db.rollback()
@@ -2201,6 +2295,9 @@ def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
     # Missing env or local configuration errors are server configuration issues.
     if exc.status_code is None:
         return HTTPException(status_code=500, detail=str(exc))
+
+    if exc.status_code == 504:
+        return HTTPException(status_code=504, detail=str(exc))
 
     # Upstream API errors should be surfaced as a gateway error to the frontend.
     return HTTPException(status_code=502, detail=str(exc))

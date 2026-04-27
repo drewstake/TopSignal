@@ -19,6 +19,7 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
+import { BotSignalChart } from "./BotSignalChart";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 
@@ -171,10 +172,15 @@ export function BotPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [chartRefreshToken, setChartRefreshToken] = useState(0);
 
   const selectedBot = useMemo(
     () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
     [configs, selectedBotId],
+  );
+  const selectedBotEvaluation = useMemo(
+    () => (selectedBot && lastEvaluation?.config.id === selectedBot.id ? lastEvaluation : null),
+    [lastEvaluation, selectedBot],
   );
 
   const loadConfigs = useCallback(async () => {
@@ -353,6 +359,7 @@ export function BotPage() {
         await botsApi.stop(selectedBot.id);
       }
       await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
+      setChartRefreshToken((current) => current + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Bot action failed");
     } finally {
@@ -574,24 +581,24 @@ export function BotPage() {
                       {actionLoading === "stop" ? "Stopping" : "Stop"}
                     </Button>
                   </div>
-                  {lastEvaluation ? (
+                  {selectedBotEvaluation ? (
                     <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
                       <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
                         <div className="mb-2 flex items-center justify-between gap-2">
-                          <Badge variant={actionBadgeVariant(lastEvaluation.decision.action)}>
-                            {lastEvaluation.decision.action}
+                          <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
+                            {selectedBotEvaluation.decision.action}
                           </Badge>
-                          <span className="text-xs text-slate-500">{formatDateTime(lastEvaluation.decision.candle_timestamp)}</span>
+                          <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
                         </div>
-                        <p className="text-sm text-slate-200">{lastEvaluation.decision.reason}</p>
-                        {lastEvaluation.order_attempt ? (
+                        <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
+                        {selectedBotEvaluation.order_attempt ? (
                           <p className="mt-2 text-xs text-slate-400">
-                            Order attempt #{lastEvaluation.order_attempt.id}: {lastEvaluation.order_attempt.status}
+                            Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
                           </p>
                         ) : null}
-                        {lastEvaluation.risk_events.length > 0 ? (
+                        {selectedBotEvaluation.risk_events.length > 0 ? (
                           <div className="mt-3 space-y-1">
-                            {lastEvaluation.risk_events.map((risk) => (
+                            {selectedBotEvaluation.risk_events.map((risk) => (
                               <p key={risk.id} className="text-xs text-amber-200">
                                 {risk.code}: {risk.message}
                               </p>
@@ -600,7 +607,7 @@ export function BotPage() {
                         ) : null}
                       </div>
                       <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-                        <Sparkline candles={lastEvaluation.candles} />
+                        <Sparkline candles={selectedBotEvaluation.candles} />
                       </div>
                     </div>
                   ) : null}
@@ -610,6 +617,13 @@ export function BotPage() {
               )}
             </CardContent>
           </Card>
+
+          <BotSignalChart
+            bot={selectedBot}
+            activity={activity}
+            lastEvaluation={selectedBotEvaluation}
+            refreshToken={chartRefreshToken}
+          />
 
           <Card>
             <CardHeader>

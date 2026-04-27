@@ -54,78 +54,25 @@ function parseDotEnvFile(filePath) {
 }
 
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
-const childEnv = {
-  ...process.env,
-  ...backendEnv,
-};
-
-if (!childEnv.TOPSIGNAL_DB_SCHEMA_INIT) {
-  childEnv.TOPSIGNAL_DB_SCHEMA_INIT = "skip";
-  console.log("TOPSIGNAL_DB_SCHEMA_INIT=skip for fast dev startup. Run `npm run db:init` after schema changes.");
-}
-
-function killProcessTree(pid) {
-  if (process.platform === "win32") {
-    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    killer.unref();
-    return;
-  }
-
-  process.kill(pid, "SIGTERM");
-  const timeout = setTimeout(() => {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The child already exited.
-    }
-  }, 5000);
-  timeout.unref();
-}
-
-// Keep the backend attached to the terminal by default so `npm run dev`
-// does not spawn a second console window on Windows. If reload control
-// events ever interfere with sibling watchers, the old isolated behavior
-// can still be enabled explicitly.
-const detachBackend =
-  process.platform === "win32" &&
-  process.env.TOPSIGNAL_DEV_BACKEND_DETACHED === "1";
-
 const child = spawn(
   pythonPath,
-  ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
+  ["-c", "from app.db import init_db; init_db(force=True); print('Database schema init complete.')"],
   {
     cwd: backendDir,
-    env: childEnv,
-    stdio: ["inherit", "pipe", "pipe"],
-    detached: detachBackend,
+    env: {
+      ...process.env,
+      ...backendEnv,
+      TOPSIGNAL_DB_SCHEMA_INIT: "full",
+    },
+    stdio: "inherit",
     windowsHide: true,
   },
 );
 
-child.stdout.pipe(process.stdout);
-child.stderr.pipe(process.stderr);
-
-let shuttingDown = false;
-
-function shutdown() {
-  if (shuttingDown || child.exitCode !== null) {
-    return;
-  }
-  shuttingDown = true;
-  killProcessTree(child.pid);
-}
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, shutdown);
-}
-
 child.on("exit", (code, signal) => {
   if (signal) {
-    process.exit(shuttingDown ? 0 : 1);
+    process.exit(1);
     return;
   }
-  process.exit(code ?? (shuttingDown ? 0 : 1));
+  process.exit(code ?? 1);
 });

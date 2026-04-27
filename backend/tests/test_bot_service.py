@@ -18,29 +18,38 @@ from app.models import (
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
-from app.services.bot_service import evaluate_bot_config, evaluate_sma_cross
+from app.services.bot_service import (
+    evaluate_bot_config,
+    evaluate_sma_cross,
+    fetch_and_store_market_candles,
+    list_market_candles,
+)
+from app.services.projectx_client import ProjectXClientError
+import app.main as main_module
 
 
 def _dt(minutes_ago: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
 
 
-def _make_candle(timestamp: datetime, close: float) -> ProjectXMarketCandle:
-    return ProjectXMarketCandle(
-        user_id="00000000-0000-0000-0000-000000000000",
-        contract_id="CON.F.US.MNQ.M26",
-        symbol="MNQ",
-        live=False,
-        unit="minute",
-        unit_number=5,
-        candle_timestamp=timestamp,
-        open_price=close,
-        high_price=close,
-        low_price=close,
-        close_price=close,
-        volume=1,
-        is_partial=False,
-    )
+def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMarketCandle:
+    values = {
+        "user_id": "00000000-0000-0000-0000-000000000000",
+        "contract_id": "CON.F.US.MNQ.M26",
+        "symbol": "MNQ",
+        "live": False,
+        "unit": "minute",
+        "unit_number": 5,
+        "candle_timestamp": timestamp,
+        "open_price": close,
+        "high_price": close,
+        "low_price": close,
+        "close_price": close,
+        "volume": 1,
+        "is_partial": False,
+    }
+    values.update(overrides)
+    return ProjectXMarketCandle(**values)
 
 
 def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
@@ -56,6 +65,316 @@ def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
     assert signal.action == "BUY"
     assert "SMA crossover" in signal.reason
     assert signal.price == 20.0
+
+
+def test_list_market_candles_returns_cached_rows_sorted_with_limit():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        db.add_all(
+            [
+                _make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10),
+                _make_candle(datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc), 11),
+                _make_candle(datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc), 12),
+                _make_candle(
+                    datetime(2026, 4, 1, 10, 15, tzinfo=timezone.utc),
+                    13,
+                    is_partial=True,
+                ),
+            ]
+        )
+        db.commit()
+
+        rows = list_market_candles(
+            db,
+            user_id=user_id,
+            contract_id="CON.F.US.MNQ.M26",
+            live=False,
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 20, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=2,
+            include_partial_bar=False,
+        )
+
+        assert [float(row.close_price) for row in rows] == [11.0, 12.0]
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_returns_local_cache_without_provider_call(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider should not be called")),
+    )
+
+    try:
+        db.add(_make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10))
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            refresh=False,
+            db=db,
+        )
+
+        assert len(payload) == 1
+        assert payload[0]["close"] == 10.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_fetches_only_missing_closed_tail(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+
+    class StubClient:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "timestamp": datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+                    "open": 11,
+                    "high": 12,
+                    "low": 10,
+                    "close": 11,
+                    "volume": 1,
+                }
+            ]
+
+    client = StubClient()
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: client)
+
+    try:
+        db.add(_make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10))
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            refresh=False,
+            db=db,
+        )
+
+        assert [row["close"] for row in payload] == [10.0, 11.0]
+        assert len(client.calls) == 1
+        assert client.calls[0]["start"] == datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc)
+        assert client.calls[0]["end"] == datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc)
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_resolves_legacy_symbol_to_cached_contract(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+
+    class StubClient:
+        def search_contracts(self, *, search_text, live):
+            assert search_text == "MNQ"
+            assert live is False
+            return [
+                {
+                    "id": "CON.F.US.MNQ.M26",
+                    "name": "MNQM6",
+                    "active_contract": True,
+                    "symbol_id": "F.US.MNQ",
+                }
+            ]
+
+        def retrieve_bars(self, **_kwargs):
+            raise AssertionError("cached resolved candles should avoid provider history")
+
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: StubClient())
+
+    try:
+        db.add(
+            _make_candle(
+                datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+                10,
+                contract_id="CON.F.US.MNQ.M26",
+                symbol="F.US.MNQ",
+            )
+        )
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="MNQ",
+            symbol="MNQ",
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            refresh=False,
+            db=db,
+        )
+
+        assert len(payload) == 1
+        assert payload[0]["contract_id"] == "CON.F.US.MNQ.M26"
+        assert payload[0]["symbol"] == "F.US.MNQ"
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_returns_cached_rows_when_refresh_provider_fails(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+
+    class StubClient:
+        def retrieve_bars(self, **_kwargs):
+            raise ProjectXClientError("ProjectX request timed out.", status_code=504)
+
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: StubClient())
+
+    try:
+        db.add(_make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10))
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            refresh=True,
+            db=db,
+        )
+
+        assert len(payload) == 1
+        assert payload[0]["close"] == 10.0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_fetch_market_candles_resolves_legacy_symbol_before_history_call():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    class StubClient:
+        def search_contracts(self, *, search_text, live):
+            assert search_text == "MNQ"
+            assert live is False
+            return [
+                {
+                    "id": "CON.F.US.MNQ.M26",
+                    "name": "MNQM6",
+                    "active_contract": True,
+                    "symbol_id": "F.US.MNQ",
+                }
+            ]
+
+        def retrieve_bars(self, **kwargs):
+            assert kwargs["contract_id"] == "CON.F.US.MNQ.M26"
+            return [
+                {
+                    "timestamp": datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+                    "open": 10,
+                    "high": 11,
+                    "low": 9,
+                    "close": 10.5,
+                    "volume": 1,
+                }
+            ]
+
+    try:
+        rows = fetch_and_store_market_candles(
+            db,
+            user_id="00000000-0000-0000-0000-000000000000",
+            client=StubClient(),
+            contract_id="MNQ",
+            symbol="MNQ",
+            live=False,
+            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+        )
+
+        assert len(rows) == 1
+        assert rows[0].contract_id == "CON.F.US.MNQ.M26"
+        assert rows[0].symbol == "F.US.MNQ"
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
 
 
 def test_dry_run_evaluation_logs_order_attempt_without_submitting():
@@ -251,4 +570,3 @@ def test_live_evaluation_is_blocked_without_explicit_confirmation():
         db.close()
         Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
         engine.dispose()
-

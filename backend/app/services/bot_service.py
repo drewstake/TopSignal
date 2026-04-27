@@ -412,8 +412,14 @@ def fetch_and_store_candles(
     unit_seconds = _UNIT_SECONDS_BY_NAME[str(config.timeframe_unit)]
     lookback_seconds = unit_seconds * int(config.timeframe_unit_number) * int(config.lookback_bars) * 3
     start = now - timedelta(seconds=max(lookback_seconds, unit_seconds * int(config.timeframe_unit_number) * 25))
-    bars = client.retrieve_bars(
+    contract_id, symbol = resolve_market_contract(
+        client,
         contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        live=False,
+    )
+    bars = client.retrieve_bars(
+        contract_id=contract_id,
         live=False,
         start=start,
         end=now,
@@ -425,8 +431,8 @@ def fetch_and_store_candles(
     return store_market_candles(
         db,
         user_id=user_id,
-        contract_id=str(config.contract_id),
-        symbol=config.symbol,
+        contract_id=contract_id,
+        symbol=symbol,
         live=False,
         unit=str(config.timeframe_unit),
         unit_number=int(config.timeframe_unit_number),
@@ -454,8 +460,14 @@ def fetch_and_store_market_candles(
         raise ValueError("unsupported candle unit")
     if start > end:
         raise ValueError("start must be before end")
-    bars = client.retrieve_bars(
+    resolved_contract_id, resolved_symbol = resolve_market_contract(
+        client,
         contract_id=contract_id,
+        symbol=symbol,
+        live=live,
+    )
+    bars = client.retrieve_bars(
+        contract_id=resolved_contract_id,
         live=live,
         start=start,
         end=end,
@@ -467,13 +479,116 @@ def fetch_and_store_market_candles(
     return store_market_candles(
         db,
         user_id=user_id,
-        contract_id=contract_id,
-        symbol=symbol,
+        contract_id=resolved_contract_id,
+        symbol=resolved_symbol,
         live=live,
         unit=normalized_unit,
         unit_number=unit_number,
         bars=bars,
     )
+
+
+def list_market_candles(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+    include_partial_bar: bool = False,
+) -> list[ProjectXMarketCandle]:
+    normalized_unit = str(unit).strip().lower()
+    if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
+        raise ValueError("unsupported candle unit")
+    if start > end:
+        raise ValueError("start must be before end")
+
+    query = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == contract_id)
+        .filter(ProjectXMarketCandle.live == bool(live))
+        .filter(ProjectXMarketCandle.unit == normalized_unit)
+        .filter(ProjectXMarketCandle.unit_number == unit_number)
+        .filter(ProjectXMarketCandle.candle_timestamp >= _as_utc(start))
+        .filter(ProjectXMarketCandle.candle_timestamp <= _as_utc(end))
+    )
+    if not include_partial_bar:
+        query = query.filter(ProjectXMarketCandle.is_partial.is_(False))
+
+    rows = (
+        query.order_by(ProjectXMarketCandle.candle_timestamp.desc())
+        .limit(max(1, int(limit)))
+        .all()
+    )
+    rows.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    return rows
+
+
+def market_candle_cache_needs_refresh(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    include_partial_bar: bool = False,
+) -> bool:
+    if not cached_candles:
+        return True
+
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
+    end_utc = _as_utc(end)
+    if include_partial_bar:
+        return latest_timestamp + interval <= end_utc
+    return latest_timestamp + interval + interval <= end_utc
+
+
+def next_market_candle_fetch_start(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    start: datetime,
+    unit: str,
+    unit_number: int,
+) -> datetime:
+    start_utc = _as_utc(start)
+    if not cached_candles:
+        return start_utc
+
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
+    return max(start_utc, latest_timestamp + interval)
+
+
+def resolve_market_contract(
+    client: ProjectXClient,
+    *,
+    contract_id: str,
+    symbol: str | None,
+    live: bool,
+) -> tuple[str, str | None]:
+    normalized_contract_id = str(contract_id).strip()
+    normalized_symbol = _normalized_optional_text(symbol)
+    if _looks_like_projectx_contract_id(normalized_contract_id):
+        return normalized_contract_id, normalized_symbol
+
+    candidates = _unique_text_values([normalized_contract_id, normalized_symbol])
+    for candidate in candidates:
+        rows = client.search_contracts(search_text=candidate, live=live)
+        resolved = _pick_market_contract(rows)
+        if resolved is None:
+            continue
+        resolved_id = _normalized_optional_text(resolved.get("id"))
+        if resolved_id is None:
+            continue
+        resolved_symbol = _normalized_optional_text(resolved.get("symbol_id")) or normalized_symbol
+        return resolved_id, resolved_symbol
+
+    return normalized_contract_id, normalized_symbol
 
 
 def store_market_candles(
@@ -984,6 +1099,33 @@ def _validate_strategy_periods(fast_period: int, slow_period: int) -> None:
         raise ValueError("slow_period must be greater than fast_period")
 
 
+def _looks_like_projectx_contract_id(value: str) -> bool:
+    return value.upper().startswith("CON.")
+
+
+def _pick_market_contract(rows: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    rows_list = [row for row in rows if isinstance(row, dict)]
+    for row in rows_list:
+        if bool(row.get("active_contract")):
+            return row
+    return rows_list[0] if rows_list else None
+
+
+def _unique_text_values(values: Iterable[Any]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _normalized_optional_text(value)
+        if text is None:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(text)
+    return output
+
+
 def _normalize_allowed_contracts(values: Any) -> list[str]:
     if not values:
         return []
@@ -1007,6 +1149,13 @@ def _normalized_optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _market_candle_interval(*, unit: str, unit_number: int) -> timedelta:
+    normalized_unit = str(unit).strip().lower()
+    if normalized_unit not in _UNIT_SECONDS_BY_NAME:
+        raise ValueError("unsupported candle unit")
+    return timedelta(seconds=_UNIT_SECONDS_BY_NAME[normalized_unit] * max(1, int(unit_number)))
 
 
 def _as_utc(value: datetime) -> datetime:

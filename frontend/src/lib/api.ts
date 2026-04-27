@@ -904,6 +904,7 @@ interface CandleQuery {
   unitNumber?: number;
   limit?: number;
   includePartialBar?: boolean;
+  refresh?: boolean;
 }
 
 interface BotStartOptions {
@@ -926,7 +927,7 @@ export const botsApi = {
         live: query.live ?? false,
       },
     }),
-  getCandles: (query: CandleQuery) =>
+  getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
     requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
       query: {
         contract_id: query.contractId,
@@ -938,7 +939,9 @@ export const botsApi = {
         unit_number: query.unitNumber ?? 5,
         limit: query.limit ?? 500,
         include_partial_bar: query.includePartialBar ?? false,
+        refresh: query.refresh ?? false,
       },
+      signal: options.signal,
     }),
   listConfigs: (accountId?: number) =>
     requestJson<BotConfigListResponse>("/api/bots", {

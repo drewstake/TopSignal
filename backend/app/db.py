@@ -22,6 +22,7 @@ _LOCAL_SUPABASE_URLS = {
     "http://localhost:54321",
 }
 _SUPABASE_POOLER_SUFFIX = ".pooler.supabase.com"
+_SCHEMA_INIT_ENV = "TOPSIGNAL_DB_SCHEMA_INIT"
 
 
 def _uses_supabase_pooler(database_url: str) -> bool:
@@ -108,7 +109,22 @@ def log_runtime_connection_targets() -> None:
     )
 
 
-def init_db():
+def _schema_init_is_enabled() -> bool:
+    raw_value = os.getenv(_SCHEMA_INIT_ENV, "full").strip().lower()
+    if raw_value in {"", "1", "true", "yes", "y", "on", "full"}:
+        return True
+    if raw_value in {"0", "false", "no", "n", "off", "skip"}:
+        return False
+
+    logger.warning("Unknown %s value %r; running database schema init.", _SCHEMA_INIT_ENV, raw_value)
+    return True
+
+
+def init_db(*, force: bool = False):
+    if not force and not _schema_init_is_enabled():
+        logger.info("Skipping database schema init because %s=skip", _SCHEMA_INIT_ENV)
+        return
+
     # Import models so SQLAlchemy can register all mapped tables before create_all.
     from . import models  # noqa: F401
 
@@ -601,6 +617,8 @@ def _ensure_bot_schema_compatibility() -> None:
             conn.execute(text("update bot_configs set trading_end_time = '15:45' where trading_end_time is null or btrim(trading_end_time) = ''"))
             conn.execute(text("update bot_configs set cooldown_seconds = 300 where cooldown_seconds is null or cooldown_seconds < 0"))
             conn.execute(text("update bot_configs set max_data_staleness_seconds = 600 where max_data_staleness_seconds is null or max_data_staleness_seconds <= 0"))
+            conn.execute(text("alter table bot_configs drop constraint if exists uq_bot_configs_user_account"))
+            conn.execute(text("drop index if exists uq_bot_configs_user_account"))
             conn.execute(text("create index if not exists idx_bot_configs_user_account on bot_configs (user_id, account_id)"))
             conn.execute(text("create index if not exists idx_bot_configs_user_enabled on bot_configs (user_id, enabled)"))
 

@@ -498,6 +498,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOWED_ORIGINS` | Exact CORS allowlist |
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
+| `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
 | `SUPABASE_STORAGE_BUCKET` | Storage bucket for journal images |
@@ -521,6 +522,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 
 | Command | Purpose |
 | --- | --- |
+| `npm run db:init` | Run backend schema compatibility initialization explicitly |
 | `npm run dev` | Run backend and frontend together |
 | `npm run dev:backend` | Run backend dev script |
 | `npm run dev:frontend` | Run frontend dev script |

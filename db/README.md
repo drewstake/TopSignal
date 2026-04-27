@@ -92,6 +92,12 @@ Those patches currently help older dev databases by:
 
 Treat those patches as a safety net, not as the primary schema-upgrade path.
 
+For faster local dev startup, the root `npm run dev` backend wrapper sets `TOPSIGNAL_DB_SCHEMA_INIT=skip` unless you override it. Run the compatibility pass explicitly when you change schema-related code or apply new migrations:
+
+```powershell
+npm run db:init
+```
+
 ## Verifying The Schema
 
 Connect with `psql`:

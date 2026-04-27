@@ -431,7 +431,17 @@ class ProjectXClient:
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
             ) from exc
+        except TimeoutError as exc:
+            raise ProjectXClientError(
+                "ProjectX request timed out. Check the ProjectX connection and try again.",
+                status_code=504,
+            ) from exc
         except error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProjectXClientError(
+                    "ProjectX request timed out. Check the ProjectX connection and try again.",
+                    status_code=504,
+                ) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,

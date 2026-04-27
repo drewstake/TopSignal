@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from urllib import error
 
 import pytest
 
@@ -114,6 +115,36 @@ def test_request_once_maps_login_key_error_code_3_to_actionable_message(monkeypa
         "and confirm ProjectX API access is active and your account is linked. "
         "(error code 3)"
     )
+
+
+def test_request_once_maps_timeout_to_gateway_timeout(monkeypatch):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    def raise_timeout(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_timeout)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 504
+    assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
+
+
+def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    def raise_url_timeout(*_args, **_kwargs):
+        raise error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_url_timeout)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 504
+    assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
 
 
 def test_fetch_trade_history_skips_voided_rows():
