@@ -1103,7 +1103,7 @@ def get_projectx_market_candles(
             limit=limit,
             include_partial_bar=include_partial_bar,
         )
-        if refresh:
+        if refresh and not include_partial_bar:
             prune_market_candle_cache_range(
                 db,
                 user_id=user_id,

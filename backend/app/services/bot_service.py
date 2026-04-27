@@ -38,6 +38,8 @@ _UNIT_SECONDS_BY_NAME = {
     "week": 7 * 24 * 60 * 60,
     "month": 31 * 24 * 60 * 60,
 }
+_MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
+_MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
@@ -603,7 +605,11 @@ def market_candle_cache_needs_refresh(
     end_utc = _as_utc(end)
     if include_partial_bar:
         return latest_timestamp + interval <= end_utc
-    return latest_timestamp + interval + interval <= end_utc
+    if latest_timestamp + interval + interval <= end_utc:
+        return True
+    if latest_timestamp + interval <= end_utc:
+        return _market_candle_tail_revalidation_due(cached_candles)
+    return False
 
 
 def next_market_candle_fetch_start(
@@ -619,7 +625,22 @@ def next_market_candle_fetch_start(
 
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
-    return max(start_utc, latest_timestamp + interval)
+    overlap = interval * _MARKET_CANDLE_TAIL_REVALIDATION_BARS
+    return max(start_utc, latest_timestamp - overlap)
+
+
+def _market_candle_tail_revalidation_due(cached_candles: list[ProjectXMarketCandle]) -> bool:
+    latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
+    fetched_values = [
+        row.fetched_at
+        for row in cached_candles
+        if _as_utc(row.candle_timestamp) == latest_timestamp and row.fetched_at is not None
+    ]
+    if not fetched_values:
+        return True
+
+    newest_fetch = max(_as_utc(value) for value in fetched_values)
+    return newest_fetch + _MARKET_CANDLE_TAIL_REVALIDATION_TTL <= datetime.now(timezone.utc)
 
 
 def resolve_market_contract(

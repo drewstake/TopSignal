@@ -29,7 +29,6 @@ import {
   buildBotLivePriceQuery,
   buildCandlestickData,
   buildLiquidityLevels,
-  buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
   buildSmaData,
   buildVwapData,
@@ -60,6 +59,7 @@ type ChartTimeframeOption = (typeof CHART_TIMEFRAME_OPTIONS)[number];
 type ChartTimeframeId = ChartTimeframeOption["id"];
 const DEFAULT_CHART_TIMEFRAME_ID: ChartTimeframeId = "5m";
 const EASTERN_TIME_ZONE = "America/New_York";
+const VWAP_SESSION_START_TIME = "18:00";
 
 const lastLoadedFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: EASTERN_TIME_ZONE,
@@ -147,6 +147,12 @@ interface LoadLivePriceOptions {
   force?: boolean;
 }
 
+interface LivePricePoint {
+  timestamp: string;
+  price: number;
+  isPartial: boolean;
+}
+
 interface ChartTimeframeSelection {
   key: string;
   id: ChartTimeframeId;
@@ -154,6 +160,7 @@ interface ChartTimeframeSelection {
 
 type LiquidityPriceOverrides = Partial<Record<LiquiditySide, number>>;
 type LiquidityPriceLineMap = Partial<Record<LiquiditySide, IPriceLine>>;
+type ChartLayerId = "fastSma" | "slowSma" | "vwap" | "buySignals" | "sellSignals" | "buyLiquidity" | "sellLiquidity";
 type DrawingTool = "cursor" | "line" | "rectangle";
 type DrawingKind = Exclude<DrawingTool, "cursor">;
 type DrawingEditMode = "start" | "end" | "left" | "right" | "body";
@@ -283,12 +290,22 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const candlesRef = useRef<ProjectXMarketCandle[]>([]);
   const [candles, setCandles] = useState<ProjectXMarketCandle[]>([]);
   const [liveCandle, setLiveCandle] = useState<ProjectXMarketCandle | null>(null);
+  const [streamPrice, setStreamPrice] = useState<ProjectXMarketPrice | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [liquidityPriceOverrides, setLiquidityPriceOverrides] = useState<LiquidityPriceOverrides>({});
+  const [visibleChartLayers, setVisibleChartLayers] = useState<Record<ChartLayerId, boolean>>({
+    fastSma: true,
+    slowSma: true,
+    vwap: true,
+    buySignals: true,
+    sellSignals: true,
+    buyLiquidity: true,
+    sellLiquidity: true,
+  });
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("cursor");
   const [drawings, setDrawings] = useState<DrawingShape[]>([]);
   const [drawingDraft, setDrawingDraft] = useState<DrawingDraft | null>(null);
@@ -323,8 +340,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const fastSma = useMemo(() => buildSmaData(chartCandles, bot?.fast_period ?? 0), [bot?.fast_period, chartCandles]);
   const slowSma = useMemo(() => buildSmaData(chartCandles, bot?.slow_period ?? 0), [bot?.slow_period, chartCandles]);
   const vwap = useMemo(
-    () => buildVwapData(visibleCandles, { sessionStartTime: chartConfig?.trading_start_time, sessionTimeZone: EASTERN_TIME_ZONE }),
-    [chartConfig?.trading_start_time, visibleCandles],
+    () => buildVwapData(visibleCandles, { sessionStartTime: VWAP_SESSION_START_TIME, sessionTimeZone: EASTERN_TIME_ZONE }),
+    [visibleCandles],
   );
   const liquidityLevels = useMemo(() => buildLiquidityLevels(closedChartCandles), [closedChartCandles]);
   const displayedLiquidityLevels = useMemo(
@@ -334,6 +351,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         price: liquidityPriceOverrides[level.side] ?? level.price,
       })),
     [liquidityLevels, liquidityPriceOverrides],
+  );
+  const visibleLiquidityLevels = useMemo(
+    () =>
+      displayedLiquidityLevels.filter((level) =>
+        level.side === "buy" ? visibleChartLayers.buyLiquidity : visibleChartLayers.sellLiquidity,
+      ),
+    [displayedLiquidityLevels, visibleChartLayers.buyLiquidity, visibleChartLayers.sellLiquidity],
   );
   const signalMarkers = useMemo(
     () =>
@@ -346,7 +370,37 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       }),
     [activity, bot?.id, chartTimeframe, closedChartCandles, lastEvaluation],
   );
-  const livePrice = liveCandle && Number.isFinite(liveCandle.close) ? liveCandle.close : null;
+  const visibleSignalMarkers = useMemo(
+    () =>
+      signalMarkers.filter((marker) => {
+        if (marker.text === "BUY") {
+          return visibleChartLayers.buySignals;
+        }
+        if (marker.text === "SELL") {
+          return visibleChartLayers.sellSignals;
+        }
+        return true;
+      }),
+    [signalMarkers, visibleChartLayers.buySignals, visibleChartLayers.sellSignals],
+  );
+  const livePricePoint = useMemo<LivePricePoint | null>(() => {
+    if (streamPrice && Number.isFinite(streamPrice.price) && Number.isFinite(Date.parse(streamPrice.timestamp))) {
+      return {
+        timestamp: streamPrice.timestamp,
+        price: streamPrice.price,
+        isPartial: true,
+      };
+    }
+    if (liveCandle && Number.isFinite(liveCandle.close) && Number.isFinite(Date.parse(liveCandle.timestamp))) {
+      return {
+        timestamp: liveCandle.timestamp,
+        price: liveCandle.close,
+        isPartial: liveCandle.is_partial,
+      };
+    }
+    return null;
+  }, [liveCandle, streamPrice]);
+  const livePrice = livePricePoint?.price ?? null;
   const liquidityDragContextKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
   const chartViewportKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
 
@@ -418,8 +472,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   }, [bot, chartCandles.length, drawingTool]);
 
   useEffect(() => {
-    liquidityLevelsRef.current = displayedLiquidityLevels;
-  }, [displayedLiquidityLevels]);
+    liquidityLevelsRef.current = visibleLiquidityLevels;
+  }, [visibleLiquidityLevels]);
 
   useEffect(() => {
     setLiquidityPriceOverrides({});
@@ -461,6 +515,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         requestAbortRef.current = null;
         setCandles([]);
         setLiveCandle(null);
+        setStreamPrice(null);
         setError(null);
         setLivePriceError(null);
         setLastLoadedAt(null);
@@ -554,6 +609,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       liveRequestAbortRef.current?.abort();
       liveRequestAbortRef.current = null;
       setLiveCandle(null);
+      setStreamPrice(null);
       setLivePriceError(null);
       return;
     }
@@ -612,14 +668,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         return;
       }
 
-      setLiveCandle((current) =>
-        buildLiveCandleFromPriceUpdate({
-          config: chartConfig,
-          price,
-          closedCandles: candlesRef.current,
-          currentLiveCandle: current,
-        }),
-      );
+      setStreamPrice(price);
       setLivePriceError(null);
     },
     [chartConfig],
@@ -1432,12 +1481,22 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       },
     });
     handles.candleSeries.setData(chartCandles);
-    handles.fastSeries.setData(fastSma);
-    handles.slowSeries.setData(slowSma);
-    handles.vwapSeries.setData(vwap);
-    handles.markers.setMarkers(signalMarkers);
+    handles.fastSeries.setData(visibleChartLayers.fastSma ? fastSma : []);
+    handles.slowSeries.setData(visibleChartLayers.slowSma ? slowSma : []);
+    handles.vwapSeries.setData(visibleChartLayers.vwap ? vwap : []);
+    handles.markers.setMarkers(visibleSignalMarkers);
     setDrawingOverlayRevision((current) => current + 1);
-  }, [chartConfig?.timeframe_unit, chartCandles, fastSma, signalMarkers, slowSma, vwap]);
+  }, [
+    chartConfig?.timeframe_unit,
+    chartCandles,
+    fastSma,
+    slowSma,
+    visibleChartLayers.fastSma,
+    visibleChartLayers.slowSma,
+    visibleChartLayers.vwap,
+    visibleSignalMarkers,
+    vwap,
+  ]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -1445,7 +1504,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       return;
     }
 
-    const nextSides = new Set(displayedLiquidityLevels.map((level) => level.side));
+    const nextSides = new Set(visibleLiquidityLevels.map((level) => level.side));
     for (const side of ["buy", "sell"] as const) {
       const priceLine = liquidityPriceLinesRef.current[side];
       if (priceLine && !nextSides.has(side)) {
@@ -1454,7 +1513,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       }
     }
 
-    for (const level of displayedLiquidityLevels) {
+    for (const level of visibleLiquidityLevels) {
       const options = liquidityLevelToPriceLineOptions(level);
       const existingLine = liquidityPriceLinesRef.current[level.side];
       if (existingLine) {
@@ -1463,7 +1522,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         liquidityPriceLinesRef.current[level.side] = handles.candleSeries.createPriceLine(options);
       }
     }
-  }, [displayedLiquidityLevels]);
+  }, [visibleLiquidityLevels]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -1500,7 +1559,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       lineStyle: LineStyle.Dashed,
       lineVisible: false,
       axisLabelVisible: true,
-      title: liveCandle?.is_partial ? "Live" : "Last",
+      title: livePricePoint?.isPartial ? "Live" : "Last",
       axisLabelColor: "rgb(8,145,178)",
       axisLabelTextColor: "rgb(240,249,255)",
     };
@@ -1510,11 +1569,12 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
     } else {
       livePriceLineRef.current = handles.candleSeries.createPriceLine(priceLineOptions);
     }
-  }, [liveCandle?.is_partial, livePrice]);
+  }, [livePrice, livePricePoint?.isPartial]);
 
   useEffect(() => {
     setCandles([]);
     setLiveCandle(null);
+    setStreamPrice(null);
     setLivePriceError(null);
     void loadCandles();
     void loadLivePrice({ force: true });
@@ -1547,11 +1607,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
     if (!bot) {
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
+      setStreamPrice(null);
       return;
     }
 
     lastLiveStreamEventAtRef.current = 0;
     pendingLiveStreamPriceRef.current = null;
+    setStreamPrice(null);
     if (liveStreamRenderTimeoutRef.current !== null) {
       window.clearTimeout(liveStreamRenderTimeoutRef.current);
       liveStreamRenderTimeoutRef.current = null;
@@ -1578,6 +1640,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       stopStreaming();
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
+      setStreamPrice(null);
       if (liveStreamRenderTimeoutRef.current !== null) {
         window.clearTimeout(liveStreamRenderTimeoutRef.current);
         liveStreamRenderTimeoutRef.current = null;
@@ -1591,9 +1654,11 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
     }
 
     const intervalId = window.setInterval(() => {
-      if (Date.now() - lastLiveStreamEventAtRef.current > LIVE_PRICE_STREAM_STALE_MS) {
-        void loadLivePrice();
+      const streamIsStale = Date.now() - lastLiveStreamEventAtRef.current > LIVE_PRICE_STREAM_STALE_MS;
+      if (streamIsStale) {
+        setStreamPrice(null);
       }
+      void loadLivePrice();
     }, LIVE_PRICE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
@@ -1602,9 +1667,15 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const subtitle = bot
     ? buildChartSubtitle(bot, chartTimeframe)
     : "No bot selected";
+  const toggleChartLayer = useCallback((layer: ChartLayerId) => {
+    setVisibleChartLayers((current) => ({
+      ...current,
+      [layer]: !current[layer],
+    }));
+  }, []);
   const lastLoadedText = lastLoadedAt ? `Loaded ${lastLoadedFormatter.format(lastLoadedAt)} ET` : null;
-  const livePriceText = livePrice !== null ? `${liveCandle?.is_partial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}` : null;
-  const livePriceTitle = liveCandle ? `Price timestamp ${lastLoadedFormatter.format(new Date(liveCandle.timestamp))} ET` : undefined;
+  const livePriceText = livePrice !== null ? `${livePricePoint?.isPartial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}` : null;
+  const livePriceTitle = livePricePoint ? `Price timestamp ${lastLoadedFormatter.format(new Date(livePricePoint.timestamp))} ET` : undefined;
   const computedLiquidityButtonTitle =
     liquidityLevels.length > 0
       ? "Move Buy liq and Sell liq to their computed swing liquidity levels"
@@ -1629,9 +1700,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         drawingAnchorPreview,
         selectedDrawingId,
         drawingOverlayRevision,
-        liveCandle,
+        livePricePoint,
       ),
-    [drawingAnchorPreview, drawingDraft, drawingOverlayRevision, drawings, liveCandle, selectedDrawingId],
+    [drawingAnchorPreview, drawingDraft, drawingOverlayRevision, drawings, livePricePoint, selectedDrawingId],
   );
 
   return (
@@ -1769,13 +1840,43 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 text-xs text-slate-400">
-          <LegendDot className="bg-cyan-400" label={`Fast SMA ${bot?.fast_period ?? "-"}`} />
-          <LegendDot className="bg-yellow-300" label={`Slow SMA ${bot?.slow_period ?? "-"}`} />
-          <LegendDot className="bg-pink-400" label="VWAP" />
-          <LegendDot className="bg-emerald-500" label="Buy" />
-          <LegendDot className="bg-rose-500" label="Sell" />
-          <LegendLine className="border-emerald-500" label="Buy-side liquidity" />
-          <LegendLine className="border-rose-500" label="Sell-side liquidity" />
+          <LegendDot
+            active={visibleChartLayers.fastSma}
+            className="bg-cyan-400"
+            label={`Fast SMA ${bot?.fast_period ?? "-"}`}
+            onClick={() => toggleChartLayer("fastSma")}
+          />
+          <LegendDot
+            active={visibleChartLayers.slowSma}
+            className="bg-yellow-300"
+            label={`Slow SMA ${bot?.slow_period ?? "-"}`}
+            onClick={() => toggleChartLayer("slowSma")}
+          />
+          <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label="VWAP" onClick={() => toggleChartLayer("vwap")} />
+          <LegendDot
+            active={visibleChartLayers.buySignals}
+            className="bg-emerald-500"
+            label="Buy"
+            onClick={() => toggleChartLayer("buySignals")}
+          />
+          <LegendDot
+            active={visibleChartLayers.sellSignals}
+            className="bg-rose-500"
+            label="Sell"
+            onClick={() => toggleChartLayer("sellSignals")}
+          />
+          <LegendLine
+            active={visibleChartLayers.buyLiquidity}
+            className="border-emerald-500"
+            label="Buy-side liquidity"
+            onClick={() => toggleChartLayer("buyLiquidity")}
+          />
+          <LegendLine
+            active={visibleChartLayers.sellLiquidity}
+            className="border-rose-500"
+            label="Sell-side liquidity"
+            onClick={() => toggleChartLayer("sellLiquidity")}
+          />
         </div>
         <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:min-h-[560px] xl:min-h-0">
           <div ref={containerRef} className="h-full w-full" />
@@ -2237,7 +2338,7 @@ function buildDrawingOverlayState(
   anchorPreview: DrawingAnchorPreview | null,
   selectedDrawingId: string | null,
   revision: number,
-  liveCandle: ProjectXMarketCandle | null,
+  livePricePoint: LivePricePoint | null,
 ): DrawingOverlayState {
   void revision;
   if (!handles) {
@@ -2264,26 +2365,26 @@ function buildDrawingOverlayState(
   }
 
   const anchor = anchorPreview ? drawingPointToPanePoint(anchorPreview.point, handles.chart, handles.candleSeries) : null;
-  const livePriceLine = toRenderableLivePriceLine(liveCandle, handles, paneSize);
+  const livePriceLine = toRenderableLivePriceLine(livePricePoint, handles, paneSize);
   return { width: paneSize.width, height: paneSize.height, items, anchor, livePriceLine };
 }
 
 function toRenderableLivePriceLine(
-  liveCandle: ProjectXMarketCandle | null,
+  livePricePoint: LivePricePoint | null,
   handles: ChartHandles,
   paneSize: { width: number; height: number },
 ): RenderableLivePriceLine | null {
-  if (!liveCandle || !Number.isFinite(liveCandle.close)) {
+  if (!livePricePoint || !Number.isFinite(livePricePoint.price)) {
     return null;
   }
 
-  const time = toUtcTimestamp(liveCandle.timestamp);
+  const time = toUtcTimestamp(livePricePoint.timestamp);
   if (time === null) {
     return null;
   }
 
   const x = handles.chart.timeScale().timeToCoordinate(time);
-  const y = handles.candleSeries.priceToCoordinate(liveCandle.close);
+  const y = handles.candleSeries.priceToCoordinate(livePricePoint.price);
   if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) {
     return null;
   }
@@ -2743,21 +2844,55 @@ function RefreshIcon() {
   );
 }
 
-function LegendDot({ className, label }: { className: string; label: string }) {
+function LegendDot({
+  active,
+  className,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  className: string;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-      <span className={`h-2.5 w-2.5 rounded-full ${className}`} />
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${
+        active ? "text-slate-300 hover:bg-slate-900/80" : "text-slate-600 hover:bg-slate-900/70 hover:text-slate-400"
+      }`}
+    >
+      <span className={`h-2.5 w-2.5 rounded-full ${className} ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
-    </span>
+    </button>
   );
 }
 
-function LegendLine({ className, label }: { className: string; label: string }) {
+function LegendLine({
+  active,
+  className,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  className: string;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-      <span className={`h-0 w-5 border-t-2 border-dotted ${className}`} />
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${
+        active ? "text-slate-300 hover:bg-slate-900/80" : "text-slate-600 hover:bg-slate-900/70 hover:text-slate-400"
+      }`}
+    >
+      <span className={`h-0 w-5 border-t-2 border-dotted ${className} ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
-    </span>
+    </button>
   );
 }
 
