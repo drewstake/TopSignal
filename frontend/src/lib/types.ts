@@ -509,6 +509,13 @@ export interface ProjectXMarketCandle {
   fetched_at: string | null;
 }
 
+export interface ProjectXMarketPrice {
+  contract_id: string;
+  symbol: string | null;
+  price: number;
+  timestamp: string;
+}
+
 export interface BotConfig {
   id: number;
   name: string;

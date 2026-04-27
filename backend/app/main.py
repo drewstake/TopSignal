@@ -1,4 +1,6 @@
 import calendar
+import asyncio
+import json
 import logging
 import os
 import re
@@ -11,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -1127,6 +1129,52 @@ def get_projectx_market_candles(
         db.rollback()
         raise
     return [serialize_market_candle(row) for row in candles]
+
+
+@app.get("/api/projectx/market-price/stream")
+async def stream_projectx_market_price(
+    request: Request,
+    contract_id: str = Query(..., min_length=1, max_length=120),
+    symbol: str | None = Query(default=None, max_length=40),
+    throttle_ms: int = Query(default=250, ge=50, le=5000),
+):
+    get_authenticated_user_id()
+    runtime = _streaming_runtime
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="ProjectX streaming is not enabled.")
+
+    interval_seconds = max(throttle_ms, 50) / 1000.0
+
+    async def events():
+        last_event_key = None
+        yield ": connected\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+
+            update = runtime.tracker.get_market_price_update(contract_id=contract_id, symbol=symbol)
+            if update is not None:
+                event_key = (update.contract_id, update.mark_price, update.timestamp.isoformat())
+                if event_key != last_event_key:
+                    payload = {
+                        "contract_id": update.contract_id,
+                        "symbol": update.symbol,
+                        "price": update.mark_price,
+                        "timestamp": update.timestamp.isoformat(),
+                    }
+                    yield f"event: price\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    last_event_key = event_key
+
+            await asyncio.sleep(interval_seconds)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/bots", response_model=BotConfigListOut)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import RLock
 from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
@@ -92,7 +93,9 @@ class StreamingPnlTracker:
         point_value_by_symbol: Mapping[str, float] | None = None,
         on_lifecycle_closed: Callable[[ClosedPositionLifecycle], None] | None = None,
     ):
+        self._lock = RLock()
         self.price_by_contract_id: dict[str, float] = {}
+        self.market_update_by_contract_id: dict[str, MarketPriceUpdate] = {}
         self.position_by_contract_id: dict[str, _PositionState] = {}
         self.tracker_by_contract_id: dict[str, _LifecycleTracker] = {}
         self.symbol_by_contract_id: dict[str, str] = {}
@@ -100,17 +103,20 @@ class StreamingPnlTracker:
         self._on_lifecycle_closed = on_lifecycle_closed or (lambda _lifecycle: None)
 
     def set_point_value_lookup(self, point_value_by_symbol: Mapping[str, float]) -> None:
-        self._point_value_by_symbol = dict(point_value_by_symbol)
+        with self._lock:
+            self._point_value_by_symbol = dict(point_value_by_symbol)
 
     def ingest_market_event(self, payload: Mapping[str, Any]) -> bool:
         update = parse_quote_trade(payload)
         if update is None:
             return False
 
-        self.price_by_contract_id[update.contract_id] = update.mark_price
-        if update.symbol:
-            self.symbol_by_contract_id[update.contract_id] = update.symbol
-        self._recompute_unrealized(update.contract_id, update.timestamp)
+        with self._lock:
+            self.price_by_contract_id[update.contract_id] = update.mark_price
+            self.market_update_by_contract_id[update.contract_id] = update
+            if update.symbol:
+                self.symbol_by_contract_id[update.contract_id] = update.symbol
+            self._recompute_unrealized(update.contract_id, update.timestamp)
         return True
 
     def ingest_position_event(self, payload: Mapping[str, Any]) -> bool:
@@ -118,41 +124,67 @@ class StreamingPnlTracker:
         if update is None:
             return False
 
-        contract_id = update.contract_id
-        previous_state = self.position_by_contract_id.get(contract_id)
-        previous_qty = previous_state.net_qty if previous_state is not None else 0.0
-        next_qty = update.net_qty
-        previous_sign = _sign(previous_qty)
-        next_sign = _sign(next_qty)
+        with self._lock:
+            contract_id = update.contract_id
+            previous_state = self.position_by_contract_id.get(contract_id)
+            previous_qty = previous_state.net_qty if previous_state is not None else 0.0
+            next_qty = update.net_qty
+            previous_sign = _sign(previous_qty)
+            next_sign = _sign(next_qty)
 
-        if update.symbol:
-            self.symbol_by_contract_id[contract_id] = update.symbol
+            if update.symbol:
+                self.symbol_by_contract_id[contract_id] = update.symbol
 
-        if previous_sign != 0 and next_sign != 0 and previous_sign != next_sign:
-            self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
-            self._start_lifecycle(update)
-        elif previous_sign == 0 and next_sign != 0:
-            self._start_lifecycle(update)
-        elif previous_sign != 0 and next_sign == 0:
-            self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
+            if previous_sign != 0 and next_sign != 0 and previous_sign != next_sign:
+                self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
+                self._start_lifecycle(update)
+            elif previous_sign == 0 and next_sign != 0:
+                self._start_lifecycle(update)
+            elif previous_sign != 0 and next_sign == 0:
+                self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
 
-        if next_sign == 0:
-            self.position_by_contract_id.pop(contract_id, None)
-        else:
-            self.position_by_contract_id[contract_id] = _PositionState(
-                account_id=update.account_id,
-                contract_id=contract_id,
-                symbol=update.symbol or self.symbol_by_contract_id.get(contract_id),
-                net_qty=next_qty,
-                avg_price=update.avg_price,
-                updated_at=update.updated_at,
-            )
-            tracker = self.tracker_by_contract_id.get(contract_id)
-            if tracker is not None:
-                tracker.max_abs_qty = max(tracker.max_abs_qty, abs(next_qty))
+            if next_sign == 0:
+                self.position_by_contract_id.pop(contract_id, None)
+            else:
+                self.position_by_contract_id[contract_id] = _PositionState(
+                    account_id=update.account_id,
+                    contract_id=contract_id,
+                    symbol=update.symbol or self.symbol_by_contract_id.get(contract_id),
+                    net_qty=next_qty,
+                    avg_price=update.avg_price,
+                    updated_at=update.updated_at,
+                )
+                tracker = self.tracker_by_contract_id.get(contract_id)
+                if tracker is not None:
+                    tracker.max_abs_qty = max(tracker.max_abs_qty, abs(next_qty))
 
-        self._recompute_unrealized(contract_id, update.updated_at)
+            self._recompute_unrealized(contract_id, update.updated_at)
         return True
+
+    def get_market_price_update(
+        self,
+        *,
+        contract_id: str | None = None,
+        symbol: str | None = None,
+    ) -> MarketPriceUpdate | None:
+        normalized_contract_id = _as_text(contract_id)
+        normalized_symbol = _as_text(symbol)
+        normalized_symbol_upper = normalized_symbol.upper() if normalized_symbol else None
+
+        with self._lock:
+            if normalized_contract_id:
+                update = self.market_update_by_contract_id.get(normalized_contract_id)
+                if update is not None:
+                    return update
+
+            if normalized_symbol_upper is None:
+                return None
+
+            for update in reversed(list(self.market_update_by_contract_id.values())):
+                update_symbol = update.symbol or self.symbol_by_contract_id.get(update.contract_id)
+                if update_symbol and update_symbol.upper() == normalized_symbol_upper:
+                    return update
+            return None
 
     def _start_lifecycle(self, update: PositionUpdate) -> None:
         direction = "LONG" if update.net_qty > 0 else "SHORT"

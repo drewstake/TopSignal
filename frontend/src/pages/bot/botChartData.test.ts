@@ -6,6 +6,8 @@ import {
   buildBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
+  buildLiquidityLevels,
+  buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
   buildSmaData,
 } from "./botChartData";
@@ -113,11 +115,73 @@ describe("buildSmaData", () => {
     ]);
   });
 
+  it("uses the latest partial candle close when it is included in the chart data", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:35:00Z", 10),
+      candle("2026-04-26T13:40:00Z", 20),
+      candle("2026-04-26T13:45:00Z", 50, { is_partial: true }),
+    ]);
+
+    expect(buildSmaData(candles, 2)).toEqual([
+      { time: candles[1].time, value: 15 },
+      { time: candles[2].time, value: 35 },
+    ]);
+  });
+
   it("returns no points when the period is not usable", () => {
     const candles = buildCandlestickData([candle("2026-04-26T13:35:00Z", 10)]);
 
     expect(buildSmaData(candles, 0)).toEqual([]);
     expect(buildSmaData(candles, 3)).toEqual([]);
+  });
+});
+
+describe("buildLiquidityLevels", () => {
+  it("finds nearest active buy-side and sell-side liquidity from confirmed swing points", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:30:00Z", 98, { high: 100, low: 96 }),
+      candle("2026-04-26T13:35:00Z", 101, { high: 104, low: 95 }),
+      candle("2026-04-26T13:40:00Z", 107, { high: 110, low: 97 }),
+      candle("2026-04-26T13:45:00Z", 100, { high: 106, low: 94 }),
+      candle("2026-04-26T13:50:00Z", 94, { high: 103, low: 90 }),
+      candle("2026-04-26T13:55:00Z", 104, { high: 107, low: 92 }),
+      candle("2026-04-26T14:00:00Z", 106, { high: 108, low: 93 }),
+    ]);
+
+    expect(buildLiquidityLevels(candles)).toEqual([
+      expect.objectContaining({ side: "buy", price: 110, time: candles[2].time }),
+      expect.objectContaining({ side: "sell", price: 90, time: candles[4].time }),
+    ]);
+  });
+
+  it("ignores swept liquidity levels and uses the next active swing level", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:30:00Z", 98, { high: 100, low: 96 }),
+      candle("2026-04-26T13:35:00Z", 101, { high: 104, low: 95 }),
+      candle("2026-04-26T13:40:00Z", 107, { high: 110, low: 97 }),
+      candle("2026-04-26T13:45:00Z", 100, { high: 106, low: 94 }),
+      candle("2026-04-26T13:50:00Z", 106, { high: 112, low: 98 }),
+      candle("2026-04-26T13:55:00Z", 105, { high: 108, low: 99 }),
+      candle("2026-04-26T14:00:00Z", 104, { high: 107, low: 100 }),
+    ]);
+
+    expect(buildLiquidityLevels(candles).find((level) => level.side === "buy")).toMatchObject({
+      side: "buy",
+      price: 112,
+      time: candles[4].time,
+    });
+  });
+
+  it("does not promote unconfirmed highs or lows at the chart edge", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:30:00Z", 100, { high: 101, low: 99 }),
+      candle("2026-04-26T13:35:00Z", 101, { high: 102, low: 100 }),
+      candle("2026-04-26T13:40:00Z", 102, { high: 103, low: 101 }),
+      candle("2026-04-26T13:45:00Z", 103, { high: 104, low: 102 }),
+      candle("2026-04-26T13:50:00Z", 101, { high: 110, low: 90 }),
+    ]);
+
+    expect(buildLiquidityLevels(candles)).toEqual([]);
   });
 });
 
@@ -173,6 +237,77 @@ describe("buildBotLivePriceQuery", () => {
   });
 });
 
+describe("buildLiveCandleFromPriceUpdate", () => {
+  it("buckets streamed prices into the configured candle and accumulates high and low", () => {
+    const config = botConfig({ timeframe_unit: "minute", timeframe_unit_number: 5 });
+    const existingLive = buildLiveCandleFromPriceUpdate({
+      config,
+      price: {
+        contract_id: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        price: 18450,
+        timestamp: "2026-04-26T14:07:15Z",
+      },
+      closedCandles: [],
+      currentLiveCandle: null,
+      fetchedAt: new Date("2026-04-26T14:07:15Z"),
+    });
+
+    const updatedLive = buildLiveCandleFromPriceUpdate({
+      config,
+      price: {
+        contract_id: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        price: 18449.25,
+        timestamp: "2026-04-26T14:09:45Z",
+      },
+      closedCandles: [],
+      currentLiveCandle: existingLive,
+      fetchedAt: new Date("2026-04-26T14:09:45Z"),
+    });
+
+    expect(updatedLive).toMatchObject({
+      timestamp: "2026-04-26T14:05:00.000Z",
+      open: 18450,
+      high: 18450,
+      low: 18449.25,
+      close: 18449.25,
+      is_partial: true,
+    });
+  });
+
+  it("uses the matching closed candle as the base for a streamed partial update", () => {
+    const config = botConfig({ timeframe_unit: "minute", timeframe_unit_number: 5 });
+    const base = candle("2026-04-26T14:05:00.000Z", 18449, {
+      open: 18448,
+      high: 18449.5,
+      low: 18447.75,
+      volume: 22,
+    });
+
+    const live = buildLiveCandleFromPriceUpdate({
+      config,
+      price: {
+        contract_id: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        price: 18450.25,
+        timestamp: "2026-04-26T14:08:00Z",
+      },
+      closedCandles: [base],
+      currentLiveCandle: null,
+      fetchedAt: new Date("2026-04-26T14:08:00Z"),
+    });
+
+    expect(live).toMatchObject({
+      open: 18448,
+      high: 18450.25,
+      low: 18447.75,
+      volume: 22,
+      close: 18450.25,
+    });
+  });
+});
+
 describe("buildSignalMarkers", () => {
   it("maps recent signal decisions when their candle timestamps are loaded", () => {
     const candles = buildCandlestickData([
@@ -213,5 +348,43 @@ describe("buildSignalMarkers", () => {
 
     expect(markers).toHaveLength(1);
     expect(markers[0]).toMatchObject({ id: "decision-7", text: "HOLD" });
+  });
+
+  it("places bot decisions on the selected aggregate chart candle", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:30:00Z", 100, { unit: "minute", unit_number: 15 }),
+      candle("2026-04-26T13:45:00Z", 101, { unit: "minute", unit_number: 15 }),
+    ]);
+
+    const markers = buildSignalMarkers({
+      candles,
+      activityDecisions: [
+        decision({ id: 9, action: "BUY", candle_timestamp: "2026-04-26T13:35:00Z" }),
+      ],
+      timeframeUnit: "minute",
+      timeframeUnitNumber: 15,
+    });
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ id: "decision-9", text: "BUY", time: candles[0].time });
+  });
+
+  it("falls back to the loaded candle range when aggregate bars are not UTC-aligned", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-25T22:00:00Z", 100, { unit: "day", unit_number: 1 }),
+      candle("2026-04-26T22:00:00Z", 101, { unit: "day", unit_number: 1 }),
+    ]);
+
+    const markers = buildSignalMarkers({
+      candles,
+      activityDecisions: [
+        decision({ id: 10, action: "SELL", candle_timestamp: "2026-04-26T13:35:00Z" }),
+      ],
+      timeframeUnit: "day",
+      timeframeUnitNumber: 1,
+    });
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ id: "decision-10", text: "SELL", time: candles[0].time });
   });
 });

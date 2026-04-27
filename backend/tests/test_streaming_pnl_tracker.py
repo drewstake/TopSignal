@@ -181,6 +181,27 @@ def test_streaming_tracker_recomputes_unrealized_on_market_and_position_updates(
     assert lifecycle.mae_usd == -15.0
 
 
+def test_streaming_tracker_exposes_latest_market_price_update():
+    tracker = StreamingPnlTracker()
+
+    tracker.ingest_market_event(
+        {
+            "contractId": "CON.F.US.MNQ.H26",
+            "symbol": "MNQ",
+            "lastPrice": 17425.25,
+            "timestamp": _dt(12, 1),
+        }
+    )
+
+    by_contract = tracker.get_market_price_update(contract_id="CON.F.US.MNQ.H26")
+    by_symbol = tracker.get_market_price_update(symbol="MNQ")
+
+    assert by_contract is not None
+    assert by_contract.mark_price == 17425.25
+    assert by_contract.timestamp == datetime.fromisoformat(_dt(12, 1))
+    assert by_symbol == by_contract
+
+
 def test_save_position_lifecycle_mae_mfe_persists_row():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",

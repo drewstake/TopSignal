@@ -16,15 +16,36 @@ import {
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { botsApi } from "../../lib/api";
-import type { BotActivity, BotConfig, BotEvaluation, ProjectXMarketCandle } from "../../lib/types";
+import { botsApi, streamProjectXMarketPrice } from "../../lib/api";
+import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 import { buildBotCandleCacheKey, mergeMarketCandles, readBotCandleCache, writeBotCandleCache } from "./botCandleCache";
-import { buildBotChartQuery, buildBotLivePriceQuery, buildCandlestickData, buildSignalMarkers, buildSmaData } from "./botChartData";
+import {
+  buildBotChartQuery,
+  buildBotLivePriceQuery,
+  buildCandlestickData,
+  buildLiquidityLevels,
+  buildLiveCandleFromPriceUpdate,
+  buildSignalMarkers,
+  buildSmaData,
+  type LiquidityLevel,
+} from "./botChartData";
 
 const POLL_INTERVAL_MS = 30_000;
-const LIVE_PRICE_POLL_INTERVAL_MS = 5_000;
+const LIVE_PRICE_POLL_INTERVAL_MS = 1_000;
+const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
+const LIVE_PRICE_STREAM_STALE_MS = 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
 const LIVE_PRICE_REQUEST_TIMEOUT_MS = 12_000;
+const CHART_TIMEFRAME_OPTIONS = [
+  { id: "5m", label: "5m", unit: "minute", unitNumber: 5 },
+  { id: "15m", label: "15m", unit: "minute", unitNumber: 15 },
+  { id: "1h", label: "1H", unit: "hour", unitNumber: 1 },
+  { id: "4h", label: "4H", unit: "hour", unitNumber: 4 },
+  { id: "1d", label: "1D", unit: "day", unitNumber: 1 },
+] as const;
+type ChartTimeframeOption = (typeof CHART_TIMEFRAME_OPTIONS)[number];
+type ChartTimeframeId = ChartTimeframeOption["id"];
+const DEFAULT_CHART_TIMEFRAME_ID: ChartTimeframeId = "5m";
 
 const lastLoadedFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
@@ -56,14 +77,27 @@ interface LoadCandlesOptions {
   forceRefresh?: boolean;
 }
 
+interface LoadLivePriceOptions {
+  force?: boolean;
+}
+
+interface ChartTimeframeSelection {
+  key: string;
+  id: ChartTimeframeId;
+}
+
 export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: BotSignalChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
   const livePriceLineRef = useRef<IPriceLine | null>(null);
+  const liquidityPriceLinesRef = useRef<IPriceLine[]>([]);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
   const liveRequestSequenceRef = useRef(0);
   const liveRequestAbortRef = useRef<AbortController | null>(null);
+  const lastLiveStreamEventAtRef = useRef(0);
+  const pendingLiveStreamPriceRef = useRef<ProjectXMarketPrice | null>(null);
+  const liveStreamRenderTimeoutRef = useRef<number | null>(null);
   const candlesRef = useRef<ProjectXMarketCandle[]>([]);
   const [candles, setCandles] = useState<ProjectXMarketCandle[]>([]);
   const [liveCandle, setLiveCandle] = useState<ProjectXMarketCandle | null>(null);
@@ -72,20 +106,41 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const [error, setError] = useState<string | null>(null);
   const [livePriceError, setLivePriceError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const botTimeframeSelectionKey = buildBotTimeframeSelectionKey(bot);
+  const [timeframeSelection, setTimeframeSelection] = useState<ChartTimeframeSelection>(() => ({
+    key: buildBotTimeframeSelectionKey(bot),
+    id: defaultChartTimeframeIdForBot(bot),
+  }));
+  const selectedTimeframeId =
+    timeframeSelection.key === botTimeframeSelectionKey ? timeframeSelection.id : defaultChartTimeframeIdForBot(bot);
+  const chartTimeframe = CHART_TIMEFRAME_OPTIONS.find((option) => option.id === selectedTimeframeId) ?? CHART_TIMEFRAME_OPTIONS[0];
+  const chartConfig = useMemo<BotConfig | null>(() => {
+    if (!bot) {
+      return null;
+    }
+    return {
+      ...bot,
+      timeframe_unit: chartTimeframe.unit,
+      timeframe_unit_number: chartTimeframe.unitNumber,
+    };
+  }, [bot, chartTimeframe]);
 
   const visibleCandles = useMemo(() => mergeLiveCandle(candles, liveCandle), [candles, liveCandle]);
   const chartCandles = useMemo(() => buildCandlestickData(visibleCandles), [visibleCandles]);
   const closedChartCandles = useMemo(() => buildCandlestickData(candles), [candles]);
-  const fastSma = useMemo(() => buildSmaData(closedChartCandles, bot?.fast_period ?? 0), [bot?.fast_period, closedChartCandles]);
-  const slowSma = useMemo(() => buildSmaData(closedChartCandles, bot?.slow_period ?? 0), [bot?.slow_period, closedChartCandles]);
+  const fastSma = useMemo(() => buildSmaData(chartCandles, bot?.fast_period ?? 0), [bot?.fast_period, chartCandles]);
+  const slowSma = useMemo(() => buildSmaData(chartCandles, bot?.slow_period ?? 0), [bot?.slow_period, chartCandles]);
+  const liquidityLevels = useMemo(() => buildLiquidityLevels(closedChartCandles), [closedChartCandles]);
   const signalMarkers = useMemo(
     () =>
       buildSignalMarkers({
         candles: closedChartCandles,
         activityDecisions: activity && activity.config.id === bot?.id ? activity.decisions : [],
         lastEvaluation: lastEvaluation?.config.id === bot?.id ? lastEvaluation : null,
+        timeframeUnit: chartTimeframe.unit,
+        timeframeUnitNumber: chartTimeframe.unitNumber,
       }),
-    [activity, bot?.id, closedChartCandles, lastEvaluation],
+    [activity, bot?.id, chartTimeframe, closedChartCandles, lastEvaluation],
   );
   const livePrice = liveCandle && Number.isFinite(liveCandle.close) ? liveCandle.close : null;
 
@@ -95,7 +150,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
 
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
-      if (!bot) {
+      if (!chartConfig) {
         requestSequenceRef.current += 1;
         requestAbortRef.current?.abort();
         requestAbortRef.current = null;
@@ -115,13 +170,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       const controller = new AbortController();
       requestAbortRef.current = controller;
       const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
-      const queryWindow = buildBotChartQuery(bot);
+      const queryWindow = buildBotChartQuery(chartConfig);
       const cacheKey = buildBotCandleCacheKey({
-        contractId: bot.contract_id,
-        symbol: bot.symbol,
+        contractId: chartConfig.contract_id,
+        symbol: chartConfig.symbol,
         live: false,
-        unit: bot.timeframe_unit,
-        unitNumber: bot.timeframe_unit_number,
+        unit: chartConfig.timeframe_unit,
+        unitNumber: chartConfig.timeframe_unit_number,
       });
       const cachedEntry = forceRefresh ? null : readBotCandleCache(cacheKey);
       const cachedCandles = cachedEntry?.candles ?? [];
@@ -143,13 +198,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
 
       try {
         const rows = await botsApi.getCandles({
-          contractId: bot.contract_id,
-          symbol: bot.symbol ?? undefined,
+          contractId: chartConfig.contract_id,
+          symbol: chartConfig.symbol ?? undefined,
           start: queryWindow.start,
           end: queryWindow.end,
           live: false,
-          unit: bot.timeframe_unit,
-          unitNumber: bot.timeframe_unit_number,
+          unit: chartConfig.timeframe_unit,
+          unitNumber: chartConfig.timeframe_unit_number,
           limit: queryWindow.limit,
           includePartialBar: false,
           refresh: forceRefresh,
@@ -185,11 +240,11 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         }
       }
     },
-    [bot],
+    [chartConfig],
   );
 
-  const loadLivePrice = useCallback(async () => {
-    if (!bot) {
+  const loadLivePrice = useCallback(async ({ force = false }: LoadLivePriceOptions = {}) => {
+    if (!chartConfig) {
       liveRequestSequenceRef.current += 1;
       liveRequestAbortRef.current?.abort();
       liveRequestAbortRef.current = null;
@@ -198,23 +253,30 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       return;
     }
 
+    if (liveRequestAbortRef.current) {
+      if (!force) {
+        return;
+      }
+      liveRequestSequenceRef.current += 1;
+      liveRequestAbortRef.current.abort();
+    }
+
     const requestId = liveRequestSequenceRef.current + 1;
     liveRequestSequenceRef.current = requestId;
-    liveRequestAbortRef.current?.abort();
     const controller = new AbortController();
     liveRequestAbortRef.current = controller;
     const timeoutId = window.setTimeout(() => controller.abort(), LIVE_PRICE_REQUEST_TIMEOUT_MS);
-    const queryWindow = buildBotLivePriceQuery(bot);
+    const queryWindow = buildBotLivePriceQuery(chartConfig);
 
     try {
       const rows = await botsApi.getCandles({
-        contractId: bot.contract_id,
-        symbol: bot.symbol ?? undefined,
+        contractId: chartConfig.contract_id,
+        symbol: chartConfig.symbol ?? undefined,
         start: queryWindow.start,
         end: queryWindow.end,
         live: false,
-        unit: bot.timeframe_unit,
-        unitNumber: bot.timeframe_unit_number,
+        unit: chartConfig.timeframe_unit,
+        unitNumber: chartConfig.timeframe_unit_number,
         limit: queryWindow.limit,
         includePartialBar: true,
         refresh: true,
@@ -237,7 +299,51 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         liveRequestAbortRef.current = null;
       }
     }
-  }, [bot]);
+  }, [chartConfig]);
+
+  const applyLiveStreamPrice = useCallback(
+    (price: ProjectXMarketPrice) => {
+      if (!chartConfig) {
+        return;
+      }
+
+      setLiveCandle((current) =>
+        buildLiveCandleFromPriceUpdate({
+          config: chartConfig,
+          price,
+          closedCandles: candlesRef.current,
+          currentLiveCandle: current,
+        }),
+      );
+      setLivePriceError(null);
+    },
+    [chartConfig],
+  );
+
+  const flushPendingLiveStreamPrice = useCallback(() => {
+    const nextPrice = pendingLiveStreamPriceRef.current;
+    pendingLiveStreamPriceRef.current = null;
+    if (!nextPrice) {
+      return;
+    }
+
+    applyLiveStreamPrice(nextPrice);
+  }, [applyLiveStreamPrice]);
+
+  const scheduleLiveStreamPrice = useCallback(
+    (price: ProjectXMarketPrice) => {
+      pendingLiveStreamPriceRef.current = price;
+      if (liveStreamRenderTimeoutRef.current !== null) {
+        return;
+      }
+
+      liveStreamRenderTimeoutRef.current = window.setTimeout(() => {
+        liveStreamRenderTimeoutRef.current = null;
+        flushPendingLiveStreamPrice();
+      }, LIVE_PRICE_STREAM_THROTTLE_MS);
+    },
+    [flushPendingLiveStreamPrice],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -320,6 +426,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       chart.remove();
       chartHandlesRef.current = null;
       livePriceLineRef.current = null;
+      liquidityPriceLinesRef.current = [];
     };
   }, []);
 
@@ -331,14 +438,28 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
 
     handles.chart.applyOptions({
       timeScale: {
-        secondsVisible: bot?.timeframe_unit === "second",
+        secondsVisible: chartConfig?.timeframe_unit === "second",
       },
     });
     handles.candleSeries.setData(chartCandles);
     handles.fastSeries.setData(fastSma);
     handles.slowSeries.setData(slowSma);
     handles.markers.setMarkers(signalMarkers);
-  }, [bot?.timeframe_unit, chartCandles, fastSma, signalMarkers, slowSma]);
+  }, [chartConfig?.timeframe_unit, chartCandles, fastSma, signalMarkers, slowSma]);
+
+  useEffect(() => {
+    const handles = chartHandlesRef.current;
+    if (!handles) {
+      return;
+    }
+
+    for (const priceLine of liquidityPriceLinesRef.current) {
+      handles.candleSeries.removePriceLine(priceLine);
+    }
+    liquidityPriceLinesRef.current = liquidityLevels.map((level) =>
+      handles.candleSeries.createPriceLine(liquidityLevelToPriceLineOptions(level)),
+    );
+  }, [liquidityLevels]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -387,13 +508,17 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
     setLiveCandle(null);
     setLivePriceError(null);
     void loadCandles();
-    void loadLivePrice();
+    void loadLivePrice({ force: true });
   }, [loadCandles, loadLivePrice, refreshToken]);
 
   useEffect(() => {
     return () => {
       requestAbortRef.current?.abort();
       liveRequestAbortRef.current?.abort();
+      if (liveStreamRenderTimeoutRef.current !== null) {
+        window.clearTimeout(liveStreamRenderTimeoutRef.current);
+        liveStreamRenderTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -411,31 +536,95 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
 
   useEffect(() => {
     if (!bot) {
+      lastLiveStreamEventAtRef.current = 0;
+      pendingLiveStreamPriceRef.current = null;
+      return;
+    }
+
+    lastLiveStreamEventAtRef.current = 0;
+    pendingLiveStreamPriceRef.current = null;
+    if (liveStreamRenderTimeoutRef.current !== null) {
+      window.clearTimeout(liveStreamRenderTimeoutRef.current);
+      liveStreamRenderTimeoutRef.current = null;
+    }
+
+    const stopStreaming = streamProjectXMarketPrice(
+      {
+        contractId: bot.contract_id,
+        symbol: bot.symbol ?? undefined,
+        throttleMs: LIVE_PRICE_STREAM_THROTTLE_MS,
+      },
+      {
+        onPrice: (price) => {
+          lastLiveStreamEventAtRef.current = Date.now();
+          scheduleLiveStreamPrice(price);
+        },
+        onError: () => {
+          lastLiveStreamEventAtRef.current = 0;
+        },
+      },
+    );
+
+    return () => {
+      stopStreaming();
+      lastLiveStreamEventAtRef.current = 0;
+      pendingLiveStreamPriceRef.current = null;
+      if (liveStreamRenderTimeoutRef.current !== null) {
+        window.clearTimeout(liveStreamRenderTimeoutRef.current);
+        liveStreamRenderTimeoutRef.current = null;
+      }
+    };
+  }, [bot, scheduleLiveStreamPrice]);
+
+  useEffect(() => {
+    if (!bot) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
-      void loadLivePrice();
+      if (Date.now() - lastLiveStreamEventAtRef.current > LIVE_PRICE_STREAM_STALE_MS) {
+        void loadLivePrice();
+      }
     }, LIVE_PRICE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
   }, [bot, loadLivePrice]);
 
   const subtitle = bot
-    ? `${bot.symbol ?? bot.contract_id} / ${bot.timeframe_unit_number} ${bot.timeframe_unit}`
+    ? buildChartSubtitle(bot, chartTimeframe)
     : "No bot selected";
   const lastLoadedText = lastLoadedAt ? `Loaded ${lastLoadedFormatter.format(lastLoadedAt)}` : null;
   const livePriceText = livePrice !== null ? `${liveCandle?.is_partial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}` : null;
   const livePriceTitle = liveCandle ? `Price timestamp ${lastLoadedFormatter.format(new Date(liveCandle.timestamp))}` : undefined;
 
   return (
-    <Card>
-      <CardHeader className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+    <Card className="flex h-full min-h-[620px] flex-col">
+      <CardHeader className="shrink-0 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <CardTitle>Signal Chart</CardTitle>
           <CardDescription>{subtitle}</CardDescription>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex h-8 overflow-hidden rounded-md border border-slate-800 bg-slate-950/70" aria-label="Chart timeframe">
+            {CHART_TIMEFRAME_OPTIONS.map((option) => {
+              const active = option.id === selectedTimeframeId;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setTimeframeSelection({ key: botTimeframeSelectionKey, id: option.id })}
+                  disabled={!bot}
+                  className={`min-w-11 border-r border-slate-800 px-2.5 text-xs font-semibold transition last:border-r-0 disabled:cursor-not-allowed disabled:opacity-50 ${
+                    active
+                      ? "bg-cyan-400/15 text-cyan-100"
+                      : "text-slate-400 hover:bg-slate-900/80 hover:text-slate-100"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
           {livePriceText ? (
             <span
               className="inline-flex items-center gap-2 rounded-md border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-xs font-semibold text-cyan-100"
@@ -455,7 +644,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
             size="sm"
             onClick={() => {
               void loadCandles({ silent: true, forceRefresh: true });
-              void loadLivePrice();
+              void loadLivePrice({ force: true });
             }}
             disabled={!bot || loading || refreshing}
           >
@@ -463,14 +652,16 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap gap-4 text-xs text-slate-400">
           <LegendDot className="bg-cyan-400" label={`Fast SMA ${bot?.fast_period ?? "-"}`} />
           <LegendDot className="bg-yellow-300" label={`Slow SMA ${bot?.slow_period ?? "-"}`} />
           <LegendDot className="bg-emerald-500" label="Buy" />
           <LegendDot className="bg-rose-500" label="Sell" />
+          <LegendLine className="border-emerald-500" label="Buy-side liquidity" />
+          <LegendLine className="border-rose-500" label="Sell-side liquidity" />
         </div>
-        <div className="relative h-[360px] overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:h-[430px]">
+        <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:min-h-[560px] xl:min-h-0">
           <div ref={containerRef} className="h-full w-full" />
           {loading ? (
             <div className="absolute inset-0 grid place-items-center bg-slate-950/50 text-sm text-slate-300">
@@ -496,6 +687,73 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       </CardContent>
     </Card>
   );
+}
+
+function findMatchingTimeframeId(unit: BotTimeframeUnit, unitNumber: number): ChartTimeframeId | null {
+  const normalizedNumber = Math.max(1, Math.trunc(unitNumber));
+  return (
+    CHART_TIMEFRAME_OPTIONS.find((option) => option.unit === unit && option.unitNumber === normalizedNumber)?.id ?? null
+  );
+}
+
+function defaultChartTimeframeIdForBot(bot: BotConfig | null): ChartTimeframeId {
+  if (!bot) {
+    return DEFAULT_CHART_TIMEFRAME_ID;
+  }
+  return findMatchingTimeframeId(bot.timeframe_unit, bot.timeframe_unit_number) ?? DEFAULT_CHART_TIMEFRAME_ID;
+}
+
+function buildBotTimeframeSelectionKey(bot: BotConfig | null): string {
+  if (!bot) {
+    return "none";
+  }
+  return `${bot.id}:${bot.timeframe_unit}:${Math.max(1, Math.trunc(bot.timeframe_unit_number))}`;
+}
+
+function buildChartSubtitle(bot: BotConfig, chartTimeframe: ChartTimeframeOption): string {
+  const market = bot.symbol ?? bot.contract_id;
+  const botTimeframeLabel = formatTimeframeLabel(bot.timeframe_unit, bot.timeframe_unit_number);
+  if (botTimeframeLabel === chartTimeframe.label) {
+    return `${market} / ${chartTimeframe.label}`;
+  }
+  return `${market} / ${chartTimeframe.label} chart / ${botTimeframeLabel} bot`;
+}
+
+function formatTimeframeLabel(unit: BotTimeframeUnit, unitNumber: number): string {
+  const normalizedNumber = Math.max(1, Math.trunc(unitNumber));
+  const preset = CHART_TIMEFRAME_OPTIONS.find((option) => option.unit === unit && option.unitNumber === normalizedNumber);
+  if (preset) {
+    return preset.label;
+  }
+
+  const unitSuffix: Record<BotTimeframeUnit, string> = {
+    second: "s",
+    minute: "m",
+    hour: "H",
+    day: "D",
+    week: "W",
+    month: "M",
+  };
+  return `${normalizedNumber}${unitSuffix[unit]}`;
+}
+
+function liquidityLevelToPriceLineOptions(level: LiquidityLevel) {
+  const isBuySide = level.side === "buy";
+  const color = isBuySide ? "rgb(34,197,94)" : "rgb(244,63,94)";
+  const axisLabelColor = isBuySide ? "rgb(22,163,74)" : "rgb(225,29,72)";
+
+  return {
+    id: `liquidity-${level.side}`,
+    price: level.price,
+    color,
+    lineWidth: 2 as const,
+    lineStyle: LineStyle.Dotted,
+    lineVisible: true,
+    axisLabelVisible: true,
+    title: isBuySide ? "Buy liq" : "Sell liq",
+    axisLabelColor,
+    axisLabelTextColor: "rgb(255,255,255)",
+  };
 }
 
 function mergeLiveCandle(candles: ProjectXMarketCandle[], liveCandle: ProjectXMarketCandle | null): ProjectXMarketCandle[] {
@@ -531,6 +789,15 @@ function LegendDot({ className, label }: { className: string; label: string }) {
   return (
     <span className="inline-flex items-center gap-2">
       <span className={`h-2.5 w-2.5 rounded-full ${className}`} />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function LegendLine({ className, label }: { className: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className={`h-0 w-5 border-t-2 border-dotted ${className}`} />
       <span>{label}</span>
     </span>
   );

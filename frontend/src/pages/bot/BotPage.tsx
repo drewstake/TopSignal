@@ -378,25 +378,10 @@ export function BotPage() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-50">Bot</h1>
-          <p className="mt-1 text-sm text-slate-400">ProjectX rule execution</p>
-        </div>
-        {selectedBot ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={selectedBot.enabled ? "positive" : "neutral"}>
-              {selectedBot.enabled ? "Enabled" : "Disabled"}
-            </Badge>
-            <Badge variant="accent">{selectedBot.execution_mode === "dry_run" ? "Dry run" : "Live"}</Badge>
-          </div>
-        ) : null}
-      </div>
-
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
 
-      <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-        <Card>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px] xl:items-stretch">
+        <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
             <CardDescription>SMA cross, ProjectX candles, server-side audit trail</CardDescription>
@@ -541,15 +526,25 @@ export function BotPage() {
           </CardContent>
         </Card>
 
-        <div className="space-y-5">
-          <Card>
-            <CardHeader className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
-                <CardTitle>Deployment</CardTitle>
-                <CardDescription>Dry-run deployment and audit status</CardDescription>
+        <div className="contents">
+          <Card className="order-2 min-w-0 xl:col-span-2 xl:row-start-2">
+            <CardHeader className="space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Bot</CardTitle>
+                  <CardDescription>ProjectX rule execution</CardDescription>
+                </div>
+                {selectedBot ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={selectedBot.enabled ? "positive" : "neutral"}>
+                      {selectedBot.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <Badge variant="accent">{selectedBot.execution_mode === "dry_run" ? "Dry run" : "Live"}</Badge>
+                  </div>
+                ) : null}
               </div>
               <Select
-                className="md:max-w-sm"
+                className="w-full"
                 value={selectedBot?.id ? String(selectedBot.id) : ""}
                 onChange={(event) => setSelectedBotId(Number.parseInt(event.target.value, 10))}
               >
@@ -562,125 +557,127 @@ export function BotPage() {
               </Select>
             </CardHeader>
             <CardContent>
-              {selectedBot ? (
-                <div className="space-y-4">
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <Metric label="Account" value={String(selectedBot.account_id)} />
-                    <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
-                    <Metric label="SMA" value={`${selectedBot.fast_period}/${selectedBot.slow_period}`} />
-                    <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
-                      {actionLoading === "start" ? "Starting" : "Start Dry Run"}
-                    </Button>
-                    <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={actionLoading !== null}>
-                      {actionLoading === "evaluate" ? "Evaluating" : "Evaluate"}
-                    </Button>
-                    <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={actionLoading !== null}>
-                      {actionLoading === "stop" ? "Stopping" : "Stop"}
-                    </Button>
-                  </div>
-                  {selectedBotEvaluation ? (
-                    <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-                        <div className="mb-2 flex items-center justify-between gap-2">
-                          <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
-                            {selectedBotEvaluation.decision.action}
-                          </Badge>
-                          <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
-                        </div>
-                        <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
-                        {selectedBotEvaluation.order_attempt ? (
-                          <p className="mt-2 text-xs text-slate-400">
-                            Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
-                          </p>
-                        ) : null}
-                        {selectedBotEvaluation.risk_events.length > 0 ? (
-                          <div className="mt-3 space-y-1">
-                            {selectedBotEvaluation.risk_events.map((risk) => (
-                              <p key={risk.id} className="text-xs text-amber-200">
-                                {risk.code}: {risk.message}
-                              </p>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-                        <Sparkline candles={selectedBotEvaluation.candles} />
-                      </div>
+              <div className="space-y-5">
+                {selectedBot ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <Metric label="Account" value={String(selectedBot.account_id)} />
+                      <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
+                      <Metric label="SMA" value={`${selectedBot.fast_period}/${selectedBot.slow_period}`} />
+                      <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
                     </div>
-                  ) : null}
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
+                        {actionLoading === "start" ? "Starting" : "Start Dry Run"}
+                      </Button>
+                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={actionLoading !== null}>
+                        {actionLoading === "evaluate" ? "Evaluating" : "Evaluate"}
+                      </Button>
+                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={actionLoading !== null}>
+                        {actionLoading === "stop" ? "Stopping" : "Stop"}
+                      </Button>
+                    </div>
+                    {selectedBotEvaluation ? (
+                      <div className="grid gap-3">
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
+                              {selectedBotEvaluation.decision.action}
+                            </Badge>
+                            <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
+                          </div>
+                          <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
+                          {selectedBotEvaluation.order_attempt ? (
+                            <p className="mt-2 text-xs text-slate-400">
+                              Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
+                            </p>
+                          ) : null}
+                          {selectedBotEvaluation.risk_events.length > 0 ? (
+                            <div className="mt-3 space-y-1">
+                              {selectedBotEvaluation.risk_events.map((risk) => (
+                                <p key={risk.id} className="text-xs text-amber-200">
+                                  {risk.code}: {risk.message}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+                          <Sparkline candles={selectedBotEvaluation.candles} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">No bot configuration saved.</p>
+                )}
+
+                <div className="border-t border-slate-800 pt-5">
+                  <div className="mb-4 space-y-1">
+                    <h4 className="text-sm font-semibold text-slate-100 md:text-base">Activity</h4>
+                    <p className="text-xs text-slate-400">Signals, risk events, and order attempts</p>
+                  </div>
+                  {activityLoading ? (
+                    <Skeleton className="h-64" />
+                  ) : activity ? (
+                    <div className="grid gap-4 xl:grid-cols-2">
+                      <ActivityTable
+                        title="Decisions"
+                        rows={activity.decisions.slice(0, 8).map((decision) => ({
+                          id: decision.id,
+                          left: decision.action,
+                          middle: decision.reason,
+                          right: formatDateTime(decision.created_at),
+                          badgeVariant: actionBadgeVariant(decision.action),
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Orders"
+                        rows={activity.order_attempts.slice(0, 8).map((attempt) => ({
+                          id: attempt.id,
+                          left: attempt.status,
+                          middle: `${attempt.side} ${attempt.size} ${attempt.contract_id}`,
+                          right: formatDateTime(attempt.created_at),
+                          badgeVariant: statusBadgeVariant(attempt.status),
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Risk"
+                        rows={activity.risk_events.slice(0, 8).map((risk) => ({
+                          id: risk.id,
+                          left: risk.severity,
+                          middle: `${risk.code}: ${risk.message}`,
+                          right: formatDateTime(risk.created_at),
+                          badgeVariant: risk.severity === "critical" ? "negative" : "warning",
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Runs"
+                        rows={activity.runs.slice(0, 8).map((run) => ({
+                          id: run.id,
+                          left: run.status,
+                          middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
+                          right: formatDateTime(run.started_at),
+                          badgeVariant: statusBadgeVariant(run.status),
+                        }))}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400">No activity.</p>
+                  )}
                 </div>
-              ) : (
-                <p className="text-sm text-slate-400">No bot configuration saved.</p>
-              )}
+              </div>
             </CardContent>
           </Card>
 
-          <BotSignalChart
-            bot={selectedBot}
-            activity={activity}
-            lastEvaluation={selectedBotEvaluation}
-            refreshToken={chartRefreshToken}
-          />
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Activity</CardTitle>
-              <CardDescription>Signals, risk events, and order attempts</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {activityLoading ? (
-                <Skeleton className="h-64" />
-              ) : activity ? (
-                <div className="grid gap-4 xl:grid-cols-2">
-                  <ActivityTable
-                    title="Decisions"
-                    rows={activity.decisions.slice(0, 8).map((decision) => ({
-                      id: decision.id,
-                      left: decision.action,
-                      middle: decision.reason,
-                      right: formatDateTime(decision.created_at),
-                      badgeVariant: actionBadgeVariant(decision.action),
-                    }))}
-                  />
-                  <ActivityTable
-                    title="Orders"
-                    rows={activity.order_attempts.slice(0, 8).map((attempt) => ({
-                      id: attempt.id,
-                      left: attempt.status,
-                      middle: `${attempt.side} ${attempt.size} ${attempt.contract_id}`,
-                      right: formatDateTime(attempt.created_at),
-                      badgeVariant: statusBadgeVariant(attempt.status),
-                    }))}
-                  />
-                  <ActivityTable
-                    title="Risk"
-                    rows={activity.risk_events.slice(0, 8).map((risk) => ({
-                      id: risk.id,
-                      left: risk.severity,
-                      middle: `${risk.code}: ${risk.message}`,
-                      right: formatDateTime(risk.created_at),
-                      badgeVariant: risk.severity === "critical" ? "negative" : "warning",
-                    }))}
-                  />
-                  <ActivityTable
-                    title="Runs"
-                    rows={activity.runs.slice(0, 8).map((run) => ({
-                      id: run.id,
-                      left: run.status,
-                      middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
-                      right: formatDateTime(run.started_at),
-                      badgeVariant: statusBadgeVariant(run.status),
-                    }))}
-                  />
-                </div>
-              ) : (
-                <p className="text-sm text-slate-400">No activity.</p>
-              )}
-            </CardContent>
-          </Card>
+          <div className="order-1 min-w-0 xl:col-start-1 xl:row-start-1">
+            <BotSignalChart
+              bot={selectedBot}
+              activity={activity}
+              lastEvaluation={selectedBotEvaluation}
+              refreshToken={chartRefreshToken}
+            />
+          </div>
         </div>
       </div>
     </div>

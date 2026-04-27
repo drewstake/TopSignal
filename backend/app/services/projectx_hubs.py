@@ -98,12 +98,25 @@ class ProjectXHubRunner:
     def _dispatch_frame(self, stream_kind: str, frame: Mapping[str, Any]) -> None:
         frame_type = frame.get("type")
         if frame_type == 1 and isinstance(frame.get("arguments"), list):
-            for argument in frame["arguments"]:
-                if isinstance(argument, Mapping):
-                    self._dispatch_payload(stream_kind, argument)
+            self._dispatch_signalr_invocation(stream_kind, frame)
             return
 
         self._dispatch_payload(stream_kind, frame)
+
+    def _dispatch_signalr_invocation(self, stream_kind: str, frame: Mapping[str, Any]) -> None:
+        arguments = frame.get("arguments")
+        if not isinstance(arguments, list):
+            return
+
+        if stream_kind == "market" and len(arguments) >= 2 and isinstance(arguments[0], str) and isinstance(arguments[1], Mapping):
+            payload = dict(arguments[1])
+            payload.setdefault("contractId", arguments[0])
+            self._dispatch_payload(stream_kind, payload)
+            return
+
+        for argument in arguments:
+            if isinstance(argument, Mapping):
+                self._dispatch_payload(stream_kind, argument)
 
     def _dispatch_payload(self, stream_kind: str, payload: Mapping[str, Any]) -> None:
         if stream_kind == "market":
@@ -155,12 +168,17 @@ def _load_subscription_messages(env_name: str) -> list[Mapping[str, Any]]:
 
 def _append_query(url: str, params: Mapping[str, str]) -> str:
     parsed = urlparse(url)
+    scheme = parsed.scheme
+    if scheme == "https":
+        scheme = "wss"
+    elif scheme == "http":
+        scheme = "ws"
     existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
     existing.update(params)
     updated_query = urlencode(existing)
     return urlunparse(
         (
-            parsed.scheme,
+            scheme,
             parsed.netloc,
             parsed.path,
             parsed.params,

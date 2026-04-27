@@ -182,7 +182,7 @@ export function AppShell() {
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/95">
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="space-y-1">
+            <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-[220px]">
                   <label
@@ -210,27 +210,30 @@ export function AppShell() {
                 <Button className="h-9" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
                   {syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
+                {hasSupabaseConfig ? (
+                  <div className="flex h-9 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 text-xs text-slate-400 sm:max-w-[340px]">
+                    <span className="min-w-0 truncate" title={currentUserEmail ?? "Signed in"}>
+                      {currentUserEmail ?? "Signed in"}
+                    </span>
+                    <Button
+                      className="h-7 shrink-0 px-2"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        void signOutSupabase();
+                      }}
+                    >
+                      Sign out
+                    </Button>
+                  </div>
+                ) : null}
               </div>
               {accountsError ? <p className="text-xs text-rose-300">{accountsError}</p> : null}
               {syncMessage ? <p className="text-xs text-slate-400">{syncMessage}</p> : null}
             </div>
-            <div className="text-right">
+            <div className="shrink-0 text-right">
               <p className="text-lg font-semibold tracking-tight text-slate-100">TopSignal</p>
               <p className="text-xs text-slate-400">ProjectX Account + Trade Dashboard</p>
-              {hasSupabaseConfig ? (
-                <div className="mt-2 flex items-center justify-end gap-2 text-xs text-slate-400">
-                  <span>{currentUserEmail ?? "Signed in"}</span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      void signOutSupabase();
-                    }}
-                  >
-                    Sign out
-                  </Button>
-                </div>
-              ) : null}
             </div>
           </div>
 
