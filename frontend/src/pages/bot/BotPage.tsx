@@ -1,0 +1,898 @@
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
+
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Input";
+import { Select } from "../../components/ui/Select";
+import { Skeleton } from "../../components/ui/Skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
+import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
+import { accountsApi, botsApi } from "../../lib/api";
+import type {
+  AccountInfo,
+  BotActivity,
+  BotConfig,
+  BotEvaluation,
+  BotTimeframeUnit,
+  ProjectXContract,
+  ProjectXMarketCandle,
+} from "../../lib/types";
+import { BotSignalChart } from "./BotSignalChart";
+
+const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
+const EASTERN_TIME_ZONE = "America/New_York";
+
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: true,
+  timeZone: EASTERN_TIME_ZONE,
+});
+
+interface BotFormState {
+  name: string;
+  accountId: string;
+  contractSearch: string;
+  contractId: string;
+  symbol: string;
+  timeframeUnit: BotTimeframeUnit;
+  timeframeUnitNumber: string;
+  lookbackBars: string;
+  fastPeriod: string;
+  slowPeriod: string;
+  orderSize: string;
+  maxContracts: string;
+  maxDailyLoss: string;
+  maxTradesPerDay: string;
+  maxOpenPosition: string;
+  tradingStartTime: string;
+  tradingEndTime: string;
+  cooldownSeconds: string;
+  maxDataStalenessSeconds: string;
+}
+
+function buildInitialForm(accountId: number | null): BotFormState {
+  return {
+    name: "MNQ SMA Cross",
+    accountId: accountId ? String(accountId) : "",
+    contractSearch: "MNQ",
+    contractId: "",
+    symbol: "MNQ",
+    timeframeUnit: "minute",
+    timeframeUnitNumber: "5",
+    lookbackBars: "200",
+    fastPeriod: "9",
+    slowPeriod: "21",
+    orderSize: "1",
+    maxContracts: "1",
+    maxDailyLoss: "250",
+    maxTradesPerDay: "3",
+    maxOpenPosition: "1",
+    tradingStartTime: "09:30",
+    tradingEndTime: "15:45",
+    cooldownSeconds: "300",
+    maxDataStalenessSeconds: "600",
+  };
+}
+
+function formFromBot(bot: BotConfig): BotFormState {
+  return {
+    name: bot.name,
+    accountId: String(bot.account_id),
+    contractSearch: bot.symbol ?? bot.contract_id,
+    contractId: bot.contract_id,
+    symbol: bot.symbol ?? "",
+    timeframeUnit: bot.timeframe_unit,
+    timeframeUnitNumber: String(bot.timeframe_unit_number),
+    lookbackBars: String(bot.lookback_bars),
+    fastPeriod: String(bot.fast_period),
+    slowPeriod: String(bot.slow_period),
+    orderSize: String(bot.order_size),
+    maxContracts: String(bot.max_contracts),
+    maxDailyLoss: String(bot.max_daily_loss),
+    maxTradesPerDay: String(bot.max_trades_per_day),
+    maxOpenPosition: String(bot.max_open_position),
+    tradingStartTime: bot.trading_start_time,
+    tradingEndTime: bot.trading_end_time,
+    cooldownSeconds: String(bot.cooldown_seconds),
+    maxDataStalenessSeconds: String(bot.max_data_staleness_seconds),
+  };
+}
+
+function parsePositiveNumber(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseNonNegativeNumber(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parsePositiveInt(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseNonNegativeInt(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "None";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return `${dateTimeFormatter.format(date)} ET`;
+}
+
+function actionBadgeVariant(action: string) {
+  if (action === "BUY") {
+    return "positive" as const;
+  }
+  if (action === "SELL" || action === "STOP") {
+    return "negative" as const;
+  }
+  return "neutral" as const;
+}
+
+function statusBadgeVariant(status: string) {
+  if (status === "running" || status === "dry_run" || status === "submitted") {
+    return "positive" as const;
+  }
+  if (status === "blocked" || status === "error" || status === "rejected") {
+    return "negative" as const;
+  }
+  return "neutral" as const;
+}
+
+function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
+  const closes = candles.map((candle) => candle.close).filter((value) => Number.isFinite(value));
+  const path = useMemo(() => {
+    if (closes.length < 2) {
+      return "";
+    }
+    const min = Math.min(...closes);
+    const max = Math.max(...closes);
+    const span = max - min || 1;
+    return closes
+      .map((value, index) => {
+        const x = (index / (closes.length - 1)) * 100;
+        const y = 36 - ((value - min) / span) * 32;
+        return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(" ");
+  }, [closes]);
+
+  return (
+    <svg viewBox="0 0 100 40" className="h-16 w-full overflow-visible" aria-hidden="true">
+      <path d="M 0 38 L 100 38" stroke="rgba(148,163,184,0.25)" strokeWidth="1" />
+      {path ? <path d={path} fill="none" stroke="rgb(34,211,238)" strokeWidth="2" vectorEffect="non-scaling-stroke" /> : null}
+    </svg>
+  );
+}
+
+export function BotPage() {
+  const [searchParams] = useSearchParams();
+  const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
+  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [configs, setConfigs] = useState<BotConfig[]>([]);
+  const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
+  const [activity, setActivity] = useState<BotActivity | null>(null);
+  const [lastEvaluation, setLastEvaluation] = useState<BotEvaluation | null>(null);
+  const [contracts, setContracts] = useState<ProjectXContract[]>([]);
+  const [form, setForm] = useState<BotFormState>(() => buildInitialForm(accountFromQuery));
+  const [loading, setLoading] = useState(true);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [contractLoading, setContractLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [chartRefreshToken, setChartRefreshToken] = useState(0);
+  const [editingBotId, setEditingBotId] = useState<number | null>(null);
+
+  const selectedBot = useMemo(
+    () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
+    [configs, selectedBotId],
+  );
+  const selectedBotEvaluation = useMemo(
+    () => (selectedBot && lastEvaluation?.config.id === selectedBot.id ? lastEvaluation : null),
+    [lastEvaluation, selectedBot],
+  );
+
+  const loadConfigs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [accountRows, botRows] = await Promise.all([
+        accountsApi.getSelectableAccounts(),
+        botsApi.listConfigs(accountFromQuery ?? undefined),
+      ]);
+      setAccounts(accountRows);
+      setConfigs(botRows.items);
+      setSelectedBotId((current) => {
+        if (current && botRows.items.some((item) => item.id === current)) {
+          return current;
+        }
+        return botRows.items[0]?.id ?? null;
+      });
+      if (accountRows.length > 0) {
+        setForm((current) =>
+          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load bot data");
+    } finally {
+      setLoading(false);
+    }
+  }, [accountFromQuery]);
+
+  const loadActivity = useCallback(async (botId: number | null) => {
+    if (!botId) {
+      setActivity(null);
+      return;
+    }
+    setActivityLoading(true);
+    try {
+      const payload = await botsApi.getActivity(botId);
+      setActivity(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load bot activity");
+    } finally {
+      setActivityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadConfigs();
+  }, [loadConfigs]);
+
+  useEffect(() => {
+    void loadActivity(selectedBot?.id ?? null);
+  }, [loadActivity, selectedBot?.id]);
+
+  useEffect(() => {
+    if (!selectedBot) {
+      return;
+    }
+
+    setEditingBotId(selectedBot.id);
+    setForm(formFromBot(selectedBot));
+    setContracts([]);
+    setFormError(null);
+  }, [selectedBot]);
+
+  async function handleSearchContracts() {
+    if (!form.contractSearch.trim()) {
+      setFormError("Contract search is required.");
+      return;
+    }
+    setContractLoading(true);
+    setFormError(null);
+    try {
+      const rows = await botsApi.searchContracts({ searchText: form.contractSearch, live: false });
+      setContracts(rows);
+      if (rows[0]) {
+        applyContract(rows[0]);
+      }
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Contract search failed");
+    } finally {
+      setContractLoading(false);
+    }
+  }
+
+  function applyContract(contract: ProjectXContract) {
+    setForm((current) => ({
+      ...current,
+      contractId: contract.id,
+      symbol: contract.symbol_id ?? contract.name,
+      contractSearch: contract.name,
+    }));
+  }
+
+  function handleEditSelectedBot() {
+    if (!selectedBot) {
+      return;
+    }
+
+    setEditingBotId(selectedBot.id);
+    setForm(formFromBot(selectedBot));
+    setContracts([]);
+    setFormError(null);
+  }
+
+  function handleCancelEdit() {
+    setEditingBotId(null);
+    setForm(buildInitialForm(accountFromQuery ?? accounts[0]?.id ?? null));
+    setContracts([]);
+    setFormError(null);
+  }
+
+  async function handleDeleteSelectedBot() {
+    if (!selectedBot) {
+      return;
+    }
+
+    const botName = selectedBot.name;
+    if (!window.confirm(`Delete "${botName}"? This will remove the strategy and its bot activity.`)) {
+      return;
+    }
+
+    const deletedBotId = selectedBot.id;
+    setActionLoading("delete");
+    setError(null);
+    try {
+      await botsApi.deleteConfig(deletedBotId);
+      if (editingBotId === deletedBotId) {
+        handleCancelEdit();
+      }
+      if (lastEvaluation?.config.id === deletedBotId) {
+        setLastEvaluation(null);
+      }
+      setActivity(null);
+      await loadConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete bot");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleSaveBot(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const accountId = parsePositiveInt(form.accountId);
+    const timeframeUnitNumber = parsePositiveInt(form.timeframeUnitNumber);
+    const lookbackBars = parsePositiveInt(form.lookbackBars);
+    const fastPeriod = parsePositiveInt(form.fastPeriod);
+    const slowPeriod = parsePositiveInt(form.slowPeriod);
+    const orderSize = parsePositiveNumber(form.orderSize);
+    const maxContracts = parsePositiveNumber(form.maxContracts);
+    const maxDailyLoss = parseNonNegativeNumber(form.maxDailyLoss);
+    const maxTradesPerDay = parseNonNegativeInt(form.maxTradesPerDay);
+    const maxOpenPosition = parsePositiveNumber(form.maxOpenPosition);
+    const cooldownSeconds = parseNonNegativeInt(form.cooldownSeconds);
+    const maxDataStalenessSeconds = parsePositiveInt(form.maxDataStalenessSeconds);
+    const normalizedName = form.name.trim().toLowerCase();
+    const duplicateName = configs.some(
+      (config) => config.id !== editingBotId && config.name.trim().toLowerCase() === normalizedName,
+    );
+
+    if (!normalizedName) {
+      setFormError("Bot name is required.");
+      return;
+    }
+    if (duplicateName) {
+      setFormError("A bot with this name already exists.");
+      return;
+    }
+    if (
+      accountId === null ||
+      timeframeUnitNumber === null ||
+      lookbackBars === null ||
+      fastPeriod === null ||
+      slowPeriod === null ||
+      orderSize === null ||
+      maxContracts === null ||
+      maxDailyLoss === null ||
+      maxTradesPerDay === null ||
+      maxOpenPosition === null ||
+      cooldownSeconds === null ||
+      maxDataStalenessSeconds === null
+    ) {
+      setFormError("Numeric settings must be valid positive values.");
+      return;
+    }
+    if (!form.contractId.trim()) {
+      setFormError("Select a contract before saving.");
+      return;
+    }
+    if (slowPeriod <= fastPeriod) {
+      setFormError("Slow period must be greater than fast period.");
+      return;
+    }
+
+    setSaving(true);
+    setFormError(null);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        account_id: accountId,
+        contract_id: form.contractId,
+        symbol: form.symbol || null,
+        timeframe_unit: form.timeframeUnit,
+        timeframe_unit_number: timeframeUnitNumber,
+        lookback_bars: lookbackBars,
+        fast_period: fastPeriod,
+        slow_period: slowPeriod,
+        order_size: orderSize,
+        max_contracts: maxContracts,
+        max_daily_loss: maxDailyLoss,
+        max_trades_per_day: maxTradesPerDay,
+        max_open_position: maxOpenPosition,
+        allowed_contracts: [form.contractId],
+        trading_start_time: form.tradingStartTime,
+        trading_end_time: form.tradingEndTime,
+        cooldown_seconds: cooldownSeconds,
+        max_data_staleness_seconds: maxDataStalenessSeconds,
+        allow_market_depth: false,
+      };
+
+      const saved = editingBotId
+        ? await botsApi.updateConfig(editingBotId, payload)
+        : await botsApi.createConfig({
+            ...payload,
+            enabled: false,
+            execution_mode: "dry_run",
+            strategy_type: "sma_cross",
+          });
+      setEditingBotId(null);
+      await loadConfigs();
+      setSelectedBotId(saved.id);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Failed to save bot");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runBotAction(kind: "start" | "evaluate" | "stop") {
+    if (!selectedBot) {
+      return;
+    }
+    setActionLoading(kind);
+    setError(null);
+    try {
+      if (kind === "start") {
+        const result = await botsApi.start(selectedBot.id, { dryRun: true });
+        setLastEvaluation(result);
+      } else if (kind === "evaluate") {
+        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true });
+        setLastEvaluation(result);
+      } else {
+        await botsApi.stop(selectedBot.id);
+      }
+      await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
+      setChartRefreshToken((current) => current + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bot action failed");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+        <Skeleton className="h-[520px]" />
+        <Skeleton className="h-[520px]" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 pb-8">
+      {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
+        <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
+          <CardHeader>
+            <CardTitle>Configuration</CardTitle>
+            <CardDescription>SMA cross, ProjectX candles, server-side audit trail</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-3.5" onSubmit={handleSaveBot}>
+              <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                <span>Name</span>
+                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+              </label>
+              <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                <span>Account</span>
+                <Select value={form.accountId} onChange={(event) => setForm({ ...form, accountId: event.target.value })}>
+                  <option value="">Select account</option>
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name} ({account.id})
+                    </option>
+                  ))}
+                </Select>
+              </label>
+
+              <div className="space-y-2">
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Contract</span>
+                  <div className="flex gap-2">
+                    <Input
+                      value={form.contractSearch}
+                      onChange={(event) => setForm({ ...form, contractSearch: event.target.value })}
+                    />
+                    <Button type="button" variant="secondary" onClick={handleSearchContracts} disabled={contractLoading}>
+                      {contractLoading ? "Searching" : "Search"}
+                    </Button>
+                  </div>
+                </label>
+                {contracts.length > 0 ? (
+                  <div className="grid gap-2">
+                    {contracts.slice(0, 4).map((contract) => (
+                      <button
+                        key={contract.id}
+                        type="button"
+                        onClick={() => applyContract(contract)}
+                        className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-left text-xs text-slate-300 transition hover:border-cyan-400/45"
+                      >
+                        <span className="font-semibold text-slate-100">{contract.name}</span>
+                        <span className="ml-2 text-slate-500">{contract.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {form.contractId ? <p className="text-xs text-slate-500">{form.contractId}</p> : null}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Unit</span>
+                  <Select
+                    value={form.timeframeUnit}
+                    onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
+                  >
+                    {timeframeUnits.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {unit}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Size</span>
+                  <Input value={form.timeframeUnitNumber} onChange={(event) => setForm({ ...form, timeframeUnitNumber: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Bars</span>
+                  <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Fast SMA</span>
+                  <Input value={form.fastPeriod} onChange={(event) => setForm({ ...form, fastPeriod: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Slow SMA</span>
+                  <Input value={form.slowPeriod} onChange={(event) => setForm({ ...form, slowPeriod: event.target.value })} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Order Size</span>
+                  <Input value={form.orderSize} onChange={(event) => setForm({ ...form, orderSize: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Max Contracts</span>
+                  <Input value={form.maxContracts} onChange={(event) => setForm({ ...form, maxContracts: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Daily Loss</span>
+                  <Input value={form.maxDailyLoss} onChange={(event) => setForm({ ...form, maxDailyLoss: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Max Open</span>
+                  <Input
+                    value={form.maxOpenPosition}
+                    onChange={(event) => setForm({ ...form, maxOpenPosition: event.target.value })}
+                  />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Trades/Day</span>
+                  <Input value={form.maxTradesPerDay} onChange={(event) => setForm({ ...form, maxTradesPerDay: event.target.value })} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Start ET</span>
+                  <Input value={form.tradingStartTime} onChange={(event) => setForm({ ...form, tradingStartTime: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>End ET</span>
+                  <Input value={form.tradingEndTime} onChange={(event) => setForm({ ...form, tradingEndTime: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Cooldown</span>
+                  <Input value={form.cooldownSeconds} onChange={(event) => setForm({ ...form, cooldownSeconds: event.target.value })} />
+                </label>
+                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  <span>Stale Sec</span>
+                  <Input
+                    value={form.maxDataStalenessSeconds}
+                    onChange={(event) => setForm({ ...form, maxDataStalenessSeconds: event.target.value })}
+                  />
+                </label>
+              </div>
+
+              {formError ? <p className="text-sm text-rose-300">{formError}</p> : null}
+              <div className="flex gap-2">
+                <Button className="flex-1" type="submit" disabled={saving}>
+                  {saving ? (editingBotId ? "Updating" : "Saving") : editingBotId ? "Update Bot" : "Save Bot"}
+                </Button>
+                {editingBotId ? (
+                  <Button type="button" variant="secondary" onClick={handleCancelEdit} disabled={saving}>
+                    Cancel
+                  </Button>
+                ) : null}
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <div className="contents">
+          <Card className="order-2 min-w-0 xl:col-span-2 xl:row-start-2">
+            <CardHeader className="space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Bot</CardTitle>
+                  <CardDescription>ProjectX rule execution</CardDescription>
+                </div>
+                {selectedBot ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={selectedBot.enabled ? "positive" : "neutral"}>
+                      {selectedBot.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <Badge variant="accent">{selectedBot.execution_mode === "dry_run" ? "Dry run" : "Live"}</Badge>
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  className="min-w-0 flex-1"
+                  value={selectedBot?.id ? String(selectedBot.id) : ""}
+                  onChange={(event) => {
+                    const nextId = Number.parseInt(event.target.value, 10);
+                    setSelectedBotId(Number.isFinite(nextId) ? nextId : null);
+                  }}
+                >
+                  {configs.length === 0 ? <option value="">No bots</option> : null}
+                  {configs.map((config) => (
+                    <option key={config.id} value={config.id}>
+                      {config.name}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  aria-label={selectedBot ? `Edit ${selectedBot.name}` : "Edit selected strategy"}
+                  title="Edit strategy"
+                  disabled={!selectedBot || saving || actionLoading !== null}
+                  onClick={handleEditSelectedBot}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300 transition hover:border-cyan-400/50 hover:bg-slate-900 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <EditIcon />
+                </button>
+                <button
+                  type="button"
+                  aria-label={selectedBot ? `Delete ${selectedBot.name}` : "Delete selected strategy"}
+                  title="Delete strategy"
+                  disabled={!selectedBot || saving || actionLoading !== null}
+                  onClick={() => void handleDeleteSelectedBot()}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rose-400/30 bg-rose-500/10 text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-500/15 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/55 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionLoading === "delete" ? (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100" />
+                  ) : (
+                    <TrashIcon />
+                  )}
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-5">
+                {selectedBot ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <Metric label="Account" value={String(selectedBot.account_id)} />
+                      <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
+                      <Metric label="SMA" value={`${selectedBot.fast_period}/${selectedBot.slow_period}`} />
+                      <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
+                        {actionLoading === "start" ? "Starting" : "Start Dry Run"}
+                      </Button>
+                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={actionLoading !== null}>
+                        {actionLoading === "evaluate" ? "Evaluating" : "Evaluate"}
+                      </Button>
+                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={actionLoading !== null}>
+                        {actionLoading === "stop" ? "Stopping" : "Stop"}
+                      </Button>
+                    </div>
+                    {selectedBotEvaluation ? (
+                      <div className="grid gap-3">
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
+                              {selectedBotEvaluation.decision.action}
+                            </Badge>
+                            <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
+                          </div>
+                          <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
+                          {selectedBotEvaluation.order_attempt ? (
+                            <p className="mt-2 text-xs text-slate-400">
+                              Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
+                            </p>
+                          ) : null}
+                          {selectedBotEvaluation.risk_events.length > 0 ? (
+                            <div className="mt-3 space-y-1">
+                              {selectedBotEvaluation.risk_events.map((risk) => (
+                                <p key={risk.id} className="text-xs text-amber-200">
+                                  {risk.code}: {risk.message}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+                          <Sparkline candles={selectedBotEvaluation.candles} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">No bot configuration saved.</p>
+                )}
+
+                <div className="border-t border-slate-800 pt-5">
+                  <div className="mb-4 space-y-1">
+                    <h4 className="text-sm font-semibold text-slate-100 md:text-base">Activity</h4>
+                    <p className="text-xs text-slate-400">Signals, risk events, and order attempts</p>
+                  </div>
+                  {activityLoading ? (
+                    <Skeleton className="h-64" />
+                  ) : activity ? (
+                    <div className="grid gap-4 xl:grid-cols-2">
+                      <ActivityTable
+                        title="Decisions"
+                        rows={activity.decisions.slice(0, 8).map((decision) => ({
+                          id: decision.id,
+                          left: decision.action,
+                          middle: decision.reason,
+                          right: formatDateTime(decision.created_at),
+                          badgeVariant: actionBadgeVariant(decision.action),
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Orders"
+                        rows={activity.order_attempts.slice(0, 8).map((attempt) => ({
+                          id: attempt.id,
+                          left: attempt.status,
+                          middle: `${attempt.side} ${attempt.size} ${attempt.contract_id}`,
+                          right: formatDateTime(attempt.created_at),
+                          badgeVariant: statusBadgeVariant(attempt.status),
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Risk"
+                        rows={activity.risk_events.slice(0, 8).map((risk) => ({
+                          id: risk.id,
+                          left: risk.severity,
+                          middle: `${risk.code}: ${risk.message}`,
+                          right: formatDateTime(risk.created_at),
+                          badgeVariant: risk.severity === "critical" ? "negative" : "warning",
+                        }))}
+                      />
+                      <ActivityTable
+                        title="Runs"
+                        rows={activity.runs.slice(0, 8).map((run) => ({
+                          id: run.id,
+                          left: run.status,
+                          middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
+                          right: formatDateTime(run.started_at),
+                          badgeVariant: statusBadgeVariant(run.status),
+                        }))}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400">No activity.</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="order-1 min-w-0 xl:col-start-1 xl:row-start-1">
+            <BotSignalChart
+              bot={selectedBot}
+              activity={activity}
+              lastEvaluation={selectedBotEvaluation}
+              refreshToken={chartRefreshToken}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M12 20h9" strokeLinecap="round" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M6 7h12" strokeLinecap="round" />
+      <path d="M9 7V5h6v2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 10v8" strokeLinecap="round" />
+      <path d="M15 10v8" strokeLinecap="round" />
+      <path d="M8 7l1 13h6l1-13" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+      <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+interface ActivityRow {
+  id: number;
+  left: string;
+  middle: string;
+  right: string;
+  badgeVariant: "positive" | "negative" | "neutral" | "accent" | "warning";
+}
+
+function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800">
+      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}</div>
+      {rows.length === 0 ? (
+        <p className="px-3 py-4 text-sm text-slate-500">No rows</p>
+      ) : (
+        <div className="max-h-64 overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-24">State</TableHead>
+                <TableHead>Detail</TableHead>
+                <TableHead className="w-32 text-right">Time</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Badge variant={row.badgeVariant}>{row.left}</Badge>
+                  </TableCell>
+                  <TableCell className="max-w-[320px] truncate text-xs text-slate-300">{row.middle}</TableCell>
+                  <TableCell className="text-right text-xs text-slate-500">{row.right}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}

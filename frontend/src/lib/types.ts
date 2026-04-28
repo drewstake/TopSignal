@@ -477,3 +477,177 @@ export interface ProjectXCredentialsInput {
 export interface ProjectXCredentialsStatus {
   configured: boolean;
 }
+
+export type BotExecutionMode = "dry_run" | "live";
+export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
+export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
+
+export interface ProjectXContract {
+  id: string;
+  name: string;
+  description: string | null;
+  tick_size: number | null;
+  tick_value: number | null;
+  active_contract: boolean | null;
+  symbol_id: string | null;
+}
+
+export interface ProjectXMarketCandle {
+  id: number | null;
+  contract_id: string;
+  symbol: string | null;
+  live: boolean;
+  unit: BotTimeframeUnit;
+  unit_number: number;
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  is_partial: boolean;
+  fetched_at: string | null;
+}
+
+export interface ProjectXMarketPrice {
+  contract_id: string;
+  symbol: string | null;
+  price: number;
+  timestamp: string;
+}
+
+export interface BotConfig {
+  id: number;
+  name: string;
+  account_id: number;
+  provider: string;
+  enabled: boolean;
+  execution_mode: BotExecutionMode;
+  strategy_type: "sma_cross";
+  contract_id: string;
+  symbol: string | null;
+  timeframe_unit: BotTimeframeUnit;
+  timeframe_unit_number: number;
+  lookback_bars: number;
+  fast_period: number;
+  slow_period: number;
+  order_size: number;
+  max_contracts: number;
+  max_daily_loss: number;
+  max_trades_per_day: number;
+  max_open_position: number;
+  allowed_contracts: string[];
+  trading_start_time: string;
+  trading_end_time: string;
+  cooldown_seconds: number;
+  max_data_staleness_seconds: number;
+  allow_market_depth: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BotConfigInput {
+  name: string;
+  account_id: number;
+  contract_id: string;
+  symbol?: string | null;
+  enabled?: boolean;
+  execution_mode?: BotExecutionMode;
+  strategy_type?: "sma_cross";
+  timeframe_unit?: BotTimeframeUnit;
+  timeframe_unit_number?: number;
+  lookback_bars?: number;
+  fast_period?: number;
+  slow_period?: number;
+  order_size?: number;
+  max_contracts?: number;
+  max_daily_loss?: number;
+  max_trades_per_day?: number;
+  max_open_position?: number;
+  allowed_contracts?: string[];
+  trading_start_time?: string;
+  trading_end_time?: string;
+  cooldown_seconds?: number;
+  max_data_staleness_seconds?: number;
+  allow_market_depth?: boolean;
+}
+
+export type BotConfigUpdateInput = Partial<BotConfigInput>;
+
+export interface BotConfigListResponse {
+  items: BotConfig[];
+  total: number;
+}
+
+export interface BotRun {
+  id: number;
+  bot_config_id: number;
+  account_id: number;
+  status: "running" | "stopped" | "blocked" | "error";
+  dry_run: boolean;
+  started_at: string;
+  stopped_at: string | null;
+  stop_reason: string | null;
+  last_heartbeat_at: string | null;
+}
+
+export interface BotDecision {
+  id: number;
+  bot_config_id: number;
+  bot_run_id: number | null;
+  account_id: number;
+  contract_id: string;
+  symbol: string | null;
+  decision_type: string;
+  action: BotAction;
+  reason: string;
+  candle_timestamp: string | null;
+  price: number | null;
+  quantity: number | null;
+  created_at: string;
+}
+
+export interface BotOrderAttempt {
+  id: number;
+  bot_config_id: number;
+  bot_run_id: number | null;
+  bot_decision_id: number | null;
+  account_id: number;
+  contract_id: string;
+  side: "BUY" | "SELL";
+  order_type: string;
+  size: number;
+  status: "pending" | "dry_run" | "submitted" | "blocked" | "rejected" | "error";
+  provider_order_id: string | null;
+  rejection_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BotRiskEvent {
+  id: number;
+  bot_config_id: number;
+  bot_run_id: number | null;
+  account_id: number;
+  severity: "info" | "warning" | "critical";
+  code: string;
+  message: string;
+  created_at: string;
+}
+
+export interface BotEvaluation {
+  config: BotConfig;
+  run: BotRun | null;
+  decision: BotDecision;
+  order_attempt: BotOrderAttempt | null;
+  risk_events: BotRiskEvent[];
+  candles: ProjectXMarketCandle[];
+}
+
+export interface BotActivity {
+  config: BotConfig;
+  runs: BotRun[];
+  decisions: BotDecision[];
+  order_attempts: BotOrderAttempt[];
+  risk_events: BotRiskEvent[];
+}

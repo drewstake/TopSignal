@@ -560,7 +560,6 @@ export function DashboardPage() {
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
-  const canReuseMetricsTradesForRecentTrades = selectedTradeDate === null && metricsRangeQuery.allTime;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
   const dashboardLoadPerfRef = useRef<{
     accountId: number;
@@ -649,13 +648,6 @@ export function DashboardPage() {
       return;
     }
 
-    if (canReuseMetricsTradesForRecentTrades) {
-      setTrades([]);
-      setTradesError(null);
-      setTradesLoading(false);
-      return;
-    }
-
     setTradesLoading(true);
     setTradesError(null);
 
@@ -671,7 +663,7 @@ export function DashboardPage() {
     } finally {
       setTradesLoading(false);
     }
-  }, [canReuseMetricsTradesForRecentTrades, selectedAccountId, selectedTradeDate]);
+  }, [selectedAccountId, selectedTradeDate]);
 
   const loadJournalDays = useCallback(async () => {
     if (!selectedAccountId || !calendarVisibleRange) {
@@ -709,6 +701,7 @@ export function DashboardPage() {
         limit: METRIC_TRADE_LIMIT,
         start: metricsRangeQuery.start,
         end: metricsRangeQuery.end,
+        includeLifecycle: false,
       });
       setMetricsTrades(nextTrades);
     } catch (err) {
@@ -1162,10 +1155,9 @@ export function DashboardPage() {
 
     return "selected range";
   }, [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays]);
-  const recentTrades = canReuseMetricsTradesForRecentTrades ? metricsTrades.slice(0, TRADE_LIMIT) : trades;
-  const recentTradesLoading = canReuseMetricsTradesForRecentTrades ? metricsTradesLoading : tradesLoading;
-  const recentTradesError =
-    canReuseMetricsTradesForRecentTrades && metricsTradesError !== null ? "Failed to load recent trade events." : tradesError;
+  const recentTrades = trades;
+  const recentTradesLoading = tradesLoading;
+  const recentTradesError = tradesError;
   const copyFullStatsMetrics = useMemo<CopyFullStatsMetrics>(
     () => ({
       summary,

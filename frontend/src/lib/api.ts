@@ -43,6 +43,16 @@ import type {
   TradeRecord,
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
+  BotActivity,
+  BotConfig,
+  BotConfigInput,
+  BotConfigListResponse,
+  BotConfigUpdateInput,
+  BotEvaluation,
+  BotTimeframeUnit,
+  ProjectXContract,
+  ProjectXMarketCandle,
+  ProjectXMarketPrice,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
@@ -632,6 +642,7 @@ interface AccountTradesQuery {
   end?: string;
   symbol?: string;
   refresh?: boolean;
+  includeLifecycle?: boolean;
 }
 
 interface AccountSummaryQuery {
@@ -692,12 +703,14 @@ export const accountsApi = {
       end: query.end,
       symbol: query.symbol,
       refresh: query.refresh,
+      include_lifecycle: query.includeLifecycle,
     };
     const cacheKey = accountReadQueryCacheKey(accountId, {
       limit: requestQuery.limit,
       start: requestQuery.start,
       end: requestQuery.end,
       symbol: requestQuery.symbol,
+      include_lifecycle: requestQuery.include_lifecycle,
     });
     return getTimedCachedRequest({
       cache: accountTradesCacheByQuery,
@@ -874,6 +887,238 @@ export const accountsApi = {
       invalidateAccountJournalCaches(body.from_account_id);
       invalidateAccountJournalCaches(body.to_account_id);
       return result;
+  }),
+};
+
+interface ContractSearchQuery {
+  searchText: string;
+  live?: boolean;
+}
+
+interface CandleQuery {
+  contractId: string;
+  symbol?: string;
+  start?: string;
+  end?: string;
+  live?: boolean;
+  unit?: BotTimeframeUnit;
+  unitNumber?: number;
+  limit?: number;
+  includePartialBar?: boolean;
+  refresh?: boolean;
+}
+
+interface MarketPriceStreamQuery {
+  contractId: string;
+  symbol?: string;
+  throttleMs?: number;
+}
+
+interface MarketPriceStreamCallbacks {
+  onPrice: (price: ProjectXMarketPrice) => void;
+  onError?: (error: unknown) => void;
+}
+
+interface BotStartOptions {
+  dryRun?: boolean;
+  confirmLiveOrderRouting?: boolean;
+}
+
+function botStartPayload(options: BotStartOptions = {}) {
+  return {
+    dry_run: options.dryRun,
+    confirm_live_order_routing: options.confirmLiveOrderRouting ?? false,
+  };
+}
+
+export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
+  const controller = new AbortController();
+  let closed = false;
+
+  void runProjectXMarketPriceStream(query, callbacks, controller.signal).catch((error) => {
+    if (!closed && !isAbortError(error)) {
+      callbacks.onError?.(error);
+    }
+  });
+
+  return () => {
+    closed = true;
+    controller.abort();
+  };
+}
+
+async function runProjectXMarketPriceStream(
+  query: MarketPriceStreamQuery,
+  callbacks: MarketPriceStreamCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  const accessToken = await getAccessToken();
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(
+    buildUrl("/api/projectx/market-price/stream", {
+      contract_id: query.contractId,
+      symbol: query.symbol,
+      throttle_ms: query.throttleMs ?? 250,
+    }),
+    {
+      headers: Object.keys(headers).length === 0 ? undefined : headers,
+      signal,
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new ApiError(detail || `Market price stream failed (${response.status} ${response.statusText})`, response.status, detail, detail);
+  }
+  if (!response.body) {
+    throw new Error("Market price stream response did not include a body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const price = parseMarketPriceSseFrame(frame);
+      if (price) {
+        callbacks.onPrice(price);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+function parseMarketPriceSseFrame(frame: string): ProjectXMarketPrice | null {
+  let eventType = "message";
+  const dataLines: string[] = [];
+
+  for (const line of frame.split(/\r?\n/)) {
+    if (line === "" || line.startsWith(":")) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf(":");
+    const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+    let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
+    if (value.startsWith(" ")) {
+      value = value.slice(1);
+    }
+
+    if (field === "event") {
+      eventType = value;
+    } else if (field === "data") {
+      dataLines.push(value);
+    }
+  }
+
+  if (eventType !== "price" || dataLines.length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(dataLines.join("\n"));
+    return isProjectXMarketPrice(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProjectXMarketPrice(value: unknown): value is ProjectXMarketPrice {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<ProjectXMarketPrice>;
+  return (
+    typeof candidate.contract_id === "string" &&
+    (candidate.symbol === null || typeof candidate.symbol === "string") &&
+    typeof candidate.price === "number" &&
+    Number.isFinite(candidate.price) &&
+    typeof candidate.timestamp === "string"
+  );
+}
+
+function isAbortError(value: unknown): boolean {
+  return value instanceof Error && value.name === "AbortError";
+}
+
+export const botsApi = {
+  searchContracts: (query: ContractSearchQuery) =>
+    requestJson<ProjectXContract[]>("/api/projectx/contracts/search", {
+      query: {
+        search_text: query.searchText,
+        live: query.live ?? false,
+      },
+    }),
+  getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
+    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
+      query: {
+        contract_id: query.contractId,
+        symbol: query.symbol,
+        start: query.start,
+        end: query.end,
+        live: query.live ?? false,
+        unit: query.unit ?? "minute",
+        unit_number: query.unitNumber ?? 5,
+        limit: query.limit ?? 500,
+        include_partial_bar: query.includePartialBar ?? false,
+        refresh: query.refresh ?? false,
+      },
+      signal: options.signal,
+    }),
+  listConfigs: (accountId?: number) =>
+    requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+    }),
+  createConfig: (payload: BotConfigInput) =>
+    requestJson<BotConfig>("/api/bots", {
+      method: "POST",
+      body: payload,
+    }),
+  updateConfig: (botConfigId: number, payload: BotConfigUpdateInput) =>
+    requestJson<BotConfig>(`/api/bots/${botConfigId}`, {
+      method: "PATCH",
+      body: payload,
+    }),
+  deleteConfig: (botConfigId: number) =>
+    requestJson<void>(`/api/bots/${botConfigId}`, {
+      method: "DELETE",
+    }),
+  start: (botConfigId: number, options: BotStartOptions = {}) =>
+    requestJson<BotEvaluation>(`/api/bots/${botConfigId}/start`, {
+      method: "POST",
+      body: botStartPayload(options),
+    }),
+  evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }) =>
+    requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
+      method: "POST",
+      body: botStartPayload(options),
+    }),
+  stop: (botConfigId: number) =>
+    requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
+      method: "POST",
+    }),
+  getActivity: (botConfigId: number, limit = 50) =>
+    requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
+      query: {
+        limit,
+      },
     }),
 };
 

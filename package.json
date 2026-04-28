@@ -6,6 +6,7 @@
     "concurrently": "^9.0.0"
   },
   "scripts": {
+    "db:init": "node scripts/db-init.cjs",
     "dev": "node scripts/dev.cjs",
     "dev:backend": "node scripts/dev-backend.cjs",
     "dev:frontend": "node scripts/dev-frontend.cjs"

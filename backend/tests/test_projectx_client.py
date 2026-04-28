@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from urllib import error
 
 import pytest
 
@@ -116,6 +117,36 @@ def test_request_once_maps_login_key_error_code_3_to_actionable_message(monkeypa
     )
 
 
+def test_request_once_maps_timeout_to_gateway_timeout(monkeypatch):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    def raise_timeout(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_timeout)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 504
+    assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
+
+
+def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    def raise_url_timeout(*_args, **_kwargs):
+        raise error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_url_timeout)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
+
+    assert exc_info.value.status_code == 504
+    assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
+
+
 def test_fetch_trade_history_skips_voided_rows():
     class StubClient(ProjectXClient):
         def __init__(self, payload):
@@ -175,6 +206,113 @@ def test_fetch_trade_history_skips_voided_rows():
 
     assert len(rows) == 1
     assert rows[0]["source_trade_id"] == "1"
+
+
+def test_search_contracts_normalizes_projectx_contract_rows():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "contracts": [
+                    {
+                        "id": "CON.F.US.MNQ.M26",
+                        "name": "MNQM6",
+                        "description": "Micro E-mini Nasdaq-100: June 2026",
+                        "tickSize": 0.25,
+                        "tickValue": 0.5,
+                        "activeContract": True,
+                        "symbolId": "F.US.MNQ",
+                    }
+                ]
+            }
+
+    client = StubClient()
+
+    rows = client.search_contracts(search_text="MNQ", live=False)
+
+    assert client.calls == [("POST", "/api/Contract/search", {"searchText": "MNQ", "live": False}, True)]
+    assert rows[0]["id"] == "CON.F.US.MNQ.M26"
+    assert rows[0]["tick_size"] == 0.25
+    assert rows[0]["symbol_id"] == "F.US.MNQ"
+
+
+def test_retrieve_bars_normalizes_and_sorts_ohlcv_rows():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "bars": [
+                    {"t": "2026-04-01T10:05:00Z", "o": 102, "h": 105, "l": 101, "c": 104, "v": 20},
+                    {"t": "2026-04-01T10:00:00Z", "o": 100, "h": 103, "l": 99, "c": 102, "v": 10},
+                ]
+            }
+
+    client = StubClient()
+
+    rows = client.retrieve_bars(
+        contract_id="CON.F.US.MNQ.M26",
+        live=False,
+        start=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 4, 1, 10, 10, tzinfo=timezone.utc),
+        unit=2,
+        unit_number=5,
+        limit=500,
+    )
+
+    assert client.calls[0][1] == "/api/History/retrieveBars"
+    assert client.calls[0][2]["includePartialBar"] is False
+    assert [row["timestamp"] for row in rows] == [
+        datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
+    ]
+    assert rows[1]["close"] == 104.0
+
+
+def test_place_order_uses_projectx_order_place_payload():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {"orderId": 9056, "success": True}
+
+    client = StubClient()
+
+    response = client.place_order(
+        account_id=123,
+        contract_id="CON.F.US.MNQ.M26",
+        order_type=2,
+        side=0,
+        size=1,
+        custom_tag="bot-test",
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/api/Order/place",
+            {
+                "accountId": 123,
+                "contractId": "CON.F.US.MNQ.M26",
+                "type": 2,
+                "side": 0,
+                "size": 1,
+                "customTag": "bot-test",
+            },
+            True,
+        )
+    ]
+    assert response["order_id"] == "9056"
 
 
 def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():

@@ -49,6 +49,8 @@ Current migration list:
 20260302_add_projectx_trade_events_perf_indexes.sql
 20260307_add_payouts.sql
 20260309_add_account_display_name.sql
+20260426_add_projectx_trade_events_lifecycle_index.sql
+20260426_add_trading_bot_tables.sql
 ```
 
 Example PowerShell application loop:
@@ -66,7 +68,9 @@ $migrations = @(
   "20260302_add_multitenant_auth_and_provider_credentials.sql",
   "20260302_add_projectx_trade_events_perf_indexes.sql",
   "20260307_add_payouts.sql",
-  "20260309_add_account_display_name.sql"
+  "20260309_add_account_display_name.sql",
+  "20260426_add_projectx_trade_events_lifecycle_index.sql",
+  "20260426_add_trading_bot_tables.sql"
 )
 
 foreach ($name in $migrations) {
@@ -87,6 +91,12 @@ Those patches currently help older dev databases by:
 - seeding default `instrument_metadata`
 
 Treat those patches as a safety net, not as the primary schema-upgrade path.
+
+For faster local dev startup, the root `npm run dev` backend wrapper sets `TOPSIGNAL_DB_SCHEMA_INIT=skip` unless you override it. Run the compatibility pass explicitly when you change schema-related code or apply new migrations:
+
+```powershell
+npm run db:init
+```
 
 ## Verifying The Schema
 

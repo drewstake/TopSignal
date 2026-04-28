@@ -169,6 +169,238 @@ class ProjectXTradeDaySync(Base):
     )
 
 
+class ProjectXMarketCandle(Base):
+    __tablename__ = "projectx_market_candles"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    contract_id = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=True)
+    live = Column(Boolean, nullable=False, server_default="false")
+    unit = Column(Text, nullable=False)
+    unit_number = Column(Integer, nullable=False)
+    candle_timestamp = Column(DateTime(timezone=True), nullable=False)
+    open_price = Column(Numeric(18, 6), nullable=False)
+    high_price = Column(Numeric(18, 6), nullable=False)
+    low_price = Column(Numeric(18, 6), nullable=False)
+    close_price = Column(Numeric(18, 6), nullable=False)
+    volume = Column(Numeric(18, 6), nullable=False, server_default="0")
+    is_partial = Column(Boolean, nullable=False, server_default="false")
+    source = Column(Text, nullable=False, server_default="projectx")
+    raw_payload = Column(JSON, nullable=True)
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("unit in ('second','minute','hour','day','week','month')", name="projectx_market_candles_unit_check"),
+        CheckConstraint("unit_number > 0", name="projectx_market_candles_unit_number_positive_check"),
+        UniqueConstraint(
+            "user_id",
+            "contract_id",
+            "live",
+            "unit",
+            "unit_number",
+            "candle_timestamp",
+            name="uq_projectx_market_candles_contract_timeframe",
+        ),
+        Index(
+            "idx_projectx_market_candles_contract_ts",
+            "user_id",
+            "contract_id",
+            "live",
+            "unit",
+            "unit_number",
+            "candle_timestamp",
+        ),
+    )
+
+
+class BotConfig(Base):
+    __tablename__ = "bot_configs"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    account_id = Column(BigInteger, nullable=False)
+    name = Column(Text, nullable=False)
+    provider = Column(Text, nullable=False, server_default="projectx")
+    enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    execution_mode = Column(Text, nullable=False, default="dry_run", server_default="dry_run")
+    strategy_type = Column(Text, nullable=False, default="sma_cross", server_default="sma_cross")
+    contract_id = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=True)
+    timeframe_unit = Column(Text, nullable=False, default="minute", server_default="minute")
+    timeframe_unit_number = Column(Integer, nullable=False, default=5, server_default="5")
+    lookback_bars = Column(Integer, nullable=False, default=200, server_default="200")
+    fast_period = Column(Integer, nullable=False, default=9, server_default="9")
+    slow_period = Column(Integer, nullable=False, default=21, server_default="21")
+    order_size = Column(Numeric(18, 6), nullable=False, default=1, server_default="1")
+    max_contracts = Column(Numeric(18, 6), nullable=False, default=1, server_default="1")
+    max_daily_loss = Column(Numeric(18, 6), nullable=False, default=250, server_default="250")
+    max_trades_per_day = Column(Integer, nullable=False, default=3, server_default="3")
+    max_open_position = Column(Numeric(18, 6), nullable=False, default=1, server_default="1")
+    allowed_contracts = Column(JSON, nullable=False, server_default=text("'[]'"))
+    trading_start_time = Column(Text, nullable=False, default="09:30", server_default="09:30")
+    trading_end_time = Column(Text, nullable=False, default="15:45", server_default="15:45")
+    cooldown_seconds = Column(Integer, nullable=False, default=300, server_default="300")
+    max_data_staleness_seconds = Column(Integer, nullable=False, default=600, server_default="600")
+    allow_market_depth = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("execution_mode in ('dry_run','live')", name="bot_configs_execution_mode_check"),
+        CheckConstraint("strategy_type in ('sma_cross')", name="bot_configs_strategy_type_check"),
+        CheckConstraint(
+            "timeframe_unit in ('second','minute','hour','day','week','month')",
+            name="bot_configs_timeframe_unit_check",
+        ),
+        CheckConstraint("timeframe_unit_number > 0", name="bot_configs_timeframe_unit_number_positive_check"),
+        CheckConstraint("lookback_bars >= 25", name="bot_configs_lookback_bars_min_check"),
+        CheckConstraint("fast_period > 0", name="bot_configs_fast_period_positive_check"),
+        CheckConstraint("slow_period > fast_period", name="bot_configs_slow_period_gt_fast_check"),
+        CheckConstraint("order_size > 0", name="bot_configs_order_size_positive_check"),
+        CheckConstraint("max_contracts > 0", name="bot_configs_max_contracts_positive_check"),
+        CheckConstraint("max_daily_loss >= 0", name="bot_configs_max_daily_loss_nonnegative_check"),
+        CheckConstraint("max_trades_per_day >= 0", name="bot_configs_max_trades_per_day_nonnegative_check"),
+        CheckConstraint("max_open_position > 0", name="bot_configs_max_open_position_positive_check"),
+        CheckConstraint("cooldown_seconds >= 0", name="bot_configs_cooldown_seconds_nonnegative_check"),
+        CheckConstraint("max_data_staleness_seconds > 0", name="bot_configs_data_staleness_positive_check"),
+        Index("idx_bot_configs_user_account", "user_id", "account_id"),
+        Index("idx_bot_configs_user_enabled", "user_id", "enabled"),
+    )
+
+
+class BotRun(Base):
+    __tablename__ = "bot_runs"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="CASCADE"), nullable=False)
+    account_id = Column(BigInteger, nullable=False)
+    status = Column(Text, nullable=False, default="running", server_default="running")
+    dry_run = Column(Boolean, nullable=False, default=True, server_default="true")
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    stop_reason = Column(Text, nullable=True)
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    raw_state = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status in ('running','stopped','blocked','error')", name="bot_runs_status_check"),
+        Index("idx_bot_runs_config_started", "user_id", "bot_config_id", "started_at"),
+        Index("idx_bot_runs_account_status", "user_id", "account_id", "status"),
+    )
+
+
+class BotDecision(Base):
+    __tablename__ = "bot_decisions"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="CASCADE"), nullable=False)
+    bot_run_id = Column(BigInteger, ForeignKey("bot_runs.id", ondelete="SET NULL"), nullable=True)
+    account_id = Column(BigInteger, nullable=False)
+    contract_id = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=True)
+    decision_type = Column(Text, nullable=False)
+    action = Column(Text, nullable=False)
+    reason = Column(Text, nullable=False)
+    candle_timestamp = Column(DateTime(timezone=True), nullable=True)
+    price = Column(Numeric(18, 6), nullable=True)
+    quantity = Column(Numeric(18, 6), nullable=True)
+    raw_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision_type in ('signal','risk_reject','order_attempt','lifecycle')",
+            name="bot_decisions_type_check",
+        ),
+        CheckConstraint("action in ('BUY','SELL','HOLD','NONE','STOP')", name="bot_decisions_action_check"),
+        Index("idx_bot_decisions_config_created", "user_id", "bot_config_id", "created_at"),
+    )
+
+
+class BotOrderAttempt(Base):
+    __tablename__ = "bot_order_attempts"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="CASCADE"), nullable=False)
+    bot_run_id = Column(BigInteger, ForeignKey("bot_runs.id", ondelete="SET NULL"), nullable=True)
+    bot_decision_id = Column(BigInteger, ForeignKey("bot_decisions.id", ondelete="SET NULL"), nullable=True)
+    account_id = Column(BigInteger, nullable=False)
+    contract_id = Column(Text, nullable=False)
+    side = Column(Text, nullable=False)
+    order_type = Column(Text, nullable=False, default="market", server_default="market")
+    size = Column(Numeric(18, 6), nullable=False)
+    limit_price = Column(Numeric(18, 6), nullable=True)
+    stop_price = Column(Numeric(18, 6), nullable=True)
+    trail_price = Column(Numeric(18, 6), nullable=True)
+    status = Column(Text, nullable=False, default="pending", server_default="pending")
+    provider_order_id = Column(Text, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    raw_request = Column(JSON, nullable=True)
+    raw_response = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("side in ('BUY','SELL')", name="bot_order_attempts_side_check"),
+        CheckConstraint("order_type in ('market','limit','stop','trailing_stop')", name="bot_order_attempts_order_type_check"),
+        CheckConstraint(
+            "status in ('pending','dry_run','submitted','blocked','rejected','error')",
+            name="bot_order_attempts_status_check",
+        ),
+        CheckConstraint("size > 0", name="bot_order_attempts_size_positive_check"),
+        Index("idx_bot_order_attempts_config_created", "user_id", "bot_config_id", "created_at"),
+        Index("idx_bot_order_attempts_account_created", "user_id", "account_id", "created_at"),
+    )
+
+
+class BotRiskEvent(Base):
+    __tablename__ = "bot_risk_events"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="CASCADE"), nullable=False)
+    bot_run_id = Column(BigInteger, ForeignKey("bot_runs.id", ondelete="SET NULL"), nullable=True)
+    account_id = Column(BigInteger, nullable=False)
+    severity = Column(Text, nullable=False, default="warning", server_default="warning")
+    code = Column(Text, nullable=False)
+    message = Column(Text, nullable=False)
+    raw_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("severity in ('info','warning','critical')", name="bot_risk_events_severity_check"),
+        Index("idx_bot_risk_events_config_created", "user_id", "bot_config_id", "created_at"),
+    )
+
+
 class PositionLifecycle(Base):
     __tablename__ = "position_lifecycles"
 

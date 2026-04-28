@@ -16,7 +16,7 @@ from ..auth import get_authenticated_user_id
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient
-from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_trade_summary
+from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
 from .topstep_fees import effective_topstep_trade_fee
 
 logger = logging.getLogger(__name__)
@@ -613,17 +613,11 @@ def summarize_trade_events_with_point_bases(
         point_value_by_symbol=point_value_lookup,
     )
 
-    point_payoff_by_basis: dict[str, dict[str, float | None]] = {}
-    for basis in point_bases:
-        basis_summary = compute_trade_summary(
-            samples,
-            points_basis=basis,
-            point_value_by_symbol=point_value_lookup,
-        )
-        point_payoff_by_basis[basis] = {
-            "avgPointGain": basis_summary["avgPointGain"],
-            "avgPointLoss": basis_summary["avgPointLoss"],
-        }
+    point_payoff_by_basis = compute_point_payoff_by_basis(
+        samples,
+        point_bases=point_bases,
+        point_value_by_symbol=point_value_lookup,
+    )
 
     return summary, point_payoff_by_basis
 

@@ -136,6 +136,111 @@ class ProjectXClient:
         output.sort(key=lambda account: account["id"])
         return output
 
+    def search_contracts(self, *, search_text: str, live: bool = False) -> list[dict[str, Any]]:
+        payload = {
+            "searchText": str(search_text).strip(),
+            "live": bool(live),
+        }
+        data = self._request("POST", "/api/Contract/search", payload=payload, with_auth=True)
+        return _normalize_contract_rows(data)
+
+    def list_available_contracts(self, *, live: bool = False) -> list[dict[str, Any]]:
+        payload = {"live": bool(live)}
+        data = self._request("POST", "/api/Contract/available", payload=payload, with_auth=True)
+        return _normalize_contract_rows(data)
+
+    def retrieve_bars(
+        self,
+        *,
+        contract_id: str,
+        live: bool,
+        start: datetime,
+        end: datetime,
+        unit: int,
+        unit_number: int,
+        limit: int,
+        include_partial_bar: bool = False,
+    ) -> list[dict[str, Any]]:
+        payload = {
+            "contractId": str(contract_id),
+            "live": bool(live),
+            "startTime": _iso_utc(start),
+            "endTime": _iso_utc(end),
+            "unit": int(unit),
+            "unitNumber": max(1, int(unit_number)),
+            "limit": max(1, min(int(limit), 20_000)),
+            "includePartialBar": bool(include_partial_bar),
+        }
+        data = self._request("POST", "/api/History/retrieveBars", payload=payload, with_auth=True)
+        rows = _unwrap_list(data, preferred_keys=["bars", "data", "items"])
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            timestamp = _parse_datetime(_first_value(row, ["t", "timestamp", "time"]))
+            if timestamp is None:
+                continue
+
+            output.append(
+                {
+                    "timestamp": timestamp,
+                    "open": _safe_float(_first_value(row, ["o", "open"])),
+                    "high": _safe_float(_first_value(row, ["h", "high"])),
+                    "low": _safe_float(_first_value(row, ["l", "low"])),
+                    "close": _safe_float(_first_value(row, ["c", "close"])),
+                    "volume": _safe_float(_first_value(row, ["v", "volume"])),
+                    "is_partial": _is_truthy(_first_value(row, ["isPartial", "is_partial", "partial"])),
+                    "raw_payload": row,
+                }
+            )
+
+        output.sort(key=lambda bar: bar["timestamp"])
+        return output
+
+    def place_order(
+        self,
+        *,
+        account_id: int,
+        contract_id: str,
+        order_type: int,
+        side: int,
+        size: int,
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+        trail_price: float | None = None,
+        custom_tag: str | None = None,
+        stop_loss_bracket: dict[str, Any] | None = None,
+        take_profit_bracket: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "accountId": int(account_id),
+            "contractId": str(contract_id),
+            "type": int(order_type),
+            "side": int(side),
+            "size": int(size),
+        }
+        if limit_price is not None:
+            payload["limitPrice"] = float(limit_price)
+        if stop_price is not None:
+            payload["stopPrice"] = float(stop_price)
+        if trail_price is not None:
+            payload["trailPrice"] = float(trail_price)
+        if custom_tag is not None:
+            payload["customTag"] = str(custom_tag)
+        if stop_loss_bracket is not None:
+            payload["stopLossBracket"] = stop_loss_bracket
+        if take_profit_bracket is not None:
+            payload["takeProfitBracket"] = take_profit_bracket
+
+        data = self._request("POST", "/api/Order/place", payload=payload, with_auth=True)
+        order_id = _string_or_none(_first_value(data, ["orderId", "id"])) if isinstance(data, dict) else None
+        return {
+            "order_id": order_id,
+            "raw_payload": data,
+            "request_payload": payload,
+        }
+
     def fetch_trade_history(
         self,
         account_id: int,
@@ -326,7 +431,17 @@ class ProjectXClient:
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
             ) from exc
+        except TimeoutError as exc:
+            raise ProjectXClientError(
+                "ProjectX request timed out. Check the ProjectX connection and try again.",
+                status_code=504,
+            ) from exc
         except error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProjectXClientError(
+                    "ProjectX request timed out. Check the ProjectX connection and try again.",
+                    status_code=504,
+                ) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
@@ -426,7 +541,36 @@ def _unwrap_list(payload: Any, preferred_keys: list[str]) -> list[Any]:
     return []
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _normalize_contract_rows(payload: Any) -> list[dict[str, Any]]:
+    rows = _unwrap_list(payload, preferred_keys=["contracts", "data", "items"])
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        contract_id = _string_or_none(_first_value(row, ["id", "contractId", "contract_id"]))
+        if contract_id is None:
+            continue
+
+        name = _string_or_none(_first_value(row, ["name", "symbol", "contractSymbol"])) or contract_id
+        output.append(
+            {
+                "id": contract_id,
+                "name": name,
+                "description": _string_or_none(_first_value(row, ["description", "desc"])),
+                "tick_size": _safe_float(_first_value(row, ["tickSize", "tick_size"]), default=None),
+                "tick_value": _safe_float(_first_value(row, ["tickValue", "tick_value"]), default=None),
+                "active_contract": _safe_bool(_first_value(row, ["activeContract", "active_contract"])),
+                "symbol_id": _string_or_none(_first_value(row, ["symbolId", "symbol_id"])),
+                "raw_payload": row,
+            }
+        )
+
+    output.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("id") or "")))
+    return output
+
+
+def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
     if value is None:
         return default
     try:

@@ -1,4 +1,6 @@
 import calendar
+import asyncio
+import json
 import logging
 import os
 import re
@@ -11,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -57,6 +59,18 @@ from .journal_schemas import (
     JournalEntryOut,
     JournalMood,
     PullTradeStatsIn,
+)
+from .bot_schemas import (
+    BotActivityOut,
+    BotConfigCreateIn,
+    BotConfigListOut,
+    BotConfigOut,
+    BotConfigUpdateIn,
+    BotEvaluationOut,
+    BotRunOut,
+    BotStartIn,
+    ProjectXContractOut,
+    ProjectXMarketCandleOut,
 )
 from .metrics_schemas import (
     BehaviorMetricsOut,
@@ -147,6 +161,30 @@ from .services.projectx_trades import (
     serialize_trade_event,
     summarize_trade_events,
     summarize_trade_events_with_point_bases,
+)
+from .services.bot_service import (
+    create_bot_config,
+    delete_bot_config,
+    evaluate_bot_config,
+    fetch_and_store_market_candles,
+    get_bot_activity,
+    get_bot_config,
+    list_market_candles,
+    list_bot_configs,
+    market_candle_cache_needs_refresh,
+    next_market_candle_fetch_start,
+    prune_market_candle_cache_range,
+    resolve_market_contract,
+    serialize_bot_config,
+    serialize_bot_decision,
+    serialize_bot_order_attempt,
+    serialize_bot_risk_event,
+    serialize_bot_run,
+    serialize_evaluation,
+    serialize_market_candle,
+    start_bot_run,
+    stop_latest_bot_run,
+    update_bot_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -932,6 +970,426 @@ def get_projectx_account_last_trade(
     }
 
 
+@app.get("/api/projectx/contracts/search", response_model=list[ProjectXContractOut])
+def search_projectx_contracts(
+    search_text: str = Query(..., min_length=1, max_length=50),
+    live: bool = False,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    try:
+        client = _projectx_client_for_user(db, user_id=user_id)
+        rows = client.search_contracts(search_text=search_text, live=live)
+    except ProjectXClientError as exc:
+        raise _to_http_exception(exc) from exc
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row.get("description"),
+            "tick_size": row.get("tick_size"),
+            "tick_value": row.get("tick_value"),
+            "active_contract": row.get("active_contract"),
+            "symbol_id": row.get("symbol_id"),
+        }
+        for row in rows
+    ]
+
+
+@app.get("/api/projectx/candles", response_model=list[ProjectXMarketCandleOut])
+def get_projectx_market_candles(
+    contract_id: str = Query(..., min_length=1, max_length=120),
+    symbol: str | None = Query(default=None, max_length=40),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    live: bool = False,
+    unit: str = Query(default="minute", pattern="^(second|minute|hour|day|week|month)$"),
+    unit_number: int = Query(default=5, ge=1, le=1440),
+    limit: int = Query(default=500, ge=1, le=20000),
+    include_partial_bar: bool = False,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
+    start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
+    _validate_time_range(start=start_utc, end=end_utc)
+
+    fallback_candles = []
+    try:
+        cached_candles = list_market_candles(
+            db,
+            user_id=user_id,
+            contract_id=contract_id,
+            live=live,
+            start=start_utc,
+            end=end_utc,
+            unit=unit,
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+        )
+        fallback_candles = cached_candles
+        if (
+            cached_candles
+            and not refresh
+            and not market_candle_cache_needs_refresh(
+                cached_candles,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                include_partial_bar=include_partial_bar,
+            )
+        ):
+            return [serialize_market_candle(row) for row in cached_candles]
+
+        client = _projectx_client_for_user(db, user_id=user_id)
+        resolved_contract_id, resolved_symbol = resolve_market_contract(
+            client,
+            contract_id=contract_id,
+            symbol=symbol,
+            live=live,
+        )
+        if resolved_contract_id != contract_id:
+            cached_candles = list_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            )
+            if cached_candles:
+                fallback_candles = cached_candles
+            if (
+                cached_candles
+                and not refresh
+                and not market_candle_cache_needs_refresh(
+                    cached_candles,
+                    end=end_utc,
+                    unit=unit,
+                    unit_number=unit_number,
+                    include_partial_bar=include_partial_bar,
+                )
+            ):
+                return [serialize_market_candle(row) for row in cached_candles]
+
+        fetch_start_utc = start_utc
+        if cached_candles and not refresh:
+            fetch_start_utc = next_market_candle_fetch_start(
+                cached_candles,
+                start=start_utc,
+                unit=unit,
+                unit_number=unit_number,
+            )
+            if fetch_start_utc > end_utc:
+                return [serialize_market_candle(row) for row in cached_candles]
+
+        candles = fetch_and_store_market_candles(
+            db,
+            user_id=user_id,
+            client=client,
+            contract_id=resolved_contract_id,
+            symbol=resolved_symbol,
+            live=live,
+            start=fetch_start_utc,
+            end=end_utc,
+            unit=unit,
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+        )
+        if refresh and not include_partial_bar:
+            prune_market_candle_cache_range(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                keep_timestamps=[row.candle_timestamp for row in candles],
+            )
+        db.commit()
+        if cached_candles and not refresh:
+            combined_candles = list_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            )
+            if combined_candles:
+                return [serialize_market_candle(row) for row in combined_candles]
+    except ProjectXClientError as exc:
+        db.rollback()
+        if fallback_candles:
+            return [serialize_market_candle(row) for row in fallback_candles]
+        raise _to_http_exception(exc) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return [serialize_market_candle(row) for row in candles]
+
+
+@app.get("/api/projectx/market-price/stream")
+async def stream_projectx_market_price(
+    request: Request,
+    contract_id: str = Query(..., min_length=1, max_length=120),
+    symbol: str | None = Query(default=None, max_length=40),
+    throttle_ms: int = Query(default=250, ge=50, le=5000),
+):
+    get_authenticated_user_id()
+    runtime = _streaming_runtime
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="ProjectX streaming is not enabled.")
+
+    interval_seconds = max(throttle_ms, 50) / 1000.0
+
+    async def events():
+        last_event_key = None
+        yield ": connected\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+
+            update = runtime.tracker.get_market_price_update(contract_id=contract_id, symbol=symbol)
+            if update is not None:
+                event_key = (update.contract_id, update.mark_price, update.timestamp.isoformat())
+                if event_key != last_event_key:
+                    payload = {
+                        "contract_id": update.contract_id,
+                        "symbol": update.symbol,
+                        "price": update.mark_price,
+                        "timestamp": update.timestamp.isoformat(),
+                    }
+                    yield f"event: price\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                    last_event_key = event_key
+
+            await asyncio.sleep(interval_seconds)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/bots", response_model=BotConfigListOut)
+def list_trading_bots(
+    account_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    rows = list_bot_configs(db, user_id=user_id, account_id=account_id)
+    return {
+        "items": [serialize_bot_config(row) for row in rows],
+        "total": len(rows),
+    }
+
+
+@app.post("/api/bots", response_model=BotConfigOut, status_code=201)
+def create_trading_bot(
+    payload: BotConfigCreateIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    try:
+        row = create_bot_config(db, user_id=user_id, payload=payload)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_bot_config(row)
+
+
+@app.patch("/api/bots/{bot_config_id}", response_model=BotConfigOut)
+def update_trading_bot(
+    bot_config_id: int,
+    payload: BotConfigUpdateIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        row = update_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, payload=payload)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_bot_config(row)
+
+
+@app.delete("/api/bots/{bot_config_id}", status_code=204)
+def delete_trading_bot(
+    bot_config_id: int,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        delete_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return Response(status_code=204)
+
+
+@app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)
+def start_trading_bot(
+    bot_config_id: int,
+    payload: BotStartIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    body = payload or BotStartIn()
+    try:
+        client = _projectx_client_for_user(db, user_id=user_id)
+        result = start_bot_run(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            client=client,
+            dry_run=body.dry_run,
+            confirm_live_order_routing=body.confirm_live_order_routing,
+        )
+        db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_evaluation(result)
+
+
+@app.post("/api/bots/{bot_config_id}/evaluate", response_model=BotEvaluationOut)
+def evaluate_trading_bot(
+    bot_config_id: int,
+    payload: BotStartIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    body = payload or BotStartIn(dry_run=True)
+    try:
+        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        account = _require_owned_projectx_account(db, user_id=user_id, account_id=int(config.account_id))
+        client = _projectx_client_for_user(db, user_id=user_id)
+        result = evaluate_bot_config(
+            db,
+            user_id=user_id,
+            config=config,
+            account=account,
+            client=client,
+            dry_run=True if body.dry_run is None else body.dry_run,
+            confirm_live_order_routing=body.confirm_live_order_routing,
+        )
+        db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_evaluation(result)
+
+
+@app.post("/api/bots/{bot_config_id}/stop", response_model=BotRunOut)
+def stop_trading_bot(
+    bot_config_id: int,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        run = stop_latest_bot_run(db, user_id=user_id, bot_config_id=bot_config_id)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_bot_run(run)
+
+
+@app.get("/api/bots/{bot_config_id}/activity", response_model=BotActivityOut)
+def get_trading_bot_activity(
+    bot_config_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        payload = get_bot_activity(db, user_id=user_id, bot_config_id=bot_config_id, limit=limit)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "config": serialize_bot_config(payload["config"]),
+        "runs": [serialize_bot_run(row) for row in payload["runs"]],
+        "decisions": [serialize_bot_decision(row) for row in payload["decisions"]],
+        "order_attempts": [serialize_bot_order_attempt(row) for row in payload["order_attempts"]],
+        "risk_events": [serialize_bot_risk_event(row) for row in payload["risk_events"]],
+    }
+
+
 @app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)
 def list_projectx_account_journal_entries(
     account_id: int,
@@ -1352,6 +1810,7 @@ def list_projectx_account_trades(
     end: datetime | None = None,
     symbol: str | None = None,
     refresh: bool = False,
+    include_lifecycle: bool = True,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -1386,11 +1845,15 @@ def list_projectx_account_trades(
             end=end,
             symbol_query=symbol,
         )
-        lifecycle_by_trade_id = derive_trade_execution_lifecycles(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            closed_rows=rows,
+        lifecycle_by_trade_id = (
+            derive_trade_execution_lifecycles(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                closed_rows=rows,
+            )
+            if include_lifecycle
+            else {}
         )
         return [
             serialize_trade_event(
@@ -1914,6 +2377,9 @@ def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
     # Missing env or local configuration errors are server configuration issues.
     if exc.status_code is None:
         return HTTPException(status_code=500, detail=str(exc))
+
+    if exc.status_code == 504:
+        return HTTPException(status_code=504, detail=str(exc))
 
     # Upstream API errors should be surfaced as a gateway error to the frontend.
     return HTTPException(status_code=502, detail=str(exc))
