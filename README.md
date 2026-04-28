@@ -1,6 +1,6 @@
 # TopSignal
 
-TopSignal is a trading analytics and journaling application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, and a daily trading journal.
+TopSignal is a trading analytics and journaling application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, trading-bot controls, and a daily trading journal.
 
 This repository contains:
 
@@ -19,6 +19,7 @@ It is built for traders who want to:
 - understand risk, drawdown, expectancy, and pacing in plain numbers
 - journal trading days per account with autosave and trade-stat snapshots
 - track real cash costs such as evaluation fees, activations, resets, data fees, and actual payouts
+- test simple rule-based bot decisions against ProjectX candles with a server-side audit trail
 
 ## What The App Does
 
@@ -42,6 +43,7 @@ Core features in the current routed app:
 - Expense CRUD and totals
 - Payout tracking and payout totals
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
+- Trading bot configuration, dry-run execution controls, signal charting, and bot activity review
 - Optional Supabase authentication for multi-user deployments
 
 ## Product Walkthrough
@@ -175,6 +177,31 @@ Notable journal behavior:
 - Journal merge matches entries by `entry_date`. `skip` keeps the destination entry for that date; `overwrite` replaces the destination entry content with the source entry.
 - Journal merge copies entries into the destination account and leaves the source account untouched. When image copying is enabled, new destination image records and files are created so source images are not orphaned or shared.
 
+### Bot
+
+The Bot page is the account-scoped rule-execution workspace for ProjectX market data.
+
+A user can:
+
+- create, edit, select, and delete named bot configurations
+- bind a bot to a ProjectX account and contract
+- search ProjectX contracts from the configuration form
+- configure the current `sma_cross` strategy with timeframe, lookback bars, fast SMA, and slow SMA settings
+- set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
+- start a dry-run bot run, evaluate the strategy once, or stop the latest run
+- review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
+- inspect recent decisions, order attempts, risk events, and run history
+
+The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, fast and slow SMA overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, and y-axis fit controls.
+
+Important bot behaviors:
+
+- The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
+- New configurations default to dry-run mode and are saved disabled.
+- The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
+- Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
+- Candle reads use ProjectX market-data endpoints and a small frontend candle cache for chart responsiveness.
+
 ### Not Currently Routed
 
 The repository also contains `overview/` and `analytics/` pages, but they are not wired into the current router.
@@ -232,12 +259,14 @@ Important implementation detail:
 - The current app's main analytics dataset is `projectx_trade_events`, not the legacy `trades` table.
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
+- Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
+- ProjectX market candles are cached in `projectx_market_candles` for bot charting and replay-style reads.
 
 ### External Integrations
 
 | Integration | Purpose |
 | --- | --- |
-| ProjectX API | Account discovery, provider auth, trade history sync, last-trade lookup |
+| ProjectX API | Account discovery, provider auth, trade history sync, last-trade lookup, contract search, market candles, and optional bot order routing |
 | Supabase Auth | Optional JWT-based user auth |
 | Supabase Storage | Optional journal image storage backend |
 | ProjectX market/user hubs | Optional streaming lifecycle tracking |
@@ -248,6 +277,7 @@ Important implementation detail:
 
 - `frontend/src/app/`: app shell and router
 - `frontend/src/pages/`: routed pages plus unrouted prototypes
+- `frontend/src/pages/bot/`: bot configuration page, signal chart, candle cache, and chart data helpers
 - `frontend/src/lib/api.ts`: shared API client, request helpers, caches, and in-flight dedupe
 - `frontend/src/lib/types.ts`: frontend API types
 - `frontend/src/utils/`: metric helpers and formatting
@@ -256,9 +286,10 @@ Important implementation detail:
 
 - `backend/app/main.py`: FastAPI app and route definitions
 - `backend/app/models.py`: SQLAlchemy models
+- `backend/app/bot_schemas.py`: bot API request/response schemas
 - `backend/app/db.py`: engine/session setup and startup schema compatibility patches
 - `backend/app/auth.py`: auth middleware helpers and JWT validation
-- `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, and streaming helpers
+- `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, streaming, and bot helpers
 
 ### Database
 
@@ -381,13 +412,30 @@ The combine spend helper is separate from core expense storage:
 - it infers combine purchases from active account names
 - it can create missing evaluation-fee rows in the backend
 
-### 6. Frontend Caching
+### 6. Bot Flow
+
+Bot configurations are user-owned records tied to a ProjectX account and contract.
+
+Typical bot workflow:
+
+1. the frontend loads selectable accounts and `GET /api/bots`
+2. the user searches ProjectX contracts and saves a named bot configuration
+3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
+4. `POST /api/bots/{id}/evaluate` computes one SMA-cross decision and persists it
+5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the strategy, and records any dry-run order attempt or risk block
+6. `POST /api/bots/{id}/stop` stops the latest running bot run
+7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
+
+Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
+
+### 7. Frontend Caching
 
 The frontend has small in-memory caches in `frontend/src/lib/api.ts`:
 
 - account lists: cached for 10 minutes
 - account-scoped summary, trades, and PnL-calendar reads: cached for 10 minutes
 - journal day markers: cached per account and query
+- bot chart candles: cached in browser storage by market and timeframe
 - duplicate in-flight requests are deduplicated
 
 Mutation calls invalidate affected cache entries.
@@ -533,11 +581,12 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 
 ## Current Limitations
 
-- The main routed app is strong around dashboard, trades, journal, expenses, and payouts, but `overview/` and `analytics/` are still unrouted prototypes backed by mock data.
+- The main routed app is strong around dashboard, trades, journal, expenses, payouts, and bot dry-run workflows, but `overview/` and `analytics/` are still unrouted prototypes backed by mock data.
 - There is backend support for per-user ProjectX credentials, but there is no dedicated frontend credentials-management screen in the current routed UI.
 - The repository still carries the legacy `trades` table and `/metrics/*` routes beside the newer `projectx_trade_events` pipeline.
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
 - The optional streaming lifecycle runtime persists position data, but the current UI does not expose those records directly.
+- The bot page exposes dry-run start/evaluate/stop controls, while live order routing remains backend-gated and intentionally absent from the current UI.
 - There is no formal migration runner; schema evolution relies on raw SQL plus startup compatibility helpers.
 - Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
 
