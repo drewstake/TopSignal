@@ -145,7 +145,7 @@ function buildInitialAddExpenseState(accountId: string): AddExpenseState {
     planSize: "50k",
     stage: "evaluation_fee",
     expenseDate: getTodayLocalIsoDate(),
-    amount: "115.00",
+    amount: "95.00",
     accountId,
     description: "",
     tags: "",

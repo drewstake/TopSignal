@@ -8,9 +8,9 @@ interface PlanPreset {
 }
 
 const NO_ACTIVATION_PRESETS: Record<ExpensePlanSize, PlanPreset> = {
-  "50k": { evaluation_fee: 11_500 },
-  "100k": { evaluation_fee: 16_800 },
-  "150k": { evaluation_fee: 22_100 },
+  "50k": { evaluation_fee: 9_500 },
+  "100k": { evaluation_fee: 14_900 },
+  "150k": { evaluation_fee: 22_900 },
 };
 
 const STANDARD_PRESETS: Record<ExpensePlanSize, PlanPreset> = {

@@ -56,8 +56,8 @@ describe("evolveCombineSpendLedger", () => {
       "2": true,
     });
     expect(first.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01", source: "account" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01", source: "account" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 9_500, source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
     });
 
     const second = evolveCombineSpendLedger(first, [
@@ -72,9 +72,9 @@ describe("evolveCombineSpendLedger", () => {
       "5": true,
     });
     expect(second.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01", source: "account" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01", source: "account" },
-      "5": { planSize: "150k", purchasedOn: "2026-03-01", source: "account" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 9_500, source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
+      "5": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 22_900, source: "account" },
     });
   });
 
@@ -84,7 +84,7 @@ describe("evolveCombineSpendLedger", () => {
     const next = evolveCombineSpendLedger(baseline, [{ id: 9, name: "150KTC-9", status: "LOCKED_OUT" }]);
 
     expect(next.purchasesByAccountId).toEqual({
-      "9": { planSize: "150k", purchasedOn: "2026-03-01", source: "account" },
+      "9": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 22_900, source: "account" },
     });
   });
 });
@@ -116,7 +116,7 @@ describe("computeCombineSpendSnapshotFromLedger", () => {
       "150k": 0,
     });
     expect(snapshot.totalTrackedCombines).toBe(3);
-    expect(snapshot.baseCombineCostCents).toBe(2 * 11_500 + 16_800);
+    expect(snapshot.baseCombineCostCents).toBe(2 * 9_500 + 14_900);
     expect(snapshot.standardActivationCostCents).toBe(2 * STANDARD_ACTIVATION_FEE_CENTS);
     expect(snapshot.totalCostCents).toBe(snapshot.baseCombineCostCents + snapshot.standardActivationCostCents);
   });
@@ -164,6 +164,50 @@ describe("storage-backed helpers", () => {
     expect(afterFloor.standardActivationCount).toBe(0);
   });
 
+  it("keeps legacy ledger entries at their original paid prices", () => {
+    window.localStorage.setItem(
+      "topsignal.combineSpendTracker.v3",
+      JSON.stringify({
+        startedOn: "2026-03-01",
+        startedAt: "2026-03-01T12:00:00.000Z",
+        purchasesByAccountId: {
+          "7001": { planSize: "50k", purchasedOn: "2026-03-01", source: "account" },
+          "7002": "100k",
+        },
+        knownCombineAccountIds: {
+          "7001": true,
+          "7002": true,
+        },
+        baselineCaptured: true,
+        standardActivationCount: 0,
+        loggedStandardActivationCount: 0,
+        syncedEvaluationExpenseAccountIds: {},
+      }),
+    );
+
+    const snapshot = readCombineSpendSnapshot();
+    expect(snapshot.baseCombineCostCents).toBe(11_500 + 16_800);
+
+    const sync = syncCombineSpendTracker([
+      { id: 7001, name: "50KTC-7001", status: "ACTIVE" },
+      { id: 7002, name: "100KTC-7002", status: "ACTIVE" },
+    ]);
+    expect(sync.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 7001,
+        planSize: "50k",
+        purchasedOn: "2026-03-01",
+        amountCents: 11_500,
+      },
+      {
+        accountId: 7002,
+        planSize: "100k",
+        purchasedOn: "2026-03-01",
+        amountCents: 16_800,
+      },
+    ]);
+  });
+
   it("returns unsynced combine purchases and marks them synced", () => {
     const firstSync = syncCombineSpendTracker([
       { id: 7001, name: "50KTC-7001", status: "ACTIVE" },
@@ -176,7 +220,7 @@ describe("storage-backed helpers", () => {
         accountId: 7001,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 11_500,
+        amountCents: 9_500,
       },
     ]);
 
@@ -193,7 +237,7 @@ describe("storage-backed helpers", () => {
         accountId: 7003,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 11_500,
+        amountCents: 9_500,
       },
     ]);
 
@@ -214,7 +258,7 @@ describe("storage-backed helpers", () => {
         accountId: 8101,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 11_500,
+        amountCents: 9_500,
       },
     ]);
     markEvaluationExpensesSynced([8101]);
@@ -229,7 +273,7 @@ describe("storage-backed helpers", () => {
         accountId: 8102,
         planSize: "100k",
         purchasedOn: "2026-03-01",
-        amountCents: 16_800,
+        amountCents: 14_900,
       },
     ]);
     markEvaluationExpensesSynced([8102]);
@@ -260,7 +304,7 @@ describe("storage-backed helpers", () => {
         accountId: 8201,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 11_500,
+        amountCents: 9_500,
       },
     ]);
   });

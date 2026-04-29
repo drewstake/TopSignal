@@ -13,6 +13,12 @@ const LEGACY_COMBINE_SPEND_TRACKER_START_DATE = "2026-03-01";
 export const STANDARD_ACTIVATION_FEE_CENTS = 15_000;
 
 export const COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
+  "50k": 9_500,
+  "100k": 14_900,
+  "150k": 22_900,
+};
+
+const LEGACY_COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
   "50k": 11_500,
   "100k": 16_800,
   "150k": 22_100,
@@ -44,6 +50,7 @@ export interface CombineSpendSnapshot {
 export interface CombinePurchaseEntry {
   planSize: CombinePlanSize;
   purchasedOn: string;
+  amountCents?: number;
   source?: CombinePurchaseSource;
 }
 
@@ -166,6 +173,7 @@ export function evolveCombineSpendLedger(
       nextLedger.purchasesByAccountId[accountId] = {
         planSize,
         purchasedOn: getTodayLocalIsoDate(),
+        amountCents: COMBINE_PRICE_CENTS_BY_PLAN[planSize],
         source: "account",
       };
       continue;
@@ -174,6 +182,7 @@ export function evolveCombineSpendLedger(
     nextLedger.purchasesByAccountId[accountId] = {
       ...existingPurchase,
       planSize,
+      amountCents: getPurchaseAmountCents(existingPurchase),
       source: addAccountSource(existingPurchase.source),
     };
   }
@@ -194,10 +203,10 @@ export function computeCombineSpendSnapshotFromLedger(ledger: CombineSpendLedger
     countsByPlan[purchase.planSize] += 1;
   }
 
-  const baseCombineCostCents =
-    countsByPlan["50k"] * COMBINE_PRICE_CENTS_BY_PLAN["50k"] +
-    countsByPlan["100k"] * COMBINE_PRICE_CENTS_BY_PLAN["100k"] +
-    countsByPlan["150k"] * COMBINE_PRICE_CENTS_BY_PLAN["150k"];
+  const baseCombineCostCents = Object.values(ledger.purchasesByAccountId).reduce(
+    (total, purchase) => total + getPurchaseAmountCents(purchase),
+    0,
+  );
   const standardActivationCount = ledger.standardActivationCount + ledger.loggedStandardActivationCount;
   const standardActivationCostCents = standardActivationCount * STANDARD_ACTIVATION_FEE_CENTS;
 
@@ -283,6 +292,25 @@ function isCombinePlanSize(value: ExpensePlanSize | null | undefined): value is 
   return value === "50k" || value === "100k" || value === "150k";
 }
 
+function isKnownCombinePriceCents(planSize: CombinePlanSize, amountCents: number): boolean {
+  return (
+    amountCents === COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
+    amountCents === LEGACY_COMBINE_PRICE_CENTS_BY_PLAN[planSize]
+  );
+}
+
+function normalizeAmountCents(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const amountCents = Math.round(value);
+  return amountCents >= 0 ? amountCents : null;
+}
+
+function getPurchaseAmountCents(purchase: CombinePurchaseEntry): number {
+  return normalizeAmountCents(purchase.amountCents) ?? COMBINE_PRICE_CENTS_BY_PLAN[purchase.planSize];
+}
+
 export function isTrackedCombinePurchaseExpense(expense: CombineTrackerExpense): boolean {
   if (expense.category !== "evaluation_fee") {
     return false;
@@ -296,7 +324,7 @@ export function isTrackedCombinePurchaseExpense(expense: CombineTrackerExpense):
   if (expense.account_type === "no_activation") {
     return true;
   }
-  return expense.amount_cents === COMBINE_PRICE_CENTS_BY_PLAN[expense.plan_size];
+  return isKnownCombinePriceCents(expense.plan_size, expense.amount_cents);
 }
 
 export function isTrackedStandardActivationExpense(expense: CombineTrackerExpense): boolean {
@@ -334,6 +362,7 @@ function reconcileCombineSpendLedgerWithExpenses(
     }
     nextLedger.purchasesByAccountId[purchaseKey] = {
       ...purchase,
+      amountCents: getPurchaseAmountCents(purchase),
       source: nextSource,
     };
   }
@@ -386,6 +415,8 @@ function reconcileCombineSpendLedgerWithExpenses(
     const purchaseKey =
       expense.account_id === null ? getExpenseDerivedPurchaseKey(expense.id) : String(expense.account_id);
     const existingPurchase = nextLedger.purchasesByAccountId[purchaseKey];
+    const existingSource = existingPurchase ? normalizeCombinePurchaseSource(existingPurchase.source) : null;
+    const existingHasExpenseSource = existingSource === "expense" || existingSource === "account_and_expense";
 
     nextLedger.purchasesByAccountId[purchaseKey] = {
       planSize,
@@ -393,6 +424,10 @@ function reconcileCombineSpendLedgerWithExpenses(
         existingPurchase === undefined
           ? expense.expense_date
           : getEarlierIsoDate(existingPurchase.purchasedOn, expense.expense_date),
+      amountCents:
+        existingPurchase !== undefined && existingHasExpenseSource
+          ? getPurchaseAmountCents(existingPurchase)
+          : expense.amount_cents,
       source: addExpenseSource(existingPurchase?.source),
     };
 
@@ -450,6 +485,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
       purchasesByAccountId[accountId] = {
         planSize: rawPurchase,
         purchasedOn: normalizedStartedOn ?? todayLocalIsoDate,
+        amountCents: LEGACY_COMBINE_PRICE_CENTS_BY_PLAN[rawPurchase],
         source: "account",
       };
       continue;
@@ -466,6 +502,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     purchasesByAccountId[accountId] = {
       planSize: purchase.planSize,
       purchasedOn: isIsoDate(purchase.purchasedOn) ? purchase.purchasedOn : normalizedStartedOn ?? todayLocalIsoDate,
+      amountCents: normalizeAmountCents(purchase.amountCents) ?? LEGACY_COMBINE_PRICE_CENTS_BY_PLAN[purchase.planSize],
       source: normalizeCombinePurchaseSource(purchase.source),
     };
   }
@@ -627,7 +664,7 @@ function listUnsyncedEvaluationExpensePurchases(
       accountId: Number(accountId),
       planSize: purchase.planSize,
       purchasedOn: purchase.purchasedOn,
-      amountCents: COMBINE_PRICE_CENTS_BY_PLAN[purchase.planSize],
+      amountCents: getPurchaseAmountCents(purchase),
     });
   }
 
