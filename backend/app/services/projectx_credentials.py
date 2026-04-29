@@ -6,12 +6,16 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.orm import Session
 
 from ..models import ProviderCredential
 
 _PROJECTX_PROVIDER = "projectx"
+
+
+class ProjectXCredentialsUnavailable(RuntimeError):
+    """Stored credentials exist but cannot be safely read in the current runtime."""
 
 
 @dataclass(frozen=True)
@@ -106,7 +110,12 @@ def _encrypt(value: str) -> str:
 
 
 def _decrypt(value: str) -> str:
-    return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    try:
+        return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise ProjectXCredentialsUnavailable(
+            "Stored ProjectX credentials could not be decrypted with the configured encryption key"
+        ) from exc
 
 
 def _fernet() -> Fernet:
@@ -116,7 +125,9 @@ def _fernet() -> Fernet:
         return Fernet(normalized_key)
 
     if not _allow_insecure_local_credentials_key():
-        raise RuntimeError("CREDENTIALS_ENCRYPTION_KEY is required for non-local credential storage")
+        raise ProjectXCredentialsUnavailable(
+            "CREDENTIALS_ENCRYPTION_KEY is required for non-local credential storage"
+        )
 
     # Local/dev fallback so existing tests and localhost setups still run.
     digest = hashlib.sha256(b"topsignal-local-dev-credentials-key").digest()

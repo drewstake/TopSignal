@@ -147,6 +147,7 @@ from .services.projectx_credentials import (
     delete_projectx_credentials,
     get_projectx_credentials,
     has_projectx_credentials,
+    ProjectXCredentialsUnavailable,
     upsert_projectx_credentials,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
@@ -2026,6 +2027,16 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
         if allow_legacy_env:
             return ProjectXClient.from_env()
         raise HTTPException(status_code=500, detail="provider_credentials_table_missing")
+    except ProjectXCredentialsUnavailable as exc:
+        db.rollback()
+        if allow_legacy_env:
+            logger.warning(
+                "ProjectX stored credentials unavailable for user %s; falling back to env credentials: %s",
+                user_id,
+                exc,
+            )
+            return ProjectXClient.from_env()
+        raise HTTPException(status_code=500, detail="projectx_credentials_unavailable") from exc
 
     if credentials is None:
         if allow_legacy_env:

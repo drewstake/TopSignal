@@ -343,3 +343,68 @@ def test_local_only_origins_still_allow_legacy_env_credentials_in_authenticated_
     payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
     assert [int(row["id"]) for row in payload] == [7101]
+
+
+def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_are_unavailable_in_local_dev(
+    db_session, monkeypatch
+):
+    Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
+    monkeypatch.delenv("CREDENTIALS_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@db.example.com:5432/postgres")
+
+    db_session.add(
+        ProviderCredential(
+            user_id="00000000-0000-0000-0000-000000000000",
+            provider="projectx",
+            username_encrypted="unreadable",
+            api_key_encrypted="unreadable",
+        )
+    )
+    db_session.commit()
+
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            assert only_active_accounts is False
+            return [{"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True}]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert [int(row["id"]) for row in payload] == [7101]
+
+
+def test_authenticated_mode_returns_500_when_stored_credentials_are_unavailable_without_env_fallback(
+    db_session, monkeypatch
+):
+    Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
+    monkeypatch.delenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", raising=False)
+    monkeypatch.delenv("AUTH_REQUIRED", raising=False)
+    monkeypatch.delenv("CREDENTIALS_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@db.example.com:5432/postgres")
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("ALLOWED_ORIGIN_REGEX", "")
+    monkeypatch.setattr(
+        main_module.ProjectXClient,
+        "from_env",
+        lambda: (_ for _ in ()).throw(AssertionError("shared env credentials should not be used")),
+    )
+
+    db_session.add(
+        ProviderCredential(
+            user_id="00000000-0000-0000-0000-000000000000",
+            provider="projectx",
+            username_encrypted="unreadable",
+            api_key_encrypted="unreadable",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "projectx_credentials_unavailable"
