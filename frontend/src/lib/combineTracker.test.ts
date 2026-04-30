@@ -5,8 +5,10 @@ import {
   createEmptyCombineSpendLedger,
   decrementStandardActivationCount,
   evolveCombineSpendLedger,
+  getCombinePriceCentsFromAccountName,
   getCombinePlanSizeFromAccountName,
   incrementStandardActivationCount,
+  isDailyLossLimitCombineAccountName,
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
   STANDARD_ACTIVATION_FEE_CENTS,
@@ -28,6 +30,21 @@ describe("getCombinePlanSizeFromAccountName", () => {
   it("ignores non-combine account names", () => {
     expect(getCombinePlanSizeFromAccountName("PA-100KTC")).toBeNull();
     expect(getCombinePlanSizeFromAccountName("Account 7001")).toBeNull();
+  });
+});
+
+describe("getCombinePriceCentsFromAccountName", () => {
+  it("uses standard prices for regular combine account names", () => {
+    expect(getCombinePriceCentsFromAccountName("50KTC-12345")).toBe(4_900);
+    expect(getCombinePriceCentsFromAccountName("100KTC-12345")).toBe(9_900);
+    expect(getCombinePriceCentsFromAccountName("150KTC-12345")).toBe(14_900);
+  });
+
+  it("uses responsible trading discount prices for DLL account names", () => {
+    expect(isDailyLossLimitCombineAccountName("50KTC-V2-DLL-192577")).toBe(true);
+    expect(getCombinePriceCentsFromAccountName("50KTC-V2-DLL-192577")).toBe(8_500);
+    expect(getCombinePriceCentsFromAccountName("100KTC-V2-DLL-192577")).toBe(12_900);
+    expect(getCombinePriceCentsFromAccountName("150KTC-V2-DLL-192577")).toBe(19_900);
   });
 });
 
@@ -56,8 +73,8 @@ describe("evolveCombineSpendLedger", () => {
       "2": true,
     });
     expect(first.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 9_500, source: "account" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 4_900, source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 9_900, source: "account" },
     });
 
     const second = evolveCombineSpendLedger(first, [
@@ -72,9 +89,9 @@ describe("evolveCombineSpendLedger", () => {
       "5": true,
     });
     expect(second.purchasesByAccountId).toEqual({
-      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 9_500, source: "account" },
-      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
-      "5": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 22_900, source: "account" },
+      "1": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 4_900, source: "account" },
+      "2": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 9_900, source: "account" },
+      "5": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
     });
   });
 
@@ -84,7 +101,22 @@ describe("evolveCombineSpendLedger", () => {
     const next = evolveCombineSpendLedger(baseline, [{ id: 9, name: "150KTC-9", status: "LOCKED_OUT" }]);
 
     expect(next.purchasesByAccountId).toEqual({
-      "9": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 22_900, source: "account" },
+      "9": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 14_900, source: "account" },
+    });
+  });
+
+  it("tracks new DLL combines at their discounted prices", () => {
+    const start = createEmptyCombineSpendLedger();
+    const next = evolveCombineSpendLedger(start, [
+      { id: 11, name: "50KTC-V2-DLL-11", status: "ACTIVE" },
+      { id: 12, name: "100KTC-V2-DLL-12", status: "ACTIVE" },
+      { id: 13, name: "150KTC-V2-DLL-13", status: "ACTIVE" },
+    ]);
+
+    expect(next.purchasesByAccountId).toEqual({
+      "11": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 8_500, source: "account" },
+      "12": { planSize: "100k", purchasedOn: "2026-03-01", amountCents: 12_900, source: "account" },
+      "13": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 19_900, source: "account" },
     });
   });
 });
@@ -116,7 +148,7 @@ describe("computeCombineSpendSnapshotFromLedger", () => {
       "150k": 0,
     });
     expect(snapshot.totalTrackedCombines).toBe(3);
-    expect(snapshot.baseCombineCostCents).toBe(2 * 9_500 + 14_900);
+    expect(snapshot.baseCombineCostCents).toBe(2 * 4_900 + 9_900);
     expect(snapshot.standardActivationCostCents).toBe(2 * STANDARD_ACTIVATION_FEE_CENTS);
     expect(snapshot.totalCostCents).toBe(snapshot.baseCombineCostCents + snapshot.standardActivationCostCents);
   });
@@ -220,7 +252,7 @@ describe("storage-backed helpers", () => {
         accountId: 7001,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 9_500,
+        amountCents: 4_900,
       },
     ]);
 
@@ -237,7 +269,7 @@ describe("storage-backed helpers", () => {
         accountId: 7003,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 9_500,
+        amountCents: 4_900,
       },
     ]);
 
@@ -258,7 +290,7 @@ describe("storage-backed helpers", () => {
         accountId: 8101,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 9_500,
+        amountCents: 4_900,
       },
     ]);
     markEvaluationExpensesSynced([8101]);
@@ -273,7 +305,7 @@ describe("storage-backed helpers", () => {
         accountId: 8102,
         planSize: "100k",
         purchasedOn: "2026-03-01",
-        amountCents: 14_900,
+        amountCents: 9_900,
       },
     ]);
     markEvaluationExpensesSynced([8102]);
@@ -304,7 +336,7 @@ describe("storage-backed helpers", () => {
         accountId: 8201,
         planSize: "50k",
         purchasedOn: "2026-03-01",
-        amountCents: 9_500,
+        amountCents: 4_900,
       },
     ]);
   });
@@ -327,7 +359,7 @@ describe("storage-backed helpers", () => {
         account_id: null,
         expense_date: "2026-02-16",
         created_at: "2026-02-21T15:00:00.000Z",
-        amount_cents: 15_000,
+        amount_cents: 14_900,
         category: "activation_fee",
         account_type: "standard",
         plan_size: "50k",
@@ -339,7 +371,7 @@ describe("storage-backed helpers", () => {
     expect(snapshot.startedAt).toBe("2026-02-20T15:00:00.000Z");
     expect(snapshot.totalTrackedCombines).toBe(1);
     expect(snapshot.standardActivationCount).toBe(1);
-    expect(snapshot.totalCostCents).toBe(26_500);
+    expect(snapshot.totalCostCents).toBe(26_400);
   });
 
   it("treats existing logged combine expenses as already synced for matching accounts", () => {
@@ -372,7 +404,7 @@ describe("storage-backed helpers", () => {
         account_id: null,
         expense_date: "2026-02-28",
         created_at: "2026-02-28T12:00:00.000Z",
-        amount_cents: 15_000,
+        amount_cents: 14_900,
         category: "activation_fee",
         account_type: "standard",
         plan_size: "100k",

@@ -20,10 +20,11 @@ import {
   listExpenses,
 } from "../../lib/api";
 import {
-  COMBINE_PRICE_CENTS_BY_PLAN,
   decrementStandardActivationCount,
+  getCombinePriceCentsFromAccountName,
   getCombinePlanSizeFromAccountName,
   incrementStandardActivationCount,
+  isDailyLossLimitCombineAccountName,
   isTrackedCombinePurchaseExpense,
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
@@ -33,7 +34,9 @@ import {
 import {
   EXPENSE_ACCOUNT_TYPES,
   EXPENSE_PLAN_SIZES,
+  getExpenseAccountTypeLabel,
   getExpensePresetAmountCents,
+  type ExpenseAccountPresetType,
   type ExpenseStage,
 } from "../../lib/expensePresets";
 import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
@@ -105,6 +108,8 @@ function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
 interface ActiveCombineAccount {
   accountId: number;
   planSize: "50k" | "100k" | "150k";
+  amountCents: number;
+  isDailyLossLimit: boolean;
 }
 
 function collectActiveCombineAccounts(
@@ -116,20 +121,23 @@ function collectActiveCombineAccounts(
     if (rawState !== "ACTIVE" && rawState !== "LOCKED_OUT") {
       continue;
     }
-    const planSize = getCombinePlanSizeFromAccountName(account.provider_name ?? account.name);
+    const providerBackedName = account.provider_name ?? account.name;
+    const planSize = getCombinePlanSizeFromAccountName(providerBackedName);
     if (planSize === null) {
       continue;
     }
     output.push({
       accountId: account.id,
       planSize,
+      amountCents: getCombinePriceCentsFromAccountName(providerBackedName) ?? 0,
+      isDailyLossLimit: isDailyLossLimitCombineAccountName(providerBackedName),
     });
   }
   return output;
 }
 
 interface AddExpenseState {
-  accountType: "no_activation" | "standard" | "practice";
+  accountType: ExpenseAccountPresetType;
   planSize: "50k" | "100k" | "150k";
   stage: ExpenseStage;
   expenseDate: string;
@@ -141,11 +149,11 @@ interface AddExpenseState {
 
 function buildInitialAddExpenseState(accountId: string): AddExpenseState {
   return {
-    accountType: "no_activation",
+    accountType: "standard",
     planSize: "50k",
     stage: "evaluation_fee",
     expenseDate: getTodayLocalIsoDate(),
-    amount: "95.00",
+    amount: "49.00",
     accountId,
     description: "",
     tags: "",
@@ -421,7 +429,7 @@ export function ExpensesPage() {
             continue;
           }
           const unsyncedPurchase = unsyncedByAccountId.get(activeCombine.accountId);
-          const amountCents = unsyncedPurchase?.amountCents ?? COMBINE_PRICE_CENTS_BY_PLAN[activeCombine.planSize];
+          const amountCents = unsyncedPurchase?.amountCents ?? activeCombine.amountCents;
           const purchasedOn = unsyncedPurchase?.purchasedOn ?? getTodayLocalIsoDate();
           try {
             await createExpense({
@@ -430,8 +438,11 @@ export function ExpensesPage() {
               category: "evaluation_fee",
               plan_size: activeCombine.planSize,
               account_id: activeCombine.accountId,
-              description: `Auto tracked combine purchase (${activeCombine.planSize.toUpperCase()})`,
-              tags: ["combine_tracker", "auto"],
+              account_type: activeCombine.isDailyLossLimit ? "no_activation" : "standard",
+              description: `Auto tracked combine purchase (${activeCombine.planSize.toUpperCase()}${
+                activeCombine.isDailyLossLimit ? " DLL" : ""
+              })`,
+              tags: activeCombine.isDailyLossLimit ? ["combine_tracker", "auto", "dll"] : ["combine_tracker", "auto"],
             });
             syncedAccountIds.push(activeCombine.accountId);
             didMutateExpenses = true;
@@ -609,11 +620,14 @@ export function ExpensesPage() {
         expense_date: addState.expenseDate,
         amount,
         category: addState.stage,
-        account_type: addState.accountType,
+        account_type: addState.accountType === "no_activation_dll" ? "no_activation" : addState.accountType,
         plan_size: addState.planSize,
         account_id: parsedModalAccountId,
         description: addState.description.trim() || undefined,
-        tags: splitTags(addState.tags),
+        tags:
+          addState.accountType === "no_activation_dll"
+            ? Array.from(new Set([...splitTags(addState.tags), "dll"]))
+            : splitTags(addState.tags),
         is_practice: addState.accountType === "practice",
       });
 
@@ -707,14 +721,14 @@ export function ExpensesPage() {
             <p className="text-xs text-slate-500">
               Standard activations: {combineSpendSnapshot.standardActivationCount} (
               {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}). Prefixes: 50KTC /
-              100KTC / 150KTC. Rates: $115 / $168 / $221.
+              100KTC / 150KTC. Auto rates: Standard $49 / $99 / $149, DLL $85 / $129 / $199.
             </p>
             <div className="flex items-center gap-2">
               <Button variant="secondary" size="sm" onClick={handleAddStandardActivation}>
-                Add Standard Activation (+$150)
+                Add Standard Activation (+$149)
               </Button>
               <Button variant="ghost" size="sm" onClick={handleRemoveStandardActivation}>
-                Remove Standard Activation (-$150)
+                Remove Standard Activation (-$149)
               </Button>
               <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
                 {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
@@ -1068,7 +1082,7 @@ export function ExpensesPage() {
             >
               {EXPENSE_ACCOUNT_TYPES.map((value) => (
                 <option key={value} value={value}>
-                  {value}
+                  {getExpenseAccountTypeLabel(value)}
                 </option>
               ))}
             </Select>

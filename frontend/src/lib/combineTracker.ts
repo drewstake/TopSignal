@@ -10,12 +10,24 @@ const COMBINE_PREFIX_BY_PLAN: Record<CombinePlanSize, string> = {
 
 const COMBINE_SPEND_TRACKER_STORAGE_KEY = "topsignal.combineSpendTracker.v3";
 const LEGACY_COMBINE_SPEND_TRACKER_START_DATE = "2026-03-01";
-export const STANDARD_ACTIVATION_FEE_CENTS = 15_000;
+export const STANDARD_ACTIVATION_FEE_CENTS = 14_900;
 
 export const COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
+  "50k": 4_900,
+  "100k": 9_900,
+  "150k": 14_900,
+};
+
+export const NO_ACTIVATION_COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
   "50k": 9_500,
   "100k": 14_900,
   "150k": 22_900,
+};
+
+export const DLL_COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
+  "50k": 8_500,
+  "100k": 12_900,
+  "150k": 19_900,
 };
 
 const LEGACY_COMBINE_PRICE_CENTS_BY_PLAN: Record<CombinePlanSize, number> = {
@@ -116,6 +128,21 @@ export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize
   return null;
 }
 
+export function isDailyLossLimitCombineAccountName(name: string): boolean {
+  const normalized = name.trim().toUpperCase();
+  return /(?:^|[-_\s])DLL(?:$|[-_\s])/.test(normalized) || normalized.includes("DAILY LOSS LIMIT");
+}
+
+export function getCombinePriceCentsFromAccountName(name: string): number | null {
+  const planSize = getCombinePlanSizeFromAccountName(name);
+  if (planSize === null) {
+    return null;
+  }
+  return isDailyLossLimitCombineAccountName(name)
+    ? DLL_COMBINE_PRICE_CENTS_BY_PLAN[planSize]
+    : COMBINE_PRICE_CENTS_BY_PLAN[planSize];
+}
+
 export function createEmptyCombineSpendLedger(): CombineSpendLedger {
   return {
     startedOn: getTodayLocalIsoDate(),
@@ -161,7 +188,8 @@ export function evolveCombineSpendLedger(
     if (!isTrackableCombineTrackerAccount(account)) {
       continue;
     }
-    const planSize = getCombinePlanSizeFromAccountName(getProviderBackedAccountName(account));
+    const providerBackedName = getProviderBackedAccountName(account);
+    const planSize = getCombinePlanSizeFromAccountName(providerBackedName);
     if (planSize === null) {
       continue;
     }
@@ -173,7 +201,7 @@ export function evolveCombineSpendLedger(
       nextLedger.purchasesByAccountId[accountId] = {
         planSize,
         purchasedOn: getTodayLocalIsoDate(),
-        amountCents: COMBINE_PRICE_CENTS_BY_PLAN[planSize],
+        amountCents: getCombinePriceCentsFromAccountName(providerBackedName) ?? COMBINE_PRICE_CENTS_BY_PLAN[planSize],
         source: "account",
       };
       continue;
@@ -295,6 +323,8 @@ function isCombinePlanSize(value: ExpensePlanSize | null | undefined): value is 
 function isKnownCombinePriceCents(planSize: CombinePlanSize, amountCents: number): boolean {
   return (
     amountCents === COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
+    amountCents === NO_ACTIVATION_COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
+    amountCents === DLL_COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
     amountCents === LEGACY_COMBINE_PRICE_CENTS_BY_PLAN[planSize]
   );
 }
