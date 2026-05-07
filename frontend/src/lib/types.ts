@@ -481,6 +481,15 @@ export interface ProjectXCredentialsStatus {
 export type BotExecutionMode = "dry_run" | "live";
 export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
 export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
+export type BotStrategyType = "sma_cross" | "support_resistance";
+
+export interface BotStrategyParams {
+  bars_per_timeframe?: number;
+  swing_window?: number;
+  level_tolerance_percent?: number;
+  stop_beyond_level_percent?: number;
+  take_profit_r_multiple?: number;
+}
 
 export interface ProjectXContract {
   id: string;
@@ -523,7 +532,8 @@ export interface BotConfig {
   provider: string;
   enabled: boolean;
   execution_mode: BotExecutionMode;
-  strategy_type: "sma_cross";
+  strategy_type: BotStrategyType;
+  strategy_params: BotStrategyParams;
   contract_id: string;
   symbol: string | null;
   timeframe_unit: BotTimeframeUnit;
@@ -553,7 +563,8 @@ export interface BotConfigInput {
   symbol?: string | null;
   enabled?: boolean;
   execution_mode?: BotExecutionMode;
-  strategy_type?: "sma_cross";
+  strategy_type?: BotStrategyType;
+  strategy_params?: BotStrategyParams;
   timeframe_unit?: BotTimeframeUnit;
   timeframe_unit_number?: number;
   lookback_bars?: number;

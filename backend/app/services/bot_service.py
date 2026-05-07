@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Iterable
 
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -43,6 +44,16 @@ _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
+_STRATEGY_SMA_CROSS = "sma_cross"
+_STRATEGY_SUPPORT_RESISTANCE = "support_resistance"
+_SUPPORTED_STRATEGY_TYPES = {_STRATEGY_SMA_CROSS, _STRATEGY_SUPPORT_RESISTANCE}
+_SUPPORT_RESISTANCE_DEFAULTS = {
+    "bars_per_timeframe": 100,
+    "swing_window": 5,
+    "level_tolerance_percent": 0.25,
+    "stop_beyond_level_percent": 1.0,
+    "take_profit_r_multiple": 2.0,
+}
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,16 @@ class RiskBlock:
     code: str
     message: str
     severity: str = "warning"
+
+
+@dataclass(frozen=True)
+class SupportResistanceLevel:
+    side: str
+    price: float
+    timestamp: datetime
+    timeframe: str
+    source_index: int
+    score: float
 
 
 @dataclass(frozen=True)
@@ -96,6 +117,8 @@ def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
     _require_owned_account(db, user_id=user_id, account_id=payload.account_id)
     name = _validate_unique_bot_name(db, user_id=user_id, name=payload.name)
     _validate_strategy_periods(payload.fast_period, payload.slow_period)
+    strategy_type = _validate_strategy_type(payload.strategy_type)
+    strategy_params = _normalize_strategy_params(strategy_type, payload.strategy_params)
     _validate_session_time(payload.trading_start_time)
     _validate_session_time(payload.trading_end_time)
 
@@ -105,7 +128,8 @@ def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
         name=name,
         enabled=bool(payload.enabled),
         execution_mode=payload.execution_mode,
-        strategy_type=payload.strategy_type,
+        strategy_type=strategy_type,
+        strategy_params=strategy_params,
         contract_id=payload.contract_id.strip(),
         symbol=_normalized_optional_text(payload.symbol),
         timeframe_unit=payload.timeframe_unit,
@@ -149,6 +173,8 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
         update_data["contract_id"] = str(update_data["contract_id"]).strip()
     if "symbol" in update_data:
         update_data["symbol"] = _normalized_optional_text(update_data["symbol"])
+    if "strategy_type" in update_data and update_data["strategy_type"] is not None:
+        update_data["strategy_type"] = _validate_strategy_type(update_data["strategy_type"])
     if "allowed_contracts" in update_data and update_data["allowed_contracts"] is not None:
         update_data["allowed_contracts"] = _normalize_allowed_contracts(update_data["allowed_contracts"])
     if "trading_start_time" in update_data and update_data["trading_start_time"] is not None:
@@ -160,6 +186,8 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
         setattr(row, key, value)
 
     _validate_strategy_periods(int(row.fast_period), int(row.slow_period))
+    if "strategy_type" in update_data or "strategy_params" in update_data:
+        row.strategy_params = _normalize_strategy_params(str(row.strategy_type), row.strategy_params)
     row.updated_at = datetime.now(timezone.utc)
     db.flush()
     return row
@@ -230,8 +258,7 @@ def evaluate_bot_config(
 ) -> EvaluationResult:
     resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
-    candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
-    signal = evaluate_sma_cross(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
+    candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
     decision = BotDecision(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -423,6 +450,36 @@ def get_bot_activity(
     }
 
 
+def fetch_candles_and_evaluate_strategy(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+) -> tuple[list[ProjectXMarketCandle], SignalResult]:
+    strategy_type = _validate_strategy_type(str(config.strategy_type))
+    if strategy_type == _STRATEGY_SUPPORT_RESISTANCE:
+        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
+        candle_sets = fetch_and_store_support_resistance_candles(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            strategy_params=strategy_params,
+        )
+        candles_1h = candle_sets.get("1H", [])
+        signal = evaluate_support_resistance_levels(
+            higher_timeframe_candles=candle_sets.get("4H", []),
+            lower_timeframe_candles=candles_1h,
+            strategy_params=strategy_params,
+        )
+        return candles_1h, signal
+
+    candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
+    signal = evaluate_sma_cross(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
+    return candles, signal
+
+
 def fetch_and_store_candles(
     db: Session,
     *,
@@ -460,6 +517,53 @@ def fetch_and_store_candles(
         unit_number=int(config.timeframe_unit_number),
         bars=bars,
     )
+
+
+def fetch_and_store_support_resistance_candles(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+    strategy_params: dict[str, Any] | None = None,
+) -> dict[str, list[ProjectXMarketCandle]]:
+    params = _normalize_strategy_params(_STRATEGY_SUPPORT_RESISTANCE, strategy_params)
+    bars_per_timeframe = int(params["bars_per_timeframe"])
+    now = datetime.now(timezone.utc)
+    contract_id, symbol = resolve_market_contract(
+        client,
+        contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        live=False,
+    )
+
+    candle_sets: dict[str, list[ProjectXMarketCandle]] = {}
+    for label, unit, unit_number in (("4H", "hour", 4), ("1H", "hour", 1)):
+        unit_seconds = _UNIT_SECONDS_BY_NAME[unit]
+        lookback_seconds = unit_seconds * unit_number * bars_per_timeframe * 3
+        start = now - timedelta(seconds=lookback_seconds)
+        bars = client.retrieve_bars(
+            contract_id=contract_id,
+            live=False,
+            start=start,
+            end=now,
+            unit=_PROJECTX_UNIT_BY_NAME[unit],
+            unit_number=unit_number,
+            limit=bars_per_timeframe,
+            include_partial_bar=False,
+        )
+        candle_sets[label] = store_market_candles(
+            db,
+            user_id=user_id,
+            contract_id=contract_id,
+            symbol=symbol,
+            live=False,
+            unit=unit,
+            unit_number=unit_number,
+            bars=bars,
+        )
+
+    return candle_sets
 
 
 def fetch_and_store_market_candles(
@@ -612,6 +716,26 @@ def market_candle_cache_needs_refresh(
     return False
 
 
+def market_candle_cache_covers_request(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    start: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+) -> bool:
+    if not cached_candles:
+        return False
+
+    normalized_limit = max(1, int(limit))
+    if len(cached_candles) >= normalized_limit:
+        return True
+
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    earliest_timestamp = min(_as_utc(row.candle_timestamp) for row in cached_candles)
+    return earliest_timestamp <= _as_utc(start) + interval
+
+
 def next_market_candle_fetch_start(
     cached_candles: list[ProjectXMarketCandle],
     *,
@@ -681,11 +805,40 @@ def store_market_candles(
     unit_number: int,
     bars: Iterable[dict[str, Any]],
 ) -> list[ProjectXMarketCandle]:
-    normalized = [bar for bar in bars if isinstance(bar.get("timestamp"), datetime)]
+    normalized = _dedupe_market_candle_bars(bars)
     if not normalized:
         return []
 
-    timestamps = [_as_utc(bar["timestamp"]) for bar in normalized]
+    timestamps = [bar["timestamp"] for bar in normalized]
+    fetched_at = datetime.now(timezone.utc)
+
+    if _session_dialect_name(db) == "postgresql":
+        _upsert_market_candle_rows(
+            db,
+            values=[
+                _market_candle_insert_values(
+                    user_id=user_id,
+                    contract_id=contract_id,
+                    symbol=symbol,
+                    live=live,
+                    unit=unit,
+                    unit_number=unit_number,
+                    bar=bar,
+                    fetched_at=fetched_at,
+                )
+                for bar in normalized
+            ],
+        )
+        return _query_market_candles_by_timestamps(
+            db,
+            user_id=user_id,
+            contract_id=contract_id,
+            live=live,
+            unit=unit,
+            unit_number=unit_number,
+            timestamps=timestamps,
+        )
+
     existing_rows = (
         db.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.user_id == user_id)
@@ -699,9 +852,8 @@ def store_market_candles(
     )
     existing_by_timestamp = {_as_utc(row.candle_timestamp): row for row in existing_rows}
     output: list[ProjectXMarketCandle] = []
-    fetched_at = datetime.now(timezone.utc)
     for bar in normalized:
-        timestamp = _as_utc(bar["timestamp"])
+        timestamp = bar["timestamp"]
         row = existing_by_timestamp.get(timestamp)
         if row is None:
             row = ProjectXMarketCandle(
@@ -727,6 +879,111 @@ def store_market_candles(
     output.sort(key=lambda row: _as_utc(row.candle_timestamp))
     db.flush()
     return output
+
+
+def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_timestamp: dict[datetime, dict[str, Any]] = {}
+    for bar in bars:
+        if not isinstance(bar, dict):
+            continue
+        timestamp = bar.get("timestamp")
+        if not isinstance(timestamp, datetime):
+            continue
+        timestamp_utc = _as_utc(timestamp)
+        by_timestamp[timestamp_utc] = {**bar, "timestamp": timestamp_utc}
+    return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+
+
+def _session_dialect_name(db: Session) -> str:
+    bind = db.get_bind()
+    return str(bind.dialect.name) if bind is not None else ""
+
+
+def _market_candle_insert_values(
+    *,
+    user_id: str,
+    contract_id: str,
+    symbol: str | None,
+    live: bool,
+    unit: str,
+    unit_number: int,
+    bar: dict[str, Any],
+    fetched_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "contract_id": contract_id,
+        "symbol": symbol,
+        "live": bool(live),
+        "unit": unit,
+        "unit_number": unit_number,
+        "candle_timestamp": bar["timestamp"],
+        "open_price": float(bar.get("open") or 0.0),
+        "high_price": float(bar.get("high") or 0.0),
+        "low_price": float(bar.get("low") or 0.0),
+        "close_price": float(bar.get("close") or 0.0),
+        "volume": float(bar.get("volume") or 0.0),
+        "is_partial": bool(bar.get("is_partial") or False),
+        "raw_payload": bar.get("raw_payload"),
+        "fetched_at": fetched_at,
+    }
+
+
+def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> None:
+    if not values:
+        return
+
+    table = ProjectXMarketCandle.__table__
+    insert_stmt = postgresql_insert(table).values(values)
+    excluded = insert_stmt.excluded
+    db.execute(
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                table.c.user_id,
+                table.c.contract_id,
+                table.c.live,
+                table.c.unit,
+                table.c.unit_number,
+                table.c.candle_timestamp,
+            ],
+            set_={
+                "symbol": excluded.symbol,
+                "open_price": excluded.open_price,
+                "high_price": excluded.high_price,
+                "low_price": excluded.low_price,
+                "close_price": excluded.close_price,
+                "volume": excluded.volume,
+                "is_partial": excluded.is_partial,
+                "raw_payload": excluded.raw_payload,
+                "fetched_at": excluded.fetched_at,
+            },
+        )
+    )
+
+
+def _query_market_candles_by_timestamps(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str,
+    live: bool,
+    unit: str,
+    unit_number: int,
+    timestamps: list[datetime],
+) -> list[ProjectXMarketCandle]:
+    rows = (
+        db.query(ProjectXMarketCandle)
+        .populate_existing()
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == contract_id)
+        .filter(ProjectXMarketCandle.live == bool(live))
+        .filter(ProjectXMarketCandle.unit == unit)
+        .filter(ProjectXMarketCandle.unit_number == unit_number)
+        .filter(ProjectXMarketCandle.candle_timestamp.in_(timestamps))
+        .all()
+    )
+    rows.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    return rows
 
 
 def evaluate_sma_cross(
@@ -779,6 +1036,270 @@ def evaluate_sma_cross(
             "current_slow": current_slow,
         },
     )
+
+
+def evaluate_support_resistance_levels(
+    *,
+    higher_timeframe_candles: list[ProjectXMarketCandle],
+    lower_timeframe_candles: list[ProjectXMarketCandle],
+    strategy_params: dict[str, Any] | None = None,
+) -> SignalResult:
+    params = _normalize_strategy_params(_STRATEGY_SUPPORT_RESISTANCE, strategy_params)
+    bars_per_timeframe = int(params["bars_per_timeframe"])
+    swing_window = int(params["swing_window"])
+    tolerance_percent = float(params["level_tolerance_percent"])
+    stop_beyond_percent = float(params["stop_beyond_level_percent"])
+    reward_multiple = float(params["take_profit_r_multiple"])
+
+    higher_closed = _closed_candles(higher_timeframe_candles)[-bars_per_timeframe:]
+    lower_closed = _closed_candles(lower_timeframe_candles)[-bars_per_timeframe:]
+    minimum_required = swing_window
+    latest = lower_closed[-1] if lower_closed else None
+    latest_timestamp = _as_utc(latest.candle_timestamp) if latest is not None else None
+    latest_price = float(latest.close_price) if latest is not None else None
+
+    if len(higher_closed) < minimum_required or len(lower_closed) < minimum_required:
+        return SignalResult(
+            action="HOLD",
+            reason=(
+                f"Need at least {minimum_required} closed 4H and 1H candles; "
+                f"found {len(higher_closed)} 4H and {len(lower_closed)} 1H."
+            ),
+            candle_timestamp=latest_timestamp,
+            price=latest_price,
+            raw_payload={
+                "strategy_type": _STRATEGY_SUPPORT_RESISTANCE,
+                "settings": params,
+                "closed_counts": {"4H": len(higher_closed), "1H": len(lower_closed)},
+            },
+        )
+
+    assert latest is not None
+    price = float(latest.close_price)
+    raw_levels = [
+        *_detect_support_resistance_levels(higher_closed, timeframe="4H", window_size=swing_window),
+        *_detect_support_resistance_levels(lower_closed, timeframe="1H", window_size=swing_window),
+    ]
+    supports = _filter_clustered_levels(
+        [level for level in raw_levels if level.side == "support"],
+        tolerance_percent=tolerance_percent,
+    )
+    resistances = _filter_clustered_levels(
+        [level for level in raw_levels if level.side == "resistance"],
+        tolerance_percent=tolerance_percent,
+    )
+    support_touch = _nearest_level_touch(
+        levels=supports,
+        price=price,
+        side="support",
+        tolerance_percent=tolerance_percent,
+    )
+    resistance_touch = _nearest_level_touch(
+        levels=resistances,
+        price=price,
+        side="resistance",
+        tolerance_percent=tolerance_percent,
+    )
+    touch = _choose_nearest_touch(support_touch, resistance_touch)
+
+    raw_payload: dict[str, Any] = {
+        "strategy_type": _STRATEGY_SUPPORT_RESISTANCE,
+        "settings": params,
+        "closed_counts": {"4H": len(higher_closed), "1H": len(lower_closed)},
+        "raw_level_count": len(raw_levels),
+        "support_levels": [_serialize_support_resistance_level(level) for level in supports],
+        "resistance_levels": [_serialize_support_resistance_level(level) for level in resistances],
+    }
+
+    if touch is None:
+        return SignalResult(
+            action="HOLD",
+            reason=(
+                f"Price {_format_strategy_price(price)} is not within "
+                f"{_format_percent(tolerance_percent)}% of a filtered support or resistance level."
+            ),
+            candle_timestamp=_as_utc(latest.candle_timestamp),
+            price=price,
+            raw_payload=raw_payload,
+        )
+
+    level, distance_percent = touch
+    is_support = level.side == "support"
+    action = "BUY" if is_support else "SELL"
+    if is_support:
+        stop_loss = level.price * (1 - stop_beyond_percent / 100)
+        risk = price - stop_loss
+        take_profit = price + risk * reward_multiple
+    else:
+        stop_loss = level.price * (1 + stop_beyond_percent / 100)
+        risk = stop_loss - price
+        take_profit = price - risk * reward_multiple
+
+    if risk <= 0:
+        raw_payload["trigger_level"] = _serialize_support_resistance_level(level)
+        raw_payload["distance_percent"] = distance_percent
+        raw_payload["stop_loss"] = stop_loss
+        raw_payload["take_profit"] = take_profit
+        return SignalResult(
+            action="HOLD",
+            reason="Support/resistance level was touched, but the calculated risk was not positive.",
+            candle_timestamp=_as_utc(latest.candle_timestamp),
+            price=price,
+            raw_payload=raw_payload,
+        )
+
+    raw_payload.update(
+        {
+            "trigger_level": _serialize_support_resistance_level(level),
+            "distance_percent": distance_percent,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "risk": risk,
+        }
+    )
+    side_name = "support" if is_support else "resistance"
+    reason = (
+        f"{action} within {_format_percent(distance_percent)}% of {level.timeframe} {side_name} "
+        f"{_format_strategy_price(level.price)}. SL {_format_strategy_price(stop_loss)}, "
+        f"TP {_format_strategy_price(take_profit)} ({_format_percent(reward_multiple)}R)."
+    )
+    return SignalResult(
+        action=action,
+        reason=reason,
+        candle_timestamp=_as_utc(latest.candle_timestamp),
+        price=price,
+        raw_payload=raw_payload,
+    )
+
+
+def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketCandle]:
+    closed = [candle for candle in candles if not bool(candle.is_partial)]
+    closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
+    return closed
+
+
+def _detect_support_resistance_levels(
+    candles: list[ProjectXMarketCandle],
+    *,
+    timeframe: str,
+    window_size: int,
+) -> list[SupportResistanceLevel]:
+    span = max(3, int(window_size))
+    if span % 2 == 0:
+        span += 1
+    radius = span // 2
+    if len(candles) < span:
+        return []
+
+    levels: list[SupportResistanceLevel] = []
+    timeframe_weight = 2.0 if timeframe == "4H" else 1.0
+    last_index = len(candles) - 1
+    for index in range(radius, len(candles) - radius):
+        center = candles[index]
+        window = candles[index - radius : index + radius + 1]
+        highs = [float(candle.high_price) for candle in window]
+        lows = [float(candle.low_price) for candle in window]
+        center_high = float(center.high_price)
+        center_low = float(center.low_price)
+        recency_score = index / last_index if last_index > 0 else 0
+        score = timeframe_weight + recency_score
+        timestamp = _as_utc(center.candle_timestamp)
+
+        if center_high == max(highs) and highs.count(center_high) == 1:
+            levels.append(
+                SupportResistanceLevel(
+                    side="resistance",
+                    price=center_high,
+                    timestamp=timestamp,
+                    timeframe=timeframe,
+                    source_index=index,
+                    score=score,
+                )
+            )
+        if center_low == min(lows) and lows.count(center_low) == 1:
+            levels.append(
+                SupportResistanceLevel(
+                    side="support",
+                    price=center_low,
+                    timestamp=timestamp,
+                    timeframe=timeframe,
+                    source_index=index,
+                    score=score,
+                )
+            )
+
+    return levels
+
+
+def _filter_clustered_levels(
+    levels: list[SupportResistanceLevel],
+    *,
+    tolerance_percent: float,
+) -> list[SupportResistanceLevel]:
+    kept: list[SupportResistanceLevel] = []
+    for level in sorted(levels, key=lambda item: (-item.score, -item.timestamp.timestamp())):
+        if any(_level_distance_percent(level.price, existing.price) <= tolerance_percent for existing in kept):
+            continue
+        kept.append(level)
+    return sorted(kept, key=lambda item: item.price)
+
+
+def _nearest_level_touch(
+    *,
+    levels: list[SupportResistanceLevel],
+    price: float,
+    side: str,
+    tolerance_percent: float,
+) -> tuple[SupportResistanceLevel, float] | None:
+    touches: list[tuple[SupportResistanceLevel, float]] = []
+    for level in levels:
+        if side == "support" and price < level.price:
+            continue
+        if side == "resistance" and price > level.price:
+            continue
+        distance_percent = _level_distance_percent(price, level.price)
+        if distance_percent <= tolerance_percent:
+            touches.append((level, distance_percent))
+    if not touches:
+        return None
+    return min(touches, key=lambda item: (item[1], -item[0].score))
+
+
+def _choose_nearest_touch(
+    support_touch: tuple[SupportResistanceLevel, float] | None,
+    resistance_touch: tuple[SupportResistanceLevel, float] | None,
+) -> tuple[SupportResistanceLevel, float] | None:
+    if support_touch is None:
+        return resistance_touch
+    if resistance_touch is None:
+        return support_touch
+    return min([support_touch, resistance_touch], key=lambda item: (item[1], -item[0].score))
+
+
+def _level_distance_percent(left: float, right: float) -> float:
+    denominator = (abs(left) + abs(right)) / 2
+    if denominator <= 0:
+        return 0.0 if left == right else float("inf")
+    return abs(left - right) / denominator * 100
+
+
+def _serialize_support_resistance_level(level: SupportResistanceLevel) -> dict[str, Any]:
+    return {
+        "side": level.side,
+        "price": level.price,
+        "timestamp": level.timestamp.isoformat(),
+        "timeframe": level.timeframe,
+        "source_index": level.source_index,
+        "score": level.score,
+    }
+
+
+def _format_strategy_price(value: float) -> str:
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _format_percent(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def evaluate_risk_gates(
@@ -860,6 +1381,7 @@ def serialize_bot_config(row: BotConfig) -> dict[str, Any]:
         "enabled": bool(row.enabled),
         "execution_mode": row.execution_mode,
         "strategy_type": row.strategy_type,
+        "strategy_params": _normalize_strategy_params(row.strategy_type, row.strategy_params),
         "contract_id": row.contract_id,
         "symbol": row.symbol,
         "timeframe_unit": row.timeframe_unit,
@@ -1030,6 +1552,14 @@ def _create_order_attempt(
         "size": int(round(float(config.order_size))),
         "customTag": f"topsignal-bot-{int(config.id)}-{int(decision.id)}",
     }
+    if isinstance(decision.raw_payload, dict):
+        strategy_order_plan = {
+            key: decision.raw_payload[key]
+            for key in ["strategy_type", "trigger_level", "stop_loss", "take_profit", "risk"]
+            if key in decision.raw_payload
+        }
+        if strategy_order_plan:
+            request_payload["strategyOrderPlan"] = strategy_order_plan
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -1176,6 +1706,82 @@ def _validate_strategy_periods(fast_period: int, slow_period: int) -> None:
         raise ValueError("fast_period must be positive")
     if int(slow_period) <= int(fast_period):
         raise ValueError("slow_period must be greater than fast_period")
+
+
+def _validate_strategy_type(value: Any) -> str:
+    strategy_type = str(value or _STRATEGY_SMA_CROSS).strip()
+    if strategy_type not in _SUPPORTED_STRATEGY_TYPES:
+        raise ValueError("unsupported bot strategy type")
+    return strategy_type
+
+
+def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any]:
+    normalized_strategy_type = _validate_strategy_type(strategy_type)
+    if normalized_strategy_type != _STRATEGY_SUPPORT_RESISTANCE:
+        return {}
+
+    raw_params = params if isinstance(params, dict) else {}
+    bars_per_timeframe = _bounded_int_param(raw_params, "bars_per_timeframe", 100, minimum=25, maximum=500)
+    swing_window = _bounded_int_param(raw_params, "swing_window", 5, minimum=3, maximum=51)
+    if swing_window % 2 == 0:
+        swing_window += 1
+    return {
+        "bars_per_timeframe": bars_per_timeframe,
+        "swing_window": swing_window,
+        "level_tolerance_percent": _bounded_float_param(
+            raw_params,
+            "level_tolerance_percent",
+            float(_SUPPORT_RESISTANCE_DEFAULTS["level_tolerance_percent"]),
+            minimum=0.01,
+            maximum=10,
+        ),
+        "stop_beyond_level_percent": _bounded_float_param(
+            raw_params,
+            "stop_beyond_level_percent",
+            float(_SUPPORT_RESISTANCE_DEFAULTS["stop_beyond_level_percent"]),
+            minimum=0.01,
+            maximum=20,
+        ),
+        "take_profit_r_multiple": _bounded_float_param(
+            raw_params,
+            "take_profit_r_multiple",
+            float(_SUPPORT_RESISTANCE_DEFAULTS["take_profit_r_multiple"]),
+            minimum=0.1,
+            maximum=20,
+        ),
+    }
+
+
+def _bounded_int_param(
+    params: dict[str, Any],
+    key: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(params.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _bounded_float_param(
+    params: dict[str, Any],
+    key: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(params.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    if not value == value:
+        value = default
+    return max(minimum, min(maximum, value))
 
 
 def _validate_unique_bot_name(

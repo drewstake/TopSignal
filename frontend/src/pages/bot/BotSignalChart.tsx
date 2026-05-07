@@ -25,6 +25,7 @@ import { botsApi, streamProjectXMarketPrice } from "../../lib/api";
 import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 import { buildBotCandleCacheKey, mergeMarketCandles, readBotCandleCache, writeBotCandleCache } from "./botCandleCache";
 import {
+  BOT_CHART_MIN_BARS,
   buildBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
@@ -43,6 +44,8 @@ const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
 const LIVE_PRICE_STREAM_STALE_MS = 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
 const LIVE_PRICE_REQUEST_TIMEOUT_MS = 12_000;
+const MIN_CACHED_CHART_HYDRATION_BARS = 25;
+const HISTORY_EXPANSION_REFIT_BAR_DELTA = 25;
 const LIQUIDITY_LINE_DRAG_HIT_RADIUS_PX = 8;
 const MIN_DRAWING_SIZE_PX = 4;
 const DRAWING_HIT_RADIUS_PX = 8;
@@ -236,6 +239,11 @@ interface DrawingAnchorPreview {
   point: DrawingPoint;
 }
 
+interface FittedViewportState {
+  key: string;
+  candleCount: number;
+}
+
 interface DrawingOverlayState {
   width: number;
   height: number;
@@ -279,7 +287,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const lastDrawingPanePointRef = useRef<ChartPanePoint | null>(null);
   const selectedDrawingIdRef = useRef<string | null>(null);
   const drawingSequenceRef = useRef(0);
-  const fittedViewportKeyRef = useRef<string | null>(null);
+  const fittedViewportRef = useRef<FittedViewportState | null>(null);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
   const liveRequestSequenceRef = useRef(0);
@@ -337,8 +345,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const latestOhlcCandle = useMemo(() => getLatestHoveredCandle(hoverCandlesByTime), [hoverCandlesByTime]);
   const chartCandles = useMemo(() => buildCandlestickData(visibleCandles), [visibleCandles]);
   const closedChartCandles = useMemo(() => buildCandlestickData(candles, { bridgeConsecutiveGaps: false }), [candles]);
-  const fastSma = useMemo(() => buildSmaData(chartCandles, bot?.fast_period ?? 0), [bot?.fast_period, chartCandles]);
-  const slowSma = useMemo(() => buildSmaData(chartCandles, bot?.slow_period ?? 0), [bot?.slow_period, chartCandles]);
+  const showSmaLayers = bot?.strategy_type !== "support_resistance";
+  const fastSma = useMemo(() => (showSmaLayers ? buildSmaData(chartCandles, bot?.fast_period ?? 0) : []), [bot?.fast_period, chartCandles, showSmaLayers]);
+  const slowSma = useMemo(() => (showSmaLayers ? buildSmaData(chartCandles, bot?.slow_period ?? 0) : []), [bot?.slow_period, chartCandles, showSmaLayers]);
   const vwap = useMemo(
     () => buildVwapData(visibleCandles, { sessionStartTime: VWAP_SESSION_START_TIME, sessionTimeZone: EASTERN_TIME_ZONE }),
     [visibleCandles],
@@ -540,8 +549,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       });
       const cachedEntry = forceRefresh ? null : readBotCandleCache(cacheKey);
       const cachedCandles = cachedEntry?.candles ?? [];
+      const hydrateFromCache = shouldHydrateChartFromCache(cachedCandles.length, queryWindow.limit);
 
-      if (cachedEntry && cachedCandles.length > 0) {
+      if (cachedEntry && hydrateFromCache) {
         setCandles(cachedCandles);
         candlesRef.current = cachedCandles;
         setLastLoadedAt(cachedEntry.savedAt);
@@ -551,6 +561,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
         }
       } else if (forceRefresh) {
         setRefreshing(true);
+      } else if (cachedEntry && !silent) {
+        setLoading(true);
       } else if (!silent) {
         setLoading(true);
       }
@@ -1530,12 +1542,17 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       return;
     }
 
-    if (fittedViewportKeyRef.current === chartViewportKey) {
+    const candleCount = closedChartCandles.length;
+    const fittedViewport = fittedViewportRef.current;
+    if (
+      fittedViewport?.key === chartViewportKey &&
+      !shouldRefitViewportForExpandedHistory(fittedViewport.candleCount, candleCount)
+    ) {
       return;
     }
 
     handles.chart.timeScale().fitContent();
-    fittedViewportKeyRef.current = chartViewportKey;
+    fittedViewportRef.current = { key: chartViewportKey, candleCount };
   }, [bot, chartViewportKey, closedChartCandles.length]);
 
   useEffect(() => {
@@ -1840,18 +1857,22 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 text-xs text-slate-400">
-          <LegendDot
-            active={visibleChartLayers.fastSma}
-            className="bg-cyan-400"
-            label={`Fast SMA ${bot?.fast_period ?? "-"}`}
-            onClick={() => toggleChartLayer("fastSma")}
-          />
-          <LegendDot
-            active={visibleChartLayers.slowSma}
-            className="bg-yellow-300"
-            label={`Slow SMA ${bot?.slow_period ?? "-"}`}
-            onClick={() => toggleChartLayer("slowSma")}
-          />
+          {showSmaLayers ? (
+            <>
+              <LegendDot
+                active={visibleChartLayers.fastSma}
+                className="bg-cyan-400"
+                label={`Fast SMA ${bot?.fast_period ?? "-"}`}
+                onClick={() => toggleChartLayer("fastSma")}
+              />
+              <LegendDot
+                active={visibleChartLayers.slowSma}
+                className="bg-yellow-300"
+                label={`Slow SMA ${bot?.slow_period ?? "-"}`}
+                onClick={() => toggleChartLayer("slowSma")}
+              />
+            </>
+          ) : null}
           <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label="VWAP" onClick={() => toggleChartLayer("vwap")} />
           <LegendDot
             active={visibleChartLayers.buySignals}
@@ -1943,6 +1964,18 @@ function buildBotTimeframeSelectionKey(bot: BotConfig | null): string {
     return "none";
   }
   return `${bot.id}:${bot.timeframe_unit}:${Math.max(1, Math.trunc(bot.timeframe_unit_number))}`;
+}
+
+function shouldHydrateChartFromCache(candleCount: number, requestedLimit: number): boolean {
+  return candleCount >= Math.min(MIN_CACHED_CHART_HYDRATION_BARS, Math.max(1, Math.trunc(requestedLimit)));
+}
+
+function shouldRefitViewportForExpandedHistory(previousCandleCount: number, currentCandleCount: number): boolean {
+  if (currentCandleCount <= previousCandleCount || previousCandleCount >= BOT_CHART_MIN_BARS) {
+    return false;
+  }
+
+  return currentCandleCount >= BOT_CHART_MIN_BARS || currentCandleCount - previousCandleCount >= HISTORY_EXPANSION_REFIT_BAR_DELTA;
 }
 
 function formatEasternCrosshairTime(time: Time): string {

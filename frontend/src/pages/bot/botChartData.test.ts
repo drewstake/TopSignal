@@ -43,6 +43,7 @@ function botConfig(overrides: Partial<BotConfig> = {}): BotConfig {
     enabled: false,
     execution_mode: "dry_run",
     strategy_type: "sma_cross",
+    strategy_params: {},
     contract_id: "CON.F.US.MNQ.M26",
     symbol: "MNQ",
     timeframe_unit: "minute",

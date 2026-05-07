@@ -233,6 +233,7 @@ class BotConfig(Base):
     enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     execution_mode = Column(Text, nullable=False, default="dry_run", server_default="dry_run")
     strategy_type = Column(Text, nullable=False, default="sma_cross", server_default="sma_cross")
+    strategy_params = Column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
     contract_id = Column(Text, nullable=False)
     symbol = Column(Text, nullable=True)
     timeframe_unit = Column(Text, nullable=False, default="minute", server_default="minute")
@@ -256,7 +257,7 @@ class BotConfig(Base):
 
     __table_args__ = (
         CheckConstraint("execution_mode in ('dry_run','live')", name="bot_configs_execution_mode_check"),
-        CheckConstraint("strategy_type in ('sma_cross')", name="bot_configs_strategy_type_check"),
+        CheckConstraint("strategy_type in ('sma_cross','support_resistance')", name="bot_configs_strategy_type_check"),
         CheckConstraint(
             "timeframe_unit in ('second','minute','hour','day','week','month')",
             name="bot_configs_timeframe_unit_check",

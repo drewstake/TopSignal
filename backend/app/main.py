@@ -172,6 +172,7 @@ from .services.bot_service import (
     get_bot_config,
     list_market_candles,
     list_bot_configs,
+    market_candle_cache_covers_request,
     market_candle_cache_needs_refresh,
     next_market_candle_fetch_start,
     prune_market_candle_cache_range,
@@ -1031,9 +1032,17 @@ def get_projectx_market_candles(
             include_partial_bar=include_partial_bar,
         )
         fallback_candles = cached_candles
+        cached_covers_request = market_candle_cache_covers_request(
+            cached_candles,
+            start=start_utc,
+            unit=unit,
+            unit_number=unit_number,
+            limit=limit,
+        )
         if (
             cached_candles
             and not refresh
+            and cached_covers_request
             and not market_candle_cache_needs_refresh(
                 cached_candles,
                 end=end_utc,
@@ -1066,9 +1075,17 @@ def get_projectx_market_candles(
             )
             if cached_candles:
                 fallback_candles = cached_candles
+            cached_covers_request = market_candle_cache_covers_request(
+                cached_candles,
+                start=start_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+            )
             if (
                 cached_candles
                 and not refresh
+                and cached_covers_request
                 and not market_candle_cache_needs_refresh(
                     cached_candles,
                     end=end_utc,
@@ -1080,7 +1097,7 @@ def get_projectx_market_candles(
                 return [serialize_market_candle(row) for row in cached_candles]
 
         fetch_start_utc = start_utc
-        if cached_candles and not refresh:
+        if cached_candles and not refresh and cached_covers_request:
             fetch_start_utc = next_market_candle_fetch_start(
                 cached_candles,
                 start=start_utc,

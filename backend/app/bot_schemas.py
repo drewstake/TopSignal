@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -8,6 +8,7 @@ TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
 BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP"]
+BotStrategyType = Literal["sma_cross", "support_resistance"]
 
 
 class ProjectXContractOut(BaseModel):
@@ -43,7 +44,8 @@ class BotConfigBase(BaseModel):
     contract_id: str = Field(min_length=1, max_length=120)
     symbol: str | None = Field(default=None, max_length=40)
     execution_mode: BotExecutionMode = "dry_run"
-    strategy_type: Literal["sma_cross"] = "sma_cross"
+    strategy_type: BotStrategyType = "sma_cross"
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
     timeframe_unit: TimeframeUnit = "minute"
     timeframe_unit_number: int = Field(default=5, gt=0, le=1440)
     lookback_bars: int = Field(default=200, ge=25, le=20000)
@@ -73,6 +75,8 @@ class BotConfigUpdateIn(BaseModel):
     symbol: str | None = Field(default=None, max_length=40)
     enabled: bool | None = None
     execution_mode: BotExecutionMode | None = None
+    strategy_type: BotStrategyType | None = None
+    strategy_params: dict[str, Any] | None = None
     timeframe_unit: TimeframeUnit | None = None
     timeframe_unit_number: int | None = Field(default=None, gt=0, le=1440)
     lookback_bars: int | None = Field(default=None, ge=25, le=20000)
@@ -180,4 +184,3 @@ class BotActivityOut(BaseModel):
     decisions: list[BotDecisionOut]
     order_attempts: list[BotOrderAttemptOut]
     risk_events: list[BotRiskEventOut]
-

@@ -568,6 +568,7 @@ def _ensure_bot_schema_compatibility() -> None:
             )
 
             _add_column(conn, "bot_configs", config_columns, "strategy_type", "text not null default 'sma_cross'")
+            _add_column(conn, "bot_configs", config_columns, "strategy_params", "jsonb not null default '{}'::jsonb")
             if "symbol" not in config_columns:
                 conn.execute(text("alter table bot_configs add column if not exists symbol text"))
                 conn.execute(text("update bot_configs set symbol = 'MNQ' where symbol is null or btrim(symbol) = ''"))
@@ -602,7 +603,23 @@ def _ensure_bot_schema_compatibility() -> None:
             _add_column(conn, "bot_configs", config_columns, "created_at", "timestamptz not null default now()")
             _add_column(conn, "bot_configs", config_columns, "updated_at", "timestamptz not null default now()")
 
-            conn.execute(text("update bot_configs set strategy_type = 'sma_cross' where strategy_type is null or strategy_type <> 'sma_cross'"))
+            conn.execute(
+                text(
+                    "update bot_configs set strategy_type = 'sma_cross' "
+                    "where strategy_type is null or strategy_type not in ('sma_cross','support_resistance')"
+                )
+            )
+            conn.execute(text("alter table bot_configs alter column strategy_type set default 'sma_cross'"))
+            conn.execute(text("alter table bot_configs drop constraint if exists bot_configs_strategy_type_check"))
+            conn.execute(
+                text(
+                    """
+                    alter table bot_configs
+                    add constraint bot_configs_strategy_type_check
+                    check (strategy_type in ('sma_cross','support_resistance'))
+                    """
+                )
+            )
             conn.execute(text("update bot_configs set timeframe_unit = 'minute' where timeframe_unit is null or timeframe_unit not in ('second','minute','hour','day','week','month')"))
             conn.execute(text("update bot_configs set timeframe_unit_number = 5 where timeframe_unit_number is null or timeframe_unit_number <= 0"))
             conn.execute(text("update bot_configs set lookback_bars = 200 where lookback_bars is null or lookback_bars < 25"))

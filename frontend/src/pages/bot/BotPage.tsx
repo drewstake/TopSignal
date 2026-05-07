@@ -15,6 +15,7 @@ import type {
   BotActivity,
   BotConfig,
   BotEvaluation,
+  BotStrategyType,
   BotTimeframeUnit,
   ProjectXContract,
   ProjectXMarketCandle,
@@ -22,7 +23,12 @@ import type {
 import { BotSignalChart } from "./BotSignalChart";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
+const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
+  { value: "sma_cross", label: "SMA Cross" },
+  { value: "support_resistance", label: "Support/Resistance" },
+];
 const EASTERN_TIME_ZONE = "America/New_York";
+const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 
 const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -36,6 +42,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 
 interface BotFormState {
   name: string;
+  strategyType: BotStrategyType;
   accountId: string;
   contractSearch: string;
   contractId: string;
@@ -45,6 +52,7 @@ interface BotFormState {
   lookbackBars: string;
   fastPeriod: string;
   slowPeriod: string;
+  levelTolerancePercent: string;
   orderSize: string;
   maxContracts: string;
   maxDailyLoss: string;
@@ -59,6 +67,7 @@ interface BotFormState {
 function buildInitialForm(accountId: number | null): BotFormState {
   return {
     name: "MNQ SMA Cross",
+    strategyType: "sma_cross",
     accountId: accountId ? String(accountId) : "",
     contractSearch: "MNQ",
     contractId: "",
@@ -68,6 +77,7 @@ function buildInitialForm(accountId: number | null): BotFormState {
     lookbackBars: "200",
     fastPeriod: "9",
     slowPeriod: "21",
+    levelTolerancePercent: SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT,
     orderSize: "1",
     maxContracts: "1",
     maxDailyLoss: "250",
@@ -83,15 +93,17 @@ function buildInitialForm(accountId: number | null): BotFormState {
 function formFromBot(bot: BotConfig): BotFormState {
   return {
     name: bot.name,
+    strategyType: bot.strategy_type,
     accountId: String(bot.account_id),
     contractSearch: bot.symbol ?? bot.contract_id,
     contractId: bot.contract_id,
     symbol: bot.symbol ?? "",
-    timeframeUnit: bot.timeframe_unit,
-    timeframeUnitNumber: String(bot.timeframe_unit_number),
-    lookbackBars: String(bot.lookback_bars),
+    timeframeUnit: bot.strategy_type === "support_resistance" ? "hour" : bot.timeframe_unit,
+    timeframeUnitNumber: bot.strategy_type === "support_resistance" ? "1" : String(bot.timeframe_unit_number),
+    lookbackBars: bot.strategy_type === "support_resistance" ? "100" : String(bot.lookback_bars),
     fastPeriod: String(bot.fast_period),
     slowPeriod: String(bot.slow_period),
+    levelTolerancePercent: String(bot.strategy_params?.level_tolerance_percent ?? SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT),
     orderSize: String(bot.order_size),
     maxContracts: String(bot.max_contracts),
     maxDailyLoss: String(bot.max_daily_loss),
@@ -100,7 +112,8 @@ function formFromBot(bot: BotConfig): BotFormState {
     tradingStartTime: bot.trading_start_time,
     tradingEndTime: bot.trading_end_time,
     cooldownSeconds: String(bot.cooldown_seconds),
-    maxDataStalenessSeconds: String(bot.max_data_staleness_seconds),
+    maxDataStalenessSeconds:
+      bot.strategy_type === "support_resistance" && bot.max_data_staleness_seconds < 3600 ? "7200" : String(bot.max_data_staleness_seconds),
   };
 }
 
@@ -153,6 +166,10 @@ function statusBadgeVariant(status: string) {
     return "negative" as const;
   }
   return "neutral" as const;
+}
+
+function strategyLabel(strategyType: BotStrategyType) {
+  return strategyType === "support_resistance" ? "Support/Resistance" : "SMA Cross";
 }
 
 function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
@@ -302,6 +319,33 @@ export function BotPage() {
     }));
   }
 
+  function handleStrategyChange(strategyType: BotStrategyType) {
+    setForm((current) => {
+      if (strategyType === "support_resistance") {
+        return {
+          ...current,
+          strategyType,
+          name: current.name === "MNQ SMA Cross" ? "MNQ Support/Resistance" : current.name,
+          timeframeUnit: "hour",
+          timeframeUnitNumber: "1",
+          lookbackBars: "100",
+          levelTolerancePercent: current.levelTolerancePercent || SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT,
+          maxDataStalenessSeconds: "7200",
+        };
+      }
+
+      return {
+        ...current,
+        strategyType,
+        name: current.name === "MNQ Support/Resistance" ? "MNQ SMA Cross" : current.name,
+        timeframeUnit: current.timeframeUnit === "hour" && current.timeframeUnitNumber === "1" ? "minute" : current.timeframeUnit,
+        timeframeUnitNumber: current.timeframeUnit === "hour" && current.timeframeUnitNumber === "1" ? "5" : current.timeframeUnitNumber,
+        lookbackBars: current.lookbackBars === "100" ? "200" : current.lookbackBars,
+        maxDataStalenessSeconds: current.maxDataStalenessSeconds === "7200" ? "600" : current.maxDataStalenessSeconds,
+      };
+    });
+  }
+
   function handleEditSelectedBot() {
     if (!selectedBot) {
       return;
@@ -357,6 +401,7 @@ export function BotPage() {
     const lookbackBars = parsePositiveInt(form.lookbackBars);
     const fastPeriod = parsePositiveInt(form.fastPeriod);
     const slowPeriod = parsePositiveInt(form.slowPeriod);
+    const levelTolerancePercent = parsePositiveNumber(form.levelTolerancePercent);
     const orderSize = parsePositiveNumber(form.orderSize);
     const maxContracts = parsePositiveNumber(form.maxContracts);
     const maxDailyLoss = parseNonNegativeNumber(form.maxDailyLoss);
@@ -402,6 +447,10 @@ export function BotPage() {
       setFormError("Slow period must be greater than fast period.");
       return;
     }
+    if (form.strategyType === "support_resistance" && levelTolerancePercent === null) {
+      setFormError("Level tolerance must be a valid positive percent.");
+      return;
+    }
 
     setSaving(true);
     setFormError(null);
@@ -411,6 +460,17 @@ export function BotPage() {
         account_id: accountId,
         contract_id: form.contractId,
         symbol: form.symbol || null,
+        strategy_type: form.strategyType,
+        strategy_params:
+          form.strategyType === "support_resistance"
+            ? {
+                bars_per_timeframe: 100,
+                swing_window: 5,
+                level_tolerance_percent: levelTolerancePercent ?? Number(SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT),
+                stop_beyond_level_percent: 1,
+                take_profit_r_multiple: 2,
+              }
+            : {},
         timeframe_unit: form.timeframeUnit,
         timeframe_unit_number: timeframeUnitNumber,
         lookback_bars: lookbackBars,
@@ -435,7 +495,6 @@ export function BotPage() {
             ...payload,
             enabled: false,
             execution_mode: "dry_run",
-            strategy_type: "sma_cross",
           });
       setEditingBotId(null);
       await loadConfigs();
@@ -489,13 +548,23 @@ export function BotPage() {
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
-            <CardDescription>SMA cross, ProjectX candles, server-side audit trail</CardDescription>
+            <CardDescription>ProjectX candles, server-side audit trail</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-3.5" onSubmit={handleSaveBot}>
               <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                 <span>Name</span>
                 <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+              </label>
+              <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                <span>Strategy</span>
+                <Select value={form.strategyType} onChange={(event) => handleStrategyChange(event.target.value as BotStrategyType)}>
+                  {strategyOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
               </label>
               <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                 <span>Account</span>
@@ -540,40 +609,70 @@ export function BotPage() {
                 {form.contractId ? <p className="text-xs text-slate-500">{form.contractId}</p> : null}
               </div>
 
-              <div className="grid grid-cols-3 gap-2.5">
-                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span>Unit</span>
-                  <Select
-                    value={form.timeframeUnit}
-                    onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
-                  >
-                    {timeframeUnits.map((unit) => (
-                      <option key={unit} value={unit}>
-                        {unit}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
-                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span>Size</span>
-                  <Input value={form.timeframeUnitNumber} onChange={(event) => setForm({ ...form, timeframeUnitNumber: event.target.value })} />
-                </label>
-                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span>Bars</span>
-                  <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
-                </label>
-              </div>
+              {form.strategyType === "support_resistance" ? (
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <span>Signal TF</span>
+                    <Input value="1H" readOnly disabled />
+                  </label>
+                  <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <span>Context TF</span>
+                    <Input value="4H" readOnly disabled />
+                  </label>
+                  <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <span>Bars</span>
+                    <Input value="100" readOnly disabled />
+                  </label>
+                  <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <span>Window</span>
+                    <Input value="5" readOnly disabled />
+                  </label>
+                  <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <span>Level %</span>
+                    <Input
+                      value={form.levelTolerancePercent}
+                      onChange={(event) => setForm({ ...form, levelTolerancePercent: event.target.value })}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Unit</span>
+                      <Select
+                        value={form.timeframeUnit}
+                        onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
+                      >
+                        {timeframeUnits.map((unit) => (
+                          <option key={unit} value={unit}>
+                            {unit}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Size</span>
+                      <Input value={form.timeframeUnitNumber} onChange={(event) => setForm({ ...form, timeframeUnitNumber: event.target.value })} />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Bars</span>
+                      <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
+                    </label>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
-                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span>Fast SMA</span>
-                  <Input value={form.fastPeriod} onChange={(event) => setForm({ ...form, fastPeriod: event.target.value })} />
-                </label>
-                <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                  <span>Slow SMA</span>
-                  <Input value={form.slowPeriod} onChange={(event) => setForm({ ...form, slowPeriod: event.target.value })} />
-                </label>
-              </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Fast SMA</span>
+                      <Input value={form.fastPeriod} onChange={(event) => setForm({ ...form, fastPeriod: event.target.value })} />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Slow SMA</span>
+                      <Input value={form.slowPeriod} onChange={(event) => setForm({ ...form, slowPeriod: event.target.value })} />
+                    </label>
+                  </div>
+                </>
+              )}
 
               <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -651,6 +750,7 @@ export function BotPage() {
                     <Badge variant={selectedBot.enabled ? "positive" : "neutral"}>
                       {selectedBot.enabled ? "Enabled" : "Disabled"}
                     </Badge>
+                    <Badge variant="neutral">{strategyLabel(selectedBot.strategy_type)}</Badge>
                     <Badge variant="accent">{selectedBot.execution_mode === "dry_run" ? "Dry run" : "Live"}</Badge>
                   </div>
                 ) : null}
@@ -704,7 +804,14 @@ export function BotPage() {
                     <div className="grid grid-cols-2 gap-3">
                       <Metric label="Account" value={String(selectedBot.account_id)} />
                       <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
-                      <Metric label="SMA" value={`${selectedBot.fast_period}/${selectedBot.slow_period}`} />
+                      <Metric
+                        label={selectedBot.strategy_type === "support_resistance" ? "Level %" : "SMA"}
+                        value={
+                          selectedBot.strategy_type === "support_resistance"
+                            ? String(selectedBot.strategy_params?.level_tolerance_percent ?? SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT)
+                            : `${selectedBot.fast_period}/${selectedBot.slow_period}`
+                        }
+                      />
                       <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
                     </div>
                     <div className="flex flex-wrap gap-2">
