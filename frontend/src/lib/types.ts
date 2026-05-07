@@ -481,14 +481,139 @@ export interface ProjectXCredentialsStatus {
 export type BotExecutionMode = "dry_run" | "live";
 export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
 export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
-export type BotStrategyType = "sma_cross" | "support_resistance";
+export type BotStrategyType =
+  | "sma_cross"
+  | "support_resistance"
+  | "donchian_breakout"
+  | "fvg_sweep_mss"
+  | "liquidity_sweep_retest"
+  | "opening_rvol_breakout"
+  | "supertrend_pivot"
+  | "atr_adjusted_relative_strength"
+  | "relative_strength_spy"
+  | "pullback_trap_reversal"
+  | "bollinger_rsi_reversal"
+  | "bollinger_mean_reversion"
+  | "macd_support_resistance"
+  | "ema_trend_pullback"
+  | "ema_scalping"
+  | "delayed_orb_confirmation"
+  | "orb_fibonacci_pullback"
+  | "fisher_transform_mean_reversion"
+  | "vwap_atr_mean_reversion"
+  | "vwap_gap_retrace";
+export type BotTakeProfitMode = "vwap" | "half_vwap_distance" | "r_multiple" | "middle_band" | "two_r" | "fixed_r";
+export type BotDelayedOrbTakeProfitMode = "r_1_5" | "r_2" | "end_of_day";
+export type BotLiquiditySweepTargetMode = "2r" | "3r" | "next_liquidity";
+export type BotTrailingStopMode = "atr" | "swing" | "moving_average";
+export type BotOrbStopMode = "inside_range" | "opposite_side";
+export type BotOrbTargetMode = "2r" | "3r" | "measured_move" | "day_extreme";
 
 export interface BotStrategyParams {
+  entry_period?: number;
+  exit_period?: number;
   bars_per_timeframe?: number;
   swing_window?: number;
   level_tolerance_percent?: number;
   stop_beyond_level_percent?: number;
+  reclaim_within_bars?: number;
+  retest_within_bars?: number;
+  stop_beyond_sweep_percent?: number;
   take_profit_r_multiple?: number;
+  relative_volume_lookback_days?: number;
+  min_relative_volume?: number;
+  min_opening_volume?: number;
+  min_body_to_range_ratio?: number;
+  daily_bars?: number;
+  supertrend_period?: number;
+  supertrend_multiplier?: number;
+  pivot_tolerance_percent?: number;
+  chop_lookback_bars?: number;
+  chop_max_flips?: number;
+  chop_max_range_percent?: number;
+  signal_period?: number;
+  initial_stop_atr_multiplier?: number;
+  trailing_stop_mode?: BotTrailingStopMode;
+  trailing_atr_multiplier?: number;
+  trailing_ma_period?: number;
+  benchmark_symbol?: string;
+  benchmark_contract_id?: string | null;
+  comparison_bars?: number;
+  pullback_lookback_bars?: number;
+  relative_volume_period?: number;
+  minimum_relative_volume?: number;
+  minimum_relative_strength_percent?: number;
+  minimum_benchmark_move_percent?: number;
+  ema_period?: number;
+  major_level_lookback_bars?: number;
+  entry_level_tolerance_percent?: number;
+  stop_buffer_percent?: number;
+  opening_range_minutes?: number;
+  confirmation_minutes?: number;
+  stop_mode?: BotOrbStopMode;
+  swing_lookback_bars?: number;
+  volume_average_period?: number;
+  long_rsi_min?: number;
+  long_rsi_max?: number;
+  short_rsi_min?: number;
+  short_rsi_max?: number;
+  partial_take_profit_r_multiple?: number;
+  final_take_profit_r_multiple?: number;
+  trend_sma_period?: number;
+  stop_after_losses_per_session?: number;
+  target_mode?: BotOrbTargetMode | BotLiquiditySweepTargetMode | "recent_swing";
+  stop_reference?: "ema19" | "micro_swing" | "wider";
+  micro_swing_window?: number;
+  target_lookback_bars?: number;
+  move_lookback_bars?: number;
+  atr_period?: number;
+  relative_volume_cap?: number;
+  long_score_threshold?: number;
+  short_score_threshold?: number;
+  stop_structure_window?: number;
+  stop_atr_multiple?: number;
+  rsi_period?: number;
+  bollinger_period?: number;
+  bollinger_stddev?: number;
+  adx_period?: number;
+  stretch_atr_multiple?: number;
+  rsi_oversold?: number;
+  rsi_overbought?: number;
+  adx_max?: number;
+  vwap_slope_bars?: number;
+  flat_vwap_threshold_bps?: number;
+  local_extreme_lookback?: number;
+  stop_buffer_atr?: number;
+  volume_lookback_bars?: number;
+  strong_volume_multiplier?: number;
+  take_profit_mode?: BotTakeProfitMode | BotLiquiditySweepTargetMode | BotDelayedOrbTakeProfitMode | BotOrbTargetMode;
+  fisher_length?: number;
+  fisher_extreme_threshold?: number;
+  price_stretch_percent?: number;
+  ema_slope_lookback_bars?: number;
+  ema_slope_max_percent?: number;
+  swing_stop_lookback_bars?: number;
+  min_gap_percent?: number;
+  wait_start_minutes?: number;
+  wait_end_minutes?: number;
+  min_volume_ratio?: number;
+  stop_beyond_vwap_percent?: number;
+  touch_tolerance_percent?: number;
+  bars_to_fetch?: number;
+  micro_level_window?: number;
+  volume_baseline_bars?: number;
+  volume_spike_multiple?: number;
+  wick_to_body_ratio_min?: number;
+  trend_confirmation_bars?: number;
+  min_countertrend_bars?: number;
+  pullback_range_multiplier?: number;
+  prior_swing_window?: number;
+  atr_stop_multiple?: number;
+  atr_trail_multiple?: number;
+  atr_size_reference_percent?: number;
+  min_size_scale?: number;
+  atr_stop_buffer?: number;
+  news_blackout_windows?: string[];
 }
 
 export interface ProjectXContract {

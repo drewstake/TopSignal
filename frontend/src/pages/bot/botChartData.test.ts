@@ -6,6 +6,7 @@ import {
   buildBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
+  buildEmaData,
   buildLiquidityLevels,
   buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
@@ -180,6 +181,22 @@ describe("buildSmaData", () => {
 
     expect(buildSmaData(candles, 0)).toEqual([]);
     expect(buildSmaData(candles, 3)).toEqual([]);
+  });
+});
+
+describe("buildEmaData", () => {
+  it("builds exponential averages from the first complete seed window", () => {
+    const candles = buildCandlestickData([
+      candle("2026-04-26T13:35:00Z", 10),
+      candle("2026-04-26T13:40:00Z", 20),
+      candle("2026-04-26T13:45:00Z", 30),
+      candle("2026-04-26T13:50:00Z", 50),
+    ]);
+
+    expect(buildEmaData(candles, 3)).toEqual([
+      { time: candles[2].time, value: 20 },
+      { time: candles[3].time, value: 35 },
+    ]);
   });
 });
 

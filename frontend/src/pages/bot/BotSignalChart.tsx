@@ -29,6 +29,7 @@ import {
   buildBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
+  buildEmaData,
   buildLiquidityLevels,
   buildSignalMarkers,
   buildSmaData,
@@ -52,6 +53,7 @@ const DRAWING_HIT_RADIUS_PX = 8;
 const DRAWING_ENDPOINT_HIT_RADIUS_PX = 14;
 const RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX = 22;
 const CHART_TIMEFRAME_OPTIONS = [
+  { id: "1m", label: "1m", unit: "minute", unitNumber: 1 },
   { id: "5m", label: "5m", unit: "minute", unitNumber: 5 },
   { id: "15m", label: "15m", unit: "minute", unitNumber: 15 },
   { id: "1h", label: "1H", unit: "hour", unitNumber: 1 },
@@ -345,9 +347,19 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   const latestOhlcCandle = useMemo(() => getLatestHoveredCandle(hoverCandlesByTime), [hoverCandlesByTime]);
   const chartCandles = useMemo(() => buildCandlestickData(visibleCandles), [visibleCandles]);
   const closedChartCandles = useMemo(() => buildCandlestickData(candles, { bridgeConsecutiveGaps: false }), [candles]);
-  const showSmaLayers = bot?.strategy_type !== "support_resistance";
-  const fastSma = useMemo(() => (showSmaLayers ? buildSmaData(chartCandles, bot?.fast_period ?? 0) : []), [bot?.fast_period, chartCandles, showSmaLayers]);
-  const slowSma = useMemo(() => (showSmaLayers ? buildSmaData(chartCandles, bot?.slow_period ?? 0) : []), [bot?.slow_period, chartCandles, showSmaLayers]);
+  const usesEmaLayers =
+    bot?.strategy_type === "pullback_trap_reversal" ||
+    bot?.strategy_type === "ema_scalping" ||
+    bot?.strategy_type === "ema_trend_pullback";
+  const showAverageLayers = bot?.strategy_type === "sma_cross" || usesEmaLayers;
+  const fastAverage = useMemo(
+    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, bot?.fast_period ?? 0) : buildSmaData(chartCandles, bot?.fast_period ?? 0)) : []),
+    [bot?.fast_period, chartCandles, showAverageLayers, usesEmaLayers],
+  );
+  const slowAverage = useMemo(
+    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, bot?.slow_period ?? 0) : buildSmaData(chartCandles, bot?.slow_period ?? 0)) : []),
+    [bot?.slow_period, chartCandles, showAverageLayers, usesEmaLayers],
+  );
   const vwap = useMemo(
     () => buildVwapData(visibleCandles, { sessionStartTime: VWAP_SESSION_START_TIME, sessionTimeZone: EASTERN_TIME_ZONE }),
     [visibleCandles],
@@ -1493,16 +1505,16 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       },
     });
     handles.candleSeries.setData(chartCandles);
-    handles.fastSeries.setData(visibleChartLayers.fastSma ? fastSma : []);
-    handles.slowSeries.setData(visibleChartLayers.slowSma ? slowSma : []);
+    handles.fastSeries.setData(visibleChartLayers.fastSma ? fastAverage : []);
+    handles.slowSeries.setData(visibleChartLayers.slowSma ? slowAverage : []);
     handles.vwapSeries.setData(visibleChartLayers.vwap ? vwap : []);
     handles.markers.setMarkers(visibleSignalMarkers);
     setDrawingOverlayRevision((current) => current + 1);
   }, [
     chartConfig?.timeframe_unit,
     chartCandles,
-    fastSma,
-    slowSma,
+    fastAverage,
+    slowAverage,
     visibleChartLayers.fastSma,
     visibleChartLayers.slowSma,
     visibleChartLayers.vwap,
@@ -1857,18 +1869,18 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 text-xs text-slate-400">
-          {showSmaLayers ? (
+          {showAverageLayers ? (
             <>
               <LegendDot
                 active={visibleChartLayers.fastSma}
                 className="bg-cyan-400"
-                label={`Fast SMA ${bot?.fast_period ?? "-"}`}
+                label={`${usesEmaLayers ? "Fast EMA" : "Fast SMA"} ${bot?.fast_period ?? "-"}`}
                 onClick={() => toggleChartLayer("fastSma")}
               />
               <LegendDot
                 active={visibleChartLayers.slowSma}
                 className="bg-yellow-300"
-                label={`Slow SMA ${bot?.slow_period ?? "-"}`}
+                label={`${usesEmaLayers ? "Slow EMA" : "Slow SMA"} ${bot?.slow_period ?? "-"}`}
                 onClick={() => toggleChartLayer("slowSma")}
               />
             </>

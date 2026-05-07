@@ -137,6 +137,28 @@ export function buildSmaData(candles: CandlestickData<UTCTimestamp>[], period: n
   return output;
 }
 
+export function buildEmaData(candles: CandlestickData<UTCTimestamp>[], period: number): LineData<UTCTimestamp>[] {
+  const normalizedPeriod = Math.trunc(period);
+  if (normalizedPeriod <= 0 || candles.length < normalizedPeriod) {
+    return [];
+  }
+
+  const seed = candles.slice(0, normalizedPeriod).reduce((sum, candle) => sum + candle.close, 0) / normalizedPeriod;
+  const multiplier = 2 / (normalizedPeriod + 1);
+  const output: LineData<UTCTimestamp>[] = [{ time: candles[normalizedPeriod - 1].time, value: seed }];
+  let current = seed;
+
+  for (let index = normalizedPeriod; index < candles.length; index += 1) {
+    current = ((candles[index].close - current) * multiplier) + current;
+    output.push({
+      time: candles[index].time,
+      value: current,
+    });
+  }
+
+  return output;
+}
+
 export function buildVwapData(
   candles: ProjectXMarketCandle[],
   options: BuildVwapDataOptions = {},
