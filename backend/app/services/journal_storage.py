@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib import error, parse, request
 
 _BACKEND_LOCAL = "local"
 _BACKEND_SUPABASE = "supabase"
 _DEFAULT_JOURNAL_IMAGE_STORAGE_DIR = "storage/journal_images"
+
+
+class InvalidJournalImageObjectKey(ValueError):
+    pass
 
 
 def journal_storage_backend() -> str:
@@ -46,7 +50,13 @@ def delete_journal_image(*, object_key: str) -> None:
 
 
 def local_journal_image_path(object_key: str) -> Path:
-    return _journal_image_storage_root() / object_key
+    root = _journal_image_storage_root()
+    path = (root / _normalize_object_key(object_key)).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise InvalidJournalImageObjectKey("invalid journal image object key") from exc
+    return path
 
 
 def _journal_image_storage_root() -> Path:
@@ -56,7 +66,7 @@ def _journal_image_storage_root() -> Path:
         return root.resolve()
 
     backend_root = Path(__file__).resolve().parents[2]
-    return backend_root / _DEFAULT_JOURNAL_IMAGE_STORAGE_DIR
+    return (backend_root / _DEFAULT_JOURNAL_IMAGE_STORAGE_DIR).resolve()
 
 
 def _save_journal_image_supabase(*, object_key: str, file_bytes: bytes, mime_type: str) -> None:
@@ -117,11 +127,25 @@ def _delete_journal_image_supabase(*, object_key: str) -> None:
 
 
 def _supabase_object_url(object_key: str) -> str:
+    object_key = _normalize_object_key(object_key)
     base_url = _supabase_url()
     bucket = _supabase_bucket()
     encoded_bucket = parse.quote(bucket, safe="")
     encoded_key = parse.quote(object_key, safe="/")
     return f"{base_url}/storage/v1/object/{encoded_bucket}/{encoded_key}"
+
+
+def _normalize_object_key(object_key: str) -> str:
+    raw_key = str(object_key)
+    if not raw_key or "\x00" in raw_key or "\\" in raw_key:
+        raise InvalidJournalImageObjectKey("invalid journal image object key")
+    if raw_key.startswith("/"):
+        raise InvalidJournalImageObjectKey("invalid journal image object key")
+
+    path = PurePosixPath(raw_key)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise InvalidJournalImageObjectKey("invalid journal image object key")
+    return "/".join(path.parts)
 
 
 def _supabase_url() -> str:

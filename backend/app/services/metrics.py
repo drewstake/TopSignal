@@ -67,16 +67,22 @@ def _net_pnl_sql_expr():
     return func.coalesce(Trade.pnl, 0) - func.coalesce(Trade.fees, 0)
 
 
-def _closed_trade_query(db: Session, account_id: Optional[int]):
+def _closed_trade_query(db: Session, account_id: Optional[int], user_id: Optional[str] = None):
     query = db.query(Trade).filter(Trade.closed_at.isnot(None))
+    if user_id is not None:
+        query = query.filter(Trade.user_id == user_id)
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
     return query
 
 
-def _load_closed_trades(db: Session, account_id: Optional[int] = None) -> list[ClosedTradeSample]:
+def _load_closed_trades(
+    db: Session,
+    account_id: Optional[int] = None,
+    user_id: Optional[str] = None,
+) -> list[ClosedTradeSample]:
     rows = (
-        _closed_trade_query(db, account_id)
+        _closed_trade_query(db, account_id, user_id)
         .order_by(Trade.closed_at.asc(), Trade.id.asc())
         .all()
     )
@@ -116,8 +122,8 @@ def _max_drawdown(trades: list[ClosedTradeSample]) -> float:
     return _round(max_drawdown, 2)
 
 
-def get_summary_metrics(db: Session, account_id: Optional[int] = None) -> dict:
-    trades = _load_closed_trades(db, account_id)
+def get_summary_metrics(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> dict:
+    trades = _load_closed_trades(db, account_id, user_id)
     if not trades:
         return {
             "trade_count": 0,
@@ -163,7 +169,7 @@ def get_summary_metrics(db: Session, account_id: Optional[int] = None) -> dict:
     }
 
 
-def get_pnl_by_hour(db: Session, account_id: Optional[int] = None) -> list[dict]:
+def get_pnl_by_hour(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> list[dict]:
     hour_expr = cast(func.extract("hour", Trade.opened_at), Integer)
     net_expr = _net_pnl_sql_expr()
 
@@ -175,6 +181,8 @@ def get_pnl_by_hour(db: Session, account_id: Optional[int] = None) -> list[dict]
         )
         .filter(Trade.closed_at.isnot(None))
     )
+    if user_id is not None:
+        query = query.filter(Trade.user_id == user_id)
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
 
@@ -197,7 +205,7 @@ def get_pnl_by_hour(db: Session, account_id: Optional[int] = None) -> list[dict]
     ]
 
 
-def get_pnl_by_day(db: Session, account_id: Optional[int] = None) -> list[dict]:
+def get_pnl_by_day(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> list[dict]:
     day_expr = cast(func.extract("isodow", Trade.opened_at), Integer)
     net_expr = _net_pnl_sql_expr()
 
@@ -209,6 +217,8 @@ def get_pnl_by_day(db: Session, account_id: Optional[int] = None) -> list[dict]:
         )
         .filter(Trade.closed_at.isnot(None))
     )
+    if user_id is not None:
+        query = query.filter(Trade.user_id == user_id)
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
 
@@ -232,7 +242,7 @@ def get_pnl_by_day(db: Session, account_id: Optional[int] = None) -> list[dict]:
     ]
 
 
-def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None) -> list[dict]:
+def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> list[dict]:
     net_expr = _net_pnl_sql_expr()
     win_expr = func.sum(case((net_expr > 0, 1), else_=0))
     pnl_sum_expr = func.coalesce(func.sum(net_expr), 0)
@@ -246,6 +256,8 @@ def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None) -> list[dic
         )
         .filter(Trade.closed_at.isnot(None))
     )
+    if user_id is not None:
+        query = query.filter(Trade.user_id == user_id)
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
 
@@ -270,8 +282,8 @@ def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None) -> list[dic
     return output
 
 
-def get_streak_metrics(db: Session, account_id: Optional[int] = None) -> dict:
-    trades = _load_closed_trades(db, account_id)
+def get_streak_metrics(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> dict:
+    trades = _load_closed_trades(db, account_id, user_id)
     if not trades:
         return {
             "current_win_streak": 0,
@@ -335,8 +347,8 @@ def get_streak_metrics(db: Session, account_id: Optional[int] = None) -> dict:
     }
 
 
-def get_behavior_metrics(db: Session, account_id: Optional[int] = None) -> dict:
-    trades = _load_closed_trades(db, account_id)
+def get_behavior_metrics(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> dict:
+    trades = _load_closed_trades(db, account_id, user_id)
     if not trades:
         return {
             "trade_count": 0,

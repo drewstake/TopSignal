@@ -4,6 +4,7 @@ import os
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import jwt
 from fastapi import Request
@@ -93,10 +94,11 @@ def authenticate_request_token(token: str) -> AuthenticatedUser:
     subject = payload.get("sub")
     if not isinstance(subject, str) or not subject.strip():
         raise AuthError("invalid_token_subject")
+    user_id = _normalize_user_id(subject, error_detail="invalid_token_subject")
 
     raw_email = payload.get("email")
     email = raw_email.strip() if isinstance(raw_email, str) and raw_email.strip() else None
-    return AuthenticatedUser(user_id=subject.strip(), email=email, claims=payload)
+    return AuthenticatedUser(user_id=user_id, email=email, claims=payload)
 
 
 def _decode_jwt(*, token: str, algorithm: str) -> dict[str, Any]:
@@ -179,3 +181,10 @@ def _read_bool_env(name: str, default: bool) -> bool:
 
 def _allow_query_bearer_tokens() -> bool:
     return _read_bool_env("ALLOW_QUERY_BEARER_TOKENS", False)
+
+
+def _normalize_user_id(value: str, *, error_detail: str) -> str:
+    try:
+        return str(UUID(value.strip()))
+    except (AttributeError, ValueError) as exc:
+        raise AuthError(error_detail) from exc

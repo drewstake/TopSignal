@@ -81,7 +81,7 @@ from .metrics_schemas import (
     SymbolPnlOut,
 )
 from .models import Expense, Payout, ProjectXTradeEvent, Trade
-from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut
+from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
     ProjectXAccountMainOut,
@@ -108,6 +108,8 @@ from .services.metrics import (
     get_summary_metrics,
 )
 from .services.journal import (
+    MAX_JOURNAL_IMAGE_BYTES,
+    JournalEntryDateConflictError,
     VersionConflictError,
     archive_journal_entry,
     create_journal_entry_image,
@@ -136,6 +138,7 @@ from .services.projectx_accounts import (
     account_id_from_external_id,
     get_projectx_account_row,
     get_projectx_account_rows,
+    normalize_projectx_account_external_id,
     resolve_projectx_account_effective_name,
     resolve_projectx_account_provider_name,
     set_projectx_account_display_name,
@@ -156,7 +159,6 @@ from .services.projectx_trades import (
     derive_trade_execution_lifecycles,
     ensure_trade_cache_for_request,
     get_trade_event_pnl_calendar,
-    has_local_trades,
     list_trade_events,
     refresh_account_trades,
     serialize_trade_event,
@@ -359,7 +361,11 @@ def list_trades(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    query = db.query(Trade)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+
+    query = db.query(Trade).filter(Trade.user_id == user_id)
     if account_id is not None:
         query = query.filter(Trade.account_id == account_id)
     return query.order_by(Trade.opened_at.desc()).limit(limit).all()
@@ -422,8 +428,8 @@ def list_expenses(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if start_date and end_date and start_date > end_date:
-        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+    _validate_date_range(start_date=start_date, end_date=end_date)
+    _validate_pagination(limit=limit, offset=offset, max_limit=500)
     if account_id is not None:
         _validate_account_id(account_id)
 
@@ -461,8 +467,7 @@ def get_expense_totals(
         _validate_account_id(account_id)
 
     if start_date is not None or end_date is not None:
-        if start_date and end_date and start_date > end_date:
-            raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+        _validate_date_range(start_date=start_date, end_date=end_date)
         effective_start_date = start_date
         effective_end_date = end_date or datetime.now(_NEW_YORK_TZ).date()
     else:
@@ -485,16 +490,14 @@ def get_expense_totals(
     if account_id is not None:
         query = query.filter(Expense.account_id == account_id)
 
-    total_amount_cents, count = query.with_entities(
-        func.coalesce(func.sum(Expense.amount_cents), 0),
-        func.count(Expense.id),
-    ).one()
-
     grouped_rows = query.with_entities(
         Expense.category,
         func.coalesce(func.sum(Expense.amount_cents), 0),
         func.count(Expense.id),
     ).group_by(Expense.category).all()
+
+    total_amount_cents = sum(int(cents) for _, cents, _ in grouped_rows)
+    count = sum(int(row_count) for _, _, row_count in grouped_rows)
 
     by_category = {
         str(category): {
@@ -510,9 +513,9 @@ def get_expense_totals(
         "start_date": effective_start_date,
         "end_date": effective_end_date,
         "total_amount": _cents_to_dollars(total_amount_cents),
-        "total_amount_cents": int(total_amount_cents),
+        "total_amount_cents": total_amount_cents,
         "by_category": by_category,
-        "count": int(count),
+        "count": count,
     }
 
 
@@ -536,39 +539,57 @@ def update_expense(
         raise HTTPException(status_code=404, detail="expense not found")
 
     fields = payload.model_fields_set
+    next_expense_date = row.expense_date
+    next_category = row.category
+    next_amount_cents = row.amount_cents
+    next_description = row.description
+    next_tags = list(row.tags or [])
+    next_account_id = row.account_id
+    next_account_type = row.account_type
+    next_plan_size = row.plan_size
+
     if "expense_date" in fields:
         if payload.expense_date is None:
             raise HTTPException(status_code=400, detail="expense_date cannot be null")
-        row.expense_date = payload.expense_date
+        next_expense_date = payload.expense_date
     if "category" in fields:
         if payload.category is None:
             raise HTTPException(status_code=400, detail="category cannot be null")
-        row.category = payload.category
+        next_category = payload.category
     if "amount_cents" in fields:
         if payload.amount_cents is None:
             raise HTTPException(status_code=400, detail="amount_cents cannot be null")
-        row.amount_cents = payload.amount_cents
+        next_amount_cents = payload.amount_cents
     if "description" in fields:
-        row.description = _normalize_expense_description(payload.description)
+        next_description = _normalize_expense_description(payload.description)
     if "tags" in fields:
-        row.tags = _normalize_expense_tags(payload.tags)
+        next_tags = _normalize_expense_tags(payload.tags)
     if "account_id" in fields:
         if payload.account_id is not None:
             _validate_account_id(payload.account_id)
-        row.account_id = payload.account_id
+        next_account_id = payload.account_id
     if "account_type" in fields:
-        row.account_type = payload.account_type
+        next_account_type = payload.account_type
     if "plan_size" in fields:
-        row.plan_size = payload.plan_size
+        next_plan_size = payload.plan_size
 
     _validate_expense_practice_guard(
-        account_type=row.account_type,
+        account_type=next_account_type,
         is_practice=payload.is_practice is True,
-        description=row.description,
-        tags=row.tags,
-        plan_size=row.plan_size,
+        description=next_description,
+        tags=next_tags,
+        plan_size=next_plan_size,
     )
-    _validate_expense_amount(amount_cents=row.amount_cents, category=row.category)
+    _validate_expense_amount(amount_cents=next_amount_cents, category=next_category)
+
+    row.expense_date = next_expense_date
+    row.category = next_category
+    row.amount_cents = next_amount_cents
+    row.description = next_description
+    row.tags = next_tags
+    row.account_id = next_account_id
+    row.account_type = next_account_type
+    row.plan_size = next_plan_size
 
     try:
         db.commit()
@@ -641,8 +662,8 @@ def list_payouts(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if start_date and end_date and start_date > end_date:
-        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+    _validate_date_range(start_date=start_date, end_date=end_date)
+    _validate_pagination(limit=limit, offset=offset, max_limit=500)
 
     query = db.query(Payout).filter(Payout.user_id == user_id)
     if start_date is not None:
@@ -665,8 +686,7 @@ def get_payout_totals(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if start_date and end_date and start_date > end_date:
-        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+    _validate_date_range(start_date=start_date, end_date=end_date)
 
     query = db.query(Payout).filter(Payout.user_id == user_id)
     if start_date is not None:
@@ -690,6 +710,57 @@ def get_payout_totals(
         "average_amount_cents": average_amount_cents,
         "count": count,
     }
+
+
+@app.patch("/api/payouts/{payout_id}", response_model=PayoutOut)
+def update_payout(
+    payout_id: int,
+    payload: PayoutUpdateIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if payout_id <= 0:
+        raise HTTPException(status_code=400, detail="payout_id must be a positive integer")
+
+    row = (
+        db.query(Payout)
+        .filter(Payout.user_id == user_id)
+        .filter(Payout.id == payout_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="payout not found")
+
+    fields = payload.model_fields_set
+    next_payout_date = row.payout_date
+    next_amount_cents = row.amount_cents
+    next_notes = row.notes
+
+    if "payout_date" in fields:
+        if payload.payout_date is None:
+            raise HTTPException(status_code=400, detail="payout_date cannot be null")
+        next_payout_date = payload.payout_date
+    if "amount_cents" in fields:
+        if payload.amount_cents is None:
+            raise HTTPException(status_code=400, detail="amount_cents cannot be null")
+        next_amount_cents = payload.amount_cents
+    if "notes" in fields:
+        next_notes = _normalize_payout_notes(payload.notes)
+
+    _validate_payout_amount(next_amount_cents)
+
+    row.payout_date = next_payout_date
+    row.amount_cents = next_amount_cents
+    row.notes = next_notes
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _to_payout_integrity_http_exception(exc) from exc
+
+    db.refresh(row)
+    return PayoutOut.model_validate(row)
 
 
 @app.delete("/api/payouts/{payout_id}", status_code=204)
@@ -720,7 +791,10 @@ def metrics_summary(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_summary_metrics(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_summary_metrics(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/metrics/pnl-by-hour", response_model=list[HourPnlOut])
@@ -728,7 +802,10 @@ def metrics_pnl_by_hour(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_pnl_by_hour(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_pnl_by_hour(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/metrics/pnl-by-day", response_model=list[DayPnlOut])
@@ -736,7 +813,10 @@ def metrics_pnl_by_day(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_pnl_by_day(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_pnl_by_day(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/metrics/pnl-by-symbol", response_model=list[SymbolPnlOut])
@@ -744,7 +824,10 @@ def metrics_pnl_by_symbol(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_pnl_by_symbol(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_pnl_by_symbol(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/metrics/streaks", response_model=StreakMetricsOut)
@@ -752,7 +835,10 @@ def metrics_streaks(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_streak_metrics(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_streak_metrics(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/metrics/behavior", response_model=BehaviorMetricsOut)
@@ -760,7 +846,10 @@ def metrics_behavior(
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return get_behavior_metrics(db, account_id=account_id)
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    return get_behavior_metrics(db, account_id=account_id, user_id=user_id)
 
 
 @app.get("/api/accounts", response_model=list[ProjectXAccountOut])
@@ -795,11 +884,7 @@ def list_projectx_accounts(
         db.rollback()
         raise
 
-    provider_by_external_id = {
-        str(account["id"]): account
-        for account in provider_accounts
-        if isinstance(account, dict) and account.get("id") is not None
-    }
+    provider_by_external_id = _provider_account_payloads_by_external_id(provider_accounts)
     rows = get_projectx_account_rows(db, user_id=user_id)
     visible_rows = [
         row
@@ -909,6 +994,9 @@ def set_projectx_main_account(
     try:
         set_main_projectx_account(db, account_id, user_id=user_id)
         db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found.") from exc
     except Exception:
         db.rollback()
         raise
@@ -1335,6 +1423,8 @@ def evaluate_trading_bot(
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     body = payload or BotStartIn(dry_run=True)
+    if body.dry_run is False:
+        raise HTTPException(status_code=400, detail="evaluate endpoint is dry-run only; use /start for live order routing")
     try:
         config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
         if config is None:
@@ -1347,7 +1437,7 @@ def evaluate_trading_bot(
             config=config,
             account=account,
             client=client,
-            dry_run=True if body.dry_run is None else body.dry_run,
+            dry_run=True,
             confirm_live_order_routing=body.confirm_live_order_routing,
         )
         db.commit()
@@ -1503,6 +1593,10 @@ def merge_projectx_account_journal_entries(
             on_conflict=payload.on_conflict,
             include_images=payload.include_images,
         )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="journal image file not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1592,6 +1686,8 @@ def update_projectx_account_journal_entry(
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except JournalEntryDateConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1627,8 +1723,10 @@ async def upload_projectx_account_journal_image(
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
 
-    file_bytes = await file.read()
-    await file.close()
+    try:
+        file_bytes = await file.read(MAX_JOURNAL_IMAGE_BYTES + 1)
+    finally:
+        await file.close()
 
     try:
         row = create_journal_entry_image(
@@ -1645,6 +1743,8 @@ async def upload_projectx_account_journal_image(
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1693,11 +1793,16 @@ def serve_journal_image(
             file_bytes = get_journal_image_bytes(row.filename)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="journal image file not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="journal image file not found") from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return Response(content=file_bytes, media_type=row.mime_type)
 
-    path = get_journal_image_file_path(row.filename)
+    try:
+        path = get_journal_image_file_path(row.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="journal image file not found") from exc
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="journal image file not found")
 
@@ -1803,6 +1908,7 @@ def refresh_projectx_account_trades(
     user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     try:
         client = _projectx_client_for_user(db, user_id=user_id)
@@ -1838,6 +1944,7 @@ def list_projectx_account_trades(
     if symbol is not None and len(symbol) > 50:
         raise HTTPException(status_code=400, detail="symbol must be <= 50 characters")
     _validate_time_range(start=start, end=end)
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     try:
         try:
@@ -1903,20 +2010,19 @@ def get_projectx_account_summary(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        if refresh or not has_local_trades(db, account_id, user_id=user_id):
-            client = _projectx_client_for_user(db, user_id=user_id)
-            try:
-                refresh_account_trades(
-                    db,
-                    client,
-                    user_id=user_id,
-                    account_id=account_id,
-                    start=start,
-                    end=end,
-                )
-            except ProjectXClientError as exc:
-                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                    raise
+        try:
+            ensure_trade_cache_for_request(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                start=start,
+                end=end,
+                refresh=refresh,
+                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
+            )
+        except ProjectXClientError as exc:
+            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+                raise
 
         return summarize_trade_events(
             db,
@@ -1945,20 +2051,19 @@ def get_projectx_account_summary_with_point_bases(
     point_bases = [normalize_points_basis(basis) for basis in POINTS_BASIS_SYMBOLS]
 
     try:
-        if refresh or not has_local_trades(db, account_id, user_id=user_id):
-            client = _projectx_client_for_user(db, user_id=user_id)
-            try:
-                refresh_account_trades(
-                    db,
-                    client,
-                    user_id=user_id,
-                    account_id=account_id,
-                    start=start,
-                    end=end,
-                )
-            except ProjectXClientError as exc:
-                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                    raise
+        try:
+            ensure_trade_cache_for_request(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                start=start,
+                end=end,
+                refresh=refresh,
+                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
+            )
+        except ProjectXClientError as exc:
+            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+                raise
 
         summary, point_payoff_by_basis = summarize_trade_events_with_point_bases(
             db,
@@ -2006,23 +2111,19 @@ def get_projectx_account_pnl_calendar(
         effective_end = end
 
     try:
-        # Avoid expensive provider backfills on routine page refreshes.
-        # Use explicit refresh (or empty local cache) as the sync trigger.
-        needs_sync = refresh or not has_local_trades(db, account_id, user_id=user_id)
-        if needs_sync:
-            client = _projectx_client_for_user(db, user_id=user_id)
-            try:
-                refresh_account_trades(
-                    db,
-                    client,
-                    user_id=user_id,
-                    account_id=account_id,
-                    start=effective_start,
-                    end=effective_end,
-                )
-            except ProjectXClientError as exc:
-                if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                    raise
+        try:
+            ensure_trade_cache_for_request(
+                db,
+                user_id=user_id,
+                account_id=account_id,
+                start=effective_start,
+                end=effective_end,
+                refresh=refresh,
+                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
+            )
+        except ProjectXClientError as exc:
+            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+                raise
 
         return get_trade_event_pnl_calendar(
             db,
@@ -2239,8 +2340,20 @@ def _validate_account_id(account_id: int) -> None:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
 
 
+def _validate_date_range(*, start_date: date | None, end_date: date | None) -> None:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
+
+
+def _validate_pagination(*, limit: int, offset: int, max_limit: int) -> None:
+    if limit < 1 or limit > max_limit:
+        raise HTTPException(status_code=400, detail=f"limit must be between 1 and {max_limit}")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+
 def _validate_time_range(*, start: datetime | None, end: datetime | None) -> None:
-    if start and end and start > end:
+    if start and end and _as_utc(start) > _as_utc(end):
         raise HTTPException(status_code=400, detail="start must be before end")
 
 
@@ -2272,6 +2385,20 @@ def _load_last_trade_timestamps(db: Session, *, user_id: str, account_ids: list[
         if row.last_trade_at is None:
             continue
         output[int(row.account_id)] = _as_utc(row.last_trade_at)
+    return output
+
+
+def _provider_account_payloads_by_external_id(
+    provider_accounts: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    output: dict[str, dict[str, object]] = {}
+    for account in provider_accounts:
+        if not isinstance(account, dict):
+            continue
+        external_id = normalize_projectx_account_external_id(account.get("id"))
+        if external_id is None:
+            continue
+        output[external_id] = account
     return output
 
 

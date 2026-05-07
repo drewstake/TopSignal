@@ -168,6 +168,49 @@ def test_accounts_route_returns_provider_and_custom_display_names(db_session, mo
     ]
 
 
+def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(db_session, monkeypatch):
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            assert only_active_accounts is False
+            return [
+                {
+                    "id": "007304",
+                    "name": "50KTC-7304",
+                    "balance": 12500.0,
+                    "can_trade": True,
+                    "is_visible": True,
+                }
+            ]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert payload == [
+        {
+            "id": 7304,
+            "name": "50KTC-7304",
+            "provider_name": "50KTC-7304",
+            "custom_display_name": None,
+            "balance": 12500.0,
+            "status": "ACTIVE",
+            "account_state": "ACTIVE",
+            "is_main": False,
+            "can_trade": True,
+            "is_visible": True,
+            "last_trade_at": None,
+        }
+    ]
+
+    row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7304")
+        .one()
+    )
+    assert row.name == "50KTC-7304"
+
+
 def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
     db_session.add_all(
         [
@@ -190,6 +233,36 @@ def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
         .all()
     )
     assert [bool(row.is_main) for row in rows] == [False, True]
+
+
+def test_set_main_account_endpoint_is_idempotent_for_existing_main(db_session):
+    db_session.add_all(
+        [
+            Account(provider="projectx", external_id="7201", name="One", account_state="ACTIVE", is_main=True),
+            Account(provider="projectx", external_id="7202", name="Two", account_state="ACTIVE", is_main=False),
+        ]
+    )
+    db_session.commit()
+
+    payload = set_projectx_main_account(account_id=7201, db=db_session)
+
+    assert payload == {"account_id": 7201, "is_main": True}
+    rows = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .order_by(Account.external_id.asc())
+        .all()
+    )
+    assert [bool(row.is_main) for row in rows] == [True, False]
+
+
+def test_set_main_account_endpoint_rejects_unknown_accounts(db_session):
+    with pytest.raises(HTTPException) as exc_info:
+        set_projectx_main_account(account_id=7299, db=db_session)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Account not found."
+    assert db_session.query(Account).count() == 0
 
 
 def test_rename_account_endpoint_trims_and_persists_custom_display_name(db_session):
@@ -255,6 +328,68 @@ def test_rename_account_endpoint_rejects_blank_names(db_session):
         .one()
     )
     assert row.name == "Provider Bravo"
+    assert row.display_name == "Keep Me"
+
+
+def test_rename_account_endpoint_rejects_overlong_names(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7304",
+            name="Provider Charlie",
+            display_name="Keep Me",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        rename_projectx_account(
+            account_id=7304,
+            payload=ProjectXAccountRenameIn(display_name="A" * 121),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Account name must be 120 characters or fewer."
+
+    row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7304")
+        .one()
+    )
+    assert row.display_name == "Keep Me"
+
+
+def test_rename_account_endpoint_rejects_control_characters(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7305",
+            name="Provider Delta",
+            display_name="Keep Me",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        rename_projectx_account(
+            account_id=7305,
+            payload=ProjectXAccountRenameIn(display_name="Bad\nName"),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Account name cannot contain control characters."
+
+    row = (
+        db_session.query(Account)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == "7305")
+        .one()
+    )
     assert row.display_name == "Keep Me"
 
 

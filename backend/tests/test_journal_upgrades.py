@@ -22,6 +22,8 @@ from app.main import (
 from app.models import JournalEntry, JournalEntryImage
 from app.services.journal import create_journal_entry_image, get_journal_image_file_path
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03"
+
 
 @pytest.fixture()
 def db_session(tmp_path, monkeypatch):
@@ -168,7 +170,7 @@ def test_delete_entry_cascades_journal_images(db_session):
         db_session,
         account_id=13013,
         entry_id=created["id"],
-        file_bytes=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
 
@@ -214,6 +216,11 @@ def test_image_upload_validation_rejects_invalid_mime_and_large_files(db_session
         )
 
 
+def test_journal_image_file_paths_reject_storage_traversal(db_session):
+    with pytest.raises(ValueError, match="invalid journal image object key"):
+        get_journal_image_file_path("../outside.png")
+
+
 def test_delete_image_route_queues_file_cleanup_in_background(db_session):
     created = create_projectx_account_journal_entry(
         account_id=13015,
@@ -232,7 +239,7 @@ def test_delete_image_route_queues_file_cleanup_in_background(db_session):
         db_session,
         account_id=13015,
         entry_id=created["id"],
-        file_bytes=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
     stored_path = get_journal_image_file_path(image.filename)

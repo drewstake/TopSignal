@@ -216,19 +216,27 @@ def start_bot_run(
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
 ) -> EvaluationResult:
-    config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+    config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    now = datetime.now(timezone.utc)
     config.enabled = True
-    config.updated_at = datetime.now(timezone.utc)
+    config.updated_at = now
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
+    _stop_running_bot_runs(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        reason="superseded_by_manual_start",
+        now=now,
+    )
     run = BotRun(
         user_id=user_id,
         bot_config_id=int(config.id),
         account_id=int(config.account_id),
         status="running",
         dry_run=effective_dry_run,
-        started_at=datetime.now(timezone.utc),
-        last_heartbeat_at=datetime.now(timezone.utc),
+        started_at=now,
+        last_heartbeat_at=now,
         raw_state={"source": "manual_start"},
     )
     db.add(run)
@@ -259,13 +267,16 @@ def evaluate_bot_config(
     resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
     candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
+    latest_candle = candles[-1] if candles else None
+    execution_contract_id = _execution_contract_id(config, latest_candle)
+    execution_symbol = _execution_symbol(config, latest_candle)
     decision = BotDecision(
         user_id=user_id,
         bot_config_id=int(config.id),
         bot_run_id=int(run.id) if run is not None and run.id is not None else None,
         account_id=int(config.account_id),
-        contract_id=str(config.contract_id),
-        symbol=config.symbol,
+        contract_id=execution_contract_id,
+        symbol=execution_symbol,
         decision_type="signal",
         action=signal.action,
         reason=signal.reason,
@@ -285,7 +296,9 @@ def evaluate_bot_config(
             user_id=user_id,
             config=config,
             account=resolved_account,
-            latest_candle=candles[-1] if candles else None,
+            latest_candle=latest_candle,
+            contract_id=execution_contract_id,
+            symbol=execution_symbol,
             action=signal.action,
             dry_run=effective_dry_run,
             confirm_live_order_routing=confirm_live_order_routing,
@@ -301,8 +314,8 @@ def evaluate_bot_config(
                     bot_config_id=int(config.id),
                     bot_run_id=int(run.id) if run is not None and run.id is not None else None,
                     account_id=int(config.account_id),
-                    contract_id=str(config.contract_id),
-                    symbol=config.symbol,
+                    contract_id=execution_contract_id,
+                    symbol=execution_symbol,
                     decision_type="risk_reject",
                     action=signal.action,
                     reason="; ".join(block.message for block in blocks),
@@ -323,6 +336,7 @@ def evaluate_bot_config(
                 config=config,
                 run=run,
                 decision=decision,
+                contract_id=execution_contract_id,
                 action=signal.action,
             )
             db.flush()
@@ -355,7 +369,7 @@ def stop_latest_bot_run(
     bot_config_id: int,
     reason: str = "manual_stop",
 ) -> BotRun:
-    config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+    config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     config.enabled = False
     config.updated_at = datetime.now(timezone.utc)
     run = (
@@ -378,6 +392,7 @@ def stop_latest_bot_run(
             stop_reason=reason,
         )
         db.add(run)
+        db.flush()
     else:
         run.status = "stopped"
         run.stopped_at = datetime.now(timezone.utc)
@@ -1309,6 +1324,8 @@ def evaluate_risk_gates(
     config: BotConfig,
     account: Account,
     latest_candle: ProjectXMarketCandle | None,
+    contract_id: str,
+    symbol: str | None,
     action: str,
     dry_run: bool,
     confirm_live_order_routing: bool,
@@ -1342,7 +1359,7 @@ def evaluate_risk_gates(
                 severity="critical",
             )
         )
-    if str(config.contract_id) not in _effective_allowed_contracts(config):
+    if not _is_contract_allowed(config, contract_id=contract_id, symbol=symbol):
         blocks.append(RiskBlock(code="contract_not_allowed", message="Contract is outside this bot's allowed contract list."))
     order_size = float(config.order_size)
     if abs(order_size - round(order_size)) > 1e-9:
@@ -1499,8 +1516,21 @@ def serialize_evaluation(result: EvaluationResult) -> dict[str, Any]:
     }
 
 
-def _require_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> BotConfig:
-    row = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+def _require_bot_config(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    lock_for_update: bool = False,
+) -> BotConfig:
+    query = (
+        db.query(BotConfig)
+        .filter(BotConfig.user_id == user_id)
+        .filter(BotConfig.id == bot_config_id)
+    )
+    if lock_for_update and _session_dialect_name(db) == "postgresql":
+        query = query.with_for_update()
+    row = query.one_or_none()
     if row is None:
         raise LookupError("bot_config_not_found")
     return row
@@ -1542,11 +1572,12 @@ def _create_order_attempt(
     config: BotConfig,
     run: BotRun | None,
     decision: BotDecision,
+    contract_id: str,
     action: str,
 ) -> BotOrderAttempt:
     request_payload = {
         "accountId": int(config.account_id),
-        "contractId": str(config.contract_id),
+        "contractId": contract_id,
         "type": _ORDER_TYPE_MARKET,
         "side": _SIDE_BY_ACTION[action],
         "size": int(round(float(config.order_size))),
@@ -1566,7 +1597,7 @@ def _create_order_attempt(
         bot_run_id=int(run.id) if run is not None and run.id is not None else None,
         bot_decision_id=int(decision.id),
         account_id=int(config.account_id),
-        contract_id=str(config.contract_id),
+        contract_id=contract_id,
         side=action,
         order_type="market",
         size=float(config.order_size),
@@ -1597,11 +1628,52 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.raw_response = {"error": str(exc)}
 
 
-def _effective_allowed_contracts(config: BotConfig) -> set[str]:
+def _stop_running_bot_runs(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    reason: str,
+    now: datetime,
+) -> None:
+    rows = (
+        db.query(BotRun)
+        .filter(BotRun.user_id == user_id)
+        .filter(BotRun.bot_config_id == bot_config_id)
+        .filter(BotRun.status == "running")
+        .order_by(BotRun.started_at.desc(), BotRun.id.desc())
+        .all()
+    )
+    for row in rows:
+        row.status = "stopped"
+        row.stopped_at = now
+        row.stop_reason = reason
+
+
+def _execution_contract_id(config: BotConfig, latest_candle: ProjectXMarketCandle | None) -> str:
+    if latest_candle is not None:
+        contract_id = _normalized_optional_text(latest_candle.contract_id)
+        if contract_id is not None:
+            return contract_id
+    return str(config.contract_id).strip()
+
+
+def _execution_symbol(config: BotConfig, latest_candle: ProjectXMarketCandle | None) -> str | None:
+    if latest_candle is not None:
+        symbol = _normalized_optional_text(latest_candle.symbol)
+        if symbol is not None:
+            return symbol
+    return _normalized_optional_text(config.symbol)
+
+
+def _is_contract_allowed(config: BotConfig, *, contract_id: str, symbol: str | None) -> bool:
     values = _normalize_allowed_contracts(config.allowed_contracts)
     if not values:
-        return {str(config.contract_id)}
-    return set(values)
+        return True
+
+    allowed = set(values)
+    candidates = _unique_text_values([contract_id, symbol, config.contract_id, config.symbol])
+    return any(candidate in allowed for candidate in candidates)
 
 
 def _todays_bot_trade_count(db: Session, *, user_id: str, config: BotConfig) -> int:
@@ -1620,19 +1692,16 @@ def _todays_bot_trade_count(db: Session, *, user_id: str, config: BotConfig) -> 
 
 def _todays_account_net_pnl(db: Session, *, user_id: str, account_id: int) -> float:
     start, end = trading_day_bounds_utc(trading_day_date(datetime.now(timezone.utc)))
-    rows = (
-        db.query(ProjectXTradeEvent.pnl, ProjectXTradeEvent.fees)
+    total = (
+        db.query(func.coalesce(func.sum(ProjectXTradeEvent.pnl - func.coalesce(ProjectXTradeEvent.fees, 0)), 0))
         .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(ProjectXTradeEvent.trade_timestamp >= start)
         .filter(ProjectXTradeEvent.trade_timestamp <= end)
         .filter(ProjectXTradeEvent.pnl.isnot(None))
-        .all()
+        .scalar()
     )
-    total = 0.0
-    for row in rows:
-        total += float(row.pnl or 0.0) - float(row.fees or 0.0)
-    return total
+    return float(total or 0.0)
 
 
 def _cooldown_block(db: Session, *, user_id: str, config: BotConfig) -> RiskBlock | None:

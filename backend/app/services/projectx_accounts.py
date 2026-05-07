@@ -15,6 +15,7 @@ ACCOUNT_STATE_LOCKED_OUT = "LOCKED_OUT"
 ACCOUNT_STATE_HIDDEN = "HIDDEN"
 ACCOUNT_STATE_MISSING = "MISSING"
 ACCOUNT_STATE_INACTIVE = {ACCOUNT_STATE_LOCKED_OUT, ACCOUNT_STATE_HIDDEN}
+ACCOUNT_DISPLAY_NAME_MAX_LENGTH = 120
 
 
 def _resolve_user_id(user_id: str | None) -> str:
@@ -131,20 +132,14 @@ def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | No
     )
 
     if target is None:
-        target = Account(
-            user_id=resolved_user_id,
-            provider=ACCOUNT_PROVIDER,
-            external_id=external_id,
-            name=f"Account {account_id}",
-            account_state=ACCOUNT_STATE_MISSING,
-        )
-        db.add(target)
+        raise LookupError("projectx_account_not_found")
 
     (
         db.query(Account)
         .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.is_main.is_(True))
+        .filter(Account.external_id != external_id)
         .update({Account.is_main: False}, synchronize_session=False)
     )
 
@@ -165,6 +160,10 @@ def set_projectx_account_display_name(
     normalized_display_name = _normalize_optional_text(display_name)
     if normalized_display_name is None:
         raise ValueError("Account name cannot be empty.")
+    if len(normalized_display_name) > ACCOUNT_DISPLAY_NAME_MAX_LENGTH:
+        raise ValueError(f"Account name must be {ACCOUNT_DISPLAY_NAME_MAX_LENGTH} characters or fewer.")
+    if _has_control_character(normalized_display_name):
+        raise ValueError("Account name cannot contain control characters.")
 
     provider_name = resolve_projectx_account_provider_name(target.name, account_id=account_id)
     target.display_name = None if normalized_display_name == provider_name else normalized_display_name
@@ -189,13 +188,30 @@ def should_include_account(
 
 
 def account_id_from_external_id(external_id: str) -> int | None:
-    try:
-        value = int(external_id)
-    except (TypeError, ValueError):
+    normalized = normalize_projectx_account_external_id(external_id)
+    if normalized is None:
         return None
-    if value <= 0:
+    return int(normalized)
+
+
+def normalize_projectx_account_external_id(value: Any) -> str | None:
+    if isinstance(value, bool):
         return None
-    return value
+    if isinstance(value, int):
+        account_id = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        account_id = int(value)
+    else:
+        text = str(value).strip()
+        if not text.isdigit():
+            return None
+        account_id = int(text)
+
+    if account_id <= 0:
+        return None
+    return str(account_id)
 
 
 def resolve_projectx_account_provider_name(name: Any, *, account_id: int) -> str:
@@ -213,10 +229,8 @@ def resolve_projectx_account_effective_name(*, provider_name: str, display_name:
 
 
 def _normalize_provider_account(payload: dict[str, Any]) -> dict[str, Any] | None:
-    account_id = payload.get("id")
-    try:
-        normalized_id = str(int(account_id))
-    except (TypeError, ValueError):
+    normalized_id = normalize_projectx_account_external_id(payload.get("id"))
+    if normalized_id is None:
         return None
 
     can_trade_raw = payload.get("can_trade")
@@ -245,3 +259,7 @@ def _normalize_optional_text(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _has_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import math
 from typing import Iterable, Literal, Mapping, Optional
 
@@ -91,12 +92,12 @@ def compute_trade_summary(
 
     gross_wins = [value for value in closed_pnls if value > 0]
     gross_losses = [value for value in closed_pnls if value < 0]
-    gross_profit = sum(gross_wins)
-    gross_loss_abs = abs(sum(gross_losses))
+    gross_profit = math.fsum(gross_wins)
+    gross_loss_abs = abs(math.fsum(gross_losses))
 
-    gross_pnl = sum(realized_values)
-    total_fees = sum(fee_values)
-    net_pnl = sum(net_values)
+    gross_pnl = math.fsum(realized_values)
+    total_fees = math.fsum(fee_values)
+    net_pnl = math.fsum(net_values)
     trade_count = len(closed_net_values)
     execution_count = len(trades)
     order_ids = {trade.order_id for trade in trades if trade.order_id}
@@ -340,7 +341,7 @@ def _safe_float(value: Optional[float]) -> float:
 def _mean(values: list[float]) -> float:
     if not values:
         return 0.0
-    return sum(values) / len(values)
+    return math.fsum(values) / len(values)
 
 
 def _median(values: list[float]) -> float:
@@ -354,7 +355,15 @@ def _median(values: list[float]) -> float:
 
 
 def _round(value: float, digits: int = 2) -> float:
-    return round(float(value), digits)
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return 0.0
+    quant = Decimal("1").scaleb(-digits)
+    try:
+        rounded = Decimal(str(numeric)).quantize(quant, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return 0.0
+    return float(rounded)
 
 
 def _compute_position_size_stats(trades: list[TradeMetricSample]) -> dict[str, float | int]:

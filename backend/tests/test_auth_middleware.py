@@ -1,12 +1,14 @@
 import asyncio
 import os
 
+import jwt
+import pytest
 from fastapi import Response
 from starlette.requests import Request
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
-from app.auth import extract_access_token
+from app.auth import AuthError, authenticate_request_token, extract_access_token
 from app.main import api_auth_middleware
 
 
@@ -103,3 +105,44 @@ def test_query_string_bearer_tokens_can_be_enabled_explicitly(monkeypatch):
     request = _build_request(method="GET", query_string=b"access_token=query-token")
 
     assert extract_access_token(request) == "query-token"
+
+
+def test_authenticate_request_token_normalizes_uuid_subject(monkeypatch):
+    issuer = "https://project-ref.supabase.co/auth/v1"
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_JWT_ISSUER", issuer)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "test-secret")
+    monkeypatch.delenv("SUPABASE_JWT_AUDIENCE", raising=False)
+    token = jwt.encode(
+        {
+            "sub": "11111111-1111-1111-1111-111111111111",
+            "iss": issuer,
+            "email": " user@example.com ",
+        },
+        "test-secret",
+        algorithm="HS256",
+    )
+
+    user = authenticate_request_token(token)
+
+    assert user.user_id == "11111111-1111-1111-1111-111111111111"
+    assert user.email == "user@example.com"
+
+
+def test_authenticate_request_token_rejects_non_uuid_subject(monkeypatch):
+    issuer = "https://project-ref.supabase.co/auth/v1"
+    monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_JWT_ISSUER", issuer)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "test-secret")
+    monkeypatch.delenv("SUPABASE_JWT_AUDIENCE", raising=False)
+    token = jwt.encode(
+        {
+            "sub": "not-a-uuid",
+            "iss": issuer,
+        },
+        "test-secret",
+        algorithm="HS256",
+    )
+
+    with pytest.raises(AuthError, match="invalid_token_subject"):
+        authenticate_request_token(token)

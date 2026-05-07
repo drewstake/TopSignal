@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections import deque
 import logging
+import math
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable
 
 from sqlalchemy import func
@@ -18,6 +20,7 @@ from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
 from .topstep_fees import effective_topstep_trade_fee
+from .trading_day import trading_day_bounds_utc, trading_day_date
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,7 @@ _DEFAULT_DAY_SYNC_LIMIT = 1000
 _DEFAULT_YESTERDAY_REFRESH_MINUTES = 180
 _INCREMENTAL_OVERLAP = timedelta(minutes=5)
 _MAX_DAY_SYNC_PAGES = 200
+_MAX_LIFECYCLE_CONTEXT_ROWS = 25000
 _SYNC_STATUS_PARTIAL = "partial"
 _SYNC_STATUS_COMPLETE = "complete"
 
@@ -78,7 +82,7 @@ def ensure_trade_cache_for_request(
     client_factory: Callable[[], ProjectXClient],
 ) -> None:
     resolved_user_id = _resolve_user_id(user_id)
-    request_day = _single_day_request_utc_date(start=start, end=end)
+    request_day = _single_trading_day_request_date(start=start, end=end)
     if request_day is None:
         if refresh or not has_local_trades(db, account_id, user_id=resolved_user_id):
             refresh_account_trades(
@@ -429,8 +433,8 @@ def derive_trade_execution_lifecycles(
     if contract_ids:
         base_query = base_query.filter(ProjectXTradeEvent.contract_id.in_(contract_ids))
 
-    context_limit = max(len(closed_rows) * 25, 5000)
-    max_context_limit = max(context_limit, 100000)
+    context_limit = min(max(len(closed_rows) * 25, 5000), _MAX_LIFECYCLE_CONTEXT_ROWS)
+    max_context_limit = _MAX_LIFECYCLE_CONTEXT_ROWS
     current_limit = context_limit
     context_rows: list[ProjectXTradeEvent] = []
     while True:
@@ -630,7 +634,7 @@ def get_trade_event_pnl_calendar(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> list[dict[str, str | int | float]]:
-    samples = _load_trade_metric_samples(
+    samples = _load_pnl_calendar_metric_samples(
         db,
         user_id=user_id,
         account_id=account_id,
@@ -683,11 +687,12 @@ def _sync_single_trade_day_if_needed(
     refresh: bool,
 ) -> None:
     now_utc = datetime.now(timezone.utc)
-    today_utc = now_utc.date()
-    yesterday_utc = today_utc - timedelta(days=1)
+    today = trading_day_date(now_utc)
+    yesterday = today - timedelta(days=1)
+    day_start, day_end = trading_day_bounds_utc(trade_day)
     sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
 
-    if trade_day == today_utc:
+    if trade_day == today:
         logger.info("[trades] refresh today account=%s day=%s", account_id, trade_day.isoformat())
         _sync_trade_day_from_provider(
             db,
@@ -699,8 +704,13 @@ def _sync_single_trade_day_if_needed(
         )
         return
 
-    if trade_day == yesterday_utc:
-        if refresh or _should_refresh_yesterday(sync_row, now_utc=now_utc):
+    if trade_day == yesterday:
+        if refresh or _should_refresh_yesterday(
+            sync_row,
+            now_utc=now_utc,
+            window_start=day_start,
+            window_end=day_end,
+        ):
             logger.info("[trades] refresh yesterday account=%s day=%s", account_id, trade_day.isoformat())
             _sync_trade_day_from_provider(
                 db,
@@ -715,7 +725,7 @@ def _sync_single_trade_day_if_needed(
         logger.info("[trades] cache hit account=%s day=%s source=db", account_id, trade_day.isoformat())
         return
 
-    if not refresh and sync_row is not None and sync_row.sync_status == _SYNC_STATUS_COMPLETE:
+    if not refresh and _sync_row_is_complete_for_window(sync_row, window_start=day_start, window_end=day_end):
         logger.info("[trades] cache hit account=%s day=%s source=db", account_id, trade_day.isoformat())
         return
 
@@ -739,7 +749,7 @@ def _sync_trade_day_from_provider(
     trade_day: date,
     allow_complete: bool,
 ) -> None:
-    day_start, day_end = _utc_day_bounds(trade_day)
+    day_start, day_end = trading_day_bounds_utc(trade_day)
     page_limit = _read_int_env("PROJECTX_DAY_SYNC_LIMIT", _DEFAULT_DAY_SYNC_LIMIT)
     last_synced_at = datetime.now(timezone.utc)
 
@@ -757,6 +767,8 @@ def _sync_trade_day_from_provider(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=day_start,
+            window_end=day_end,
             last_synced_at=last_synced_at,
         )
         logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())
@@ -768,17 +780,22 @@ def _sync_trade_day_from_provider(
 
     try:
         store_trade_events(db, fetch_result.events, user_id=user_id)
+        db.flush()
         row_count = _count_trade_events_for_day(
             db,
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=day_start,
+            window_end=day_end,
         )
         _upsert_trade_day_sync(
             db,
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=day_start,
+            window_end=day_end,
             sync_status=sync_status,
             last_synced_at=last_synced_at,
             row_count=row_count,
@@ -791,6 +808,8 @@ def _sync_trade_day_from_provider(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=day_start,
+            window_end=day_end,
             last_synced_at=last_synced_at,
         )
         logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())
@@ -894,10 +913,22 @@ def _event_identity_key(event: dict[str, Any]) -> str:
     return f"{account_id}:fallback:{order_id}:{timestamp}"
 
 
-def _should_refresh_yesterday(sync_row: ProjectXTradeDaySync | None, *, now_utc: datetime) -> bool:
+def _should_refresh_yesterday(
+    sync_row: ProjectXTradeDaySync | None,
+    *,
+    now_utc: datetime,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+) -> bool:
     if sync_row is None:
         return True
     if sync_row.sync_status != _SYNC_STATUS_COMPLETE:
+        return True
+    if (
+        window_start is not None
+        and window_end is not None
+        and not _sync_row_covers_window(sync_row, window_start=window_start, window_end=window_end)
+    ):
         return True
     if sync_row.last_synced_at is None:
         return True
@@ -929,6 +960,8 @@ def _upsert_trade_day_sync(
     user_id: str,
     account_id: int,
     trade_day: date,
+    window_start: datetime,
+    window_end: datetime,
     sync_status: str,
     last_synced_at: datetime,
     row_count: int | None = None,
@@ -939,6 +972,8 @@ def _upsert_trade_day_sync(
             user_id=user_id,
             account_id=account_id,
             trade_date=trade_day,
+            window_start=window_start,
+            window_end=window_end,
             sync_status=sync_status,
             last_synced_at=last_synced_at,
             row_count=row_count,
@@ -948,6 +983,8 @@ def _upsert_trade_day_sync(
         return
 
     sync_row.sync_status = sync_status
+    sync_row.window_start = window_start
+    sync_row.window_end = window_end
     sync_row.last_synced_at = last_synced_at
     sync_row.row_count = row_count
     sync_row.updated_at = last_synced_at
@@ -959,6 +996,8 @@ def _mark_trade_day_partial(
     user_id: str,
     account_id: int,
     trade_day: date,
+    window_start: datetime,
+    window_end: datetime,
     last_synced_at: datetime,
 ) -> None:
     try:
@@ -967,12 +1006,16 @@ def _mark_trade_day_partial(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
         )
         _upsert_trade_day_sync(
             db,
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
             sync_status=_SYNC_STATUS_PARTIAL,
             last_synced_at=last_synced_at,
             row_count=row_count,
@@ -982,7 +1025,7 @@ def _mark_trade_day_partial(
         db.rollback()
 
 
-def _single_day_request_utc_date(*, start: datetime | None, end: datetime | None) -> date | None:
+def _single_trading_day_request_date(*, start: datetime | None, end: datetime | None) -> date | None:
     if start is None or end is None:
         return None
 
@@ -990,16 +1033,13 @@ def _single_day_request_utc_date(*, start: datetime | None, end: datetime | None
     end_utc = _as_utc(end)
     if start_utc > end_utc:
         return None
-    if start_utc.date() != end_utc.date():
+
+    start_trading_day = trading_day_date(start_utc)
+    end_trading_day = trading_day_date(end_utc)
+    if start_trading_day != end_trading_day:
         return None
 
-    return start_utc.date()
-
-
-def _utc_day_bounds(value: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(value, time.min, tzinfo=timezone.utc)
-    end = start + timedelta(days=1) - timedelta(microseconds=1)
-    return start, end
+    return start_trading_day
 
 
 def _count_trade_events_for_day(
@@ -1008,8 +1048,13 @@ def _count_trade_events_for_day(
     user_id: str,
     account_id: int,
     trade_day: date,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> int:
-    day_start, day_end = _utc_day_bounds(trade_day)
+    if window_start is None or window_end is None:
+        day_start, day_end = trading_day_bounds_utc(trade_day)
+    else:
+        day_start, day_end = _as_utc(window_start), _as_utc(window_end)
     count = (
         db.query(func.count(ProjectXTradeEvent.id))
         .filter(ProjectXTradeEvent.user_id == user_id)
@@ -1020,6 +1065,33 @@ def _count_trade_events_for_day(
         .scalar()
     )
     return int(count or 0)
+
+
+def _sync_row_is_complete_for_window(
+    sync_row: ProjectXTradeDaySync | None,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    if sync_row is None:
+        return False
+    if sync_row.sync_status != _SYNC_STATUS_COMPLETE:
+        return False
+    return _sync_row_covers_window(sync_row, window_start=window_start, window_end=window_end)
+
+
+def _sync_row_covers_window(
+    sync_row: ProjectXTradeDaySync,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    if sync_row.window_start is None or sync_row.window_end is None:
+        return False
+
+    return _as_utc(sync_row.window_start) <= _as_utc(window_start) and _as_utc(sync_row.window_end) >= _as_utc(
+        window_end
+    )
 
 
 def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) -> None:
@@ -1208,6 +1280,38 @@ def _load_trade_metric_samples(
     return [_to_metric_sample(row) for row in rows]
 
 
+def _load_pnl_calendar_metric_samples(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    account_id: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[TradeMetricSample]:
+    resolved_user_id = _resolve_user_id(user_id)
+    query = (
+        db.query(
+            ProjectXTradeEvent.trade_timestamp,
+            ProjectXTradeEvent.pnl,
+            ProjectXTradeEvent.fees,
+            ProjectXTradeEvent.symbol,
+            ProjectXTradeEvent.contract_id,
+            ProjectXTradeEvent.size,
+        )
+        .filter(ProjectXTradeEvent.user_id == resolved_user_id)
+        .filter(ProjectXTradeEvent.account_id == account_id)
+        .filter(ProjectXTradeEvent.pnl.isnot(None))
+        .filter(_non_voided_trade_event_expr())
+    )
+    if start is not None:
+        query = query.filter(ProjectXTradeEvent.trade_timestamp >= _as_utc(start))
+    if end is not None:
+        query = query.filter(ProjectXTradeEvent.trade_timestamp <= _as_utc(end))
+
+    rows = query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
+    return [_to_pnl_calendar_metric_sample(row) for row in rows]
+
+
 def _to_metric_sample(row: Any) -> TradeMetricSample:
     return TradeMetricSample(
         timestamp=_as_utc(row.trade_timestamp),
@@ -1222,19 +1326,30 @@ def _to_metric_sample(row: Any) -> TradeMetricSample:
     )
 
 
+def _to_pnl_calendar_metric_sample(row: Any) -> TradeMetricSample:
+    return TradeMetricSample(
+        timestamp=_as_utc(row.trade_timestamp),
+        pnl=float(row.pnl) if row.pnl is not None else None,
+        fees=_round_turn_trade_fees(row),
+        symbol=row.symbol or row.contract_id,
+        contract_id=row.contract_id,
+        size=float(row.size) if row.size is not None else None,
+    )
+
+
 def _normalized_trade_fees(row: ProjectXTradeEvent) -> float:
     # Trade payloads should show the same closed-trade fee the user sees in
     # Topstep: round-turn broker fees plus the Topstep commission that started
     # on April 12, 2026.
-    return round(
+    return _round_decimal(
         effective_topstep_trade_fee(
-        trade_timestamp=_as_utc(row.trade_timestamp),
-        pnl=float(row.pnl) if row.pnl is not None else None,
-        fees=float(row.fees) if row.fees is not None else 0.0,
-        symbol=row.symbol,
-        contract_id=row.contract_id,
-        size=float(row.size) if row.size is not None else None,
-        raw_fee_is_per_side=True,
+            trade_timestamp=_as_utc(row.trade_timestamp),
+            pnl=float(row.pnl) if row.pnl is not None else None,
+            fees=float(row.fees) if row.fees is not None else 0.0,
+            symbol=row.symbol,
+            contract_id=row.contract_id,
+            size=float(row.size) if row.size is not None else None,
+            raw_fee_is_per_side=True,
         ),
         2,
     )
@@ -1245,6 +1360,18 @@ def _round_turn_trade_fees(row: Any) -> float:
     if row.pnl is not None:
         fees *= 2
     return fees
+
+
+def _round_decimal(value: float, digits: int) -> float:
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return 0.0
+    quant = Decimal("1").scaleb(-digits)
+    try:
+        rounded = Decimal(str(numeric)).quantize(quant, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return 0.0
+    return float(rounded)
 
 
 def _event_is_voided(event: dict[str, Any]) -> bool:
@@ -1263,7 +1390,7 @@ def _non_voided_trade_event_expr():
     # ProjectX marks canceled/invalid rows as `raw_payload.voided = true`.
     # Excluding these keeps local metrics aligned with Topstep's day journal.
     voided_text = func.lower(func.coalesce(ProjectXTradeEvent.raw_payload.op("->>")("voided"), "false"))
-    return voided_text != "true"
+    return ~voided_text.in_(("true", "1", "yes", "y", "on"))
 
 
 def _is_truthy(value: Any) -> bool:

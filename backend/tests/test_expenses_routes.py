@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -12,8 +13,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.main as main_module
 from app.db import Base
-from app.expense_schemas import ExpenseCreateIn
-from app.main import create_expense, get_expense_totals
+from app.expense_schemas import ExpenseCreateIn, ExpenseUpdateIn
+from app.main import create_expense, delete_expense, get_expense_totals, list_expenses, update_expense
 from app.models import Expense
 
 
@@ -112,6 +113,79 @@ def test_reject_practice_description_contains_practice(db_session):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "practice_accounts_are_free"
+
+
+def test_update_expense_can_clear_nullable_fields(db_session):
+    created = create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 2, 20),
+            amount=51.0,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="50k",
+            account_id=123,
+            description="Initial note",
+            tags=["topstep", "february"],
+        ),
+        db=db_session,
+    )
+
+    updated = update_expense(
+        expense_id=created.id,
+        payload=ExpenseUpdateIn(account_id=None, description=None, tags=None),
+        db=db_session,
+    )
+
+    assert updated.account_id is None
+    assert updated.description is None
+    assert updated.tags == []
+
+
+def test_empty_expense_update_payload_is_rejected():
+    with pytest.raises(ValidationError):
+        ExpenseUpdateIn()
+
+
+def test_invalid_expense_update_leaves_row_unchanged(db_session):
+    created = _create_standard_50k_evaluation(db_session, expense_date=date(2026, 2, 20))
+
+    with pytest.raises(HTTPException) as exc_info:
+        update_expense(
+            expense_id=created.id,
+            payload=ExpenseUpdateIn(amount_cents=-1),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "amount_cents must be >= 0"
+    row = db_session.query(Expense).filter(Expense.id == created.id).one()
+    assert row.amount_cents == 5100
+
+
+def test_expense_routes_are_scoped_to_authenticated_user(db_session, monkeypatch):
+    created = _create_standard_50k_evaluation(db_session, expense_date=date(2026, 2, 20))
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "other-user")
+
+    listed = list_expenses(limit=200, offset=0, db=db_session)
+    totals = get_expense_totals(range="all_time", db=db_session)
+
+    assert listed == {"items": [], "total": 0}
+    assert totals["total_amount_cents"] == 0
+    assert totals["count"] == 0
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete_expense(expense_id=created.id, db=db_session)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "expense not found"
+
+
+def test_list_expenses_rejects_invalid_pagination(db_session):
+    with pytest.raises(HTTPException) as exc_info:
+        list_expenses(limit=0, offset=0, db=db_session)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "limit must be between 1 and 500"
 
 
 class _FrozenDatetime(datetime):

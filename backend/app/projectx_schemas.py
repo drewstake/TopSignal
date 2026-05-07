@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+ProjectXAccountState = Literal["ACTIVE", "LOCKED_OUT", "HIDDEN", "MISSING"]
+
 
 class ProjectXAccountOut(BaseModel):
     id: int
@@ -10,8 +12,8 @@ class ProjectXAccountOut(BaseModel):
     provider_name: str
     custom_display_name: str | None = None
     balance: float
-    status: str
-    account_state: str
+    status: ProjectXAccountState
+    account_state: ProjectXAccountState
     is_main: bool
     can_trade: bool | None = None
     is_visible: bool | None = None

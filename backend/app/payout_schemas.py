@@ -29,6 +29,18 @@ class PayoutCreateIn(BaseModel):
         return self
 
 
+class PayoutUpdateIn(BaseModel):
+    payout_date: date | None = None
+    amount_cents: int | None = None
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def ensure_non_empty(self) -> "PayoutUpdateIn":
+        if not self.model_fields_set:
+            raise ValueError("at least one field must be provided")
+        return self
+
+
 class PayoutOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

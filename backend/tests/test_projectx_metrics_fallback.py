@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -16,8 +16,9 @@ from app.main import (
     get_projectx_account_summary_with_point_bases,
     list_projectx_account_trades,
 )
-from app.models import Account, ProjectXTradeEvent
+from app.models import Account, ProjectXTradeDaySync, ProjectXTradeEvent
 from app.services.projectx_client import ProjectXClientError
+from app.services.trading_day import trading_day_bounds_utc
 
 
 @pytest.fixture()
@@ -27,20 +28,36 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__])
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[Account.__table__, ProjectXTradeEvent.__table__, ProjectXTradeDaySync.__table__],
+    )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__, Account.__table__])
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__, Account.__table__],
+        )
         engine.dispose()
 
 
 class MissingAccountStubClient:
     def fetch_trade_history(self, *args, **kwargs):
         raise ProjectXClientError("missing account", status_code=404)
+
+
+class RecordingTradeHistoryClient:
+    def __init__(self, events):
+        self.events = events
+        self.calls = []
+
+    def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
+        self.calls.append((account_id, start, end, limit, offset))
+        return list(self.events)
 
 
 def _add_trade_event(db_session, *, event_id: int, account_id: int, pnl: float = 125.0, fees: float = 3.0):
@@ -85,6 +102,39 @@ def test_summary_raises_gateway_error_for_non_missing_account_on_provider_404(db
         get_projectx_account_summary(account_id=7302, refresh=True, db=db_session)
 
     assert exc_info.value.status_code == 502
+
+
+def test_summary_uses_day_sync_for_single_trading_day_when_other_local_trades_exist(db_session, monkeypatch):
+    account_id = 7306
+    trade_day = date(2026, 3, 2)
+    window_start, window_end = trading_day_bounds_utc(trade_day)
+    provider_event = {
+        "account_id": account_id,
+        "contract_id": "CON.F.US.MNQ.H26",
+        "symbol": "MNQ",
+        "side": "BUY",
+        "size": 1.0,
+        "price": 20500.0,
+        "timestamp": window_start + timedelta(minutes=15),
+        "fees": 1.0,
+        "pnl": 40.0,
+        "order_id": "ORD-SYNC-1",
+        "source_trade_id": "SRC-SYNC-1",
+        "status": "FILLED",
+        "raw_payload": {"id": "SRC-SYNC-1"},
+    }
+    client = RecordingTradeHistoryClient([provider_event])
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda db, user_id: client)
+    db_session.add(Account(provider="projectx", external_id=str(account_id), account_state="ACTIVE", is_main=True))
+    _add_trade_event(db_session, event_id=6, account_id=account_id, pnl=25.0, fees=1.0)
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=account_id, start=window_start, end=window_end, db=db_session)
+
+    assert len(client.calls) == 1
+    assert client.calls[0] == (account_id, window_start, window_end, 1000, 0)
+    assert payload["trade_count"] == 1
+    assert payload["realized_pnl"] == 40.0
 
 
 def test_trades_endpoint_falls_back_to_local_for_missing_account_on_provider_404(db_session, monkeypatch):

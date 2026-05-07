@@ -105,6 +105,20 @@ def test_compute_trade_summary_with_mixed_results_and_fees():
     assert summary["profit_per_day"] == 109.5
 
 
+def test_compute_trade_summary_rounds_money_half_up_at_cent_boundaries():
+    samples = [
+        TradeMetricSample(timestamp=_dt(9, 0), pnl=2.675, fees=0.0),
+        TradeMetricSample(timestamp=_dt(9, 1), pnl=-1.005, fees=0.0),
+    ]
+
+    summary = compute_trade_summary(samples)
+
+    assert summary["realized_pnl"] == 1.67
+    assert summary["net_pnl"] == 1.67
+    assert summary["avg_win"] == 2.68
+    assert summary["avg_loss"] == -1.01
+
+
 def test_compute_trade_summary_calculates_position_size_stats_from_closed_trades():
     samples = [
         TradeMetricSample(timestamp=_dt(9, 0), pnl=120.0, fees=4.0, size=2.0, symbol="MNQ"),

@@ -56,20 +56,7 @@ class ExpenseUpdateIn(BaseModel):
 
     @model_validator(mode="after")
     def ensure_non_empty(self) -> "ExpenseUpdateIn":
-        if not any(
-            value is not None
-            for value in (
-                self.expense_date,
-                self.amount_cents,
-                self.category,
-                self.account_id,
-                self.account_type,
-                self.plan_size,
-                self.description,
-                self.tags,
-                self.is_practice,
-            )
-        ):
+        if not self.model_fields_set:
             raise ValueError("at least one field must be provided")
         return self
 

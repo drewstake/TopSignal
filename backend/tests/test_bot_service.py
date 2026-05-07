@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -19,7 +20,7 @@ from app.models import (
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
-from app.bot_schemas import BotConfigCreateIn, BotConfigUpdateIn
+from app.bot_schemas import BotConfigCreateIn, BotConfigUpdateIn, BotStartIn
 from app.services.bot_service import (
     create_bot_config,
     delete_bot_config,
@@ -29,6 +30,8 @@ from app.services.bot_service import (
     fetch_and_store_market_candles,
     fetch_and_store_support_resistance_candles,
     list_market_candles,
+    start_bot_run,
+    stop_latest_bot_run,
     update_bot_config,
 )
 from app.services.projectx_client import ProjectXClientError
@@ -1307,6 +1310,225 @@ def test_live_evaluation_is_blocked_without_explicit_confirmation():
         assert result.order_attempt is None
         assert {event.code for event in result.risk_events} == {"live_order_confirmation_missing"}
         assert db.query(BotRiskEvent).count() == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
+        engine.dispose()
+
+
+def test_evaluate_endpoint_rejects_live_routing_request(monkeypatch):
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "00000000-0000-0000-0000-000000000000")
+
+    with pytest.raises(HTTPException) as exc_info:
+        main_module.evaluate_trading_bot(
+            1,
+            payload=BotStartIn(dry_run=False, confirm_live_order_routing=True),
+            db=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "dry-run only" in exc_info.value.detail
+
+
+def test_evaluation_uses_resolved_contract_for_decision_and_order_attempt():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [
+        Account.__table__,
+        ProjectXMarketCandle.__table__,
+        BotConfig.__table__,
+        BotRun.__table__,
+        BotDecision.__table__,
+        BotOrderAttempt.__table__,
+        BotRiskEvent.__table__,
+        ProjectXTradeEvent.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    class StubClient:
+        def search_contracts(self, *, search_text, live):
+            assert search_text == "MNQ"
+            assert live is False
+            return [
+                {
+                    "id": "CON.F.US.MNQ.M26",
+                    "name": "MNQM6",
+                    "active_contract": True,
+                    "symbol_id": "F.US.MNQ",
+                }
+            ]
+
+        def retrieve_bars(self, **kwargs):
+            assert kwargs["contract_id"] == "CON.F.US.MNQ.M26"
+            return [
+                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+            ]
+
+        def place_order(self, **_kwargs):
+            raise AssertionError("dry-run evaluation should not submit provider orders")
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        account = Account(
+            user_id=user_id,
+            provider="projectx",
+            external_id="9001",
+            name="Practice 9001",
+            account_state="ACTIVE",
+            can_trade=True,
+            is_visible=True,
+        )
+        db.add(account)
+        db.flush()
+        payload = _make_bot_create_payload(name="Resolved Contract Bot").model_copy(
+            update={"contract_id": "MNQ", "allowed_contracts": []}
+        )
+        config = create_bot_config(db, user_id=user_id, payload=payload)
+        config.enabled = True
+        db.flush()
+
+        result = evaluate_bot_config(
+            db,
+            user_id=user_id,
+            config=config,
+            account=account,
+            client=StubClient(),
+            dry_run=True,
+        )
+        db.commit()
+
+        assert result.risk_events == []
+        assert result.decision.contract_id == "CON.F.US.MNQ.M26"
+        assert result.decision.symbol == "F.US.MNQ"
+        assert result.order_attempt is not None
+        assert result.order_attempt.contract_id == "CON.F.US.MNQ.M26"
+        assert result.order_attempt.raw_request["contractId"] == "CON.F.US.MNQ.M26"
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
+        engine.dispose()
+
+
+def test_start_bot_run_supersedes_existing_running_run():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [
+        Account.__table__,
+        ProjectXMarketCandle.__table__,
+        BotConfig.__table__,
+        BotRun.__table__,
+        BotDecision.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    class StubClient:
+        def retrieve_bars(self, **_kwargs):
+            return [
+                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(1), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(0), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+            ]
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        account = Account(
+            user_id=user_id,
+            provider="projectx",
+            external_id="9001",
+            name="Practice 9001",
+            account_state="ACTIVE",
+            can_trade=True,
+            is_visible=True,
+        )
+        db.add(account)
+        db.flush()
+        config = create_bot_config(db, user_id=user_id, payload=_make_bot_create_payload(name="Start Once"))
+        db.flush()
+
+        first = start_bot_run(db, user_id=user_id, bot_config_id=config.id, client=StubClient(), dry_run=True)
+        db.commit()
+        second = start_bot_run(db, user_id=user_id, bot_config_id=config.id, client=StubClient(), dry_run=True)
+        db.commit()
+
+        runs = db.query(BotRun).order_by(BotRun.started_at.asc(), BotRun.id.asc()).all()
+        assert first.run is not None
+        assert second.run is not None
+        assert len(runs) == 2
+        assert [run.status for run in runs] == ["stopped", "running"]
+        assert runs[0].stop_reason == "superseded_by_manual_start"
+        assert db.query(BotRun).filter(BotRun.status == "running").count() == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
+        engine.dispose()
+
+
+def test_stop_without_active_run_links_lifecycle_decision_to_created_run():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [
+        BotConfig.__table__,
+        BotRun.__table__,
+        BotDecision.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        config = BotConfig(
+            user_id=user_id,
+            account_id=9001,
+            name="Stop Audit",
+            enabled=True,
+            execution_mode="dry_run",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=2,
+            slow_period=3,
+            order_size=1,
+            max_contracts=1,
+            max_daily_loss=250,
+            max_trades_per_day=3,
+            max_open_position=1,
+            allowed_contracts=["CON.F.US.MNQ.M26"],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3600,
+        )
+        db.add(config)
+        db.flush()
+
+        run = stop_latest_bot_run(db, user_id=user_id, bot_config_id=config.id)
+        db.commit()
+
+        decision = db.query(BotDecision).one()
+        assert run.id is not None
+        assert decision.bot_run_id == run.id
+        assert decision.decision_type == "lifecycle"
+        assert decision.action == "STOP"
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))

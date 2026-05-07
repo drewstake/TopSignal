@@ -113,6 +113,44 @@ def test_patch_updates_fields_and_updated_at(db_session):
     assert updated["updated_at"] >= created["updated_at"]
 
 
+def test_patch_entry_date_conflict_returns_conflict(db_session):
+    first = create_projectx_account_journal_entry(
+        account_id=13002,
+        payload=JournalEntryCreateIn(
+            entry_date=date(2026, 2, 20),
+            title="First day",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="",
+        ),
+        response=Response(),
+        db=db_session,
+    )
+    second = create_projectx_account_journal_entry(
+        account_id=13002,
+        payload=JournalEntryCreateIn(
+            entry_date=date(2026, 2, 21),
+            title="Second day",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="",
+        ),
+        response=Response(),
+        db=db_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        update_projectx_account_journal_entry(
+            account_id=13002,
+            entry_id=second["id"],
+            payload=JournalEntryUpdateIn(version=second["version"], entry_date=first["entry_date"]),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "journal entry already exists for this account and date"
+
+
 def test_soft_archive_hidden_by_default_and_visible_when_requested(db_session):
     created = create_projectx_account_journal_entry(
         account_id=13003,

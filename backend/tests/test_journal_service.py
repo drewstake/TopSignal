@@ -28,6 +28,13 @@ from app.services.journal import (
     validate_date_range,
 )
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03"
+JPEG_BYTES = (
+    b"\xff\xd8"
+    b"\xff\xc0\x00\x11\x08\x00\x05\x00\x07\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+    b"\xff\xd9"
+)
+
 
 @pytest.fixture()
 def db_session():
@@ -325,7 +332,7 @@ def test_merge_journal_entries_skip_conflict_preserves_destination_entry(db_sess
         user_id=user_id,
         account_id=4301,
         entry_id=int(source_entry.id),
-        file_bytes=b"source-image",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
     destination_image = create_journal_entry_image(
@@ -333,7 +340,7 @@ def test_merge_journal_entries_skip_conflict_preserves_destination_entry(db_sess
         user_id=user_id,
         account_id=4302,
         entry_id=int(destination_entry.id),
-        file_bytes=b"destination-image",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
 
@@ -396,7 +403,7 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
         user_id=user_id,
         account_id=4401,
         entry_id=int(source_entry.id),
-        file_bytes=b"source-image-one",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
     source_image_two = create_journal_entry_image(
@@ -404,9 +411,13 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
         user_id=user_id,
         account_id=4401,
         entry_id=int(source_entry.id),
-        file_bytes=b"source-image-two",
+        file_bytes=JPEG_BYTES,
         mime_type="image/jpeg",
     )
+    source_image_one.byte_size = 1
+    source_image_two.byte_size = 1
+    db_session.add_all([source_image_one, source_image_two])
+    db_session.commit()
 
     destination_entry, _ = create_journal_entry(
         db_session,
@@ -427,7 +438,7 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
         user_id=user_id,
         account_id=4402,
         entry_id=int(destination_entry.id),
-        file_bytes=b"destination-old-image",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
     old_image_path = journal_storage_dir / destination_old_image.filename
@@ -468,11 +479,49 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
     assert int(destination_entry.version) == 6
     assert len(destination_images) == 2
     assert sorted(image.mime_type for image in destination_images) == ["image/jpeg", "image/png"]
+    assert sorted(image.byte_size for image in destination_images) == sorted([len(JPEG_BYTES), len(PNG_BYTES)])
     assert all(image.filename != destination_old_image.filename for image in destination_images)
     assert all((journal_storage_dir / image.filename).exists() for image in destination_images)
     assert not old_image_path.exists()
     assert (journal_storage_dir / source_image_one.filename).exists()
     assert (journal_storage_dir / source_image_two.filename).exists()
+
+
+def test_create_journal_entry_image_validates_content_and_records_dimensions(
+    db_session,
+    journal_storage_dir: Path,
+):
+    entry, _ = create_journal_entry(
+        db_session,
+        account_id=4501,
+        entry_date=date(2026, 2, 12),
+        title="Image validation",
+        mood=JournalMood.NEUTRAL,
+        tags=[],
+        body="",
+    )
+
+    with pytest.raises(ValueError, match="image content does not match image/png"):
+        create_journal_entry_image(
+            db_session,
+            account_id=4501,
+            entry_id=int(entry.id),
+            file_bytes=b"not-a-png",
+            mime_type="image/png",
+        )
+
+    image = create_journal_entry_image(
+        db_session,
+        account_id=4501,
+        entry_id=int(entry.id),
+        file_bytes=PNG_BYTES,
+        mime_type="image/png",
+    )
+
+    assert image.width == 2
+    assert image.height == 3
+    assert image.byte_size == len(PNG_BYTES)
+    assert (journal_storage_dir / image.filename).exists()
 
 
 def test_compute_trade_stats_snapshot_counts_broker_fees_once():
@@ -518,7 +567,7 @@ def test_delete_journal_entry_does_not_fail_when_image_cleanup_fails(
         user_id=user_id,
         account_id=5501,
         entry_id=int(entry.id),
-        file_bytes=b"delete-image",
+        file_bytes=PNG_BYTES,
         mime_type="image/png",
     )
 
@@ -897,3 +946,34 @@ def test_pull_journal_entry_trade_stats_invokes_sync_callback_with_effective_bou
     assert len(calls) == 1
     assert calls[0][0] == datetime(2026, 2, 26, 23, 0, tzinfo=timezone.utc)
     assert calls[0][1] == datetime(2026, 2, 27, 22, 59, 59, 999999, tzinfo=timezone.utc)
+
+
+def test_pull_journal_entry_trade_stats_keeps_version_when_snapshot_is_unchanged(db_session):
+    user_id = "test-user-stable-stats"
+    entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=1003,
+        entry_date=date(2026, 2, 27),
+        title="Stable stats",
+        mood=JournalMood.NEUTRAL,
+        tags=[],
+        body="",
+    )
+
+    first = pull_journal_entry_trade_stats(
+        db_session,
+        user_id=user_id,
+        account_id=1003,
+        entry_id=int(entry.id),
+    )
+    second = pull_journal_entry_trade_stats(
+        db_session,
+        user_id=user_id,
+        account_id=1003,
+        entry_id=int(entry.id),
+    )
+
+    assert int(first.version) == 2
+    assert int(second.version) == 2
+    assert second.stats_json == first.stats_json

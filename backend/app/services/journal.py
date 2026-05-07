@@ -22,7 +22,7 @@ _MAX_TITLE_LENGTH = 160
 _MAX_BODY_LENGTH = 20_000
 _MAX_TAG_COUNT = 20
 _MAX_TAG_LENGTH = 32
-_MAX_JOURNAL_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_JOURNAL_IMAGE_BYTES = 10 * 1024 * 1024
 _ALLOWED_JOURNAL_IMAGE_MIME_TYPES = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -36,6 +36,10 @@ class VersionConflictError(Exception):
     def __init__(self, server_row: JournalEntry):
         super().__init__("version_conflict")
         self.server_row = server_row
+
+
+class JournalEntryDateConflictError(ValueError):
+    pass
 
 
 def validate_date_range(*, start_date: date | None, end_date: date | None) -> None:
@@ -340,6 +344,7 @@ def update_journal_entry(
         user_id=resolved_user_id,
         account_id=account_id,
         entry_id=entry_id,
+        for_update=True,
     )
     if row is None:
         raise LookupError("journal entry not found")
@@ -354,7 +359,7 @@ def update_journal_entry(
                 entry_date=entry_date,
             )
             if existing is not None and int(existing.id) != int(row.id):
-                raise ValueError("journal entry already exists for this account and date")
+                raise JournalEntryDateConflictError("journal entry already exists for this account and date")
         normalized_updates["entry_date"] = entry_date
     if title is not None:
         normalized_updates["title"] = normalize_title(title)
@@ -392,7 +397,7 @@ def update_journal_entry(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ValueError("journal entry already exists for this account and date") from exc
+        raise JournalEntryDateConflictError("journal entry already exists for this account and date") from exc
 
     db.refresh(row)
     return row
@@ -447,6 +452,7 @@ def delete_journal_entry(
         user_id=resolved_user_id,
         account_id=account_id,
         entry_id=entry_id,
+        for_update=True,
     )
     if row is None:
         raise LookupError("journal entry not found")
@@ -465,7 +471,11 @@ def delete_journal_entry(
         db.flush()
 
     db.delete(row)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     for filename in image_filenames:
         _delete_journal_image_quietly(filename)
@@ -490,13 +500,8 @@ def create_journal_entry_image(
     if entry is None:
         raise LookupError("journal entry not found")
 
+    normalized_mime, width, height = validate_journal_image_upload(file_bytes=file_bytes, mime_type=mime_type)
     byte_size = len(file_bytes)
-    if byte_size <= 0:
-        raise ValueError("image file must not be empty")
-    if byte_size > _MAX_JOURNAL_IMAGE_BYTES:
-        raise ValueError("image file exceeds 10MB limit")
-
-    normalized_mime = _normalize_image_mime_type(mime_type)
     filename = _build_journal_image_filename(
         user_id=resolved_user_id,
         account_id=account_id,
@@ -513,8 +518,8 @@ def create_journal_entry_image(
         filename=filename,
         mime_type=normalized_mime,
         byte_size=byte_size,
-        width=None,
-        height=None,
+        width=width,
+        height=height,
     )
     db.add(row)
 
@@ -610,6 +615,7 @@ def delete_journal_entry_image_record(
         user_id=resolved_user_id,
         account_id=account_id,
         entry_id=entry_id,
+        for_update=True,
     )
     if entry is None:
         raise LookupError("journal entry not found")
@@ -627,7 +633,11 @@ def delete_journal_entry_image_record(
 
     filename = row.filename
     db.delete(row)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return filename
 
 
@@ -729,10 +739,12 @@ def pull_journal_entry_trade_stats(
     snapshot = _compute_trade_stats_snapshot(closed_rows, largest_position_size=largest_position_size)
 
     now = _utcnow()
+    stats_changed = row.stats_source != "trade_snapshot" or _copy_stats_json(row.stats_json) != snapshot
     row.stats_source = "trade_snapshot"
     row.stats_json = snapshot
     row.stats_pulled_at = now
-    row.version = int(row.version or 1) + 1
+    if stats_changed:
+        row.version = int(row.version or 1) + 1
     row.updated_at = now
 
     db.add(row)
@@ -841,6 +853,18 @@ def normalize_tags(tags: list[str]) -> list[str]:
     return normalized
 
 
+def validate_journal_image_upload(*, file_bytes: bytes, mime_type: str | None) -> tuple[str, int | None, int | None]:
+    byte_size = len(file_bytes)
+    if byte_size <= 0:
+        raise ValueError("image file must not be empty")
+    if byte_size > MAX_JOURNAL_IMAGE_BYTES:
+        raise ValueError("image file exceeds 10MB limit")
+
+    normalized_mime = _normalize_image_mime_type(mime_type)
+    width, height = _read_image_dimensions(file_bytes=file_bytes, mime_type=normalized_mime)
+    return normalized_mime, width, height
+
+
 def _normalize_search_query(value: str | None) -> str | None:
     if value is None:
         return None
@@ -897,14 +921,17 @@ def _get_entry_for_account(
     user_id: str,
     account_id: int,
     entry_id: int,
+    for_update: bool = False,
 ) -> JournalEntry | None:
-    return (
+    query = (
         db.query(JournalEntry)
         .filter(JournalEntry.user_id == user_id)
         .filter(JournalEntry.account_id == account_id)
         .filter(JournalEntry.id == entry_id)
-        .one_or_none()
     )
+    if for_update:
+        query = query.with_for_update()
+    return query.one_or_none()
 
 
 def _get_entry_for_account_and_date(
@@ -932,6 +959,101 @@ def _normalize_image_mime_type(value: str | None) -> str:
     if normalized not in _ALLOWED_JOURNAL_IMAGE_MIME_TYPES:
         raise ValueError("unsupported image type")
     return normalized
+
+
+def _read_image_dimensions(*, file_bytes: bytes, mime_type: str) -> tuple[int | None, int | None]:
+    if mime_type == "image/png":
+        return _read_png_dimensions(file_bytes)
+    if mime_type == "image/jpeg":
+        return _read_jpeg_dimensions(file_bytes)
+    if mime_type == "image/webp":
+        return _read_webp_dimensions(file_bytes)
+    raise ValueError("unsupported image type")
+
+
+def _read_png_dimensions(file_bytes: bytes) -> tuple[int, int]:
+    if len(file_bytes) < 24 or not file_bytes.startswith(b"\x89PNG\r\n\x1a\n") or file_bytes[12:16] != b"IHDR":
+        raise ValueError("image content does not match image/png")
+    width = int.from_bytes(file_bytes[16:20], "big")
+    height = int.from_bytes(file_bytes[20:24], "big")
+    if width <= 0 or height <= 0:
+        raise ValueError("image content does not match image/png")
+    return width, height
+
+
+def _read_jpeg_dimensions(file_bytes: bytes) -> tuple[int, int]:
+    if len(file_bytes) < 4 or not file_bytes.startswith(b"\xff\xd8"):
+        raise ValueError("image content does not match image/jpeg")
+
+    index = 2
+    start_of_frame_markers = {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+    while index < len(file_bytes):
+        if file_bytes[index] != 0xFF:
+            index += 1
+            continue
+        while index < len(file_bytes) and file_bytes[index] == 0xFF:
+            index += 1
+        if index >= len(file_bytes):
+            break
+
+        marker = file_bytes[index]
+        index += 1
+        if marker in {0xD8, 0xD9}:
+            continue
+        if marker == 0xDA:
+            break
+        if index + 2 > len(file_bytes):
+            break
+
+        segment_length = int.from_bytes(file_bytes[index : index + 2], "big")
+        if segment_length < 2 or index + segment_length > len(file_bytes):
+            break
+        if marker in start_of_frame_markers and segment_length >= 7:
+            height = int.from_bytes(file_bytes[index + 3 : index + 5], "big")
+            width = int.from_bytes(file_bytes[index + 5 : index + 7], "big")
+            if width > 0 and height > 0:
+                return width, height
+            break
+        index += segment_length
+
+    raise ValueError("image content does not match image/jpeg")
+
+
+def _read_webp_dimensions(file_bytes: bytes) -> tuple[int | None, int | None]:
+    if len(file_bytes) < 16 or file_bytes[0:4] != b"RIFF" or file_bytes[8:12] != b"WEBP":
+        raise ValueError("image content does not match image/webp")
+
+    chunk_type = file_bytes[12:16]
+    if chunk_type == b"VP8X" and len(file_bytes) >= 30:
+        width = 1 + int.from_bytes(file_bytes[24:27], "little")
+        height = 1 + int.from_bytes(file_bytes[27:30], "little")
+        return width, height
+    if chunk_type == b"VP8 " and len(file_bytes) >= 30 and file_bytes[23:26] == b"\x9d\x01\x2a":
+        width = int.from_bytes(file_bytes[26:28], "little") & 0x3FFF
+        height = int.from_bytes(file_bytes[28:30], "little") & 0x3FFF
+        if width > 0 and height > 0:
+            return width, height
+    if chunk_type == b"VP8L" and len(file_bytes) >= 25 and file_bytes[20] == 0x2F:
+        b1, b2, b3, b4 = file_bytes[21], file_bytes[22], file_bytes[23], file_bytes[24]
+        width = 1 + (((b2 & 0x3F) << 8) | b1)
+        height = 1 + (((b4 & 0x0F) << 10) | (b3 << 2) | ((b2 & 0xC0) >> 6))
+        return width, height
+
+    return None, None
 
 
 def _build_journal_image_filename(*, user_id: str, account_id: int, entry_id: int, mime_type: str) -> str:
@@ -976,7 +1098,10 @@ def _copy_journal_entry_images(
     destination_entry_id = int(destination_entry.id)
     for source_image in source_images:
         file_bytes = load_journal_image(object_key=source_image.filename)
-        normalized_mime = _normalize_image_mime_type(source_image.mime_type)
+        normalized_mime, width, height = validate_journal_image_upload(
+            file_bytes=file_bytes,
+            mime_type=source_image.mime_type,
+        )
         filename = _build_journal_image_filename(
             user_id=user_id,
             account_id=account_id,
@@ -994,9 +1119,9 @@ def _copy_journal_entry_images(
                 entry_date=destination_entry.entry_date,
                 filename=filename,
                 mime_type=normalized_mime,
-                byte_size=int(source_image.byte_size),
-                width=source_image.width,
-                height=source_image.height,
+                byte_size=len(file_bytes),
+                width=width if width is not None else source_image.width,
+                height=height if height is not None else source_image.height,
                 created_at=source_image.created_at,
             )
         )

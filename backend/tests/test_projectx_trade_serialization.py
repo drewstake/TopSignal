@@ -5,7 +5,13 @@ from app.models import ProjectXTradeEvent
 from app.services.projectx_trades import TradeExecutionLifecycle, _to_metric_sample, serialize_trade_event
 
 
-def _event(*, pnl: Decimal | None, trade_timestamp: datetime | None = None, symbol: str = "CON.F.US.MES.H26") -> ProjectXTradeEvent:
+def _event(
+    *,
+    pnl: Decimal | None,
+    trade_timestamp: datetime | None = None,
+    symbol: str = "CON.F.US.MES.H26",
+    fees: Decimal = Decimal("1.110000"),
+) -> ProjectXTradeEvent:
     return ProjectXTradeEvent(
         id=1,
         account_id=13048312,
@@ -15,7 +21,7 @@ def _event(*, pnl: Decimal | None, trade_timestamp: datetime | None = None, symb
         size=Decimal("3.000000"),
         price=Decimal("6858.750000"),
         trade_timestamp=trade_timestamp or datetime(2026, 2, 6, 11, 12, 9, tzinfo=timezone.utc),
-        fees=Decimal("1.110000"),
+        fees=fees,
         pnl=pnl,
         order_id="2397509693",
         source_trade_id="2074009852",
@@ -27,6 +33,12 @@ def test_serialize_trade_event_uses_round_trip_fees_for_closed_rows():
 
     assert payload["fees"] == 2.22
     assert payload["source_trade_id"] == "2074009852"
+
+
+def test_serialize_trade_event_rounds_fees_half_up():
+    payload = serialize_trade_event(_event(pnl=Decimal("10.000000"), fees=Decimal("0.502500")))
+
+    assert payload["fees"] == 1.01
 
 
 def test_serialize_trade_event_keeps_fill_fees_for_open_rows():
