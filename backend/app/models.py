@@ -52,6 +52,14 @@ class Account(Base):
         UniqueConstraint("user_id", "provider", "external_id", name="uq_accounts_provider_external_id"),
         Index("idx_accounts_is_main", "user_id", "is_main"),
         Index("idx_accounts_account_state", "user_id", "account_state"),
+        Index(
+            "uq_accounts_one_main_per_user_provider",
+            "user_id",
+            "provider",
+            unique=True,
+            postgresql_where=text("is_main"),
+            sqlite_where=text("is_main = 1"),
+        ),
     )
 
 class Trade(Base):
@@ -85,6 +93,10 @@ class Trade(Base):
 
     __table_args__ = (
         CheckConstraint("side in ('LONG','SHORT')", name="trades_side_check"),
+        Index("idx_trades_user_account_opened_at", user_id, account_id, opened_at.desc()),
+        Index("idx_trades_user_closed_at", user_id, closed_at.desc(), postgresql_where=closed_at.isnot(None)),
+        Index("idx_trades_user_symbol_opened_at", user_id, symbol, opened_at.desc()),
+        Index("idx_trades_user_rule_break", user_id, is_rule_break),
     )
 
 
@@ -143,6 +155,13 @@ class ProjectXTradeEvent(Base):
             "trade_timestamp",
             name="uq_projectx_trade_events_account_order_ts",
         ),
+        Index(
+            "idx_projectx_trade_events_user_account_ts_id",
+            "user_id",
+            "account_id",
+            "trade_timestamp",
+            "id",
+        ),
     )
 
 
@@ -157,6 +176,8 @@ class ProjectXTradeDaySync(Base):
     )
     account_id = Column(BigInteger, nullable=False)
     trade_date = Column(Date, nullable=False)
+    window_start = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
     sync_status = Column(Text, nullable=False, server_default="partial")
     last_synced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     row_count = Column(Integer, nullable=True)
@@ -563,6 +584,7 @@ class Expense(Base):
             name="expenses_plan_size_check",
         ),
         Index("idx_expenses_expense_date", "user_id", "expense_date"),
+        Index("idx_expenses_user_date_id", "user_id", "expense_date", "id"),
         Index("idx_expenses_account_id", "user_id", "account_id"),
         Index("idx_expenses_category", "user_id", "category"),
         Index(
@@ -598,4 +620,5 @@ class Payout(Base):
     __table_args__ = (
         CheckConstraint("amount_cents > 0", name="payouts_amount_cents_positive_check"),
         Index("idx_payouts_payout_date", "user_id", "payout_date"),
+        Index("idx_payouts_user_date_id", "user_id", "payout_date", "id"),
     )

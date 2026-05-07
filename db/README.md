@@ -51,6 +51,12 @@ Current migration list:
 20260309_add_account_display_name.sql
 20260426_add_projectx_trade_events_lifecycle_index.sql
 20260426_add_trading_bot_tables.sql
+20260427_relax_legacy_bot_schema.sql
+20260428_drop_legacy_bot_config_unique_constraint.sql
+20260506_add_support_resistance_bot_strategy.sql
+20260507_add_projectx_trade_day_sync_windows.sql
+20260507_add_unique_main_account_index.sql
+20260507_add_user_scoped_infra_indexes.sql
 ```
 
 Example PowerShell application loop:
@@ -70,7 +76,13 @@ $migrations = @(
   "20260307_add_payouts.sql",
   "20260309_add_account_display_name.sql",
   "20260426_add_projectx_trade_events_lifecycle_index.sql",
-  "20260426_add_trading_bot_tables.sql"
+  "20260426_add_trading_bot_tables.sql",
+  "20260427_relax_legacy_bot_schema.sql",
+  "20260428_drop_legacy_bot_config_unique_constraint.sql",
+  "20260506_add_support_resistance_bot_strategy.sql",
+  "20260507_add_projectx_trade_day_sync_windows.sql",
+  "20260507_add_unique_main_account_index.sql",
+  "20260507_add_user_scoped_infra_indexes.sql"
 )
 
 foreach ($name in $migrations) {

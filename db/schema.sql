@@ -64,6 +64,10 @@ create index if not exists idx_accounts_is_main
 create index if not exists idx_accounts_account_state
   on accounts (user_id, account_state);
 
+create unique index if not exists uq_accounts_one_main_per_user_provider
+  on accounts (user_id, provider)
+  where is_main;
+
 
 -- ============================================
 -- TABLE: trades
@@ -139,6 +143,9 @@ create table if not exists trades (
 create index if not exists idx_trades_account_opened_at
   on trades (account_id, opened_at desc);
 
+create index if not exists idx_trades_user_account_opened_at
+  on trades (user_id, account_id, opened_at desc);
+
 
 -- ============================================
 -- INDEX: idx_trades_symbol_opened_at
@@ -149,6 +156,18 @@ create index if not exists idx_trades_account_opened_at
 create index if not exists idx_trades_symbol_opened_at
   on trades (symbol, opened_at desc);
 
+create index if not exists idx_trades_user_symbol_opened_at
+  on trades (user_id, symbol, opened_at desc);
+
+
+-- ============================================
+-- INDEX: idx_trades_user_closed_at
+-- Speeds authenticated legacy metrics routes.
+-- ============================================
+create index if not exists idx_trades_user_closed_at
+  on trades (user_id, closed_at desc)
+  where closed_at is not null;
+
 
 -- ============================================
 -- INDEX: idx_trades_is_rule_break
@@ -156,6 +175,9 @@ create index if not exists idx_trades_symbol_opened_at
 -- ============================================
 create index if not exists idx_trades_is_rule_break
   on trades (is_rule_break);
+
+create index if not exists idx_trades_user_rule_break
+  on trades (user_id, is_rule_break);
 
 
 -- ============================================
@@ -216,6 +238,17 @@ create table if not exists projectx_trade_events (
 create index if not exists idx_projectx_trade_events_account_ts
   on projectx_trade_events (account_id, trade_timestamp desc);
 
+create index if not exists idx_projectx_trade_events_user_account_ts
+  on projectx_trade_events (user_id, account_id, trade_timestamp desc);
+
+create index if not exists idx_projectx_trade_events_user_account_ts_id
+  on projectx_trade_events (user_id, account_id, trade_timestamp desc, id desc);
+
+create index if not exists idx_projectx_trade_events_user_account_closed_ts_nonvoided
+  on projectx_trade_events (user_id, account_id, trade_timestamp desc, id desc)
+  where pnl is not null
+    and lower(coalesce(raw_payload->>'voided', 'false')) <> 'true';
+
 
 -- ============================================
 -- INDEX: idx_projectx_trade_events_symbol_ts
@@ -223,6 +256,10 @@ create index if not exists idx_projectx_trade_events_account_ts
 -- ============================================
 create index if not exists idx_projectx_trade_events_symbol_ts
   on projectx_trade_events (symbol, trade_timestamp desc);
+
+create index if not exists idx_projectx_trade_events_user_account_contract_ts_nonvoided
+  on projectx_trade_events (user_id, account_id, contract_id, trade_timestamp desc, id desc)
+  where lower(coalesce(raw_payload->>'voided', 'false')) <> 'true';
 
 
 -- ============================================
@@ -267,6 +304,8 @@ create table if not exists projectx_trade_day_syncs (
   user_id uuid not null default '00000000-0000-0000-0000-000000000000',
   account_id bigint not null,
   trade_date date not null,
+  window_start timestamptz,
+  window_end timestamptz,
   sync_status text not null default 'partial' check (sync_status in ('partial','complete')),
   last_synced_at timestamptz not null default now(),
   row_count integer,
@@ -580,6 +619,9 @@ create table if not exists expenses (
 create index if not exists idx_expenses_expense_date
   on expenses (user_id, expense_date);
 
+create index if not exists idx_expenses_user_date_id
+  on expenses (user_id, expense_date, id);
+
 create index if not exists idx_expenses_account_id
   on expenses (user_id, account_id);
 
@@ -615,3 +657,6 @@ create table if not exists payouts (
 
 create index if not exists idx_payouts_payout_date
   on payouts (user_id, payout_date desc);
+
+create index if not exists idx_payouts_user_date_id
+  on payouts (user_id, payout_date, id);
