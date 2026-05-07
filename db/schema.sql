@@ -364,7 +364,7 @@ create table if not exists bot_configs (
   provider text not null default 'projectx',
   enabled boolean not null default false,
   execution_mode text not null default 'dry_run' check (execution_mode in ('dry_run','live')),
-  strategy_type text not null default 'sma_cross' check (strategy_type in ('sma_cross','support_resistance')),
+  strategy_type text not null default 'sma_cross' check (strategy_type in ('sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation','ema_trend_pullback','ema_scalping','vwap_atr_mean_reversion','fisher_transform_mean_reversion','atr_adjusted_relative_strength','relative_strength_spy','fvg_sweep_mss','orb_fibonacci_pullback','supertrend_pivot','bollinger_mean_reversion','vwap_gap_retrace','pullback_trap_reversal')),
   strategy_params jsonb not null default '{}'::jsonb,
   contract_id text not null,
   symbol text,

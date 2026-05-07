@@ -54,9 +54,21 @@ Current migration list:
 20260427_relax_legacy_bot_schema.sql
 20260428_drop_legacy_bot_config_unique_constraint.sql
 20260506_add_support_resistance_bot_strategy.sql
+20260506_add_liquidity_sweep_retest_bot_strategy.sql
+20260506_add_orb_fibonacci_pullback_bot_strategy.sql
 20260507_add_projectx_trade_day_sync_windows.sql
 20260507_add_unique_main_account_index.sql
 20260507_add_user_scoped_infra_indexes.sql
+20260507_add_bollinger_mean_reversion_bot_strategy.sql
+20260507_add_fvg_sweep_mss_bot_strategy.sql
+20260507_add_relative_strength_vs_spy_bot_strategy.sql
+20260508_add_atr_adjusted_relative_strength_bot_strategy.sql
+20260508_add_ema_trend_pullback_bot_strategy.sql
+20260508_add_vwap_gap_retrace_bot_strategy.sql
+20260509_add_supertrend_pivot_bot_strategy.sql
+20260510_add_ema_scalping_bot_strategy.sql
+20260510_add_pullback_trap_reversal_bot_strategy.sql
+20260511_add_opening_rvol_breakout_bot_strategy.sql
 ```
 
 Example PowerShell application loop:
@@ -80,9 +92,21 @@ $migrations = @(
   "20260427_relax_legacy_bot_schema.sql",
   "20260428_drop_legacy_bot_config_unique_constraint.sql",
   "20260506_add_support_resistance_bot_strategy.sql",
+  "20260506_add_liquidity_sweep_retest_bot_strategy.sql",
+  "20260506_add_orb_fibonacci_pullback_bot_strategy.sql",
   "20260507_add_projectx_trade_day_sync_windows.sql",
   "20260507_add_unique_main_account_index.sql",
-  "20260507_add_user_scoped_infra_indexes.sql"
+  "20260507_add_user_scoped_infra_indexes.sql",
+  "20260507_add_bollinger_mean_reversion_bot_strategy.sql",
+  "20260507_add_fvg_sweep_mss_bot_strategy.sql",
+  "20260507_add_relative_strength_vs_spy_bot_strategy.sql",
+  "20260508_add_atr_adjusted_relative_strength_bot_strategy.sql",
+  "20260508_add_ema_trend_pullback_bot_strategy.sql",
+  "20260508_add_vwap_gap_retrace_bot_strategy.sql",
+  "20260509_add_supertrend_pivot_bot_strategy.sql",
+  "20260510_add_ema_scalping_bot_strategy.sql",
+  "20260510_add_pullback_trap_reversal_bot_strategy.sql",
+  "20260511_add_opening_rvol_breakout_bot_strategy.sql"
 )
 
 foreach ($name in $migrations) {

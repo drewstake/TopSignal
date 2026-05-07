@@ -8,7 +8,28 @@ TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
 BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP"]
-BotStrategyType = Literal["sma_cross", "support_resistance"]
+BotStrategyType = Literal[
+    "sma_cross",
+    "support_resistance",
+    "donchian_breakout",
+    "liquidity_sweep_retest",
+    "opening_rvol_breakout",
+    "bollinger_rsi_reversal",
+    "macd_support_resistance",
+    "delayed_orb_confirmation",
+    "ema_trend_pullback",
+    "ema_scalping",
+    "fvg_sweep_mss",
+    "orb_fibonacci_pullback",
+    "pullback_trap_reversal",
+    "supertrend_pivot",
+    "bollinger_mean_reversion",
+    "fisher_transform_mean_reversion",
+    "vwap_atr_mean_reversion",
+    "atr_adjusted_relative_strength",
+    "relative_strength_spy",
+    "vwap_gap_retrace",
+]
 
 
 class ProjectXContractOut(BaseModel):

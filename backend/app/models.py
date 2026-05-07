@@ -278,7 +278,15 @@ class BotConfig(Base):
 
     __table_args__ = (
         CheckConstraint("execution_mode in ('dry_run','live')", name="bot_configs_execution_mode_check"),
-        CheckConstraint("strategy_type in ('sma_cross','support_resistance')", name="bot_configs_strategy_type_check"),
+        CheckConstraint(
+            "strategy_type in "
+            "('sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
+            "'ema_trend_pullback','ema_scalping','vwap_atr_mean_reversion','fisher_transform_mean_reversion',"
+            "'atr_adjusted_relative_strength','relative_strength_spy',"
+            "'fvg_sweep_mss','orb_fibonacci_pullback','pullback_trap_reversal','supertrend_pivot','bollinger_mean_reversion',"
+            "'vwap_gap_retrace')",
+            name="bot_configs_strategy_type_check",
+        ),
         CheckConstraint(
             "timeframe_unit in ('second','minute','hour','day','week','month')",
             name="bot_configs_timeframe_unit_check",
