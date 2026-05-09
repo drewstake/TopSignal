@@ -181,7 +181,7 @@ export function AppShell() {
     <div className="flex min-h-screen flex-col bg-app-bg text-app-text">
       <header className="sticky top-0 z-30 border-b border-app-border/80 bg-app-bg/95">
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-[220px]">
@@ -207,7 +207,7 @@ export function AppShell() {
                     ))}
                   </Select>
                 </div>
-                <Button className="h-9" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
+                <Button className="h-9 whitespace-nowrap" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
                   {syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 {hasSupabaseConfig ? (
@@ -231,7 +231,7 @@ export function AppShell() {
               {accountsError ? <p className="text-xs text-app-negative">{accountsError}</p> : null}
               {syncMessage ? <p className="text-xs text-app-muted">{syncMessage}</p> : null}
             </div>
-            <div className="shrink-0 text-right">
+            <div className="shrink-0 text-left sm:text-right">
               <p className="text-lg font-semibold tracking-tight text-app-text">TopSignal</p>
               <p className="text-xs text-app-muted">ProjectX Account + Trade Dashboard</p>
             </div>

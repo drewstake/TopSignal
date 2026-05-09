@@ -44,9 +44,12 @@ Core features in the current routed app:
 - Payout tracking and payout totals
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
 - Trading bot configuration, dry-run execution controls, signal charting, and bot activity review
+- Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 
 ## Product Walkthrough
+
+The screenshots below are representative local captures from the routed app. Account balances, trade rows, fees, and dates will reflect whichever ProjectX account and database are connected in your environment.
 
 ### Dashboard
 
@@ -115,6 +118,10 @@ TopSignal tracks four account states:
 
 The Trades page is the execution-review surface.
 
+Trades page:
+
+![Trade review filters, summary cards, and execution feed](images/trades.png)
+
 A user can:
 
 - filter trades by date range
@@ -130,6 +137,10 @@ If an account is currently `MISSING`, the page still shows locally stored data a
 ### Expenses And Payouts
 
 The Expenses page tracks paid account costs, operating costs, and recorded payouts.
+
+Expenses and payouts page:
+
+![Expenses, combine spend tracker, and payout logging page](images/expenses.png)
 
 A user can:
 
@@ -181,6 +192,10 @@ Notable journal behavior:
 
 The Bot page is the account-scoped rule-execution workspace for ProjectX market data.
 
+Bot control page:
+
+![Bot signal chart, strategy configuration, and activity panels](images/bot.png)
+
 A user can:
 
 - create, edit, select, and delete named bot configurations
@@ -202,16 +217,35 @@ Important bot behaviors:
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
 - Candle reads use ProjectX market-data endpoints and a small frontend candle cache for chart responsiveness.
 
-### Not Currently Routed
+### Themes
 
-The repository also contains `overview/` and `analytics/` pages, but they are not wired into the current router.
+The Themes page is the routed appearance workspace for choosing the app's visual palette.
 
-Their current status in code:
+Themes page:
 
-- `frontend/src/pages/overview/*`: prototype UI backed by mock data
-- `frontend/src/pages/analytics/*`: prototype UI backed by mock data
+![Theme palette gallery and live preview](images/themes.png)
 
-These should be treated as design experiments, not current product features.
+A user can:
+
+- preview each built-in workspace palette
+- apply a theme across the routed app
+- compare status, metric, control, and surface colors before switching
+
+Themes are stored client-side and applied through CSS variables, so they affect the shell, dashboard, trade review, journal, bot, and supporting controls without a backend migration.
+
+### Routed Pages
+
+The current router includes these product surfaces:
+
+- `/`: dashboard
+- `/accounts`: account management
+- `/trades`: execution review
+- `/expenses`: expenses and payouts
+- `/journal`: daily journal
+- `/bot`: bot configuration and dry-run review
+- `/themes`: appearance and palette selection
+
+There are no separate `overview/` or `analytics/` prototype route directories in the current tree.
 
 ## Architecture
 
@@ -276,8 +310,9 @@ Important implementation detail:
 ### Frontend
 
 - `frontend/src/app/`: app shell and router
-- `frontend/src/pages/`: routed pages plus unrouted prototypes
+- `frontend/src/pages/`: routed product pages
 - `frontend/src/pages/bot/`: bot configuration page, signal chart, candle cache, and chart data helpers
+- `frontend/src/pages/themes/`: theme gallery and live appearance preview
 - `frontend/src/lib/api.ts`: shared API client, request helpers, caches, and in-flight dedupe
 - `frontend/src/lib/types.ts`: frontend API types
 - `frontend/src/utils/`: metric helpers and formatting
@@ -581,7 +616,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 
 ## Current Limitations
 
-- The main routed app is strong around dashboard, trades, journal, expenses, payouts, and bot dry-run workflows, but `overview/` and `analytics/` are still unrouted prototypes backed by mock data.
+- The main routed app is strong around dashboard, trades, journal, expenses, payouts, themes, and bot dry-run workflows.
 - There is backend support for per-user ProjectX credentials, but there is no dedicated frontend credentials-management screen in the current routed UI.
 - The repository still carries the legacy `trades` table and `/metrics/*` routes beside the newer `projectx_trade_events` pipeline.
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.

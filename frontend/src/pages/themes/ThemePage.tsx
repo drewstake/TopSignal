@@ -1,27 +1,51 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { Badge } from "../../components/ui/Badge";
-import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
 import {
   APP_THEME_CHANGED_EVENT,
   APP_THEMES,
   getAppTheme,
+  isAppThemeId,
   readStoredAppThemeId,
   selectAppTheme,
   type AppThemeChangedDetail,
   type AppThemeId,
 } from "../../lib/theme";
 
+type PreviewActionVariant = "primary" | "secondary" | "ghost";
+
+const previewActionStyles: Record<PreviewActionVariant, string> = {
+  primary: "bg-app-accent/90 text-app-accent-contrast shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)]",
+  secondary: "bg-app-raised text-app-text",
+  ghost: "bg-transparent text-app-text-soft",
+};
+
+function PreviewAction({ children, variant = "primary" }: { children: string; variant?: PreviewActionVariant }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-8 items-center justify-center gap-2 rounded-xl border border-transparent px-3 text-xs font-medium",
+        previewActionStyles[variant],
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 export function ThemePage() {
   const [selectedThemeId, setSelectedThemeId] = useState<AppThemeId>(() => readStoredAppThemeId());
+  const themeButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedTheme = getAppTheme(selectedThemeId);
 
   useEffect(() => {
     function handleThemeChanged(event: Event) {
-      const detail = (event as CustomEvent<AppThemeChangedDetail>).detail;
-      setSelectedThemeId(detail.themeId);
+      const detail = (event as CustomEvent<Partial<AppThemeChangedDetail> | undefined>).detail;
+      if (isAppThemeId(detail?.themeId)) {
+        setSelectedThemeId(detail.themeId);
+      }
     }
 
     window.addEventListener(APP_THEME_CHANGED_EVENT, handleThemeChanged);
@@ -31,6 +55,32 @@ export function ThemePage() {
   function handleThemeSelect(themeId: AppThemeId) {
     setSelectedThemeId(themeId);
     selectAppTheme(themeId);
+  }
+
+  function handleThemeKeyDown(event: KeyboardEvent<HTMLButtonElement>, themeIndex: number) {
+    const lastThemeIndex = APP_THEMES.length - 1;
+    let nextThemeIndex: number | null = null;
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextThemeIndex = themeIndex === lastThemeIndex ? 0 : themeIndex + 1;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextThemeIndex = themeIndex === 0 ? lastThemeIndex : themeIndex - 1;
+    } else if (event.key === "Home") {
+      nextThemeIndex = 0;
+    } else if (event.key === "End") {
+      nextThemeIndex = lastThemeIndex;
+    }
+
+    if (nextThemeIndex === null) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTheme = APP_THEMES[nextThemeIndex];
+    if (nextTheme) {
+      handleThemeSelect(nextTheme.id);
+      themeButtonRefs.current[nextThemeIndex]?.focus();
+    }
   }
 
   return (
@@ -50,7 +100,7 @@ export function ThemePage() {
       </section>
 
       <section className="grid gap-4 lg:grid-cols-4" role="radiogroup" aria-label="Theme selection">
-        {APP_THEMES.map((theme) => {
+        {APP_THEMES.map((theme, themeIndex) => {
           const isSelected = theme.id === selectedThemeId;
           return (
             <Card
@@ -61,11 +111,17 @@ export function ThemePage() {
               )}
             >
               <button
+                ref={(element) => {
+                  themeButtonRefs.current[themeIndex] = element;
+                }}
                 type="button"
                 className="flex h-full flex-1 flex-col rounded-lg p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/55"
                 role="radio"
                 aria-checked={isSelected}
+                aria-label={`${theme.name}: ${theme.description}`}
+                tabIndex={isSelected ? 0 : -1}
                 onClick={() => handleThemeSelect(theme.id)}
+                onKeyDown={(event) => handleThemeKeyDown(event, themeIndex)}
               >
                 <div
                   className="grid h-24 overflow-hidden rounded-lg border border-app-border"
@@ -137,13 +193,9 @@ export function ThemePage() {
                   <p className="text-xs text-app-muted">Primary, secondary, and quiet actions.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm">Apply</Button>
-                  <Button size="sm" variant="secondary">
-                    Review
-                  </Button>
-                  <Button size="sm" variant="ghost">
-                    Cancel
-                  </Button>
+                  <PreviewAction>Apply</PreviewAction>
+                  <PreviewAction variant="secondary">Review</PreviewAction>
+                  <PreviewAction variant="ghost">Cancel</PreviewAction>
                 </div>
               </div>
             </div>

@@ -1,4 +1,5 @@
-﻿import { NavLink } from "react-router-dom";
+﻿import { useEffect, useRef } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "./cn";
 
 export interface TabItem {
@@ -11,8 +12,19 @@ export interface TabsProps {
 }
 
 export function Tabs({ items }: TabsProps) {
+  const location = useLocation();
+  const navRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const activeLink = navRef.current?.querySelector<HTMLAnchorElement>("[aria-current='page']");
+    activeLink?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [location.pathname, location.search]);
+
   return (
-    <nav className="flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-app-border bg-app-surface/50 p-1">
+    <nav
+      ref={navRef}
+      className="flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-app-border bg-app-surface/50 p-1"
+    >
       {items.map((item) => (
         <NavLink
           key={item.to}
