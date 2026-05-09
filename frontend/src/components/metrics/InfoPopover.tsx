@@ -65,8 +65,8 @@ export function InfoPopover({ content, label = "Metric definition", className, p
         aria-haspopup="dialog"
         onClick={() => setClickedOpen((value) => !value)}
         className={cn(
-          "inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-700/80 bg-slate-900/80 text-[10px] font-semibold text-slate-400 transition",
-          open ? "border-cyan-300/70 text-cyan-100" : "hover:border-cyan-300/65 hover:text-cyan-200",
+          "inline-flex h-5 w-5 items-center justify-center rounded-full border border-app-border/80 bg-app-surface/80 text-[10px] font-semibold text-app-muted transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35",
+          open ? "border-app-accent/70 text-app-accent" : "hover:border-app-accent/65 hover:text-app-accent",
         )}
       >
         i
@@ -76,7 +76,7 @@ export function InfoPopover({ content, label = "Metric definition", className, p
           id={panelId}
           role="dialog"
           className={cn(
-            "absolute right-0 top-full z-20 mt-2 w-56 rounded-lg border border-slate-700/80 bg-slate-950/95 px-3 py-2 text-[11px] leading-relaxed text-slate-200 shadow-lg",
+            "absolute right-0 top-full z-20 mt-2 w-56 rounded-lg border border-app-border/80 bg-app-bg/95 px-3 py-2 text-[11px] leading-relaxed text-app-text-soft shadow-lg shadow-app-bg/35",
             panelClassName,
           )}
         >

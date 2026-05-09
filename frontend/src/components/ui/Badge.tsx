@@ -4,11 +4,11 @@ import { cn } from "./cn";
 type BadgeVariant = "positive" | "negative" | "neutral" | "accent" | "warning";
 
 const styles: Record<BadgeVariant, string> = {
-  positive: "border-emerald-400/40 bg-emerald-500/10 text-emerald-300",
-  negative: "border-rose-400/40 bg-rose-500/10 text-rose-300",
-  neutral: "border-slate-600 bg-slate-700/40 text-slate-200",
-  accent: "border-cyan-400/40 bg-cyan-500/10 text-cyan-200",
-  warning: "border-amber-400/40 bg-amber-500/10 text-amber-200",
+  positive: "border-app-positive/40 bg-app-positive/10 text-app-positive",
+  negative: "border-app-negative/40 bg-app-negative/10 text-app-negative",
+  neutral: "border-app-border-strong bg-app-border-strong/40 text-app-text-soft",
+  accent: "border-app-accent/40 bg-app-accent/10 text-app-accent",
+  warning: "border-app-warning/40 bg-app-warning/10 text-app-warning",
 };
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {

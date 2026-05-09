@@ -116,22 +116,22 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
   const hasAnchoredBalance = currentBalance !== null && Number.isFinite(currentBalance);
   const isPositiveTrend = (firstPoint && lastPoint ? lastPoint.balance - firstPoint.balance : 0) >= 0;
   const summaryTint = isPositiveTrend
-    ? "linear-gradient(180deg, rgba(16, 185, 129, 0.16) 0%, rgba(15, 23, 42, 0) 100%)"
-    : "linear-gradient(180deg, rgba(244, 63, 94, 0.16) 0%, rgba(15, 23, 42, 0) 100%)";
+    ? "linear-gradient(180deg, rgb(var(--dashboard-positive-rgb) / 0.14) 0%, transparent 100%)"
+    : "linear-gradient(180deg, rgb(var(--dashboard-negative-rgb) / 0.14) 0%, transparent 100%)";
   const tone = isPositiveTrend
     ? {
-        lineStart: "#10b981",
-        lineEnd: "#34d399",
-        point: "#6ee7b7",
-        glow: "#34d399",
-        area: "#34d399",
+        lineStart: "var(--dashboard-positive)",
+        lineEnd: "rgb(var(--dashboard-positive-rgb) / 0.86)",
+        point: "var(--dashboard-positive)",
+        glow: "rgb(var(--dashboard-positive-rgb) / 0.72)",
+        area: "rgb(var(--dashboard-positive-rgb) / 1)",
       }
     : {
-        lineStart: "#f43f5e",
-        lineEnd: "#fb7185",
-        point: "#fda4af",
-        glow: "#fb7185",
-        area: "#fb7185",
+        lineStart: "var(--dashboard-negative)",
+        lineEnd: "rgb(var(--dashboard-negative-rgb) / 0.86)",
+        point: "var(--dashboard-negative)",
+        glow: "rgb(var(--dashboard-negative-rgb) / 0.72)",
+        area: "rgb(var(--dashboard-negative-rgb) / 1)",
       };
 
   const stats = useMemo(() => {
@@ -311,21 +311,21 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
         </div>
         {stats ? (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg border border-slate-800/75 bg-slate-950/45 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Start</p>
-              <p className="text-sm font-semibold text-slate-100">{formatCurrency(stats.startingBalance)}</p>
+            <div className="rounded-lg border border-app-border/75 bg-app-bg/45 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Start</p>
+              <p className="text-sm font-semibold text-app-text">{formatCurrency(stats.startingBalance)}</p>
             </div>
-            <div className="rounded-lg border border-slate-800/75 bg-slate-950/45 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">High</p>
-              <p className="text-sm font-semibold text-emerald-200">{formatCurrency(stats.highBalance)}</p>
+            <div className="rounded-lg border border-app-border/75 bg-app-bg/45 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">High</p>
+              <p className="text-sm font-semibold text-app-positive">{formatCurrency(stats.highBalance)}</p>
             </div>
-            <div className="rounded-lg border border-slate-800/75 bg-slate-950/45 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Low</p>
-              <p className="text-sm font-semibold text-rose-200">{formatCurrency(stats.lowBalance)}</p>
+            <div className="rounded-lg border border-app-border/75 bg-app-bg/45 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Low</p>
+              <p className="text-sm font-semibold text-app-negative">{formatCurrency(stats.lowBalance)}</p>
             </div>
-            <div className="rounded-lg border border-slate-800/75 bg-slate-950/45 px-3 py-2">
-              <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Largest Day</p>
-              <p className={`text-sm font-semibold ${stats.largestDailyMove >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+            <div className="rounded-lg border border-app-border/75 bg-app-bg/45 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Largest Day</p>
+              <p className={`text-sm font-semibold ${stats.largestDailyMove >= 0 ? "text-app-positive" : "text-app-negative"}`}>
                 {formatPnl(stats.largestDailyMove)}
               </p>
             </div>
@@ -336,14 +336,14 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
         {loading ? (
           <Skeleton className="h-64 w-full" />
         ) : error ? (
-          <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>
+          <p className="rounded-xl border border-app-negative/30 bg-app-negative/10 px-3 py-2 text-sm text-app-negative">{error}</p>
         ) : series.length === 0 || !chartData ? (
-          <p className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-3 py-4 text-sm text-slate-400">
+          <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-4 text-sm text-app-muted">
             No daily balance data yet. Sync trades to populate this chart.
           </p>
         ) : (
           <>
-            <div className="overflow-x-auto rounded-2xl border border-slate-700/70 bg-gradient-to-b from-slate-950/95 via-slate-900/80 to-slate-950/95 p-4 shadow-[inset_0_1px_0_rgba(148,163,184,0.08)]">
+            <div className="overflow-x-auto rounded-2xl border border-app-border/70 bg-gradient-to-b from-app-bg/95 via-app-surface/80 to-app-bg/95 p-4 shadow-[inset_0_1px_0_rgb(var(--theme-muted)/0.08)]">
               <svg
                 viewBox={`0 0 ${width} ${height}`}
                 preserveAspectRatio="none"
@@ -378,7 +378,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                     y1={chartPadding.top}
                     x2={x}
                     y2={height - chartPadding.bottom}
-                    stroke="#334155"
+                    stroke="var(--dashboard-chart-grid, rgb(var(--theme-chart-grid)/0.34))"
                     strokeWidth="1"
                     opacity="0.28"
                   />
@@ -391,12 +391,12 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                       y1={tick.y}
                       x2={width - chartPadding.right}
                       y2={tick.y}
-                      stroke="#334155"
+                      stroke="var(--dashboard-chart-grid-strong, rgb(var(--theme-chart-grid)/0.58))"
                       strokeWidth="1"
                       strokeDasharray="4 5"
                       opacity="0.85"
                     />
-                    <text x={yLabelX} y={tick.y + 4} textAnchor="start" fontSize="11" fill="#94a3b8">
+                    <text x={yLabelX} y={tick.y + 4} textAnchor="start" fontSize="11" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
                       {formatCurrency(tick.value)}
                     </text>
                   </g>
@@ -414,7 +414,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                 />
 
                 {startLabelY !== null ? (
-                  <text x={chartPadding.left + 6} y={startLabelY} fontSize="10" fill="#94a3b8">
+                  <text x={chartPadding.left + 6} y={startLabelY} fontSize="10" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
                     Start
                   </text>
                 ) : null}
@@ -454,7 +454,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                             : 2.5
                       }
                       fill={index === chartData.points.length - 1 ? tone.point : tone.lineEnd}
-                      stroke={index === chartData.points.length - 1 ? "#0f172a" : "none"}
+                      stroke={index === chartData.points.length - 1 ? "var(--dashboard-chart-point-stroke, rgb(var(--theme-bg)/1))" : "none"}
                       strokeWidth={index === chartData.points.length - 1 ? 1.5 : 0}
                     />
                   ) : null
@@ -473,7 +473,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                       strokeDasharray="3 4"
                     />
                     <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r={7.5} fill={tone.point} opacity="0.16" />
-                    <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r={4} fill={tone.point} stroke="#0f172a" strokeWidth="1.5" />
+                    <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r={4} fill={tone.point} stroke="var(--dashboard-chart-point-stroke, rgb(var(--theme-bg)/1))" strokeWidth="1.5" />
                   </g>
                 ) : null}
 
@@ -485,16 +485,16 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                       width={hoveredTooltipWidth}
                       height={hoveredTooltipHeight}
                       rx={9}
-                      fill="rgba(2, 6, 23, 0.92)"
-                      stroke="rgba(148, 163, 184, 0.38)"
+                      fill="var(--dashboard-chart-tooltip-bg, rgb(var(--theme-bg)/0.94))"
+                      stroke="var(--dashboard-chart-tooltip-border, rgb(var(--theme-border-strong)/0.52))"
                     />
-                    <text x={hoveredTooltip.x + 10} y={hoveredTooltip.y + 19} fontSize="10" fill="#94a3b8">
+                    <text x={hoveredTooltip.x + 10} y={hoveredTooltip.y + 19} fontSize="10" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
                       Date
                     </text>
-                    <text x={hoveredTooltip.x + hoveredTooltipWidth - 10} y={hoveredTooltip.y + 19} textAnchor="end" fontSize="11" fill="#e2e8f0">
+                    <text x={hoveredTooltip.x + hoveredTooltipWidth - 10} y={hoveredTooltip.y + 19} textAnchor="end" fontSize="11" fill="var(--dashboard-chart-tooltip-text, rgb(var(--theme-text)/1))">
                       {hoveredTooltip.dateLabel}
                     </text>
-                    <text x={hoveredTooltip.x + 10} y={hoveredTooltip.y + 37} fontSize="10" fill="#94a3b8">
+                    <text x={hoveredTooltip.x + 10} y={hoveredTooltip.y + 37} fontSize="10" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
                       Balance
                     </text>
                     <text
@@ -520,7 +520,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                       opacity="0.2"
                       filter={`url(#${glowFilterId})`}
                     />
-                    <circle cx={lastChartPoint.x} cy={lastChartPoint.y} r={5} fill={tone.point} stroke="#0f172a" strokeWidth="2" />
+                    <circle cx={lastChartPoint.x} cy={lastChartPoint.y} r={5} fill={tone.point} stroke="var(--dashboard-chart-point-stroke, rgb(var(--theme-bg)/1))" strokeWidth="2" />
                     <text x={lastChartPoint.x - 10} y={endLabelY} textAnchor="end" fontSize="11" fontWeight={600} fill={tone.point}>
                       {formatCurrency(lastPoint.balance)}
                     </text>
@@ -528,20 +528,20 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                 ) : null}
 
                 {chartData.xTicks.map((tick) => (
-                  <text key={`x-tick-${tick.date}`} x={tick.x} y={height - 8} textAnchor="middle" fontSize="11" fill="#94a3b8">
+                  <text key={`x-tick-${tick.date}`} x={tick.x} y={height - 8} textAnchor="middle" fontSize="11" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
                     {dateFormatter.format(parseIsoDate(tick.date))}
                   </text>
                 ))}
               </svg>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
               <p>
                 Range: {firstPoint ? dateFormatter.format(parseIsoDate(firstPoint.date)) : "-"} to{" "}
                 {lastPoint ? dateFormatter.format(parseIsoDate(lastPoint.date)) : "-"} | Net:{" "}
-                <span className={netPnlTotal >= 0 ? "text-emerald-300" : "text-rose-300"}>{formatPnl(netPnlTotal)}</span>
+                <span className={netPnlTotal >= 0 ? "text-app-positive" : "text-app-negative"}>{formatPnl(netPnlTotal)}</span>
               </p>
-              <p className={hasAnchoredBalance ? "text-cyan-200/80" : "text-slate-400"}>
+              <p className={hasAnchoredBalance ? "text-app-secondary/80" : "text-app-muted"}>
                 {hasAnchoredBalance ? "Anchored to current account balance." : "Anchored to cumulative net PnL only."}
               </p>
             </div>

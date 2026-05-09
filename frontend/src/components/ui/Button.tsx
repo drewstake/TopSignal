@@ -6,10 +6,10 @@ type ButtonSize = "sm" | "md" | "lg";
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
-    "bg-cyan-500/90 text-slate-950 hover:bg-cyan-400 focus-visible:ring-cyan-300 shadow-[0_8px_24px_-16px_rgba(34,211,238,0.95)]",
-  secondary: "bg-slate-800 text-slate-100 hover:bg-slate-700 focus-visible:ring-slate-400",
-  ghost: "bg-transparent text-slate-200 hover:bg-slate-800/70 focus-visible:ring-slate-400",
-  danger: "bg-rose-500/85 text-rose-50 hover:bg-rose-400 focus-visible:ring-rose-300",
+    "bg-app-accent/90 text-app-accent-contrast hover:bg-app-accent focus-visible:ring-app-accent shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)]",
+  secondary: "bg-app-raised text-app-text hover:bg-app-border-strong focus-visible:ring-app-muted",
+  ghost: "bg-transparent text-app-text-soft hover:bg-app-raised/70 focus-visible:ring-app-muted",
+  danger: "bg-app-negative/85 text-app-bg hover:bg-app-negative focus-visible:ring-app-negative",
 };
 
 const buttonSizes: Record<ButtonSize, string> = {

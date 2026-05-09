@@ -628,7 +628,7 @@ export function CopyFullStatsButton({
       disabled={disabled}
       className={cn(
         "shrink-0 rounded-lg border px-2.5 text-[11px]",
-        copied ? "border-cyan-300/40" : "border-slate-700/80 bg-transparent hover:border-slate-600 hover:bg-slate-800/70",
+        copied ? "border-app-accent/40" : "border-app-border/80 bg-transparent hover:border-app-border-strong hover:bg-app-raised/70",
         className,
       )}
     >

@@ -12,7 +12,7 @@ export interface TabsProps {
 
 export function Tabs({ items }: TabsProps) {
   return (
-    <nav className="flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/50 p-1">
+    <nav className="flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-app-border bg-app-surface/50 p-1">
       {items.map((item) => (
         <NavLink
           key={item.to}
@@ -21,8 +21,8 @@ export function Tabs({ items }: TabsProps) {
             cn(
               "rounded-lg px-3 py-2 text-sm font-medium transition duration-200",
               isActive
-                ? "bg-gradient-to-r from-cyan-500/20 to-violet-500/25 text-cyan-100"
-                : "text-slate-400 hover:bg-slate-800/80 hover:text-slate-200",
+                ? "bg-gradient-to-r from-app-accent/20 to-app-highlight/25 text-app-accent"
+                : "text-app-muted hover:bg-app-raised/80 hover:text-app-text-soft",
             )
           }
         >

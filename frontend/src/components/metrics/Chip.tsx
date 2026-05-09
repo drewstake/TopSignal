@@ -11,12 +11,12 @@ export function Chip({ label, value, className, valueClassName }: ChipProps) {
   return (
       <span
         className={cn(
-          "inline-flex items-center gap-1 rounded-full border border-slate-700/80 bg-slate-900/75 px-2 py-0.5 text-[10px] text-slate-300",
+          "inline-flex items-center gap-1 rounded-full border border-app-border/80 bg-app-surface/75 px-2 py-0.5 text-[10px] text-app-muted",
           className,
         )}
       >
-      <span className="text-slate-400">{label}</span>
-      <span className={cn("font-semibold text-slate-100", valueClassName)}>{value}</span>
+      <span className="text-app-muted">{label}</span>
+      <span className={cn("font-semibold text-app-text", valueClassName)}>{value}</span>
     </span>
   );
 }

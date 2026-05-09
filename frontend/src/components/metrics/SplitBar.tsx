@@ -39,25 +39,25 @@ export function SplitBar({
 
   return (
     <div className={cn("space-y-1.5", className)}>
-      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.12em] text-slate-500">
+      <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">
         <span>{leftLabel}</span>
         <span>{rightLabel}</span>
       </div>
-      <div className={cn("relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85", trackClassName)}>
+      <div className={cn("relative h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85", trackClassName)}>
         <div
-          className={cn("h-full bg-emerald-400/80 transition-all duration-300", leftBarClassName)}
+          className={cn("h-full bg-app-positive/80 transition-all duration-300", leftBarClassName)}
           style={{ width: `${leftPercent}%` }}
           aria-hidden="true"
         />
         <div
-          className={cn("absolute right-0 top-0 h-full bg-rose-400/75 transition-all duration-300", rightBarClassName)}
+          className={cn("absolute right-0 top-0 h-full bg-app-negative/75 transition-all duration-300", rightBarClassName)}
           style={{ width: `${rightPercent}%` }}
           aria-hidden="true"
         />
       </div>
       <div className={cn("flex items-center justify-between text-[10px] font-medium", valueClassName)}>
-        <span className="text-emerald-200">{leftValue}</span>
-        <span className="text-rose-200">{rightValue}</span>
+        <span className="text-app-positive">{leftValue}</span>
+        <span className="text-app-negative">{rightValue}</span>
       </div>
     </div>
   );

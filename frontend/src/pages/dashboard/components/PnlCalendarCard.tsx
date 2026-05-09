@@ -76,25 +76,25 @@ function formatPnl(value: number) {
 
 function pnlClass(value: number) {
   if (value > 0) {
-    return "text-emerald-100";
+    return "text-app-positive";
   }
   if (value < 0) {
-    return "text-rose-100";
+    return "text-app-negative";
   }
-  return "text-slate-200";
+  return "text-app-text-soft";
 }
 
 function tileBackground(value: number, maxAbs: number) {
   if (value === 0) {
-    return "rgba(148, 163, 184, 0.2)";
+    return "rgb(var(--dashboard-neutral-rgb) / 0.2)";
   }
 
   const intensity = Math.min(1, Math.abs(value) / maxAbs);
-  const alpha = 0.2 + intensity * 0.55;
+  const alpha = 0.14 + intensity * 0.38;
   if (value > 0) {
-    return `rgba(16, 185, 129, ${alpha.toFixed(3)})`;
+    return `rgb(var(--dashboard-positive-rgb) / ${alpha.toFixed(3)})`;
   }
-  return `rgba(244, 63, 94, ${alpha.toFixed(3)})`;
+  return `rgb(var(--dashboard-negative-rgb) / ${alpha.toFixed(3)})`;
 }
 
 export function PnlCalendarCard({
@@ -244,7 +244,7 @@ export function PnlCalendarCard({
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center">
             <CardTitle className="sm:justify-self-start">PnL Calendar</CardTitle>
             <div className="text-center">
-              <p className="text-sm font-medium text-slate-200 md:text-base">
+              <p className="text-sm font-medium text-app-text-soft md:text-base">
                 {formatPnl(monthSummary.netPnl)} {" \u2022 "} {monthSummary.tradeCount} trades
               </p>
             </div>
@@ -257,7 +257,7 @@ export function PnlCalendarCard({
               >
                 Prev
               </Button>
-              <p className="min-w-[92px] text-center text-xs font-medium text-slate-300">
+              <p className="min-w-[92px] text-center text-xs font-medium text-app-muted">
                 {monthLabelFormatter.format(visibleMonth)}
               </p>
               <Button
@@ -282,18 +282,18 @@ export function PnlCalendarCard({
             ))}
           </div>
         ) : error ? (
-          <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>
+          <p className="rounded-xl border border-app-negative/30 bg-app-negative/10 px-3 py-2 text-sm text-app-negative">{error}</p>
         ) : days.length === 0 ? (
-          <p className="rounded-xl border border-slate-800/80 bg-slate-900/40 px-3 py-4 text-sm text-slate-400">
+          <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-4 text-sm text-app-muted">
             No stored trade events yet. Sync trades to populate the calendar.
           </p>
         ) : (
           <div className="space-y-3">
-            <div className="overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/55 p-2">
+            <div className="overflow-x-auto rounded-xl border border-app-border/80 bg-app-bg/55 p-2">
               <div className="min-w-[680px]">
                 <div className="mb-2 grid grid-cols-7 gap-2">
                   {weekdayLabels.map((label) => (
-                    <p key={label} className="text-center text-[11px] uppercase tracking-wide text-slate-500">
+                    <p key={label} className="text-center text-[11px] uppercase tracking-wide text-app-muted-strong">
                       {label}
                     </p>
                   ))}
@@ -309,14 +309,14 @@ export function PnlCalendarCard({
                       return (
                         <div
                           key={cell.key}
-                          className="flex h-20 flex-col items-center justify-center rounded-lg border border-slate-800/80 p-2 text-center"
+                          className="flex h-20 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
                           style={{ backgroundColor: tileBackground(summary.netPnl, maxAbsWeekPnl) }}
                         >
-                          <p className="text-xs font-medium uppercase tracking-wide text-slate-300">Week {weekNumber}</p>
+                          <p className="text-xs font-medium uppercase tracking-wide text-app-muted">Week {weekNumber}</p>
                           <p className={`mt-1 text-sm font-semibold ${pnlClass(summary.netPnl)}`}>
                             {formatPnlCompact(summary.netPnl)}
                           </p>
-                          <p className="text-[11px] text-slate-300">{summary.tradeCount} trade(s)</p>
+                          <p className="text-[11px] text-app-muted">{summary.tradeCount} trade(s)</p>
                         </div>
                       );
                     }
@@ -329,7 +329,7 @@ export function PnlCalendarCard({
                     const netPnl = point?.net_pnl ?? 0;
                     const backgroundColor = point
                       ? tileBackground(netPnl, maxAbsMonthPnl)
-                      : "rgba(15, 23, 42, 0.6)";
+                      : "var(--dashboard-calendar-empty)";
                     const isSelected = selectedDate === cell.key;
                     const hasJournalEntry = journalDays?.has(cell.key) ?? false;
 
@@ -341,13 +341,13 @@ export function PnlCalendarCard({
                         onClick={() => onDaySelect?.(isSelected ? null : cell.key)}
                         className={`h-20 rounded-lg border p-2 text-left transition ${
                           isSelected
-                            ? "border-cyan-400/90 ring-1 ring-cyan-300/70"
-                            : "border-slate-800/80 hover:border-slate-700/80"
+                            ? "border-app-accent/90 ring-1 ring-app-accent/70"
+                            : "border-app-border/80 hover:border-app-border/80"
                         } ${onDaySelect ? "cursor-pointer" : "cursor-default"}`}
                         style={{ backgroundColor }}
                       >
                         <div className="flex items-start justify-between gap-1">
-                          <p className="text-xs font-medium text-slate-300">{cell.dayNumber}</p>
+                          <p className="text-xs font-medium text-app-muted">{cell.dayNumber}</p>
                           {hasJournalEntry ? (
                             <span
                               role="button"
@@ -363,7 +363,7 @@ export function PnlCalendarCard({
                                   onJournalDayOpen?.(cell.key);
                                 }
                               }}
-                              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-cyan-300/65 bg-cyan-400/15 px-1 text-[10px] font-semibold text-cyan-100"
+                              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-app-accent/65 bg-app-accent/15 px-1 text-[10px] font-semibold text-app-accent"
                               aria-label={`Open journal entry for ${cell.key}`}
                               title="Open journal entry"
                             >
@@ -374,10 +374,10 @@ export function PnlCalendarCard({
                         {point ? (
                           <>
                             <p className={`mt-1 text-sm font-semibold ${pnlClass(netPnl)}`}>{formatPnlCompact(netPnl)}</p>
-                            <p className="text-[11px] text-slate-300">{point.trade_count} trade(s)</p>
+                            <p className="text-[11px] text-app-muted">{point.trade_count} trade(s)</p>
                           </>
                         ) : (
-                          <p className="mt-2 text-[11px] text-slate-500">No trades</p>
+                          <p className="mt-2 text-[11px] text-app-muted-strong">No trades</p>
                         )}
                       </button>
                     );
@@ -385,7 +385,7 @@ export function PnlCalendarCard({
                 </div>
               </div>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
               <div>{journalDaysLoading ? "Loading journal markers..." : "J marker indicates a journal entry for that day."}</div>
               {selectedDate && onAddJournalForSelectedDay ? (
                 <Button variant="secondary" size="sm" onClick={() => onAddJournalForSelectedDay(selectedDate)}>

@@ -48,14 +48,14 @@ export function Drawer({ open, onClose, title, description, children, footer }: 
     >
       <div
         className={cn(
-          "absolute inset-0 bg-slate-950/75 backdrop-blur-sm transition-opacity duration-200",
+          "absolute inset-0 bg-app-bg/75 backdrop-blur-sm transition-opacity duration-200",
           open ? "opacity-100" : "opacity-0",
         )}
         onClick={onClose}
       />
       <aside
         className={cn(
-          "absolute right-0 top-0 h-full w-full max-w-md border-l border-slate-800 bg-slate-950/95 p-5 shadow-2xl transition duration-200",
+          "absolute right-0 top-0 h-full w-full max-w-md border-l border-app-border bg-app-bg/95 p-5 shadow-2xl transition duration-200",
           open ? "translate-x-0" : "translate-x-full",
         )}
         role="dialog"
@@ -64,15 +64,15 @@ export function Drawer({ open, onClose, title, description, children, footer }: 
       >
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
-            {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
+            <h2 className="text-lg font-semibold text-app-text">{title}</h2>
+            {description ? <p className="mt-1 text-sm text-app-muted">{description}</p> : null}
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close trade drawer">
             Close
           </Button>
         </div>
         <div className="h-[calc(100%-112px)] overflow-y-auto pr-1">{children}</div>
-        {footer ? <div className="mt-4 border-t border-slate-800 pt-4">{footer}</div> : null}
+        {footer ? <div className="mt-4 border-t border-app-border pt-4">{footer}</div> : null}
       </aside>
     </div>,
     document.body,

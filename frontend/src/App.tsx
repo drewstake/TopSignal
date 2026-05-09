@@ -62,19 +62,19 @@ export default function App() {
   }
 
   if (loading) {
-    return <div className="min-h-screen bg-slate-950 p-8 text-sm text-slate-300">Loading authentication...</div>;
+    return <div className="min-h-screen bg-app-bg p-8 text-sm text-app-muted">Loading authentication...</div>;
   }
 
   if (!session) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-slate-100">
-        <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-6">
+      <div className="flex min-h-screen items-center justify-center bg-app-bg p-6 text-app-text">
+        <div className="w-full max-w-md space-y-4 rounded-2xl border border-app-border bg-app-surface/70 p-6">
           <h1 className="text-xl font-semibold">Sign in to TopSignal</h1>
-          <p className="text-sm text-slate-300">Use your Supabase account to access your cloud-synced data.</p>
-          {error ? <p className="text-sm text-rose-300">{error}</p> : null}
+          <p className="text-sm text-app-muted">Use your Supabase account to access your cloud-synced data.</p>
+          {error ? <p className="text-sm text-app-negative">{error}</p> : null}
           <button
             type="button"
-            className="w-full rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-900"
+            className="w-full rounded-lg bg-app-accent px-4 py-2 text-sm font-medium text-app-accent-contrast transition hover:bg-app-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
             onClick={() => {
               void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
             }}

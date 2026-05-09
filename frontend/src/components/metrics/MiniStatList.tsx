@@ -18,10 +18,10 @@ export function MiniStatList({ items, columns = 2, className }: MiniStatListProp
       {items.map((item, index) => (
         <div
           key={`${item.label}-${index}`}
-          className="flex items-center justify-between gap-1.5 rounded-md border border-slate-800/70 bg-slate-950/35 px-2 py-1 text-[10px] leading-tight"
+          className="flex items-center justify-between gap-1.5 rounded-md border border-app-border/70 bg-app-bg/35 px-2 py-1 text-[10px] leading-tight"
         >
-          <dt className="text-slate-400">{item.label}</dt>
-          <dd className={cn("text-right font-medium text-slate-100", item.valueClassName)}>{item.value}</dd>
+          <dt className="text-app-muted">{item.label}</dt>
+          <dd className={cn("text-right font-medium text-app-text", item.valueClassName)}>{item.value}</dd>
         </div>
       ))}
     </dl>

@@ -168,35 +168,35 @@ function createEmptyPointPayoffByBasis(): PointPayoffByBasis {
 const sizingBenchmarkTooltipContent = (
   <div className="space-y-1.5">
     <div>
-      <p className="font-semibold text-slate-50">Sizing Benchmark</p>
-      <p className="mt-1 text-slate-200">
+      <p className="font-semibold text-app-text">Sizing Benchmark</p>
+      <p className="mt-1 text-app-text-soft">
         This compares your actual results to a fixed-size benchmark using the same trades, same entries, and same exits,
         but with a constant size equal to your average position size in the selected range.
       </p>
     </div>
     <div>
-      <p className="font-semibold text-rose-200">Far Below Benchmark</p>
-      <p className="text-slate-200">
+      <p className="font-semibold text-app-negative">Far Below Benchmark</p>
+      <p className="text-app-text-soft">
         You made much less than the average-size benchmark, or your sizing reduced performance.
       </p>
     </div>
     <div>
-      <p className="font-semibold text-amber-200">Below Benchmark</p>
-      <p className="text-slate-200">You trailed the benchmark by a meaningful amount.</p>
+      <p className="font-semibold text-app-warning">Below Benchmark</p>
+      <p className="text-app-text-soft">You trailed the benchmark by a meaningful amount.</p>
     </div>
     <div>
-      <p className="font-semibold text-slate-100">In Line With Benchmark</p>
-      <p className="text-slate-200">Your dynamic sizing performed about the same as a fixed average-size approach.</p>
+      <p className="font-semibold text-app-text">In Line With Benchmark</p>
+      <p className="text-app-text-soft">Your dynamic sizing performed about the same as a fixed average-size approach.</p>
     </div>
     <div>
-      <p className="font-semibold text-cyan-100">Above Benchmark</p>
-      <p className="text-slate-200">Your sizing improved results over the benchmark.</p>
+      <p className="font-semibold text-app-accent">Above Benchmark</p>
+      <p className="text-app-text-soft">Your sizing improved results over the benchmark.</p>
     </div>
     <div>
-      <p className="font-semibold text-emerald-200">Far Above Benchmark</p>
-      <p className="text-slate-200">Your sizing clearly added strong value versus a fixed average-size approach.</p>
+      <p className="font-semibold text-app-positive">Far Above Benchmark</p>
+      <p className="text-app-text-soft">Your sizing clearly added strong value versus a fixed average-size approach.</p>
     </div>
-    <div className="border-t border-slate-800/80 pt-1.5 text-slate-300">
+    <div className="border-t border-app-border/80 pt-1.5 text-app-muted">
       <p>When the benchmark is positive, the label is based on your actual net PnL compared to benchmark net PnL.</p>
       <p className="mt-0.5">When the benchmark is flat or negative, fall back to dollar difference so the label stays meaningful.</p>
     </div>
@@ -237,7 +237,7 @@ function formatSizingBenchmarkSubtitle(size: number, tradeCountUsed: number) {
 }
 
 function pnlClass(value: number) {
-  return value >= 0 ? "text-emerald-300" : "text-rose-300";
+  return value >= 0 ? "text-app-positive" : "text-app-negative";
 }
 
 function formatMetricValue(metric: MetricValue, formatter: (value: number) => string) {
@@ -329,15 +329,15 @@ function sustainabilityBadgeVariant(label: SustainabilityLabel) {
 
 function sustainabilityFillClass(score: number) {
   if (score >= 80) {
-    return "bg-emerald-300/75";
+    return "bg-app-positive/75";
   }
   if (score >= 60) {
-    return "bg-cyan-300/75";
+    return "bg-app-accent/75";
   }
   if (score >= 40) {
-    return "bg-amber-300/80";
+    return "bg-app-warning/80";
   }
-  return "bg-rose-300/80";
+  return "bg-app-negative/80";
 }
 
 function parseIsoDay(value: string) {
@@ -847,46 +847,46 @@ export function DashboardPage() {
   const performanceSignalLabel = summary.net_pnl > 0 ? "Positive Flow" : summary.net_pnl < 0 ? "Negative Drift" : "Flat Session";
   const performanceAccentClassName =
     summary.net_pnl > 0
-      ? "bg-gradient-to-r from-emerald-300/80 via-cyan-200/30 to-transparent"
+      ? "bg-gradient-to-r from-app-positive/80 via-app-accent/30 to-transparent"
       : summary.net_pnl < 0
-        ? "bg-gradient-to-r from-rose-300/80 via-orange-200/35 to-transparent"
-        : "bg-gradient-to-r from-cyan-300/70 via-sky-200/25 to-transparent";
+        ? "bg-gradient-to-r from-app-negative/80 via-app-warning/35 to-transparent"
+        : "bg-gradient-to-r from-app-accent/70 via-app-accent/25 to-transparent";
   const performancePrimaryClassName =
     summary.net_pnl > 0
-      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
+      ? "bg-gradient-to-r from-app-positive via-app-accent to-app-positive bg-clip-text text-transparent"
       : summary.net_pnl < 0
-        ? "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent"
-        : "text-cyan-100";
+        ? "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent"
+        : "text-app-accent";
   const performanceCardClassName =
     summary.net_pnl > 0
-      ? "border-emerald-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.24),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]"
+      ? "border-app-positive/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-positive)/0.24),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]"
       : summary.net_pnl < 0
-        ? "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.22),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]"
-        : "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.2),rgba(15,23,42,0.58)_44%,rgba(15,23,42,0.9)_100%)]";
+        ? "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.22),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]"
+        : "border-app-accent/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.2),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]";
   const performanceGlowClassName =
-    summary.net_pnl > 0 ? "bg-emerald-300/24" : summary.net_pnl < 0 ? "bg-rose-300/24" : "bg-cyan-300/22";
+    summary.net_pnl > 0 ? "bg-app-positive/25" : summary.net_pnl < 0 ? "bg-app-negative/25" : "bg-app-accent/20";
   const edgeSignalVariant = summary.expectancy_per_trade > 0 ? "positive" : summary.expectancy_per_trade < 0 ? "negative" : "neutral";
   const edgeSignalLabel = summary.expectancy_per_trade > 0 ? "Positive Expectancy" : summary.expectancy_per_trade < 0 ? "Negative Expectancy" : "Flat Expectancy";
   const edgeAccentClassName =
     summary.expectancy_per_trade > 0
-      ? "bg-gradient-to-r from-cyan-300/80 via-emerald-200/25 to-transparent"
+      ? "bg-gradient-to-r from-app-accent/80 via-app-positive/25 to-transparent"
       : summary.expectancy_per_trade < 0
-        ? "bg-gradient-to-r from-rose-300/80 via-orange-200/28 to-transparent"
-        : "bg-gradient-to-r from-sky-300/75 via-cyan-200/20 to-transparent";
+        ? "bg-gradient-to-r from-app-negative/80 via-app-warning/30 to-transparent"
+        : "bg-gradient-to-r from-app-accent/75 via-app-accent/20 to-transparent";
   const edgePrimaryClassName =
     summary.expectancy_per_trade > 0
-      ? "bg-gradient-to-r from-cyan-100 via-emerald-100 to-cyan-200 bg-clip-text text-transparent"
+      ? "bg-gradient-to-r from-app-accent via-app-positive to-app-accent bg-clip-text text-transparent"
       : summary.expectancy_per_trade < 0
-        ? "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent"
-        : "text-cyan-100";
+        ? "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent"
+        : "text-app-accent";
   const edgeCardClassName =
     summary.expectancy_per_trade > 0
-      ? "border-cyan-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.22),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]"
+      ? "border-app-accent/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.22),rgb(var(--theme-surface)/0.58)_45%,rgb(var(--theme-surface)/0.9)_100%)]"
       : summary.expectancy_per_trade < 0
-        ? "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]"
-        : "border-sky-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.18),rgba(15,23,42,0.58)_45%,rgba(15,23,42,0.9)_100%)]";
+        ? "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.2),rgb(var(--theme-surface)/0.58)_45%,rgb(var(--theme-surface)/0.9)_100%)]"
+        : "border-app-accent/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.18),rgb(var(--theme-surface)/0.58)_45%,rgb(var(--theme-surface)/0.9)_100%)]";
   const edgeGlowClassName =
-    summary.expectancy_per_trade > 0 ? "bg-cyan-300/20" : summary.expectancy_per_trade < 0 ? "bg-rose-300/20" : "bg-sky-300/20";
+    summary.expectancy_per_trade > 0 ? "bg-app-accent/20" : summary.expectancy_per_trade < 0 ? "bg-app-negative/20" : "bg-app-accent/20";
   const edgeOutcomeTotal = summary.win_count + summary.loss_count + summary.breakeven_count;
   const edgeWinShare = edgeOutcomeTotal > 0 ? (summary.win_count / edgeOutcomeTotal) * 100 : 0;
   const edgeLossShare = edgeOutcomeTotal > 0 ? (summary.loss_count / edgeOutcomeTotal) * 100 : 0;
@@ -909,16 +909,16 @@ export function DashboardPage() {
           : "Weak Asymmetry";
   const payoffAccentClassName =
     derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
-      ? "bg-gradient-to-r from-emerald-300/70 via-cyan-200/18 to-transparent"
-      : "bg-gradient-to-r from-rose-300/75 via-orange-200/20 to-transparent";
+      ? "bg-gradient-to-r from-app-positive/70 via-app-accent/20 to-transparent"
+      : "bg-gradient-to-r from-app-negative/75 via-app-warning/20 to-transparent";
   const payoffPrimaryClassName =
     derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
-      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
-      : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+      ? "bg-gradient-to-r from-app-positive via-app-accent to-app-positive bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent";
   const payoffCardClassName =
     derivedMetrics.winLossRatio.value === null || derivedMetrics.winLossRatio.value >= 1
-      ? "border-emerald-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
-      : "border-rose-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+      ? "border-app-positive/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-positive)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
+      : "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.2),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
   const holdTimeSignalVariant =
     derivedMetrics.winDurationOverLossDuration.value === null
       ? "neutral"
@@ -937,16 +937,16 @@ export function DashboardPage() {
           : "Cut Winners Early";
   const holdTimeAccentClassName =
     derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
-      ? "bg-gradient-to-r from-cyan-300/70 via-amber-200/25 to-transparent"
-      : "bg-gradient-to-r from-amber-300/70 via-rose-200/22 to-transparent";
+      ? "bg-gradient-to-r from-app-accent/70 via-app-warning/25 to-transparent"
+      : "bg-gradient-to-r from-app-warning/70 via-app-negative/20 to-transparent";
   const holdTimePrimaryClassName =
     derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
-      ? "bg-gradient-to-r from-cyan-100 via-amber-100 to-cyan-200 bg-clip-text text-transparent"
-      : "bg-gradient-to-r from-amber-100 via-rose-100 to-orange-200 bg-clip-text text-transparent";
+      ? "bg-gradient-to-r from-app-accent via-app-warning to-app-accent bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-app-warning via-app-negative to-app-warning bg-clip-text text-transparent";
   const holdTimeCardClassName =
     derivedMetrics.winDurationOverLossDuration.value === null || derivedMetrics.winDurationOverLossDuration.value >= 1
-      ? "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
-      : "border-amber-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+      ? "border-app-accent/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
+      : "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
 
   const drawdownPercentOfNet = useMemo(
     () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, summary.net_pnl),
@@ -1000,28 +1000,28 @@ export function DashboardPage() {
   );
   const sustainabilityAccentClassName =
     sustainability.score >= 80
-      ? "bg-gradient-to-r from-emerald-300/75 via-cyan-200/22 to-transparent"
+      ? "bg-gradient-to-r from-app-positive/75 via-app-accent/20 to-transparent"
       : sustainability.score >= 60
-        ? "bg-gradient-to-r from-cyan-300/75 via-indigo-200/22 to-transparent"
+        ? "bg-gradient-to-r from-app-accent/75 via-app-secondary/20 to-transparent"
         : sustainability.score >= 40
-          ? "bg-gradient-to-r from-amber-300/75 via-orange-200/25 to-transparent"
-          : "bg-gradient-to-r from-rose-300/80 via-orange-200/25 to-transparent";
+          ? "bg-gradient-to-r from-app-warning/75 via-app-warning/25 to-transparent"
+          : "bg-gradient-to-r from-app-negative/80 via-app-warning/25 to-transparent";
   const sustainabilityPrimaryClassName =
     sustainability.score >= 80
-      ? "bg-gradient-to-r from-emerald-100 via-cyan-100 to-emerald-200 bg-clip-text text-transparent"
+      ? "bg-gradient-to-r from-app-positive via-app-accent to-app-positive bg-clip-text text-transparent"
       : sustainability.score >= 60
-        ? "bg-gradient-to-r from-cyan-100 via-indigo-100 to-cyan-200 bg-clip-text text-transparent"
+        ? "bg-gradient-to-r from-app-accent via-app-secondary to-app-accent bg-clip-text text-transparent"
         : sustainability.score >= 40
-          ? "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent"
-          : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+          ? "bg-gradient-to-r from-app-warning via-app-warning to-app-warning bg-clip-text text-transparent"
+          : "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent";
   const sustainabilityCardClassName =
     sustainability.score >= 80
-      ? "border-emerald-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(16,185,129,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+      ? "border-app-positive/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-positive)/0.2),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
       : sustainability.score >= 60
-        ? "border-cyan-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
+        ? "border-app-accent/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.2),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
         : sustainability.score >= 40
-          ? "border-amber-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
-          : "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+          ? "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
+          : "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.2),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
   const drawdownEquityBase = useMemo(() => {
     const currentBalance = selectedAccount?.balance ?? null;
     if (currentBalance !== null && Number.isFinite(currentBalance) && currentBalance > 0) {
@@ -1074,22 +1074,22 @@ export function DashboardPage() {
               : "Uncontrolled";
   const riskAccentClassName =
     drawdownPercentOfEquityBase.value === null || drawdownPercentOfEquityBase.value <= 10
-      ? "bg-gradient-to-r from-cyan-300/70 via-emerald-200/22 to-transparent"
+      ? "bg-gradient-to-r from-app-accent/70 via-app-positive/20 to-transparent"
       : drawdownPercentOfEquityBase.value <= 15
-        ? "bg-gradient-to-r from-amber-300/70 via-orange-200/22 to-transparent"
-        : "bg-gradient-to-r from-rose-300/75 via-orange-200/25 to-transparent";
+        ? "bg-gradient-to-r from-app-warning/70 via-app-warning/20 to-transparent"
+        : "bg-gradient-to-r from-app-negative/75 via-app-warning/25 to-transparent";
   const riskPrimaryClassName =
     drawdownPercentOfEquityBase.value === null || drawdownPercentOfEquityBase.value <= 10
-      ? "bg-gradient-to-r from-cyan-100 via-emerald-100 to-cyan-200 bg-clip-text text-transparent"
+      ? "bg-gradient-to-r from-app-accent via-app-positive to-app-accent bg-clip-text text-transparent"
       : drawdownPercentOfEquityBase.value <= 15
-        ? "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent"
-        : "bg-gradient-to-r from-rose-100 via-orange-100 to-rose-200 bg-clip-text text-transparent";
+        ? "bg-gradient-to-r from-app-warning via-app-warning to-app-warning bg-clip-text text-transparent"
+        : "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent";
   const riskCardClassName =
     drawdownPercentOfEquityBase.value === null || drawdownPercentOfEquityBase.value <= 10
-      ? "border-cyan-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(56,189,248,0.16),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]"
+      ? "border-app-accent/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.16),rgb(var(--theme-surface)/0.6)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
       : drawdownPercentOfEquityBase.value <= 15
-        ? "border-amber-400/28 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.18),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]"
-        : "border-rose-400/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(244,63,94,0.2),rgba(15,23,42,0.6)_46%,rgba(15,23,42,0.9)_100%)]";
+        ? "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.6)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
+        : "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.2),rgb(var(--theme-surface)/0.6)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
   const riskPressurePercent =
     drawdownPercentOfEquityBase.value === null
       ? 0
@@ -1131,16 +1131,16 @@ export function DashboardPage() {
           : "Selective Tempo";
   const activityAccentClassName =
     activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
-      ? "bg-gradient-to-r from-slate-300/58 via-cyan-200/20 to-transparent"
-      : "bg-gradient-to-r from-amber-300/70 via-orange-200/22 to-transparent";
+      ? "bg-gradient-to-r from-app-muted/60 via-app-accent/20 to-transparent"
+      : "bg-gradient-to-r from-app-warning/70 via-app-warning/20 to-transparent";
   const activityPrimaryClassName =
     activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
-      ? "bg-gradient-to-r from-cyan-100 via-slate-100 to-cyan-200 bg-clip-text text-transparent"
-      : "bg-gradient-to-r from-amber-100 via-orange-100 to-amber-200 bg-clip-text text-transparent";
+      ? "bg-gradient-to-r from-app-accent via-app-text to-app-accent bg-clip-text text-transparent"
+      : "bg-gradient-to-r from-app-warning via-app-warning to-app-warning bg-clip-text text-transparent";
   const activityCardClassName =
     activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
-      ? "border-slate-600/60 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(148,163,184,0.16),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]"
-      : "border-amber-400/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgba(251,191,36,0.15),rgba(15,23,42,0.58)_46%,rgba(15,23,42,0.9)_100%)]";
+      ? "border-app-border-strong/60 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-muted)/0.16),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
+      : "border-app-warning/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.15),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
   const activityPacePercent =
     activityMetrics.tradesPerWeek === null ? 0 : Math.min(100, Math.max(0, (activityMetrics.tradesPerWeek / 30) * 100));
   const fullStatsRangeLabel = useMemo(() => {
@@ -1343,17 +1343,17 @@ export function DashboardPage() {
   }, []);
 
   return (
-    <div className="space-y-5 pb-8">
+    <div className="dashboard-surface space-y-5 pb-8">
       <div className="space-y-1.5">
         <div className="max-w-full pb-1">
-          <div className="flex flex-col gap-1 rounded-xl border border-slate-800/80 bg-slate-950/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
             <div className="flex flex-col gap-1 sm:flex-row">
               <Input
                 type="date"
                 value={customStartDate}
                 max={customEndDate || undefined}
                 onChange={(event) => setCustomStartDate(event.target.value)}
-                className="h-8 w-full min-w-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px] sm:w-[140px]"
+                className="h-8 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:w-[140px]"
                 aria-label="Custom start date"
               />
               <Input
@@ -1369,7 +1369,7 @@ export function DashboardPage() {
                     setSelectedTradeDate(null);
                   }
                 }}
-                className="h-8 w-full min-w-0 rounded-lg border-slate-700/80 bg-slate-900/60 px-2 text-[11px] sm:w-[140px]"
+                className="h-8 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:w-[140px]"
                 aria-label="Custom end date"
               />
             </div>
@@ -1384,8 +1384,8 @@ export function DashboardPage() {
                     aria-pressed={active}
                     onClick={() => setMetricsRange(option.key)}
                     className={cn(
-                      "min-w-[44px] flex-1 rounded-lg border border-slate-700/80 px-2.5 text-[11px] sm:flex-none",
-                      active ? "border-cyan-300/40 ring-1 ring-cyan-300/60" : undefined,
+                      "min-w-[44px] flex-1 rounded-lg border border-app-border/80 px-2.5 text-[11px] sm:flex-none",
+                      active ? "border-app-accent/40 ring-1 ring-app-accent/60" : undefined,
                     )}
                   >
                     {option.label}
@@ -1404,12 +1404,12 @@ export function DashboardPage() {
             </Suspense>
           </div>
         </div>
-        {customRangeInvalid ? <p className="w-full text-xs text-rose-300">End date must be on or after start date.</p> : null}
+        {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
       </div>
 
       {selectedAccount?.account_state === "MISSING" ? (
-        <Card className="border-amber-400/40 bg-amber-500/10 p-4">
-          <p className="text-sm text-amber-100">
+        <Card className="border-app-warning/40 bg-app-warning/10 p-4">
+          <p className="text-sm text-app-warning">
             This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
           </p>
         </Card>
@@ -1427,14 +1427,14 @@ export function DashboardPage() {
           ))
         ) : summaryError ? (
           <Card className="col-span-full p-4">
-            <p className="text-sm text-rose-300">{summaryError}</p>
+            <p className="text-sm text-app-negative">{summaryError}</p>
           </Card>
         ) : (
           <>
             <MetricCard
               title="Performance"
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", performancePrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", performancePrimaryClassName)}
               subtitle="Net realized PnL after fees."
               info="Realized net profit and loss after fees in the selected range."
               accentClassName={performanceAccentClassName}
@@ -1445,30 +1445,30 @@ export function DashboardPage() {
               contentClassName="relative mt-2.5 space-y-2.5"
             >
               <div aria-hidden="true" className={cn("pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full blur-2xl", performanceGlowClassName)} />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
                   <Badge variant="accent">{`${formatInteger(summary.trade_count)} Trades`}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Win ${formatPercent(summary.win_rate, 1)}`}
                   </span>
                 </div>
                 <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Profit / Day</p>
+                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit / Day</p>
                     <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.profit_per_day))}>
                       {formatMetricValue(profitPerDayMetric, formatPnl)}
                     </p>
                   </div>
-                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Efficiency / Hour</p>
+                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Efficiency / Hour</p>
                     <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.efficiency_per_hour))}>
                       {formatMetricValue(efficiencyPerHourMetric, formatPnl)}
                     </p>
                   </div>
                 </div>
-                <div className="mt-2.5 rounded-lg border border-slate-700/75 bg-slate-900/55 px-2.5 py-2">
-                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                <div className="mt-2.5 rounded-lg border border-app-border/75 bg-app-surface/55 px-2.5 py-2">
+                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     <span>Sizing Benchmark</span>
                     <InfoPopover
                       content={sizingBenchmarkTooltipContent}
@@ -1483,7 +1483,7 @@ export function DashboardPage() {
                     >
                       {summary.sizingBenchmark.benchmarkLabel}
                     </Badge>
-                    <span className="text-[10px] text-slate-400">
+                    <span className="text-[10px] text-app-muted">
                       {formatSizingBenchmarkSubtitle(
                         summary.sizingBenchmark.benchmarkSizeUsed,
                         summary.tradeCountUsedForSizingStats,
@@ -1491,14 +1491,14 @@ export function DashboardPage() {
                     </span>
                   </div>
                   {formatMicroPositionSize(summary.sizingBenchmark.benchmarkSizeUsed, summary.tradeCountUsedForSizingStats) !== "N/A" ? (
-                    <p className="mt-1 text-[10px] text-slate-500">
+                    <p className="mt-1 text-[10px] text-app-muted-strong">
                       Benchmark Size:{" "}
                       {formatMicroPositionSize(summary.sizingBenchmark.benchmarkSizeUsed, summary.tradeCountUsedForSizingStats)}
                     </p>
                   ) : null}
-                  <div className="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-t border-slate-700/70 pt-2.5">
+                  <div className="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-t border-app-border/70 pt-2.5">
                     <div className="min-w-0">
-                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">
                         {sizingBenchmarkDeltaLabel(summary.sizingBenchmark.benchmarkDiff)}
                       </p>
                       <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
@@ -1509,10 +1509,10 @@ export function DashboardPage() {
                           className={cn(
                             "pb-0.5 text-[11px] font-medium",
                             summary.sizingBenchmark.benchmarkDiff > 0
-                              ? "text-emerald-200"
+                              ? "text-app-positive"
                               : summary.sizingBenchmark.benchmarkDiff < 0
-                                ? "text-rose-200"
-                                : "text-slate-300",
+                                ? "text-app-negative"
+                                : "text-app-muted",
                           )}
                         >
                           {sizingBenchmarkComparisonLabel(summary.sizingBenchmark)}
@@ -1520,15 +1520,15 @@ export function DashboardPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-700/70 pt-2.5">
+                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-app-border/70 pt-2.5">
                     <div className="min-w-0">
-                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">Benchmark Net</p>
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">Benchmark Net</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.sizingBenchmark.benchmarkNetPnl))}>
                         {formatPnl(summary.sizingBenchmark.benchmarkNetPnl)}
                       </p>
                     </div>
                     <div className="min-w-0 text-right">
-                      <p className="text-[9px] uppercase tracking-[0.12em] text-slate-500">Actual Net</p>
+                      <p className="text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">Actual Net</p>
                       <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.net_pnl))}>
                         {formatPnl(summary.net_pnl)}
                       </p>
@@ -1541,7 +1541,7 @@ export function DashboardPage() {
             <MetricCard
               title="Edge"
               primaryValue={formatMetricValue(expectancyPerTradeMetric, formatPnl)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", edgePrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", edgePrimaryClassName)}
               subtitle="Expected net result per trade."
               info="Expectancy combines your win rate and payoff profile into average dollars per trade."
               accentClassName={edgeAccentClassName}
@@ -1555,40 +1555,40 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn("pointer-events-none absolute -right-14 -top-12 h-28 w-28 rounded-full blur-3xl", edgeGlowClassName)}
               />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
                   <Badge variant="accent">{`PF ${formatNumber(summary.profit_factor)}`}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
                 </div>
                 <div className="mt-2.5 grid gap-1.5 sm:grid-cols-3">
-                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Profit Factor</p>
-                    <p className="mt-1 text-sm font-semibold text-cyan-100">{formatNumber(summary.profit_factor)}</p>
+                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit Factor</p>
+                    <p className="mt-1 text-sm font-semibold text-app-accent">{formatNumber(summary.profit_factor)}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Win Rate</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-100">{formatPercent(summary.win_rate, 1)}</p>
+                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Win Rate</p>
+                    <p className="mt-1 text-sm font-semibold text-app-text">{formatPercent(summary.win_rate, 1)}</p>
                   </div>
-                  <div className="rounded-lg border border-slate-700/75 bg-slate-900/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">W/L Ratio</p>
-                    <p className="mt-1 text-sm font-semibold text-slate-100">
+                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">W/L Ratio</p>
+                    <p className="mt-1 text-sm font-semibold text-app-text">
                       {formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
                     </p>
                   </div>
                 </div>
                 <div className="mt-2.5 space-y-1">
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     <span>Outcome Mix</span>
                     <span>{`${summary.win_count}W / ${summary.loss_count}L / ${summary.breakeven_count} BE`}</span>
                   </div>
-                  <div className="relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
-                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-300/95 to-emerald-400/85" style={{ width: `${edgeWinShare}%` }} />
+                  <div className="relative h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
+                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-app-positive/95 to-app-positive/85" style={{ width: `${edgeWinShare}%` }} />
                     <div
-                      className="absolute inset-y-0 bg-gradient-to-r from-amber-300/85 to-slate-300/75"
+                      className="absolute inset-y-0 bg-gradient-to-r from-app-warning/85 to-app-muted/75"
                       style={{ left: `${edgeWinShare}%`, width: `${edgeBreakevenShare}%` }}
                     />
-                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-rose-300/95 to-rose-400/85" style={{ width: `${edgeLossShare}%` }} />
+                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-app-negative/95 to-app-negative/85" style={{ width: `${edgeLossShare}%` }} />
                   </div>
                 </div>
               </div>
@@ -1597,27 +1597,27 @@ export function DashboardPage() {
             <MetricCard
               title="Swing"
               primaryValue={formatMetricValue(derivedMetrics.stability.dailyPnlVolatility, formatCurrency)}
-              primaryClassName="bg-gradient-to-r from-violet-200 via-cyan-100 to-indigo-200 bg-clip-text text-transparent"
+              primaryClassName="bg-gradient-to-r from-app-secondary via-app-accent to-app-secondary bg-clip-text text-transparent"
               subtitle="Daily PnL volatility ($)."
               info="Stability uses worst-day % of net PnL; lower worst-day concentration implies higher stability."
-              accentClassName="bg-gradient-to-r from-violet-300/80 via-cyan-200/30 to-indigo-300/80"
+              accentClassName="bg-gradient-to-r from-app-secondary/80 via-app-accent/30 to-app-secondary/80"
               className="relative overflow-hidden p-3 sm:col-span-2 md:col-span-2 md:row-start-2 md:col-start-1 lg:col-span-3 lg:col-start-1 lg:row-start-2"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
-              <div className="relative overflow-hidden rounded-xl border border-cyan-500/20 bg-[radial-gradient(120%_130%_at_8%_0%,rgba(129,140,248,0.16),rgba(15,23,42,0.28)_42%,rgba(15,23,42,0.78)_100%)] p-2.5">
-                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-violet-300/20 blur-2xl" />
-                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-cyan-300/14 blur-2xl" />
+              <div className="relative overflow-hidden rounded-xl border border-app-accent/20 bg-[radial-gradient(120%_130%_at_8%_0%,rgb(var(--theme-accent-secondary)/0.16),rgb(var(--theme-surface)/0.28)_42%,rgb(var(--theme-surface)/0.78)_100%)] p-2.5">
+                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-secondary/20 blur-2xl" />
+                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-accent/15 blur-2xl" />
                 <div className="relative space-y-2.5">
                   <SplitBar
-                    className="rounded-md border border-slate-700/70 bg-slate-950/35 p-2"
+                    className="rounded-md border border-app-border/70 bg-app-bg/35 p-2"
                     leftLabel="Best Day"
                     rightLabel="Worst Day"
                     leftValue={formatMetricValue(derivedMetrics.stability.bestDay, formatPnl)}
                     rightValue={formatMetricValue(derivedMetrics.stability.worstDay, formatPnl)}
                     leftMagnitude={Math.abs(derivedMetrics.stability.bestDay.value ?? 0)}
                     rightMagnitude={Math.abs(derivedMetrics.stability.worstDay.value ?? 0)}
-                    leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-cyan-300/80"
-                    rightBarClassName="bg-gradient-to-l from-rose-300/90 to-amber-300/75"
+                    leftBarClassName="bg-gradient-to-r from-app-positive/95 to-app-accent/80"
+                    rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-warning/75"
                   />
                   <MiniStatList
                     className="gap-1.5"
@@ -1659,32 +1659,32 @@ export function DashboardPage() {
                   }
                   className={
                     derivedMetrics.stability.nukeRatio.value !== null && derivedMetrics.stability.nukeRatio.value >= 10
-                      ? "border-rose-300/40 bg-rose-500/15 text-rose-100"
-                      : "border-cyan-300/40 bg-cyan-500/15 text-cyan-100"
+                      ? "border-app-negative/40 bg-app-negative/15 text-app-negative"
+                      : "border-app-accent/40 bg-app-accent/15 text-app-accent"
                   }
                 />
                 <Chip
                   label="G/R Size Ratio"
                   value={formatMetricValueWithNote(derivedMetrics.stability.greenRedDaySizeRatio, (value) => `${formatNumber(value)}x`)}
-                  className="border-violet-400/30 bg-violet-500/10 text-violet-100"
+                  className="border-app-secondary/30 bg-app-secondary/10 text-app-secondary"
                 />
               </div>
               <GaugeBar
                 label="Stability"
                 value={stabilityScore.value}
                 valueLabel={formatMetricValue(stabilityScore, (value) => `${formatNumber(value, 0)}%`)}
-                className="space-y-1.5 rounded-md border border-slate-700/70 bg-slate-950/35 p-2"
-                fillClassName="bg-gradient-to-r from-cyan-300/85 via-indigo-300/80 to-violet-300/80"
+                className="space-y-1.5 rounded-md border border-app-border/70 bg-app-bg/35 p-2"
+                fillClassName="bg-gradient-to-r from-app-accent/85 via-app-secondary/80 to-app-secondary/80"
               />
-              <p className="rounded-md border border-indigo-400/30 bg-[linear-gradient(120deg,rgba(129,140,248,0.15),rgba(15,23,42,0.48)_45%,rgba(56,189,248,0.12)_100%)] px-2 py-1 text-[11px] text-slate-200">
-                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.stability.insight}
+              <p className="rounded-md border border-app-secondary/30 bg-[linear-gradient(120deg,rgb(var(--theme-accent-secondary)/0.15),rgb(var(--theme-surface)/0.48)_45%,rgb(var(--theme-accent)/0.12)_100%)] px-2 py-1 text-[11px] text-app-text-soft">
+                <span className="font-semibold text-app-accent">Insight:</span> {derivedMetrics.stability.insight}
               </p>
             </MetricCard>
 
             <MetricCard
               title="Risk Control"
               primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgba(15,23,42,0.5)]", riskPrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", riskPrimaryClassName)}
               subtitle="Peak-to-trough drawdown with account-risk context."
               info="Drawdown control is graded from max drawdown as a share of equity base. The dashboard uses current account balance when available and falls back to peak equity inferred from daily PnL. Profit giveback is shown separately and does not determine control."
               accentClassName={riskAccentClassName}
@@ -1694,31 +1694,31 @@ export function DashboardPage() {
               )}
               contentClassName="mt-2.5 space-y-2.5"
             >
-              <div className="rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={riskSignalVariant}>{riskSignalLabel}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">Account Risk</span>
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">Account Risk</span>
                 </div>
                 <div className="mt-2.5 space-y-1.5">
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     <span>Max DD % of Equity Base</span>
-                    <span className="font-semibold text-slate-200">{formatMetricValue(drawdownPercentOfEquityBase, formatPercent)}</span>
+                    <span className="font-semibold text-app-text-soft">{formatMetricValue(drawdownPercentOfEquityBase, formatPercent)}</span>
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                  <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
                     <div
                       aria-hidden="true"
                       className={cn(
                         "h-full transition-all duration-500",
                         drawdownPercentOfEquityBase.value === null || drawdownPercentOfEquityBase.value <= 10
-                          ? "bg-gradient-to-r from-cyan-300/90 to-emerald-300/80"
+                          ? "bg-gradient-to-r from-app-accent/90 to-app-positive/80"
                           : drawdownPercentOfEquityBase.value <= 15
-                            ? "bg-gradient-to-r from-amber-300/90 to-orange-300/80"
-                            : "bg-gradient-to-r from-rose-300/95 to-orange-300/85",
+                            ? "bg-gradient-to-r from-app-warning/90 to-app-warning/80"
+                            : "bg-gradient-to-r from-app-negative/95 to-app-warning/85",
                       )}
                       style={{ width: `${riskPressurePercent}%` }}
                     />
                   </div>
-                  <p className="text-[10px] text-slate-400">{drawdownEquityBase.detail}</p>
+                  <p className="text-[10px] text-app-muted">{drawdownEquityBase.detail}</p>
                 </div>
               </div>
               <MiniStatList
@@ -1744,20 +1744,20 @@ export function DashboardPage() {
             <MetricCard
               title="Direction"
               primaryValue={directionPrimaryValue}
-              primaryClassName="bg-gradient-to-r from-emerald-200 via-cyan-100 to-rose-200 bg-clip-text text-transparent"
+              primaryClassName="bg-gradient-to-r from-app-positive via-app-accent to-app-negative bg-clip-text text-transparent"
               subtitle={
                 directionSplit.longPercent.value === null
                   ? directionSplit.longPercent.missingReason ?? "Needs directional trade history."
                   : "Long vs short trade mix."
               }
               info="Long % is long trades divided by total directional trades for this range."
-              accentClassName="bg-gradient-to-r from-emerald-300/80 via-cyan-200/25 to-rose-300/80"
+              accentClassName="bg-gradient-to-r from-app-positive/80 via-app-accent/25 to-app-negative/80"
               className="relative flex flex-col overflow-hidden md:col-span-2 md:row-start-2 md:col-start-3 lg:col-span-6 lg:col-start-4 lg:row-start-2"
               contentClassName="relative mt-2.5 flex flex-col gap-2.5 space-y-0"
             >
-              <div className="relative overflow-hidden rounded-xl border border-cyan-500/20 bg-[radial-gradient(120%_130%_at_6%_0%,rgba(16,185,129,0.16),rgba(15,23,42,0.25)_42%,rgba(15,23,42,0.75)_100%)] p-2.5">
-                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-emerald-300/18 blur-2xl" />
-                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-rose-300/14 blur-2xl" />
+              <div className="relative overflow-hidden rounded-xl border border-app-accent/20 bg-[radial-gradient(120%_130%_at_6%_0%,rgb(var(--theme-positive)/0.16),rgb(var(--theme-surface)/0.25)_42%,rgb(var(--theme-surface)/0.75)_100%)] p-2.5">
+                <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-positive/20 blur-2xl" />
+                <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-negative/15 blur-2xl" />
                 <div className="relative grid gap-2.5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                   <DonutRing
                     className="lg:items-start"
@@ -1766,24 +1766,24 @@ export function DashboardPage() {
                         label: "Long",
                         value: directionSplit.longPercent.value,
                         valueLabel: formatMetricValue(directionSplit.longPercent, (value) => formatPercent(value, 0)),
-                        color: "rgba(16,185,129,0.95)",
+                        color: "rgb(var(--theme-positive)/0.95)",
                       },
                       {
                         label: "Short",
                         value: directionSplit.shortPercent.value,
                         valueLabel: formatMetricValue(directionSplit.shortPercent, (value) => formatPercent(value, 0)),
-                        color: "rgba(248,113,113,0.95)",
+                        color: "rgb(var(--theme-negative)/0.95)",
                       },
                     ]}
                     centerLabel={directionPrimaryValue}
                     centerSubLabel="Direction"
                   />
                     <div className="space-y-1.5">
-                      <div className="overflow-hidden rounded-lg border border-slate-700/70 bg-slate-950/45 shadow-[inset_0_1px_0_rgba(148,163,184,0.07)]">
-                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-b border-slate-700/65 bg-slate-900/90 px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-slate-400">
+                      <div className="overflow-hidden rounded-lg border border-app-border/70 bg-app-bg/45 shadow-[inset_0_1px_0_rgb(var(--theme-muted)/0.07)]">
+                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-b border-app-border/65 bg-app-surface/90 px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-app-muted">
                           <span>Side Comparison</span>
-                          <span className="text-right text-emerald-300">Long</span>
-                          <span className="text-right text-rose-300">Short</span>
+                          <span className="text-right text-app-positive">Long</span>
+                          <span className="text-right text-app-negative">Short</span>
                       </div>
                       {[
                         {
@@ -1836,38 +1836,38 @@ export function DashboardPage() {
                       ].map((row, rowIndex) => (
                         <div
                           key={row.label}
-                          className={`grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-t border-slate-800/65 px-2 py-1 text-[10px] ${
-                            rowIndex % 2 === 0 ? "bg-slate-950/30" : "bg-slate-900/45"
+                          className={`grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)] border-t border-app-border/65 px-2 py-1 text-[10px] ${
+                            rowIndex % 2 === 0 ? "bg-app-bg/30" : "bg-app-surface/45"
                           }`}
                         >
-                          <span className="text-slate-300">{row.label}</span>
-                          <span className="text-right font-medium text-emerald-100">{row.long}</span>
-                          <span className="text-right font-medium text-rose-100">{row.short}</span>
+                          <span className="text-app-muted">{row.label}</span>
+                          <span className="text-right font-medium text-app-positive">{row.long}</span>
+                          <span className="text-right font-medium text-app-negative">{row.short}</span>
                         </div>
                       ))}
                     </div>
-                    <div className="space-y-1 rounded-md border border-slate-700/70 bg-slate-950/45 p-1.5">
-                      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                    <div className="space-y-1 rounded-md border border-app-border/70 bg-app-bg/45 p-1.5">
+                      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
                         <span>PnL Share Split</span>
-                        <span className="text-slate-300">
-                          <span className="text-emerald-200">
+                        <span className="text-app-muted">
+                          <span className="text-app-positive">
                             {formatMetricValueWithNote(derivedMetrics.direction.longPnlShare, (value) => `Long ${formatPercent(value, 1)}`)}
                           </span>{" "}
                           /{" "}
-                          <span className="text-rose-200">
+                          <span className="text-app-negative">
                             {formatMetricValueWithNote(derivedMetrics.direction.shortPnlShare, (value) => `Short ${formatPercent(value, 1)}`)}
                           </span>
                         </span>
                       </div>
-                      <div className="relative h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/90">
-                        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(16,185,129,0.18)_0%,rgba(15,23,42,0)_50%,rgba(248,113,113,0.18)_100%)]" />
+                      <div className="relative h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/90">
+                        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgb(var(--theme-positive)/0.18)_0%,rgb(var(--theme-surface)/0)_50%,rgb(var(--theme-negative)/0.18)_100%)]" />
                         <div
-                          className="relative h-full bg-gradient-to-r from-emerald-300/90 to-emerald-400/80"
+                          className="relative h-full bg-gradient-to-r from-app-positive/90 to-app-positive/80"
                           style={{ width: `${longPnlShareWidth}%` }}
                           aria-hidden="true"
                         />
                         <div
-                          className="absolute right-0 top-0 h-full bg-gradient-to-l from-rose-300/85 to-rose-400/75"
+                          className="absolute right-0 top-0 h-full bg-gradient-to-l from-app-negative/85 to-app-negative/75"
                           style={{ width: `${shortPnlShareWidth}%` }}
                           aria-hidden="true"
                         />
@@ -1877,25 +1877,25 @@ export function DashboardPage() {
                 </div>
               </div>
               <SplitBar
-                className="rounded-md border border-slate-700/70 bg-slate-950/35 p-1.5"
+                className="rounded-md border border-app-border/70 bg-app-bg/35 p-1.5"
                 leftLabel="Long PnL"
                 rightLabel="Short PnL"
                 leftValue={formatMetricValue(derivedMetrics.direction.longPnl, formatPnl)}
                 rightValue={formatMetricValue(derivedMetrics.direction.shortPnl, formatPnl)}
                 leftMagnitude={Math.abs(derivedMetrics.direction.longPnl.value ?? 0)}
                 rightMagnitude={Math.abs(derivedMetrics.direction.shortPnl.value ?? 0)}
-                leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-emerald-400/80"
-                rightBarClassName="bg-gradient-to-l from-rose-300/90 to-rose-400/80"
+                leftBarClassName="bg-gradient-to-r from-app-positive/95 to-app-positive/80"
+                rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-negative/80"
               />
-              <p className="rounded-md border border-cyan-500/20 bg-[linear-gradient(120deg,rgba(16,185,129,0.12),rgba(15,23,42,0.48)_48%,rgba(248,113,113,0.1)_100%)] px-2 py-1 text-[10px] text-slate-200">
-                <span className="font-semibold text-cyan-100">Insight:</span> {derivedMetrics.direction.insight}
+              <p className="rounded-md border border-app-accent/20 bg-[linear-gradient(120deg,rgb(var(--theme-positive)/0.12),rgb(var(--theme-surface)/0.48)_48%,rgb(var(--theme-negative)/0.1)_100%)] px-2 py-1 text-[10px] text-app-text-soft">
+                <span className="font-semibold text-app-accent">Insight:</span> {derivedMetrics.direction.insight}
               </p>
             </MetricCard>
 
             <MetricCard
               title="Payoff"
               primaryValue={formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", payoffPrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", payoffPrimaryClassName)}
               subtitle="Average win versus average loss."
               info="Breakeven win rate = abs(avg loss) / (avg win + abs(avg loss))."
               accentClassName={payoffAccentClassName}
@@ -1906,27 +1906,27 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn(
                   "pointer-events-none absolute -right-10 -top-10 h-24 w-24 rounded-full blur-3xl",
-                  derivedMetrics.winLossRatio.value !== null && derivedMetrics.winLossRatio.value < 1 ? "bg-rose-300/22" : "bg-emerald-300/20",
+                  derivedMetrics.winLossRatio.value !== null && derivedMetrics.winLossRatio.value < 1 ? "bg-app-negative/20" : "bg-app-positive/20",
                 )}
               />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={payoffSignalVariant}>{payoffSignalLabel}</Badge>
                   <Badge variant="accent">{`W/L ${formatMetricValue(derivedMetrics.winLossRatio, (value) => `${formatNumber(value)}x`)}`}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Capture ${formatMetricValueWithNote(derivedMetrics.payoff.capture, (value) => formatPercent(value * 100, 1))}`}
                   </span>
                 </div>
                 <SplitBar
-                  className="mt-2.5 rounded-md border border-slate-700/70 bg-slate-950/45 p-1.5"
+                  className="mt-2.5 rounded-md border border-app-border/70 bg-app-bg/45 p-1.5"
                   leftLabel="Avg Win"
                   rightLabel="Avg Loss"
                   leftValue={formatMetricValue(derivedMetrics.payoff.averageWin, formatPnl)}
                   rightValue={formatMetricValue(derivedMetrics.payoff.averageLoss, formatPnl)}
                   leftMagnitude={Math.abs(derivedMetrics.payoff.averageWin.value ?? 0)}
                   rightMagnitude={Math.abs(derivedMetrics.payoff.averageLoss.value ?? 0)}
-                  leftBarClassName="bg-gradient-to-r from-emerald-300/95 to-cyan-300/80"
-                  rightBarClassName="bg-gradient-to-l from-rose-300/90 to-orange-300/80"
+                  leftBarClassName="bg-gradient-to-r from-app-positive/95 to-app-accent/80"
+                  rightBarClassName="bg-gradient-to-l from-app-negative/90 to-app-warning/80"
                 />
                 <MiniStatList
                   className="mt-2.5 gap-1.5"
@@ -1968,10 +1968,10 @@ export function DashboardPage() {
                   ]}
                 />
               </div>
-              <div className="space-y-1 rounded-xl border border-slate-700/70 bg-slate-950/35 p-2">
-                <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Points Payoff By Basis</p>
-                <div className="overflow-hidden rounded-md border border-slate-800/70 bg-slate-950/25">
-                  <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-slate-500">
+              <div className="space-y-1 rounded-xl border border-app-border/70 bg-app-bg/35 p-2">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">Points Payoff By Basis</p>
+                <div className="overflow-hidden rounded-md border border-app-border/70 bg-app-bg/25">
+                  <div className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-app-muted-strong">
                     <span>Basis</span>
                     <span className="text-right">Avg Point Gain</span>
                     <span className="text-right">Avg Point Loss</span>
@@ -1979,11 +1979,11 @@ export function DashboardPage() {
                   {DISPLAY_PAYOFF_POINTS_BASES.map((basis) => (
                     <div
                       key={basis}
-                      className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] border-t border-slate-800/65 px-2 py-1 text-[10px]"
+                      className="grid grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_minmax(0,1fr)] border-t border-app-border/65 px-2 py-1 text-[10px]"
                     >
-                      <span className="font-semibold text-slate-200">{basis}</span>
-                      <span className="text-right text-emerald-200">{formatPointMetric(pointPayoffByBasis[basis].avgPointGain, basis)}</span>
-                      <span className="text-right text-rose-200">{formatPointMetric(pointPayoffByBasis[basis].avgPointLoss, basis)}</span>
+                      <span className="font-semibold text-app-text-soft">{basis}</span>
+                      <span className="text-right text-app-positive">{formatPointMetric(pointPayoffByBasis[basis].avgPointGain, basis)}</span>
+                      <span className="text-right text-app-negative">{formatPointMetric(pointPayoffByBasis[basis].avgPointLoss, basis)}</span>
                     </div>
                   ))}
                 </div>
@@ -1993,7 +1993,7 @@ export function DashboardPage() {
             <MetricCard
               title="Activity"
               primaryValue={formatInteger(summary.trade_count)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", activityPrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", activityPrimaryClassName)}
               subtitle="Closed trades in this range."
               info="Activity normalizes execution count by active trading days."
               accentClassName={activityAccentClassName}
@@ -2007,32 +2007,32 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn(
                   "pointer-events-none absolute -right-10 -top-8 h-24 w-24 rounded-full blur-3xl",
-                  activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30 ? "bg-amber-300/20" : "bg-cyan-300/18",
+                  activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30 ? "bg-app-warning/20" : "bg-app-accent/20",
                 )}
               />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>
                   <Badge variant="accent">{`${formatInteger(summary.active_days)} Active Days`}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Avg ${formatNumber(summary.avg_trades_per_day, 1)} / day`}
                   </span>
                 </div>
                 <div className="mt-2.5 space-y-1.5">
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     <span>Pacing vs 30 Trades/Week</span>
-                    <span className="font-semibold text-slate-200">
+                    <span className="font-semibold text-app-text-soft">
                       {activityMetrics.tradesPerWeek === null ? "N/A" : formatNumber(activityMetrics.tradesPerWeek, 1)}
                     </span>
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                  <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
                     <div
                       aria-hidden="true"
                       className={cn(
                         "h-full transition-all duration-500",
                         activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30
-                          ? "bg-gradient-to-r from-amber-300/90 to-orange-300/80"
-                          : "bg-gradient-to-r from-cyan-300/90 to-emerald-300/80",
+                          ? "bg-gradient-to-r from-app-warning/90 to-app-warning/80"
+                          : "bg-gradient-to-r from-app-accent/90 to-app-positive/80",
                       )}
                       style={{ width: `${activityPacePercent}%` }}
                     />
@@ -2069,7 +2069,7 @@ export function DashboardPage() {
             <MetricCard
               title="Sustainability"
               primaryValue={`${formatInteger(sustainability.score)}/100`}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", sustainabilityPrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", sustainabilityPrimaryClassName)}
               subtitle="Composite score from Risk, Consistency, and Edge."
               info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
               accentClassName={sustainabilityAccentClassName}
@@ -2083,12 +2083,12 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn(
                   "pointer-events-none absolute -right-14 -top-10 h-28 w-28 rounded-full blur-3xl",
-                  sustainability.score >= 70 ? "bg-emerald-300/18" : sustainability.score >= 45 ? "bg-cyan-300/18" : "bg-rose-300/20",
+                  sustainability.score >= 70 ? "bg-app-positive/20" : sustainability.score >= 45 ? "bg-app-accent/20" : "bg-app-negative/20",
                 )}
               />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">Score 0-100</p>
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-app-muted-strong">Score 0-100</p>
                   <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
                 </div>
 
@@ -2097,25 +2097,25 @@ export function DashboardPage() {
                     {
                       label: "Risk",
                       value: sustainability.riskScore,
-                      fillClassName: "bg-gradient-to-r from-rose-300/90 to-amber-300/75",
+                      fillClassName: "bg-gradient-to-r from-app-negative/90 to-app-warning/75",
                     },
                     {
                       label: "Consistency",
                       value: sustainability.consistencyScore,
-                      fillClassName: "bg-gradient-to-r from-cyan-300/90 to-indigo-300/80",
+                      fillClassName: "bg-gradient-to-r from-app-accent/90 to-app-secondary/80",
                     },
                     {
                       label: "Edge",
                       value: sustainability.edgeScore,
-                      fillClassName: "bg-gradient-to-r from-emerald-300/90 to-cyan-300/80",
+                      fillClassName: "bg-gradient-to-r from-app-positive/90 to-app-accent/80",
                     },
                   ].map((item) => (
-                    <div key={item.label} className="space-y-1 rounded-md border border-slate-700/70 bg-slate-950/45 px-2 py-1.5">
+                    <div key={item.label} className="space-y-1 rounded-md border border-app-border/70 bg-app-bg/45 px-2 py-1.5">
                       <div className="flex items-center justify-between text-[10px]">
-                        <span className="text-slate-300">{item.label}</span>
-                        <span className="font-semibold text-slate-100">{formatNumber(item.value, 1)}/100</span>
+                        <span className="text-app-muted">{item.label}</span>
+                        <span className="font-semibold text-app-text">{formatNumber(item.value, 1)}/100</span>
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                      <div className="h-1.5 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
                         <div className={cn("h-full", item.fillClassName)} style={{ width: `${Math.max(0, Math.min(100, item.value))}%` }} />
                       </div>
                     </div>
@@ -2123,13 +2123,13 @@ export function DashboardPage() {
                 </div>
               </div>
 
-              <div className="space-y-1 rounded-xl border border-slate-700/70 bg-slate-950/35 p-2.5">
-                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-slate-500">
+              <div className="space-y-1 rounded-xl border border-app-border/70 bg-app-bg/35 p-2.5">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted-strong">
                   <span>Score Gauge</span>
-                  <span className="font-semibold text-slate-300">{formatInteger(sustainability.score)}/100</span>
+                  <span className="font-semibold text-app-muted">{formatInteger(sustainability.score)}/100</span>
                 </div>
                 <div className="relative pt-3.5">
-                  <div className="h-2 overflow-hidden rounded-full border border-slate-700/80 bg-slate-900/85">
+                  <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
                     <div
                       aria-hidden="true"
                       className={`h-full transition-all duration-500 ${sustainabilityFillClass(sustainability.score)}`}
@@ -2138,8 +2138,8 @@ export function DashboardPage() {
                   </div>
                   {[40, 60, 80].map((tick) => (
                     <div key={tick} className="pointer-events-none absolute top-0 -translate-x-1/2" style={{ left: `${tick}%` }}>
-                      <span className="block text-[10px] text-slate-500">{tick}</span>
-                      <span className="mx-auto mt-0.5 block h-2 w-px bg-slate-500/70" />
+                      <span className="block text-[10px] text-app-muted-strong">{tick}</span>
+                      <span className="mx-auto mt-0.5 block h-2 w-px bg-app-muted-strong/70" />
                     </div>
                   ))}
                 </div>
@@ -2149,7 +2149,7 @@ export function DashboardPage() {
             <MetricCard
               title="Hold Time"
               primaryValue={formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}
-              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgba(15,23,42,0.45)]", holdTimePrimaryClassName)}
+              primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", holdTimePrimaryClassName)}
               subtitle="Win duration divided by loss duration."
               info="Win Duration / Loss Duration = avg win hold minutes / avg loss hold minutes."
               accentClassName={holdTimeAccentClassName}
@@ -2161,27 +2161,27 @@ export function DashboardPage() {
                 className={cn(
                   "pointer-events-none absolute -right-10 -top-8 h-24 w-24 rounded-full blur-3xl",
                   derivedMetrics.winDurationOverLossDuration.value !== null && derivedMetrics.winDurationOverLossDuration.value < 1
-                    ? "bg-amber-300/20"
-                    : "bg-cyan-300/20",
+                    ? "bg-app-warning/20"
+                    : "bg-app-accent/20",
                 )}
               />
-              <div className="relative rounded-xl border border-white/10 bg-slate-950/35 p-2.5 backdrop-blur-sm">
+              <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={holdTimeSignalVariant}>{holdTimeSignalLabel}</Badge>
-                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                  <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {`Ratio ${formatMetricValue(derivedMetrics.winDurationOverLossDuration, (value) => `${formatNumber(value)}x`)}`}
                   </span>
                 </div>
                 <SplitBar
-                  className="mt-2.5 rounded-md border border-slate-700/70 bg-slate-950/45 p-1.5"
+                  className="mt-2.5 rounded-md border border-app-border/70 bg-app-bg/45 p-1.5"
                   leftLabel="Avg Win Duration"
                   rightLabel="Avg Loss Duration"
                   leftValue={formatDurationCompact(summary.avg_win_duration_minutes)}
                   rightValue={formatDurationCompact(summary.avg_loss_duration_minutes)}
                   leftMagnitude={summary.avg_win_duration_minutes}
                   rightMagnitude={summary.avg_loss_duration_minutes}
-                  leftBarClassName="bg-gradient-to-r from-cyan-300/90 to-emerald-300/80"
-                  rightBarClassName="bg-gradient-to-l from-amber-300/90 to-orange-300/80"
+                  leftBarClassName="bg-gradient-to-r from-app-accent/90 to-app-positive/80"
+                  rightBarClassName="bg-gradient-to-l from-app-warning/90 to-app-warning/80"
                 />
               </div>
               <MiniStatList
@@ -2254,9 +2254,9 @@ export function DashboardPage() {
           ) : null}
         </CardHeader>
         <CardContent className="space-y-0">
-          <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800/80">
+          <div className="max-h-[320px] overflow-auto rounded-xl border border-app-border/80">
             <table className="w-full min-w-[1100px] table-fixed border-collapse text-sm whitespace-nowrap">
-              <thead className="sticky top-0 z-10 bg-slate-900/95 text-xs uppercase tracking-wide text-slate-400">
+              <thead className="sticky top-0 z-10 bg-app-surface/95 text-xs uppercase tracking-wide text-app-muted">
                 <tr>
                   <th className="w-[10%] px-2 py-2 text-left font-medium">Entry Time (ET)</th>
                   <th className="w-[10%] px-2 py-2 text-left font-medium">Exit Time (ET)</th>
@@ -2270,22 +2270,22 @@ export function DashboardPage() {
                   <th className="w-[10%] px-2 py-2 text-right font-medium">Trade ID</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70">
+              <tbody className="divide-y divide-app-border/70">
                 {recentTradesLoading ? (
                   <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
+                    <td colSpan={10} className="px-2 py-4 text-center text-app-muted">
                       Loading trades...
                     </td>
                   </tr>
                 ) : recentTradesError ? (
                   <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-rose-300">
+                    <td colSpan={10} className="px-2 py-4 text-center text-app-negative">
                       {recentTradesError}
                     </td>
                   </tr>
                 ) : recentTrades.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-slate-400">
+                    <td colSpan={10} className="px-2 py-4 text-center text-app-muted">
                       No trades available.
                     </td>
                   </tr>
@@ -2298,31 +2298,31 @@ export function DashboardPage() {
                     const entryPrice = trade.entry_price;
                     const exitPrice = trade.exit_price ?? trade.price;
                     return (
-                      <tr key={trade.id} className="transition hover:bg-slate-900/65">
-                        <td className="px-2 py-2 text-left text-slate-300">
+                      <tr key={trade.id} className="transition hover:bg-app-surface/70">
+                        <td className="px-2 py-2 text-left text-app-muted">
                           {entryTime ? timestampFormatter.format(new Date(entryTime)) : "-"}
                         </td>
-                        <td className="px-2 py-2 text-left text-slate-300">
+                        <td className="px-2 py-2 text-left text-app-muted">
                           {timestampFormatter.format(new Date(exitTime))}
                         </td>
-                        <td className="px-2 py-2 text-center text-slate-300">
+                        <td className="px-2 py-2 text-center text-app-muted">
                           {formatTradeDuration(trade.duration_minutes)}
                         </td>
-                        <td className="px-2 py-2 text-center font-medium text-slate-100">
+                        <td className="px-2 py-2 text-center font-medium text-app-text">
                           {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
                         </td>
                         <td className="px-2 py-2 text-center">
                           <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
                         </td>
-                        <td className="px-2 py-2 text-center text-slate-200">{formatInteger(trade.size)}</td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-center text-app-text-soft">{formatInteger(trade.size)}</td>
+                        <td className="px-2 py-2 text-right font-mono text-app-text-soft">
                           {entryPrice == null ? "-" : entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-200">
+                        <td className="px-2 py-2 text-right font-mono text-app-text-soft">
                           {exitPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
                         </td>
                         <td className={`px-2 py-2 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-400">
+                        <td className="px-2 py-2 text-right font-mono text-app-muted">
                           {trade.source_trade_id ?? trade.order_id}
                         </td>
                       </tr>

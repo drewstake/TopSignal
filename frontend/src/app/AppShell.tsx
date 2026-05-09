@@ -178,8 +178,8 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/95">
+    <div className="flex min-h-screen flex-col bg-app-bg text-app-text">
+      <header className="sticky top-0 z-30 border-b border-app-border/80 bg-app-bg/95">
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1 space-y-1">
@@ -187,7 +187,7 @@ export function AppShell() {
                 <div className="min-w-[220px]">
                   <label
                     htmlFor="app-active-account"
-                    className="mb-1 block text-[11px] uppercase tracking-wide text-slate-500"
+                    className="mb-1 block text-[11px] uppercase tracking-wide text-app-muted-strong"
                   >
                     Active Account
                   </label>
@@ -211,7 +211,7 @@ export function AppShell() {
                   {syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 {hasSupabaseConfig ? (
-                  <div className="flex h-9 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-slate-800 bg-slate-900/60 px-2.5 text-xs text-slate-400 sm:max-w-[340px]">
+                  <div className="flex h-9 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:max-w-[340px]">
                     <span className="min-w-0 truncate" title={currentUserEmail ?? "Signed in"}>
                       {currentUserEmail ?? "Signed in"}
                     </span>
@@ -228,12 +228,12 @@ export function AppShell() {
                   </div>
                 ) : null}
               </div>
-              {accountsError ? <p className="text-xs text-rose-300">{accountsError}</p> : null}
-              {syncMessage ? <p className="text-xs text-slate-400">{syncMessage}</p> : null}
+              {accountsError ? <p className="text-xs text-app-negative">{accountsError}</p> : null}
+              {syncMessage ? <p className="text-xs text-app-muted">{syncMessage}</p> : null}
             </div>
             <div className="shrink-0 text-right">
-              <p className="text-lg font-semibold tracking-tight text-slate-100">TopSignal</p>
-              <p className="text-xs text-slate-400">ProjectX Account + Trade Dashboard</p>
+              <p className="text-lg font-semibold tracking-tight text-app-text">TopSignal</p>
+              <p className="text-xs text-app-muted">ProjectX Account + Trade Dashboard</p>
             </div>
           </div>
 
@@ -245,6 +245,7 @@ export function AppShell() {
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Journal", to: `/journal${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
+              { label: "Themes", to: "/themes" },
             ]}
           />
         </div>

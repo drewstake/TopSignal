@@ -21,6 +21,9 @@ const JournalPage = lazy(() =>
 const BotPage = lazy(() =>
   import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
 );
+const ThemePage = lazy(() =>
+  import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -56,6 +59,11 @@ export const router = createBrowserRouter([
       {
         path: "bot",
         element: <BotPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "themes",
+        element: <ThemePage />,
         errorElement: <RouteErrorPage />,
       },
     ],

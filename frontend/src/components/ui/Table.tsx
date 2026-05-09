@@ -6,15 +6,15 @@ export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElem
 }
 
 export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={cn("border-b border-slate-800 text-xs uppercase tracking-wide text-slate-400", className)} {...props} />;
+  return <thead className={cn("border-b border-app-border text-xs uppercase tracking-wide text-app-muted", className)} {...props} />;
 }
 
 export function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <tbody className={cn("divide-y divide-slate-800", className)} {...props} />;
+  return <tbody className={cn("divide-y divide-app-border", className)} {...props} />;
 }
 
 export function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className={cn("transition hover:bg-slate-800/50", className)} {...props} />;
+  return <tr className={cn("transition hover:bg-app-raised/50", className)} {...props} />;
 }
 
 export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
@@ -22,5 +22,5 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
 }
 
 export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn("px-3 py-3 text-slate-200", className)} {...props} />;
+  return <td className={cn("px-3 py-3 text-app-text-soft", className)} {...props} />;
 }
