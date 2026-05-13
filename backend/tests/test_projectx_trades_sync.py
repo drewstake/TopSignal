@@ -313,7 +313,7 @@ def test_ensure_trade_cache_records_trading_day_window_and_reuses_complete_cache
         engine.dispose()
 
 
-def test_ensure_trade_cache_current_day_uses_requested_window(monkeypatch):
+def test_ensure_trade_cache_current_day_refresh_uses_requested_window(monkeypatch):
     monkeypatch.delenv("PROJECTX_DAY_SYNC_LIMIT", raising=False)
 
     class FrozenDateTime(datetime):
@@ -337,7 +337,7 @@ def test_ensure_trade_cache_current_day_uses_requested_window(monkeypatch):
             account_id=account_id,
             start=window_start,
             end=request_end,
-            refresh=False,
+            refresh=True,
             client_factory=lambda: client,
         )
 
@@ -358,7 +358,7 @@ def test_ensure_trade_cache_current_day_uses_requested_window(monkeypatch):
         engine.dispose()
 
 
-def test_ensure_trade_cache_current_day_provider_failure_uses_local_cache(monkeypatch):
+def test_ensure_trade_cache_current_day_non_refresh_uses_local_cache(monkeypatch):
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -387,10 +387,9 @@ def test_ensure_trade_cache_current_day_provider_failure_uses_local_cache(monkey
             db.query(ProjectXTradeDaySync)
             .filter(ProjectXTradeDaySync.account_id == account_id)
             .filter(ProjectXTradeDaySync.trade_date == trade_day)
-            .one()
+            .one_or_none()
         )
-        assert sync_row.sync_status == "partial"
-        assert sync_row.row_count == 0
+        assert sync_row is None
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])

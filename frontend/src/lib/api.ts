@@ -3,6 +3,8 @@ import type {
   AccountInfo,
   AccountLastTradeInfo,
   AccountRenameResult,
+  AIJournalRecapInput,
+  AIJournalRecapResult,
   AuthMe,
   JournalEntry,
   JournalEntryCreateResult,
@@ -874,6 +876,16 @@ export const accountsApi = {
       body,
     }).then((result) => {
       invalidateAccountJournalCaches(accountId);
+      return result;
+    }),
+  generateAIJournalRecap: (accountId: number, body: AIJournalRecapInput) =>
+    requestJson<AIJournalRecapResult>(`/projectx/accounts/${accountId}/journal/ai-recap`, {
+      method: "POST",
+      body,
+    }).then((result) => {
+      if (result.created || result.updated) {
+        invalidateAccountJournalCaches(accountId);
+      }
       return result;
     }),
   mergeJournalEntries: (body: JournalMergeInput) =>

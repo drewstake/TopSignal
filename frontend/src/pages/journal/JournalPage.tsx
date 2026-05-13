@@ -250,6 +250,7 @@ export function JournalPage() {
   const [draft, setDraft] = useState<JournalDraft | null>(null);
   const [saveState, setSaveState] = useState<JournalSaveState>("saved");
   const [creatingEntry, setCreatingEntry] = useState(false);
+  const [generatingAiRecap, setGeneratingAiRecap] = useState(false);
   const [deletingEntry, setDeletingEntry] = useState(false);
 
   const [images, setImages] = useState<JournalEntryImage[]>([]);
@@ -746,6 +747,66 @@ export function JournalPage() {
     [currentPage, flushAutosave, loadEntries, selectedAccountId],
   );
 
+  const handleGenerateAiRecap = useCallback(async () => {
+    if (!selectedAccountId) {
+      return;
+    }
+
+    const entryDate = selectedEntry?.entry_date ?? dateFromQuery ?? getTodayTradingDateIso();
+    setGeneratingAiRecap(true);
+    setEntriesError(null);
+    setEntriesInfo("Generating recap...");
+
+    try {
+      await flushAutosave();
+      const result = await accountsApi.generateAIJournalRecap(selectedAccountId, {
+        entry_date: entryDate,
+        mode: "append_or_create",
+        include_existing_notes: true,
+      });
+
+      if (result.skipped) {
+        setEntriesInfo(
+          result.skip_reason === "no_trades_for_day"
+            ? `No trades found for ${entryDate}. No journal entry was created.`
+            : "AI recap skipped.",
+        );
+        return;
+      }
+
+      const refreshed = await accountsApi.getJournalEntries(selectedAccountId, {
+        start_date: result.entry_date,
+        end_date: result.entry_date,
+        include_archived: true,
+        limit: 1,
+        offset: 0,
+      });
+      const refreshedEntry =
+        refreshed.items.find((entry) => entry.id === result.journal_entry_id) ?? refreshed.items[0] ?? null;
+
+      entriesRequestVersionRef.current += 1;
+      setLoadingEntries(false);
+      if (refreshedEntry) {
+        setEntries((currentEntries) => upsertEntry(currentEntries, refreshedEntry));
+        setTotalEntries((currentTotal) => (result.created ? currentTotal + 1 : currentTotal));
+        setSelectedId(refreshedEntry.id);
+      }
+      setPage(1);
+      setConflictServerEntry(null);
+      setEntriesInfo(
+        result.created ? `AI recap created for ${result.entry_date}.` : `AI recap updated for ${result.entry_date}.`,
+      );
+      if (currentPage === 1) {
+        void loadEntries();
+      }
+    } catch (err) {
+      setEntriesInfo(null);
+      setEntriesError(err instanceof Error ? err.message : "Failed to generate AI recap");
+    } finally {
+      setGeneratingAiRecap(false);
+    }
+  }, [currentPage, dateFromQuery, flushAutosave, loadEntries, selectedAccountId, selectedEntry?.entry_date]);
+
   useEffect(() => {
     const dateKey = selectedAccountId && dateFromQuery ? `${selectedAccountId}:${dateFromQuery}` : null;
     if (!dateKey) {
@@ -1142,6 +1203,15 @@ export function JournalPage() {
                 onCopyEntry={handleCopyEntry}
                 onCopyRecent={handleCopyRecent}
               />
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
+                onClick={() => void handleGenerateAiRecap()}
+                disabled={generatingAiRecap || creatingEntry || !selectedAccountId}
+              >
+                {generatingAiRecap ? "Generating recap..." : "AI Recap"}
+              </Button>
               <Button
                 size="sm"
                 className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]"

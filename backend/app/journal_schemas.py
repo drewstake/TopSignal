@@ -35,6 +35,29 @@ class JournalEntryCreateOut(JournalEntryOut):
     already_existed: bool = False
 
 
+class AIJournalRecapMode(str, Enum):
+    APPEND_OR_CREATE = "append_or_create"
+
+
+class AIJournalRecapIn(BaseModel):
+    entry_date: date
+    mode: AIJournalRecapMode = AIJournalRecapMode.APPEND_OR_CREATE
+    include_existing_notes: bool = True
+
+
+class AIJournalRecapOut(BaseModel):
+    account_id: int
+    entry_date: date
+    journal_entry_id: int | None = None
+    created: bool
+    updated: bool
+    skipped: bool
+    skip_reason: str | None = None
+    source_trade_count: int
+    recap_markdown: str
+    generated_at: datetime
+
+
 class JournalEntrySaveOut(BaseModel):
     id: int
     account_id: int

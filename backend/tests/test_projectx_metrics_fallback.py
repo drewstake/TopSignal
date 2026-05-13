@@ -172,6 +172,36 @@ def test_summary_non_refresh_uses_local_when_provider_sync_crashes(db_session, m
     assert payload["net_pnl"] == 0
 
 
+def test_trades_endpoint_rolls_back_failed_cache_sync_before_local_fallback(db_session, monkeypatch):
+    account_id = 7310
+    trade_day = date(2026, 2, 10)
+    window_start, window_end = trading_day_bounds_utc(trade_day)
+    monkeypatch.setattr(
+        main_module,
+        "ensure_trade_cache_for_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sync metadata query failed")),
+    )
+    db_session.add(Account(provider="projectx", external_id=str(account_id), account_state="ACTIVE", is_main=True))
+    _add_trade_event(db_session, event_id=10, account_id=account_id, pnl=70.0, fees=2.0)
+    db_session.commit()
+
+    rollback_calls = 0
+    original_rollback = db_session.rollback
+
+    def rollback_spy():
+        nonlocal rollback_calls
+        rollback_calls += 1
+        original_rollback()
+
+    monkeypatch.setattr(db_session, "rollback", rollback_spy)
+
+    payload = list_projectx_account_trades(account_id=account_id, start=window_start, end=window_end, db=db_session)
+
+    assert rollback_calls == 1
+    assert len(payload) == 1
+    assert payload[0]["account_id"] == account_id
+
+
 def test_summary_refresh_raises_when_provider_sync_crashes(db_session, monkeypatch):
     account_id = 7308
     trade_day = date(2026, 3, 2)

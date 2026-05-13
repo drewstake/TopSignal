@@ -446,6 +446,27 @@ export interface JournalPullTradeStatsInput {
   end_date?: string;
 }
 
+export type AIJournalRecapMode = "append_or_create";
+
+export interface AIJournalRecapInput {
+  entry_date: string;
+  mode?: AIJournalRecapMode;
+  include_existing_notes?: boolean;
+}
+
+export interface AIJournalRecapResult {
+  account_id: number;
+  entry_date: string;
+  journal_entry_id: number | null;
+  created: boolean;
+  updated: boolean;
+  skipped: boolean;
+  skip_reason: string | null;
+  source_trade_count: number;
+  recap_markdown: string;
+  generated_at: string;
+}
+
 export type JournalMergeConflictStrategy = "skip" | "overwrite";
 
 export interface JournalMergeInput {

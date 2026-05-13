@@ -47,6 +47,8 @@ from .expense_schemas import (
     WeekStart,
 )
 from .journal_schemas import (
+    AIJournalRecapIn,
+    AIJournalRecapOut,
     JournalEntryCreateIn,
     JournalEntryCreateOut,
     JournalEntryListOut,
@@ -131,6 +133,8 @@ from .services.journal import (
     update_journal_entry,
     validate_date_range as validate_journal_date_range,
 )
+from .services.gemini_client import GeminiClientError
+from .services.journal_ai_recap import generate_ai_journal_recap
 from .services.journal_storage import delete_journal_image as delete_journal_image_file, journal_storage_backend
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
@@ -266,7 +270,7 @@ def _apply_cors_headers(request: Request, response: Response) -> Response:
 
 
 def _is_authenticated_route(path: str) -> bool:
-    return path.startswith("/api/") or path.startswith("/metrics/") or path == "/trades"
+    return path.startswith("/api/") or path.startswith("/metrics/") or path.startswith("/projectx/") or path == "/trades"
 
 
 @app.middleware("http")
@@ -1589,6 +1593,51 @@ def create_projectx_account_journal_entry(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/accounts/{account_id}/journal/ai-recap", response_model=AIJournalRecapOut)
+@app.post("/projectx/accounts/{account_id}/journal/ai-recap", response_model=AIJournalRecapOut)
+def create_projectx_account_ai_journal_recap(
+    account_id: int,
+    payload: AIJournalRecapIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+
+    try:
+        return generate_ai_journal_recap(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            entry_date=payload.entry_date,
+            mode=payload.mode,
+            include_existing_notes=payload.include_existing_notes,
+        )
+    except GeminiClientError as exc:
+        db.rollback()
+        raise _to_gemini_http_exception(exc) from exc
+    except VersionConflictError as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(
+                {
+                    "detail": "version_conflict",
+                    "server": serialize_journal_entry(exc.server_row),
+                }
+            ),
+        )
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
 @app.post("/api/journal/merge", response_model=JournalMergeOut)
 def merge_projectx_account_journal_entries(
     payload: JournalMergeIn,
@@ -2456,6 +2505,7 @@ def _ensure_trade_cache_or_fallback(
             client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
         )
     except ProjectXClientError as exc:
+        db.rollback()
         if refresh and not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
             raise
         logger.warning(
@@ -2463,6 +2513,7 @@ def _ensure_trade_cache_or_fallback(
             extra={"account_id": account_id, "user_id": user_id, "status_code": exc.status_code},
         )
     except Exception:
+        db.rollback()
         if refresh:
             raise
         logger.exception(
@@ -2577,3 +2628,14 @@ def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
 
     # Upstream API errors should be surfaced as a gateway error to the frontend.
     return HTTPException(status_code=502, detail=str(exc))
+
+
+def _to_gemini_http_exception(exc: GeminiClientError) -> HTTPException:
+    message = str(exc)
+    if exc.status_code is None and "Missing Gemini configuration" in message:
+        return HTTPException(status_code=503, detail="Gemini is not configured on the backend.")
+    if exc.status_code == 504:
+        return HTTPException(status_code=504, detail="Gemini recap generation timed out.")
+    if exc.status_code in {429, 503}:
+        return HTTPException(status_code=503, detail=message or "Gemini is temporarily unavailable.")
+    return HTTPException(status_code=502, detail=message or "Gemini recap generation failed.")

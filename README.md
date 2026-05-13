@@ -379,7 +379,7 @@ Voided or canceled provider rows are ignored.
 
 For single-day trade-range requests, TopSignal uses `projectx_trade_day_syncs` to decide whether to re-sync:
 
-- today: always refresh from provider
+- today: normal dashboard reads use the local cache; explicit sync refreshes from provider
 - yesterday: refresh only if missing, partial, stale, or explicitly requested
 - older days: use the local cache when the day was previously marked `complete`, unless explicitly refreshed
 
@@ -578,6 +578,12 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `PROJECTX_YESTERDAY_REFRESH_MINUTES` | Staleness threshold for yesterday refresh |
 | `PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS` | Delay before absent accounts become `MISSING` |
 | `PROJECTX_LAST_TRADE_LOOKBACK_DAYS` | Provider lookback for last-trade resolution |
+| `GEMINI_API_KEY` | Server-side Gemini API key used by AI journal recap generation |
+| `GEMINI_MODEL` | Gemini model for AI journal recap generation; defaults to `gemini-3.1-flash-lite` |
+| `GEMINI_API_BASE_URL` | Optional Gemini API base URL override |
+| `GEMINI_TIMEOUT_SECONDS` | Optional Gemini request timeout override |
+| `GEMINI_RETRY_ATTEMPTS` | Optional total attempts for retryable Gemini HTTP errors; defaults to `3` |
+| `GEMINI_RETRY_BACKOFF_SECONDS` | Optional base delay for Gemini retries; defaults to `0.75` |
 | `ALLOWED_ORIGINS` | Exact CORS allowlist |
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |

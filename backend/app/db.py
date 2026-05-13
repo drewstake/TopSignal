@@ -364,6 +364,8 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
 
         conn.execute(text("alter table projectx_trade_day_syncs drop constraint if exists uq_projectx_trade_day_syncs_account_date"))
         conn.execute(text("drop index if exists uq_projectx_trade_day_syncs_account_date"))
+        conn.execute(text("alter table projectx_trade_day_syncs add column if not exists window_start timestamptz"))
+        conn.execute(text("alter table projectx_trade_day_syncs add column if not exists window_end timestamptz"))
         conn.execute(
             text(
                 """

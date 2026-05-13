@@ -702,6 +702,10 @@ def _sync_single_trade_day_if_needed(
         window_end = min(window_end, now_utc)
     sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
 
+    if trade_day == today and not refresh:
+        logger.info("[trades] current-day cache read account=%s day=%s source=db", account_id, trade_day.isoformat())
+        return
+
     if trade_day == today:
         logger.info("[trades] refresh today account=%s day=%s", account_id, trade_day.isoformat())
         try:
