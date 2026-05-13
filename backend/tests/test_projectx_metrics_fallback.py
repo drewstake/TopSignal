@@ -60,6 +60,11 @@ class RecordingTradeHistoryClient:
         return list(self.events)
 
 
+class CrashingTradeHistoryClient:
+    def fetch_trade_history(self, *args, **kwargs):
+        raise RuntimeError("provider sync crashed")
+
+
 def _add_trade_event(db_session, *, event_id: int, account_id: int, pnl: float = 125.0, fees: float = 3.0):
     db_session.add(
         ProjectXTradeEvent(
@@ -104,6 +109,21 @@ def test_summary_raises_gateway_error_for_non_missing_account_on_provider_404(db
     assert exc_info.value.status_code == 502
 
 
+def test_summary_non_refresh_uses_local_for_active_account_provider_error(db_session, monkeypatch):
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: MissingAccountStubClient())
+    account_id = 7309
+    trade_day = date(2026, 2, 10)
+    window_start, window_end = trading_day_bounds_utc(trade_day)
+    db_session.add(Account(provider="projectx", external_id=str(account_id), account_state="ACTIVE", is_main=False))
+    _add_trade_event(db_session, event_id=9, account_id=account_id, pnl=80.0, fees=2.0)
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=account_id, start=window_start, end=window_end, db=db_session)
+
+    assert payload["trade_count"] == 1
+    assert payload["realized_pnl"] == 80.0
+
+
 def test_summary_uses_day_sync_for_single_trading_day_when_other_local_trades_exist(db_session, monkeypatch):
     account_id = 7306
     trade_day = date(2026, 3, 2)
@@ -135,6 +155,39 @@ def test_summary_uses_day_sync_for_single_trading_day_when_other_local_trades_ex
     assert client.calls[0] == (account_id, window_start, window_end, 1000, 0)
     assert payload["trade_count"] == 1
     assert payload["realized_pnl"] == 40.0
+
+
+def test_summary_non_refresh_uses_local_when_provider_sync_crashes(db_session, monkeypatch):
+    account_id = 7307
+    trade_day = date(2026, 3, 2)
+    window_start, window_end = trading_day_bounds_utc(trade_day)
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda db, user_id: CrashingTradeHistoryClient())
+    db_session.add(Account(provider="projectx", external_id=str(account_id), account_state="ACTIVE", is_main=True))
+    _add_trade_event(db_session, event_id=7, account_id=account_id, pnl=70.0, fees=2.0)
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=account_id, start=window_start, end=window_end, db=db_session)
+
+    assert payload["trade_count"] == 0
+    assert payload["net_pnl"] == 0
+
+
+def test_summary_refresh_raises_when_provider_sync_crashes(db_session, monkeypatch):
+    account_id = 7308
+    trade_day = date(2026, 3, 2)
+    window_start, window_end = trading_day_bounds_utc(trade_day)
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda db, user_id: CrashingTradeHistoryClient())
+    db_session.add(Account(provider="projectx", external_id=str(account_id), account_state="ACTIVE", is_main=True))
+    db_session.commit()
+
+    with pytest.raises(RuntimeError, match="provider sync crashed"):
+        get_projectx_account_summary(
+            account_id=account_id,
+            start=window_start,
+            end=window_end,
+            refresh=True,
+            db=db_session,
+        )
 
 
 def test_trades_endpoint_falls_back_to_local_for_missing_account_on_provider_404(db_session, monkeypatch):

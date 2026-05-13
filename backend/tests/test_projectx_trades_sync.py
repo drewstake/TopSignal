@@ -10,6 +10,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
 from app.models import DEFAULT_USER_ID, ProjectXTradeDaySync, ProjectXTradeEvent
+from app.services import projectx_trades as projectx_trades_module
 from app.services.projectx_trades import (
     _build_sync_windows,
     _iter_time_chunks,
@@ -17,6 +18,7 @@ from app.services.projectx_trades import (
     _single_trading_day_request_date,
     ensure_trade_cache_for_request,
 )
+from app.services.projectx_client import ProjectXClientError
 from app.services.trading_day import trading_day_bounds_utc
 
 
@@ -67,6 +69,11 @@ class _RecordingClient:
     def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
         self.calls.append((account_id, start, end, limit, offset))
         return list(self.events)
+
+
+class _FailingClient:
+    def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
+        raise ProjectXClientError("provider unavailable", status_code=504)
 
 
 def test_build_sync_windows_uses_explicit_start_and_end():
@@ -300,6 +307,120 @@ def test_ensure_trade_cache_records_trading_day_window_and_reuses_complete_cache
         )
 
         assert len(client.calls) == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_ensure_trade_cache_current_day_uses_requested_window(monkeypatch):
+    monkeypatch.delenv("PROJECTX_DAY_SYNC_LIMIT", raising=False)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 3, 2, 15, 5, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(projectx_trades_module, "datetime", FrozenDateTime)
+    engine, db = _make_session()
+    try:
+        account_id = 13032503
+        trade_day = date(2026, 3, 2)
+        window_start, _window_end = trading_day_bounds_utc(trade_day)
+        request_end = datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc)
+        client = _RecordingClient([_event(account_id, window_start + timedelta(minutes=30))])
+
+        ensure_trade_cache_for_request(
+            db,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            start=window_start,
+            end=request_end,
+            refresh=False,
+            client_factory=lambda: client,
+        )
+
+        sync_row = (
+            db.query(ProjectXTradeDaySync)
+            .filter(ProjectXTradeDaySync.account_id == account_id)
+            .filter(ProjectXTradeDaySync.trade_date == trade_day)
+            .one()
+        )
+        assert len(client.calls) == 1
+        assert client.calls[0] == (account_id, window_start, request_end, 1000, 0)
+        assert sync_row.sync_status == "partial"
+        assert _as_utc(sync_row.window_start) == window_start
+        assert _as_utc(sync_row.window_end) == request_end
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_ensure_trade_cache_current_day_provider_failure_uses_local_cache(monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 3, 2, 15, 5, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(projectx_trades_module, "datetime", FrozenDateTime)
+    engine, db = _make_session()
+    try:
+        account_id = 13032504
+        trade_day = date(2026, 3, 2)
+        window_start, _window_end = trading_day_bounds_utc(trade_day)
+        request_end = datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc)
+
+        ensure_trade_cache_for_request(
+            db,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            start=window_start,
+            end=request_end,
+            refresh=False,
+            client_factory=lambda: _FailingClient(),
+        )
+
+        sync_row = (
+            db.query(ProjectXTradeDaySync)
+            .filter(ProjectXTradeDaySync.account_id == account_id)
+            .filter(ProjectXTradeDaySync.trade_date == trade_day)
+            .one()
+        )
+        assert sync_row.sync_status == "partial"
+        assert sync_row.row_count == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_ensure_trade_cache_current_day_provider_failure_raises_on_refresh(monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 3, 2, 15, 5, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(projectx_trades_module, "datetime", FrozenDateTime)
+    engine, db = _make_session()
+    try:
+        trade_day = date(2026, 3, 2)
+        window_start, _window_end = trading_day_bounds_utc(trade_day)
+        request_end = datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc)
+
+        with pytest.raises(ProjectXClientError):
+            ensure_trade_cache_for_request(
+                db,
+                user_id=DEFAULT_USER_ID,
+                account_id=13032505,
+                start=window_start,
+                end=request_end,
+                refresh=True,
+                client_factory=lambda: _FailingClient(),
+            )
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])

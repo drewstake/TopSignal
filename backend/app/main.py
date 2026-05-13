@@ -1971,19 +1971,14 @@ def list_projectx_account_trades(
     _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     try:
-        try:
-            ensure_trade_cache_for_request(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                start=start,
-                end=end,
-                refresh=refresh,
-                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
-            )
-        except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                raise
+        _ensure_trade_cache_or_fallback(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            start=start,
+            end=end,
+            refresh=refresh,
+        )
 
         rows = list_trade_events(
             db,
@@ -2034,19 +2029,14 @@ def get_projectx_account_summary(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        try:
-            ensure_trade_cache_for_request(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                start=start,
-                end=end,
-                refresh=refresh,
-                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
-            )
-        except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                raise
+        _ensure_trade_cache_or_fallback(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            start=start,
+            end=end,
+            refresh=refresh,
+        )
 
         return summarize_trade_events(
             db,
@@ -2075,19 +2065,14 @@ def get_projectx_account_summary_with_point_bases(
     point_bases = [normalize_points_basis(basis) for basis in POINTS_BASIS_SYMBOLS]
 
     try:
-        try:
-            ensure_trade_cache_for_request(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                start=start,
-                end=end,
-                refresh=refresh,
-                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
-            )
-        except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                raise
+        _ensure_trade_cache_or_fallback(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            start=start,
+            end=end,
+            refresh=refresh,
+        )
 
         summary, point_payoff_by_basis = summarize_trade_events_with_point_bases(
             db,
@@ -2135,19 +2120,14 @@ def get_projectx_account_pnl_calendar(
         effective_end = end
 
     try:
-        try:
-            ensure_trade_cache_for_request(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                start=effective_start,
-                end=effective_end,
-                refresh=refresh,
-                client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
-            )
-        except ProjectXClientError as exc:
-            if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
-                raise
+        _ensure_trade_cache_or_fallback(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            start=effective_start,
+            end=effective_end,
+            refresh=refresh,
+        )
 
         return get_trade_event_pnl_calendar(
             db,
@@ -2454,6 +2434,41 @@ def _should_fallback_to_local_metrics(
         return False
 
     return account.account_state == ACCOUNT_STATE_MISSING
+
+
+def _ensure_trade_cache_or_fallback(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    start: datetime | None,
+    end: datetime | None,
+    refresh: bool,
+) -> None:
+    try:
+        ensure_trade_cache_for_request(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            start=start,
+            end=end,
+            refresh=refresh,
+            client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
+        )
+    except ProjectXClientError as exc:
+        if refresh and not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+            raise
+        logger.warning(
+            "projectx_trade_cache_sync_failed_using_local",
+            extra={"account_id": account_id, "user_id": user_id, "status_code": exc.status_code},
+        )
+    except Exception:
+        if refresh:
+            raise
+        logger.exception(
+            "projectx_trade_cache_sync_failed_using_local",
+            extra={"account_id": account_id, "user_id": user_id},
+        )
 
 
 def _read_int_env(name: str, default: int) -> int:

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, load_only
 from ..auth import get_authenticated_user_id
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
-from .projectx_client import ProjectXClient
+from .projectx_client import ProjectXClient, ProjectXClientError
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
 from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import trading_day_bounds_utc, trading_day_date
@@ -101,6 +101,8 @@ def ensure_trade_cache_for_request(
         user_id=resolved_user_id,
         account_id=account_id,
         trade_day=request_day,
+        request_start=start,
+        request_end=end,
         refresh=refresh,
     )
 
@@ -684,32 +686,51 @@ def _sync_single_trade_day_if_needed(
     user_id: str,
     account_id: int,
     trade_day: date,
+    request_start: datetime | None,
+    request_end: datetime | None,
     refresh: bool,
 ) -> None:
     now_utc = datetime.now(timezone.utc)
     today = trading_day_date(now_utc)
     yesterday = today - timedelta(days=1)
     day_start, day_end = trading_day_bounds_utc(trade_day)
+    window_start = _as_utc(request_start) if request_start is not None else day_start
+    window_end = _as_utc(request_end) if request_end is not None else day_end
+    window_start = max(window_start, day_start)
+    window_end = min(window_end, day_end)
+    if trade_day == today:
+        window_end = min(window_end, now_utc)
     sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
 
     if trade_day == today:
         logger.info("[trades] refresh today account=%s day=%s", account_id, trade_day.isoformat())
-        _sync_trade_day_from_provider(
-            db,
-            client_factory=client_factory,
-            user_id=user_id,
-            account_id=account_id,
-            trade_day=trade_day,
-            allow_complete=False,
-        )
+        try:
+            _sync_trade_day_from_provider(
+                db,
+                client_factory=client_factory,
+                user_id=user_id,
+                account_id=account_id,
+                trade_day=trade_day,
+                window_start=window_start,
+                window_end=window_end,
+                allow_complete=False,
+            )
+        except ProjectXClientError:
+            if refresh:
+                raise
+            logger.warning(
+                "[trades] current-day provider sync failed; using local cache account=%s day=%s",
+                account_id,
+                trade_day.isoformat(),
+            )
         return
 
     if trade_day == yesterday:
         if refresh or _should_refresh_yesterday(
             sync_row,
             now_utc=now_utc,
-            window_start=day_start,
-            window_end=day_end,
+            window_start=window_start,
+            window_end=window_end,
         ):
             logger.info("[trades] refresh yesterday account=%s day=%s", account_id, trade_day.isoformat())
             _sync_trade_day_from_provider(
@@ -718,6 +739,8 @@ def _sync_single_trade_day_if_needed(
                 user_id=user_id,
                 account_id=account_id,
                 trade_day=trade_day,
+                window_start=window_start,
+                window_end=window_end,
                 allow_complete=True,
             )
             return
@@ -725,7 +748,7 @@ def _sync_single_trade_day_if_needed(
         logger.info("[trades] cache hit account=%s day=%s source=db", account_id, trade_day.isoformat())
         return
 
-    if not refresh and _sync_row_is_complete_for_window(sync_row, window_start=day_start, window_end=day_end):
+    if not refresh and _sync_row_is_complete_for_window(sync_row, window_start=window_start, window_end=window_end):
         logger.info("[trades] cache hit account=%s day=%s source=db", account_id, trade_day.isoformat())
         return
 
@@ -736,6 +759,8 @@ def _sync_single_trade_day_if_needed(
         user_id=user_id,
         account_id=account_id,
         trade_day=trade_day,
+        window_start=window_start,
+        window_end=window_end,
         allow_complete=True,
     )
 
@@ -748,8 +773,12 @@ def _sync_trade_day_from_provider(
     account_id: int,
     trade_day: date,
     allow_complete: bool,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> None:
     day_start, day_end = trading_day_bounds_utc(trade_day)
+    fetch_start = _as_utc(window_start) if window_start is not None else day_start
+    fetch_end = _as_utc(window_end) if window_end is not None else day_end
     page_limit = _read_int_env("PROJECTX_DAY_SYNC_LIMIT", _DEFAULT_DAY_SYNC_LIMIT)
     last_synced_at = datetime.now(timezone.utc)
 
@@ -757,8 +786,8 @@ def _sync_trade_day_from_provider(
         fetch_result = _fetch_trade_day_all_pages(
             client_factory(),
             account_id=account_id,
-            start=day_start,
-            end=day_end,
+            start=fetch_start,
+            end=fetch_end,
             limit=page_limit,
         )
     except Exception:
@@ -767,8 +796,8 @@ def _sync_trade_day_from_provider(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
-            window_start=day_start,
-            window_end=day_end,
+            window_start=fetch_start,
+            window_end=fetch_end,
             last_synced_at=last_synced_at,
         )
         logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())
@@ -786,16 +815,16 @@ def _sync_trade_day_from_provider(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
-            window_start=day_start,
-            window_end=day_end,
+            window_start=fetch_start,
+            window_end=fetch_end,
         )
         _upsert_trade_day_sync(
             db,
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
-            window_start=day_start,
-            window_end=day_end,
+            window_start=fetch_start,
+            window_end=fetch_end,
             sync_status=sync_status,
             last_synced_at=last_synced_at,
             row_count=row_count,
@@ -808,8 +837,8 @@ def _sync_trade_day_from_provider(
             user_id=user_id,
             account_id=account_id,
             trade_day=trade_day,
-            window_start=day_start,
-            window_end=day_end,
+            window_start=fetch_start,
+            window_end=fetch_end,
             last_synced_at=last_synced_at,
         )
         logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())

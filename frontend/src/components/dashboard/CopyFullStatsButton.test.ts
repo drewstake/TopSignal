@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFullStatsText, type CopyFullStatsMetrics, NO_DATA_TEXT } from "./CopyFullStatsButton";
+import { buildFullStatsText, buildStatsCoachSummary, type CopyFullStatsMetrics, NO_DATA_TEXT } from "./CopyFullStatsButton";
 
 function metric(value: number | null) {
   return { value };
@@ -181,121 +181,426 @@ const sampleCalendarDays = [
   { date: "2026-03-05", trade_count: 8, gross_pnl: 0, fees: 0, net_pnl: 1396.2 },
 ];
 
+function makeMetrics(
+  overrides: {
+    summary?: Partial<CopyFullStatsMetrics["summary"]>;
+    performance?: Partial<CopyFullStatsMetrics["performance"]>;
+    consistency?: Partial<CopyFullStatsMetrics["consistency"]>;
+    risk?: Partial<CopyFullStatsMetrics["risk"]>;
+    direction?: Partial<CopyFullStatsMetrics["direction"]>;
+    payoff?: Partial<CopyFullStatsMetrics["payoff"]>;
+    activity?: Partial<CopyFullStatsMetrics["activity"]>;
+    sustainability?: Partial<CopyFullStatsMetrics["sustainability"]>;
+  } = {},
+): CopyFullStatsMetrics {
+  return {
+    ...sampleMetrics,
+    summary: { ...sampleMetrics.summary, ...overrides.summary },
+    performance: { ...sampleMetrics.performance, ...overrides.performance },
+    consistency: { ...sampleMetrics.consistency, ...overrides.consistency },
+    risk: { ...sampleMetrics.risk, ...overrides.risk },
+    direction: { ...sampleMetrics.direction, ...overrides.direction },
+    payoff: {
+      ...sampleMetrics.payoff,
+      ...overrides.payoff,
+      pointPayoffByBasis: {
+        ...sampleMetrics.payoff.pointPayoffByBasis,
+        ...(overrides.payoff?.pointPayoffByBasis ?? {}),
+      },
+    },
+    activity: { ...sampleMetrics.activity, ...overrides.activity },
+    sustainability: {
+      ...sampleMetrics.sustainability,
+      ...overrides.sustainability,
+      debug: {
+        ...sampleMetrics.sustainability.debug,
+        ...(overrides.sustainability?.debug ?? {}),
+      },
+    },
+  };
+}
+
+function getSection(summary: ReturnType<typeof buildStatsCoachSummary>, title: string) {
+  return summary.sections.find((section) => section.title === title)?.items ?? [];
+}
+
 describe("buildFullStatsText", () => {
-  it("builds the full dashboard stats block", () => {
-    expect(
-      buildFullStatsText({
-        metrics: sampleMetrics,
-        rangeLabel: "Mar 3 to Mar 5, 2026",
-        calendarDays: sampleCalendarDays,
+  it("builds the full dashboard stats block with safe copy formatting", () => {
+    const text = buildFullStatsText({
+      metrics: sampleMetrics,
+      rangeLabel: "Mar 3 to Mar 5, 2026",
+      calendarDays: sampleCalendarDays,
+      generatedAt: new Date("2026-05-13T14:42:00.000Z"),
+    });
+
+    expect(text).toContain("TopSignal Full Stats (Mar 3 to Mar 5, 2026)");
+    expect(text).toContain("- Generated: May 13, 2026, 10:42 AM ET");
+    expect(text).toContain("- Range: Mar 3 to Mar 5, 2026");
+    expect(text).toContain("- Sample: 21 trades across 3 active days");
+    expect(text).toContain("- Basis: Net PnL after fees unless marked Gross");
+    expect(text).toContain(
+      "- Sample Warning: Only 21 trades across 3 active days. Win rate, profit factor, sustainability, and loss percentile metrics may be unstable.",
+    );
+    expect(text).toContain("- Net PnL (after fees): +$5,458.30");
+    expect(text).toContain("- Long: Trades 10 | WR 70.0% | Expectancy +$109.50");
+    expect(text).toContain("- Mar 5: +$1,396.20 (8 trades)");
+    expect(text).toContain("- Risk Base Definition: Current balance: Current balance is used for the risk base.");
+    expect(text).toContain("- P95 Loss: N/A - requires at least 20 losses; current losses: 4");
+    expect(text).toContain("- Capture: N/A - capture data not available");
+    expect(text).toContain("- Projected Trades / Week: 49.0, based on 3-day pace");
+    expect(text).toContain("- Projected Active Days / Week: 7.0, based on 3-day pace");
+    expect(text).toContain("- Trades / Active Hour: N/A - active trading time not available");
+    expect(text).toContain("- Risk Quality: 0.0/100 (higher is better)");
+    expect(text).not.toContain("\u00e2\u20ac\u00a2");
+    expect(text).not.toContain("\u2022");
+  });
+
+  it("labels all-green ranges by lowest day instead of worst day", () => {
+    const text = buildFullStatsText({
+      metrics: sampleMetrics,
+      rangeLabel: "Mar 3 to Mar 5, 2026",
+      calendarDays: sampleCalendarDays,
+    });
+
+    expect(text).toContain("- Lowest Day: +$1,396.20 (25.6%)");
+    expect(text).toContain("- Lowest Day Impact: Lowest Day = 0.8 days of avg profit");
+    expect(text).not.toContain("Worst Day: +$1,396.20");
+  });
+
+  it("explains unavailable direction metrics when one side has no trades", () => {
+    const text = buildFullStatsText({
+      metrics: makeMetrics({
+        summary: {
+          trade_count: 10,
+          loss_count: 4,
+          active_days: 2,
+        },
+        direction: {
+          longPercent: metric(0),
+          shortPercent: metric(100),
+          longTrades: metric(0),
+          shortTrades: metric(10),
+          longPnl: metric(0),
+          shortPnl: metric(1538),
+          longPnlShare: metric(0),
+          shortPnlShare: metric(100),
+          longWinRate: metric(null),
+          shortWinRate: metric(60),
+          longExpectancy: metric(null),
+          shortExpectancy: metric(153.8),
+          longProfitFactor: metric(null),
+          shortProfitFactor: metric(5.82),
+          longAvgWin: metric(null),
+          longAvgLoss: metric(null),
+          shortAvgWin: metric(309.5),
+          shortAvgLoss: metric(-79.75),
+          longLargeLossRate: metric(null),
+          shortLargeLossRate: metric(0),
+          insight: "",
+        },
+        activity: {
+          rangeDays: 2,
+          tradesPerWeek: 35,
+          activeDaysPerWeek: 7,
+          tradesPerActiveHour: null,
+        },
       }),
-    ).toBe(`TopSignal Full Stats (Mar 3 to Mar 5, 2026)
+      rangeLabel: "May 11 to May 12, 2026",
+      calendarDays: [],
+      generatedAt: new Date("2026-05-13T14:42:00.000Z"),
+    });
 
-PERFORMANCE
-• Net PnL (after fees): +$5,458.30
-• Gross PnL: +$5,610.00
-• Fees: $151.70
-• Trades: 21
-• Win Rate: 81.0%
-• Profit Factor: 4.26x
-• Profit / Day: +$1,819.43
-• Efficiency / Hour: +$4,967.04
-• Edge (Expectancy): +$259.92 per trade
-• Outcome Mix: 17W / 4L / 0 BE
-
-CONSISTENCY
-• Swing (daily PnL volatility): $330.15
-• Best Day: +$2,201.80 (40.3%)
-• Worst Day: +$1,396.20 (25.6%)
-• Median Day: +$1,860.30
-• Avg Green: +$1,819.43
-• Avg Red: N/A
-• Red Day %: 0.0%
-• Worst Day Impact: Worst Day = 0.8 days of avg profit
-• G/R Size Ratio: N/A
-• Stability: 74.0%
-
-RISK
-• Max Drawdown: -$1,664.40
-• DD % of Net PnL: 30.5%
-• Max DD % of Risk Base: 3.3%
-• Risk Base: $50,000.00
-• Risk Base Basis: Current balance
-• Avg Drawdown: -$853.40
-• DD Length: 0.1 h
-• Recovery: 0.0 h
-
-DIRECTION
-• Long %: 48.0%
-• Short %: 52.0%
-• PnL Share: Long +$1,095.00 (19.5%) | Short +$4,515.00 (80.5%)
-• Insight: Shorts outperform longs on expectancy.
-
-Direction Breakdown
-• Long: Trades 10 | WR 70.0% | Expectancy +$109.50 | PF 1.67x | Avg W/L +$389.64 / -$544.17 | Large Loss % 0.0%
-• Short: Trades 11 | WR 90.9% | Expectancy +$410.45 | PF 51.17x | Avg W/L +$460.50 / -$90.00 | Large Loss % 0.0%
-
-PAYOFF
-• W/L Ratio: 0.96x
-• Avg Win: +$424.79
-• Avg Loss: -$440.80
-• Breakeven WR: 50.9%
-• Current WR: 81.0%
-• WR Cushion: +30.0 pts
-• Large Loss Rate: 0.0% (<= -$881.60)
-• P95 Loss: N/A
-• Capture: N/A
-
-Points Payoff By Basis
-• MNQ: Avg Point Gain 31.76 pts | Avg Point Loss 14.87 pts
-• MES: Avg Point Gain N/A | Avg Point Loss N/A
-
-ACTIVITY
-• Active Days: 3
-• Avg Trades / Day: 7.0
-• Median / Day: 7.0
-• Max / Day: 8
-• Trades / Week: 49.0
-• Days / Week: 7.0
-• Trades / Active Hour: N/A
-
-SUSTAINABILITY
-• Score: 49/100 (Unstable)
-• Risk: 0.0/100
-• Consistency: 72.7/100
-• Edge: 100.0/100
-
-HOLD TIME
-• Hold Time Ratio (win/loss): 1.22x
-• Avg Win Duration: 4m 6s
-• Avg Loss Duration: 3m 22s
-
-DAILY BALANCE
-• Start Balance: $0.00
-• Ending Balance: $5,458.30
-• High: $5,458.30
-• Low: $0.00
-• Largest Day: +$2,201.80
-
-PNL CALENDAR (Mar 3 to Mar 5, 2026)
-• Mar 3: +$2,201.80 (7 trades)
-• Mar 4: +$1,860.30 (6 trades)
-• Mar 5: +$1,396.20 (8 trades)`);
+    expect(text).toContain("- Sample: 10 trades across 2 active days");
+    expect(text).toContain("- Insight: Only short trades taken; no long/short comparison available.");
+    expect(text).toContain("Expectancy N/A - no long trades in range");
+    expect(text).toContain("- Projected Trades / Week: 35.0, based on 2-day pace");
+    expect(text).toContain("- Projected Active Days / Week: 7.0, based on 2-day pace");
   });
 
   it("returns the empty-range fallback when there are no trades", () => {
     expect(
       buildFullStatsText({
-        metrics: {
-          ...sampleMetrics,
+        metrics: makeMetrics({
           summary: {
-            ...sampleMetrics.summary,
             trade_count: 0,
           },
-        },
+        }),
         rangeLabel: "selected range",
         calendarDays: [],
       }),
     ).toBe(NO_DATA_TEXT);
+  });
+});
+
+describe("buildStatsCoachSummary", () => {
+  it("uses Scaling Candidate for strong profitable ranges", () => {
+    const metrics = makeMetrics({
+      summary: {
+        trade_count: 80,
+        active_days: 12,
+        avg_trades_per_day: 4,
+        profit_factor: 2.2,
+        avg_win: 450,
+        avg_loss: -300,
+        win_rate: 62,
+      },
+      performance: {
+        netPnl: metric(8000),
+        profitPerDay: metric(666.67),
+        expectancyPerTrade: metric(100),
+      },
+      consistency: {
+        worstDay: metric(-450),
+        worstDayPercentOfNet: metric(5.6),
+        redDayPercent: metric(25),
+        stabilityScore: metric(88),
+        insight: "Daily PnL is stable.",
+      },
+      risk: {
+        maxDrawdown: metric(960),
+        drawdownPercentOfNet: metric(12),
+        drawdownPercentOfEquityBase: metric(1.2),
+      },
+      direction: {
+        longPnlShare: metric(49),
+        shortPnlShare: metric(51),
+        longExpectancy: metric(95),
+        shortExpectancy: metric(105),
+        insight: "Direction mix is balanced.",
+      },
+      payoff: {
+        winLossRatio: metric(1.5),
+        averageWin: metric(450),
+        averageLoss: metric(-300),
+        largeLossRate: metric(2),
+      },
+      activity: {
+        tradesPerWeek: 20,
+        activeDaysPerWeek: 3.5,
+      },
+      sustainability: {
+        score: 84,
+        label: "Healthy",
+        riskScore: 82,
+        consistencyScore: 86,
+        edgeScore: 90,
+      },
+    });
+
+    const summary = buildStatsCoachSummary({ metrics, rangeLabel: "Last 30 days" });
+
+    expect(summary.verdict).toContain("Scaling Candidate");
+    expect(summary.confidence).toEqual({
+      label: "High confidence sample",
+      detail: "High confidence sample - 80 trades / 12 active days / 0 missing key metrics",
+      tone: "positive",
+    });
+    expect(summary.keyStats).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Net PnL", value: "+$8,000.00", tone: "positive" }),
+        expect.objectContaining({ label: "Trades / Days", value: "80 / 12", tone: "positive" }),
+      ]),
+    );
+    expect(summary.sections[0]).toEqual(expect.objectContaining({ title: "Top 3 Levers" }));
+    expect(summary.sections[0].items).toHaveLength(3);
+    expect(summary.topLevers).toHaveLength(3);
+  });
+
+  it("uses Profitable But Fragile for profitable ranges with weak risk", () => {
+    const metrics = makeMetrics({
+      summary: {
+        trade_count: 45,
+        active_days: 6,
+      },
+      sustainability: {
+        score: 55,
+        label: "Unstable",
+        riskScore: 45,
+      },
+    });
+
+    const summary = buildStatsCoachSummary({ metrics, rangeLabel: "Last 2 weeks" });
+
+    expect(summary.verdict).toContain("Profitable But Fragile");
+    expect(summary.confidence).toEqual({
+      label: "Medium confidence sample",
+      detail: "Medium confidence sample - 45 trades / 6 active days / 0 missing key metrics",
+      tone: "neutral",
+    });
+    expect(summary.topLevers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ issue: "Loss sizing", metric: "avg loss -$440.80 vs avg win +$424.79" }),
+        expect.objectContaining({ issue: "Drawdown pressure" }),
+      ]),
+    );
+    expect(getSection(summary, "Improvements")).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Trade frequency: current pace projects to 49.0 trades/week"),
+        expect.stringContaining("require at least 4 of 5 A-setup checklist items before entry"),
+      ]),
+    );
+  });
+
+  it("uses Defensive Mode for losing ranges", () => {
+    const metrics = makeMetrics({
+      summary: {
+        trade_count: 60,
+        active_days: 11,
+        net_pnl: -1200,
+        realized_pnl: -1200,
+        gross_pnl: -1000,
+        profit_factor: 0.75,
+        win_rate: 42,
+      },
+      performance: {
+        netPnl: metric(-1200),
+        profitPerDay: metric(-109.09),
+        expectancyPerTrade: metric(-20),
+      },
+      risk: {
+        drawdownPercentOfNet: metric(null),
+        drawdownPercentOfEquityBase: metric(2.1),
+      },
+      activity: {
+        activeDaysPerWeek: 4,
+        tradesPerWeek: 24,
+      },
+      sustainability: {
+        score: 61,
+        label: "Mostly healthy",
+        riskScore: 72,
+      },
+    });
+
+    const summary = buildStatsCoachSummary({ metrics, rangeLabel: "April" });
+
+    expect(summary.verdict).toContain("Defensive Mode");
+    expect(summary.keyStats).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Net PnL", value: "-$1,200.00", tone: "negative" })]));
+    expect(summary.sections[0].items[0]).toContain("Negative edge");
+  });
+
+  it("uses Insufficient Sample and low confidence for small profitable samples", () => {
+    const summary = buildStatsCoachSummary({
+      metrics: makeMetrics({
+        summary: {
+          trade_count: 12,
+          active_days: 3,
+          avg_trades_per_day: 4,
+          profit_factor: 2.1,
+          avg_win: 500,
+          avg_loss: -250,
+          win_rate: 66,
+        },
+        performance: {
+          netPnl: metric(1800),
+          profitPerDay: metric(600),
+          expectancyPerTrade: metric(150),
+        },
+        consistency: {
+          worstDay: metric(-180),
+          worstDayPercentOfNet: metric(10),
+          redDayPercent: metric(33),
+          stabilityScore: metric(82),
+        },
+        risk: {
+          maxDrawdown: metric(300),
+          drawdownPercentOfNet: metric(16.7),
+          drawdownPercentOfEquityBase: metric(0.6),
+        },
+        direction: {
+          longPnlShare: metric(52),
+          shortPnlShare: metric(48),
+          longExpectancy: metric(145),
+          shortExpectancy: metric(155),
+          insight: "Direction mix is balanced.",
+        },
+        payoff: {
+          winLossRatio: metric(2),
+          averageWin: metric(500),
+          averageLoss: metric(-250),
+          largeLossRate: metric(0),
+        },
+        activity: {
+          tradesPerWeek: 18,
+          activeDaysPerWeek: 3,
+        },
+        sustainability: {
+          score: 76,
+          label: "Mostly healthy",
+          riskScore: 80,
+        },
+      }),
+      rangeLabel: "Three sessions",
+    });
+
+    expect(summary.verdict).toContain("Insufficient Sample");
+    expect(summary.confidence).toEqual({
+      label: "Low confidence sample",
+      detail: "Low confidence sample - 12 trades / 3 active days / 0 missing key metrics",
+      tone: "negative",
+    });
+    expect(getSection(summary, "Main Risks")).toContain(
+      "Low confidence sample - 12 trades / 3 active days / 0 missing key metrics. Treat positive stats as directional, not proven, until the sample reaches at least 30 trades and 5 active days.",
+    );
+  });
+
+  it("names missing key metrics in the sample quality detail", () => {
+    const summary = buildStatsCoachSummary({
+      metrics: makeMetrics({
+        summary: {
+          trade_count: 30,
+          active_days: 5,
+        },
+        direction: {
+          longExpectancy: metric(null),
+        },
+      }),
+      rangeLabel: "Five sessions",
+    });
+
+    expect(summary.confidence.detail).toBe("Medium confidence sample - 30 trades / 5 active days / 1 missing key metric: long expectancy");
+  });
+
+  it("puts underperforming direction insights in the risk section", () => {
+    const summary = buildStatsCoachSummary({
+      metrics: sampleMetrics,
+      rangeLabel: "Mar 3 to Mar 5, 2026",
+      calendarDays: sampleCalendarDays,
+    });
+
+    expect(summary.topLevers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          issue: "Direction imbalance",
+          metric: "long expectancy +$109.50 vs short +$410.45",
+        }),
+      ]),
+    );
+    expect(getSection(summary, "Main Risks")).toContain("Shorts outperform longs on expectancy.");
+    expect(getSection(summary, "What You're Doing Right")).not.toContain("Shorts outperform longs on expectancy.");
+  });
+
+  it("returns the empty-range fallback when there are no trades", () => {
+    expect(
+      buildStatsCoachSummary({
+        metrics: makeMetrics({
+          summary: {
+            trade_count: 0,
+          },
+        }),
+        rangeLabel: "selected range",
+        calendarDays: [],
+      }),
+    ).toEqual({
+      verdict: NO_DATA_TEXT,
+      confidence: {
+        label: "No meaningful sample yet",
+        detail: "No meaningful sample yet - 0 trades / 0 active days / 0 missing key metrics",
+        tone: "negative",
+      },
+      keyStats: [],
+      topLevers: [],
+      sections: [],
+    });
   });
 });
