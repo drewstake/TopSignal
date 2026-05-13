@@ -167,6 +167,7 @@ interface BalanceSeriesPoint {
   date: string;
   netPnl: number;
   balance: number;
+  startingBalance: number;
 }
 
 interface BalanceSummary {
@@ -343,6 +344,7 @@ function buildBalanceSeries(days: AccountPnlCalendarDay[], currentBalance: numbe
       date: day.date,
       netPnl: day.net_pnl,
       balance: startingBalance + runningNetPnl,
+      startingBalance,
     };
   });
 }
@@ -359,8 +361,9 @@ function buildBalanceSummary(days: AccountPnlCalendarDay[], currentBalance: numb
     };
   }
 
-  let highBalance = series[0].balance;
-  let lowBalance = series[0].balance;
+  const startBalance = series[0].startingBalance;
+  let highBalance = startBalance;
+  let lowBalance = startBalance;
   let largestDay = series[0].netPnl;
 
   for (const point of series) {
@@ -372,7 +375,7 @@ function buildBalanceSummary(days: AccountPnlCalendarDay[], currentBalance: numb
   }
 
   return {
-    startBalance: series[0].balance,
+    startBalance,
     endingBalance: series[series.length - 1].balance,
     highBalance,
     lowBalance,
@@ -467,9 +470,9 @@ export function buildFullStatsText({ metrics, rangeLabel, calendarDays = [] }: B
     "RISK",
     buildLine("Max Drawdown", formatMetricMoney(metrics.risk.maxDrawdown, { forceNegative: true })),
     buildLine("DD % of Net PnL", formatMetricPercent(metrics.risk.drawdownPercentOfNet)),
-    buildLine("Max DD % of Equity Base", formatMetricPercent(metrics.risk.drawdownPercentOfEquityBase)),
-    buildLine("Equity Base", formatMoney(metrics.risk.equityBase.value, { showPositiveSign: false })),
-    buildLine("Equity Base Basis", metrics.risk.equityBase.label || "N/A"),
+    buildLine("Max DD % of Risk Base", formatMetricPercent(metrics.risk.drawdownPercentOfEquityBase)),
+    buildLine("Risk Base", formatMoney(metrics.risk.equityBase.value, { showPositiveSign: false })),
+    buildLine("Risk Base Basis", metrics.risk.equityBase.label || "N/A"),
     buildLine("Avg Drawdown", formatMetricMoney(metrics.risk.averageDrawdown, { forceNegative: true })),
     buildLine("DD Length", formatHours(metrics.risk.maxDrawdownLengthHours)),
     buildLine("Recovery", formatHours(metrics.risk.recoveryTimeHours)),

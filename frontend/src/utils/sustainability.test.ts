@@ -30,6 +30,17 @@ describe("computeSustainability", () => {
     expect(result.riskScore).toBeLessThan(70);
   });
 
+  it("does not treat the smallest green day as a loss against risk capital", () => {
+    const result = computeSustainability({
+      dailyNetPnl: [589.6, 923.6],
+      maxDrawdown: -197.96,
+      equityBase: 2_000,
+    });
+
+    expect(result.debug.worstDayPct).toBe(0);
+    expect(result.riskScore).toBeGreaterThan(70);
+  });
+
   it("keeps breakeven low-risk performance in a mid range and below healthy", () => {
     const result = computeSustainability({
       dailyNetPnl: [20, -19, 18, -18, 21, -20, 19, -19, 20, -20],

@@ -27,9 +27,9 @@ export function computeDrawdownPercentOfNetPnl(maxDrawdown: number, netPnl: numb
 
 export function computeDrawdownPercentOfEquityBase(maxDrawdown: number, equityBase: number | null | undefined): DerivedMetricValue {
   if (equityBase === null || equityBase === undefined || !Number.isFinite(equityBase) || equityBase <= EPSILON) {
-    return missingMetric("Needs positive equity base.");
+    return missingMetric("Needs positive risk base.");
   }
-  // Drawdown % of Equity Base = abs(Max Drawdown) / Equity Base.
+  // Drawdown % of Risk Base = abs(Max Drawdown) / Risk Base.
   const percent = (Math.abs(maxDrawdown) / equityBase) * 100;
   return metric(percent);
 }

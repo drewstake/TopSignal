@@ -17,6 +17,8 @@ interface BalanceSeriesPoint {
   date: string;
   netPnl: number;
   balance: number;
+  startingBalance: number;
+  isPeriodStart?: boolean;
 }
 
 interface ChartPoint extends BalanceSeriesPoint {
@@ -80,6 +82,7 @@ function buildBalanceSeries(days: AccountPnlCalendarDay[], currentBalance: numbe
       date: day.date,
       netPnl: day.net_pnl,
       balance: startingBalance + runningNetPnl,
+      startingBalance,
     };
   });
 }
@@ -112,9 +115,11 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
   const series = useMemo(() => buildBalanceSeries(days, currentBalance), [currentBalance, days]);
   const firstPoint = series[0] ?? null;
   const lastPoint = series[series.length - 1] ?? null;
+  const periodStartingBalance = firstPoint?.startingBalance ?? null;
   const netPnlTotal = useMemo(() => series.reduce((sum, point) => sum + point.netPnl, 0), [series]);
   const hasAnchoredBalance = currentBalance !== null && Number.isFinite(currentBalance);
-  const isPositiveTrend = (firstPoint && lastPoint ? lastPoint.balance - firstPoint.balance : 0) >= 0;
+  const isPositiveTrend =
+    periodStartingBalance !== null && lastPoint !== null ? lastPoint.balance - periodStartingBalance >= 0 : true;
   const summaryTint = isPositiveTrend
     ? "linear-gradient(180deg, rgb(var(--dashboard-positive-rgb) / 0.14) 0%, transparent 100%)"
     : "linear-gradient(180deg, rgb(var(--dashboard-negative-rgb) / 0.14) 0%, transparent 100%)";
@@ -139,8 +144,9 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
       return null;
     }
 
-    let highBalance = series[0].balance;
-    let lowBalance = series[0].balance;
+    const startingBalance = series[0].startingBalance;
+    let highBalance = startingBalance;
+    let lowBalance = startingBalance;
     let largestDailyMove = series[0].netPnl;
 
     for (const point of series) {
@@ -152,7 +158,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     }
 
     return {
-      startingBalance: series[0].balance,
+      startingBalance,
       highBalance,
       lowBalance,
       largestDailyMove,
@@ -164,7 +170,15 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
       return null;
     }
 
-    const balances = series.map((point) => point.balance);
+    const openingPoint: BalanceSeriesPoint = {
+      date: series[0].date,
+      netPnl: 0,
+      balance: series[0].startingBalance,
+      startingBalance: series[0].startingBalance,
+      isPeriodStart: true,
+    };
+    const chartSeries = [openingPoint, ...series];
+    const balances = chartSeries.map((point) => point.balance);
     const minBalance = Math.min(...balances);
     const maxBalance = Math.max(...balances);
     const spread = maxBalance - minBalance;
@@ -175,11 +189,11 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     const yRange = Math.max(yMax - yMin, 1);
     const baselineY = height - chartPadding.bottom;
 
-    const points: ChartPoint[] = series.map((point, index) => {
+    const points: ChartPoint[] = chartSeries.map((point, index) => {
       const x =
-        series.length === 1
+        chartSeries.length === 1
           ? chartPadding.left + plotWidth / 2
-          : chartPadding.left + (index / (series.length - 1)) * plotWidth;
+          : chartPadding.left + (index / (chartSeries.length - 1)) * plotWidth;
       const y = chartPadding.top + ((yMax - point.balance) / yRange) * plotHeight;
       return { ...point, x, y };
     });
@@ -202,7 +216,12 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
       }
       const pointIndex = Math.round((index / (xTickCount - 1)) * (points.length - 1));
       return points[pointIndex];
-    }).filter((point, index, allTicks) => index === 0 || point.date !== allTicks[index - 1].date);
+    }).filter(
+      (point, index, allTicks) =>
+        index === 0 ||
+        point.date !== allTicks[index - 1].date ||
+        Boolean(point.isPeriodStart) !== Boolean(allTicks[index - 1].isPeriodStart),
+    );
     const xGuides = xTicks.map((tick) => tick.x);
     const markerIndexes = createMarkerIndexes(points.length);
 
@@ -226,7 +245,11 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
     chartData && hoveredPointIndex !== null && hoveredPointIndex >= 0 && hoveredPointIndex < chartData.points.length
       ? chartData.points[hoveredPointIndex]
       : null;
-  const hoveredDateLabel = hoveredPoint ? hoverDateFormatter.format(parseIsoDate(hoveredPoint.date)) : null;
+  const hoveredDateLabel = hoveredPoint
+    ? hoveredPoint.isPeriodStart
+      ? "Start"
+      : hoverDateFormatter.format(parseIsoDate(hoveredPoint.date))
+    : null;
   const hoveredBalanceLabel = hoveredPoint ? formatCurrency(hoveredPoint.balance) : null;
   const hoveredTooltipWidth = Math.max(
     126,
@@ -441,7 +464,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                 {chartData.points.map((point, index) => (
                   chartData.markerIndexes.has(index) ? (
                     <circle
-                      key={`point-${point.date}`}
+                      key={`point-${point.date}-${index}`}
                       cx={point.x}
                       cy={point.y}
                       r={
@@ -527,9 +550,9 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                   </g>
                 ) : null}
 
-                {chartData.xTicks.map((tick) => (
-                  <text key={`x-tick-${tick.date}`} x={tick.x} y={height - 8} textAnchor="middle" fontSize="11" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
-                    {dateFormatter.format(parseIsoDate(tick.date))}
+                {chartData.xTicks.map((tick, index) => (
+                  <text key={`x-tick-${tick.date}-${index}`} x={tick.x} y={height - 8} textAnchor="middle" fontSize="11" fill="var(--dashboard-chart-muted, rgb(var(--theme-muted)/0.9))">
+                    {tick.isPeriodStart ? "Start" : dateFormatter.format(parseIsoDate(tick.date))}
                   </text>
                 ))}
               </svg>

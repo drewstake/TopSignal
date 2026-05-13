@@ -40,7 +40,7 @@ import {
 } from "./botChartData";
 
 const POLL_INTERVAL_MS = 30_000;
-const LIVE_PRICE_POLL_INTERVAL_MS = 1_000;
+const LIVE_PRICE_POLL_INTERVAL_MS = 10_000;
 const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
 const LIVE_PRICE_STREAM_STALE_MS = 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
@@ -1601,12 +1601,20 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   }, [livePrice, livePricePoint?.isPartial]);
 
   useEffect(() => {
+    let active = true;
     setCandles([]);
     setLiveCandle(null);
     setStreamPrice(null);
     setLivePriceError(null);
-    void loadCandles();
-    void loadLivePrice({ force: true });
+    void loadCandles().finally(() => {
+      if (active) {
+        void loadLivePrice({ force: true });
+      }
+    });
+
+    return () => {
+      active = false;
+    };
   }, [loadCandles, loadLivePrice, refreshToken]);
 
   useEffect(() => {

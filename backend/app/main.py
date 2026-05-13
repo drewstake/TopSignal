@@ -166,6 +166,7 @@ from .services.projectx_trades import (
     summarize_trade_events_with_point_bases,
 )
 from .services.bot_service import (
+    _looks_like_projectx_contract_id,
     create_bot_config,
     delete_bot_config,
     evaluate_bot_config,
@@ -1209,11 +1210,34 @@ def get_projectx_market_candles(
             limit=limit,
             include_partial_bar=include_partial_bar,
         )
+        if not candles and symbol and _looks_like_projectx_contract_id(resolved_contract_id):
+            symbol_contract_id, symbol_resolved_symbol = resolve_market_contract(
+                client,
+                contract_id=symbol,
+                symbol=symbol,
+                live=live,
+            )
+            if symbol_contract_id != resolved_contract_id:
+                candles = fetch_and_store_market_candles(
+                    db,
+                    user_id=user_id,
+                    client=client,
+                    contract_id=symbol_contract_id,
+                    symbol=symbol_resolved_symbol,
+                    live=live,
+                    start=fetch_start_utc,
+                    end=end_utc,
+                    unit=unit,
+                    unit_number=unit_number,
+                    limit=limit,
+                    include_partial_bar=include_partial_bar,
+                )
         if refresh and not include_partial_bar:
+            prune_contract_id = str(candles[0].contract_id) if candles else resolved_contract_id
             prune_market_candle_cache_range(
                 db,
                 user_id=user_id,
-                contract_id=resolved_contract_id,
+                contract_id=prune_contract_id,
                 live=live,
                 start=start_utc,
                 end=end_utc,

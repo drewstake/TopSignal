@@ -1,6 +1,6 @@
 import type { ExpenseAccountType, ExpenseCategory, ExpensePlanSize } from "./types";
 
-type CombinePlanSize = Extract<ExpensePlanSize, "50k" | "100k" | "150k">;
+export type CombinePlanSize = Extract<ExpensePlanSize, "50k" | "100k" | "150k">;
 
 const COMBINE_PREFIX_BY_PLAN: Record<CombinePlanSize, string> = {
   "50k": "50KTC",
@@ -657,6 +657,11 @@ function writeCombineSpendLedger(ledger: CombineSpendLedger): void {
 
 export function readCombineSpendSnapshot(): CombineSpendSnapshot {
   return computeCombineSpendSnapshotFromLedger(readCombineSpendLedger());
+}
+
+export function readTrackedCombinePlanSizeForAccountId(accountId: number): CombinePlanSize | null {
+  const purchase = readCombineSpendLedger().purchasesByAccountId[String(accountId)];
+  return purchase?.planSize ?? null;
 }
 
 export function syncCombineSpendTrackerFromExpenses(expenses: CombineTrackerExpense[]): CombineSpendSnapshot {

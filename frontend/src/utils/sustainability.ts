@@ -145,7 +145,8 @@ export function computeSustainability(input: SustainabilityInputs): Sustainabili
     ? Math.abs(maxDrawdownInput)
     : computeMaxDrawdownFromDailyPnl(dailyNetPnl);
   const maxDDPct = maxDrawdownDollars / (effectiveEquityBase + EPSILON);
-  const worstDayPct = Math.abs(Math.min(...dailyNetPnl)) / (effectiveEquityBase + EPSILON);
+  const worstDayLoss = Math.abs(Math.min(0, ...dailyNetPnl));
+  const worstDayPct = worstDayLoss / (effectiveEquityBase + EPSILON);
 
   const riskScore =
     0.6 * clamp(100 - 400 * maxDDPct, 0, 100) +

@@ -84,7 +84,7 @@ const sampleMetrics: CopyFullStatsMetrics = {
     equityBase: {
       value: 50000,
       label: "Current balance",
-      detail: "Current balance is used for the equity base.",
+      detail: "Current balance is used for the risk base.",
     },
     averageDrawdown: metric(853.4),
     maxDrawdownLengthHours: 0.1,
@@ -218,9 +218,9 @@ CONSISTENCY
 RISK
 • Max Drawdown: -$1,664.40
 • DD % of Net PnL: 30.5%
-• Max DD % of Equity Base: 3.3%
-• Equity Base: $50,000.00
-• Equity Base Basis: Current balance
+• Max DD % of Risk Base: 3.3%
+• Risk Base: $50,000.00
+• Risk Base Basis: Current balance
 • Avg Drawdown: -$853.40
 • DD Length: 0.1 h
 • Recovery: 0.0 h
@@ -271,10 +271,10 @@ HOLD TIME
 • Avg Loss Duration: 3m 22s
 
 DAILY BALANCE
-• Start Balance: $2,201.80
+• Start Balance: $0.00
 • Ending Balance: $5,458.30
 • High: $5,458.30
-• Low: $2,201.80
+• Low: $0.00
 • Largest Day: +$2,201.80
 
 PNL CALENDAR (Mar 3 to Mar 5, 2026)

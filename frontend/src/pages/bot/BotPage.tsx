@@ -1138,7 +1138,7 @@ export function BotPage() {
     try {
       const [accountRows, botRows] = await Promise.all([
         accountsApi.getSelectableAccounts(),
-        botsApi.listConfigs(accountFromQuery ?? undefined),
+        botsApi.listConfigs(),
       ]);
       setAccounts(accountRows);
       setConfigs(botRows.items);

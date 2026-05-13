@@ -23,6 +23,7 @@ import {
   readStoredMainAccountId,
   writeStoredAccountId,
 } from "../../lib/accountSelection";
+import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
@@ -61,6 +62,7 @@ type PointsBasis = "auto" | "MNQ" | "MES" | "MGC" | "SIL";
 type ConcretePointsBasis = Exclude<PointsBasis, "auto">;
 const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "MGC", "SIL"];
 const DISPLAY_PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES"];
+const RISK_PRESSURE_FULL_SCALE_PERCENT = 25;
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -985,15 +987,43 @@ export function DashboardPage() {
         .filter((value) => Number.isFinite(value)),
     [pnlCalendarDays],
   );
+  const accountRiskRule = useMemo(() => {
+    if (!selectedAccount) {
+      return null;
+    }
+    return getAccountRiskRuleForAccount(selectedAccount);
+  }, [selectedAccount]);
+  const accountRiskBase = useMemo(() => {
+    if (accountRiskRule !== null) {
+      return {
+        value: accountRiskRule.maxLossLimit,
+        label: `${accountRiskRule.provider} ${accountRiskRule.planSize.toUpperCase()} max loss limit`,
+        detail: `Risk uses the ${formatCurrency(accountRiskRule.maxLossLimit)} Maximum Loss Limit, not ${formatCurrency(
+          accountRiskRule.nominalBuyingPower,
+        )} buying power or current balance.`,
+      };
+    }
+
+    const currentBalance = selectedAccount?.balance ?? null;
+    if (currentBalance !== null && Number.isFinite(currentBalance) && currentBalance > 0) {
+      return {
+        value: currentBalance,
+        label: "Current balance",
+        detail: "Account risk uses the current account balance as the risk base.",
+      };
+    }
+
+    return null;
+  }, [accountRiskRule, selectedAccount?.balance]);
   const sustainability = useMemo(
     () =>
       computeSustainability({
         dailyNetPnl: sustainabilityDailyNetPnl,
         maxDrawdown: summary.max_drawdown,
-        equityBase: selectedAccount?.balance ?? null,
+        equityBase: accountRiskBase?.value ?? null,
       }),
     [
-      selectedAccount?.balance,
+      accountRiskBase?.value,
       sustainabilityDailyNetPnl,
       summary.max_drawdown,
     ],
@@ -1023,29 +1053,24 @@ export function DashboardPage() {
           ? "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
           : "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.2),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
   const drawdownEquityBase = useMemo(() => {
-    const currentBalance = selectedAccount?.balance ?? null;
-    if (currentBalance !== null && Number.isFinite(currentBalance) && currentBalance > 0) {
-      return {
-        value: currentBalance,
-        label: "Current balance",
-        detail: "Account risk uses the current account balance as the equity base.",
-      };
+    if (accountRiskBase !== null) {
+      return accountRiskBase;
     }
 
     if (sustainability.debug.peakEquityFallback > 0) {
       return {
         value: sustainability.debug.peakEquityFallback,
         label: "Peak equity fallback",
-        detail: "Account balance is unavailable, so risk uses peak equity inferred from daily PnL in this range.",
+        detail: "Account risk base is unavailable, so risk uses peak equity inferred from daily PnL in this range.",
       };
     }
 
     return {
       value: null,
       label: "Unavailable",
-      detail: "Need account balance or equity history to grade drawdown control.",
+      detail: "Need account risk rules, account balance, or equity history to grade drawdown control.",
     };
-  }, [selectedAccount?.balance, sustainability.debug.peakEquityFallback]);
+  }, [accountRiskBase, sustainability.debug.peakEquityFallback]);
   const drawdownPercentOfEquityBase = useMemo(
     () => computeDrawdownPercentOfEquityBase(summary.max_drawdown, drawdownEquityBase.value),
     [summary.max_drawdown, drawdownEquityBase.value],
@@ -1062,7 +1087,7 @@ export function DashboardPage() {
             : "negative";
   const riskSignalLabel =
     drawdownPercentOfEquityBase.value === null
-      ? "Awaiting Equity Base"
+      ? "Awaiting Risk Base"
       : drawdownPercentOfEquityBase.value <= 5
         ? "Very Controlled"
         : drawdownPercentOfEquityBase.value <= 10
@@ -1093,7 +1118,7 @@ export function DashboardPage() {
   const riskPressurePercent =
     drawdownPercentOfEquityBase.value === null
       ? 0
-      : Math.min(100, Math.max(0, (drawdownPercentOfEquityBase.value / 25) * 100));
+      : Math.min(100, Math.max(0, (drawdownPercentOfEquityBase.value / RISK_PRESSURE_FULL_SCALE_PERCENT) * 100));
 
   const directionPrimaryValue =
     directionSplit.longPercent.value === null ? "N/A" : `${formatPercent(directionSplit.longPercent.value, 0)} Long`;
@@ -1686,7 +1711,7 @@ export function DashboardPage() {
               primaryValue={formatMetricValue(maxDrawdownMetric, formatPnl)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", riskPrimaryClassName)}
               subtitle="Peak-to-trough drawdown with account-risk context."
-              info="Drawdown control is graded from max drawdown as a share of equity base. The dashboard uses current account balance when available and falls back to peak equity inferred from daily PnL. Profit giveback is shown separately and does not determine control."
+              info="Drawdown control is graded from max drawdown as a share of risk base. Known Topstep combines use Maximum Loss Limit as risk capital; other accounts use current balance when available and then fall back to peak equity inferred from daily PnL. Profit giveback is shown separately and does not determine control."
               accentClassName={riskAccentClassName}
               className={cn(
                 "self-start sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-5 lg:col-span-3 lg:row-start-1 lg:col-start-10",
@@ -1701,7 +1726,7 @@ export function DashboardPage() {
                 </div>
                 <div className="mt-2.5 space-y-1.5">
                   <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    <span>Max DD % of Equity Base</span>
+                    <span>Max DD % of Risk Base</span>
                     <span className="font-semibold text-app-text-soft">{formatMetricValue(drawdownPercentOfEquityBase, formatPercent)}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
@@ -1718,14 +1743,18 @@ export function DashboardPage() {
                       style={{ width: `${riskPressurePercent}%` }}
                     />
                   </div>
+                  <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.12em] text-app-muted">
+                    <span>Risk pressure scale</span>
+                    <span>{formatNumber(RISK_PRESSURE_FULL_SCALE_PERCENT, 0)}% = full bar</span>
+                  </div>
                   <p className="text-[10px] text-app-muted">{drawdownEquityBase.detail}</p>
                 </div>
               </div>
               <MiniStatList
                 items={[
-                  { label: "Max DD % of Equity Base", value: formatMetricValue(drawdownPercentOfEquityBase, formatPercent) },
+                  { label: "Max DD % of Risk Base", value: formatMetricValue(drawdownPercentOfEquityBase, formatPercent) },
                   { label: "Profit Giveback", value: formatMetricValue(drawdownPercentOfNet, formatPercent) },
-                  { label: "Equity Base", value: drawdownEquityBase.value === null ? "N/A" : formatCurrency(drawdownEquityBase.value) },
+                  { label: "Risk Base", value: drawdownEquityBase.value === null ? "N/A" : formatCurrency(drawdownEquityBase.value) },
                   { label: "Basis", value: drawdownEquityBase.label },
                   {
                     label: "Avg Size Used",
