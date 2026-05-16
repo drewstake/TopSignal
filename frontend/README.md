@@ -1,6 +1,6 @@
 # TopSignal Frontend
 
-This frontend is the trader-facing UI for TopSignal. It is a React 19 + TypeScript + Vite application that talks to the FastAPI backend and renders the current routed product: dashboard, accounts, trades, expenses, payouts, and journal workflows.
+This frontend is the trader-facing UI for TopSignal. It is a React 19 + TypeScript + Vite application that talks to the FastAPI backend and renders the current routed product: dashboard, accounts, trades, expenses, payouts, journal, bot, and theme workflows.
 
 ## Stack
 
@@ -23,6 +23,8 @@ The current router lives in `src/app/routes.tsx` and ships:
 - `/trades`: `TradesPage`
 - `/expenses`: `ExpensesPage`
 - `/journal`: `JournalPage`
+- `/bot`: `BotPage`
+- `/themes`: `ThemePage`
 
 The app shell in `src/app/AppShell.tsx` provides:
 
@@ -97,6 +99,26 @@ Supports:
 - archive toggle
 - trade-stat snapshot pulls
 - copy/export helpers for recent entries
+
+### Bot
+
+`src/pages/bot/BotPage.tsx`
+
+Supports:
+
+- bot strategy configuration
+- dry-run start and evaluation flows
+- signal charting
+- recent bot decision, order-attempt, risk-event, and run activity review
+
+### Themes
+
+`src/pages/themes/ThemePage.tsx`
+
+Supports:
+
+- workspace theme palette selection
+- active-palette preview across controls, surfaces, metrics, and status colors
 
 ## Shared Frontend Architecture
 
@@ -232,7 +254,6 @@ frontend/
 - The frontend assumes the backend is the source of truth for accounts, summaries, trades, journal data, expenses, and payouts
 - Some product logic is intentionally client-side, especially the combine tracker
 - Supabase auth is optional and only activates when the relevant frontend env vars are present
-- The repo still contains unrouted prototype folders for `overview` and `analytics`
 
 ## Related Files
 

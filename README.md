@@ -86,6 +86,8 @@ Important dashboard behaviors:
 - The page can sync trades, change time range, and drill into a specific trading day.
 - Clicking a PnL-calendar day filters the trade feed to that trading day.
 - Calendar days can open or create a journal entry for that date/account.
+- `Summary` opens a coach-style trading summary for the selected dashboard range, including verdict, sample quality, top levers, risks, improvements, and a short action plan.
+- `Copy Full Stats` copies a text payload for the selected dashboard range.
 - The dashboard uses `summary-with-point-bases` so it can render one summary request plus point-payoff comparisons instead of fanning out multiple summary calls.
 
 ### Accounts
@@ -172,6 +174,7 @@ A user can:
 - archive or unarchive entries
 - paste images into the entry workspace
 - pull a trade-stat snapshot into the journal entry
+- generate or append a Gemini-backed AI Recap for the selected trading date and account
 - copy journal content for recent entries
 - merge one account's journal history into another account without deleting the source account history
 
@@ -185,6 +188,8 @@ Notable journal behavior:
 - If a stale save collides with newer server state, the API returns `409 version_conflict` and the UI can reload the server version.
 - Journal images are stored either locally on disk or in Supabase Storage, depending on configuration.
 - Trade stats can be pulled by explicit trade IDs, explicit date range, or the entry's trading day.
+- AI Recap generation uses the backend Gemini client and the existing `GEMINI_*` environment variables listed in this README.
+- AI Recap skips days with no trades instead of creating or updating a journal entry.
 - Journal merge matches entries by `entry_date`. `skip` keeps the destination entry for that date; `overwrite` replaces the destination entry content with the source entry.
 - Journal merge copies entries into the destination account and leaves the source account untouched. When image copying is enabled, new destination image records and files are created so source images are not orphaned or shared.
 
@@ -201,13 +206,13 @@ A user can:
 - create, edit, select, and delete named bot configurations
 - bind a bot to a ProjectX account and contract
 - search ProjectX contracts from the configuration form
-- configure the current `sma_cross` strategy with timeframe, lookback bars, fast SMA, and slow SMA settings
+- choose from multiple strategy types, including SMA Cross, EMA Scalping, Support/Resistance, Donchian Breakout, FVG Sweep + MSS, Liquidity Sweep + Retest, Supertrend Pivot, RVOL Breakout, relative-strength strategies, Bollinger/VWAP/Fisher mean reversion, ORB variants, and pullback/trap strategies
 - set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
 - start a dry-run bot run, evaluate the strategy once, or stop the latest run
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
 - inspect recent decisions, order attempts, risk events, and run history
 
-The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, fast and slow SMA overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, and y-axis fit controls.
+The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, strategy overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, and y-axis fit controls.
 
 Important bot behaviors:
 
@@ -426,6 +431,15 @@ Trade-stat snapshot flow:
 3. it computes a snapshot from closed trades in the selected window
 4. it stores that snapshot in `journal_entries.stats_json`
 
+AI Recap flow:
+
+1. the user clicks AI Recap for the selected account and trading date on the Journal page
+2. the frontend flushes pending journal autosave work, then calls the account-scoped AI recap endpoint
+3. the backend loads closed trades for that account and trading date
+4. if the day has no trades, the backend skips recap generation and does not create or update a journal entry
+5. if trades exist, the backend calls Gemini using the existing `GEMINI_*` backend environment variables listed in this README
+6. the recap is created as a new journal entry or appended to the existing entry as a managed AI recap section
+
 Journal merge flow:
 
 1. the user chooses an old account and a new account from the Accounts page
@@ -456,8 +470,8 @@ Typical bot workflow:
 1. the frontend loads selectable accounts and `GET /api/bots`
 2. the user searches ProjectX contracts and saves a named bot configuration
 3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
-4. `POST /api/bots/{id}/evaluate` computes one SMA-cross decision and persists it
-5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the strategy, and records any dry-run order attempt or risk block
+4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision and persists it
+5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
 6. `POST /api/bots/{id}/stop` stops the latest running bot run
 7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
 
@@ -524,6 +538,9 @@ VITE_API_BASE_URL=http://localhost:8000
 ```
 
 If you want authenticated cloud mode, also set the Supabase variables shown in `.env.example`.
+When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are configured, the frontend
+bootstraps a Supabase session before rendering the routed app. If there is no active
+session, it shows a Google OAuth sign-in screen first.
 
 #### 3. Install dependencies
 
@@ -606,6 +623,13 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `VITE_SUPABASE_URL` | Supabase project URL |
 | `VITE_SUPABASE_ANON_KEY` | Supabase anon key |
 | `VITE_PERF_LOGS` | Enable frontend API perf logging |
+
+Frontend auth behavior:
+
+- If both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are present, the app treats Supabase auth as enabled.
+- With Supabase auth enabled, the app requires Supabase session bootstrap before the routed app is shown.
+- If session bootstrap does not find an active session, the user sees a Google OAuth sign-in screen.
+- Google must be enabled in Supabase Auth providers for sign-in to work.
 
 ### Common Commands
 
