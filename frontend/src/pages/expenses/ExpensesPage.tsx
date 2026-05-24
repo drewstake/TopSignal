@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -20,10 +20,8 @@ import {
   listExpenses,
 } from "../../lib/api";
 import {
-  decrementStandardActivationCount,
   getCombinePriceCentsFromAccountName,
   getCombinePlanSizeFromAccountName,
-  incrementStandardActivationCount,
   isDailyLossLimitCombineAccountName,
   isTrackedCombinePurchaseExpense,
   markEvaluationExpensesSynced,
@@ -60,14 +58,6 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
-const trackerDateFormatter = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
-
 function formatCategoryLabel(category: string) {
   return category
     .split("_")
@@ -101,8 +91,35 @@ function splitTags(input: string) {
     .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index);
 }
 
+function getNetProfitTitleClassName(amount: number, loading: boolean) {
+  if (loading) {
+    return "text-2xl";
+  }
+  if (amount > 0) {
+    return "text-2xl text-emerald-300";
+  }
+  if (amount < 0) {
+    return "text-2xl text-rose-300";
+  }
+  return "text-2xl";
+}
+
+function getNetProfitPositionLabel(amount: number) {
+  if (amount > 0) {
+    return `Positive by ${currencyFormatter.format(amount)}`;
+  }
+  if (amount < 0) {
+    return `Negative by ${currencyFormatter.format(Math.abs(amount))}`;
+  }
+  return "Break-even";
+}
+
 function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
   return expense.tags.includes("combine_tracker");
+}
+
+function isSpreadsheetImportedTopstepExpense(expense: ExpenseRecord): boolean {
+  return expense.tags.includes("topstep_import");
 }
 
 interface ActiveCombineAccount {
@@ -178,7 +195,6 @@ export function ExpensesPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [category, setCategory] = useState<ExpenseCategory | "">("");
-  const [accountFilter, setAccountFilter] = useState("");
 
   const [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
@@ -196,7 +212,7 @@ export function ExpensesPage() {
   const [combineTrackerError, setCombineTrackerError] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
-  const [addState, setAddState] = useState<AddExpenseState>(buildInitialAddExpenseState(accountFilter));
+  const [addState, setAddState] = useState<AddExpenseState>(buildInitialAddExpenseState(""));
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [payoutItems, setPayoutItems] = useState<PayoutRecord[]>([]);
@@ -213,16 +229,7 @@ export function ExpensesPage() {
   const [addingPayout, setAddingPayout] = useState(false);
   const didInitialCombineSyncRef = useRef(false);
 
-  const parsedAccountFilter = useMemo(() => parsePositiveInt(accountFilter), [accountFilter]);
-
   const loadExpenses = useCallback(async () => {
-    if (parsedAccountFilter === null) {
-      setError("Account ID filter must be a positive integer.");
-      setItems([]);
-      setTotal(0);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     try {
@@ -230,7 +237,6 @@ export function ExpensesPage() {
         start_date: startDate || undefined,
         end_date: endDate || undefined,
         category: category || undefined,
-        account_id: parsedAccountFilter,
         limit,
         offset,
       });
@@ -243,22 +249,13 @@ export function ExpensesPage() {
     } finally {
       setLoading(false);
     }
-  }, [category, endDate, limit, offset, parsedAccountFilter, startDate]);
+  }, [category, endDate, limit, offset, startDate]);
 
   const loadTotals = useCallback(async () => {
-    if (parsedAccountFilter === null) {
-      setTotalsError("Account ID filter must be a positive integer.");
-      setTotals(null);
-      return;
-    }
-
     setTotalsLoading(true);
     setTotalsError(null);
     try {
-      const response = await getExpenseTotals(TOTAL_RANGE, {
-        accountId: parsedAccountFilter,
-        startCreatedAt: combineSpendSnapshot.startedAt,
-      });
+      const response = await getExpenseTotals(TOTAL_RANGE);
       setTotals(response);
     } catch (err) {
       setTotals(null);
@@ -266,7 +263,7 @@ export function ExpensesPage() {
     } finally {
       setTotalsLoading(false);
     }
-  }, [combineSpendSnapshot.startedAt, parsedAccountFilter]);
+  }, []);
 
   const loadPayouts = useCallback(async () => {
     setPayoutLoading(true);
@@ -338,6 +335,9 @@ export function ExpensesPage() {
     try {
       const combineRelevantExpenses = await listAllCombineRelevantExpenses();
       nextSnapshot = syncCombineSpendTrackerFromExpenses(combineRelevantExpenses);
+      if (combineRelevantExpenses.some(isSpreadsheetImportedTopstepExpense)) {
+        return;
+      }
       const combinePurchaseExpenses = combineRelevantExpenses.filter(isTrackedCombinePurchaseExpense);
       const trackedCombineExpensesByAccountId = new Map<number, ExpenseRecord[]>();
       const expenseIdsToDelete = new Set<number>();
@@ -506,7 +506,7 @@ export function ExpensesPage() {
 
   useEffect(() => {
     setOffset(0);
-  }, [startDate, endDate, category, accountFilter, limit]);
+  }, [startDate, endDate, category, limit]);
 
   useEffect(() => {
     if (addState.accountType !== "standard" && addState.stage !== "evaluation_fee") {
@@ -529,11 +529,15 @@ export function ExpensesPage() {
   const payoutTotalPages = Math.max(1, Math.ceil(payoutTotal / PAYOUT_PAGE_SIZE));
   const payoutCurrentPage = Math.floor(payoutOffset / PAYOUT_PAGE_SIZE) + 1;
   const practiceBlocked = addState.accountType === "practice";
-  const combineTrackerTotalAmount = combineSpendSnapshot.totalCostCents / 100;
-  const trackerStartedOnLabel = trackerDateFormatter.format(new Date(combineSpendSnapshot.startedAt));
+  const recordedSpendAmount = totals?.total_amount ?? 0;
+  const netPayoutTotalAmount = payoutTotals?.total_amount ?? 0;
+  const netProfitAmount = netPayoutTotalAmount - recordedSpendAmount;
+  const netProfitLoading = totalsLoading || payoutTotalsLoading;
+  const netProfitTitleClassName = getNetProfitTitleClassName(netProfitAmount, netProfitLoading);
+  const netProfitPositionLabel = getNetProfitPositionLabel(netProfitAmount);
 
   function resetAddForm() {
-    setAddState(buildInitialAddExpenseState(accountFilter));
+    setAddState(buildInitialAddExpenseState(""));
     setAddError(null);
   }
 
@@ -581,16 +585,6 @@ export function ExpensesPage() {
     } catch (err) {
       setPayoutError(err instanceof Error ? err.message : "Failed to delete payout");
     }
-  }
-
-  function handleAddStandardActivation() {
-    setCombineSpendSnapshot(incrementStandardActivationCount(1));
-    setCombineTrackerError(null);
-  }
-
-  function handleRemoveStandardActivation() {
-    setCombineSpendSnapshot(decrementStandardActivationCount(1));
-    setCombineTrackerError(null);
   }
 
   async function handleSubmitNewExpense(event: FormEvent<HTMLFormElement>) {
@@ -689,7 +683,7 @@ export function ExpensesPage() {
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card className="xl:col-span-2">
           <CardHeader className="mb-2">
-            <CardDescription>Spend since {trackerStartedOnLabel}</CardDescription>
+            <CardDescription>Recorded spend</CardDescription>
             <CardTitle className="text-2xl">
               {totalsLoading ? "..." : totals ? currencyFormatter.format(totals.total_amount) : "$0.00"}
             </CardTitle>
@@ -703,33 +697,30 @@ export function ExpensesPage() {
 
         <Card className="xl:col-span-2">
           <CardHeader className="mb-2">
-            <CardDescription>Combine spend tracker</CardDescription>
-            <CardTitle className="text-2xl">
-              {combineTrackerLoading ? "..." : currencyFormatter.format(combineTrackerTotalAmount)}
+            <CardDescription>Net after payouts</CardDescription>
+            <CardTitle className={netProfitTitleClassName}>
+              {netProfitLoading ? "..." : currencyFormatter.format(netProfitAmount)}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {combineTrackerError ? (
-              <p className="text-xs text-rose-300">{combineTrackerError}</p>
+            {totalsError || payoutTotalsError || combineTrackerError ? (
+              <p className="text-xs text-rose-300">{totalsError ?? payoutTotalsError ?? combineTrackerError}</p>
             ) : (
               <p className="text-xs text-slate-400">
-                {combineSpendSnapshot.totalTrackedCombines} combine purchase
-                {combineSpendSnapshot.totalTrackedCombines === 1 ? "" : "s"} since {trackerStartedOnLabel} (
-                {`50k: ${combineSpendSnapshot.countsByPlan["50k"]} | 100k: ${combineSpendSnapshot.countsByPlan["100k"]} | 150k: ${combineSpendSnapshot.countsByPlan["150k"]}`})
+                {netProfitLoading
+                  ? "Calculating net..."
+                  : `${netProfitPositionLabel}. ${currencyFormatter.format(netPayoutTotalAmount)} payouts - ${currencyFormatter.format(
+                      recordedSpendAmount,
+                    )} recorded spend.`}
               </p>
             )}
             <p className="text-xs text-slate-500">
+              Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted:{" "}
+              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}.{" "}
               Standard activations: {combineSpendSnapshot.standardActivationCount} (
-              {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}). Prefixes: 50KTC /
-              100KTC / 150KTC. Auto rates: Standard $49 / $99 / $149, DLL $85 / $129 / $199.
+              {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}).
             </p>
             <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={handleAddStandardActivation}>
-                Add Standard Activation (+$149)
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleRemoveStandardActivation}>
-                Remove Standard Activation (-$149)
-              </Button>
               <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
                 {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
               </Button>
@@ -752,7 +743,7 @@ export function ExpensesPage() {
         </CardHeader>
 
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
               <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
               <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
@@ -776,15 +767,6 @@ export function ExpensesPage() {
               </Select>
             </div>
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account ID</label>
-              <Input
-                value={accountFilter}
-                onChange={(event) => setAccountFilter(event.target.value)}
-                placeholder="Any"
-                inputMode="numeric"
-              />
-            </div>
-            <div>
               <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Page Size</label>
               <Select value={String(limit)} onChange={(event) => setLimit(Number(event.target.value))}>
                 <option value={25}>25</option>
@@ -796,15 +778,12 @@ export function ExpensesPage() {
           </div>
 
           <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
-            <Table className="min-w-[980px]">
+            <Table className="min-w-[760px]">
               <TableHeader>
                 <tr>
                   <TableHead>Date</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Plan Size</TableHead>
-                  <TableHead>Account Type</TableHead>
-                  <TableHead className="text-right">Account ID</TableHead>
                   <TableHead>Description</TableHead>
                   <TableHead>Tags</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -813,19 +792,19 @@ export function ExpensesPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-slate-400">
+                    <TableCell colSpan={6} className="text-center text-slate-400">
                       Loading expenses...
                     </TableCell>
                   </TableRow>
                 ) : error ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-rose-300">
+                    <TableCell colSpan={6} className="text-center text-rose-300">
                       {error}
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-slate-400">
+                    <TableCell colSpan={6} className="text-center text-slate-400">
                       No expenses found.
                     </TableCell>
                   </TableRow>
@@ -835,9 +814,6 @@ export function ExpensesPage() {
                       <TableCell>{dateFormatter.format(new Date(`${expense.expense_date}T00:00:00.000Z`))}</TableCell>
                       <TableCell>{formatCategoryLabel(expense.category)}</TableCell>
                       <TableCell className="text-right font-mono">{currencyFormatter.format(expense.amount)}</TableCell>
-                      <TableCell>{expense.plan_size ?? "-"}</TableCell>
-                      <TableCell>{expense.account_type ?? "-"}</TableCell>
-                      <TableCell className="text-right">{expense.account_id ?? "-"}</TableCell>
                       <TableCell className="max-w-[240px] truncate" title={expense.description ?? undefined}>
                         {expense.description ?? "-"}
                       </TableCell>

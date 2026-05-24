@@ -610,6 +610,7 @@ create table if not exists expenses (
   category text not null check (category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other')),
   account_type text check (account_type in ('no_activation', 'standard', 'practice')),
   plan_size text check (plan_size in ('50k', '100k', '150k')),
+  source_id text,
   description text,
   tags text[] not null default '{}',
   created_at timestamptz not null default now(),
@@ -635,6 +636,7 @@ create unique index if not exists uq_expenses_dedupe
     category,
     coalesce(account_type, ''),
     coalesce(plan_size, ''),
+    coalesce(source_id, ''),
     coalesce(account_id, 0),
     amount_cents
   );

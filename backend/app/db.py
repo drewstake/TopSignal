@@ -446,6 +446,7 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
         conn.execute(text("drop index if exists idx_expenses_account_id"))
         conn.execute(text("drop index if exists idx_expenses_category"))
         conn.execute(text("drop index if exists uq_expenses_dedupe"))
+        conn.execute(text("alter table if exists expenses add column if not exists source_id text"))
         conn.execute(text("create index if not exists idx_expenses_expense_date on expenses (user_id, expense_date)"))
         conn.execute(text("create index if not exists idx_expenses_user_date_id on expenses (user_id, expense_date, id)"))
         conn.execute(text("create index if not exists idx_expenses_account_id on expenses (user_id, account_id)"))
@@ -460,6 +461,7 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
                   category,
                   coalesce(account_type, ''),
                   coalesce(plan_size, ''),
+                  coalesce(source_id, ''),
                   coalesce(account_id, 0),
                   amount_cents
                 )

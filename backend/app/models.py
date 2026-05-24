@@ -568,6 +568,7 @@ class Expense(Base):
     category = Column(Text, nullable=False)
     account_type = Column(Text, nullable=True)
     plan_size = Column(Text, nullable=True)
+    source_id = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     tags = Column(
         ARRAY(Text).with_variant(JSON, "sqlite"),
@@ -602,6 +603,7 @@ class Expense(Base):
             "category",
             func.coalesce(account_type, ""),
             func.coalesce(plan_size, ""),
+            func.coalesce(source_id, ""),
             func.coalesce(account_id, 0),
             "amount_cents",
             unique=True,
