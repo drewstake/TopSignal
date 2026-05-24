@@ -43,6 +43,14 @@ const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
 const PAYOUT_PAGE_SIZE = 50;
+const NET_RANGE_OPTIONS = [
+  { key: "one_month", label: "1 Month", months: 1 },
+  { key: "three_months", label: "3 Months", months: 3 },
+  { key: "six_months", label: "6 Months", months: 6 },
+  { key: "year_to_date", label: "YTD", months: null },
+  { key: "one_year", label: "1 Year", months: 12 },
+  { key: "all_time", label: "All Time", months: null },
+] as const;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -66,11 +74,37 @@ function formatCategoryLabel(category: string) {
 }
 
 function getTodayLocalIsoDate() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = `${now.getMonth() + 1}`.padStart(2, "0");
-  const day = `${now.getDate()}`.padStart(2, "0");
+  return formatLocalIsoDate(new Date());
+}
+
+function formatLocalIsoDate(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function subtractLocalMonths(date: Date, months: number) {
+  const target = new Date(date.getFullYear(), date.getMonth() - months, 1);
+  const lastDayOfTargetMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(date.getDate(), lastDayOfTargetMonth));
+  return target;
+}
+
+function getTrailingDateRange(months: number) {
+  const end = new Date();
+  return {
+    startDate: formatLocalIsoDate(subtractLocalMonths(end, months)),
+    endDate: formatLocalIsoDate(end),
+  };
+}
+
+function getYearToDateRange() {
+  const end = new Date();
+  return {
+    startDate: `${end.getFullYear()}-01-01`,
+    endDate: formatLocalIsoDate(end),
+  };
 }
 
 function parsePositiveInt(value: string) {
@@ -102,6 +136,16 @@ function getNetProfitTitleClassName(amount: number, loading: boolean) {
     return "text-2xl text-rose-300";
   }
   return "text-2xl";
+}
+
+function getNetProfitAmountClassName(amount: number) {
+  if (amount > 0) {
+    return "text-emerald-300";
+  }
+  if (amount < 0) {
+    return "text-rose-300";
+  }
+  return "text-slate-100";
 }
 
 function getNetProfitPositionLabel(amount: number) {
@@ -183,6 +227,16 @@ interface AddPayoutState {
   notes: string;
 }
 
+interface NetRangeSummary {
+  key: string;
+  label: string;
+  netAmount: number;
+  expenseAmount: number;
+  payoutAmount: number;
+  expenseCount: number;
+  payoutCount: number;
+}
+
 function buildInitialAddPayoutState(): AddPayoutState {
   return {
     payoutDate: getTodayLocalIsoDate(),
@@ -223,6 +277,9 @@ export function ExpensesPage() {
   const [payoutTotals, setPayoutTotals] = useState<PayoutTotals | null>(null);
   const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(false);
   const [payoutTotalsError, setPayoutTotalsError] = useState<string | null>(null);
+  const [netRanges, setNetRanges] = useState<NetRangeSummary[]>([]);
+  const [netRangesLoading, setNetRangesLoading] = useState(false);
+  const [netRangesError, setNetRangesError] = useState<string | null>(null);
   const [addPayoutOpen, setAddPayoutOpen] = useState(false);
   const [addPayoutState, setAddPayoutState] = useState<AddPayoutState>(buildInitialAddPayoutState());
   const [addPayoutError, setAddPayoutError] = useState<string | null>(null);
@@ -295,6 +352,39 @@ export function ExpensesPage() {
       setPayoutTotalsError(err instanceof Error ? err.message : "Failed to load payout totals");
     } finally {
       setPayoutTotalsLoading(false);
+    }
+  }, []);
+
+  const loadNetRanges = useCallback(async () => {
+    setNetRangesLoading(true);
+    setNetRangesError(null);
+    try {
+      const summaries = await Promise.all(
+        NET_RANGE_OPTIONS.map(async (option) => {
+          const dateRange =
+            option.months !== null ? getTrailingDateRange(option.months) : option.key === "year_to_date" ? getYearToDateRange() : {};
+          const [expenseTotal, payoutTotal] = await Promise.all([
+            getExpenseTotals(TOTAL_RANGE, dateRange),
+            getPayoutTotals(dateRange),
+          ]);
+
+          return {
+            key: option.key,
+            label: option.label,
+            netAmount: payoutTotal.total_amount - expenseTotal.total_amount,
+            expenseAmount: expenseTotal.total_amount,
+            payoutAmount: payoutTotal.total_amount,
+            expenseCount: expenseTotal.count,
+            payoutCount: payoutTotal.count,
+          };
+        }),
+      );
+      setNetRanges(summaries);
+    } catch (err) {
+      setNetRanges([]);
+      setNetRangesError(err instanceof Error ? err.message : "Failed to load net ranges");
+    } finally {
+      setNetRangesLoading(false);
     }
   }, []);
 
@@ -460,7 +550,7 @@ export function ExpensesPage() {
         }
 
         if (didMutateExpenses) {
-          await Promise.all([loadExpenses(), loadTotals()]);
+          await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
         }
 
         const failedCount = failedCreateCount + failedDeleteCount;
@@ -478,7 +568,7 @@ export function ExpensesPage() {
       setCombineSpendSnapshot(nextSnapshot);
       setCombineTrackerLoading(false);
     }
-  }, [listAllCombineRelevantExpenses, loadExpenses, loadTotals]);
+  }, [listAllCombineRelevantExpenses, loadExpenses, loadNetRanges, loadTotals]);
 
   useEffect(() => {
     void loadExpenses();
@@ -495,6 +585,10 @@ export function ExpensesPage() {
   useEffect(() => {
     void loadPayoutTotals();
   }, [loadPayoutTotals]);
+
+  useEffect(() => {
+    void loadNetRanges();
+  }, [loadNetRanges]);
 
   useEffect(() => {
     if (didInitialCombineSyncRef.current) {
@@ -564,7 +658,7 @@ export function ExpensesPage() {
 
     try {
       await deleteExpense(expense.id);
-      await Promise.all([loadExpenses(), loadTotals()]);
+      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
       if (expense.category === "evaluation_fee" || expense.category === "activation_fee") {
         await syncCombineTracker();
       }
@@ -581,7 +675,7 @@ export function ExpensesPage() {
 
     try {
       await deletePayout(payout.id);
-      await Promise.all([loadPayouts(), loadPayoutTotals()]);
+      await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges()]);
     } catch (err) {
       setPayoutError(err instanceof Error ? err.message : "Failed to delete payout");
     }
@@ -626,7 +720,7 @@ export function ExpensesPage() {
       });
 
       setAddOpen(false);
-      await Promise.all([loadExpenses(), loadTotals()]);
+      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
       if (addState.stage === "evaluation_fee" || addState.stage === "activation_fee") {
         await syncCombineTracker();
       }
@@ -667,9 +761,9 @@ export function ExpensesPage() {
       setAddPayoutOpen(false);
       if (payoutOffset !== 0) {
         setPayoutOffset(0);
-        await loadPayoutTotals();
+        await Promise.all([loadPayoutTotals(), loadNetRanges()]);
       } else {
-        await Promise.all([loadPayouts(), loadPayoutTotals()]);
+        await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges()]);
       }
     } catch (err) {
       setAddPayoutError(err instanceof Error ? err.message : "Failed to create payout");
@@ -680,51 +774,80 @@ export function ExpensesPage() {
 
   return (
     <div className="space-y-6 pb-10">
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card className="xl:col-span-2">
-          <CardHeader className="mb-2">
-            <CardDescription>Recorded spend</CardDescription>
-            <CardTitle className="text-2xl">
-              {totalsLoading ? "..." : totals ? currencyFormatter.format(totals.total_amount) : "$0.00"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-xs text-slate-400">
-              {totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}
-            </p>
-          </CardContent>
-        </Card>
+      <section className="grid gap-3">
+        <Card>
+          <CardContent className="space-y-5">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+              <div className="space-y-3">
+                <div>
+                  <CardDescription>Recorded spend</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {totalsLoading ? "..." : totals ? currencyFormatter.format(totals.total_amount) : "$0.00"}
+                  </CardTitle>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <p className="text-xs text-slate-400">
+                    {totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}
+                  </p>
+                  <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
+                    {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
+                  </Button>
+                </div>
+                {combineTrackerError ? <p className="text-xs text-rose-300">{combineTrackerError}</p> : null}
+              </div>
 
-        <Card className="xl:col-span-2">
-          <CardHeader className="mb-2">
-            <CardDescription>Net after payouts</CardDescription>
-            <CardTitle className={netProfitTitleClassName}>
-              {netProfitLoading ? "..." : currencyFormatter.format(netProfitAmount)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {totalsError || payoutTotalsError || combineTrackerError ? (
-              <p className="text-xs text-rose-300">{totalsError ?? payoutTotalsError ?? combineTrackerError}</p>
-            ) : (
-              <p className="text-xs text-slate-400">
-                {netProfitLoading
-                  ? "Calculating net..."
-                  : `${netProfitPositionLabel}. ${currencyFormatter.format(netPayoutTotalAmount)} payouts - ${currencyFormatter.format(
-                      recordedSpendAmount,
-                    )} recorded spend.`}
-              </p>
-            )}
+              <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+                <div>
+                  <CardDescription>Net after payouts</CardDescription>
+                  <CardTitle className={netProfitTitleClassName}>
+                    {netProfitLoading ? "..." : currencyFormatter.format(netProfitAmount)}
+                  </CardTitle>
+                </div>
+                {totalsError || payoutTotalsError ? (
+                  <p className="text-xs text-rose-300">{totalsError ?? payoutTotalsError}</p>
+                ) : (
+                  <p className="text-xs text-slate-400">
+                    {netProfitLoading
+                      ? "Calculating net..."
+                      : `${netProfitPositionLabel}. ${currencyFormatter.format(netPayoutTotalAmount)} payouts - ${currencyFormatter.format(
+                          recordedSpendAmount,
+                        )} recorded spend.`}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {netRangesError ? <p className="text-xs text-rose-300">{netRangesError}</p> : null}
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+              {NET_RANGE_OPTIONS.map((option) => {
+                const summary = netRanges.find((item) => item.key === option.key);
+                return (
+                  <div key={option.key} className="rounded-md border border-slate-800/80 bg-slate-950/40 p-3">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">{option.label}</p>
+                    <p
+                      className={`mt-1 text-lg font-semibold ${
+                        summary ? getNetProfitAmountClassName(summary.netAmount) : "text-slate-100"
+                      }`}
+                    >
+                      {netRangesLoading || !summary ? "..." : currencyFormatter.format(summary.netAmount)}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {netRangesLoading || !summary
+                        ? "Loading..."
+                        : `${currencyFormatter.format(summary.payoutAmount)} payouts - ${currencyFormatter.format(
+                            summary.expenseAmount,
+                          )} spend`}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
             <p className="text-xs text-slate-500">
               Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted:{" "}
-              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}.{" "}
-              Standard activations: {combineSpendSnapshot.standardActivationCount} (
+              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}. Standard activations:{" "}
+              {combineSpendSnapshot.standardActivationCount} (
               {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}).
             </p>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
-                {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
-              </Button>
-            </div>
           </CardContent>
         </Card>
       </section>
