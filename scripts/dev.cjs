@@ -9,8 +9,11 @@ const commands = [
 ];
 
 const children = new Map();
+const states = new Map();
+const earlyExitRestartLimit = 5;
+const earlyExitWindowMs = 60000;
+const keepAlive = setInterval(() => {}, 60 * 60 * 1000);
 let shuttingDown = false;
-let remainingChildren = commands.length;
 let exitCode = 0;
 
 function prefixStream(name, stream, writer) {
@@ -52,12 +55,25 @@ function stopChild(child) {
 }
 
 function maybeExit() {
-  if (remainingChildren === 0) {
+  if ([...states.values()].every((state) => !state.child)) {
+    clearInterval(keepAlive);
     process.exit(exitCode);
   }
 }
 
-for (const command of commands) {
+function formatExitReason(code, signal) {
+  if (signal) {
+    return `signal ${signal}`;
+  }
+  return `code ${code ?? 0}`;
+}
+
+function startCommand(command) {
+  if (shuttingDown) {
+    return;
+  }
+
+  const state = states.get(command.name);
   const child = spawn(process.execPath, [command.script], {
     cwd: repoRoot,
     env: process.env,
@@ -65,25 +81,64 @@ for (const command of commands) {
     windowsHide: true,
   });
 
+  state.child = child;
+  state.startedAt = Date.now();
   children.set(command.name, child);
   prefixStream(command.name, child.stdout, (line) => process.stdout.write(line));
   prefixStream(command.name, child.stderr, (line) => process.stderr.write(line));
 
   child.on("exit", (code, signal) => {
-    remainingChildren -= 1;
+    const runtimeMs = Date.now() - state.startedAt;
+    process.stderr.write(
+      `[${command.name}] process exited after ${Math.round(runtimeMs / 1000)}s with ${formatExitReason(
+        code,
+        signal,
+      )}.\n`,
+    );
 
-    if (!shuttingDown) {
-      shuttingDown = true;
-      exitCode = code ?? (signal ? 1 : 0);
-      for (const [name, sibling] of children) {
-        if (name !== command.name) {
-          stopChild(sibling);
-        }
+    if (state.child === child) {
+      state.child = null;
+    }
+
+    if (shuttingDown) {
+      maybeExit();
+      return;
+    }
+
+    const canRestart =
+      runtimeMs < earlyExitWindowMs && state.restartCount < earlyExitRestartLimit;
+
+    if (canRestart) {
+      state.restartCount += 1;
+      process.stderr.write(
+        `[${command.name}] exited during startup with ${formatExitReason(
+          code,
+          signal,
+        )}; restarting (${state.restartCount}/${earlyExitRestartLimit})...\n`,
+      );
+      setTimeout(() => startCommand(command), 500);
+      return;
+    }
+
+    shuttingDown = true;
+    exitCode = code ?? (signal ? 1 : 0);
+    for (const [name, sibling] of children) {
+      if (name !== command.name) {
+        stopChild(sibling);
       }
     }
 
     maybeExit();
   });
+}
+
+for (const command of commands) {
+  states.set(command.name, {
+    child: null,
+    restartCount: 0,
+    startedAt: 0,
+  });
+  startCommand(command);
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -92,9 +147,11 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
       return;
     }
 
+    process.stderr.write(`Received ${signal}; stopping dev servers...\n`);
     shuttingDown = true;
     exitCode = 0;
-    for (const child of children.values()) {
+    for (const state of states.values()) {
+      const child = state.child;
       stopChild(child);
     }
     maybeExit();
