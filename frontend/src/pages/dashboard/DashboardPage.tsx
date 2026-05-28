@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
 import { Skeleton } from "../../components/ui/Skeleton";
+import { Toggle } from "../../components/ui/Toggle";
 import {
   ACCOUNT_QUERY_PARAM,
   parseAccountId,
@@ -41,6 +42,21 @@ import {
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
+import { CopyTradePanel } from "./components/CopyTradePanel";
+import {
+  buildCopyTradeAccountRows,
+  combineCopyTradePnlCalendarDays,
+  computeCopyTradeDriftSummary,
+  computeCopyTradeTotals,
+  getCopyTradeRosterAccountIds,
+  getLatestDailyNetPnl,
+  readStoredCopyTradeSettings,
+  updateCopyTradeFollowerSetting,
+  updateCopyTradeModeSetting,
+  writeStoredCopyTradeSettings,
+  type CopyTradeMetricSnapshot,
+  type CopyTradeSettings,
+} from "./copyTrade";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
 
@@ -412,6 +428,14 @@ interface CustomDateRange {
   endDate: string;
 }
 
+interface CopyTradeLoadedAccountData {
+  summary: AccountSummary | null;
+  calendarDays: AccountPnlCalendarDay[];
+  trades: AccountTrade[];
+  tradesError: string | null;
+  error: string | null;
+}
+
 function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
@@ -473,6 +497,7 @@ export function DashboardPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
@@ -493,6 +518,7 @@ export function DashboardPage() {
   const [metricsTradesError, setMetricsTradesError] = useState<string | null>(null);
 
   const [pnlCalendarDays, setPnlCalendarDays] = useState<AccountPnlCalendarDay[]>([]);
+  const [copyTradeAccountDataById, setCopyTradeAccountDataById] = useState<Record<number, CopyTradeLoadedAccountData>>({});
   const [pnlCalendarLoading, setPnlCalendarLoading] = useState(false);
   const [pnlCalendarError, setPnlCalendarError] = useState<string | null>(null);
   const [journalDays, setJournalDays] = useState<Set<string>>(new Set());
@@ -561,6 +587,10 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const copyTradeRosterAccountIds = useMemo(
+    () => (copyTradeSettings.modeEnabled ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId) : []),
+    [copyTradeSettings.modeEnabled, orderedAccounts, selectedAccountId],
+  );
   const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
   const dashboardLoadPerfRef = useRef<{
@@ -588,6 +618,7 @@ export function DashboardPage() {
       setPointPayoffByBasis(createEmptyPointPayoffByBasis());
       setSummaryError(null);
       setPnlCalendarDays([]);
+      setCopyTradeAccountDataById({});
       setPnlCalendarError(null);
       return;
     }
@@ -630,6 +661,77 @@ export function DashboardPage() {
       setSummary(nextSummaryBundle.summary);
       setPointPayoffByBasis(nextPointPayoffByBasis);
       setPnlCalendarDays(nextPnlCalendar);
+
+      const nextCopyTradeAccountDataById: Record<number, CopyTradeLoadedAccountData> = {
+        [selectedAccountId]: {
+          summary: nextSummaryBundle.summary,
+          calendarDays: nextPnlCalendar,
+          trades: [],
+          tradesError: null,
+          error: null,
+        },
+      };
+
+      if (copyTradeSettings.modeEnabled) {
+        const followerAccountIds = copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId);
+        const followerResults = await Promise.all(
+          followerAccountIds.map(async (accountId) => {
+            try {
+              const [summaryBundle, calendarDays] = await Promise.all([
+                accountsApi.getSummaryWithPointBases(accountId, {
+                  start: summaryQuery.start,
+                  end: summaryQuery.end,
+                }),
+                accountsApi.getPnlCalendar(accountId, {
+                  start: metricsRangeQuery.start,
+                  end: metricsRangeQuery.end,
+                  all_time: metricsRangeQuery.allTime,
+                }),
+              ]);
+              let followerTrades: AccountTrade[] = [];
+              let followerTradesError: string | null = null;
+              try {
+                followerTrades = await accountsApi.getTrades(accountId, {
+                  limit: METRIC_TRADE_LIMIT,
+                  start: metricsRangeQuery.start,
+                  end: metricsRangeQuery.end,
+                  includeLifecycle: false,
+                });
+              } catch (err) {
+                followerTradesError = err instanceof Error ? err.message : "Failed to load follower trade history";
+              }
+
+              return {
+                accountId,
+                data: {
+                  summary: summaryBundle.summary,
+                  calendarDays,
+                  trades: followerTrades,
+                  tradesError: followerTradesError,
+                  error: null,
+                } satisfies CopyTradeLoadedAccountData,
+              };
+            } catch (err) {
+              return {
+                accountId,
+                data: {
+                  summary: null,
+                  calendarDays: [],
+                  trades: [],
+                  tradesError: null,
+                  error: err instanceof Error ? err.message : "Failed to load copy-trade account data",
+                } satisfies CopyTradeLoadedAccountData,
+              };
+            }
+          }),
+        );
+
+        followerResults.forEach(({ accountId, data }) => {
+          nextCopyTradeAccountDataById[accountId] = data;
+        });
+      }
+
+      setCopyTradeAccountDataById(nextCopyTradeAccountDataById);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load dashboard data";
       setSummaryError(message);
@@ -637,11 +739,12 @@ export function DashboardPage() {
       setSummary(emptySummary);
       setPointPayoffByBasis(createEmptyPointPayoffByBasis());
       setPnlCalendarDays([]);
+      setCopyTradeAccountDataById({});
     } finally {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [metricsRangeQuery, selectedAccountId]);
+  }, [copyTradeRosterAccountIds, copyTradeSettings.modeEnabled, metricsRangeQuery, selectedAccountId]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
@@ -819,6 +922,69 @@ export function DashboardPage() {
     };
   }, [reloadDashboard, selectedAccountId]);
 
+  const copyTradeSnapshotsByAccountId = useMemo<Record<number, CopyTradeMetricSnapshot | undefined>>(() => {
+    const snapshots: Record<number, CopyTradeMetricSnapshot | undefined> = {};
+
+    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+      snapshots[Number(accountId)] = {
+        netPnl: data.summary?.net_pnl ?? 0,
+        dailyPnl: getLatestDailyNetPnl(data.calendarDays),
+        openPositions: 0,
+        loadError: data.error,
+      };
+    });
+
+    return snapshots;
+  }, [copyTradeAccountDataById]);
+
+  const copyTradeRows = useMemo(
+    () =>
+      buildCopyTradeAccountRows({
+        accounts: orderedAccounts,
+        leaderAccountId: selectedAccountId,
+        settings: copyTradeSettings,
+        snapshotsByAccountId: copyTradeSnapshotsByAccountId,
+      }),
+    [copyTradeSettings, copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
+  );
+
+  const copyTradeTotals = useMemo(() => computeCopyTradeTotals(copyTradeRows), [copyTradeRows]);
+  const copyTradeCalendarDays = useMemo(() => {
+    const calendarDaysByAccountId: Record<number, AccountPnlCalendarDay[] | undefined> = {};
+    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+      calendarDaysByAccountId[Number(accountId)] = data.calendarDays;
+    });
+    return combineCopyTradePnlCalendarDays(copyTradeRows, calendarDaysByAccountId);
+  }, [copyTradeAccountDataById, copyTradeRows]);
+  const copyTradeTradesByAccountId = useMemo(() => {
+    const tradesByAccountId: Record<number, AccountTrade[] | undefined> = {};
+    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+      tradesByAccountId[Number(accountId)] = data.trades;
+    });
+    if (selectedAccountId !== null) {
+      tradesByAccountId[selectedAccountId] = metricsTrades;
+    }
+    return tradesByAccountId;
+  }, [copyTradeAccountDataById, metricsTrades, selectedAccountId]);
+  const copyTradeDriftSummary = useMemo(
+    () => computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId),
+    [copyTradeRows, copyTradeTradesByAccountId],
+  );
+  const copyTradeStatsActive = copyTradeSettings.modeEnabled && copyTradeTotals.canCalculate;
+  const dashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
+  const dashboardSummary = useMemo(
+    () =>
+      copyTradeStatsActive
+        ? {
+            ...summary,
+            net_pnl: copyTradeTotals.combinedNetPnl,
+            profit_per_day: copyTradeTotals.combinedDailyPnl,
+          }
+        : summary,
+    [copyTradeStatsActive, copyTradeTotals.combinedDailyPnl, copyTradeTotals.combinedNetPnl, summary],
+  );
+  const dashboardCurrentBalance = copyTradeStatsActive ? copyTradeTotals.combinedBalance : selectedAccount?.balance ?? null;
+
   const directionDataIssue = metricsTradesLoading
     ? "Loading directional trade history."
     : metricsTradesError
@@ -831,42 +997,52 @@ export function DashboardPage() {
   const derivedMetrics = useMemo(
     () =>
       computeDashboardDerivedMetrics({
-        summary,
+        summary: dashboardSummary,
         trades: metricsTrades,
-        dailyPnlDays: pnlCalendarDays,
+        dailyPnlDays: dashboardPnlCalendarDays,
         hasCompleteDirectionalHistory,
         directionDataIssue,
       }),
-    [directionDataIssue, hasCompleteDirectionalHistory, metricsTrades, pnlCalendarDays, summary],
+    [dashboardPnlCalendarDays, dashboardSummary, directionDataIssue, hasCompleteDirectionalHistory, metricsTrades],
   );
 
-  const netPnlMetric = useMemo<MetricValue>(() => ({ value: summary.net_pnl }), [summary.net_pnl]);
-  const profitPerDayMetric = useMemo<MetricValue>(() => ({ value: summary.profit_per_day }), [summary.profit_per_day]);
+  const netPnlMetric = useMemo<MetricValue>(() => ({ value: dashboardSummary.net_pnl }), [dashboardSummary.net_pnl]);
+  const profitPerDayMetric = useMemo<MetricValue>(() => ({ value: dashboardSummary.profit_per_day }), [dashboardSummary.profit_per_day]);
   const efficiencyPerHourMetric = useMemo<MetricValue>(() => ({ value: summary.efficiency_per_hour }), [summary.efficiency_per_hour]);
   const expectancyPerTradeMetric = useMemo<MetricValue>(() => ({ value: summary.expectancy_per_trade }), [summary.expectancy_per_trade]);
   const maxDrawdownMetric = useMemo<MetricValue>(() => ({ value: summary.max_drawdown }), [summary.max_drawdown]);
-  const performanceSignalVariant = summary.net_pnl > 0 ? "positive" : summary.net_pnl < 0 ? "negative" : "neutral";
-  const performanceSignalLabel = summary.net_pnl > 0 ? "Positive Flow" : summary.net_pnl < 0 ? "Negative Drift" : "Flat Session";
+  const performanceSignalVariant = dashboardSummary.net_pnl > 0 ? "positive" : dashboardSummary.net_pnl < 0 ? "negative" : "neutral";
+  const performanceSignalLabel = copyTradeStatsActive
+    ? dashboardSummary.net_pnl > 0
+      ? "Copy Net Positive"
+      : dashboardSummary.net_pnl < 0
+        ? "Copy Net Negative"
+        : "Copy Net Flat"
+    : dashboardSummary.net_pnl > 0
+      ? "Positive Flow"
+      : dashboardSummary.net_pnl < 0
+        ? "Negative Drift"
+        : "Flat Session";
   const performanceAccentClassName =
-    summary.net_pnl > 0
+    dashboardSummary.net_pnl > 0
       ? "bg-gradient-to-r from-app-positive/80 via-app-accent/30 to-transparent"
-      : summary.net_pnl < 0
+      : dashboardSummary.net_pnl < 0
         ? "bg-gradient-to-r from-app-negative/80 via-app-warning/35 to-transparent"
         : "bg-gradient-to-r from-app-accent/70 via-app-accent/25 to-transparent";
   const performancePrimaryClassName =
-    summary.net_pnl > 0
+    dashboardSummary.net_pnl > 0
       ? "bg-gradient-to-r from-app-positive via-app-accent to-app-positive bg-clip-text text-transparent"
-      : summary.net_pnl < 0
+      : dashboardSummary.net_pnl < 0
         ? "bg-gradient-to-r from-app-negative via-app-warning to-app-negative bg-clip-text text-transparent"
         : "text-app-accent";
   const performanceCardClassName =
-    summary.net_pnl > 0
+    dashboardSummary.net_pnl > 0
       ? "border-app-positive/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-positive)/0.24),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]"
-      : summary.net_pnl < 0
+      : dashboardSummary.net_pnl < 0
         ? "border-app-negative/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-negative)/0.22),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]"
         : "border-app-accent/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-accent)/0.2),rgb(var(--theme-surface)/0.58)_44%,rgb(var(--theme-surface)/0.9)_100%)]";
   const performanceGlowClassName =
-    summary.net_pnl > 0 ? "bg-app-positive/25" : summary.net_pnl < 0 ? "bg-app-negative/25" : "bg-app-accent/20";
+    dashboardSummary.net_pnl > 0 ? "bg-app-positive/25" : dashboardSummary.net_pnl < 0 ? "bg-app-negative/25" : "bg-app-accent/20";
   const edgeSignalVariant = summary.expectancy_per_trade > 0 ? "positive" : summary.expectancy_per_trade < 0 ? "negative" : "neutral";
   const edgeSignalLabel = summary.expectancy_per_trade > 0 ? "Positive Expectancy" : summary.expectancy_per_trade < 0 ? "Negative Expectancy" : "Flat Expectancy";
   const edgeAccentClassName =
@@ -951,8 +1127,8 @@ export function DashboardPage() {
       : "border-app-warning/30 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.18),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
 
   const drawdownPercentOfNet = useMemo(
-    () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, summary.net_pnl),
-    [summary.max_drawdown, summary.net_pnl],
+    () => computeDrawdownPercentOfNetPnl(summary.max_drawdown, dashboardSummary.net_pnl),
+    [dashboardSummary.net_pnl, summary.max_drawdown],
   );
 
   const directionSplit = useMemo(() => {
@@ -982,10 +1158,10 @@ export function DashboardPage() {
   );
   const sustainabilityDailyNetPnl = useMemo(
     () =>
-      pnlCalendarDays
+      dashboardPnlCalendarDays
         .map((day) => day.net_pnl)
         .filter((value) => Number.isFinite(value)),
-    [pnlCalendarDays],
+    [dashboardPnlCalendarDays],
   );
   const accountRiskRule = useMemo(() => {
     if (!selectedAccount) {
@@ -1132,11 +1308,11 @@ export function DashboardPage() {
       computeActivityMetrics({
         totalTrades: summary.trade_count,
         activeDays: summary.active_days,
-        dailyPnlDays: pnlCalendarDays,
+        dailyPnlDays: dashboardPnlCalendarDays,
         rangeStart: metricsRangeQuery.start,
         rangeEnd: metricsRangeQuery.end,
       }),
-    [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays, summary.active_days, summary.trade_count],
+    [dashboardPnlCalendarDays, metricsRangeQuery.end, metricsRangeQuery.start, summary.active_days, summary.trade_count],
   );
   const activitySignalVariant =
     activityMetrics.tradesPerWeek === null
@@ -1173,19 +1349,19 @@ export function DashboardPage() {
       return formatFullStatsRangeLabel(tradingDayKey(metricsRangeQuery.start), tradingDayKey(metricsRangeQuery.end));
     }
 
-    if (pnlCalendarDays.length > 0) {
-      const orderedDays = [...pnlCalendarDays].sort((left, right) => left.date.localeCompare(right.date));
+    if (dashboardPnlCalendarDays.length > 0) {
+      const orderedDays = [...dashboardPnlCalendarDays].sort((left, right) => left.date.localeCompare(right.date));
       return formatFullStatsRangeLabel(orderedDays[0].date, orderedDays[orderedDays.length - 1].date);
     }
 
     return "selected range";
-  }, [metricsRangeQuery.end, metricsRangeQuery.start, pnlCalendarDays]);
+  }, [dashboardPnlCalendarDays, metricsRangeQuery.end, metricsRangeQuery.start]);
   const recentTrades = trades;
   const recentTradesLoading = tradesLoading;
   const recentTradesError = tradesError;
   const copyFullStatsMetrics = useMemo<CopyFullStatsMetrics>(
     () => ({
-      summary,
+      summary: dashboardSummary,
       performance: {
         netPnl: netPnlMetric,
         profitPerDay: profitPerDayMetric,
@@ -1261,7 +1437,7 @@ export function DashboardPage() {
         averageLossDurationMinutes: summary.avg_loss_duration_minutes,
       },
       balance: {
-        currentBalance: selectedAccount?.balance ?? null,
+        currentBalance: dashboardCurrentBalance,
       },
     }),
     [
@@ -1320,7 +1496,8 @@ export function DashboardPage() {
       netPnlMetric,
       pointPayoffByBasis,
       profitPerDayMetric,
-      selectedAccount?.balance,
+      dashboardCurrentBalance,
+      dashboardSummary,
       stabilityScore,
       summary,
       sustainability,
@@ -1366,6 +1543,28 @@ export function DashboardPage() {
       return { startDate, endDate };
     });
   }, []);
+
+  const saveCopyTradeSettings = useCallback((updater: (current: CopyTradeSettings) => CopyTradeSettings) => {
+    setCopyTradeSettings((current) => {
+      const next = updater(current);
+      writeStoredCopyTradeSettings(next);
+      return next;
+    });
+  }, []);
+
+  const handleCopyTradeModeChange = useCallback(
+    (enabled: boolean) => {
+      saveCopyTradeSettings((current) => updateCopyTradeModeSetting(current, enabled));
+    },
+    [saveCopyTradeSettings],
+  );
+
+  const handleFollowerCopyEnabledChange = useCallback(
+    (accountId: number, copyEnabled: boolean) => {
+      saveCopyTradeSettings((current) => updateCopyTradeFollowerSetting(current, accountId, { copyEnabled }));
+    },
+    [saveCopyTradeSettings],
+  );
 
   return (
     <div className="dashboard-surface space-y-5 pb-8">
@@ -1418,11 +1617,21 @@ export function DashboardPage() {
                 );
               })}
             </div>
+            <Toggle
+              checked={copyTradeSettings.modeEnabled}
+              onChange={handleCopyTradeModeChange}
+              label="Copy Trade Mode"
+              aria-label="Toggle Copy Trade Mode"
+              className={cn(
+                "h-8 w-full justify-center rounded-lg border-app-border/80 bg-app-surface/60 px-2.5 text-[11px] sm:w-auto",
+                copyTradeSettings.modeEnabled ? "border-app-accent/40 ring-1 ring-app-accent/50" : undefined,
+              )}
+            />
             <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
                 rangeLabel={fullStatsRangeLabel}
-                calendarDays={pnlCalendarDays}
+                calendarDays={dashboardPnlCalendarDays}
                 disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
                 className="h-8 w-full rounded-lg px-2.5 text-[11px] sm:w-auto"
               />
@@ -1438,6 +1647,16 @@ export function DashboardPage() {
             This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
           </p>
         </Card>
+      ) : null}
+
+      {copyTradeSettings.modeEnabled ? (
+        <CopyTradePanel
+          rows={copyTradeRows}
+          totals={copyTradeTotals}
+          driftSummary={copyTradeDriftSummary}
+          loading={summaryLoading || pnlCalendarLoading}
+          onFollowerCopyEnabledChange={handleFollowerCopyEnabledChange}
+        />
       ) : null}
 
       <MasonryGrid>
@@ -1457,11 +1676,15 @@ export function DashboardPage() {
         ) : (
           <>
             <MetricCard
-              title="Performance"
+              title={copyTradeStatsActive ? "Copy Trade Net" : "Performance"}
               primaryValue={formatMetricValue(netPnlMetric, formatPnl)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_12px_rgb(var(--theme-bg)/0.5)]", performancePrimaryClassName)}
-              subtitle="Net realized PnL after fees."
-              info="Realized net profit and loss after fees in the selected range."
+              subtitle={copyTradeStatsActive ? "Combined copied-account net P&L." : "Net realized PnL after fees."}
+              info={
+                copyTradeStatsActive
+                  ? "Copy Trade Net adds the active leader result plus enabled active follower account results."
+                  : "Realized net profit and loss after fees in the selected range."
+              }
               accentClassName={performanceAccentClassName}
               className={cn(
                 "z-20 isolate overflow-visible sm:col-span-2 md:col-span-2 md:row-start-1 md:col-start-1 lg:col-span-3 lg:row-start-1 lg:col-start-1",
@@ -1473,25 +1696,54 @@ export function DashboardPage() {
               <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
-                  <Badge variant="accent">{`${formatInteger(summary.trade_count)} Trades`}</Badge>
+                  <Badge variant="accent">
+                    {copyTradeStatsActive ? `${formatInteger(copyTradeTotals.activeCopiedAccountCount)} Accounts` : `${formatInteger(summary.trade_count)} Trades`}
+                  </Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    {`Win ${formatPercent(summary.win_rate, 1)}`}
+                    {copyTradeStatsActive ? `Leader ${formatPnl(copyTradeTotals.leaderNetPnl)}` : `Win ${formatPercent(summary.win_rate, 1)}`}
                   </span>
                 </div>
-                <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
-                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit / Day</p>
-                    <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.profit_per_day))}>
-                      {formatMetricValue(profitPerDayMetric, formatPnl)}
-                    </p>
+                {copyTradeStatsActive ? (
+                  <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Combined Daily P&L</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.combinedDailyPnl))}>
+                        {formatPnl(copyTradeTotals.combinedDailyPnl)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Combined Balance</p>
+                      <p className="mt-1 text-sm font-semibold text-app-text">{formatCurrency(copyTradeTotals.combinedBalance)}</p>
+                    </div>
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Leader P&L</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.leaderNetPnl))}>
+                        {formatPnl(copyTradeTotals.leaderNetPnl)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Follower P&L</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(copyTradeTotals.followerContributionNetPnl))}>
+                        {formatPnl(copyTradeTotals.followerContributionNetPnl)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Efficiency / Hour</p>
-                    <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.efficiency_per_hour))}>
-                      {formatMetricValue(efficiencyPerHourMetric, formatPnl)}
-                    </p>
+                ) : (
+                  <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit / Day</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.profit_per_day))}>
+                        {formatMetricValue(profitPerDayMetric, formatPnl)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Efficiency / Hour</p>
+                      <p className={cn("mt-1 text-sm font-semibold", pnlClass(summary.efficiency_per_hour))}>
+                        {formatMetricValue(efficiencyPerHourMetric, formatPnl)}
+                      </p>
+                    </div>
                   </div>
-                </div>
+                )}
                 <div className="mt-2.5 rounded-lg border border-app-border/75 bg-app-surface/55 px-2.5 py-2">
                   <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     <span>Sizing Benchmark</span>
@@ -2236,10 +2488,10 @@ export function DashboardPage() {
         }
       >
         <DailyAccountBalanceCard
-          days={pnlCalendarDays}
+          days={dashboardPnlCalendarDays}
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
-          currentBalance={selectedAccount?.balance ?? null}
+          currentBalance={dashboardCurrentBalance}
         />
       </Suspense>
 
@@ -2253,7 +2505,7 @@ export function DashboardPage() {
         }
       >
         <PnlCalendarCard
-          days={pnlCalendarDays}
+          days={dashboardPnlCalendarDays}
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
           journalDays={journalDays}
