@@ -18,6 +18,10 @@ class ProjectXCredentialsUnavailable(RuntimeError):
     """Stored credentials exist but cannot be safely read in the current runtime."""
 
 
+class ProjectXCredentialsEncryptionKeyMissing(ProjectXCredentialsUnavailable):
+    """Stored credentials need CREDENTIALS_ENCRYPTION_KEY, but this runtime does not have one."""
+
+
 @dataclass(frozen=True)
 class ProjectXCredentials:
     username: str
@@ -125,7 +129,7 @@ def _fernet() -> Fernet:
         return Fernet(normalized_key)
 
     if not _allow_insecure_local_credentials_key():
-        raise ProjectXCredentialsUnavailable(
+        raise ProjectXCredentialsEncryptionKeyMissing(
             "CREDENTIALS_ENCRYPTION_KEY is required for non-local credential storage"
         )
 

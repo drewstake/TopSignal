@@ -14,6 +14,10 @@ describe("tradingDayKey", () => {
   it("rolls Monday 6:09 PM ET to Tuesday (reported case)", () => {
     expect(tradingDayKey(new Date("2026-03-02T23:09:00.000Z"))).toBe("2026-03-03");
   });
+
+  it("rolls 6:28 PM ET during daylight saving time to the next session", () => {
+    expect(tradingDayKey(new Date("2026-05-28T22:28:00.000Z"))).toBe("2026-05-29");
+  });
 });
 
 describe("getTradingDayRange", () => {
@@ -21,6 +25,13 @@ describe("getTradingDayRange", () => {
     expect(getTradingDayRange("2026-03-03")).toEqual({
       start: "2026-03-02T23:00:00.000Z",
       end: "2026-03-03T22:59:59.999Z",
+    });
+  });
+
+  it("returns daylight-saving UTC boundaries for a trading day key", () => {
+    expect(getTradingDayRange("2026-05-29")).toEqual({
+      start: "2026-05-28T22:00:00.000Z",
+      end: "2026-05-29T21:59:59.999Z",
     });
   });
 });

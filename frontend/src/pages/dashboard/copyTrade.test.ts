@@ -6,6 +6,9 @@ import {
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
+  getCopyTradeUncopyEventsResetAt,
+  getDailyNetPnlForTradingDay,
+  updateCopyTradeUncopyEventsResetAt,
   type CopyTradeAccountRow,
 } from "./copyTrade";
 
@@ -285,6 +288,32 @@ describe("combineCopyTradePnlCalendarDays", () => {
   });
 });
 
+describe("getDailyNetPnlForTradingDay", () => {
+  it("returns zero when the current trading session has no closed P&L yet", () => {
+    expect(
+      getDailyNetPnlForTradingDay(
+        [
+          { date: "2026-05-28", trade_count: 4, gross_pnl: 1_500, fees: 18.3, net_pnl: 1_481.7 },
+          { date: "2026-05-27", trade_count: 2, gross_pnl: 200, fees: 8, net_pnl: 192 },
+        ],
+        "2026-05-29",
+      ),
+    ).toBe(0);
+  });
+
+  it("returns the matching trading session P&L when present", () => {
+    expect(
+      getDailyNetPnlForTradingDay(
+        [
+          { date: "2026-05-28", trade_count: 4, gross_pnl: 1_500, fees: 18.3, net_pnl: 1_481.7 },
+          { date: "2026-05-29", trade_count: 1, gross_pnl: -50, fees: 2.8, net_pnl: -52.8 },
+        ],
+        "2026-05-29",
+      ),
+    ).toBe(-52.8);
+  });
+});
+
 describe("computeCopyTradeDriftSummary", () => {
   it("does not flag copied follower trades that match the leader", () => {
     const summary = computeCopyTradeDriftSummary(
@@ -340,5 +369,39 @@ describe("computeCopyTradeDriftSummary", () => {
       followerOnlyTradeCount: 1,
       netPnl: -250,
     });
+  });
+
+  it("ignores follower-only trades before the uncopy reset time", () => {
+    const summary = computeCopyTradeDriftSummary(
+      [row({ accountId: 1, role: "Leader" }), row({ accountId: 2, accountName: "Follower 1" })],
+      {
+        1: [trade({ id: 1, account_id: 1, entry_time: "2026-05-28T14:00:00.000Z", exit_time: "2026-05-28T14:02:00.000Z" })],
+        2: [
+          trade({ id: 2, account_id: 2, entry_time: "2026-05-28T14:05:00.000Z", exit_time: "2026-05-28T14:07:00.000Z", pnl: -250 }),
+          trade({ id: 3, account_id: 2, entry_time: "2026-05-28T14:20:00.000Z", exit_time: "2026-05-28T14:22:00.000Z", pnl: -125 }),
+        ],
+      },
+      { resetAt: "2026-05-28T14:10:00.000Z" },
+    );
+
+    expect(summary.likelyUncopyEventCount).toBe(1);
+    expect(summary.followerOnlyTradeCount).toBe(1);
+    expect(summary.followerOnlyNetPnl).toBe(-125);
+  });
+});
+
+describe("copy-trade uncopy event reset settings", () => {
+  it("stores reset timestamps by leader account", () => {
+    const settings = updateCopyTradeUncopyEventsResetAt(
+      {
+        modeEnabled: true,
+        followersByAccountId: {},
+      },
+      10,
+      "2026-05-28T22:34:00.000Z",
+    );
+
+    expect(getCopyTradeUncopyEventsResetAt(settings, 10)).toBe("2026-05-28T22:34:00.000Z");
+    expect(getCopyTradeUncopyEventsResetAt(settings, 11)).toBeNull();
   });
 });

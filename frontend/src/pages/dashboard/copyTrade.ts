@@ -12,6 +12,7 @@ export interface CopyTradeFollowerSetting {
 export interface CopyTradeSettings {
   modeEnabled: boolean;
   followersByAccountId: Record<string, CopyTradeFollowerSetting>;
+  uncopyEventsResetAtByLeaderAccountId?: Record<string, string>;
 }
 
 export interface CopyTradeMetricSnapshot {
@@ -83,6 +84,7 @@ const COPY_TRADE_MATCH_WINDOW_MS = 2 * 60 * 1000;
 const defaultSettings: CopyTradeSettings = {
   modeEnabled: false,
   followersByAccountId: {},
+  uncopyEventsResetAtByLeaderAccountId: {},
 };
 
 export function readStoredCopyTradeSettings(): CopyTradeSettings {
@@ -134,6 +136,38 @@ export function updateCopyTradeFollowerSetting(
       },
     },
   };
+}
+
+export function updateCopyTradeUncopyEventsResetAt(
+  settings: CopyTradeSettings,
+  leaderAccountId: number | null,
+  resetAt: string | null,
+): CopyTradeSettings {
+  const normalized = normalizeCopyTradeSettings(settings);
+  if (leaderAccountId === null) {
+    return normalized;
+  }
+
+  const resetAtByLeaderAccountId = { ...(normalized.uncopyEventsResetAtByLeaderAccountId ?? {}) };
+  if (resetAt && Number.isFinite(Date.parse(resetAt))) {
+    resetAtByLeaderAccountId[String(leaderAccountId)] = resetAt;
+  } else {
+    delete resetAtByLeaderAccountId[String(leaderAccountId)];
+  }
+
+  return {
+    ...normalized,
+    uncopyEventsResetAtByLeaderAccountId: resetAtByLeaderAccountId,
+  };
+}
+
+export function getCopyTradeUncopyEventsResetAt(settings: CopyTradeSettings, leaderAccountId: number | null): string | null {
+  if (leaderAccountId === null) {
+    return null;
+  }
+
+  const resetAt = normalizeCopyTradeSettings(settings).uncopyEventsResetAtByLeaderAccountId?.[String(leaderAccountId)] ?? null;
+  return resetAt && Number.isFinite(Date.parse(resetAt)) ? resetAt : null;
 }
 
 export function getCopyTradeRosterAccountIds(accounts: readonly AccountInfo[], leaderAccountId: number | null): number[] {
@@ -290,22 +324,20 @@ export function combineCopyTradePnlCalendarDays(
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-export function getLatestDailyNetPnl(days: readonly AccountPnlCalendarDay[]): number {
-  const latestDay = [...days]
-    .filter((day) => Number.isFinite(day.net_pnl))
-    .sort((left, right) => left.date.localeCompare(right.date))
-    .at(-1);
-
-  return latestDay?.net_pnl ?? 0;
+export function getDailyNetPnlForTradingDay(days: readonly AccountPnlCalendarDay[], tradingDay: string): number {
+  const currentDay = days.find((day) => day.date === tradingDay && Number.isFinite(day.net_pnl));
+  return currentDay?.net_pnl ?? 0;
 }
 
 export function computeCopyTradeDriftSummary(
   rows: readonly CopyTradeAccountRow[],
   tradesByAccountId: Record<number, AccountTrade[] | undefined>,
+  options: { resetAt?: string | null } = {},
 ): CopyTradeDriftSummary {
   const leader = rows.find((row) => row.role === "Leader" && row.accountId !== null) ?? null;
   const leaderTrades = leader?.accountId === null || leader?.accountId === undefined ? [] : tradesByAccountId[leader.accountId] ?? [];
   const comparableLeaderTrades = leaderTrades.filter(hasComparableTradeTime);
+  const resetAtMs = parseResetAtMs(options.resetAt);
   const unmatchedFollowerTrades: Array<{
     accountId: number;
     accountName: string;
@@ -326,7 +358,7 @@ export function computeCopyTradeDriftSummary(
     const followerTrades = tradesByAccountId[accountId] ?? [];
     followerTrades.forEach((trade) => {
       const startedAtMs = getTradeStartedAtMs(trade);
-      if (startedAtMs === null || hasMatchingLeaderTrade(trade, comparableLeaderTrades)) {
+      if (startedAtMs === null || (resetAtMs !== null && startedAtMs <= resetAtMs) || hasMatchingLeaderTrade(trade, comparableLeaderTrades)) {
         return;
       }
 
@@ -496,6 +528,7 @@ function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
   const candidate = value as Partial<CopyTradeSettings>;
   const followersByAccountId: Record<string, CopyTradeFollowerSetting> = {};
   const rawFollowers = candidate.followersByAccountId;
+  const uncopyEventsResetAtByLeaderAccountId: Record<string, string> = {};
 
   if (rawFollowers && typeof rawFollowers === "object") {
     Object.entries(rawFollowers).forEach(([accountId, setting]) => {
@@ -509,9 +542,20 @@ function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
     });
   }
 
+  const rawUncopyEventResets = candidate.uncopyEventsResetAtByLeaderAccountId;
+  if (rawUncopyEventResets && typeof rawUncopyEventResets === "object") {
+    Object.entries(rawUncopyEventResets).forEach(([leaderAccountId, resetAt]) => {
+      if (!/^\d+$/.test(leaderAccountId) || typeof resetAt !== "string" || !Number.isFinite(Date.parse(resetAt))) {
+        return;
+      }
+      uncopyEventsResetAtByLeaderAccountId[leaderAccountId] = resetAt;
+    });
+  }
+
   return {
     modeEnabled: candidate.modeEnabled === true,
     followersByAccountId,
+    uncopyEventsResetAtByLeaderAccountId,
   };
 }
 
@@ -523,6 +567,15 @@ function createDefaultFollowerSetting(): CopyTradeFollowerSetting {
   return {
     copyEnabled: true,
   };
+}
+
+function parseResetAtMs(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function safeNumber(value: unknown): number {

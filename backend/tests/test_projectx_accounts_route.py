@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -481,7 +482,7 @@ def test_local_only_origins_still_allow_legacy_env_credentials_in_authenticated_
 
 
 def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_are_unavailable_in_local_dev(
-    db_session, monkeypatch
+    db_session, monkeypatch, caplog
 ):
     Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
     monkeypatch.delenv("CREDENTIALS_ENCRYPTION_KEY", raising=False)
@@ -504,10 +505,12 @@ def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_ar
             return [{"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True}]
 
     monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+    caplog.set_level(logging.WARNING, logger=main_module.logger.name)
 
     payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
     assert [int(row["id"]) for row in payload] == [7101]
+    assert "falling back to env credentials" not in caplog.text
 
 
 def test_authenticated_mode_returns_500_when_stored_credentials_are_unavailable_without_env_fallback(

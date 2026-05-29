@@ -154,6 +154,7 @@ from .services.projectx_credentials import (
     delete_projectx_credentials,
     get_projectx_credentials,
     has_projectx_credentials,
+    ProjectXCredentialsEncryptionKeyMissing,
     ProjectXCredentialsUnavailable,
     upsert_projectx_credentials,
 )
@@ -2201,7 +2202,10 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
     except ProjectXCredentialsUnavailable as exc:
         db.rollback()
         if allow_legacy_env:
-            logger.warning(
+            log_method = (
+                logger.debug if isinstance(exc, ProjectXCredentialsEncryptionKeyMissing) else logger.warning
+            )
+            log_method(
                 "ProjectX stored credentials unavailable for user %s; falling back to env credentials: %s",
                 user_id,
                 exc,

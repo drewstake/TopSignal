@@ -48,11 +48,13 @@ import {
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
+  getCopyTradeUncopyEventsResetAt,
   getCopyTradeRosterAccountIds,
-  getLatestDailyNetPnl,
+  getDailyNetPnlForTradingDay,
   readStoredCopyTradeSettings,
   updateCopyTradeFollowerSetting,
   updateCopyTradeModeSetting,
+  updateCopyTradeUncopyEventsResetAt,
   writeStoredCopyTradeSettings,
   type CopyTradeMetricSnapshot,
   type CopyTradeSettings,
@@ -439,6 +441,7 @@ interface CopyTradeLoadedAccountData {
 function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
+  currentTradingDay: string = tradingDayKey(new Date()),
 ): { start?: string; end?: string; allTime: boolean } {
   if (range === "CUSTOM") {
     if (!customRange) {
@@ -462,7 +465,6 @@ function buildMetricsRangeQuery(
   switch (range) {
     case "1D":
       {
-        const currentTradingDay = tradingDayKey(end);
         const currentTradingDayRange = getTradingDayRange(currentTradingDay);
         if (currentTradingDayRange) {
           start = new Date(currentTradingDayRange.start);
@@ -524,6 +526,7 @@ export function DashboardPage() {
   const [journalDays, setJournalDays] = useState<Set<string>>(new Set());
   const [journalDaysLoading, setJournalDaysLoading] = useState(false);
   const [calendarVisibleRange, setCalendarVisibleRange] = useState<{ startDate: string; endDate: string } | null>(null);
+  const [currentTradingDayKey, setCurrentTradingDayKey] = useState(() => tradingDayKey(new Date()));
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -548,6 +551,19 @@ export function DashboardPage() {
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
+
+  useEffect(() => {
+    function syncCurrentTradingDayKey() {
+      const nextTradingDayKey = tradingDayKey(new Date());
+      setCurrentTradingDayKey((current) => (current === nextTradingDayKey ? current : nextTradingDayKey));
+    }
+
+    syncCurrentTradingDayKey();
+    const intervalId = window.setInterval(syncCurrentTradingDayKey, 60_000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
 
@@ -591,7 +607,10 @@ export function DashboardPage() {
     () => (copyTradeSettings.modeEnabled ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId) : []),
     [copyTradeSettings.modeEnabled, orderedAccounts, selectedAccountId],
   );
-  const metricsRangeQuery = useMemo(() => buildMetricsRangeQuery(metricsRange, customRange), [customRange, metricsRange]);
+  const metricsRangeQuery = useMemo(
+    () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
+    [customRange, currentTradingDayKey, metricsRange],
+  );
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
   const dashboardLoadPerfRef = useRef<{
     accountId: number;
@@ -928,14 +947,14 @@ export function DashboardPage() {
     Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
       snapshots[Number(accountId)] = {
         netPnl: data.summary?.net_pnl ?? 0,
-        dailyPnl: getLatestDailyNetPnl(data.calendarDays),
+        dailyPnl: getDailyNetPnlForTradingDay(data.calendarDays, currentTradingDayKey),
         openPositions: 0,
         loadError: data.error,
       };
     });
 
     return snapshots;
-  }, [copyTradeAccountDataById]);
+  }, [copyTradeAccountDataById, currentTradingDayKey]);
 
   const copyTradeRows = useMemo(
     () =>
@@ -966,9 +985,13 @@ export function DashboardPage() {
     }
     return tradesByAccountId;
   }, [copyTradeAccountDataById, metricsTrades, selectedAccountId]);
+  const copyTradeDriftResetAt = useMemo(
+    () => getCopyTradeUncopyEventsResetAt(copyTradeSettings, selectedAccountId),
+    [copyTradeSettings, selectedAccountId],
+  );
   const copyTradeDriftSummary = useMemo(
-    () => computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId),
-    [copyTradeRows, copyTradeTradesByAccountId],
+    () => computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId, { resetAt: copyTradeDriftResetAt }),
+    [copyTradeDriftResetAt, copyTradeRows, copyTradeTradesByAccountId],
   );
   const copyTradeStatsActive = copyTradeSettings.modeEnabled && copyTradeTotals.canCalculate;
   const dashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
@@ -1566,6 +1589,10 @@ export function DashboardPage() {
     [saveCopyTradeSettings],
   );
 
+  const handleResetUncopyEvents = useCallback(() => {
+    saveCopyTradeSettings((current) => updateCopyTradeUncopyEventsResetAt(current, selectedAccountId, new Date().toISOString()));
+  }, [saveCopyTradeSettings, selectedAccountId]);
+
   return (
     <div className="dashboard-surface space-y-5 pb-8">
       <div className="space-y-1.5">
@@ -1654,8 +1681,10 @@ export function DashboardPage() {
           rows={copyTradeRows}
           totals={copyTradeTotals}
           driftSummary={copyTradeDriftSummary}
+          driftResetAt={copyTradeDriftResetAt}
           loading={summaryLoading || pnlCalendarLoading}
           onFollowerCopyEnabledChange={handleFollowerCopyEnabledChange}
+          onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}
 

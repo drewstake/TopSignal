@@ -1,4 +1,5 @@
 import { Badge } from "../../../components/ui/Badge";
+import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/ui/Table";
@@ -10,9 +11,19 @@ interface CopyTradePanelProps {
   rows: CopyTradeAccountRow[];
   totals: CopyTradeTotals;
   driftSummary: CopyTradeDriftSummary;
+  driftResetAt: string | null;
   loading: boolean;
   onFollowerCopyEnabledChange: (accountId: number, copyEnabled: boolean) => void;
+  onResetUncopyEvents: () => void;
 }
+
+const resetTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "America/New_York",
+});
 
 function statusBadgeVariant(status: CopyTradeStatus) {
   if (status === "Active") {
@@ -41,16 +52,31 @@ function contributionClass(value: number) {
   return "text-app-muted";
 }
 
+function formatResetTime(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return resetTimeFormatter.format(date);
+}
+
 export function CopyTradePanel({
   rows,
   totals,
   driftSummary,
+  driftResetAt,
   loading,
   onFollowerCopyEnabledChange,
+  onResetUncopyEvents,
 }: CopyTradePanelProps) {
   const cappedWarnings = totals.warnings.slice(0, 3);
   const remainingWarningCount = Math.max(0, totals.warnings.length - cappedWarnings.length);
   const driftByAccountId = new Map(driftSummary.accounts.map((account) => [account.accountId, account]));
+  const driftResetLabel = formatResetTime(driftResetAt);
 
   return (
     <Card className="border-app-accent/30 bg-[radial-gradient(120%_130%_at_0%_0%,rgb(var(--theme-accent)/0.16),rgb(var(--theme-surface)/0.64)_48%,rgb(var(--theme-surface)/0.92)_100%)]">
@@ -59,9 +85,20 @@ export function CopyTradePanel({
           <CardTitle>Copy Trade Mode</CardTitle>
           <CardDescription>Combined leader and follower performance across up to five Topstep accounts.</CardDescription>
         </div>
-        <Badge variant={totals.canCalculate ? "accent" : "warning"}>
-          {loading ? "Syncing" : totals.canCalculate ? "Copy Adjusted" : "Needs Leader"}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onResetUncopyEvents}
+            disabled={!totals.hasLeader || loading}
+            className="rounded-lg px-2.5"
+          >
+            Reset Uncopy Events
+          </Button>
+          <Badge variant={totals.canCalculate ? "accent" : "warning"}>
+            {loading ? "Syncing" : totals.canCalculate ? "Copy Adjusted" : "Needs Leader"}
+          </Badge>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
@@ -87,7 +124,7 @@ export function CopyTradePanel({
           <CopyTradeStat
             label="Uncopy Events"
             value={formatInteger(driftSummary.likelyUncopyEventCount)}
-            detail={`${formatInteger(driftSummary.followerOnlyTradeCount)} follower-only trades`}
+            detail={`${formatInteger(driftSummary.followerOnlyTradeCount)} follower-only trades${driftResetLabel ? ` since ${driftResetLabel}` : ""}`}
             valueClassName={driftSummary.likelyUncopyEventCount > 0 ? "text-app-warning" : "text-app-text"}
           />
           <CopyTradeStat
