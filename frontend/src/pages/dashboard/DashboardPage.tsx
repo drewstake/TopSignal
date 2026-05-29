@@ -651,8 +651,66 @@ export function DashboardPage() {
         start: metricsRangeQuery.start,
         end: metricsRangeQuery.end,
       };
+      const followerAccountIds = copyTradeSettings.modeEnabled
+        ? copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId)
+        : [];
+      const followerResultsRequest = Promise.all(
+        followerAccountIds.map(async (accountId) => {
+          const followerTradesRequest = accountsApi
+            .getTrades(accountId, {
+              limit: METRIC_TRADE_LIMIT,
+              start: metricsRangeQuery.start,
+              end: metricsRangeQuery.end,
+              includeLifecycle: false,
+            })
+            .then(
+              (trades) => ({ trades, error: null }),
+              (err) => ({
+                trades: [],
+                error: err instanceof Error ? err.message : "Failed to load follower trade history",
+              }),
+            );
 
-      const [nextSummaryBundle, nextPnlCalendar] = await Promise.all([
+          try {
+            const [summaryBundle, calendarDays, followerTrades] = await Promise.all([
+              accountsApi.getSummaryWithPointBases(accountId, {
+                start: summaryQuery.start,
+                end: summaryQuery.end,
+              }),
+              accountsApi.getPnlCalendar(accountId, {
+                start: metricsRangeQuery.start,
+                end: metricsRangeQuery.end,
+                all_time: metricsRangeQuery.allTime,
+              }),
+              followerTradesRequest,
+            ]);
+
+            return {
+              accountId,
+              data: {
+                summary: summaryBundle.summary,
+                calendarDays,
+                trades: followerTrades.trades,
+                tradesError: followerTrades.error,
+                error: null,
+              } satisfies CopyTradeLoadedAccountData,
+            };
+          } catch (err) {
+            return {
+              accountId,
+              data: {
+                summary: null,
+                calendarDays: [],
+                trades: [],
+                tradesError: null,
+                error: err instanceof Error ? err.message : "Failed to load copy-trade account data",
+              } satisfies CopyTradeLoadedAccountData,
+            };
+          }
+        }),
+      );
+
+      const [nextSummaryBundle, nextPnlCalendar, followerResults] = await Promise.all([
         accountsApi.getSummaryWithPointBases(selectedAccountId, {
           start: summaryQuery.start,
           end: summaryQuery.end,
@@ -662,6 +720,7 @@ export function DashboardPage() {
           end: metricsRangeQuery.end,
           all_time: metricsRangeQuery.allTime,
         }),
+        followerResultsRequest,
       ]);
 
       const nextPointPayoffByBasis = createEmptyPointPayoffByBasis();
@@ -690,64 +749,9 @@ export function DashboardPage() {
         },
       };
 
-      if (copyTradeSettings.modeEnabled) {
-        const followerAccountIds = copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId);
-        const followerResults = await Promise.all(
-          followerAccountIds.map(async (accountId) => {
-            try {
-              const [summaryBundle, calendarDays] = await Promise.all([
-                accountsApi.getSummaryWithPointBases(accountId, {
-                  start: summaryQuery.start,
-                  end: summaryQuery.end,
-                }),
-                accountsApi.getPnlCalendar(accountId, {
-                  start: metricsRangeQuery.start,
-                  end: metricsRangeQuery.end,
-                  all_time: metricsRangeQuery.allTime,
-                }),
-              ]);
-              let followerTrades: AccountTrade[] = [];
-              let followerTradesError: string | null = null;
-              try {
-                followerTrades = await accountsApi.getTrades(accountId, {
-                  limit: METRIC_TRADE_LIMIT,
-                  start: metricsRangeQuery.start,
-                  end: metricsRangeQuery.end,
-                  includeLifecycle: false,
-                });
-              } catch (err) {
-                followerTradesError = err instanceof Error ? err.message : "Failed to load follower trade history";
-              }
-
-              return {
-                accountId,
-                data: {
-                  summary: summaryBundle.summary,
-                  calendarDays,
-                  trades: followerTrades,
-                  tradesError: followerTradesError,
-                  error: null,
-                } satisfies CopyTradeLoadedAccountData,
-              };
-            } catch (err) {
-              return {
-                accountId,
-                data: {
-                  summary: null,
-                  calendarDays: [],
-                  trades: [],
-                  tradesError: null,
-                  error: err instanceof Error ? err.message : "Failed to load copy-trade account data",
-                } satisfies CopyTradeLoadedAccountData,
-              };
-            }
-          }),
-        );
-
-        followerResults.forEach(({ accountId, data }) => {
-          nextCopyTradeAccountDataById[accountId] = data;
-        });
-      }
+      followerResults.forEach(({ accountId, data }) => {
+        nextCopyTradeAccountDataById[accountId] = data;
+      });
 
       setCopyTradeAccountDataById(nextCopyTradeAccountDataById);
     } catch (err) {
