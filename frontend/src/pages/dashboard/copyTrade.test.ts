@@ -22,7 +22,6 @@ function row(overrides: Partial<CopyTradeAccountRow>): CopyTradeAccountRow {
     dailyPnl: 300,
     netPnl: 300,
     openPositions: 0,
-    copyEnabled: true,
     contributionNetPnl: overrides.role === "Leader" ? 300 : 300,
     contributionDailyPnl: overrides.role === "Leader" ? 300 : 300,
     includedInTotals: true,
@@ -69,29 +68,6 @@ describe("computeCopyTradeTotals", () => {
     expect(totals.combinedNetPnl).toBe(1_500);
     expect(totals.activeCopiedAccountCount).toBe(5);
     expect(totals.followersCopyingCount).toBe(4);
-  });
-
-  it("excludes disabled followers", () => {
-    const totals = computeCopyTradeTotals([
-      row({ accountId: 1, accountName: "Leader", role: "Leader", contributionNetPnl: 300 }),
-      row({ accountId: 2, accountName: "Follower 1", contributionNetPnl: 300 }),
-      row({ accountId: 3, accountName: "Follower 2", contributionNetPnl: 300 }),
-      row({ accountId: 4, accountName: "Follower 3", contributionNetPnl: 300 }),
-      row({
-        accountId: 5,
-        accountName: "Follower 4",
-        copyEnabled: false,
-        contributionNetPnl: 0,
-        contributionDailyPnl: 0,
-        includedInTotals: false,
-        exclusionReason: "Copy disabled",
-      }),
-    ]);
-
-    expect(totals.combinedNetPnl).toBe(1_200);
-    expect(totals.followerContributionNetPnl).toBe(900);
-    expect(totals.activeCopiedAccountCount).toBe(4);
-    expect(totals.warnings).toContain("Follower 4 is not copying and is excluded.");
   });
 
   it("excludes inactive and errored followers", () => {
@@ -181,13 +157,6 @@ describe("buildCopyTradeAccountRows", () => {
     const rows = buildCopyTradeAccountRows({
       accounts,
       leaderAccountId: 1,
-      settings: {
-        modeEnabled: true,
-        followersByAccountId: {
-          "3": { copyEnabled: true },
-          "5": { copyEnabled: false },
-        },
-      },
       snapshotsByAccountId: {
         1: { netPnl: 300, dailyPnl: 300, openPositions: 0 },
         2: { netPnl: 300, dailyPnl: 300, openPositions: 0 },
@@ -201,7 +170,7 @@ describe("buildCopyTradeAccountRows", () => {
 
     expect(rows.filter((candidate) => candidate.role === "Leader")).toHaveLength(1);
     expect(rows.filter((candidate) => candidate.role === "Follower" && candidate.accountId !== null)).toHaveLength(4);
-    expect(totals.combinedNetPnl).toBe(1_200);
+    expect(totals.combinedNetPnl).toBe(1_500);
   });
 
   it("maps ProjectX lockout accounts to locked out and keeps copy contributions", () => {
@@ -237,10 +206,6 @@ describe("buildCopyTradeAccountRows", () => {
     const rows = buildCopyTradeAccountRows({
       accounts,
       leaderAccountId: 1,
-      settings: {
-        modeEnabled: true,
-        followersByAccountId: {},
-      },
       snapshotsByAccountId: {
         1: { netPnl: 300, dailyPnl: 300, openPositions: 0 },
         2: { netPnl: 300, dailyPnl: 300, openPositions: 0 },
@@ -263,7 +228,7 @@ describe("combineCopyTradePnlCalendarDays", () => {
         row({ accountId: 2 }),
         row({
           accountId: 3,
-          copyEnabled: false,
+          status: "Inactive",
           includedInTotals: false,
           contributionNetPnl: 0,
           contributionDailyPnl: 0,
@@ -395,7 +360,6 @@ describe("copy-trade uncopy event reset settings", () => {
     const settings = updateCopyTradeUncopyEventsResetAt(
       {
         modeEnabled: true,
-        followersByAccountId: {},
       },
       10,
       "2026-05-28T22:34:00.000Z",

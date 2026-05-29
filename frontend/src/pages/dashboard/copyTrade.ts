@@ -5,13 +5,8 @@ export const COPY_TRADE_SETTINGS_STORAGE_KEY = "topsignal.dashboard.copyTradeSet
 export type CopyTradeRole = "Leader" | "Follower";
 export type CopyTradeStatus = "Active" | "Inactive" | "Locked Out" | "Error" | "Syncing";
 
-export interface CopyTradeFollowerSetting {
-  copyEnabled: boolean;
-}
-
 export interface CopyTradeSettings {
   modeEnabled: boolean;
-  followersByAccountId: Record<string, CopyTradeFollowerSetting>;
   uncopyEventsResetAtByLeaderAccountId?: Record<string, string>;
 }
 
@@ -31,7 +26,6 @@ export interface CopyTradeAccountRow {
   dailyPnl: number;
   netPnl: number;
   openPositions: number;
-  copyEnabled: boolean;
   contributionNetPnl: number;
   contributionDailyPnl: number;
   includedInTotals: boolean;
@@ -73,7 +67,6 @@ export interface CopyTradeDriftSummary {
 interface BuildCopyTradeAccountRowsInput {
   accounts: readonly AccountInfo[];
   leaderAccountId: number | null;
-  settings: CopyTradeSettings;
   snapshotsByAccountId: Record<number, CopyTradeMetricSnapshot | undefined>;
 }
 
@@ -83,7 +76,6 @@ const COPY_TRADE_MATCH_WINDOW_MS = 2 * 60 * 1000;
 
 const defaultSettings: CopyTradeSettings = {
   modeEnabled: false,
-  followersByAccountId: {},
   uncopyEventsResetAtByLeaderAccountId: {},
 };
 
@@ -116,25 +108,6 @@ export function updateCopyTradeModeSetting(settings: CopyTradeSettings, modeEnab
   return {
     ...normalizeCopyTradeSettings(settings),
     modeEnabled,
-  };
-}
-
-export function updateCopyTradeFollowerSetting(
-  settings: CopyTradeSettings,
-  accountId: number,
-  patch: Partial<CopyTradeFollowerSetting>,
-): CopyTradeSettings {
-  const normalized = normalizeCopyTradeSettings(settings);
-  const current = normalized.followersByAccountId[String(accountId)] ?? createDefaultFollowerSetting();
-
-  return {
-    ...normalized,
-    followersByAccountId: {
-      ...normalized.followersByAccountId,
-      [String(accountId)]: {
-        copyEnabled: patch.copyEnabled ?? current.copyEnabled,
-      },
-    },
   };
 }
 
@@ -190,13 +163,12 @@ export function getCopyTradeRosterAccountIds(accounts: readonly AccountInfo[], l
 }
 
 export function buildCopyTradeAccountRows(input: BuildCopyTradeAccountRowsInput): CopyTradeAccountRow[] {
-  const { accounts, leaderAccountId, settings, snapshotsByAccountId } = input;
-  const normalizedSettings = normalizeCopyTradeSettings(settings);
+  const { accounts, leaderAccountId, snapshotsByAccountId } = input;
   const leader = leaderAccountId === null ? null : accounts.find((account) => account.id === leaderAccountId) ?? null;
   const rows: CopyTradeAccountRow[] = [];
 
   if (leader) {
-    rows.push(buildAccountRow(leader, "Leader", normalizedSettings, snapshotsByAccountId[leader.id]));
+    rows.push(buildAccountRow(leader, "Leader", snapshotsByAccountId[leader.id]));
   }
 
   const followers = leader
@@ -204,7 +176,7 @@ export function buildCopyTradeAccountRows(input: BuildCopyTradeAccountRowsInput)
     : [];
 
   followers.forEach((account) => {
-    rows.push(buildAccountRow(account, "Follower", normalizedSettings, snapshotsByAccountId[account.id]));
+    rows.push(buildAccountRow(account, "Follower", snapshotsByAccountId[account.id]));
   });
 
   while (rows.length < MAX_COPY_TRADE_ACCOUNTS) {
@@ -236,11 +208,6 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
 
     if (row.loadError) {
       warnings.push(`${row.accountName} could not load and is excluded: ${row.loadError}`);
-      return;
-    }
-
-    if (!row.copyEnabled) {
-      warnings.push(`${row.accountName} is not copying and is excluded.`);
       return;
     }
 
@@ -428,10 +395,8 @@ export function computeCopyTradeDriftSummary(
 function buildAccountRow(
   account: AccountInfo,
   role: CopyTradeRole,
-  settings: CopyTradeSettings,
   snapshot: CopyTradeMetricSnapshot | undefined,
 ): CopyTradeAccountRow {
-  const followerSetting = role === "Follower" ? getFollowerSetting(settings, account.id) : createDefaultFollowerSetting();
   const status = snapshot?.loadError ? "Error" : snapshot === undefined ? "Syncing" : getCopyTradeStatusForAccount(account);
 
   return {
@@ -443,7 +408,6 @@ function buildAccountRow(
     dailyPnl: safeNumber(snapshot?.dailyPnl),
     netPnl: safeNumber(snapshot?.netPnl),
     openPositions: Math.max(0, safeNumber(snapshot?.openPositions)),
-    copyEnabled: role === "Leader" ? true : followerSetting.copyEnabled,
     contributionNetPnl: 0,
     contributionDailyPnl: 0,
     includedInTotals: false,
@@ -462,7 +426,6 @@ function buildEmptyFollowerSlot(slotNumber: number): CopyTradeAccountRow {
     dailyPnl: 0,
     netPnl: 0,
     openPositions: 0,
-    copyEnabled: false,
     contributionNetPnl: 0,
     contributionDailyPnl: 0,
     includedInTotals: false,
@@ -491,10 +454,6 @@ function getExclusionReason(row: CopyTradeAccountRow): string | null {
 
   if (row.role === "Leader") {
     return row.status === "Error" || row.status === "Syncing" ? `Leader is ${row.status.toLowerCase()}` : null;
-  }
-
-  if (!row.copyEnabled) {
-    return "Copy disabled";
   }
 
   if (row.status === "Locked Out") {
@@ -526,21 +485,7 @@ function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
   }
 
   const candidate = value as Partial<CopyTradeSettings>;
-  const followersByAccountId: Record<string, CopyTradeFollowerSetting> = {};
-  const rawFollowers = candidate.followersByAccountId;
   const uncopyEventsResetAtByLeaderAccountId: Record<string, string> = {};
-
-  if (rawFollowers && typeof rawFollowers === "object") {
-    Object.entries(rawFollowers).forEach(([accountId, setting]) => {
-      if (!/^\d+$/.test(accountId) || !setting || typeof setting !== "object") {
-        return;
-      }
-      const partialSetting = setting as Partial<CopyTradeFollowerSetting>;
-      followersByAccountId[accountId] = {
-        copyEnabled: typeof partialSetting.copyEnabled === "boolean" ? partialSetting.copyEnabled : true,
-      };
-    });
-  }
 
   const rawUncopyEventResets = candidate.uncopyEventsResetAtByLeaderAccountId;
   if (rawUncopyEventResets && typeof rawUncopyEventResets === "object") {
@@ -554,18 +499,7 @@ function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
 
   return {
     modeEnabled: candidate.modeEnabled === true,
-    followersByAccountId,
     uncopyEventsResetAtByLeaderAccountId,
-  };
-}
-
-function getFollowerSetting(settings: CopyTradeSettings, accountId: number): CopyTradeFollowerSetting {
-  return settings.followersByAccountId[String(accountId)] ?? createDefaultFollowerSetting();
-}
-
-function createDefaultFollowerSetting(): CopyTradeFollowerSetting {
-  return {
-    copyEnabled: true,
   };
 }
 

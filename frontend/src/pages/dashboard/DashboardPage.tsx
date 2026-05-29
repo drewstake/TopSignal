@@ -52,7 +52,6 @@ import {
   getCopyTradeRosterAccountIds,
   getDailyNetPnlForTradingDay,
   readStoredCopyTradeSettings,
-  updateCopyTradeFollowerSetting,
   updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
   writeStoredCopyTradeSettings,
@@ -961,10 +960,9 @@ export function DashboardPage() {
       buildCopyTradeAccountRows({
         accounts: orderedAccounts,
         leaderAccountId: selectedAccountId,
-        settings: copyTradeSettings,
         snapshotsByAccountId: copyTradeSnapshotsByAccountId,
       }),
-    [copyTradeSettings, copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
+    [copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
   );
 
   const copyTradeTotals = useMemo(() => computeCopyTradeTotals(copyTradeRows), [copyTradeRows]);
@@ -1582,13 +1580,6 @@ export function DashboardPage() {
     [saveCopyTradeSettings],
   );
 
-  const handleFollowerCopyEnabledChange = useCallback(
-    (accountId: number, copyEnabled: boolean) => {
-      saveCopyTradeSettings((current) => updateCopyTradeFollowerSetting(current, accountId, { copyEnabled }));
-    },
-    [saveCopyTradeSettings],
-  );
-
   const handleResetUncopyEvents = useCallback(() => {
     saveCopyTradeSettings((current) => updateCopyTradeUncopyEventsResetAt(current, selectedAccountId, new Date().toISOString()));
   }, [saveCopyTradeSettings, selectedAccountId]);
@@ -1683,7 +1674,6 @@ export function DashboardPage() {
           driftSummary={copyTradeDriftSummary}
           driftResetAt={copyTradeDriftResetAt}
           loading={summaryLoading || pnlCalendarLoading}
-          onFollowerCopyEnabledChange={handleFollowerCopyEnabledChange}
           onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}

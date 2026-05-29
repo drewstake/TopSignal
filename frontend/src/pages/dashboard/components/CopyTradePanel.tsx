@@ -3,7 +3,6 @@ import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/ui/Table";
-import { Toggle } from "../../../components/ui/Toggle";
 import { formatCurrency, formatInteger, formatNumber, formatPnl } from "../../../utils/formatters";
 import type { CopyTradeAccountRow, CopyTradeDriftSummary, CopyTradeStatus, CopyTradeTotals } from "../copyTrade";
 
@@ -13,7 +12,6 @@ interface CopyTradePanelProps {
   driftSummary: CopyTradeDriftSummary;
   driftResetAt: string | null;
   loading: boolean;
-  onFollowerCopyEnabledChange: (accountId: number, copyEnabled: boolean) => void;
   onResetUncopyEvents: () => void;
 }
 
@@ -70,7 +68,6 @@ export function CopyTradePanel({
   driftSummary,
   driftResetAt,
   loading,
-  onFollowerCopyEnabledChange,
   onResetUncopyEvents,
 }: CopyTradePanelProps) {
   const cappedWarnings = totals.warnings.slice(0, 3);
@@ -151,18 +148,17 @@ export function CopyTradePanel({
         ) : null}
 
         <div className="overflow-auto rounded-xl border border-app-border/80">
-          <Table className="min-w-[980px] table-fixed border-collapse whitespace-nowrap text-xs">
+          <Table className="min-w-[900px] table-fixed border-collapse whitespace-nowrap text-xs">
             <TableHeader className="sticky top-0 z-10 bg-app-surface/95">
               <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[16%]">Account</TableHead>
+                <TableHead className="w-[18%]">Account</TableHead>
                 <TableHead className="w-[8%] text-center">Role</TableHead>
                 <TableHead className="w-[9%] text-center">Status</TableHead>
-                <TableHead className="w-[10%] text-center">Copy</TableHead>
                 <TableHead className="w-[12%] text-right">Daily P&L</TableHead>
                 <TableHead className="w-[12%] text-right">Net P&L</TableHead>
-                <TableHead className="w-[12%] text-right">Contribution</TableHead>
+                <TableHead className="w-[14%] text-right">Contribution</TableHead>
                 <TableHead className="w-[12%] text-right">Uncopy</TableHead>
-                <TableHead className="w-[9%] text-right">Open</TableHead>
+                <TableHead className="w-[15%] text-right">Open</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -183,21 +179,6 @@ export function CopyTradePanel({
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge variant={statusBadgeVariant(row.status)}>{row.status}</Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {row.role === "Leader" ? (
-                        <span className="text-[11px] font-medium text-app-accent">Required</span>
-                      ) : row.accountId === null ? (
-                        <span className="text-[11px] text-app-muted">Disabled</span>
-                      ) : (
-                        <Toggle
-                          checked={row.copyEnabled}
-                          onChange={(checked) => onFollowerCopyEnabledChange(row.accountId!, checked)}
-                          label={row.copyEnabled ? "On" : "Off"}
-                          aria-label={`Toggle copy trading for ${row.accountName}`}
-                          className="h-7 rounded-lg px-2 py-1"
-                        />
-                      )}
                     </TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.dailyPnl))}>{formatPnl(row.dailyPnl)}</TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.netPnl))}>{formatPnl(row.netPnl)}</TableCell>
