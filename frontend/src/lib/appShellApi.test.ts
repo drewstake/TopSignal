@@ -12,7 +12,7 @@ vi.mock("./api", () => ({
   },
 }));
 
-import { getSelectableAccounts, refreshTrades } from "./appShellApi";
+import { getLatestTradesSyncRange, getSelectableAccounts, refreshTrades } from "./appShellApi";
 
 describe("appShellApi", () => {
   it("delegates account loading to the shared accounts api", async () => {
@@ -33,6 +33,13 @@ describe("appShellApi", () => {
     expect(refreshTradesMock).toHaveBeenCalledWith(7012, {
       start: "2026-03-09T00:00:00Z",
       end: "2026-03-09T23:59:59Z",
+    });
+  });
+
+  it("builds latest sync range from the current trading day", () => {
+    expect(getLatestTradesSyncRange(new Date("2026-05-29T14:34:00.000Z"))).toEqual({
+      start: "2026-05-28T22:00:00.000Z",
+      end: "2026-05-29T21:59:59.999Z",
     });
   });
 });

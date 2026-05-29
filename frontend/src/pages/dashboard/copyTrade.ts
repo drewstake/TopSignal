@@ -1,4 +1,5 @@
-import type { AccountInfo, AccountPnlCalendarDay, AccountTrade } from "../../lib/types";
+import { tradingDayKey } from "../../lib/tradingDay";
+import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 
 export const COPY_TRADE_SETTINGS_STORAGE_KEY = "topsignal.dashboard.copyTradeSettings";
 
@@ -73,6 +74,7 @@ interface BuildCopyTradeAccountRowsInput {
 const MAX_COPY_TRADE_ACCOUNTS = 5;
 const MAX_COPY_TRADE_FOLLOWERS = 4;
 const COPY_TRADE_MATCH_WINDOW_MS = 2 * 60 * 1000;
+const MAX_LIVE_BALANCE_DAILY_PNL_FALLBACK_ABS = 10_000;
 
 const defaultSettings: CopyTradeSettings = {
   modeEnabled: false,
@@ -294,6 +296,46 @@ export function combineCopyTradePnlCalendarDays(
 export function getDailyNetPnlForTradingDay(days: readonly AccountPnlCalendarDay[], tradingDay: string): number {
   const currentDay = days.find((day) => day.date === tradingDay && Number.isFinite(day.net_pnl));
   return currentDay?.net_pnl ?? 0;
+}
+
+export function getCopyTradeDailyNetPnlForTradingDay(
+  days: readonly AccountPnlCalendarDay[],
+  tradingDay: string,
+  summary: Pick<AccountSummary, "active_days" | "net_pnl"> | null | undefined,
+  lastTradeAt: string | null | undefined,
+  currentBalance?: number | null,
+): number {
+  const calendarValue = getDailyNetPnlForTradingDay(days, tradingDay);
+  if (calendarValue !== 0 || days.some((day) => day.date === tradingDay)) {
+    return calendarValue;
+  }
+
+  if (!lastTradeAt) {
+    return 0;
+  }
+
+  try {
+    if (tradingDayKey(lastTradeAt) !== tradingDay) {
+      return 0;
+    }
+
+    if (summary?.active_days === 1 && Number.isFinite(summary.net_pnl)) {
+      return summary.net_pnl;
+    }
+
+    const balanceFallback = safeNumber(currentBalance);
+    if (
+      (!summary || (summary.active_days === 0 && summary.net_pnl === 0)) &&
+      balanceFallback !== 0 &&
+      Math.abs(balanceFallback) <= MAX_LIVE_BALANCE_DAILY_PNL_FALLBACK_ABS
+    ) {
+      return balanceFallback;
+    }
+
+    return 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function computeCopyTradeDriftSummary(

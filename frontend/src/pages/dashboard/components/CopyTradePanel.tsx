@@ -72,7 +72,6 @@ export function CopyTradePanel({
 }: CopyTradePanelProps) {
   const cappedWarnings = totals.warnings.slice(0, 3);
   const remainingWarningCount = Math.max(0, totals.warnings.length - cappedWarnings.length);
-  const driftByAccountId = new Map(driftSummary.accounts.map((account) => [account.accountId, account]));
   const driftResetLabel = formatResetTime(driftResetAt);
 
   return (
@@ -148,22 +147,18 @@ export function CopyTradePanel({
         ) : null}
 
         <div className="overflow-auto rounded-xl border border-app-border/80">
-          <Table className="min-w-[900px] table-fixed border-collapse whitespace-nowrap text-xs">
+          <Table className="min-w-[640px] table-fixed border-collapse whitespace-nowrap text-xs">
             <TableHeader className="sticky top-0 z-10 bg-app-surface/95">
               <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[18%]">Account</TableHead>
-                <TableHead className="w-[8%] text-center">Role</TableHead>
-                <TableHead className="w-[9%] text-center">Status</TableHead>
-                <TableHead className="w-[12%] text-right">Daily P&L</TableHead>
-                <TableHead className="w-[12%] text-right">Net P&L</TableHead>
-                <TableHead className="w-[14%] text-right">Contribution</TableHead>
-                <TableHead className="w-[12%] text-right">Uncopy</TableHead>
-                <TableHead className="w-[15%] text-right">Open</TableHead>
+                <TableHead className="w-[38%]">Account</TableHead>
+                <TableHead className="w-[13%] text-center">Role</TableHead>
+                <TableHead className="w-[15%] text-center">Status</TableHead>
+                <TableHead className="w-[17%] text-right">Daily P&L</TableHead>
+                <TableHead className="w-[17%] text-right">Net P&L</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((row, index) => {
-                const drift = row.accountId === null ? null : driftByAccountId.get(row.accountId) ?? null;
                 return (
                   <TableRow key={row.accountId ?? `slot-${index}`} className={row.includedInTotals ? "bg-app-accent/5" : undefined}>
                     <TableCell>
@@ -182,21 +177,6 @@ export function CopyTradePanel({
                     </TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.dailyPnl))}>{formatPnl(row.dailyPnl)}</TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.netPnl))}>{formatPnl(row.netPnl)}</TableCell>
-                    <TableCell className={cn("text-right font-mono font-semibold", contributionClass(row.contributionNetPnl))}>
-                      {formatPnl(row.contributionNetPnl)}
-                      {row.exclusionReason ? <p className="text-[10px] font-normal text-app-muted">{row.exclusionReason}</p> : null}
-                    </TableCell>
-                    <TableCell className={cn("text-right font-mono", drift && drift.followerOnlyTradeCount > 0 ? "text-app-warning" : "text-app-muted")}>
-                      {drift ? (
-                        <>
-                          {formatInteger(drift.followerOnlyTradeCount)}
-                          <p className={cn("text-[10px]", contributionClass(drift.netPnl))}>{formatPnl(drift.netPnl)}</p>
-                        </>
-                      ) : (
-                        "-"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">{formatNumber(row.openPositions, 0)}</TableCell>
                   </TableRow>
                 );
               })}

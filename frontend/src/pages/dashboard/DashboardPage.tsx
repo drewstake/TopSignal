@@ -48,9 +48,9 @@ import {
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
+  getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeUncopyEventsResetAt,
   getCopyTradeRosterAccountIds,
-  getDailyNetPnlForTradingDay,
   readStoredCopyTradeSettings,
   updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
@@ -946,18 +946,26 @@ export function DashboardPage() {
 
   const copyTradeSnapshotsByAccountId = useMemo<Record<number, CopyTradeMetricSnapshot | undefined>>(() => {
     const snapshots: Record<number, CopyTradeMetricSnapshot | undefined> = {};
+    const accountById = new Map(orderedAccounts.map((account) => [account.id, account]));
 
     Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+      const account = accountById.get(Number(accountId));
       snapshots[Number(accountId)] = {
         netPnl: data.summary?.net_pnl ?? 0,
-        dailyPnl: getDailyNetPnlForTradingDay(data.calendarDays, currentTradingDayKey),
+        dailyPnl: getCopyTradeDailyNetPnlForTradingDay(
+          data.calendarDays,
+          currentTradingDayKey,
+          data.summary,
+          account?.last_trade_at,
+          account?.balance,
+        ),
         openPositions: 0,
         loadError: data.error,
       };
     });
 
     return snapshots;
-  }, [copyTradeAccountDataById, currentTradingDayKey]);
+  }, [copyTradeAccountDataById, currentTradingDayKey, orderedAccounts]);
 
   const copyTradeRows = useMemo(
     () =>
@@ -1585,6 +1593,13 @@ export function DashboardPage() {
   );
 
   const handleResetUncopyEvents = useCallback(() => {
+    const confirmed = window.confirm(
+      "Reset uncopy event tracking for this leader account? This only hides currently detected follower-only trades from Copy Trade Mode. It does not change trades or account P&L.",
+    );
+    if (!confirmed) {
+      return;
+    }
+
     saveCopyTradeSettings((current) => updateCopyTradeUncopyEventsResetAt(current, selectedAccountId, new Date().toISOString()));
   }, [saveCopyTradeSettings, selectedAccountId]);
 

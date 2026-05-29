@@ -6,6 +6,7 @@ import {
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
+  getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeUncopyEventsResetAt,
   getDailyNetPnlForTradingDay,
   updateCopyTradeUncopyEventsResetAt,
@@ -276,6 +277,89 @@ describe("getDailyNetPnlForTradingDay", () => {
         "2026-05-29",
       ),
     ).toBe(-52.8);
+  });
+});
+
+describe("getCopyTradeDailyNetPnlForTradingDay", () => {
+  it("uses the current trading-day calendar value when present", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [{ date: "2026-05-29", trade_count: 1, gross_pnl: 750, fees: 30.2, net_pnl: 719.8 }],
+      "2026-05-29",
+      { active_days: 1, net_pnl: 6_415.35 },
+      "2026-05-29T14:30:00.000Z",
+    );
+
+    expect(dailyPnl).toBe(719.8);
+  });
+
+  it("falls back to one-day summary net P&L when a current follower calendar row is missing", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 1, net_pnl: 6_415.35 },
+      "2026-05-29T14:30:00.000Z",
+    );
+
+    expect(dailyPnl).toBe(6_415.35);
+  });
+
+  it("does not treat multi-day all-time net P&L as current daily P&L", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 3, net_pnl: 6_415.35 },
+      "2026-05-29T14:30:00.000Z",
+    );
+
+    expect(dailyPnl).toBe(0);
+  });
+
+  it("falls back to live balance for same-day accounts with no local closed P&L yet", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 0, net_pnl: 0 },
+      "2026-05-29T13:45:00.000Z",
+      719.8,
+    );
+
+    expect(dailyPnl).toBe(719.8);
+  });
+
+  it("does not use live balance as daily P&L for older last-trade dates", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 0, net_pnl: 0 },
+      "2026-05-27T13:39:00.000Z",
+      4_136.25,
+    );
+
+    expect(dailyPnl).toBe(0);
+  });
+
+  it("does not use live balance when summary already has multi-day history", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 3, net_pnl: 6_415.35 },
+      "2026-05-29T13:45:00.000Z",
+      7_135.15,
+    );
+
+    expect(dailyPnl).toBe(0);
+  });
+
+  it("does not treat nominal account balances as daily P&L", () => {
+    const dailyPnl = getCopyTradeDailyNetPnlForTradingDay(
+      [],
+      "2026-05-29",
+      { active_days: 0, net_pnl: 0 },
+      "2026-05-29T13:45:00.000Z",
+      50_719.8,
+    );
+
+    expect(dailyPnl).toBe(0);
   });
 });
 
