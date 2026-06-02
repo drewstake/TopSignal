@@ -101,7 +101,7 @@ export interface CombineTrackerExpense {
 const EXPENSE_DERIVED_PURCHASE_KEY_PREFIX = "expense:";
 
 function normalizeCombineTrackerAccountState(account: CombineTrackerAccount): string {
-  const raw = account.status ?? account.account_state ?? "";
+  const raw = account.account_state ?? account.status ?? "";
   return raw.trim().toUpperCase();
 }
 

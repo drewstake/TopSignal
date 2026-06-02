@@ -119,6 +119,17 @@ describe("evolveCombineSpendLedger", () => {
       "13": { planSize: "150k", purchasedOn: "2026-03-01", amountCents: 19_900, source: "account" },
     });
   });
+
+  it("uses canonical account_state over stale status values", () => {
+    const start = createEmptyCombineSpendLedger();
+    const next = evolveCombineSpendLedger(start, [
+      { id: 21, name: "50KTC-21", status: "MISSING", account_state: "ACTIVE" },
+    ]);
+
+    expect(next.purchasesByAccountId).toEqual({
+      "21": { planSize: "50k", purchasedOn: "2026-03-01", amountCents: 4_900, source: "account" },
+    });
+  });
 });
 
 describe("computeCombineSpendSnapshotFromLedger", () => {

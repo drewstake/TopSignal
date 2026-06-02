@@ -448,17 +448,19 @@ interface RequestSignalOptions {
 interface GetAccountsOptions {
   showInactive?: boolean;
   showMissing?: boolean;
+  bypassCache?: boolean;
 }
 
 function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | boolean): Required<GetAccountsOptions> {
   if (typeof optionsOrOnlyActive === "boolean") {
     return optionsOrOnlyActive
-      ? { showInactive: false, showMissing: false }
-      : { showInactive: true, showMissing: true };
+      ? { showInactive: false, showMissing: false, bypassCache: false }
+      : { showInactive: true, showMissing: true, bypassCache: false };
   }
   return {
     showInactive: optionsOrOnlyActive?.showInactive ?? false,
     showMissing: optionsOrOnlyActive?.showMissing ?? false,
+    bypassCache: optionsOrOnlyActive?.bypassCache ?? false,
   };
 }
 
@@ -555,12 +557,12 @@ function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<Acco
   const cacheKey = accountsQueryCacheKey(options);
   const now = Date.now();
   const cached = accountsCacheByQuery.get(cacheKey);
-  if (cached && cached.expiresAtMs > now) {
+  if (!options.bypassCache && cached && cached.expiresAtMs > now) {
     return Promise.resolve(cached.value);
   }
 
   const inFlight = inFlightAccountsByQuery.get(cacheKey);
-  if (inFlight) {
+  if (!options.bypassCache && inFlight) {
     return inFlight;
   }
 
@@ -595,7 +597,7 @@ function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boole
 }
 
 function getSelectableAccountsFromApi(): Promise<AccountInfo[]> {
-  return getAccountsFromApi({ showInactive: true, showMissing: false }).then((accounts) =>
+  return getAccountsFromApi({ showInactive: true, showMissing: false, bypassCache: false }).then((accounts) =>
     accounts.filter((account) => isSelectableAccount(account)),
   );
 }

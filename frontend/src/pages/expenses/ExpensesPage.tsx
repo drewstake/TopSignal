@@ -166,6 +166,19 @@ function isSpreadsheetImportedTopstepExpense(expense: ExpenseRecord): boolean {
   return expense.tags.includes("topstep_import");
 }
 
+function getLatestSpreadsheetImportedTopstepExpenseDate(expenses: ExpenseRecord[]): string | null {
+  let latestDate: string | null = null;
+  for (const expense of expenses) {
+    if (!isSpreadsheetImportedTopstepExpense(expense)) {
+      continue;
+    }
+    if (latestDate === null || expense.expense_date > latestDate) {
+      latestDate = expense.expense_date;
+    }
+  }
+  return latestDate;
+}
+
 interface ActiveCombineAccount {
   accountId: number;
   planSize: "50k" | "100k" | "150k";
@@ -425,9 +438,7 @@ export function ExpensesPage() {
     try {
       const combineRelevantExpenses = await listAllCombineRelevantExpenses();
       nextSnapshot = syncCombineSpendTrackerFromExpenses(combineRelevantExpenses);
-      if (combineRelevantExpenses.some(isSpreadsheetImportedTopstepExpense)) {
-        return;
-      }
+      const latestSpreadsheetImportExpenseDate = getLatestSpreadsheetImportedTopstepExpenseDate(combineRelevantExpenses);
       const combinePurchaseExpenses = combineRelevantExpenses.filter(isTrackedCombinePurchaseExpense);
       const trackedCombineExpensesByAccountId = new Map<number, ExpenseRecord[]>();
       const expenseIdsToDelete = new Set<number>();
@@ -476,7 +487,7 @@ export function ExpensesPage() {
       }
 
       try {
-        const payload = await accountsApi.getAccounts({ showInactive: true, showMissing: false });
+        const payload = await accountsApi.getAccounts({ showInactive: true, showMissing: false, bypassCache: true });
         const activeCombineAccounts = collectActiveCombineAccounts(payload);
         const activeCombineByAccountId = new Map<number, ActiveCombineAccount>();
         for (const account of activeCombineAccounts) {
@@ -519,6 +530,15 @@ export function ExpensesPage() {
             continue;
           }
           const unsyncedPurchase = unsyncedByAccountId.get(activeCombine.accountId);
+          if (
+            latestSpreadsheetImportExpenseDate !== null &&
+            (unsyncedPurchase === undefined || unsyncedPurchase.purchasedOn <= latestSpreadsheetImportExpenseDate)
+          ) {
+            if (unsyncedPurchase !== undefined) {
+              syncedAccountIds.push(activeCombine.accountId);
+            }
+            continue;
+          }
           const amountCents = unsyncedPurchase?.amountCents ?? activeCombine.amountCents;
           const purchasedOn = unsyncedPurchase?.purchasedOn ?? getTodayLocalIsoDate();
           try {
