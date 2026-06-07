@@ -17,6 +17,7 @@ from app.services.projectx_trades import (
     _should_refresh_yesterday,
     _single_trading_day_request_date,
     ensure_trade_cache_for_request,
+    refresh_account_trades,
 )
 from app.services.projectx_client import ProjectXClientError
 from app.services.trading_day import trading_day_bounds_utc
@@ -71,6 +72,18 @@ class _RecordingClient:
         return list(self.events)
 
 
+class _PagedClient:
+    def __init__(self, events: list[dict[str, object]]):
+        self.events = events
+        self.calls: list[tuple[int, datetime, datetime | None, int | None, int | None]] = []
+
+    def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
+        self.calls.append((account_id, start, end, limit, offset))
+        page_limit = int(limit or len(self.events) or 1)
+        page_offset = int(offset or 0)
+        return list(self.events[page_offset : page_offset + page_limit])
+
+
 class _FailingClient:
     def fetch_trade_history(self, account_id, start, end=None, *, limit=None, offset=None):
         raise ProjectXClientError("provider unavailable", status_code=504)
@@ -120,6 +133,25 @@ def test_build_sync_windows_incremental_only_when_history_floor_is_already_cover
     assert windows == [(latest - timedelta(minutes=5), now)]
 
 
+def test_build_sync_windows_can_revisit_recent_gap_between_local_events():
+    now = _dt(20, 12, 0)
+    latest = _dt(19, 14, 10)
+    earliest = _dt(1, 8, 0)
+    recent_floor = now - timedelta(days=10)
+
+    windows = _build_sync_windows(
+        start=None,
+        end=now,
+        now=now,
+        latest_local=latest,
+        earliest_local=earliest,
+        lookback_days=15,
+        recent_backfill_days=10,
+    )
+
+    assert windows == [(recent_floor, now)]
+
+
 def test_build_sync_windows_backfills_when_local_history_is_partial():
     now = _dt(20, 12, 0)
     latest = _dt(19, 14, 10)
@@ -165,6 +197,39 @@ def test_iter_time_chunks_splits_into_contiguous_windows():
     assert chunks[1][1] == _dt(3, 0, 0) + timedelta(microseconds=1)
     assert chunks[2][0] == _dt(3, 0, 0) + timedelta(microseconds=2)
     assert chunks[2][1] == end
+
+
+def test_refresh_account_trades_pages_through_provider_results(monkeypatch):
+    monkeypatch.setenv("PROJECTX_DAY_SYNC_LIMIT", "2")
+    engine, db = _make_session()
+    try:
+        account_id = 13032506
+        start = _dt(3, 14, 0)
+        end = _dt(3, 16, 0)
+        client = _PagedClient(
+            [
+                _event(account_id, start + timedelta(minutes=10), "SRC-PAGE-1"),
+                _event(account_id, start + timedelta(minutes=20), "SRC-PAGE-2"),
+                _event(account_id, start + timedelta(minutes=30), "SRC-PAGE-3"),
+            ]
+        )
+
+        result = refresh_account_trades(
+            db,
+            client,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            start=start,
+            end=end,
+        )
+
+        assert result == {"fetched_count": 3, "inserted_count": 3}
+        assert [call[3:] for call in client.calls] == [(2, 0), (2, 2)]
+        assert db.query(ProjectXTradeEvent).filter(ProjectXTradeEvent.account_id == account_id).count() == 3
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
 
 
 def test_single_trading_day_request_date_returns_day_when_start_end_match():

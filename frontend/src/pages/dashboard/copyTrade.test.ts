@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountInfo, AccountTrade } from "../../lib/types";
 import {
+  COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
+  COPY_TRADE_SETTINGS_STORAGE_KEY,
   buildCopyTradeAccountRows,
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
@@ -9,7 +11,11 @@ import {
   getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeUncopyEventsResetAt,
   getDailyNetPnlForTradingDay,
+  prepareCopyTradeModeToggle,
+  readStoredCopyTradeSettings,
+  updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
+  writeStoredCopyTradeSettings,
   type CopyTradeAccountRow,
 } from "./copyTrade";
 
@@ -451,5 +457,135 @@ describe("copy-trade uncopy event reset settings", () => {
 
     expect(getCopyTradeUncopyEventsResetAt(settings, 10)).toBe("2026-05-28T22:34:00.000Z");
     expect(getCopyTradeUncopyEventsResetAt(settings, 11)).toBeNull();
+  });
+});
+
+describe("copy-trade mode toggle decisions", () => {
+  it("requires confirmation before enabling copy trade mode", () => {
+    expect(COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE).toContain("does not place orders");
+
+    const decision = prepareCopyTradeModeToggle(
+      { modeEnabled: false },
+      true,
+      {
+        selectedAccountId: 10,
+        enableConfirmed: false,
+      },
+    );
+
+    expect(decision.status).toBe("cancelled");
+    expect(decision.nextSettings.modeEnabled).toBe(false);
+  });
+
+  it("blocks enabling copy trade mode until a leader account is selected", () => {
+    const decision = prepareCopyTradeModeToggle(
+      { modeEnabled: false },
+      true,
+      {
+        selectedAccountId: null,
+        enableConfirmed: true,
+      },
+    );
+
+    expect(decision.status).toBe("blocked");
+    expect(decision.message).toContain("Select an account");
+  });
+
+  it("enables copy trade mode after confirmation without losing reset settings", () => {
+    const settings = updateCopyTradeUncopyEventsResetAt({ modeEnabled: false }, 10, "2026-05-28T22:34:00.000Z");
+    const decision = prepareCopyTradeModeToggle(settings, true, {
+      selectedAccountId: 10,
+      enableConfirmed: true,
+    });
+
+    expect(decision.status).toBe("ready");
+    expect(decision.nextSettings.modeEnabled).toBe(true);
+    expect(getCopyTradeUncopyEventsResetAt(decision.nextSettings, 10)).toBe("2026-05-28T22:34:00.000Z");
+  });
+
+  it("allows disabling copy trade mode without a selected account", () => {
+    const decision = prepareCopyTradeModeToggle({ modeEnabled: true }, false, {
+      selectedAccountId: null,
+    });
+
+    expect(decision.status).toBe("ready");
+    expect(decision.nextSettings.modeEnabled).toBe(false);
+  });
+
+  it("treats repeated toggle requests as unchanged", () => {
+    const decision = prepareCopyTradeModeToggle(updateCopyTradeModeSetting({ modeEnabled: false }, true), true, {
+      selectedAccountId: 10,
+      enableConfirmed: true,
+    });
+
+    expect(decision.status).toBe("unchanged");
+    expect(decision.nextSettings.modeEnabled).toBe(true);
+  });
+});
+
+describe("copy-trade settings storage", () => {
+  let values: Map<string, string>;
+
+  beforeEach(() => {
+    values = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => (values.has(key) ? values.get(key)! : null),
+        setItem: (key: string, value: string) => {
+          values.set(key, value);
+        },
+        removeItem: (key: string) => {
+          values.delete(key);
+        },
+        clear: () => {
+          values.clear();
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("persists normalized copy trade settings", () => {
+    const settings = updateCopyTradeUncopyEventsResetAt({ modeEnabled: true }, 10, "2026-05-28T22:34:00.000Z");
+
+    writeStoredCopyTradeSettings(settings);
+
+    expect(JSON.parse(window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY) ?? "{}")).toEqual({
+      modeEnabled: true,
+      uncopyEventsResetAtByLeaderAccountId: {
+        "10": "2026-05-28T22:34:00.000Z",
+      },
+    });
+    expect(readStoredCopyTradeSettings()).toEqual(settings);
+  });
+
+  it("falls back to disabled settings when localStorage cannot be read", () => {
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: () => {
+          throw new Error("storage blocked");
+        },
+      },
+    });
+
+    expect(readStoredCopyTradeSettings()).toEqual({
+      modeEnabled: false,
+      uncopyEventsResetAtByLeaderAccountId: {},
+    });
+  });
+
+  it("surfaces localStorage write failures so the UI can keep state consistent", () => {
+    vi.stubGlobal("window", {
+      localStorage: {
+        setItem: () => {
+          throw new Error("storage blocked");
+        },
+      },
+    });
+
+    expect(() => writeStoredCopyTradeSettings({ modeEnabled: true })).toThrow("storage blocked");
   });
 });

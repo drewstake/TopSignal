@@ -46,6 +46,7 @@ export interface CombineSpendLedger {
   standardActivationCount: number;
   loggedStandardActivationCount: number;
   syncedEvaluationExpenseAccountIds: Record<string, true>;
+  suppressedEvaluationExpenseAccountIds: Record<string, true>;
 }
 
 export interface CombineSpendSnapshot {
@@ -153,6 +154,7 @@ export function createEmptyCombineSpendLedger(): CombineSpendLedger {
     standardActivationCount: 0,
     loggedStandardActivationCount: 0,
     syncedEvaluationExpenseAccountIds: {},
+    suppressedEvaluationExpenseAccountIds: {},
   };
 }
 
@@ -181,6 +183,7 @@ export function evolveCombineSpendLedger(
     standardActivationCount: ledger.standardActivationCount,
     loggedStandardActivationCount: ledger.loggedStandardActivationCount,
     syncedEvaluationExpenseAccountIds: { ...ledger.syncedEvaluationExpenseAccountIds },
+    suppressedEvaluationExpenseAccountIds: { ...ledger.suppressedEvaluationExpenseAccountIds },
   };
 
   for (const account of accounts) {
@@ -383,6 +386,7 @@ function reconcileCombineSpendLedgerWithExpenses(
     standardActivationCount: ledger.standardActivationCount,
     loggedStandardActivationCount: 0,
     syncedEvaluationExpenseAccountIds: {},
+    suppressedEvaluationExpenseAccountIds: { ...ledger.suppressedEvaluationExpenseAccountIds },
   };
 
   for (const [purchaseKey, purchase] of Object.entries(ledger.purchasesByAccountId)) {
@@ -465,6 +469,7 @@ function reconcileCombineSpendLedgerWithExpenses(
       const accountId = String(expense.account_id);
       nextLedger.knownCombineAccountIds[accountId] = true;
       nextLedger.syncedEvaluationExpenseAccountIds[accountId] = true;
+      delete nextLedger.suppressedEvaluationExpenseAccountIds[accountId];
     }
   }
 
@@ -604,6 +609,18 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     }
   }
 
+  const suppressedEvaluationExpenseAccountIdsRaw =
+    candidate.suppressedEvaluationExpenseAccountIds &&
+    typeof candidate.suppressedEvaluationExpenseAccountIds === "object"
+      ? (candidate.suppressedEvaluationExpenseAccountIds as Record<string, unknown>)
+      : {};
+  const suppressedEvaluationExpenseAccountIds: Record<string, true> = {};
+  for (const [accountId, value] of Object.entries(suppressedEvaluationExpenseAccountIdsRaw)) {
+    if (value === true) {
+      suppressedEvaluationExpenseAccountIds[accountId] = true;
+    }
+  }
+
   return {
     startedOn,
     startedAt,
@@ -613,6 +630,7 @@ function normalizeCombineSpendLedger(raw: unknown): CombineSpendLedger {
     standardActivationCount,
     loggedStandardActivationCount,
     syncedEvaluationExpenseAccountIds,
+    suppressedEvaluationExpenseAccountIds,
   };
 }
 
@@ -695,6 +713,9 @@ function listUnsyncedEvaluationExpensePurchases(
     if (ledger.syncedEvaluationExpenseAccountIds[accountId] === true) {
       continue;
     }
+    if (ledger.suppressedEvaluationExpenseAccountIds[accountId] === true) {
+      continue;
+    }
     unsynced.push({
       accountId: Number(accountId),
       planSize: purchase.planSize,
@@ -736,6 +757,32 @@ export function markEvaluationExpensesSynced(accountIds: number[]): CombineSpend
       continue;
     }
     next.syncedEvaluationExpenseAccountIds[accountIdKey] = true;
+  }
+
+  writeCombineSpendLedger(next);
+  return computeCombineSpendSnapshotFromLedger(next);
+}
+
+export function suppressEvaluationExpenseSync(accountIds: number[]): CombineSpendSnapshot {
+  if (accountIds.length === 0) {
+    return readCombineSpendSnapshot();
+  }
+
+  const current = readCombineSpendLedger();
+  const next: CombineSpendLedger = {
+    ...current,
+    syncedEvaluationExpenseAccountIds: {
+      ...current.syncedEvaluationExpenseAccountIds,
+    },
+    suppressedEvaluationExpenseAccountIds: {
+      ...current.suppressedEvaluationExpenseAccountIds,
+    },
+  };
+
+  for (const accountId of accountIds) {
+    const accountIdKey = String(accountId);
+    next.suppressedEvaluationExpenseAccountIds[accountIdKey] = true;
+    delete next.syncedEvaluationExpenseAccountIds[accountIdKey];
   }
 
   writeCombineSpendLedger(next);

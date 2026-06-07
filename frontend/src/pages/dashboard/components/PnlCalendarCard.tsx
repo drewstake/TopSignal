@@ -220,9 +220,17 @@ export function PnlCalendarCard({
         },
         { tradeCount: 0, netPnl: 0.0 },
       );
-      summaries.set(rowStart + 6, summary);
+      summaries.set(rowStart, summary);
     }
     return summaries;
+  }, [calendarCells]);
+
+  const calendarRows = useMemo(() => {
+    const rows: CalendarCell[][] = [];
+    for (let rowStart = 0; rowStart < calendarCells.length; rowStart += 7) {
+      rows.push(calendarCells.slice(rowStart, rowStart + 7));
+    }
+    return rows;
   }, [calendarCells]);
 
   const maxAbsWeekPnl = useMemo(() => {
@@ -290,96 +298,95 @@ export function PnlCalendarCard({
         ) : (
           <div className="space-y-3">
             <div className="overflow-x-auto rounded-xl border border-app-border/80 bg-app-bg/55 p-2">
-              <div className="min-w-[680px]">
-                <div className="mb-2 grid grid-cols-7 gap-2">
+              <div className="min-w-[780px]">
+                <div className="mb-2 grid grid-cols-[repeat(7,minmax(0,1fr))_96px] gap-2">
                   {weekdayLabels.map((label) => (
                     <p key={label} className="text-center text-[11px] uppercase tracking-wide text-app-muted-strong">
                       {label}
                     </p>
                   ))}
+                  <p className="text-center text-[11px] uppercase tracking-wide text-app-muted-strong">Week</p>
                 </div>
 
-                <div className="grid grid-cols-7 gap-2">
-                  {calendarCells.map((cell, index) => {
-                    const isSaturdayColumn = index % 7 === 6;
+                <div className="space-y-2">
+                  {calendarRows.map((weekCells, rowIndex) => {
+                    const rowStart = rowIndex * 7;
+                    const summary = weeklySummaries.get(rowStart) ?? { tradeCount: 0, netPnl: 0 };
+                    return (
+                      <div key={`calendar-row-${rowStart}`} className="grid grid-cols-[repeat(7,minmax(0,1fr))_96px] gap-2">
+                        {weekCells.map((cell) => {
+                          if (cell.dayNumber === null) {
+                            return <div key={cell.key} className="h-20 rounded-lg border border-transparent" />;
+                          }
 
-                    if (isSaturdayColumn) {
-                      const summary = weeklySummaries.get(index) ?? { tradeCount: 0, netPnl: 0 };
-                      const weekNumber = Math.floor(index / 7) + 1;
-                      return (
+                          const point = cell.point;
+                          const netPnl = point?.net_pnl ?? 0;
+                          const backgroundColor = point
+                            ? tileBackground(netPnl, maxAbsMonthPnl)
+                            : "var(--dashboard-calendar-empty)";
+                          const isSelected = selectedDate === cell.key;
+                          const hasJournalEntry = journalDays?.has(cell.key) ?? false;
+
+                          return (
+                            <button
+                              key={cell.key}
+                              type="button"
+                              aria-pressed={isSelected}
+                              onClick={() => onDaySelect?.(isSelected ? null : cell.key)}
+                              className={`h-20 rounded-lg border p-2 text-left transition ${
+                                isSelected
+                                  ? "border-app-accent/90 ring-1 ring-app-accent/70"
+                                  : "border-app-border/80 hover:border-app-border/80"
+                              } ${onDaySelect ? "cursor-pointer" : "cursor-default"}`}
+                              style={{ backgroundColor }}
+                            >
+                              <div className="flex items-start justify-between gap-1">
+                                <p className="text-xs font-medium text-app-muted">{cell.dayNumber}</p>
+                                {hasJournalEntry ? (
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      onJournalDayOpen?.(cell.key);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter" || event.key === " ") {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        onJournalDayOpen?.(cell.key);
+                                      }
+                                    }}
+                                    className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-app-accent/65 bg-app-accent/15 px-1 text-[10px] font-semibold text-app-accent"
+                                    aria-label={`Open journal entry for ${cell.key}`}
+                                    title="Open journal entry"
+                                  >
+                                    J
+                                  </span>
+                                ) : null}
+                              </div>
+                              {point ? (
+                                <>
+                                  <p className={`mt-1 text-sm font-semibold ${pnlClass(netPnl)}`}>{formatPnlCompact(netPnl)}</p>
+                                  <p className="text-[11px] text-app-muted">{point.trade_count} trade(s)</p>
+                                </>
+                              ) : (
+                                <p className="mt-2 text-[11px] text-app-muted-strong">No trades</p>
+                              )}
+                            </button>
+                          );
+                        })}
                         <div
-                          key={cell.key}
                           className="flex h-20 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
                           style={{ backgroundColor: tileBackground(summary.netPnl, maxAbsWeekPnl) }}
                         >
-                          <p className="text-xs font-medium uppercase tracking-wide text-app-muted">Week {weekNumber}</p>
+                          <p className="text-xs font-medium uppercase tracking-wide text-app-muted">Week {rowIndex + 1}</p>
                           <p className={`mt-1 text-sm font-semibold ${pnlClass(summary.netPnl)}`}>
                             {formatPnlCompact(summary.netPnl)}
                           </p>
                           <p className="text-[11px] text-app-muted">{summary.tradeCount} trade(s)</p>
                         </div>
-                      );
-                    }
-
-                    if (cell.dayNumber === null) {
-                      return <div key={cell.key} className="h-20 rounded-lg border border-transparent" />;
-                    }
-
-                    const point = cell.point;
-                    const netPnl = point?.net_pnl ?? 0;
-                    const backgroundColor = point
-                      ? tileBackground(netPnl, maxAbsMonthPnl)
-                      : "var(--dashboard-calendar-empty)";
-                    const isSelected = selectedDate === cell.key;
-                    const hasJournalEntry = journalDays?.has(cell.key) ?? false;
-
-                    return (
-                      <button
-                        key={cell.key}
-                        type="button"
-                        aria-pressed={isSelected}
-                        onClick={() => onDaySelect?.(isSelected ? null : cell.key)}
-                        className={`h-20 rounded-lg border p-2 text-left transition ${
-                          isSelected
-                            ? "border-app-accent/90 ring-1 ring-app-accent/70"
-                            : "border-app-border/80 hover:border-app-border/80"
-                        } ${onDaySelect ? "cursor-pointer" : "cursor-default"}`}
-                        style={{ backgroundColor }}
-                      >
-                        <div className="flex items-start justify-between gap-1">
-                          <p className="text-xs font-medium text-app-muted">{cell.dayNumber}</p>
-                          {hasJournalEntry ? (
-                            <span
-                              role="button"
-                              tabIndex={0}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onJournalDayOpen?.(cell.key);
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" || event.key === " ") {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  onJournalDayOpen?.(cell.key);
-                                }
-                              }}
-                              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-app-accent/65 bg-app-accent/15 px-1 text-[10px] font-semibold text-app-accent"
-                              aria-label={`Open journal entry for ${cell.key}`}
-                              title="Open journal entry"
-                            >
-                              J
-                            </span>
-                          ) : null}
-                        </div>
-                        {point ? (
-                          <>
-                            <p className={`mt-1 text-sm font-semibold ${pnlClass(netPnl)}`}>{formatPnlCompact(netPnl)}</p>
-                            <p className="text-[11px] text-app-muted">{point.trade_count} trade(s)</p>
-                          </>
-                        ) : (
-                          <p className="mt-2 text-[11px] text-app-muted-strong">No trades</p>
-                        )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>

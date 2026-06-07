@@ -10,7 +10,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable
 
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -28,6 +27,7 @@ _DEFAULT_INITIAL_LOOKBACK_DAYS = 365
 _DEFAULT_SYNC_CHUNK_DAYS = 90
 _DEFAULT_DAY_SYNC_LIMIT = 1000
 _DEFAULT_YESTERDAY_REFRESH_MINUTES = 180
+_DEFAULT_RECENT_REFRESH_DAYS = 10
 _INCREMENTAL_OVERLAP = timedelta(minutes=5)
 _MAX_DAY_SYNC_PAGES = 200
 _MAX_LIFECYCLE_CONTEXT_ROWS = 25000
@@ -122,6 +122,7 @@ def refresh_account_trades(
     end_utc = _as_utc(end) if end is not None else now
     effective_lookback_days = _read_int_env("PROJECTX_INITIAL_LOOKBACK_DAYS", lookback_days)
     chunk_days = _read_int_env("PROJECTX_SYNC_CHUNK_DAYS", _DEFAULT_SYNC_CHUNK_DAYS)
+    recent_refresh_days = _read_int_env("PROJECTX_RECENT_REFRESH_DAYS", _DEFAULT_RECENT_REFRESH_DAYS)
     latest = get_latest_trade_timestamp(db, account_id, user_id=resolved_user_id) if start is None else None
     earliest = get_earliest_trade_timestamp(db, account_id, user_id=resolved_user_id) if start is None else None
 
@@ -132,6 +133,7 @@ def refresh_account_trades(
         latest_local=latest,
         earliest_local=earliest,
         lookback_days=effective_lookback_days,
+        recent_backfill_days=recent_refresh_days if start is None else 0,
     )
 
     fetched_count = 0
@@ -143,11 +145,14 @@ def refresh_account_trades(
                 window_end,
                 chunk_days=chunk_days,
             ):
-                events = client.fetch_trade_history(
+                fetch_result = _fetch_trade_day_all_pages(
+                    client,
                     account_id=account_id,
                     start=chunk_start,
                     end=chunk_end,
+                    limit=_read_int_env("PROJECTX_DAY_SYNC_LIMIT", _DEFAULT_DAY_SYNC_LIMIT),
                 )
+                events = fetch_result.events
                 fetched_count += len(events)
                 try:
                     inserted_count += store_trade_events(db, events, user_id=resolved_user_id)
@@ -247,14 +252,10 @@ def _store_trade_events_postgres(
     *,
     user_id: str,
 ) -> int:
-    if not events_sorted:
-        return 0
-
-    values = [_event_to_insert_values(event, user_id=user_id) for event in events_sorted]
-    stmt = pg_insert(ProjectXTradeEvent).values(values)
-    stmt = stmt.on_conflict_do_nothing().returning(ProjectXTradeEvent.id)
-    result = db.execute(stmt)
-    return len(result.scalars().all())
+    # ProjectX can return the same execution later with completed PnL/fee data.
+    # The ORM merge path updates existing rows; a PostgreSQL bulk insert with
+    # ON CONFLICT DO NOTHING would leave earlier pnl=null rows permanently stale.
+    return _store_trade_events_orm(db, events_sorted, user_id=user_id)
 
 
 def _store_trade_events_orm(
@@ -1208,6 +1209,7 @@ def _build_sync_windows(
     latest_local: datetime | None,
     earliest_local: datetime | None,
     lookback_days: int,
+    recent_backfill_days: int = 0,
 ) -> list[tuple[datetime, datetime]]:
     end_utc = _as_utc(end)
     effective_lookback_days = max(1, int(lookback_days))
@@ -1232,7 +1234,13 @@ def _build_sync_windows(
     if earliest_utc is not None and earliest_utc > history_floor:
         windows.append((history_floor, earliest_utc))
 
-    windows.append((latest_utc - _INCREMENTAL_OVERLAP, end_utc))
+    catchup_start = latest_utc - _INCREMENTAL_OVERLAP
+    recent_days = max(0, int(recent_backfill_days))
+    if recent_days > 0:
+        recent_start = max(history_floor, end_utc - timedelta(days=recent_days))
+        catchup_start = min(catchup_start, recent_start)
+
+    windows.append((catchup_start, end_utc))
 
     normalized_windows: list[tuple[datetime, datetime]] = []
     for window_start, window_end in windows:

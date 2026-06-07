@@ -26,6 +26,7 @@ import {
   isTrackedCombinePurchaseExpense,
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
+  suppressEvaluationExpenseSync,
   syncCombineSpendTracker,
   syncCombineSpendTrackerFromExpenses,
 } from "../../lib/combineTracker";
@@ -678,8 +679,14 @@ export function ExpensesPage() {
 
     try {
       await deleteExpense(expense.id);
+      if (isAutoTrackedCombineExpense(expense) && expense.account_id !== null) {
+        setCombineSpendSnapshot(suppressEvaluationExpenseSync([expense.account_id]));
+      }
       await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
-      if (expense.category === "evaluation_fee" || expense.category === "activation_fee") {
+      if (
+        !isAutoTrackedCombineExpense(expense) &&
+        (expense.category === "evaluation_fee" || expense.category === "activation_fee")
+      ) {
         await syncCombineTracker();
       }
     } catch (err) {
@@ -964,13 +971,9 @@ export function ExpensesPage() {
                         {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        {isAutoTrackedCombineExpense(expense) ? (
-                          <span className="text-xs text-slate-500">Auto-tracked</span>
-                        ) : (
-                          <Button variant="danger" size="sm" onClick={() => void handleDeleteExpense(expense)}>
-                            Delete
-                          </Button>
-                        )}
+                        <Button variant="danger" size="sm" onClick={() => void handleDeleteExpense(expense)}>
+                          Delete
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))

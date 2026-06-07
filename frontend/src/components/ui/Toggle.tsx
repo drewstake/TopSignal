@@ -7,15 +7,22 @@ export interface ToggleProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
   label?: string;
 }
 
-export function Toggle({ checked, onChange, label, className, ...props }: ToggleProps) {
+export function Toggle({ checked, onChange, label, className, disabled, onClick, ...props }: ToggleProps) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={(event) => {
+        onClick?.(event);
+        if (event.defaultPrevented || disabled) {
+          return;
+        }
+        onChange(!checked);
+      }}
       className={cn(
-        "inline-flex items-center gap-2 rounded-xl border border-app-border bg-app-surface/70 px-2.5 py-1.5 text-xs text-app-muted transition hover:border-app-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45",
+        "inline-flex items-center gap-2 rounded-xl border border-app-border bg-app-surface/70 px-2.5 py-1.5 text-xs text-app-muted transition hover:border-app-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-app-border",
         className,
       )}
       {...props}

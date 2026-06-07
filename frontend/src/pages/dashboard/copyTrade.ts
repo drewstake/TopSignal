@@ -2,13 +2,25 @@ import { tradingDayKey } from "../../lib/tradingDay";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 
 export const COPY_TRADE_SETTINGS_STORAGE_KEY = "topsignal.dashboard.copyTradeSettings";
+export const COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE = [
+  "Enable Copy Trade Mode?",
+  "This changes dashboard analytics to combine the selected leader account with eligible follower accounts.",
+  "It does not place orders or enable live trade copying. Confirm the leader and followers before relying on combined P&L.",
+].join("\n\n");
 
 export type CopyTradeRole = "Leader" | "Follower";
 export type CopyTradeStatus = "Active" | "Inactive" | "Locked Out" | "Error" | "Syncing";
+export type CopyTradeModeToggleDecisionStatus = "ready" | "blocked" | "cancelled" | "unchanged";
 
 export interface CopyTradeSettings {
   modeEnabled: boolean;
   uncopyEventsResetAtByLeaderAccountId?: Record<string, string>;
+}
+
+export interface CopyTradeModeToggleDecision {
+  status: CopyTradeModeToggleDecisionStatus;
+  nextSettings: CopyTradeSettings;
+  message: string;
 }
 
 export interface CopyTradeMetricSnapshot {
@@ -86,7 +98,13 @@ export function readStoredCopyTradeSettings(): CopyTradeSettings {
     return defaultSettings;
   }
 
-  const rawValue = window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY);
+  let rawValue: string | null;
+  try {
+    rawValue = window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY);
+  } catch {
+    return defaultSettings;
+  }
+
   if (!rawValue) {
     return defaultSettings;
   }
@@ -110,6 +128,46 @@ export function updateCopyTradeModeSetting(settings: CopyTradeSettings, modeEnab
   return {
     ...normalizeCopyTradeSettings(settings),
     modeEnabled,
+  };
+}
+
+export function prepareCopyTradeModeToggle(
+  settings: CopyTradeSettings,
+  requestedModeEnabled: boolean,
+  options: { selectedAccountId: number | null; enableConfirmed?: boolean },
+): CopyTradeModeToggleDecision {
+  const normalized = normalizeCopyTradeSettings(settings);
+
+  if (normalized.modeEnabled === requestedModeEnabled) {
+    return {
+      status: "unchanged",
+      nextSettings: normalized,
+      message: requestedModeEnabled ? "Copy Trade Mode is already on." : "Copy Trade Mode is already off.",
+    };
+  }
+
+  if (requestedModeEnabled && options.selectedAccountId === null) {
+    return {
+      status: "blocked",
+      nextSettings: normalized,
+      message: "Select an account before enabling Copy Trade Mode.",
+    };
+  }
+
+  if (requestedModeEnabled && options.enableConfirmed !== true) {
+    return {
+      status: "cancelled",
+      nextSettings: normalized,
+      message: "Copy Trade Mode stayed off.",
+    };
+  }
+
+  return {
+    status: "ready",
+    nextSettings: updateCopyTradeModeSetting(normalized, requestedModeEnabled),
+    message: requestedModeEnabled
+      ? "Copy Trade Mode enabled. Dashboard totals now include eligible follower accounts."
+      : "Copy Trade Mode disabled. Dashboard totals now show the selected account only.",
   };
 }
 

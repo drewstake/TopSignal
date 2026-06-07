@@ -44,6 +44,7 @@ import {
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
 import { CopyTradePanel } from "./components/CopyTradePanel";
 import {
+  COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
   buildCopyTradeAccountRows,
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
@@ -51,6 +52,7 @@ import {
   getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeUncopyEventsResetAt,
   getCopyTradeRosterAccountIds,
+  prepareCopyTradeModeToggle,
   readStoredCopyTradeSettings,
   updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
@@ -437,6 +439,18 @@ interface CopyTradeLoadedAccountData {
   error: string | null;
 }
 
+type CopyTradeToggleFeedbackTone = "neutral" | "success" | "error";
+
+interface CopyTradeToggleFeedback {
+  tone: CopyTradeToggleFeedbackTone;
+  message: string;
+}
+
+interface CopyTradeSettingsSaveResult {
+  ok: boolean;
+  errorMessage?: string;
+}
+
 function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
@@ -492,6 +506,10 @@ function buildMetricsRangeQuery(
   };
 }
 
+function getCopyTradeSettingsSaveErrorMessage(error: unknown) {
+  return error instanceof Error && error.message ? error.message : "Browser storage is unavailable.";
+}
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -499,6 +517,11 @@ export function DashboardPage() {
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
+  const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
+  const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
+  const copyTradeSettingsRef = useRef(copyTradeSettings);
+  const copyTradeTogglePendingRef = useRef(false);
+  const copyTradeToggleTimerRef = useRef<number | null>(null);
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
@@ -550,6 +573,18 @@ export function DashboardPage() {
   useEffect(() => {
     void loadAccounts();
   }, [loadAccounts]);
+
+  useEffect(() => {
+    copyTradeSettingsRef.current = copyTradeSettings;
+  }, [copyTradeSettings]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTradeToggleTimerRef.current !== null) {
+        window.clearTimeout(copyTradeToggleTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     function syncCurrentTradingDayKey() {
@@ -780,7 +815,9 @@ export function DashboardPage() {
 
     try {
       const selectedRange = selectedTradeDate ? getTradingDayRange(selectedTradeDate) : null;
-      const query = selectedRange ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange } : { limit: TRADE_LIMIT };
+      const query = selectedRange
+        ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange, refresh: true }
+        : { limit: TRADE_LIMIT };
       const nextTrades = await accountsApi.getTrades(selectedAccountId, query);
       setTrades(nextTrades);
     } catch (err) {
@@ -1577,19 +1614,73 @@ export function DashboardPage() {
     });
   }, []);
 
-  const saveCopyTradeSettings = useCallback((updater: (current: CopyTradeSettings) => CopyTradeSettings) => {
-    setCopyTradeSettings((current) => {
-      const next = updater(current);
+  const saveCopyTradeSettings = useCallback((updater: (current: CopyTradeSettings) => CopyTradeSettings): CopyTradeSettingsSaveResult => {
+    const current = copyTradeSettingsRef.current;
+    const next = updater(current);
+
+    try {
       writeStoredCopyTradeSettings(next);
-      return next;
-    });
+      copyTradeSettingsRef.current = next;
+      setCopyTradeSettings(next);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        errorMessage: getCopyTradeSettingsSaveErrorMessage(err),
+      };
+    }
   }, []);
 
   const handleCopyTradeModeChange = useCallback(
     (enabled: boolean) => {
-      saveCopyTradeSettings((current) => updateCopyTradeModeSetting(current, enabled));
+      if (copyTradeTogglePendingRef.current) {
+        return;
+      }
+
+      const currentSettings = copyTradeSettingsRef.current;
+      const enableConfirmed =
+        enabled && !currentSettings.modeEnabled && selectedAccountId !== null
+          ? window.confirm(COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE)
+          : undefined;
+      const decision = prepareCopyTradeModeToggle(currentSettings, enabled, {
+        selectedAccountId,
+        enableConfirmed,
+      });
+
+      if (decision.status !== "ready") {
+        setCopyTradeToggleFeedback({
+          tone: decision.status === "blocked" ? "error" : "neutral",
+          message: decision.message,
+        });
+        return;
+      }
+
+      copyTradeTogglePendingRef.current = true;
+      setCopyTradeTogglePending(true);
+      setCopyTradeToggleFeedback({
+        tone: "neutral",
+        message: enabled ? "Enabling Copy Trade Mode..." : "Disabling Copy Trade Mode...",
+      });
+
+      const saveResult = saveCopyTradeSettings((current) => updateCopyTradeModeSetting(current, enabled));
+      if (!saveResult.ok) {
+        setCopyTradeToggleFeedback({
+          tone: "error",
+          message: `Copy Trade Mode was not changed: ${saveResult.errorMessage}`,
+        });
+        copyTradeTogglePendingRef.current = false;
+        setCopyTradeTogglePending(false);
+        return;
+      }
+
+      copyTradeToggleTimerRef.current = window.setTimeout(() => {
+        setCopyTradeToggleFeedback({ tone: "success", message: decision.message });
+        copyTradeTogglePendingRef.current = false;
+        copyTradeToggleTimerRef.current = null;
+        setCopyTradeTogglePending(false);
+      }, 0);
     },
-    [saveCopyTradeSettings],
+    [saveCopyTradeSettings, selectedAccountId],
   );
 
   const handleResetUncopyEvents = useCallback(() => {
@@ -1600,8 +1691,32 @@ export function DashboardPage() {
       return;
     }
 
-    saveCopyTradeSettings((current) => updateCopyTradeUncopyEventsResetAt(current, selectedAccountId, new Date().toISOString()));
+    const saveResult = saveCopyTradeSettings((current) => updateCopyTradeUncopyEventsResetAt(current, selectedAccountId, new Date().toISOString()));
+    setCopyTradeToggleFeedback(
+      saveResult.ok
+        ? { tone: "success", message: "Uncopy event tracking reset for this leader account." }
+        : { tone: "error", message: `Copy Trade settings were not saved: ${saveResult.errorMessage}` },
+    );
   }, [saveCopyTradeSettings, selectedAccountId]);
+
+  const copyTradeToggleDisabled = copyTradeTogglePending || (selectedAccountId === null && !copyTradeSettings.modeEnabled);
+  const copyTradeModeStatusMessage =
+    copyTradeToggleFeedback?.message ??
+    (selectedAccountId === null
+      ? copyTradeSettings.modeEnabled
+        ? "On. Waiting for account selection before copy totals can load."
+        : "Select an account to use Copy Trade Mode."
+      : copyTradeSettings.modeEnabled
+        ? "On. Combining eligible leader and follower accounts."
+        : "Off. Showing the selected account only.");
+  const copyTradeModeStatusTone: CopyTradeToggleFeedbackTone =
+    copyTradeToggleFeedback?.tone ?? (copyTradeSettings.modeEnabled ? "success" : "neutral");
+  const copyTradeModeStatusClassName =
+    copyTradeModeStatusTone === "error"
+      ? "text-app-negative"
+      : copyTradeModeStatusTone === "success"
+        ? "text-app-accent"
+        : "text-app-muted";
 
   return (
     <div className="dashboard-surface space-y-5 pb-8">
@@ -1654,16 +1769,39 @@ export function DashboardPage() {
                 );
               })}
             </div>
-            <Toggle
-              checked={copyTradeSettings.modeEnabled}
-              onChange={handleCopyTradeModeChange}
-              label="Copy Trade Mode"
-              aria-label="Toggle Copy Trade Mode"
-              className={cn(
-                "h-8 w-full justify-center rounded-lg border-app-border/80 bg-app-surface/60 px-2.5 text-[11px] sm:w-auto",
-                copyTradeSettings.modeEnabled ? "border-app-accent/40 ring-1 ring-app-accent/50" : undefined,
-              )}
-            />
+            <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
+              <div className="flex items-center gap-1.5">
+                <Toggle
+                  checked={copyTradeSettings.modeEnabled}
+                  onChange={handleCopyTradeModeChange}
+                  label={copyTradeTogglePending ? "Updating..." : "Copy Trade Mode"}
+                  aria-label={
+                    copyTradeSettings.modeEnabled
+                      ? "Copy Trade Mode is on"
+                      : copyTradeToggleDisabled
+                        ? "Copy Trade Mode unavailable"
+                        : "Copy Trade Mode is off"
+                  }
+                  aria-describedby="copy-trade-toggle-status"
+                  disabled={copyTradeToggleDisabled}
+                  className={cn(
+                    "h-8 flex-1 justify-center rounded-lg border-app-border/80 bg-app-surface/60 px-2.5 text-[11px] sm:flex-none",
+                    copyTradeSettings.modeEnabled ? "border-app-accent/40 ring-1 ring-app-accent/50" : undefined,
+                  )}
+                />
+                <Badge variant={copyTradeTogglePending ? "accent" : copyTradeSettings.modeEnabled ? "positive" : "neutral"} className="h-8 rounded-lg">
+                  {copyTradeTogglePending ? "Saving" : copyTradeSettings.modeEnabled ? "On" : "Off"}
+                </Badge>
+              </div>
+              <p
+                id="copy-trade-toggle-status"
+                role="status"
+                aria-live={copyTradeModeStatusTone === "error" ? "assertive" : "polite"}
+                className={cn("text-[10px] leading-snug", copyTradeModeStatusClassName)}
+              >
+                {copyTradeModeStatusMessage}
+              </p>
+            </div>
             <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
@@ -1692,7 +1830,7 @@ export function DashboardPage() {
           totals={copyTradeTotals}
           driftSummary={copyTradeDriftSummary}
           driftResetAt={copyTradeDriftResetAt}
-          loading={summaryLoading || pnlCalendarLoading}
+          loading={summaryLoading || pnlCalendarLoading || copyTradeTogglePending}
           onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}

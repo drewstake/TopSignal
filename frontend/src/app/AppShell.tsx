@@ -15,7 +15,7 @@ import {
   readStoredMainAccountId,
   writeStoredAccountId,
 } from "../lib/accountSelection";
-import { getLatestTradesSyncRange, getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
+import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
@@ -148,7 +148,7 @@ export function AppShell() {
     setSyncMessage(null);
 
     try {
-      const result = await refreshTrades(selectedAccountId, getLatestTradesSyncRange());
+      const result = await refreshTrades(selectedAccountId);
       setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
       window.dispatchEvent(
         new CustomEvent<AccountTradesSyncedDetail>(ACCOUNT_TRADES_SYNCED_EVENT, {

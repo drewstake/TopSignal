@@ -12,6 +12,7 @@ import {
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
   STANDARD_ACTIVATION_FEE_CENTS,
+  suppressEvaluationExpenseSync,
   syncCombineSpendTracker,
   syncCombineSpendTrackerFromExpenses,
 } from "./combineTracker";
@@ -151,6 +152,7 @@ describe("computeCombineSpendSnapshotFromLedger", () => {
       standardActivationCount: 2,
       loggedStandardActivationCount: 0,
       syncedEvaluationExpenseAccountIds: {},
+      suppressedEvaluationExpenseAccountIds: {},
     });
 
     expect(snapshot.countsByPlan).toEqual({
@@ -292,6 +294,24 @@ describe("storage-backed helpers", () => {
       { id: 7003, name: "50KTC-7003", status: "ACTIVE" },
     ]);
     expect(thirdSync.unsyncedEvaluationPurchases).toEqual([]);
+  });
+
+  it("does not recreate a suppressed auto-tracked evaluation expense", () => {
+    const firstSync = syncCombineSpendTracker([{ id: 7101, name: "150KTC-V2-DLL-7101", status: "ACTIVE" }]);
+    expect(firstSync.unsyncedEvaluationPurchases).toEqual([
+      {
+        accountId: 7101,
+        planSize: "150k",
+        purchasedOn: "2026-03-01",
+        amountCents: 19_900,
+      },
+    ]);
+
+    suppressEvaluationExpenseSync([7101]);
+    syncCombineSpendTrackerFromExpenses([]);
+
+    const secondSync = syncCombineSpendTracker([{ id: 7101, name: "150KTC-V2-DLL-7101", status: "ACTIVE" }]);
+    expect(secondSync.unsyncedEvaluationPurchases).toEqual([]);
   });
 
   it("keeps locked-out combines tracked and synced", () => {

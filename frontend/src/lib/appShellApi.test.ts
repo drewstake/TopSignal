@@ -12,7 +12,7 @@ vi.mock("./api", () => ({
   },
 }));
 
-import { getLatestTradesSyncRange, getSelectableAccounts, refreshTrades } from "./appShellApi";
+import { getSelectableAccounts, refreshTrades } from "./appShellApi";
 
 describe("appShellApi", () => {
   it("delegates account loading to the shared accounts api", async () => {
@@ -36,10 +36,11 @@ describe("appShellApi", () => {
     });
   });
 
-  it("builds latest sync range from the current trading day", () => {
-    expect(getLatestTradesSyncRange(new Date("2026-05-29T14:34:00.000Z"))).toEqual({
-      start: "2026-05-28T22:00:00.000Z",
-      end: "2026-05-29T21:59:59.999Z",
-    });
+  it("uses the backend incremental latest-trade window by default", async () => {
+    const refreshResult = { fetched_count: 1, inserted_count: 1 };
+    refreshTradesMock.mockResolvedValueOnce(refreshResult);
+
+    await expect(refreshTrades(7012)).resolves.toBe(refreshResult);
+    expect(refreshTradesMock).toHaveBeenCalledWith(7012, {});
   });
 });
