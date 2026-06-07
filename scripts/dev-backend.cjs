@@ -85,36 +85,129 @@ function killProcessTree(pid) {
   timeout.unref();
 }
 
-// Keep the backend attached to the terminal by default so `npm run dev`
-// does not spawn a second console window on Windows. If reload control
-// events ever interfere with sibling watchers, the old isolated behavior
-// can still be enabled explicitly.
-const detachBackend =
+// On Windows, Uvicorn's --reload supervisor can propagate console control
+// events back to the parent npm dev wrapper and stop the frontend. Use a small
+// wrapper-side watcher there and restart plain Uvicorn ourselves instead.
+const useWrapperReload =
   process.platform === "win32" &&
-  process.env.TOPSIGNAL_DEV_BACKEND_DETACHED === "1";
+  process.env.TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD !== "1";
 
-const child = spawn(
-  pythonPath,
-  ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
-  {
+let child = null;
+let shuttingDown = false;
+let restarting = false;
+let restartTimer = null;
+let watcher = null;
+
+function startBackend() {
+  const args = ["-m", "uvicorn", "app.main:app", "--port", "8000"];
+  if (!useWrapperReload) {
+    args.splice(3, 0, "--reload");
+  }
+
+  child = spawn(pythonPath, args, {
     cwd: backendDir,
     env: childEnv,
-    stdio: ["inherit", "pipe", "pipe"],
-    detached: detachBackend,
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-  },
-);
+  });
 
-child.stdout.pipe(process.stdout);
-child.stderr.pipe(process.stderr);
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
 
-let shuttingDown = false;
+  child.on("exit", (code, signal) => {
+    child = null;
+
+    if (shuttingDown) {
+      process.exit(0);
+      return;
+    }
+
+    if (restarting) {
+      restarting = false;
+      setTimeout(startBackend, 300);
+      return;
+    }
+
+    if (signal) {
+      process.exit(1);
+      return;
+    }
+    process.exit(code ?? 1);
+  });
+}
+
+function shouldRestartForChange(fileName) {
+  if (!fileName) {
+    return true;
+  }
+
+  const normalized = String(fileName).replaceAll("\\", "/");
+  if (normalized.includes("__pycache__/")) {
+    return false;
+  }
+
+  return (
+    normalized.endsWith(".py") ||
+    normalized === ".env" ||
+    normalized.endsWith("/.env")
+  );
+}
+
+function scheduleRestart(fileName) {
+  if (shuttingDown || !shouldRestartForChange(fileName)) {
+    return;
+  }
+
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+  }
+
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    if (shuttingDown) {
+      return;
+    }
+
+    console.log(`Detected backend change${fileName ? ` in ${fileName}` : ""}; restarting...`);
+    if (!child || child.exitCode !== null) {
+      startBackend();
+      return;
+    }
+
+    restarting = true;
+    killProcessTree(child.pid);
+  }, 250);
+}
+
+function startWrapperReloadWatcher() {
+  if (!useWrapperReload) {
+    return;
+  }
+
+  watcher = fs.watch(backendDir, { recursive: true }, (_eventType, fileName) => {
+    scheduleRestart(fileName);
+  });
+}
 
 function shutdown() {
-  if (shuttingDown || child.exitCode !== null) {
+  if (shuttingDown) {
     return;
   }
   shuttingDown = true;
+
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+  }
+
+  if (watcher) {
+    watcher.close();
+  }
+
+  if (!child || child.exitCode !== null) {
+    process.exit(0);
+    return;
+  }
+
   killProcessTree(child.pid);
 }
 
@@ -122,10 +215,5 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, shutdown);
 }
 
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.exit(shuttingDown ? 0 : 1);
-    return;
-  }
-  process.exit(code ?? (shuttingDown ? 0 : 1));
-});
+startBackend();
+startWrapperReloadWatcher();
