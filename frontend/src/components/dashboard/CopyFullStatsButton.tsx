@@ -242,6 +242,7 @@ interface DirectionConcentration {
   weakerSide: "long" | "short";
   otherSideHasTrades: boolean;
   otherSideHasExpectancy: boolean;
+  otherSideExpectancy: number | null;
 }
 
 interface DirectionComparison {
@@ -698,6 +699,7 @@ function getDirectionConcentration(metrics: CopyFullStatsMetrics): DirectionConc
     weakerSide,
     otherSideHasTrades: otherTrades !== null && otherTrades > 0,
     otherSideHasExpectancy: otherExpectancy !== null,
+    otherSideExpectancy: otherExpectancy,
   };
 }
 
@@ -726,7 +728,10 @@ function getDirectionConcentrationAction(concentration: DirectionConcentration) 
     return `do not scale ${concentration.weakerSide}s until that side has at least 10 logged trades with positive expectancy.`;
   }
   if (!concentration.otherSideHasExpectancy) {
-    return `keep ${concentration.weakerSide}s at 50% size until expectancy is available and positive across at least 10 trades.`;
+    return `keep ${concentration.weakerSide}s at reduced size until expectancy is available across at least 10 trades.`;
+  }
+  if (concentration.otherSideExpectancy !== null && concentration.otherSideExpectancy > 0) {
+    return `keep ${concentration.weakerSide}s at reduced size until expectancy improves across at least 10 more trades and loss size stays controlled.`;
   }
   return `keep ${concentration.weakerSide}s at 50% size until expectancy is positive across at least 10 trades.`;
 }
@@ -844,7 +849,9 @@ function buildLeverCandidates(metrics: CopyFullStatsMetrics, sampleQuality: Samp
     const dailyPause = averageWin !== null ? averageWin * 2 : null;
     levers.push({
       issue: "Drawdown pressure",
-      metric: `max DD ${formatPercent(drawdownPercentOfNet)} of net / ${formatPercent(drawdownPercentOfRiskBase)} of risk base (${getRiskBaseLabel(
+      metric: `max DD ${formatMetricMoney(metrics.risk.maxDrawdown, { forceNegative: true })}, ${formatPercent(drawdownPercentOfNet)} of net / ${formatPercent(
+        drawdownPercentOfRiskBase,
+      )} of selected risk base (${getRiskBaseLabel(
         metrics,
       )})`,
       action:
@@ -858,10 +865,16 @@ function buildLeverCandidates(metrics: CopyFullStatsMetrics, sampleQuality: Samp
   if (directionComparison !== null) {
     const weaker = directionComparison.weaker.toLowerCase();
     const stronger = directionComparison.stronger.toLowerCase();
+    const action =
+      directionComparison.weakerExpectancy > 0
+        ? `keep ${weaker} size reduced or require stricter confirmation until ${weaker} expectancy improves over at least 10 more trades.`
+        : `reduce ${weaker} size or require stricter confirmation until ${weaker} expectancy turns positive.`;
     levers.push({
       issue: "Direction imbalance",
-      metric: `${weaker} expectancy ${formatMoney(directionComparison.weakerExpectancy)} vs ${stronger} ${formatMoney(directionComparison.strongerExpectancy)}`,
-      action: `reduce ${weaker} size or require stricter confirmation until ${weaker} expectancy closes the gap.`,
+      metric: `${weaker} expectancy ${formatMoney(directionComparison.weakerExpectancy)} vs ${stronger} expectancy ${formatMoney(
+        directionComparison.strongerExpectancy,
+      )}`,
+      action,
       priority: 75,
     });
   }
@@ -1363,16 +1376,16 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
   addInsightByTone(metrics.direction.insight, doingRight, doingWrong);
 
   if (riskScore < 50) {
-    doingWrong.push(`Risk quality is the biggest issue: ${formatDecimal(riskScore, 1)}/100, where higher is better.`);
+    doingWrong.push(`Risk quality is the main constraint: ${formatDecimal(riskScore, 1)}/100, driven by drawdown and worst-day pressure.`);
   }
   if (drawdownPercentOfNet !== null && drawdownPercentOfNet >= 25) {
     doingWrong.push(`Drawdown is too large relative to profit: max drawdown equals ${formatPercent(drawdownPercentOfNet)} of net PnL.`);
   }
   if (drawdownPercentOfRiskBase !== null && drawdownPercentOfRiskBase >= 3) {
     doingWrong.push(
-      `Max drawdown reached ${formatPercent(drawdownPercentOfRiskBase)} of risk base (${getRiskBaseDescription(
+      `Max drawdown reached ${formatPercent(drawdownPercentOfRiskBase)} of the selected risk base (${getRiskBaseDescription(
         metrics,
-      )}), which can pressure consistency and funding rules.`,
+      )}). If this base is a risk budget or account cushion, values can exceed 100% and should be treated as a hard sizing warning.`,
     );
   }
   if (Number.isFinite(sustainabilityScore) && sustainabilityScore < 60) {
@@ -1390,8 +1403,9 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
     );
   }
   if (directionComparison !== null) {
+    const relationship = directionComparison.weakerExpectancy > 0 ? "profitable but materially weaker" : "underperforming";
     doingWrong.push(
-      `${directionComparison.weaker} side is underperforming: ${directionComparison.weaker.toLowerCase()} expectancy is ${formatMoney(
+      `${directionComparison.weaker} side is ${relationship}: ${directionComparison.weaker.toLowerCase()} expectancy is ${formatMoney(
         directionComparison.weakerExpectancy,
       )} versus ${directionComparison.stronger.toLowerCase()} expectancy at ${formatMoney(directionComparison.strongerExpectancy)}.`,
     );

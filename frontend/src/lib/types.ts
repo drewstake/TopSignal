@@ -529,6 +529,36 @@ export type BotLiquiditySweepTargetMode = "2r" | "3r" | "next_liquidity";
 export type BotTrailingStopMode = "atr" | "swing" | "moving_average";
 export type BotOrbStopMode = "inside_range" | "opposite_side";
 export type BotOrbTargetMode = "2r" | "3r" | "measured_move" | "day_extreme";
+export type BotMarketBias = "bullish" | "bearish" | "neutral";
+
+export interface BotDirectionalProbabilities {
+  bullish: number;
+  bearish: number;
+  sideways: number;
+}
+
+export interface BotAnalysis {
+  current_price: number | null;
+  previous_close: number | null;
+  price_change: number | null;
+  price_change_percent: number | null;
+  trend: BotMarketBias;
+  trend_strength: number;
+  volatility_state: "low" | "normal" | "elevated" | "extreme";
+  volume_state: "low" | "normal" | "elevated";
+  support_levels: number[];
+  resistance_levels: number[];
+  nearest_support: number | null;
+  nearest_resistance: number | null;
+  bullish_probability: number;
+  bearish_probability: number;
+  sideways_probability: number;
+  expected_move: number | null;
+  invalidation_level: number | null;
+  summary: string;
+  reasoning: string[];
+  risk_notes: string[];
+}
 
 export interface BotStrategyParams {
   entry_period?: number;
@@ -798,6 +828,7 @@ export interface BotEvaluation {
   decision: BotDecision;
   order_attempt: BotOrderAttempt | null;
   risk_events: BotRiskEvent[];
+  analysis?: BotAnalysis | null;
   candles: ProjectXMarketCandle[];
 }
 

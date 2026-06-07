@@ -52,7 +52,9 @@ from app.services.bot_service import (
     fetch_and_store_supertrend_pivot_candles,
     fetch_and_store_support_resistance_candles,
     fetch_and_store_vwap_gap_retrace_candles,
+    build_bot_market_analysis,
     list_market_candles,
+    SignalResult,
     start_bot_run,
     stop_latest_bot_run,
     update_bot_config,
@@ -304,6 +306,151 @@ def _make_bot_create_payload(name: str = "Test Bot") -> BotConfigCreateIn:
         cooldown_seconds=0,
         max_data_staleness_seconds=3600,
     )
+
+
+def _make_analysis_config() -> BotConfig:
+    return BotConfig(
+        user_id="00000000-0000-0000-0000-000000000000",
+        account_id=9001,
+        name="Analysis Bot",
+        enabled=True,
+        execution_mode="dry_run",
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id="CON.F.US.MNQ.M26",
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=50,
+        fast_period=5,
+        slow_period=13,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=3,
+        max_open_position=1,
+        allowed_contracts=["CON.F.US.MNQ.M26"],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3600,
+    )
+
+
+def _make_analysis_signal(action: str = "HOLD", price: float | None = None) -> SignalResult:
+    return SignalResult(
+        action=action,
+        reason="test signal",
+        candle_timestamp=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+        price=price,
+        raw_payload={},
+    )
+
+
+def test_bot_market_analysis_leans_bullish_for_rising_candles():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candles = [
+        _make_candle(
+            base + timedelta(minutes=index * 5),
+            100 + index,
+            open_price=99.6 + index,
+            high_price=100.6 + index,
+            low_price=99.3 + index,
+            volume=180 if index == 29 else 100,
+        )
+        for index in range(30)
+    ]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal("BUY", price=float(candles[-1].close_price)),
+    )
+
+    assert analysis["trend"] == "bullish"
+    assert analysis["trend_strength"] > 50
+    assert analysis["bullish_probability"] > analysis["bearish_probability"]
+    assert analysis["bullish_probability"] + analysis["bearish_probability"] + analysis["sideways_probability"] == 100
+    assert analysis["nearest_support"] is not None
+    assert analysis["invalidation_level"] is not None
+    assert "not financial advice" in analysis["summary"]
+
+
+def test_bot_market_analysis_leans_bearish_for_falling_candles():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candles = [
+        _make_candle(
+            base + timedelta(minutes=index * 5),
+            130 - index,
+            open_price=130.4 - index,
+            high_price=130.7 - index,
+            low_price=129.4 - index,
+            volume=180 if index == 29 else 100,
+        )
+        for index in range(30)
+    ]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal("SELL", price=float(candles[-1].close_price)),
+    )
+
+    assert analysis["trend"] == "bearish"
+    assert analysis["trend_strength"] > 50
+    assert analysis["bearish_probability"] > analysis["bullish_probability"]
+    assert analysis["bullish_probability"] + analysis["bearish_probability"] + analysis["sideways_probability"] == 100
+    assert analysis["nearest_resistance"] is not None
+    assert analysis["invalidation_level"] is not None
+
+
+def test_bot_market_analysis_prefers_sideways_for_flat_candles():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    closes = [100.0, 100.1, 99.9, 100.05, 99.95] * 6
+    candles = [
+        _make_candle(
+            base + timedelta(minutes=index * 5),
+            close,
+            open_price=close,
+            high_price=close + 0.35,
+            low_price=close - 0.35,
+            volume=100,
+        )
+        for index, close in enumerate(closes)
+    ]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal("HOLD", price=float(candles[-1].close_price)),
+    )
+
+    assert analysis["trend"] == "neutral"
+    assert analysis["sideways_probability"] > analysis["bullish_probability"]
+    assert analysis["sideways_probability"] > analysis["bearish_probability"]
+    assert analysis["bullish_probability"] + analysis["bearish_probability"] + analysis["sideways_probability"] == 100
+
+
+def test_bot_market_analysis_handles_insufficient_candles_with_neutral_probabilities():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candles = [
+        _make_candle(base + timedelta(minutes=index * 5), 100 + index)
+        for index in range(3)
+    ]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal("HOLD", price=float(candles[-1].close_price)),
+    )
+
+    assert analysis["trend"] == "neutral"
+    assert analysis["trend_strength"] == 0
+    assert analysis["bullish_probability"] == 33
+    assert analysis["bearish_probability"] == 33
+    assert analysis["sideways_probability"] == 34
+    assert analysis["expected_move"] is None
+    assert any("at least 10" in note for note in analysis["risk_notes"])
 
 
 def test_sma_cross_generates_buy_signal_on_latest_closed_candle():

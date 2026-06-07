@@ -25,6 +25,7 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
+import { BotAnalysisPanel } from "./BotAnalysisPanel";
 import { BotSignalChart } from "./BotSignalChart";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
@@ -3707,12 +3708,18 @@ export function BotPage() {
             </CardContent>
           </Card>
 
-          <div className="order-1 min-w-0 xl:col-start-1 xl:row-start-1">
+          <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
             <BotSignalChart
               bot={selectedBot}
               activity={activity}
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
+            />
+            <BotAnalysisPanel
+              bot={selectedBot}
+              evaluation={selectedBotEvaluation}
+              loading={actionLoading === "start" || actionLoading === "evaluate"}
+              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
             />
           </div>
         </div>

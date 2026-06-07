@@ -572,12 +572,53 @@ describe("buildStatsCoachSummary", () => {
       expect.arrayContaining([
         expect.objectContaining({
           issue: "Direction imbalance",
-          metric: "long expectancy +$109.50 vs short +$410.45",
+          metric: "long expectancy +$109.50 vs short expectancy +$410.45",
+          action: "keep long size reduced or require stricter confirmation until long expectancy improves over at least 10 more trades.",
         }),
       ]),
     );
     expect(getSection(summary, "Main Risks")).toContain("Shorts outperform longs on expectancy.");
     expect(getSection(summary, "What You're Doing Right")).not.toContain("Shorts outperform longs on expectancy.");
+  });
+
+  it("does not tell traders to make an already-positive weaker side positive", () => {
+    const summary = buildStatsCoachSummary({
+      metrics: makeMetrics({
+        summary: {
+          trade_count: 53,
+          active_days: 16,
+          avg_trades_per_day: 3.3,
+          profit_factor: 1.98,
+          win_rate: 66,
+        },
+        performance: {
+          netPnl: metric(5180.49),
+          expectancyPerTrade: metric(97.75),
+        },
+        direction: {
+          longPnlShare: metric(9.4),
+          shortPnlShare: metric(90.6),
+          longExpectancy: metric(30.43),
+          shortExpectancy: metric(138.13),
+          insight: "",
+        },
+        activity: {
+          tradesPerWeek: 23.2,
+          activeDaysPerWeek: 5,
+        },
+      }),
+      rangeLabel: "May 15 to Jun 5, 2026",
+    });
+
+    expect(getSection(summary, "Next 10 Trading Days Plan").join("\n")).toContain(
+      "PnL concentration: keep longs at reduced size until expectancy improves across at least 10 more trades and loss size stays controlled.",
+    );
+    expect(getSection(summary, "Next 10 Trading Days Plan").join("\n")).not.toContain(
+      "keep longs at 50% size until expectancy is positive across at least 10 trades.",
+    );
+    expect(getSection(summary, "Main Risks")).toContain(
+      "Long side is profitable but materially weaker: long expectancy is +$30.43 versus short expectancy at +$138.13.",
+    );
   });
 
   it("returns the empty-range fallback when there are no trades", () => {

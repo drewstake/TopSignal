@@ -450,6 +450,7 @@ class EvaluationResult:
     decision: BotDecision
     order_attempt: BotOrderAttempt | None
     risk_events: list[BotRiskEvent]
+    analysis: dict[str, Any]
     candles: list[ProjectXMarketCandle]
 
 
@@ -650,6 +651,7 @@ def evaluate_bot_config(
     resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
     candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
+    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
     signal_order_size = _signal_order_size(config=config, signal=signal)
     current_position_qty = _signal_current_position_qty(signal)
     target_position_qty = _signal_target_position_qty(signal)
@@ -748,6 +750,7 @@ def evaluate_bot_config(
         decision=decision,
         order_attempt=order_attempt,
         risk_events=risk_events,
+        analysis=analysis,
         candles=candles,
     )
 
@@ -8399,8 +8402,593 @@ def serialize_evaluation(result: EvaluationResult) -> dict[str, Any]:
         "decision": serialize_bot_decision(result.decision),
         "order_attempt": serialize_bot_order_attempt(result.order_attempt) if result.order_attempt is not None else None,
         "risk_events": [serialize_bot_risk_event(row) for row in result.risk_events],
+        "analysis": result.analysis,
         "candles": [serialize_market_candle(row) for row in result.candles[-50:]],
     }
+
+
+def build_bot_market_analysis(
+    *,
+    candles: list[ProjectXMarketCandle],
+    config: BotConfig,
+    signal: SignalResult,
+) -> dict[str, Any]:
+    closed_candles = _closed_candles(candles)
+    analysis_candles = closed_candles or sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+    risk_notes = [
+        "Heuristic probabilities are not financial advice and are not guaranteed predictions.",
+    ]
+    if any(bool(candle.is_partial) for candle in candles):
+        risk_notes.append("Partial candles are excluded from the indicator read when closed candles are available.")
+    if not closed_candles and candles:
+        risk_notes.append("No closed candles were available, so the analysis used the available candle rows.")
+
+    if len(analysis_candles) < 10:
+        return _neutral_market_analysis_payload(
+            analysis_candles,
+            risk_notes=[
+                *risk_notes,
+                f"Only {len(analysis_candles)} candle(s) were available; at least 10 are needed for a reliable heuristic read.",
+            ],
+        )
+
+    latest = analysis_candles[-1]
+    previous = analysis_candles[-2]
+    current_price = float(latest.close_price)
+    previous_close = float(previous.close_price)
+    price_change = current_price - previous_close
+    price_change_percent = _analysis_percent_change(current_price, previous_close)
+    closes = [float(candle.close_price) for candle in analysis_candles]
+
+    true_ranges = _analysis_true_ranges(analysis_candles)
+    atr_period = min(14, len(analysis_candles))
+    atr_values = _atr_series(analysis_candles, period=atr_period)
+    latest_atr = _last_defined_float(atr_values)
+    if latest_atr is None:
+        latest_atr = _average(true_ranges[-min(len(true_ranges), atr_period) :])
+    atr_reference = max(latest_atr, _average(true_ranges), abs(current_price) * 0.001, 1e-9)
+    volatility_ratio = _analysis_volatility_ratio(true_ranges, latest_atr)
+    volatility_state = _classify_analysis_volatility(volatility_ratio)
+
+    volume_ratio = _analysis_volume_ratio(analysis_candles)
+    volume_state = _classify_analysis_volume(volume_ratio)
+
+    requested_fast = int(getattr(config, "fast_period", 9) or 9)
+    requested_slow = int(getattr(config, "slow_period", 21) or 21)
+    fast_period = min(max(2, requested_fast), max(2, len(closes) - 1))
+    slow_period = min(max(fast_period + 1, requested_slow), len(closes))
+    fast_ema = _ema_series(closes, fast_period)
+    slow_ema = _ema_series(closes, slow_period)
+    latest_fast = _last_defined_float(fast_ema) or current_price
+    latest_slow = _last_defined_float(slow_ema) or current_price
+    slow_prior = _prior_defined_float(slow_ema, lookback=5) or latest_slow
+    ema_gap = latest_fast - latest_slow
+    ema_slope = latest_slow - slow_prior
+    recent_lookback = min(5, len(closes) - 1)
+    recent_delta = current_price - closes[-(recent_lookback + 1)]
+    trend, trend_strength = _classify_analysis_trend(
+        ema_gap=ema_gap,
+        ema_slope=ema_slope,
+        recent_delta=recent_delta,
+        atr_reference=atr_reference,
+        recent_lookback=recent_lookback,
+    )
+
+    support_levels, resistance_levels = _analysis_support_resistance_levels(
+        analysis_candles,
+        current_price=current_price,
+    )
+    nearest_support = support_levels[0] if support_levels else None
+    nearest_resistance = resistance_levels[0] if resistance_levels else None
+
+    probabilities = _analysis_probability_scores(
+        trend=trend,
+        trend_strength=trend_strength,
+        volatility_state=volatility_state,
+        volume_state=volume_state,
+        signal_action=signal.action,
+        current_price=current_price,
+        expected_move=latest_atr,
+        nearest_support=nearest_support,
+        nearest_resistance=nearest_resistance,
+    )
+    invalidation_level = _analysis_invalidation_level(
+        trend=trend,
+        signal_action=signal.action,
+        current_price=current_price,
+        expected_move=latest_atr,
+        nearest_support=nearest_support,
+        nearest_resistance=nearest_resistance,
+    )
+
+    reasoning = [
+        (
+            f"Latest close is {_format_strategy_price(current_price)} versus previous close "
+            f"{_format_strategy_price(previous_close)} ({_format_percent(price_change_percent or 0.0)}%)."
+        ),
+        (
+            f"Fast EMA({fast_period}) is {_format_strategy_price(latest_fast)} and slow EMA({slow_period}) "
+            f"is {_format_strategy_price(latest_slow)}, with slow EMA slope {_format_strategy_price(ema_slope)}."
+        ),
+        (
+            f"ATR({atr_period}) is {_format_strategy_price(latest_atr)} and recent range ratio is "
+            f"{_format_analysis_ratio(volatility_ratio)}, classifying volatility as {volatility_state}."
+        ),
+        (
+            f"Latest volume is {float(latest.volume):.0f} versus recent average ratio "
+            f"{_format_analysis_ratio(volume_ratio)}, classifying volume as {volume_state}."
+        ),
+        _analysis_level_reasoning(nearest_support=nearest_support, nearest_resistance=nearest_resistance),
+        _analysis_signal_reasoning(signal.action),
+    ]
+
+    if volatility_state in {"elevated", "extreme"}:
+        risk_notes.append(f"Volatility is {volatility_state}; expected move and level invalidation can be less stable.")
+    if volume_state == "low":
+        risk_notes.append("Low relative volume can make candle signals less reliable.")
+    if nearest_support is None or nearest_resistance is None:
+        risk_notes.append("One or more nearby support/resistance levels could not be detected from recent candles.")
+    risk_notes.append("The read uses recent ProjectX candle data only and does not include news, macro, or order-book context.")
+
+    summary = _analysis_summary(
+        trend=trend,
+        trend_strength=trend_strength,
+        probabilities=probabilities,
+    )
+    return {
+        "current_price": _round_analysis_float(current_price),
+        "previous_close": _round_analysis_float(previous_close),
+        "price_change": _round_analysis_float(price_change),
+        "price_change_percent": _round_analysis_float(price_change_percent),
+        "trend": trend,
+        "trend_strength": trend_strength,
+        "volatility_state": volatility_state,
+        "volume_state": volume_state,
+        "support_levels": support_levels,
+        "resistance_levels": resistance_levels,
+        "nearest_support": nearest_support,
+        "nearest_resistance": nearest_resistance,
+        "bullish_probability": probabilities["bullish"],
+        "bearish_probability": probabilities["bearish"],
+        "sideways_probability": probabilities["sideways"],
+        "expected_move": _round_analysis_float(latest_atr),
+        "invalidation_level": invalidation_level,
+        "summary": summary,
+        "reasoning": reasoning,
+        "risk_notes": risk_notes,
+    }
+
+
+def _neutral_market_analysis_payload(
+    candles: list[ProjectXMarketCandle],
+    *,
+    risk_notes: list[str],
+) -> dict[str, Any]:
+    current_price: float | None = None
+    previous_close: float | None = None
+    price_change: float | None = None
+    price_change_percent: float | None = None
+    if candles:
+        current_price = float(candles[-1].close_price)
+    if len(candles) >= 2:
+        previous_close = float(candles[-2].close_price)
+    if current_price is not None and previous_close is not None:
+        price_change = current_price - previous_close
+        price_change_percent = _analysis_percent_change(current_price, previous_close)
+
+    return {
+        "current_price": _round_analysis_float(current_price),
+        "previous_close": _round_analysis_float(previous_close),
+        "price_change": _round_analysis_float(price_change),
+        "price_change_percent": _round_analysis_float(price_change_percent),
+        "trend": "neutral",
+        "trend_strength": 0,
+        "volatility_state": "normal",
+        "volume_state": "normal",
+        "support_levels": [],
+        "resistance_levels": [],
+        "nearest_support": None,
+        "nearest_resistance": None,
+        "bullish_probability": 33,
+        "bearish_probability": 33,
+        "sideways_probability": 34,
+        "expected_move": None,
+        "invalidation_level": None,
+        "summary": "Insufficient candle history for a directional read; heuristic probabilities are held neutral.",
+        "reasoning": [
+            "Not enough candle history is available to calculate trend, volatility, volume, and swing levels together.",
+        ],
+        "risk_notes": risk_notes,
+    }
+
+
+def _analysis_percent_change(current_price: float, previous_close: float) -> float | None:
+    if abs(previous_close) <= 1e-9:
+        return None
+    return (current_price - previous_close) / previous_close * 100
+
+
+def _analysis_true_ranges(candles: list[ProjectXMarketCandle]) -> list[float]:
+    true_ranges: list[float] = []
+    previous_close: float | None = None
+    for candle in candles:
+        high_price = float(candle.high_price)
+        low_price = float(candle.low_price)
+        if previous_close is None:
+            true_range = high_price - low_price
+        else:
+            true_range = max(high_price - low_price, abs(high_price - previous_close), abs(low_price - previous_close))
+        true_ranges.append(max(0.0, true_range))
+        previous_close = float(candle.close_price)
+    return true_ranges or [0.0]
+
+
+def _analysis_volatility_ratio(true_ranges: list[float], latest_atr: float) -> float | None:
+    if len(true_ranges) < 2:
+        return None
+    baseline = true_ranges[-21:-1] if len(true_ranges) > 20 else true_ranges[:-1]
+    average_baseline = _average(baseline) if baseline else 0.0
+    if average_baseline <= 1e-9:
+        return None
+    return latest_atr / average_baseline
+
+
+def _classify_analysis_volatility(volatility_ratio: float | None) -> str:
+    if volatility_ratio is None:
+        return "normal"
+    if volatility_ratio < 0.7:
+        return "low"
+    if volatility_ratio < 1.35:
+        return "normal"
+    if volatility_ratio < 2.0:
+        return "elevated"
+    return "extreme"
+
+
+def _analysis_volume_ratio(candles: list[ProjectXMarketCandle]) -> float | None:
+    if len(candles) < 2:
+        return None
+    baseline_count = min(20, len(candles) - 1)
+    baseline = [float(candle.volume or 0) for candle in candles[-(baseline_count + 1) : -1]]
+    average_baseline = _average(baseline) if baseline else 0.0
+    if average_baseline <= 1e-9:
+        return None
+    return float(candles[-1].volume or 0) / average_baseline
+
+
+def _classify_analysis_volume(volume_ratio: float | None) -> str:
+    if volume_ratio is None:
+        return "normal"
+    if volume_ratio < 0.7:
+        return "low"
+    if volume_ratio > 1.5:
+        return "elevated"
+    return "normal"
+
+
+def _classify_analysis_trend(
+    *,
+    ema_gap: float,
+    ema_slope: float,
+    recent_delta: float,
+    atr_reference: float,
+    recent_lookback: int,
+) -> tuple[str, int]:
+    gap_units = ema_gap / atr_reference
+    slope_units = ema_slope / atr_reference
+    recent_units = recent_delta / (atr_reference * max(1, recent_lookback))
+    component_signs = [
+        _analysis_component_sign(gap_units, threshold=0.05),
+        _analysis_component_sign(slope_units, threshold=0.03),
+        _analysis_component_sign(recent_units, threshold=0.05),
+    ]
+    direction_score = sum(component_signs)
+    strength = int(
+        round(
+            min(
+                100.0,
+                (abs(gap_units) * 30.0)
+                + (abs(slope_units) * 25.0)
+                + (abs(recent_units) * 35.0),
+            )
+        )
+    )
+    if strength < 15 or abs(direction_score) < 2:
+        return "neutral", strength
+    if direction_score > 0:
+        return "bullish", strength
+    return "bearish", strength
+
+
+def _analysis_component_sign(value: float, *, threshold: float) -> int:
+    if value > threshold:
+        return 1
+    if value < -threshold:
+        return -1
+    return 0
+
+
+def _analysis_support_resistance_levels(
+    candles: list[ProjectXMarketCandle],
+    *,
+    current_price: float,
+) -> tuple[list[float], list[float]]:
+    recent_candles = candles[-min(80, len(candles)) :]
+    window_size = 5 if len(recent_candles) >= 15 else 3
+    timeframe = _candles_timeframe_label(recent_candles) or "analysis"
+    detected_levels = _filter_clustered_levels(
+        _detect_support_resistance_levels(recent_candles, timeframe=timeframe, window_size=window_size),
+        tolerance_percent=0.15,
+    )
+    support_candidates = [
+        level.price for level in detected_levels if level.side == "support" and level.price <= current_price
+    ]
+    resistance_candidates = [
+        level.price for level in detected_levels if level.side == "resistance" and level.price >= current_price
+    ]
+    support_candidates.extend(_analysis_fallback_levels(recent_candles, side="support", current_price=current_price))
+    resistance_candidates.extend(
+        _analysis_fallback_levels(recent_candles, side="resistance", current_price=current_price)
+    )
+    supports = _analysis_unique_level_prices(support_candidates, current_price=current_price, side="support")
+    resistances = _analysis_unique_level_prices(
+        resistance_candidates,
+        current_price=current_price,
+        side="resistance",
+    )
+    return supports, resistances
+
+
+def _analysis_fallback_levels(
+    candles: list[ProjectXMarketCandle],
+    *,
+    side: str,
+    current_price: float,
+) -> list[float]:
+    candidates: list[float] = []
+    for lookback in (5, 10, 20, 50):
+        subset = candles[-min(lookback, len(candles)) :]
+        if not subset:
+            continue
+        if side == "support":
+            price = min(float(candle.low_price) for candle in subset)
+            if price <= current_price:
+                candidates.append(price)
+        else:
+            price = max(float(candle.high_price) for candle in subset)
+            if price >= current_price:
+                candidates.append(price)
+    return candidates
+
+
+def _analysis_unique_level_prices(
+    values: list[float],
+    *,
+    current_price: float,
+    side: str,
+) -> list[float]:
+    ordered_values = sorted(
+        [value for value in values if math.isfinite(value)],
+        reverse=side == "support",
+    )
+    output: list[float] = []
+    for value in ordered_values:
+        if side == "support" and value > current_price:
+            continue
+        if side == "resistance" and value < current_price:
+            continue
+        if any(_level_distance_percent(value, existing) <= 0.1 for existing in output):
+            continue
+        rounded = _round_analysis_float(value)
+        if rounded is not None:
+            output.append(rounded)
+        if len(output) >= 5:
+            break
+    return output
+
+
+def _analysis_probability_scores(
+    *,
+    trend: str,
+    trend_strength: int,
+    volatility_state: str,
+    volume_state: str,
+    signal_action: str,
+    current_price: float,
+    expected_move: float,
+    nearest_support: float | None,
+    nearest_resistance: float | None,
+) -> dict[str, int]:
+    bullish = 33.0
+    bearish = 33.0
+    sideways = 34.0
+    trend_bias = min(32.0, max(0, trend_strength) * 0.4)
+    if trend == "bullish":
+        bullish += trend_bias
+        bearish -= trend_bias * 0.55
+        sideways -= trend_bias * 0.45
+    elif trend == "bearish":
+        bearish += trend_bias
+        bullish -= trend_bias * 0.55
+        sideways -= trend_bias * 0.45
+    else:
+        sideways += 6.0
+        bullish -= 3.0
+        bearish -= 3.0
+
+    if volatility_state == "low":
+        sideways += 4.0
+        bullish -= 2.0
+        bearish -= 2.0
+    elif volatility_state == "elevated":
+        sideways -= 4.0
+        if trend == "bullish":
+            bullish += 3.0
+            bearish += 1.0
+        elif trend == "bearish":
+            bearish += 3.0
+            bullish += 1.0
+        else:
+            bullish += 2.0
+            bearish += 2.0
+    elif volatility_state == "extreme":
+        sideways -= 8.0
+        bullish += 4.0
+        bearish += 4.0
+
+    if volume_state == "elevated" and trend == "bullish":
+        bullish += 5.0
+        bearish -= 2.0
+        sideways -= 3.0
+    elif volume_state == "elevated" and trend == "bearish":
+        bearish += 5.0
+        bullish -= 2.0
+        sideways -= 3.0
+    elif volume_state == "low":
+        sideways += 3.0
+        if trend == "bullish":
+            bullish -= 2.0
+            bearish -= 1.0
+        elif trend == "bearish":
+            bearish -= 2.0
+            bullish -= 1.0
+        else:
+            bullish -= 1.5
+            bearish -= 1.5
+
+    if signal_action == "BUY":
+        bullish += 4.0
+        bearish -= 2.0
+        sideways -= 2.0
+    elif signal_action == "SELL":
+        bearish += 4.0
+        bullish -= 2.0
+        sideways -= 2.0
+    elif signal_action in {"HOLD", "NONE"}:
+        sideways += 2.0
+        bullish -= 1.0
+        bearish -= 1.0
+
+    if expected_move > 0 and nearest_resistance is not None:
+        resistance_distance = nearest_resistance - current_price
+        if 0 <= resistance_distance <= expected_move:
+            bullish -= 4.0
+            bearish += 2.0
+            sideways += 2.0
+    if expected_move > 0 and nearest_support is not None:
+        support_distance = current_price - nearest_support
+        if 0 <= support_distance <= expected_move:
+            bearish -= 4.0
+            bullish += 2.0
+            sideways += 2.0
+
+    normalized = _normalize_analysis_probabilities(
+        {
+            "bullish": bullish,
+            "bearish": bearish,
+            "sideways": sideways,
+        }
+    )
+    return normalized
+
+
+def _normalize_analysis_probabilities(scores: dict[str, float]) -> dict[str, int]:
+    ordered_keys = ["bullish", "bearish", "sideways"]
+    positive_scores = {key: max(0.0, float(scores.get(key, 0.0))) for key in ordered_keys}
+    total = sum(positive_scores.values())
+    if total <= 1e-9:
+        return {"bullish": 33, "bearish": 33, "sideways": 34}
+
+    scaled = {key: positive_scores[key] / total * 100.0 for key in ordered_keys}
+    output = {key: int(math.floor(scaled[key])) for key in ordered_keys}
+    remainder = 100 - sum(output.values())
+    by_fraction = sorted(ordered_keys, key=lambda key: (scaled[key] - output[key], scaled[key]), reverse=True)
+    for index in range(remainder):
+        output[by_fraction[index % len(by_fraction)]] += 1
+    return output
+
+
+def _analysis_invalidation_level(
+    *,
+    trend: str,
+    signal_action: str,
+    current_price: float,
+    expected_move: float,
+    nearest_support: float | None,
+    nearest_resistance: float | None,
+) -> float | None:
+    effective_direction = trend
+    if signal_action == "BUY":
+        effective_direction = "bullish"
+    elif signal_action == "SELL":
+        effective_direction = "bearish"
+
+    if effective_direction == "bullish":
+        level = nearest_support if nearest_support is not None else current_price - expected_move
+        return _round_analysis_float(level)
+    if effective_direction == "bearish":
+        level = nearest_resistance if nearest_resistance is not None else current_price + expected_move
+        return _round_analysis_float(level)
+    return None
+
+
+def _analysis_summary(
+    *,
+    trend: str,
+    trend_strength: int,
+    probabilities: dict[str, int],
+) -> str:
+    if trend == "neutral":
+        return (
+            "Heuristic read is neutral, with sideways probability highest at "
+            f"{probabilities['sideways']}%. This is not financial advice."
+        )
+    return (
+        f"Heuristic read leans {trend} with {trend_strength}/100 trend strength and "
+        f"{probabilities[trend]}% {trend} probability. This is not financial advice."
+    )
+
+
+def _analysis_level_reasoning(*, nearest_support: float | None, nearest_resistance: float | None) -> str:
+    support_text = _format_strategy_price(nearest_support) if nearest_support is not None else "none detected"
+    resistance_text = _format_strategy_price(nearest_resistance) if nearest_resistance is not None else "none detected"
+    return f"Nearest support is {support_text}; nearest resistance is {resistance_text}."
+
+
+def _analysis_signal_reasoning(signal_action: str) -> str:
+    if signal_action in {"BUY", "SELL"}:
+        return f"Bot signal action is {signal_action}; probabilities use it as context, not as a guaranteed prediction."
+    return f"Bot signal action is {signal_action}; probabilities stay conservative without an active directional order signal."
+
+
+def _format_analysis_ratio(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}x"
+
+
+def _last_defined_float(values: list[float | None]) -> float | None:
+    for value in reversed(values):
+        if value is not None and math.isfinite(value):
+            return float(value)
+    return None
+
+
+def _prior_defined_float(values: list[float | None], *, lookback: int) -> float | None:
+    defined = [(index, float(value)) for index, value in enumerate(values) if value is not None and math.isfinite(value)]
+    if not defined:
+        return None
+    latest_index = defined[-1][0]
+    target_index = latest_index - max(1, int(lookback))
+    prior_candidates = [value for index, value in defined if index <= target_index]
+    return prior_candidates[-1] if prior_candidates else defined[0][1]
+
+
+def _round_analysis_float(value: float | None, digits: int = 4) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    rounded = round(float(value), digits)
+    return 0.0 if rounded == 0 else rounded
 
 
 def _require_bot_config(

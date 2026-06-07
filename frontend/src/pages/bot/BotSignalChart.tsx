@@ -8,12 +8,14 @@ import {
   TickMarkType,
   createChart,
   createSeriesMarkers,
+  type AutoscaleInfo,
   type CandlestickData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type Logical,
+  type LogicalRange,
   type MouseEventParams,
   type Time,
   type UTCTimestamp,
@@ -772,6 +774,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
       wickDownColor: "rgb(244,63,94)",
       priceLineVisible: false,
       lastValueVisible: false,
+      autoscaleInfoProvider: () => buildVisibleCandleAutoscaleInfo(chartCandlesRef.current, chart.timeScale().getVisibleLogicalRange()),
     });
     const fastSeries = chart.addSeries(LineSeries, {
       color: "rgb(34,211,238)",
@@ -1743,7 +1746,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
   );
 
   return (
-    <Card className="flex h-full min-h-[620px] flex-col">
+    <Card className="flex flex-col pb-3 md:pb-3">
       <CardHeader className="shrink-0 !space-y-0">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
@@ -1875,7 +1878,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
           </div>
         </div>
       </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col">
+      <CardContent className="flex min-h-0 flex-col">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 text-xs text-slate-400">
           {showAverageLayers ? (
             <>
@@ -1919,7 +1922,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken }: 
             onClick={() => toggleChartLayer("sellLiquidity")}
           />
         </div>
-        <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:min-h-[560px] xl:min-h-0">
+        <div className="relative h-[420px] overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:h-[560px]">
           <div ref={containerRef} className="h-full w-full" />
           <OhlcReadout candle={activeOhlcCandle} />
           <DrawingOverlay overlay={drawingOverlay} />
@@ -1996,6 +1999,50 @@ function shouldRefitViewportForExpandedHistory(previousCandleCount: number, curr
   }
 
   return currentCandleCount >= BOT_CHART_MIN_BARS || currentCandleCount - previousCandleCount >= HISTORY_EXPANSION_REFIT_BAR_DELTA;
+}
+
+function buildVisibleCandleAutoscaleInfo(
+  candles: CandlestickData<UTCTimestamp>[],
+  logicalRange: LogicalRange | null,
+): AutoscaleInfo | null {
+  if (candles.length === 0) {
+    return null;
+  }
+
+  const fromIndex = logicalRange ? Math.max(0, Math.floor(Number(logicalRange.from))) : 0;
+  const toIndex = logicalRange ? Math.min(candles.length - 1, Math.ceil(Number(logicalRange.to))) : candles.length - 1;
+  if (fromIndex > toIndex) {
+    return null;
+  }
+
+  let minValue = Number.POSITIVE_INFINITY;
+  let maxValue = Number.NEGATIVE_INFINITY;
+  for (let index = fromIndex; index <= toIndex; index += 1) {
+    const candle = candles[index];
+    if (!candle) {
+      continue;
+    }
+
+    minValue = Math.min(minValue, candle.low);
+    maxValue = Math.max(maxValue, candle.high);
+  }
+
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return null;
+  }
+
+  if (minValue === maxValue) {
+    const padding = Math.max(Math.abs(minValue) * 0.001, 0.01);
+    minValue -= padding;
+    maxValue += padding;
+  }
+
+  return {
+    priceRange: {
+      minValue,
+      maxValue,
+    },
+  };
 }
 
 function formatEasternCrosshairTime(time: Time): string {

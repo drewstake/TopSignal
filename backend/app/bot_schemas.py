@@ -8,6 +8,9 @@ TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
 BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP"]
+BotMarketTrend = Literal["bullish", "bearish", "neutral"]
+BotVolatilityState = Literal["low", "normal", "elevated", "extreme"]
+BotVolumeState = Literal["low", "normal", "elevated"]
 BotStrategyType = Literal[
     "sma_cross",
     "support_resistance",
@@ -190,12 +193,36 @@ class BotStartIn(BaseModel):
     confirm_live_order_routing: bool = False
 
 
+class BotMarketAnalysisOut(BaseModel):
+    current_price: float | None = None
+    previous_close: float | None = None
+    price_change: float | None = None
+    price_change_percent: float | None = None
+    trend: BotMarketTrend
+    trend_strength: int = Field(ge=0, le=100)
+    volatility_state: BotVolatilityState
+    volume_state: BotVolumeState
+    support_levels: list[float]
+    resistance_levels: list[float]
+    nearest_support: float | None = None
+    nearest_resistance: float | None = None
+    bullish_probability: int = Field(ge=0, le=100)
+    bearish_probability: int = Field(ge=0, le=100)
+    sideways_probability: int = Field(ge=0, le=100)
+    expected_move: float | None = None
+    invalidation_level: float | None = None
+    summary: str
+    reasoning: list[str]
+    risk_notes: list[str]
+
+
 class BotEvaluationOut(BaseModel):
     config: BotConfigOut
     run: BotRunOut | None = None
     decision: BotDecisionOut
     order_attempt: BotOrderAttemptOut | None = None
     risk_events: list[BotRiskEventOut]
+    analysis: BotMarketAnalysisOut
     candles: list[ProjectXMarketCandleOut]
 
 
