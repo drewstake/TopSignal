@@ -920,6 +920,8 @@ interface CandleQuery {
   limit?: number;
   includePartialBar?: boolean;
   refresh?: boolean;
+  /** Force a full-window upstream fetch to backfill missing bars without pruning cache. */
+  repair?: boolean;
 }
 
 interface MarketPriceStreamQuery {
@@ -1091,6 +1093,7 @@ export const botsApi = {
         limit: query.limit ?? 500,
         include_partial_bar: query.includePartialBar ?? false,
         refresh: query.refresh ?? false,
+        repair: query.repair ?? false,
       },
       signal: options.signal,
     }),

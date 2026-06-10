@@ -210,10 +210,13 @@ class BotMarketAnalysisOut(BaseModel):
     bearish_probability: int = Field(ge=0, le=100)
     sideways_probability: int = Field(ge=0, le=100)
     expected_move: float | None = None
+    expected_move_percent: float | None = None
     invalidation_level: float | None = None
     summary: str
     reasoning: list[str]
     risk_notes: list[str]
+    candle_timestamp: str | None = None
+    generated_at: str | None = None
 
 
 class BotEvaluationOut(BaseModel):

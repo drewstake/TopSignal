@@ -101,6 +101,43 @@ export function mergeMarketCandles(
   return trimCandlesForCache(Array.from(byTimestamp.values()), limit);
 }
 
+/**
+ * In-memory merge that, unlike `mergeMarketCandles`, keeps partial candles so
+ * a just-rolled-over live bar stays on the chart until an authoritative closed
+ * bar replaces it. A closed candle is never replaced by a partial one at the
+ * same timestamp.
+ */
+export function upsertMarketCandles(
+  existingCandles: ProjectXMarketCandle[],
+  incomingCandles: ProjectXMarketCandle[],
+  limit?: number,
+): ProjectXMarketCandle[] {
+  const byTimestamp = new Map<string, ProjectXMarketCandle>();
+  for (const candle of existingCandles) {
+    if (isCachedMarketCandle(candle)) {
+      byTimestamp.set(candle.timestamp, candle);
+    }
+  }
+  for (const candle of incomingCandles) {
+    if (!isCachedMarketCandle(candle)) {
+      continue;
+    }
+    const existing = byTimestamp.get(candle.timestamp);
+    if (existing && !existing.is_partial && candle.is_partial) {
+      continue;
+    }
+    byTimestamp.set(candle.timestamp, candle);
+  }
+
+  const sorted = Array.from(byTimestamp.values()).sort(
+    (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+  );
+  if (limit === undefined) {
+    return sorted;
+  }
+  return sorted.slice(-Math.max(1, Math.trunc(limit)));
+}
+
 function trimCandlesForCache(candles: ProjectXMarketCandle[], limit: number): ProjectXMarketCandle[] {
   const boundedLimit = Math.max(1, Math.trunc(limit));
   return candles

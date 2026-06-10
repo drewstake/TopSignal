@@ -554,10 +554,14 @@ export interface BotAnalysis {
   bearish_probability: number;
   sideways_probability: number;
   expected_move: number | null;
+  expected_move_percent?: number | null;
   invalidation_level: number | null;
   summary: string;
   reasoning: string[];
   risk_notes: string[];
+  /** Timestamp of the latest candle the analysis was computed from. */
+  candle_timestamp?: string | null;
+  generated_at?: string | null;
 }
 
 export interface BotStrategyParams {

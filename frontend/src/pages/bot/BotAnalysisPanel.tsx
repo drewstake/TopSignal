@@ -14,11 +14,20 @@ import type {
   BotMarketBias,
   ProjectXMarketCandle,
 } from "../../lib/types";
+import { intervalSecondsFor } from "./botCandleGaps";
 import { buildCandlestickData, buildLiquidityLevels } from "./botChartData";
+import {
+  buildMarketContext,
+  timeframeLabel,
+  type BotMarketSnapshot,
+  type MarketContext,
+  type TimeframeTrend,
+} from "./botMarketContext";
 
 const MAX_REASONING_ITEMS = 5;
 const MAX_RISK_ITEMS = 4;
 const PRICE_FALLBACK = "-";
+const STALE_EVALUATION_BARS = 2;
 
 const priceFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -53,8 +62,16 @@ type ProbabilityTone = "bullish" | "bearish" | "sideways";
 interface BotAnalysisPanelProps {
   bot: BotConfig | null;
   evaluation: BotEvaluation | null;
+  /** Live candles currently on the signal chart; keeps context fresher than evaluations. */
+  marketSnapshot?: BotMarketSnapshot | null;
   loading?: boolean;
   onEvaluate?: () => void;
+}
+
+interface EvaluationStaleness {
+  barsBehind: number;
+  isStale: boolean;
+  priceDrift: number | null;
 }
 
 interface DisplayAnalysis {
@@ -91,10 +108,16 @@ interface FallbackProbabilityInput {
   nearestResistance: number | null;
 }
 
-export function BotAnalysisPanel({ bot, evaluation, loading = false, onEvaluate }: BotAnalysisPanelProps) {
+export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loading = false, onEvaluate }: BotAnalysisPanelProps) {
   const analysis = useMemo(() => buildDisplayAnalysis(evaluation), [evaluation]);
+  const snapshot = bot ? marketSnapshot : null;
+  const marketContext = useMemo(() => buildMarketContext(snapshot), [snapshot]);
+  const staleness = useMemo(
+    () => computeEvaluationStaleness(evaluation, snapshot, bot),
+    [bot, evaluation, snapshot],
+  );
   const symbolLabel = bot?.symbol ?? bot?.contract_id ?? "Bot";
-  const timeframeLabel = bot ? `${bot.timeframe_unit_number}${timeframeAbbreviation(bot.timeframe_unit)}` : null;
+  const botTimeframeLabel = bot ? `${bot.timeframe_unit_number}${timeframeAbbreviation(bot.timeframe_unit)}` : null;
 
   return (
     <Card className="min-w-0">
@@ -103,11 +126,16 @@ export function BotAnalysisPanel({ bot, evaluation, loading = false, onEvaluate 
           <div className="min-w-0">
             <CardTitle>Analysis</CardTitle>
             <CardDescription>
-              {bot ? `${symbolLabel}${timeframeLabel ? ` ${timeframeLabel}` : ""} chart context` : "Chart and price context"}
+              {bot ? `${symbolLabel}${botTimeframeLabel ? ` ${botTimeframeLabel}` : ""} chart context` : "Chart and price context"}
             </CardDescription>
           </div>
           {analysis ? (
             <div className="flex flex-wrap items-center gap-2">
+              {staleness?.isStale ? (
+                <Badge variant="warning" title="The market has printed new candles since this evaluation ran.">
+                  {`Stale - ${staleness.barsBehind} bar${staleness.barsBehind === 1 ? "" : "s"} behind`}
+                </Badge>
+              ) : null}
               <Badge variant={marketBiasBadgeVariant(analysis.marketBias)}>{marketBiasLabel(analysis.marketBias)}</Badge>
               <Badge variant={analysis.source === "backend" ? "accent" : "neutral"}>
                 {analysis.source === "backend" ? "Backend" : "Chart fallback"}
@@ -117,6 +145,9 @@ export function BotAnalysisPanel({ bot, evaluation, loading = false, onEvaluate 
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {bot && marketContext && snapshot ? (
+          <MarketContextSection context={marketContext} snapshot={snapshot} />
+        ) : null}
         {loading ? (
           <AnalysisLoadingState />
         ) : !bot ? (
@@ -163,6 +194,15 @@ export function BotAnalysisPanel({ bot, evaluation, loading = false, onEvaluate 
                   <span className="text-xs text-slate-500">scenario weighting, not a guarantee</span>
                 </div>
                 <p className="mt-2 text-sm leading-6 text-slate-300">{analysis.summary}</p>
+                {staleness?.isStale ? (
+                  <p className="mt-2 border-t border-slate-800/80 pt-2 text-xs leading-5 text-amber-200/90">
+                    {staleness.barsBehind} new bar{staleness.barsBehind === 1 ? "" : "s"} since this evaluation
+                    {staleness.priceDrift !== null
+                      ? `; price has moved ${signedPriceFormatter.format(staleness.priceDrift)} since`
+                      : ""}
+                    . Run Evaluate for a current strategy read.
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/45 p-3">
                 <ProbabilityBar label="Bullish" value={analysis.probabilities.bullish} tone="bullish" />
@@ -882,6 +922,213 @@ function priceChangeClassName(value: number | null): string {
     return "font-mono text-slate-100";
   }
   return value > 0 ? "font-mono text-emerald-300" : "font-mono text-rose-300";
+}
+
+const contextAsOfFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
+
+function MarketContextSection({ context, snapshot }: { context: MarketContext; snapshot: BotMarketSnapshot }) {
+  const asOfText = context.asOfTimestamp
+    ? `${contextAsOfFormatter.format(new Date(context.asOfTimestamp))} ET`
+    : null;
+  const vwapValue =
+    context.vwap !== null
+      ? `${priceFormatter.format(context.vwap)}${
+          context.vwapDistance !== null ? ` (${signedPriceFormatter.format(context.vwapDistance)})` : ""
+        }`
+      : PRICE_FALLBACK;
+  const atrValue =
+    context.atr !== null
+      ? `${priceFormatter.format(context.atr)}${
+          context.atrPercent !== null ? ` (${percentFormatter.format(context.atrPercent)}%)` : ""
+        }`
+      : PRICE_FALLBACK;
+  const relVolValue =
+    context.relativeVolume !== null
+      ? `${context.relativeVolume.toFixed(2)}x${context.volumeState ? ` ${context.volumeState}` : ""}`
+      : "Unknown";
+  const sessionRangeValue =
+    context.sessionHigh !== null && context.sessionLow !== null
+      ? `${priceFormatter.format(context.sessionLow)} - ${priceFormatter.format(context.sessionHigh)}`
+      : PRICE_FALLBACK;
+  const priorCloseValue =
+    context.priorSessionClose !== null
+      ? `${priceFormatter.format(context.priorSessionClose)}${
+          context.sessionChangePercent !== null
+            ? ` (${signedPercentFormatter.format(context.sessionChangePercent)}%)`
+            : ""
+        }`
+      : PRICE_FALLBACK;
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          Market context - {timeframeLabel(snapshot.unit, snapshot.unitNumber)} chart
+        </p>
+        {asOfText ? <span className="text-[11px] text-slate-500">as of {asOfText} - live from chart data</span> : null}
+      </div>
+      {context.trends.length > 0 ? (
+        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] uppercase tracking-wide text-slate-500">Trend</span>
+          {context.trends.map((trend) => (
+            <TrendChip key={trend.label} trend={trend} />
+          ))}
+        </div>
+      ) : null}
+      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+        <ContextMetric label="VWAP (dist)" value={vwapValue} valueClassName="font-mono text-pink-200" />
+        <ContextMetric
+          label="ATR / volatility"
+          value={context.volatilityState ? `${atrValue} ${context.volatilityState}` : atrValue}
+          valueClassName="font-mono text-slate-100"
+        />
+        <ContextMetric label="Rel volume" value={relVolValue} valueClassName="font-mono text-slate-100" />
+        <ContextMetric label="Session range" value={sessionRangeValue} valueClassName="font-mono text-slate-100" />
+        <ContextMetric label="Prior close" value={priorCloseValue} valueClassName="font-mono text-slate-100" />
+        <ContextMetric
+          label="Support"
+          value={formatPrice(context.nearestSupport)}
+          valueClassName="font-mono text-emerald-300"
+        />
+        <ContextMetric
+          label="Resistance"
+          value={formatPrice(context.nearestResistance)}
+          valueClassName="font-mono text-rose-300"
+        />
+        <ContextMetric
+          label="Last price"
+          value={formatPrice(context.lastPrice)}
+          valueClassName="font-mono text-cyan-200"
+        />
+      </div>
+    </div>
+  );
+}
+
+function TrendChip({ trend }: { trend: TimeframeTrend }) {
+  const arrow = trend.direction === "up" ? "▲" : trend.direction === "down" ? "▼" : "→";
+  const tone =
+    trend.direction === "up"
+      ? "border-emerald-400/35 bg-emerald-400/10 text-emerald-300"
+      : trend.direction === "down"
+        ? "border-rose-400/35 bg-rose-400/10 text-rose-300"
+        : "border-slate-700 bg-slate-900/60 text-slate-300";
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-semibold", tone)}
+      title={`${trend.label} trend ${trend.direction} - strength ${Math.round(trend.strength * 100)}% over ${trend.bars} bars`}
+    >
+      {trend.label} {arrow}
+    </span>
+  );
+}
+
+function ContextMetric({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-slate-800/80 bg-slate-950/55 px-2.5 py-2">
+      <p className="truncate text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className={cn("mt-0.5 truncate text-[13px] font-semibold text-slate-100", valueClassName)} title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * How far behind the live chart the evaluation is, measured in bot-timeframe
+ * bars between the evaluation's last analyzed candle and the latest closed
+ * candle on the chart.
+ */
+function computeEvaluationStaleness(
+  evaluation: BotEvaluation | null,
+  snapshot: BotMarketSnapshot | null,
+  bot: BotConfig | null,
+): EvaluationStaleness | null {
+  if (!evaluation || !snapshot || !bot) {
+    return null;
+  }
+
+  const evaluationMs = evaluationCandleTimestampMs(evaluation);
+  if (evaluationMs === null) {
+    return null;
+  }
+
+  let latestClosedMs: number | null = null;
+  let latestClose: number | null = null;
+  for (const candle of snapshot.candles) {
+    const candleMs = Date.parse(candle.timestamp);
+    if (!Number.isFinite(candleMs) || candle.is_partial) {
+      continue;
+    }
+    if (latestClosedMs === null || candleMs > latestClosedMs) {
+      latestClosedMs = candleMs;
+      latestClose = Number.isFinite(candle.close) ? candle.close : null;
+    }
+  }
+  if (latestClosedMs === null) {
+    return null;
+  }
+
+  const intervalMs = intervalSecondsFor(bot.timeframe_unit, bot.timeframe_unit_number) * 1000;
+  if (intervalMs <= 0) {
+    return null;
+  }
+
+  const barsBehind = Math.max(0, Math.floor((latestClosedMs - evaluationMs) / intervalMs));
+  const referenceNow = snapshot.lastPrice ?? latestClose;
+  const evaluationPrice =
+    finiteNumberOrNull(evaluation.analysis?.current_price ?? null) ?? finiteNumberOrNull(evaluation.decision.price);
+  return {
+    barsBehind,
+    isStale: barsBehind >= STALE_EVALUATION_BARS,
+    priceDrift: referenceNow !== null && evaluationPrice !== null ? referenceNow - evaluationPrice : null,
+  };
+}
+
+function evaluationCandleTimestampMs(evaluation: BotEvaluation): number | null {
+  const analysisTimestamp = evaluation.analysis?.candle_timestamp;
+  if (analysisTimestamp) {
+    const ms = Date.parse(analysisTimestamp);
+    if (Number.isFinite(ms)) {
+      return ms;
+    }
+  }
+
+  let latest: number | null = null;
+  for (const candle of evaluation.candles) {
+    if (candle.is_partial) {
+      continue;
+    }
+    const ms = Date.parse(candle.timestamp);
+    if (Number.isFinite(ms) && (latest === null || ms > latest)) {
+      latest = ms;
+    }
+  }
+  if (latest !== null) {
+    return latest;
+  }
+
+  const decisionTimestamp = evaluation.decision.candle_timestamp;
+  if (decisionTimestamp) {
+    const ms = Date.parse(decisionTimestamp);
+    if (Number.isFinite(ms)) {
+      return ms;
+    }
+  }
+  return null;
 }
 
 function timeframeAbbreviation(unit: BotConfig["timeframe_unit"]): string {

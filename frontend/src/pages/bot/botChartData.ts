@@ -248,6 +248,39 @@ export function buildBotChartQuery(config: BotConfig, now: Date = new Date()): B
   };
 }
 
+export const BOT_CHART_HISTORY_PAGE_BARS = 500;
+
+/**
+ * Query window for loading candles older than the earliest loaded bar, used by
+ * on-demand history expansion. The span is padded (x3) so session closures do
+ * not starve the page of bars.
+ */
+export function buildOlderCandlesQuery(
+  config: BotConfig,
+  earliestLoadedTimestamp: string,
+  pageBars: number = BOT_CHART_HISTORY_PAGE_BARS,
+): BotChartQueryWindow | null {
+  const earliestMs = Date.parse(earliestLoadedTimestamp);
+  if (!Number.isFinite(earliestMs)) {
+    return null;
+  }
+
+  const limit = Math.max(1, Math.trunc(pageBars));
+  const timeframeSeconds =
+    UNIT_SECONDS_BY_NAME[config.timeframe_unit] * Math.max(1, Math.trunc(config.timeframe_unit_number));
+  const end = new Date(earliestMs - 1000);
+  const start = new Date(end.getTime() - timeframeSeconds * limit * CHART_LOOKBACK_MULTIPLIER * 1000);
+  if (start.getTime() >= end.getTime()) {
+    return null;
+  }
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    limit,
+  };
+}
+
 export function buildBotLivePriceQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
   const timeframeSeconds =
     UNIT_SECONDS_BY_NAME[config.timeframe_unit] * Math.max(1, Math.trunc(config.timeframe_unit_number));
@@ -434,7 +467,32 @@ function parseSessionStartMinutes(value: string | null | undefined): number {
   return hour * 60 + minute;
 }
 
+// Session keys are pure functions of (timezone, session start, timestamp); the
+// Intl conversion dominates VWAP cost, so memoize it. Live ticks recompute the
+// VWAP series several times per second over the same historical timestamps.
+const vwapSessionKeyCache = new Map<string, string>();
+const VWAP_SESSION_KEY_CACHE_LIMIT = 60_000;
+
 function buildVwapSessionKey(
+  timestamp: string,
+  formatter: Intl.DateTimeFormat,
+  sessionStartMinutes: number,
+): string {
+  const cacheKey = `${formatter.resolvedOptions().timeZone}|${sessionStartMinutes}|${timestamp}`;
+  const cached = vwapSessionKeyCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const key = computeVwapSessionKey(timestamp, formatter, sessionStartMinutes);
+  if (vwapSessionKeyCache.size >= VWAP_SESSION_KEY_CACHE_LIMIT) {
+    vwapSessionKeyCache.clear();
+  }
+  vwapSessionKeyCache.set(cacheKey, key);
+  return key;
+}
+
+function computeVwapSessionKey(
   timestamp: string,
   formatter: Intl.DateTimeFormat,
   sessionStartMinutes: number,

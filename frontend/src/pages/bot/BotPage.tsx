@@ -27,6 +27,7 @@ import type {
 } from "../../lib/types";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
 import { BotSignalChart } from "./BotSignalChart";
+import type { BotMarketSnapshot } from "./botMarketContext";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
@@ -1122,6 +1123,7 @@ export function BotPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
+  const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
 
   const selectedBot = useMemo(
     () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
@@ -3714,10 +3716,12 @@ export function BotPage() {
               activity={activity}
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
+              onMarketData={setMarketSnapshot}
             />
             <BotAnalysisPanel
               bot={selectedBot}
               evaluation={selectedBotEvaluation}
+              marketSnapshot={marketSnapshot}
               loading={actionLoading === "start" || actionLoading === "evaluate"}
               onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
             />

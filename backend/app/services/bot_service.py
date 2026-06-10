@@ -8535,6 +8535,9 @@ def build_bot_market_analysis(
         trend_strength=trend_strength,
         probabilities=probabilities,
     )
+    expected_move_percent = (
+        (latest_atr / abs(current_price)) * 100 if latest_atr is not None and abs(current_price) > 1e-9 else None
+    )
     return {
         "current_price": _round_analysis_float(current_price),
         "previous_close": _round_analysis_float(previous_close),
@@ -8552,10 +8555,13 @@ def build_bot_market_analysis(
         "bearish_probability": probabilities["bearish"],
         "sideways_probability": probabilities["sideways"],
         "expected_move": _round_analysis_float(latest_atr),
+        "expected_move_percent": _round_analysis_float(expected_move_percent),
         "invalidation_level": invalidation_level,
         "summary": summary,
         "reasoning": reasoning,
         "risk_notes": risk_notes,
+        "candle_timestamp": _as_utc(latest.candle_timestamp).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -8593,12 +8599,15 @@ def _neutral_market_analysis_payload(
         "bearish_probability": 33,
         "sideways_probability": 34,
         "expected_move": None,
+        "expected_move_percent": None,
         "invalidation_level": None,
         "summary": "Insufficient candle history for a directional read; heuristic probabilities are held neutral.",
         "reasoning": [
             "Not enough candle history is available to calculate trend, volatility, volume, and swing levels together.",
         ],
         "risk_notes": risk_notes,
+        "candle_timestamp": _as_utc(candles[-1].candle_timestamp).isoformat() if candles else None,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

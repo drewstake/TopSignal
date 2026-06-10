@@ -7,6 +7,7 @@ import {
   buildBotLivePriceQuery,
   buildCandlestickData,
   buildEmaData,
+  buildOlderCandlesQuery,
   buildLiquidityLevels,
   buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
@@ -295,6 +296,26 @@ describe("buildBotChartQuery", () => {
 
   it("keeps small lookbacks above the minimum chart size", () => {
     expect(buildBotChartQuery(botConfig({ lookback_bars: 25 })).limit).toBe(BOT_CHART_MIN_BARS);
+  });
+});
+
+describe("buildOlderCandlesQuery", () => {
+  it("builds a padded window that ends just before the earliest loaded candle", () => {
+    const window = buildOlderCandlesQuery(
+      botConfig({ timeframe_unit: "minute", timeframe_unit_number: 5 }),
+      "2026-04-26T14:00:00Z",
+      500,
+    );
+
+    expect(window).not.toBeNull();
+    expect(window!.limit).toBe(500);
+    expect(window!.end).toBe("2026-04-26T13:59:59.000Z");
+    // 500 bars * 5m * 3x session padding before the end.
+    expect(window!.start).toBe(new Date(Date.parse(window!.end) - 500 * 5 * 60_000 * 3).toISOString());
+  });
+
+  it("returns null for an unparseable timestamp", () => {
+    expect(buildOlderCandlesQuery(botConfig(), "not-a-date")).toBeNull();
   });
 });
 

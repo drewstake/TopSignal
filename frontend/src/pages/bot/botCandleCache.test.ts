@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBotCandleCacheKey, mergeMarketCandles } from "./botCandleCache";
+import { buildBotCandleCacheKey, mergeMarketCandles, upsertMarketCandles } from "./botCandleCache";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
 function candle(timestamp: string, close: number, overrides: Partial<ProjectXMarketCandle> = {}): ProjectXMarketCandle {
@@ -66,5 +66,44 @@ describe("mergeMarketCandles", () => {
       "2026-04-26T13:50:00Z",
     ]);
     expect(rows.map((row) => row.close)).toEqual([103, 102, 104]);
+  });
+});
+
+describe("upsertMarketCandles", () => {
+  it("keeps partial candles and sorts by timestamp", () => {
+    const rows = upsertMarketCandles(
+      [candle("2026-04-26T13:40:00Z", 101)],
+      [candle("2026-04-26T13:45:00Z", 102, { is_partial: true }), candle("2026-04-26T13:35:00Z", 100)],
+    );
+
+    expect(rows.map((row) => row.timestamp)).toEqual([
+      "2026-04-26T13:35:00Z",
+      "2026-04-26T13:40:00Z",
+      "2026-04-26T13:45:00Z",
+    ]);
+    expect(rows[2].is_partial).toBe(true);
+  });
+
+  it("never replaces a closed candle with a partial one at the same timestamp", () => {
+    const rows = upsertMarketCandles(
+      [candle("2026-04-26T13:40:00Z", 101)],
+      [candle("2026-04-26T13:40:00Z", 999, { is_partial: true })],
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].close).toBe(101);
+    expect(rows[0].is_partial).toBe(false);
+  });
+
+  it("replaces a partial candle with a closed one and respects the limit from the newest side", () => {
+    const rows = upsertMarketCandles(
+      [candle("2026-04-26T13:40:00Z", 101, { is_partial: true }), candle("2026-04-26T13:35:00Z", 100)],
+      [candle("2026-04-26T13:40:00Z", 102), candle("2026-04-26T13:45:00Z", 103)],
+      2,
+    );
+
+    expect(rows.map((row) => row.timestamp)).toEqual(["2026-04-26T13:40:00Z", "2026-04-26T13:45:00Z"]);
+    expect(rows[0].close).toBe(102);
+    expect(rows[0].is_partial).toBe(false);
   });
 });

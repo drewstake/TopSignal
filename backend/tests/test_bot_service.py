@@ -4508,3 +4508,172 @@ def test_stop_without_active_run_links_lifecycle_decision_to_created_run():
         db.close()
         Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
         engine.dispose()
+
+
+def test_candles_endpoint_serves_cache_with_interior_gap_without_repair(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider should not be called")),
+    )
+
+    try:
+        fetched_at = datetime.now(timezone.utc)
+        base = fetched_at.replace(second=0, microsecond=0) - timedelta(minutes=30)
+        # Interior hole: base+10m and base+15m are missing.
+        for offset, close in ((0, 10), (5, 11), (20, 12), (25, 13)):
+            db.add(_make_candle(base + timedelta(minutes=offset), close, fetched_at=fetched_at))
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=base,
+            end=base + timedelta(minutes=27),
+            unit="minute",
+            unit_number=5,
+            limit=10,
+            refresh=False,
+            db=db,
+        )
+
+        # Documents the fast path: a covering, fresh cache is returned as-is even
+        # when it has interior holes. Backfill requires repair=True.
+        assert len(payload) == 4
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_candles_endpoint_repair_backfills_interior_gap_without_pruning(monkeypatch):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+
+    fetched_at = datetime.now(timezone.utc)
+    base = fetched_at.replace(second=0, microsecond=0) - timedelta(minutes=30)
+
+    class StubClient:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "timestamp": base + timedelta(minutes=10),
+                    "open": 11.5,
+                    "high": 11.8,
+                    "low": 11.2,
+                    "close": 11.6,
+                    "volume": 5,
+                },
+                {
+                    "timestamp": base + timedelta(minutes=15),
+                    "open": 11.6,
+                    "high": 12.0,
+                    "low": 11.4,
+                    "close": 11.9,
+                    "volume": 6,
+                },
+            ]
+
+    client = StubClient()
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: client)
+
+    try:
+        for offset, close in ((0, 10), (5, 11), (20, 12), (25, 13)):
+            db.add(_make_candle(base + timedelta(minutes=offset), close, fetched_at=fetched_at))
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            start=base,
+            end=base + timedelta(minutes=27),
+            unit="minute",
+            unit_number=5,
+            limit=10,
+            refresh=False,
+            repair=True,
+            db=db,
+        )
+
+        # The repair fetch covers the full requested window, not just the tail.
+        assert len(client.calls) == 1
+        assert client.calls[0]["start"] == base
+        # Backfilled bars are merged with the cached rows; nothing is pruned.
+        assert [row["close"] for row in payload] == [10.0, 11.0, 11.6, 11.9, 12.0, 13.0]
+        assert (
+            db.query(ProjectXMarketCandle)
+            .filter(ProjectXMarketCandle.user_id == user_id)
+            .count()
+            == 6
+        )
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_bot_market_analysis_includes_freshness_metadata():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candles = [
+        _make_candle(
+            base + timedelta(minutes=index * 5),
+            100 + index,
+            open_price=99.6 + index,
+            high_price=100.6 + index,
+            low_price=99.3 + index,
+            volume=100,
+        )
+        for index in range(30)
+    ]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal("BUY", price=float(candles[-1].close_price)),
+    )
+
+    assert analysis["candle_timestamp"] == (base + timedelta(minutes=29 * 5)).isoformat()
+    generated_at = datetime.fromisoformat(analysis["generated_at"])
+    assert abs((datetime.now(timezone.utc) - generated_at).total_seconds()) < 60
+    assert analysis["expected_move_percent"] == pytest.approx(
+        analysis["expected_move"] / float(candles[-1].close_price) * 100,
+        rel=0.01,
+    )
+
+
+def test_bot_market_analysis_neutral_payload_includes_freshness_metadata():
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candles = [_make_candle(base + timedelta(minutes=index * 5), 100 + index) for index in range(3)]
+
+    analysis = build_bot_market_analysis(
+        candles=candles,
+        config=_make_analysis_config(),
+        signal=_make_analysis_signal(),
+    )
+
+    assert analysis["trend"] == "neutral"
+    assert analysis["expected_move_percent"] is None
+    assert analysis["candle_timestamp"] == (base + timedelta(minutes=10)).isoformat()
+    assert analysis["generated_at"] is not None

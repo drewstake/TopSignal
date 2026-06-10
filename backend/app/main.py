@@ -1104,8 +1104,15 @@ def get_projectx_market_candles(
     limit: int = Query(default=500, ge=1, le=20000),
     include_partial_bar: bool = False,
     refresh: bool = False,
+    repair: bool = False,
     db: Session = Depends(get_db),
 ):
+    """Serve candles from the per-user cache, fetching from ProjectX when needed.
+
+    `refresh` forces a full re-fetch and prunes cached rows the provider no longer
+    returns. `repair` also forces a full-window fetch (so interior holes in the
+    cache get backfilled) but merges with existing cache instead of pruning.
+    """
     user_id = get_authenticated_user_id()
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
     start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
@@ -1136,6 +1143,7 @@ def get_projectx_market_candles(
         if (
             cached_candles
             and not refresh
+            and not repair
             and cached_covers_request
             and not market_candle_cache_needs_refresh(
                 cached_candles,
@@ -1179,6 +1187,7 @@ def get_projectx_market_candles(
             if (
                 cached_candles
                 and not refresh
+                and not repair
                 and cached_covers_request
                 and not market_candle_cache_needs_refresh(
                     cached_candles,
@@ -1191,7 +1200,9 @@ def get_projectx_market_candles(
                 return [serialize_market_candle(row) for row in cached_candles]
 
         fetch_start_utc = start_utc
-        if cached_candles and not refresh and cached_covers_request:
+        # A repair request always fetches the full window so interior cache holes
+        # are refilled; the normal path only extends the cached tail.
+        if cached_candles and not refresh and not repair and cached_covers_request:
             fetch_start_utc = next_market_candle_fetch_start(
                 cached_candles,
                 start=start_utc,
