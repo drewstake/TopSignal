@@ -1785,8 +1785,8 @@ export function DashboardPage() {
                   aria-describedby="copy-trade-toggle-status"
                   disabled={copyTradeToggleDisabled}
                   className={cn(
-                    "h-8 flex-1 justify-center rounded-lg border-app-border/80 bg-app-surface/60 px-2.5 text-[11px] sm:flex-none",
-                    copyTradeSettings.modeEnabled ? "border-app-accent/40 ring-1 ring-app-accent/50" : undefined,
+                    "h-8 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:flex-none",
+                    copyTradeSettings.modeEnabled ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
                   )}
                 />
                 <Badge variant={copyTradeTogglePending ? "accent" : copyTradeSettings.modeEnabled ? "positive" : "neutral"} className="h-8 rounded-lg">

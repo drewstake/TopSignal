@@ -2227,9 +2227,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
             ) : null}
           </div>
         </div>
-        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/45 p-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-app-border/80 bg-app-bg/40 p-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex h-8 overflow-hidden rounded-md border border-slate-800 bg-slate-950/70" aria-label="Chart timeframe">
+            <div className="inline-flex h-8 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)]" aria-label="Chart timeframe">
               {CHART_TIMEFRAME_OPTIONS.map((option) => {
                 const active = option.id === selectedTimeframeId;
                 return (
@@ -2238,10 +2238,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                     type="button"
                     onClick={() => setTimeframeSelection({ key: botTimeframeSelectionKey, id: option.id })}
                     disabled={!bot}
-                    className={`min-w-11 border-r border-slate-800 px-2.5 text-xs font-semibold transition last:border-r-0 disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`min-w-11 border-r border-app-border/80 px-2.5 text-xs font-semibold transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
-                        ? "bg-cyan-400/15 text-cyan-100"
-                        : "text-slate-400 hover:bg-slate-900/80 hover:text-slate-100"
+                        ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]"
+                        : "text-app-text-soft hover:bg-app-accent/10 hover:text-app-text"
                     }`}
                   >
                     {option.label}
@@ -2249,7 +2249,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                 );
               })}
             </div>
-            <div className="inline-flex h-8 overflow-hidden rounded-md border border-slate-800 bg-slate-950/70" aria-label="Chart drawing tools">
+            <div className="inline-flex h-8 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)]" aria-label="Chart drawing tools">
               <ChartToolButton
                 label="Cursor"
                 active={drawingTool === "cursor"}
@@ -2428,7 +2428,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
               event.stopPropagation();
               fitPriceScaleToVisibleRange();
             }}
-            className="absolute bottom-3 right-3 z-30 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/85 px-2.5 text-xs font-semibold text-slate-200 shadow-lg shadow-slate-950/30 backdrop-blur transition hover:border-cyan-400/50 hover:bg-slate-900 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-45"
+            className="absolute bottom-3 right-3 z-30 inline-flex h-8 items-center gap-1.5 rounded-md border border-app-accent/45 bg-app-surface/95 px-2.5 text-xs font-semibold text-app-text shadow-[0_14px_30px_-20px_rgb(var(--theme-shadow-color)/0.8)] backdrop-blur transition hover:border-app-accent/70 hover:bg-app-accent/15 hover:text-app-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45"
           >
             <FitChartIcon />
             <span>Fit</span>
@@ -3416,8 +3416,10 @@ function ChartToolButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className={`grid h-8 w-9 place-items-center border-r border-slate-800 text-slate-400 transition last:border-r-0 disabled:cursor-not-allowed disabled:opacity-45 ${
-        active ? "bg-cyan-400/15 text-cyan-100" : "hover:bg-slate-900/80 hover:text-slate-100"
+      className={`grid h-8 w-9 place-items-center border-r border-app-border/80 text-app-text-soft transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45 ${
+        active
+          ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]"
+          : "hover:bg-app-accent/10 hover:text-app-text"
       }`}
     >
       {children}

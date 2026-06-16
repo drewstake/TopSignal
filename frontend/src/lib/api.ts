@@ -55,6 +55,8 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
   ProjectXMarketPrice,
+  TradeEvaluationResult,
+  TradePlanEvaluationInput,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
@@ -1136,6 +1138,11 @@ export const botsApi = {
       query: {
         limit,
       },
+    }),
+  evaluateTradePlan: (payload: TradePlanEvaluationInput) =>
+    requestJson<TradeEvaluationResult>("/api/trade-plan/evaluate", {
+      method: "POST",
+      body: payload,
     }),
 };
 

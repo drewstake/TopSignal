@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .trade_plan_schemas import TradeEvaluationResultOut
+
 
 TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
 BotExecutionMode = Literal["dry_run", "live"]
@@ -217,6 +219,7 @@ class BotMarketAnalysisOut(BaseModel):
     risk_notes: list[str]
     candle_timestamp: str | None = None
     generated_at: str | None = None
+    trade_evaluation: TradeEvaluationResultOut | None = None
 
 
 class BotEvaluationOut(BaseModel):

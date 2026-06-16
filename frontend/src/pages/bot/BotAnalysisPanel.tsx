@@ -13,6 +13,7 @@ import type {
   BotEvaluation,
   BotMarketBias,
   ProjectXMarketCandle,
+  TradeEvaluationResult,
 } from "../../lib/types";
 import { intervalSecondsFor } from "./botCandleGaps";
 import { buildCandlestickData, buildLiquidityLevels } from "./botChartData";
@@ -92,6 +93,7 @@ interface DisplayAnalysis {
   riskNotes: string[];
   invalidationLevel: number | null;
   generatedAt: string | null;
+  tradeEvaluation: TradeEvaluationResult | null;
 }
 
 interface SortedCandle {
@@ -210,6 +212,8 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loadi
                 <ProbabilityBar label="Sideways" value={analysis.probabilities.sideways} tone="sideways" />
               </div>
             </div>
+
+            {analysis.tradeEvaluation ? <TradeEvaluationSummary evaluation={analysis.tradeEvaluation} /> : null}
 
             <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
               <AnalysisMetric
@@ -354,6 +358,63 @@ function AnalysisList({ title, items, tone }: { title: string; items: string[]; 
   );
 }
 
+function TradeEvaluationSummary({ evaluation }: { evaluation: TradeEvaluationResult }) {
+  return (
+    <div className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-cyan-200/80">Trade plan grade</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className={cn("text-2xl font-semibold", tradeGradeTextClassName(evaluation.grade))}>
+              {evaluation.grade}
+            </span>
+            <span className="font-mono text-sm text-slate-200">{Math.round(evaluation.total_score)}/100</span>
+            <Badge variant={tradeDecisionBadgeVariant(evaluation.decision)}>{formatStateLabel(evaluation.decision)}</Badge>
+            <Badge variant="neutral">{formatStateLabel(evaluation.confidence)} confidence</Badge>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-right text-[11px] text-slate-400">
+          <MiniScore label="R:R" value={formatRatio(evaluation.features.risk_reward_ratio)} />
+          <MiniScore label="Trend" value={`${evaluation.features.trend_alignment_score}%`} />
+          <MiniScore label="Stop" value={formatRatio(evaluation.features.stop_atr_multiple, " ATR")} />
+        </div>
+      </div>
+      <p className="text-sm leading-6 text-slate-300">{evaluation.summary}</p>
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <CompactList title="Positives" items={evaluation.positives.slice(0, 3)} tone="positive" />
+        <CompactList title="Warnings" items={evaluation.warnings.slice(0, 3)} tone="warning" />
+        <CompactList title="Adjustments" items={evaluation.suggested_adjustments.slice(0, 3)} tone="neutral" />
+      </div>
+    </div>
+  );
+}
+
+function MiniScore({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-[3.8rem] rounded-lg border border-slate-800 bg-slate-950/45 px-2 py-1.5">
+      <p className="uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-0.5 font-mono text-xs font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function CompactList({ title, items, tone }: { title: string; items: string[]; tone: "positive" | "warning" | "neutral" }) {
+  const displayItems = items.length > 0 ? items : ["No items."];
+  return (
+    <div className="min-w-0">
+      <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-500">{title}</p>
+      <ul className="space-y-1.5 text-xs leading-5 text-slate-300">
+        {displayItems.map((item, index) => (
+          <li key={`${title}-${index}-${item}`} className="flex gap-2">
+            <span className={cn("mt-2 h-1.5 w-1.5 shrink-0 rounded-full", compactListDotClassName(tone))} />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function buildDisplayAnalysis(evaluation: BotEvaluation | null): DisplayAnalysis | null {
   if (!evaluation) {
     return null;
@@ -377,6 +438,7 @@ function normalizeBackendAnalysis(
     probabilities?: Partial<BotDirectionalProbabilities>;
     expected_move_percent?: number | null;
     generated_at?: string | null;
+    trade_evaluation?: TradeEvaluationResult | null;
   };
   const probabilities = normalizeProbabilities(
     optionalAnalysis.probabilities ?? {
@@ -416,6 +478,7 @@ function normalizeBackendAnalysis(
     riskNotes,
     invalidationLevel,
     generatedAt: formatGeneratedAt(optionalAnalysis.generated_at),
+    tradeEvaluation: optionalAnalysis.trade_evaluation ?? null,
   };
 }
 
@@ -491,6 +554,7 @@ function buildFallbackAnalysis(evaluation: BotEvaluation): DisplayAnalysis | nul
     riskNotes,
     invalidationLevel,
     generatedAt: null,
+    tradeEvaluation: null,
   };
 }
 
@@ -859,6 +923,13 @@ function formatExpectedMove(value: number | null, percent: number | null): strin
   return percent === null ? moveText : `${moveText} (${percentFormatter.format(Math.abs(percent))}%)`;
 }
 
+function formatRatio(value: number | null, suffix = "R"): string {
+  if (value === null || !Number.isFinite(value)) {
+    return PRICE_FALLBACK;
+  }
+  return `${percentFormatter.format(value)}${suffix}`;
+}
+
 function formatGeneratedAt(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -887,6 +958,16 @@ function marketBiasBadgeVariant(value: BotMarketBias): BadgeVariant {
   return "warning";
 }
 
+function tradeDecisionBadgeVariant(value: TradeEvaluationResult["decision"]): BadgeVariant {
+  if (value === "take") {
+    return "positive";
+  }
+  if (value === "avoid") {
+    return "negative";
+  }
+  return "warning";
+}
+
 function marketBiasTextClassName(value: BotMarketBias): string {
   if (value === "bullish") {
     return "text-emerald-300";
@@ -895,6 +976,26 @@ function marketBiasTextClassName(value: BotMarketBias): string {
     return "text-rose-300";
   }
   return "text-amber-200";
+}
+
+function tradeGradeTextClassName(value: TradeEvaluationResult["grade"]): string {
+  if (value === "A" || value === "B") {
+    return "text-emerald-300";
+  }
+  if (value === "C") {
+    return "text-amber-200";
+  }
+  return "text-rose-300";
+}
+
+function compactListDotClassName(tone: "positive" | "warning" | "neutral"): string {
+  if (tone === "positive") {
+    return "bg-emerald-300/80";
+  }
+  if (tone === "warning") {
+    return "bg-amber-300/80";
+  }
+  return "bg-cyan-300/75";
 }
 
 function probabilityTextClassName(tone: ProbabilityTone): string {

@@ -74,6 +74,7 @@ from .bot_schemas import (
     ProjectXContractOut,
     ProjectXMarketCandleOut,
 )
+from .trade_plan_schemas import TradeEvaluationResultOut, TradePlanEvaluationIn
 from .metrics_schemas import (
     BehaviorMetricsOut,
     DayPnlOut,
@@ -196,6 +197,7 @@ from .services.bot_service import (
     stop_latest_bot_run,
     update_bot_config,
 )
+from .services.trade_plan_evaluator import MarketContext, TradePlan, TradePlanEvaluator
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
@@ -1335,6 +1337,18 @@ async def stream_projectx_market_price(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/trade-plan/evaluate", response_model=TradeEvaluationResultOut)
+def evaluate_trade_plan(payload: TradePlanEvaluationIn):
+    try:
+        result = TradePlanEvaluator().evaluate(
+            TradePlan(**payload.trade_plan.model_dump()),
+            MarketContext(**payload.market_context.model_dump()),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result.to_payload()
 
 
 @app.get("/api/bots", response_model=BotConfigListOut)

@@ -1688,8 +1688,7 @@ export function CopyFullStatsButton({
         onClick={() => setSummaryOpen(true)}
         disabled={disabled}
         className={cn(
-          "shrink-0 rounded-lg border px-2.5 text-[11px]",
-          "border-app-border/80 bg-transparent hover:border-app-border-strong hover:bg-app-raised/70",
+          "shrink-0 rounded-lg px-2.5 text-[11px]",
           className,
         )}
       >
@@ -1701,8 +1700,8 @@ export function CopyFullStatsButton({
         onClick={() => void handleCopyFullStats()}
         disabled={disabled}
         className={cn(
-          "shrink-0 rounded-lg border px-2.5 text-[11px]",
-          copiedFullStats ? "border-app-accent/40" : "border-app-border/80 bg-transparent hover:border-app-border-strong hover:bg-app-raised/70",
+          "shrink-0 rounded-lg px-2.5 text-[11px]",
+          copiedFullStats ? "border-app-accent/50 bg-app-accent/15" : undefined,
           className,
         )}
       >

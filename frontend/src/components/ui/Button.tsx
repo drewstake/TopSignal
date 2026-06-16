@@ -6,10 +6,12 @@ type ButtonSize = "sm" | "md" | "lg";
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
-    "bg-app-accent/90 text-app-accent-contrast hover:bg-app-accent focus-visible:ring-app-accent shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)]",
-  secondary: "bg-app-raised text-app-text hover:bg-app-border-strong focus-visible:ring-app-muted",
-  ghost: "bg-transparent text-app-text-soft hover:bg-app-raised/70 focus-visible:ring-app-muted",
-  danger: "bg-app-negative/85 text-app-bg hover:bg-app-negative focus-visible:ring-app-negative",
+    "border-app-accent/70 bg-app-accent/90 text-app-accent-contrast shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)] hover:border-app-accent hover:bg-app-accent focus-visible:ring-app-accent",
+  secondary:
+    "border-app-accent/40 bg-app-accent/15 text-app-text shadow-[0_10px_24px_-20px_rgb(var(--theme-accent)/0.75)] hover:border-app-accent/70 hover:bg-app-accent/20 focus-visible:ring-app-accent/45",
+  ghost:
+    "border-app-border/65 bg-transparent text-app-text-soft hover:border-app-border-strong/80 hover:bg-app-accent/10 hover:text-app-text focus-visible:ring-app-accent/35",
+  danger: "border-app-negative/70 bg-app-negative/85 text-app-bg hover:border-app-negative hover:bg-app-negative focus-visible:ring-app-negative",
 };
 
 const buttonSizes: Record<ButtonSize, string> = {
@@ -28,7 +30,7 @@ export function Button({ className, variant = "primary", size = "md", type = "bu
     <button
       type={type}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl border border-transparent font-medium transition duration-200 focus-visible:outline-none focus-visible:ring-2",
+        "inline-flex items-center justify-center gap-2 rounded-xl border font-medium transition duration-200 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60",
         buttonVariants[variant],
         buttonSizes[size],
         className,

@@ -537,6 +537,133 @@ export interface BotDirectionalProbabilities {
   sideways: number;
 }
 
+export type TradePlanDirection = "long" | "short";
+export type TradePlanTrend = "bullish" | "bearish" | "neutral" | "unknown";
+export type TradePlanTimeOfDay = "premarket" | "open" | "ny_am" | "lunch" | "power_hour" | "close" | "overnight";
+export type TradePlanMarketRegime = "trend" | "range" | "chop" | "breakout" | "reversal" | "unknown";
+export type TradePlanNewsRisk = "low" | "medium" | "high";
+export type TradeEvaluationDecision = "take" | "wait" | "avoid";
+export type TradeEvaluationConfidence = "low" | "medium" | "high";
+export type TradeEvaluationGrade = "A" | "B" | "C" | "D" | "F";
+
+export interface TradePlanInput {
+  symbol: string;
+  direction: TradePlanDirection;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+  quantity: number;
+  timestamp: string;
+  account_balance?: number | null;
+  current_day_pnl?: number | null;
+  max_daily_loss?: number | null;
+  trailing_drawdown?: number | null;
+}
+
+export interface MarketContextInput {
+  current_price: number;
+  high_of_day?: number | null;
+  low_of_day?: number | null;
+  previous_day_high?: number | null;
+  previous_day_low?: number | null;
+  previous_close?: number | null;
+  open_price?: number | null;
+  vwap?: number | null;
+  anchored_vwap?: number | null;
+  volume_profile_poc?: number | null;
+  value_area_high?: number | null;
+  value_area_low?: number | null;
+  ema21_5m?: number | null;
+  ema21_15m?: number | null;
+  ema21_1h?: number | null;
+  ema21_4h?: number | null;
+  ma200_5m?: number | null;
+  ma200_15m?: number | null;
+  ma200_1h?: number | null;
+  ma200_4h?: number | null;
+  trend5m?: TradePlanTrend;
+  trend15m?: TradePlanTrend;
+  trend1h?: TradePlanTrend;
+  trend4h?: TradePlanTrend;
+  atr1m?: number | null;
+  atr5m?: number | null;
+  atr15m?: number | null;
+  atr1h?: number | null;
+  average_daily_range?: number | null;
+  current_day_range?: number | null;
+  current_volume?: number | null;
+  average_volume_at_time?: number | null;
+  relative_volume?: number | null;
+  cumulative_delta?: number | null;
+  time_of_day?: TradePlanTimeOfDay;
+  market_regime?: TradePlanMarketRegime;
+  news_risk?: TradePlanNewsRisk;
+  es_trend?: TradePlanTrend | null;
+  nq_trend?: TradePlanTrend | null;
+  vix_trend?: TradePlanTrend | null;
+  ten_year_yield_trend?: TradePlanTrend | null;
+  nvda_trend?: TradePlanTrend | null;
+  smh_trend?: TradePlanTrend | null;
+}
+
+export interface TradePlanEvaluationInput {
+  trade_plan: TradePlanInput;
+  market_context: MarketContextInput;
+}
+
+export interface TradePlanFeatures {
+  risk_points: number;
+  reward_points: number;
+  risk_reward_ratio: number | null;
+  breakeven_win_rate: number | null;
+  is_long: boolean;
+  is_short: boolean;
+  price_above_vwap: boolean | null;
+  price_below_vwap: boolean | null;
+  entry_distance_from_vwap_points: number | null;
+  entry_distance_from_vwap_atr: number | null;
+  vwap_supports_direction: boolean | null;
+  distance_from_high_of_day: number | null;
+  distance_from_low_of_day: number | null;
+  distance_from_previous_day_high: number | null;
+  distance_from_previous_day_low: number | null;
+  entry_near_high_of_day: boolean;
+  entry_near_low_of_day: boolean;
+  take_profit_blocked_by_high_of_day: boolean;
+  take_profit_blocked_by_low_of_day: boolean;
+  stop_atr_multiple: number | null;
+  target_atr_multiple: number | null;
+  is_stop_too_tight: boolean;
+  is_stop_too_wide: boolean;
+  is_target_realistic: boolean;
+  trend_alignment_score: number;
+  aligned_timeframes: number;
+  conflicting_timeframes: number;
+  higher_timeframe_conflict: boolean;
+  stop_behind_structure: boolean;
+  entry_chasing: boolean;
+  has_room_to_target: boolean;
+  bad_location: boolean;
+  max_loss_risk_percent: number | null;
+  daily_loss_danger: boolean | null;
+  should_reduce_size: boolean | null;
+}
+
+export interface TradeEvaluationResult {
+  total_score: number;
+  score: number;
+  grade: TradeEvaluationGrade;
+  decision: TradeEvaluationDecision;
+  confidence: TradeEvaluationConfidence;
+  summary: string;
+  reasons: string[];
+  warnings: string[];
+  positives: string[];
+  suggested_adjustments: string[];
+  features: TradePlanFeatures;
+  category_scores: Record<string, number>;
+}
+
 export interface BotAnalysis {
   current_price: number | null;
   previous_close: number | null;
@@ -562,6 +689,7 @@ export interface BotAnalysis {
   /** Timestamp of the latest candle the analysis was computed from. */
   candle_timestamp?: string | null;
   generated_at?: string | null;
+  trade_evaluation?: TradeEvaluationResult | null;
 }
 
 export interface BotStrategyParams {

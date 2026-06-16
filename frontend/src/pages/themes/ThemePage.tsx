@@ -17,16 +17,18 @@ import {
 type PreviewActionVariant = "primary" | "secondary" | "ghost";
 
 const previewActionStyles: Record<PreviewActionVariant, string> = {
-  primary: "bg-app-accent/90 text-app-accent-contrast shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)]",
-  secondary: "bg-app-raised text-app-text",
-  ghost: "bg-transparent text-app-text-soft",
+  primary:
+    "border-app-accent/70 bg-app-accent/90 text-app-accent-contrast shadow-[0_8px_24px_-16px_rgb(var(--theme-accent)/0.95)]",
+  secondary:
+    "border-app-accent/40 bg-app-accent/15 text-app-text shadow-[0_10px_24px_-20px_rgb(var(--theme-accent)/0.75)]",
+  ghost: "border-app-border/65 bg-transparent text-app-text-soft",
 };
 
 function PreviewAction({ children, variant = "primary" }: { children: string; variant?: PreviewActionVariant }) {
   return (
     <span
       className={cn(
-        "inline-flex h-8 items-center justify-center gap-2 rounded-xl border border-transparent px-3 text-xs font-medium",
+        "inline-flex h-8 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-medium",
         previewActionStyles[variant],
       )}
     >

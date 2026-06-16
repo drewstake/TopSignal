@@ -1135,8 +1135,10 @@ export function BotPage() {
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
-  const loadConfigs = useCallback(async () => {
-    setLoading(true);
+  const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
+    if (showLoading) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [accountRows, botRows] = await Promise.all([
@@ -1159,7 +1161,9 @@ export function BotPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load bot data");
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, [accountFromQuery]);
 
@@ -1180,7 +1184,7 @@ export function BotPage() {
   }, []);
 
   useEffect(() => {
-    void loadConfigs();
+    void loadConfigs({ showLoading: true });
   }, [loadConfigs]);
 
   useEffect(() => {

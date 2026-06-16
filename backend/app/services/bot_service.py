@@ -24,6 +24,7 @@ from ..models import (
 from .instruments import load_instrument_specs, normalize_symbol_key
 from .projectx_accounts import ACCOUNT_STATE_ACTIVE, get_projectx_account_row
 from .projectx_client import ProjectXClient
+from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
 from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
 
 _PROJECTX_UNIT_BY_NAME = {
@@ -652,6 +653,9 @@ def evaluate_bot_config(
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
     candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
     analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    trade_evaluation = build_signal_trade_evaluation(candles=candles, config=config, signal=signal, analysis=analysis)
+    if trade_evaluation is not None:
+        analysis["trade_evaluation"] = trade_evaluation
     signal_order_size = _signal_order_size(config=config, signal=signal)
     current_position_qty = _signal_current_position_qty(signal)
     target_position_qty = _signal_target_position_qty(signal)
@@ -8405,6 +8409,117 @@ def serialize_evaluation(result: EvaluationResult) -> dict[str, Any]:
         "analysis": result.analysis,
         "candles": [serialize_market_candle(row) for row in result.candles[-50:]],
     }
+
+
+def build_signal_trade_evaluation(
+    *,
+    candles: list[ProjectXMarketCandle],
+    config: BotConfig,
+    signal: SignalResult,
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    if signal.action not in {"BUY", "SELL"} or not isinstance(signal.raw_payload, dict):
+        return None
+
+    payload = signal.raw_payload
+    entry_price = _optional_float(payload.get("entry_price")) or _optional_float(signal.price)
+    stop_loss = _optional_float(payload.get("stop_loss"))
+    take_profit = (
+        _optional_float(payload.get("take_profit"))
+        or _optional_float(payload.get("final_take_profit"))
+        or _optional_float(payload.get("partial_take_profit"))
+    )
+    if entry_price is None or stop_loss is None or take_profit is None:
+        return None
+
+    quantity = (
+        _optional_float(payload.get("effective_order_size"))
+        or _optional_float(payload.get("order_size"))
+        or float(config.order_size)
+    )
+    timestamp = signal.candle_timestamp
+    if timestamp is None and candles:
+        timestamp = candles[-1].candle_timestamp
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+
+    market_context = build_market_context_from_ohlcv(
+        [
+            {
+                "timestamp": candle.candle_timestamp,
+                "open": float(candle.open_price),
+                "high": float(candle.high_price),
+                "low": float(candle.low_price),
+                "close": float(candle.close_price),
+                "volume": float(candle.volume or 0),
+            }
+            for candle in _closed_candles(candles) or candles
+        ],
+        current_price=float(signal.price) if signal.price is not None else None,
+        timestamp=timestamp,
+        market_regime=_infer_trade_plan_market_regime(config=config, signal=signal, analysis=analysis),
+        news_risk="low",
+    )
+    if market_context is None:
+        return None
+
+    plan = TradePlan(
+        symbol=str(config.symbol or config.contract_id),
+        direction="long" if signal.action == "BUY" else "short",
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        quantity=quantity,
+        timestamp=timestamp,
+        max_daily_loss=float(config.max_daily_loss),
+    )
+    return TradePlanEvaluator().evaluate(plan, market_context).to_payload()
+
+
+def _infer_trade_plan_market_regime(
+    *,
+    config: BotConfig,
+    signal: SignalResult,
+    analysis: dict[str, Any],
+) -> str:
+    if isinstance(signal.raw_payload, dict):
+        raw_regime = str(signal.raw_payload.get("market_regime") or "").strip().lower()
+        if raw_regime in {"trend", "range", "chop", "breakout", "reversal", "unknown"}:
+            return raw_regime
+        chop_state = signal.raw_payload.get("chop")
+        if isinstance(chop_state, dict) and bool(chop_state.get("is_choppy")):
+            return "chop"
+
+    strategy_type = str(config.strategy_type)
+    if strategy_type in {
+        _STRATEGY_DONCHIAN_BREAKOUT,
+        _STRATEGY_OPENING_RVOL_BREAKOUT,
+        _STRATEGY_DELAYED_ORB_CONFIRMATION,
+        _STRATEGY_ORB_FIBONACCI_PULLBACK,
+        _STRATEGY_VWAP_GAP_RETRACE,
+    }:
+        return "breakout"
+    if strategy_type in {
+        _STRATEGY_BOLLINGER_MEAN_REVERSION,
+        _STRATEGY_BOLLINGER_RSI_REVERSAL,
+        _STRATEGY_FISHER_MEAN_REVERSION,
+        _STRATEGY_VWAP_ATR_MEAN_REVERSION,
+    }:
+        return "reversal"
+    if strategy_type in {
+        _STRATEGY_EMA_SCALPING,
+        _STRATEGY_EMA_TREND_PULLBACK,
+        _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
+        _STRATEGY_RELATIVE_STRENGTH_SPY,
+        _STRATEGY_PULLBACK_TRAP_REVERSAL,
+    }:
+        return "trend"
+
+    trend = str(analysis.get("trend") or "neutral")
+    trend_strength = int(analysis.get("trend_strength") or 0)
+    if trend in {"bullish", "bearish"} and trend_strength >= 65:
+        return "trend"
+    return "unknown"
 
 
 def build_bot_market_analysis(
