@@ -9,10 +9,13 @@ import {
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
   getCopyTradeDailyNetPnlForTradingDay,
+  getCopyTradeRosterAccountIds,
+  getCopyTradeSelectedFollowerAccountIds,
   getCopyTradeUncopyEventsResetAt,
   getDailyNetPnlForTradingDay,
   prepareCopyTradeModeToggle,
   readStoredCopyTradeSettings,
+  updateCopyTradeFollowerAccountIds,
   updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
   writeStoredCopyTradeSettings,
@@ -57,6 +60,21 @@ function trade(overrides: Partial<AccountTrade>): AccountTrade {
     pnl: 300,
     order_id: "order-1",
     source_trade_id: "trade-1",
+    ...overrides,
+  };
+}
+
+function account(overrides: Partial<AccountInfo> & Pick<AccountInfo, "id" | "name">): AccountInfo {
+  return {
+    provider_name: overrides.name,
+    custom_display_name: null,
+    balance: 50_000,
+    status: "ACTIVE",
+    account_state: "ACTIVE",
+    is_main: false,
+    can_trade: true,
+    is_visible: true,
+    last_trade_at: null,
     ...overrides,
   };
 }
@@ -136,12 +154,7 @@ describe("computeCopyTradeTotals", () => {
     expect(totals.canCalculate).toBe(true);
     expect(totals.combinedNetPnl).toBe(600);
     expect(totals.followersCopyingCount).toBe(1);
-    expect(totals.warnings).toContain(
-      "Leader account Lockout Leader is locked out; loaded P&L is included but live copy trading may be blocked.",
-    );
-    expect(totals.warnings).toContain(
-      "Lockout Follower is locked out; loaded P&L is included but live copy trading may be blocked.",
-    );
+    expect(totals.warnings).toEqual([]);
   });
 });
 
@@ -224,6 +237,63 @@ describe("buildCopyTradeAccountRows", () => {
     expect(rows[1].status).toBe("Locked Out");
     expect(rows[1].includedInTotals).toBe(true);
     expect(rows[1].contributionNetPnl).toBe(300);
+  });
+
+  it("uses explicit follower selections instead of the first four accounts", () => {
+    const accounts: AccountInfo[] = [
+      account({ id: 10, name: "EXPRESS-V2-DLL-192577-16782575", is_main: true }),
+      account({ id: 20, name: "50KTC-V2-DLL-192577-11530403", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),
+      account({ id: 21, name: "50KTC-V2-DLL-192577-15694349", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),
+      account({ id: 30, name: "EXPRESS-V2-DLL-192577-50519642" }),
+      account({ id: 31, name: "EXPRESS-V2-DLL-192577-93912778" }),
+    ];
+
+    const rows = buildCopyTradeAccountRows({
+      accounts,
+      leaderAccountId: 10,
+      followerAccountIds: [30, 31],
+      snapshotsByAccountId: {
+        10: { netPnl: 200, dailyPnl: 200, openPositions: 0 },
+        20: { netPnl: -1_000, dailyPnl: -1_000, openPositions: 0 },
+        21: { netPnl: -1_000, dailyPnl: -1_000, openPositions: 0 },
+        30: { netPnl: 200, dailyPnl: 200, openPositions: 0 },
+        31: { netPnl: 200, dailyPnl: 200, openPositions: 0 },
+      },
+    });
+
+    expect(rows.map((candidate) => candidate.accountId)).toEqual([10, 30, 31, null, null]);
+    expect(computeCopyTradeTotals(rows).combinedNetPnl).toBe(600);
+  });
+});
+
+describe("getCopyTradeRosterAccountIds", () => {
+  it("defaults an EXPRESS leader to active EXPRESS followers before locked accounts from other account families", () => {
+    const accounts: AccountInfo[] = [
+      account({ id: 50, name: "50KTC-V2-DLL-192577-11530403", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),
+      account({ id: 51, name: "50KTC-V2-DLL-192577-15694349", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),
+      account({ id: 10, name: "EXPRESS-V2-DLL-192577-16782575", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),
+      account({ id: 11, name: "EXPRESS-V2-DLL-192577-50519642" }),
+      account({ id: 12, name: "EXPRESS-V2-DLL-192577-93912778" }),
+      account({ id: 13, name: "EXPRESS-V2-DLL-192577-95520881" }),
+      account({ id: 14, name: "EXPRESS-V2-DLL-192577-98052478" }),
+    ];
+
+    expect(getCopyTradeRosterAccountIds(accounts, 10)).toEqual([10, 11, 12, 13, 14]);
+  });
+
+  it("persists explicit follower selections per leader, including an intentionally empty roster", () => {
+    const accounts: AccountInfo[] = [
+      account({ id: 1, name: "150KTC-V2-DLL-192577-16577193" }),
+      account({ id: 2, name: "150KTC-V2-DLL-192577-45224872" }),
+      account({ id: 3, name: "150KTC-V2-DLL-192577-52861877" }),
+    ];
+    const settings = updateCopyTradeFollowerAccountIds({ modeEnabled: true }, 1, [3]);
+    const emptySettings = updateCopyTradeFollowerAccountIds(settings, 1, []);
+
+    expect(getCopyTradeSelectedFollowerAccountIds(settings, 1)).toEqual([3]);
+    expect(getCopyTradeRosterAccountIds(accounts, 1, settings)).toEqual([1, 3]);
+    expect(getCopyTradeSelectedFollowerAccountIds(emptySettings, 1)).toEqual([]);
+    expect(getCopyTradeRosterAccountIds(accounts, 1, emptySettings)).toEqual([1]);
   });
 });
 
@@ -555,6 +625,7 @@ describe("copy-trade settings storage", () => {
 
     expect(JSON.parse(window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY) ?? "{}")).toEqual({
       modeEnabled: true,
+      followerAccountIdsByLeaderAccountId: {},
       uncopyEventsResetAtByLeaderAccountId: {
         "10": "2026-05-28T22:34:00.000Z",
       },
@@ -573,6 +644,7 @@ describe("copy-trade settings storage", () => {
 
     expect(readStoredCopyTradeSettings()).toEqual({
       modeEnabled: false,
+      followerAccountIdsByLeaderAccountId: {},
       uncopyEventsResetAtByLeaderAccountId: {},
     });
   });

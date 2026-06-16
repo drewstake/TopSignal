@@ -1,9 +1,12 @@
+import { useMemo, useState } from "react";
+
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/ui/Table";
 import { formatCurrency, formatInteger, formatNumber, formatPnl } from "../../../utils/formatters";
+import type { AccountInfo } from "../../../lib/types";
 import type { CopyTradeAccountRow, CopyTradeDriftSummary, CopyTradeStatus, CopyTradeTotals } from "../copyTrade";
 
 interface CopyTradePanelProps {
@@ -11,7 +14,12 @@ interface CopyTradePanelProps {
   totals: CopyTradeTotals;
   driftSummary: CopyTradeDriftSummary;
   driftResetAt: string | null;
+  accounts: AccountInfo[];
+  leaderAccountId: number | null;
+  selectedFollowerAccountIds: number[];
+  maxFollowers: number;
   loading: boolean;
+  onFollowerSelectionChange: (accountId: number, selected: boolean) => void;
   onResetUncopyEvents: () => void;
 }
 
@@ -67,12 +75,31 @@ export function CopyTradePanel({
   totals,
   driftSummary,
   driftResetAt,
+  accounts,
+  leaderAccountId,
+  selectedFollowerAccountIds,
+  maxFollowers,
   loading,
+  onFollowerSelectionChange,
   onResetUncopyEvents,
 }: CopyTradePanelProps) {
+  const selectedFollowerCount = selectedFollowerAccountIds.length;
+  const [followerSelectorState, setFollowerSelectorState] = useState(() => ({
+    leaderAccountId,
+    expanded: selectedFollowerCount === 0,
+  }));
   const cappedWarnings = totals.warnings.slice(0, 3);
   const remainingWarningCount = Math.max(0, totals.warnings.length - cappedWarnings.length);
   const driftResetLabel = formatResetTime(driftResetAt);
+  const selectedFollowerIds = useMemo(() => new Set(selectedFollowerAccountIds), [selectedFollowerAccountIds]);
+  const followerCandidates = accounts.filter(
+    (account) => account.id !== leaderAccountId && (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
+  );
+  const selectedFollowerAccounts = followerCandidates.filter((account) => selectedFollowerIds.has(account.id));
+  const followerSelectionFull = selectedFollowerCount >= maxFollowers;
+  const followerSelectorExpanded =
+    followerSelectorState.leaderAccountId === leaderAccountId ? followerSelectorState.expanded : selectedFollowerCount === 0;
+  const showFollowerEditor = selectedFollowerCount === 0 || followerSelectorExpanded;
 
   return (
     <Card className="border-app-accent/30 bg-[radial-gradient(120%_130%_at_0%_0%,rgb(var(--theme-accent)/0.16),rgb(var(--theme-surface)/0.64)_48%,rgb(var(--theme-surface)/0.92)_100%)]">
@@ -131,6 +158,92 @@ export function CopyTradePanel({
           />
         </div>
 
+        <div className="rounded-lg border border-app-border/75 bg-app-bg/35 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] uppercase tracking-[0.14em] text-app-muted">Followers</p>
+            <div className="flex items-center gap-2">
+              <Badge variant={selectedFollowerCount > 0 ? "accent" : "warning"}>{`${formatInteger(selectedFollowerCount)} / ${formatInteger(maxFollowers)}`}</Badge>
+              {selectedFollowerCount > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setFollowerSelectorState((current) => {
+                      const currentExpanded =
+                        current.leaderAccountId === leaderAccountId ? current.expanded : selectedFollowerCount === 0;
+                      return {
+                        leaderAccountId,
+                        expanded: !currentExpanded,
+                      };
+                    })
+                  }
+                  className="h-7 rounded-lg px-2 text-[10px]"
+                >
+                  {showFollowerEditor ? "Done" : "Edit"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          {selectedFollowerCount > 0 && !showFollowerEditor ? (
+            <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {selectedFollowerAccounts.map((account) => {
+                const status = getAccountStatusLabel(account);
+                return (
+                  <div key={account.id} className="min-w-0 rounded-lg border border-app-accent/45 bg-app-accent/10 px-2.5 py-2 text-xs">
+                    <p className="truncate font-semibold text-app-text">{getAccountDisplayName(account)}</p>
+                    <div className="mt-1 flex items-center gap-1.5 text-[10px] text-app-muted">
+                      <span>{`ID ${account.id}`}</span>
+                      <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
+                        {status}
+                      </Badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : followerCandidates.length > 0 ? (
+            <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {followerCandidates.map((account) => {
+                const selected = selectedFollowerIds.has(account.id);
+                const disabled = loading || (!selected && followerSelectionFull);
+                const status = getAccountStatusLabel(account);
+                return (
+                  <label
+                    key={account.id}
+                    className={cn(
+                      "flex min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2 text-xs transition",
+                      selected
+                        ? "border-app-accent/55 bg-app-accent/15 text-app-text"
+                        : "border-app-border/75 bg-app-surface/45 text-app-text-soft",
+                      disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-app-accent/45 hover:bg-app-accent/10",
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={disabled}
+                      onChange={(event) => onFollowerSelectionChange(account.id, event.currentTarget.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-app-border bg-app-bg accent-[rgb(var(--theme-accent))]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold">{getAccountDisplayName(account)}</span>
+                      <span className="mt-1 flex items-center gap-1.5 text-[10px] text-app-muted">
+                        <span>{`ID ${account.id}`}</span>
+                        <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
+                          {status}
+                        </Badge>
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-app-muted">No follower accounts available.</p>
+          )}
+        </div>
+
         {driftSummary.likelyUncopyEventCount > 0 ? (
           <div className="rounded-lg border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning">
             Detected follower trades without a matching leader trade within {formatNumber(driftSummary.matchWindowMinutes, 0)} minutes.
@@ -186,6 +299,14 @@ export function CopyTradePanel({
       </CardContent>
     </Card>
   );
+}
+
+function getAccountDisplayName(account: AccountInfo) {
+  return account.name || account.provider_name || `Account ${account.id}`;
+}
+
+function getAccountStatusLabel(account: AccountInfo) {
+  return account.account_state === "ACTIVE" ? "Active" : "Locked Out";
 }
 
 function CopyTradeStat({

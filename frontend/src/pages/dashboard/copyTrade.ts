@@ -14,6 +14,7 @@ export type CopyTradeModeToggleDecisionStatus = "ready" | "blocked" | "cancelled
 
 export interface CopyTradeSettings {
   modeEnabled: boolean;
+  followerAccountIdsByLeaderAccountId?: Record<string, number[]>;
   uncopyEventsResetAtByLeaderAccountId?: Record<string, string>;
 }
 
@@ -80,16 +81,18 @@ export interface CopyTradeDriftSummary {
 interface BuildCopyTradeAccountRowsInput {
   accounts: readonly AccountInfo[];
   leaderAccountId: number | null;
+  followerAccountIds?: readonly number[];
   snapshotsByAccountId: Record<number, CopyTradeMetricSnapshot | undefined>;
 }
 
-const MAX_COPY_TRADE_ACCOUNTS = 5;
-const MAX_COPY_TRADE_FOLLOWERS = 4;
+export const MAX_COPY_TRADE_ACCOUNTS = 5;
+export const MAX_COPY_TRADE_FOLLOWERS = 4;
 const COPY_TRADE_MATCH_WINDOW_MS = 2 * 60 * 1000;
 const MAX_LIVE_BALANCE_DAILY_PNL_FALLBACK_ABS = 10_000;
 
 const defaultSettings: CopyTradeSettings = {
   modeEnabled: false,
+  followerAccountIdsByLeaderAccountId: {},
   uncopyEventsResetAtByLeaderAccountId: {},
 };
 
@@ -128,6 +131,27 @@ export function updateCopyTradeModeSetting(settings: CopyTradeSettings, modeEnab
   return {
     ...normalizeCopyTradeSettings(settings),
     modeEnabled,
+  };
+}
+
+export function updateCopyTradeFollowerAccountIds(
+  settings: CopyTradeSettings,
+  leaderAccountId: number | null,
+  followerAccountIds: readonly number[],
+): CopyTradeSettings {
+  const normalized = normalizeCopyTradeSettings(settings);
+  if (leaderAccountId === null) {
+    return normalized;
+  }
+
+  const followerIdsByLeaderAccountId = { ...(normalized.followerAccountIdsByLeaderAccountId ?? {}) };
+  followerIdsByLeaderAccountId[String(leaderAccountId)] = normalizeAccountIds(followerAccountIds)
+    .filter((accountId) => accountId !== leaderAccountId)
+    .slice(0, MAX_COPY_TRADE_FOLLOWERS);
+
+  return {
+    ...normalized,
+    followerAccountIdsByLeaderAccountId: followerIdsByLeaderAccountId,
   };
 }
 
@@ -203,7 +227,20 @@ export function getCopyTradeUncopyEventsResetAt(settings: CopyTradeSettings, lea
   return resetAt && Number.isFinite(Date.parse(resetAt)) ? resetAt : null;
 }
 
-export function getCopyTradeRosterAccountIds(accounts: readonly AccountInfo[], leaderAccountId: number | null): number[] {
+export function getCopyTradeSelectedFollowerAccountIds(settings: CopyTradeSettings, leaderAccountId: number | null): number[] {
+  if (leaderAccountId === null) {
+    return [];
+  }
+
+  const normalized = normalizeCopyTradeSettings(settings);
+  return normalizeAccountIds(normalized.followerAccountIdsByLeaderAccountId?.[String(leaderAccountId)] ?? []);
+}
+
+export function getCopyTradeRosterAccountIds(
+  accounts: readonly AccountInfo[],
+  leaderAccountId: number | null,
+  settings?: CopyTradeSettings,
+): number[] {
   if (leaderAccountId === null) {
     return [];
   }
@@ -213,17 +250,22 @@ export function getCopyTradeRosterAccountIds(accounts: readonly AccountInfo[], l
     return [];
   }
 
-  return [
-    leader.id,
-    ...accounts
-      .filter((account) => account.id !== leader.id)
-      .slice(0, MAX_COPY_TRADE_FOLLOWERS)
-      .map((account) => account.id),
-  ].slice(0, MAX_COPY_TRADE_ACCOUNTS);
+  const normalizedSettings = settings ? normalizeCopyTradeSettings(settings) : null;
+  const followerKey = String(leader.id);
+  const configuredFollowerIds =
+    normalizedSettings && Object.prototype.hasOwnProperty.call(normalizedSettings.followerAccountIdsByLeaderAccountId ?? {}, followerKey)
+      ? normalizedSettings.followerAccountIdsByLeaderAccountId?.[followerKey] ?? []
+      : null;
+  const followerIds =
+    configuredFollowerIds !== null
+      ? getConfiguredCopyTradeFollowerAccountIds(accounts, leader, configuredFollowerIds)
+      : getDefaultCopyTradeFollowerAccountIds(accounts, leader);
+
+  return [leader.id, ...followerIds].slice(0, MAX_COPY_TRADE_ACCOUNTS);
 }
 
 export function buildCopyTradeAccountRows(input: BuildCopyTradeAccountRowsInput): CopyTradeAccountRow[] {
-  const { accounts, leaderAccountId, snapshotsByAccountId } = input;
+  const { accounts, leaderAccountId, followerAccountIds, snapshotsByAccountId } = input;
   const leader = leaderAccountId === null ? null : accounts.find((account) => account.id === leaderAccountId) ?? null;
   const rows: CopyTradeAccountRow[] = [];
 
@@ -231,9 +273,7 @@ export function buildCopyTradeAccountRows(input: BuildCopyTradeAccountRowsInput)
     rows.push(buildAccountRow(leader, "Leader", snapshotsByAccountId[leader.id]));
   }
 
-  const followers = leader
-    ? accounts.filter((account) => account.id !== leader.id).slice(0, MAX_COPY_TRADE_FOLLOWERS)
-    : [];
+  const followers = leader ? getCopyTradeFollowerAccounts(accounts, leader, followerAccountIds) : [];
 
   followers.forEach((account) => {
     rows.push(buildAccountRow(account, "Follower", snapshotsByAccountId[account.id]));
@@ -257,8 +297,8 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
     warnings.push("Copy Trade Mode needs one leader account before combined stats can be calculated.");
   } else if (leader.status === "Error" || leader.status === "Syncing") {
     warnings.push(`Leader account ${leader.accountName} is ${leader.status.toLowerCase()}; copy totals are unavailable.`);
-  } else if (leader.status === "Inactive" || leader.status === "Locked Out") {
-    warnings.push(`Leader account ${leader.accountName} is ${leader.status.toLowerCase()}; loaded P&L is included but live copy trading may be blocked.`);
+  } else if (leader.status === "Inactive") {
+    warnings.push(`Leader account ${leader.accountName} is inactive; loaded P&L is included.`);
   }
 
   rows.forEach((row) => {
@@ -272,7 +312,6 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
     }
 
     if (row.status === "Locked Out") {
-      warnings.push(`${row.accountName} is locked out; loaded P&L is included but live copy trading may be blocked.`);
       return;
     }
 
@@ -579,13 +618,119 @@ function getCopyTradeStatusForAccount(account: AccountInfo): CopyTradeStatus {
   return "Inactive";
 }
 
+function getCopyTradeFollowerAccounts(
+  accounts: readonly AccountInfo[],
+  leader: AccountInfo,
+  followerAccountIds: readonly number[] | undefined,
+): AccountInfo[] {
+  const accountById = new Map(accounts.map((account) => [account.id, account]));
+  const followerIds =
+    followerAccountIds !== undefined
+      ? getConfiguredCopyTradeFollowerAccountIds(accounts, leader, followerAccountIds)
+      : getDefaultCopyTradeFollowerAccountIds(accounts, leader);
+
+  return followerIds.flatMap((accountId) => {
+    const account = accountById.get(accountId);
+    return account ? [account] : [];
+  });
+}
+
+function getConfiguredCopyTradeFollowerAccountIds(
+  accounts: readonly AccountInfo[],
+  leader: AccountInfo,
+  followerAccountIds: readonly number[],
+): number[] {
+  const selectableFollowerIds = new Set(
+    accounts
+      .filter((account) => account.id !== leader.id && isCopyTradeSelectableFollower(account))
+      .map((account) => account.id),
+  );
+
+  return normalizeAccountIds(followerAccountIds)
+    .filter((accountId) => selectableFollowerIds.has(accountId))
+    .slice(0, MAX_COPY_TRADE_FOLLOWERS);
+}
+
+function getDefaultCopyTradeFollowerAccountIds(accounts: readonly AccountInfo[], leader: AccountInfo): number[] {
+  const leaderFamily = getAccountFamilyName(leader);
+  return accounts
+    .map((account, index) => ({ account, index }))
+    .filter(({ account }) => account.id !== leader.id && isCopyTradeSelectableFollower(account))
+    .sort((left, right) => {
+      const priorityDifference =
+        getDefaultFollowerPriority(left.account, leaderFamily) - getDefaultFollowerPriority(right.account, leaderFamily);
+      if (priorityDifference !== 0) {
+        return priorityDifference;
+      }
+      return left.index - right.index;
+    })
+    .slice(0, MAX_COPY_TRADE_FOLLOWERS)
+    .map(({ account }) => account.id);
+}
+
+function getDefaultFollowerPriority(account: AccountInfo, leaderFamily: string): number {
+  const sameFamily = getAccountFamilyName(account) === leaderFamily;
+  const active = account.account_state === "ACTIVE" && account.can_trade !== false;
+  if (sameFamily && active) {
+    return 0;
+  }
+  if (active) {
+    return 1;
+  }
+  if (sameFamily) {
+    return 2;
+  }
+  return 3;
+}
+
+function isCopyTradeSelectableFollower(account: AccountInfo): boolean {
+  return account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT";
+}
+
+function getAccountFamilyName(account: AccountInfo): string {
+  const name = (account.provider_name || account.name || "").trim().toUpperCase();
+  const separatorIndex = name.indexOf("-");
+  return separatorIndex > 0 ? name.slice(0, separatorIndex) : name;
+}
+
+function normalizeAccountIds(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<number>();
+  const output: number[] = [];
+  value.forEach((rawAccountId) => {
+    const accountId = typeof rawAccountId === "number" ? rawAccountId : Number(rawAccountId);
+    if (!Number.isInteger(accountId) || accountId <= 0 || seen.has(accountId)) {
+      return;
+    }
+    seen.add(accountId);
+    output.push(accountId);
+  });
+  return output;
+}
+
 function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
   if (!value || typeof value !== "object") {
     return defaultSettings;
   }
 
   const candidate = value as Partial<CopyTradeSettings>;
+  const followerAccountIdsByLeaderAccountId: Record<string, number[]> = {};
   const uncopyEventsResetAtByLeaderAccountId: Record<string, string> = {};
+
+  const rawFollowerSelections = candidate.followerAccountIdsByLeaderAccountId;
+  if (rawFollowerSelections && typeof rawFollowerSelections === "object") {
+    Object.entries(rawFollowerSelections).forEach(([leaderAccountId, followerAccountIds]) => {
+      if (!/^\d+$/.test(leaderAccountId)) {
+        return;
+      }
+      followerAccountIdsByLeaderAccountId[leaderAccountId] = normalizeAccountIds(followerAccountIds)
+        .filter((accountId) => accountId !== Number(leaderAccountId))
+        .slice(0, MAX_COPY_TRADE_FOLLOWERS);
+    });
+  }
 
   const rawUncopyEventResets = candidate.uncopyEventsResetAtByLeaderAccountId;
   if (rawUncopyEventResets && typeof rawUncopyEventResets === "object") {
@@ -599,6 +744,7 @@ function normalizeCopyTradeSettings(value: unknown): CopyTradeSettings {
 
   return {
     modeEnabled: candidate.modeEnabled === true,
+    followerAccountIdsByLeaderAccountId,
     uncopyEventsResetAtByLeaderAccountId,
   };
 }

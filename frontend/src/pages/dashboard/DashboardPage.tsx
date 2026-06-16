@@ -45,13 +45,15 @@ import { computeSustainability, type SustainabilityLabel } from "../../utils/sus
 import { CopyTradePanel } from "./components/CopyTradePanel";
 import {
   COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
+  MAX_COPY_TRADE_FOLLOWERS,
   buildCopyTradeAccountRows,
   combineCopyTradePnlCalendarDays,
   computeCopyTradeDriftSummary,
   computeCopyTradeTotals,
   getCopyTradeDailyNetPnlForTradingDay,
-  getCopyTradeUncopyEventsResetAt,
   getCopyTradeRosterAccountIds,
+  getCopyTradeUncopyEventsResetAt,
+  updateCopyTradeFollowerAccountIds,
   prepareCopyTradeModeToggle,
   readStoredCopyTradeSettings,
   updateCopyTradeModeSetting,
@@ -638,8 +640,12 @@ export function DashboardPage() {
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   const copyTradeRosterAccountIds = useMemo(
-    () => (copyTradeSettings.modeEnabled ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId) : []),
-    [copyTradeSettings.modeEnabled, orderedAccounts, selectedAccountId],
+    () => (copyTradeSettings.modeEnabled ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings) : []),
+    [copyTradeSettings, orderedAccounts, selectedAccountId],
+  );
+  const copyTradeFollowerAccountIds = useMemo(
+    () => getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings).filter((accountId) => accountId !== selectedAccountId),
+    [copyTradeSettings, orderedAccounts, selectedAccountId],
   );
   const metricsRangeQuery = useMemo(
     () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
@@ -1009,9 +1015,10 @@ export function DashboardPage() {
       buildCopyTradeAccountRows({
         accounts: orderedAccounts,
         leaderAccountId: selectedAccountId,
+        followerAccountIds: copyTradeFollowerAccountIds,
         snapshotsByAccountId: copyTradeSnapshotsByAccountId,
       }),
-    [copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
+    [copyTradeFollowerAccountIds, copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
   );
 
   const copyTradeTotals = useMemo(() => computeCopyTradeTotals(copyTradeRows), [copyTradeRows]);
@@ -1699,18 +1706,42 @@ export function DashboardPage() {
     );
   }, [saveCopyTradeSettings, selectedAccountId]);
 
+  const handleCopyTradeFollowerSelectionChange = useCallback(
+    (accountId: number, selected: boolean) => {
+      if (selectedAccountId === null) {
+        return;
+      }
+
+      const currentFollowerIds = getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettingsRef.current).filter(
+        (candidateAccountId) => candidateAccountId !== selectedAccountId,
+      );
+      const alreadySelected = currentFollowerIds.includes(accountId);
+      if (selected && !alreadySelected && currentFollowerIds.length >= MAX_COPY_TRADE_FOLLOWERS) {
+        setCopyTradeToggleFeedback({
+          tone: "error",
+          message: `Copy Trade Mode supports up to ${MAX_COPY_TRADE_FOLLOWERS} follower accounts.`,
+        });
+        return;
+      }
+
+      const nextFollowerIds = selected
+        ? alreadySelected
+          ? currentFollowerIds
+          : [...currentFollowerIds, accountId]
+        : currentFollowerIds.filter((candidateAccountId) => candidateAccountId !== accountId);
+      const saveResult = saveCopyTradeSettings((current) => updateCopyTradeFollowerAccountIds(current, selectedAccountId, nextFollowerIds));
+      setCopyTradeToggleFeedback(
+        saveResult.ok
+          ? { tone: "success", message: "Copy Trade followers updated." }
+          : { tone: "error", message: `Copy Trade followers were not saved: ${saveResult.errorMessage}` },
+      );
+    },
+    [orderedAccounts, saveCopyTradeSettings, selectedAccountId],
+  );
+
   const copyTradeToggleDisabled = copyTradeTogglePending || (selectedAccountId === null && !copyTradeSettings.modeEnabled);
-  const copyTradeModeStatusMessage =
-    copyTradeToggleFeedback?.message ??
-    (selectedAccountId === null
-      ? copyTradeSettings.modeEnabled
-        ? "On. Waiting for account selection before copy totals can load."
-        : "Select an account to use Copy Trade Mode."
-      : copyTradeSettings.modeEnabled
-        ? "On. Combining eligible leader and follower accounts."
-        : "Off. Showing the selected account only.");
-  const copyTradeModeStatusTone: CopyTradeToggleFeedbackTone =
-    copyTradeToggleFeedback?.tone ?? (copyTradeSettings.modeEnabled ? "success" : "neutral");
+  const copyTradeModeStatusMessage = copyTradeToggleFeedback?.message ?? null;
+  const copyTradeModeStatusTone: CopyTradeToggleFeedbackTone = copyTradeToggleFeedback?.tone ?? "neutral";
   const copyTradeModeStatusClassName =
     copyTradeModeStatusTone === "error"
       ? "text-app-negative"
@@ -1782,7 +1813,7 @@ export function DashboardPage() {
                         ? "Copy Trade Mode unavailable"
                         : "Copy Trade Mode is off"
                   }
-                  aria-describedby="copy-trade-toggle-status"
+                  aria-describedby={copyTradeModeStatusMessage ? "copy-trade-toggle-status" : undefined}
                   disabled={copyTradeToggleDisabled}
                   className={cn(
                     "h-8 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:flex-none",
@@ -1793,14 +1824,16 @@ export function DashboardPage() {
                   {copyTradeTogglePending ? "Saving" : copyTradeSettings.modeEnabled ? "On" : "Off"}
                 </Badge>
               </div>
-              <p
-                id="copy-trade-toggle-status"
-                role="status"
-                aria-live={copyTradeModeStatusTone === "error" ? "assertive" : "polite"}
-                className={cn("text-[10px] leading-snug", copyTradeModeStatusClassName)}
-              >
-                {copyTradeModeStatusMessage}
-              </p>
+              {copyTradeModeStatusMessage ? (
+                <p
+                  id="copy-trade-toggle-status"
+                  role="status"
+                  aria-live={copyTradeModeStatusTone === "error" ? "assertive" : "polite"}
+                  className={cn("text-[10px] leading-snug", copyTradeModeStatusClassName)}
+                >
+                  {copyTradeModeStatusMessage}
+                </p>
+              ) : null}
             </div>
             <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
@@ -1830,7 +1863,12 @@ export function DashboardPage() {
           totals={copyTradeTotals}
           driftSummary={copyTradeDriftSummary}
           driftResetAt={copyTradeDriftResetAt}
+          accounts={orderedAccounts}
+          leaderAccountId={selectedAccountId}
+          selectedFollowerAccountIds={copyTradeFollowerAccountIds}
+          maxFollowers={MAX_COPY_TRADE_FOLLOWERS}
           loading={summaryLoading || pnlCalendarLoading || copyTradeTogglePending}
+          onFollowerSelectionChange={handleCopyTradeFollowerSelectionChange}
           onResetUncopyEvents={handleResetUncopyEvents}
         />
       ) : null}
