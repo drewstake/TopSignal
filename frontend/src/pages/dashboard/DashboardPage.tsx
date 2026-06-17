@@ -512,6 +512,23 @@ function getCopyTradeSettingsSaveErrorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : "Browser storage is unavailable.";
 }
 
+async function refreshCopyTradeCurrentTradingDay(accountIds: readonly number[], tradingDay: string) {
+  const tradingDayRange = getTradingDayRange(tradingDay);
+  if (!tradingDayRange || accountIds.length === 0) {
+    return;
+  }
+
+  await Promise.all(
+    accountIds.map(async (accountId) => {
+      try {
+        await accountsApi.refreshTrades(accountId, tradingDayRange);
+      } catch {
+        // Fall back to the existing local cache for accounts that cannot refresh.
+      }
+    }),
+  );
+}
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -688,6 +705,10 @@ export function DashboardPage() {
     setPnlCalendarError(null);
 
     try {
+      if (copyTradeSettings.modeEnabled) {
+        await refreshCopyTradeCurrentTradingDay(copyTradeRosterAccountIds, currentTradingDayKey);
+      }
+
       const summaryQuery = {
         start: metricsRangeQuery.start,
         end: metricsRangeQuery.end,
@@ -807,7 +828,7 @@ export function DashboardPage() {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [copyTradeRosterAccountIds, copyTradeSettings.modeEnabled, metricsRangeQuery, selectedAccountId]);
+  }, [copyTradeRosterAccountIds, copyTradeSettings.modeEnabled, currentTradingDayKey, metricsRangeQuery, selectedAccountId]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
