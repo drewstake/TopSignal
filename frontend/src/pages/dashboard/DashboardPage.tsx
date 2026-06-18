@@ -433,6 +433,12 @@ interface CustomDateRange {
   endDate: string;
 }
 
+interface MetricsRangeQuery {
+  start?: string;
+  end?: string;
+  allTime: boolean;
+}
+
 interface CopyTradeLoadedAccountData {
   summary: AccountSummary | null;
   calendarDays: AccountPnlCalendarDay[];
@@ -457,7 +463,7 @@ function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
   currentTradingDay: string = tradingDayKey(new Date()),
-): { start?: string; end?: string; allTime: boolean } {
+): MetricsRangeQuery {
   if (range === "CUSTOM") {
     if (!customRange) {
       return { allTime: true };
@@ -668,6 +674,15 @@ export function DashboardPage() {
     () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
     [customRange, currentTradingDayKey, metricsRange],
   );
+  const selectedTradeDayRangeQuery = useMemo<MetricsRangeQuery | null>(() => {
+    if (!selectedTradeDate) {
+      return null;
+    }
+    const selectedRange = getTradingDayRange(selectedTradeDate);
+    return selectedRange ? { ...selectedRange, allTime: false } : null;
+  }, [selectedTradeDate]);
+  const analyticsRangeQuery = selectedTradeDayRangeQuery ?? metricsRangeQuery;
+  const selectedTradeDayRefresh = selectedTradeDayRangeQuery !== null;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
   const dashboardLoadPerfRef = useRef<{
     accountId: number;
@@ -679,7 +694,7 @@ export function DashboardPage() {
   useEffect(() => {
     dashboardLoadPerfRef.current = null;
     dashboardWasLoadingRef.current = false;
-  }, [selectedAccountId, metricsRangeQuery.end, metricsRangeQuery.start, selectedTradeDate]);
+  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, selectedAccountId, selectedTradeDate]);
 
   const selectedTradeDateLabel = useMemo(() => {
     if (!selectedTradeDate) {
@@ -710,8 +725,9 @@ export function DashboardPage() {
       }
 
       const summaryQuery = {
-        start: metricsRangeQuery.start,
-        end: metricsRangeQuery.end,
+        start: analyticsRangeQuery.start,
+        end: analyticsRangeQuery.end,
+        refresh: selectedTradeDayRefresh,
       };
       const followerAccountIds = copyTradeSettings.modeEnabled
         ? copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId)
@@ -721,8 +737,9 @@ export function DashboardPage() {
           const followerTradesRequest = accountsApi
             .getTrades(accountId, {
               limit: METRIC_TRADE_LIMIT,
-              start: metricsRangeQuery.start,
-              end: metricsRangeQuery.end,
+              start: analyticsRangeQuery.start,
+              end: analyticsRangeQuery.end,
+              refresh: selectedTradeDayRefresh,
               includeLifecycle: false,
             })
             .then(
@@ -738,6 +755,7 @@ export function DashboardPage() {
               accountsApi.getSummaryWithPointBases(accountId, {
                 start: summaryQuery.start,
                 end: summaryQuery.end,
+                refresh: summaryQuery.refresh,
               }),
               accountsApi.getPnlCalendar(accountId, {
                 start: metricsRangeQuery.start,
@@ -776,6 +794,7 @@ export function DashboardPage() {
         accountsApi.getSummaryWithPointBases(selectedAccountId, {
           start: summaryQuery.start,
           end: summaryQuery.end,
+          refresh: summaryQuery.refresh,
         }),
         accountsApi.getPnlCalendar(selectedAccountId, {
           start: metricsRangeQuery.start,
@@ -828,7 +847,18 @@ export function DashboardPage() {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
     }
-  }, [copyTradeRosterAccountIds, copyTradeSettings.modeEnabled, currentTradingDayKey, metricsRangeQuery, selectedAccountId]);
+  }, [
+    analyticsRangeQuery.end,
+    analyticsRangeQuery.start,
+    copyTradeRosterAccountIds,
+    copyTradeSettings.modeEnabled,
+    currentTradingDayKey,
+    metricsRangeQuery.allTime,
+    metricsRangeQuery.end,
+    metricsRangeQuery.start,
+    selectedAccountId,
+    selectedTradeDayRefresh,
+  ]);
 
   const loadTrades = useCallback(async () => {
     if (!selectedAccountId) {
@@ -890,8 +920,9 @@ export function DashboardPage() {
     try {
       const nextTrades = await accountsApi.getTrades(selectedAccountId, {
         limit: METRIC_TRADE_LIMIT,
-        start: metricsRangeQuery.start,
-        end: metricsRangeQuery.end,
+        start: analyticsRangeQuery.start,
+        end: analyticsRangeQuery.end,
+        refresh: selectedTradeDayRefresh,
         includeLifecycle: false,
       });
       setMetricsTrades(nextTrades);
@@ -902,7 +933,7 @@ export function DashboardPage() {
     } finally {
       setMetricsTradesLoading(false);
     }
-  }, [metricsRangeQuery.end, metricsRangeQuery.start, selectedAccountId]);
+  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, selectedAccountId, selectedTradeDayRefresh]);
 
   const reloadDashboard = useCallback(async () => {
     await Promise.all([loadSummaryAndCalendar(), loadTrades(), loadMetricsTrades()]);
@@ -1069,7 +1100,7 @@ export function DashboardPage() {
     [copyTradeDriftResetAt, copyTradeRows, copyTradeTradesByAccountId],
   );
   const copyTradeStatsActive = copyTradeSettings.modeEnabled && copyTradeTotals.canCalculate;
-  const dashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
+  const rawDashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
   const dashboardSummary = useMemo(
     () =>
       copyTradeStatsActive
@@ -1082,6 +1113,43 @@ export function DashboardPage() {
     [copyTradeStatsActive, copyTradeTotals.combinedDailyPnl, copyTradeTotals.combinedNetPnl, summary],
   );
   const dashboardCurrentBalance = copyTradeStatsActive ? copyTradeTotals.combinedBalance : selectedAccount?.balance ?? null;
+  const selectedDayLoadedTradeCount = !copyTradeStatsActive && selectedTradeDate && !tradesLoading && !tradesError ? trades.length : null;
+  const displayTradeCount = selectedDayLoadedTradeCount ?? summary.trade_count;
+  const displayActiveDays = selectedDayLoadedTradeCount !== null ? (selectedDayLoadedTradeCount > 0 ? 1 : 0) : summary.active_days;
+  const displayAvgTradesPerDay = selectedDayLoadedTradeCount !== null ? selectedDayLoadedTradeCount : summary.avg_trades_per_day;
+  const dashboardPnlCalendarDays = useMemo(
+    () =>
+      selectedDayLoadedTradeCount === null || !selectedTradeDate
+        ? rawDashboardPnlCalendarDays
+        : rawDashboardPnlCalendarDays.map((day) =>
+            day.date === selectedTradeDate
+              ? {
+                  ...day,
+                  trade_count: selectedDayLoadedTradeCount,
+                }
+              : day,
+          ),
+    [rawDashboardPnlCalendarDays, selectedDayLoadedTradeCount, selectedTradeDate],
+  );
+  const analyticsPnlCalendarDays = useMemo(
+    () =>
+      selectedTradeDate
+        ? dashboardPnlCalendarDays.filter((day) => day.date === selectedTradeDate)
+        : dashboardPnlCalendarDays,
+    [dashboardPnlCalendarDays, selectedTradeDate],
+  );
+  const analyticsSummary = useMemo(
+    () =>
+      selectedDayLoadedTradeCount === null
+        ? dashboardSummary
+        : {
+            ...dashboardSummary,
+            trade_count: displayTradeCount,
+            active_days: displayActiveDays,
+            avg_trades_per_day: displayAvgTradesPerDay,
+          },
+    [dashboardSummary, displayActiveDays, displayAvgTradesPerDay, displayTradeCount, selectedDayLoadedTradeCount],
+  );
 
   const directionDataIssue = metricsTradesLoading
     ? "Loading directional trade history."
@@ -1090,18 +1158,18 @@ export function DashboardPage() {
       : null;
 
   const hasCompleteDirectionalHistory =
-    !metricsTradesLoading && !metricsTradesError && summary.trade_count <= metricsTrades.length;
+    !metricsTradesLoading && !metricsTradesError && displayTradeCount <= metricsTrades.length;
 
   const derivedMetrics = useMemo(
     () =>
       computeDashboardDerivedMetrics({
-        summary: dashboardSummary,
+        summary: analyticsSummary,
         trades: metricsTrades,
-        dailyPnlDays: dashboardPnlCalendarDays,
+        dailyPnlDays: analyticsPnlCalendarDays,
         hasCompleteDirectionalHistory,
         directionDataIssue,
       }),
-    [dashboardPnlCalendarDays, dashboardSummary, directionDataIssue, hasCompleteDirectionalHistory, metricsTrades],
+    [analyticsPnlCalendarDays, analyticsSummary, directionDataIssue, hasCompleteDirectionalHistory, metricsTrades],
   );
 
   const netPnlMetric = useMemo<MetricValue>(() => ({ value: dashboardSummary.net_pnl }), [dashboardSummary.net_pnl]);
@@ -1256,10 +1324,10 @@ export function DashboardPage() {
   );
   const sustainabilityDailyNetPnl = useMemo(
     () =>
-      dashboardPnlCalendarDays
+      analyticsPnlCalendarDays
         .map((day) => day.net_pnl)
         .filter((value) => Number.isFinite(value)),
-    [dashboardPnlCalendarDays],
+    [analyticsPnlCalendarDays],
   );
   const accountRiskRule = useMemo(() => {
     if (!selectedAccount) {
@@ -1404,62 +1472,66 @@ export function DashboardPage() {
   const activityMetrics = useMemo(
     () =>
       computeActivityMetrics({
-        totalTrades: summary.trade_count,
-        activeDays: summary.active_days,
-        dailyPnlDays: dashboardPnlCalendarDays,
-        rangeStart: metricsRangeQuery.start,
-        rangeEnd: metricsRangeQuery.end,
+        totalTrades: displayTradeCount,
+        activeDays: displayActiveDays,
+        dailyPnlDays: analyticsPnlCalendarDays,
+        rangeStart: analyticsRangeQuery.start,
+        rangeEnd: analyticsRangeQuery.end,
       }),
-    [dashboardPnlCalendarDays, metricsRangeQuery.end, metricsRangeQuery.start, summary.active_days, summary.trade_count],
+    [analyticsPnlCalendarDays, analyticsRangeQuery.end, analyticsRangeQuery.start, displayActiveDays, displayTradeCount],
   );
+  const activityWeeklyPace = selectedTradeDate ? null : activityMetrics.tradesPerWeek;
   const activitySignalVariant =
-    activityMetrics.tradesPerWeek === null
+    selectedTradeDate
+      ? "accent"
+      : activityWeeklyPace === null
       ? "neutral"
-      : activityMetrics.tradesPerWeek >= 30
+      : activityWeeklyPace >= 30
         ? "warning"
-        : activityMetrics.tradesPerWeek >= 15
+        : activityWeeklyPace >= 15
           ? "accent"
           : "positive";
   const activitySignalLabel =
-    activityMetrics.tradesPerWeek === null
+    selectedTradeDate
+      ? "Day Filter"
+      : activityWeeklyPace === null
       ? "Awaiting Pace Data"
-      : activityMetrics.tradesPerWeek >= 30
+      : activityWeeklyPace >= 30
         ? "High Tempo"
-        : activityMetrics.tradesPerWeek >= 15
+        : activityWeeklyPace >= 15
           ? "Balanced Tempo"
           : "Selective Tempo";
   const activityAccentClassName =
-    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+    activityWeeklyPace === null || activityWeeklyPace < 30
       ? "bg-gradient-to-r from-app-muted/60 via-app-accent/20 to-transparent"
       : "bg-gradient-to-r from-app-warning/70 via-app-warning/20 to-transparent";
   const activityPrimaryClassName =
-    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+    activityWeeklyPace === null || activityWeeklyPace < 30
       ? "bg-gradient-to-r from-app-accent via-app-text to-app-accent bg-clip-text text-transparent"
       : "bg-gradient-to-r from-app-warning via-app-warning to-app-warning bg-clip-text text-transparent";
   const activityCardClassName =
-    activityMetrics.tradesPerWeek === null || activityMetrics.tradesPerWeek < 30
+    activityWeeklyPace === null || activityWeeklyPace < 30
       ? "border-app-border-strong/60 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-muted)/0.16),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]"
       : "border-app-warning/25 bg-[radial-gradient(150%_120%_at_0%_0%,rgb(var(--theme-warning)/0.15),rgb(var(--theme-surface)/0.58)_46%,rgb(var(--theme-surface)/0.9)_100%)]";
-  const activityPacePercent =
-    activityMetrics.tradesPerWeek === null ? 0 : Math.min(100, Math.max(0, (activityMetrics.tradesPerWeek / 30) * 100));
+  const activityPacePercent = activityWeeklyPace === null ? 0 : Math.min(100, Math.max(0, (activityWeeklyPace / 30) * 100));
   const fullStatsRangeLabel = useMemo(() => {
-    if (metricsRangeQuery.start && metricsRangeQuery.end) {
-      return formatFullStatsRangeLabel(tradingDayKey(metricsRangeQuery.start), tradingDayKey(metricsRangeQuery.end));
+    if (analyticsRangeQuery.start && analyticsRangeQuery.end) {
+      return formatFullStatsRangeLabel(tradingDayKey(analyticsRangeQuery.start), tradingDayKey(analyticsRangeQuery.end));
     }
 
-    if (dashboardPnlCalendarDays.length > 0) {
-      const orderedDays = [...dashboardPnlCalendarDays].sort((left, right) => left.date.localeCompare(right.date));
+    if (analyticsPnlCalendarDays.length > 0) {
+      const orderedDays = [...analyticsPnlCalendarDays].sort((left, right) => left.date.localeCompare(right.date));
       return formatFullStatsRangeLabel(orderedDays[0].date, orderedDays[orderedDays.length - 1].date);
     }
 
     return "selected range";
-  }, [dashboardPnlCalendarDays, metricsRangeQuery.end, metricsRangeQuery.start]);
+  }, [analyticsPnlCalendarDays, analyticsRangeQuery.end, analyticsRangeQuery.start]);
   const recentTrades = trades;
   const recentTradesLoading = tradesLoading;
   const recentTradesError = tradesError;
   const copyFullStatsMetrics = useMemo<CopyFullStatsMetrics>(
     () => ({
-      summary: dashboardSummary,
+      summary: analyticsSummary,
       performance: {
         netPnl: netPnlMetric,
         profitPerDay: profitPerDayMetric,
@@ -1595,7 +1667,7 @@ export function DashboardPage() {
       pointPayoffByBasis,
       profitPerDayMetric,
       dashboardCurrentBalance,
-      dashboardSummary,
+      analyticsSummary,
       stabilityScore,
       summary,
       sustainability,
@@ -1860,7 +1932,7 @@ export function DashboardPage() {
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
                 rangeLabel={fullStatsRangeLabel}
-                calendarDays={dashboardPnlCalendarDays}
+                calendarDays={analyticsPnlCalendarDays}
                 disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
                 className="h-8 w-full rounded-lg px-2.5 text-[11px] sm:w-auto"
               />
@@ -1932,7 +2004,7 @@ export function DashboardPage() {
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={performanceSignalVariant}>{performanceSignalLabel}</Badge>
                   <Badge variant="accent">
-                    {copyTradeStatsActive ? `${formatInteger(copyTradeTotals.activeCopiedAccountCount)} Accounts` : `${formatInteger(summary.trade_count)} Trades`}
+                    {copyTradeStatsActive ? `${formatInteger(copyTradeTotals.activeCopiedAccountCount)} Accounts` : `${formatInteger(displayTradeCount)} Trades`}
                   </Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
                     {copyTradeStatsActive ? `Leader ${formatPnl(copyTradeTotals.leaderNetPnl)}` : `Win ${formatPercent(summary.win_rate, 1)}`}
@@ -2508,7 +2580,7 @@ export function DashboardPage() {
 
             <MetricCard
               title="Activity"
-              primaryValue={formatInteger(summary.trade_count)}
+              primaryValue={formatInteger(displayTradeCount)}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", activityPrimaryClassName)}
               subtitle="Closed trades in this range."
               info="Activity normalizes execution count by active trading days."
@@ -2523,22 +2595,22 @@ export function DashboardPage() {
                 aria-hidden="true"
                 className={cn(
                   "pointer-events-none absolute -right-10 -top-8 h-24 w-24 rounded-full blur-3xl",
-                  activityMetrics.tradesPerWeek !== null && activityMetrics.tradesPerWeek >= 30 ? "bg-app-warning/20" : "bg-app-accent/20",
+                  activityWeeklyPace !== null && activityWeeklyPace >= 30 ? "bg-app-warning/20" : "bg-app-accent/20",
                 )}
               />
               <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={activitySignalVariant}>{activitySignalLabel}</Badge>
-                  <Badge variant="accent">{`${formatInteger(summary.active_days)} Active Days`}</Badge>
+                  <Badge variant="accent">{`${formatInteger(displayActiveDays)} Active Days`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    {`Avg ${formatNumber(summary.avg_trades_per_day, 1)} / day`}
+                    {`Avg ${formatNumber(displayAvgTradesPerDay, 1)} / day`}
                   </span>
                 </div>
                 <div className="mt-2.5 space-y-1.5">
                   <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    <span>Pacing vs 30 Trades/Week</span>
+                    <span>{selectedTradeDate ? "Selected Day Count" : "Weekly Pacing"}</span>
                     <span className="font-semibold text-app-text-soft">
-                      {activityMetrics.tradesPerWeek === null ? "N/A" : formatNumber(activityMetrics.tradesPerWeek, 1)}
+                      {selectedTradeDate ? formatInteger(displayTradeCount) : activityWeeklyPace === null ? "N/A" : formatNumber(activityWeeklyPace, 1)}
                     </span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
@@ -2568,11 +2640,11 @@ export function DashboardPage() {
                   },
                   {
                     label: "Trades/week",
-                    value: activityMetrics.tradesPerWeek === null ? "N/A" : formatNumber(activityMetrics.tradesPerWeek, 1),
+                    value: activityWeeklyPace === null ? "N/A" : formatNumber(activityWeeklyPace, 1),
                   },
                   {
                     label: "Days/week",
-                    value: activityMetrics.activeDaysPerWeek === null ? "N/A" : formatNumber(activityMetrics.activeDaysPerWeek, 1),
+                    value: selectedTradeDate || activityMetrics.activeDaysPerWeek === null ? "N/A" : formatNumber(activityMetrics.activeDaysPerWeek, 1),
                   },
                   {
                     label: "Trades/active hr",

@@ -361,6 +361,8 @@ export function combineCopyTradePnlCalendarDays(
   calendarDaysByAccountId: Record<number, AccountPnlCalendarDay[] | undefined>,
 ): AccountPnlCalendarDay[] {
   const byDate = new Map<string, AccountPnlCalendarDay>();
+  const leaderAccountId =
+    rows.find((row) => row.role === "Leader" && row.accountId !== null && getExclusionReason(row) === null)?.accountId ?? null;
 
   rows.forEach((row) => {
     if (row.accountId === null || getExclusionReason(row) !== null) {
@@ -379,7 +381,9 @@ export function combineCopyTradePnlCalendarDays(
           net_pnl: 0,
         } satisfies AccountPnlCalendarDay);
 
-      current.trade_count += day.trade_count;
+      if (row.accountId === leaderAccountId) {
+        current.trade_count = day.trade_count;
+      }
       current.gross_pnl += day.gross_pnl;
       current.fees += day.fees;
       current.net_pnl += day.net_pnl;

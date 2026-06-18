@@ -298,7 +298,7 @@ describe("getCopyTradeRosterAccountIds", () => {
 });
 
 describe("combineCopyTradePnlCalendarDays", () => {
-  it("combines only included account calendar days one-to-one", () => {
+  it("combines PnL across included accounts while keeping leader trade counts", () => {
     const days = combineCopyTradePnlCalendarDays(
       [
         row({ accountId: 1, role: "Leader" }),
@@ -321,10 +321,39 @@ describe("combineCopyTradePnlCalendarDays", () => {
     expect(days).toEqual([
       {
         date: "2026-05-28",
-        trade_count: 2,
+        trade_count: 1,
         gross_pnl: 620,
         fees: 20,
         net_pnl: 600,
+      },
+    ]);
+  });
+
+  it("does not multiply copied trade counts across followers", () => {
+    const rows = [
+      row({ accountId: 1, role: "Leader" }),
+      row({ accountId: 2 }),
+      row({ accountId: 3 }),
+      row({ accountId: 4 }),
+      row({ accountId: 5 }),
+    ];
+    const copiedDay = { date: "2026-06-18", trade_count: 6, gross_pnl: 100, fees: 5, net_pnl: 95 };
+
+    const days = combineCopyTradePnlCalendarDays(rows, {
+      1: [copiedDay],
+      2: [copiedDay],
+      3: [copiedDay],
+      4: [copiedDay],
+      5: [copiedDay],
+    });
+
+    expect(days).toEqual([
+      {
+        date: "2026-06-18",
+        trade_count: 6,
+        gross_pnl: 500,
+        fees: 25,
+        net_pnl: 475,
       },
     ]);
   });

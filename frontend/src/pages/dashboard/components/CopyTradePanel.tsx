@@ -88,8 +88,9 @@ export function CopyTradePanel({
     leaderAccountId,
     expanded: selectedFollowerCount === 0,
   }));
-  const cappedWarnings = totals.warnings.slice(0, 3);
-  const remainingWarningCount = Math.max(0, totals.warnings.length - cappedWarnings.length);
+  const visibleWarnings = loading ? [] : totals.warnings;
+  const cappedWarnings = visibleWarnings.slice(0, 3);
+  const remainingWarningCount = Math.max(0, visibleWarnings.length - cappedWarnings.length);
   const driftResetLabel = formatResetTime(driftResetAt);
   const selectedFollowerIds = useMemo(() => new Set(selectedFollowerAccountIds), [selectedFollowerAccountIds]);
   const followerCandidates = accounts.filter(
