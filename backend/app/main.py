@@ -83,7 +83,7 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Expense, Payout, ProjectXTradeEvent, Trade
+from .models import Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
@@ -183,6 +183,7 @@ from .services.bot_service import (
     list_bot_configs,
     market_candle_cache_covers_request,
     market_candle_cache_needs_refresh,
+    market_candle_rows_are_stale,
     next_market_candle_fetch_start,
     prune_market_candle_cache_range,
     resolve_market_contract,
@@ -1118,6 +1119,7 @@ def get_projectx_market_candles(
     user_id = get_authenticated_user_id()
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
     start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
+    requested_symbol = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
     _validate_time_range(start=start_utc, end=end_utc)
 
     fallback_candles = []
@@ -1161,7 +1163,7 @@ def get_projectx_market_candles(
         resolved_contract_id, resolved_symbol = resolve_market_contract(
             client,
             contract_id=contract_id,
-            symbol=symbol,
+            symbol=requested_symbol,
             live=live,
         )
         if resolved_contract_id != contract_id:
@@ -1214,34 +1216,39 @@ def get_projectx_market_candles(
             if fetch_start_utc > end_utc:
                 return [serialize_market_candle(row) for row in cached_candles]
 
-        candles = fetch_and_store_market_candles(
-            db,
-            user_id=user_id,
-            client=client,
-            contract_id=resolved_contract_id,
-            symbol=resolved_symbol,
-            live=live,
-            start=fetch_start_utc,
+        active_lookup_symbol = requested_symbol or resolved_symbol
+        active_contract_fallback_attempted = False
+        active_contract_lookup_attempted = False
+        candles: list[ProjectXMarketCandle] = []
+        if _should_fetch_active_symbol_contract_first(
+            current_contract_id=resolved_contract_id,
+            lookup_symbol=active_lookup_symbol,
             end=end_utc,
-            unit=unit,
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=include_partial_bar,
-        )
-        if not candles and symbol and _looks_like_projectx_contract_id(resolved_contract_id):
-            symbol_contract_id, symbol_resolved_symbol = resolve_market_contract(
-                client,
-                contract_id=symbol,
-                symbol=symbol,
+        ):
+            active_contract_lookup_attempted = True
+            candles = _fetch_active_symbol_market_candles(
+                db,
+                user_id=user_id,
+                client=client,
+                current_contract_id=resolved_contract_id,
+                lookup_symbol=active_lookup_symbol,
                 live=live,
+                start=fetch_start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
             )
-            if symbol_contract_id != resolved_contract_id:
+
+        if not candles:
+            try:
                 candles = fetch_and_store_market_candles(
                     db,
                     user_id=user_id,
                     client=client,
-                    contract_id=symbol_contract_id,
-                    symbol=symbol_resolved_symbol,
+                    contract_id=resolved_contract_id,
+                    symbol=resolved_symbol,
                     live=live,
                     start=fetch_start_utc,
                     end=end_utc,
@@ -1250,8 +1257,61 @@ def get_projectx_market_candles(
                     limit=limit,
                     include_partial_bar=include_partial_bar,
                 )
+            except ProjectXClientError:
+                active_contract_fallback_attempted = True
+                active_candles = []
+                if not active_contract_lookup_attempted:
+                    active_candles = _fetch_active_symbol_market_candles(
+                        db,
+                        user_id=user_id,
+                        client=client,
+                        current_contract_id=resolved_contract_id,
+                        lookup_symbol=active_lookup_symbol,
+                        live=live,
+                        start=fetch_start_utc,
+                        end=end_utc,
+                        unit=unit,
+                        unit_number=unit_number,
+                        limit=limit,
+                        include_partial_bar=include_partial_bar,
+                    )
+                if not active_candles:
+                    raise
+                candles = active_candles
+
+        if (
+            active_lookup_symbol
+            and not active_contract_fallback_attempted
+            and not active_contract_lookup_attempted
+            and _looks_like_projectx_contract_id(resolved_contract_id)
+            and market_candle_rows_are_stale(
+                candles,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                include_partial_bar=include_partial_bar,
+            )
+        ):
+            active_candles = _fetch_active_symbol_market_candles(
+                db,
+                user_id=user_id,
+                client=client,
+                current_contract_id=resolved_contract_id,
+                lookup_symbol=active_lookup_symbol,
+                live=live,
+                start=fetch_start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            )
+            if _market_candle_rows_have_newer_tail(active_candles, candles):
+                candles = active_candles
+
+        response_contract_id = str(candles[-1].contract_id) if candles else resolved_contract_id
         if refresh and not include_partial_bar:
-            prune_contract_id = str(candles[0].contract_id) if candles else resolved_contract_id
+            prune_contract_id = response_contract_id
             prune_market_candle_cache_range(
                 db,
                 user_id=user_id,
@@ -1268,7 +1328,7 @@ def get_projectx_market_candles(
             combined_candles = list_market_candles(
                 db,
                 user_id=user_id,
-                contract_id=resolved_contract_id,
+                contract_id=response_contract_id,
                 live=live,
                 start=start_utc,
                 end=end_utc,
@@ -1291,6 +1351,111 @@ def get_projectx_market_candles(
         db.rollback()
         raise
     return [serialize_market_candle(row) for row in candles]
+
+
+def _should_fetch_active_symbol_contract_first(
+    *,
+    current_contract_id: str,
+    lookup_symbol: str | None,
+    end: datetime,
+) -> bool:
+    if not lookup_symbol or not _looks_like_projectx_contract_id(current_contract_id):
+        return False
+
+    # Initial chart loads always ask for a window ending at "now"; try the
+    # active symbol contract first so an expired saved futures contract cannot
+    # hold the page in a slow history request.
+    return _as_utc(end) >= datetime.now(timezone.utc) - timedelta(days=1)
+
+
+def _fetch_active_symbol_market_candles(
+    db: Session,
+    *,
+    user_id: str,
+    client: ProjectXClient,
+    current_contract_id: str,
+    lookup_symbol: str | None,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+    include_partial_bar: bool,
+) -> list[ProjectXMarketCandle]:
+    normalized_symbol = str(lookup_symbol or "").strip()
+    if not normalized_symbol or not _looks_like_projectx_contract_id(current_contract_id):
+        return []
+
+    symbol_contract_id: str | None = None
+    symbol_resolved_symbol: str | None = None
+    for candidate in _market_symbol_lookup_candidates(normalized_symbol):
+        resolved_contract_id, resolved_symbol = resolve_market_contract(
+            client,
+            contract_id=candidate,
+            symbol=normalized_symbol,
+            live=live,
+        )
+        if resolved_contract_id == current_contract_id:
+            return []
+        if not _looks_like_projectx_contract_id(resolved_contract_id):
+            continue
+        symbol_contract_id = resolved_contract_id
+        symbol_resolved_symbol = resolved_symbol
+        break
+
+    if symbol_contract_id is None:
+        return []
+
+    return fetch_and_store_market_candles(
+        db,
+        user_id=user_id,
+        client=client,
+        contract_id=symbol_contract_id,
+        symbol=symbol_resolved_symbol,
+        live=live,
+        start=start,
+        end=end,
+        unit=unit,
+        unit_number=unit_number,
+        limit=limit,
+        include_partial_bar=include_partial_bar,
+    )
+
+
+def _market_symbol_lookup_candidates(symbol: str) -> list[str]:
+    normalized_symbol = symbol.strip()
+    candidates = [normalized_symbol]
+    if "." in normalized_symbol:
+        candidates.append(normalized_symbol.rsplit(".", 1)[-1])
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        value = candidate.strip()
+        key = value.upper()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        output.append(value)
+    return output
+
+
+def _market_candle_rows_have_newer_tail(
+    candidate: list[ProjectXMarketCandle],
+    current: list[ProjectXMarketCandle],
+) -> bool:
+    candidate_latest = _latest_market_candle_timestamp(candidate)
+    if candidate_latest is None:
+        return False
+
+    current_latest = _latest_market_candle_timestamp(current)
+    return current_latest is None or candidate_latest > current_latest
+
+
+def _latest_market_candle_timestamp(candles: list[ProjectXMarketCandle]) -> datetime | None:
+    timestamps = [_as_utc(row.candle_timestamp) for row in candles]
+    return max(timestamps) if timestamps else None
 
 
 @app.get("/api/projectx/market-price/stream")

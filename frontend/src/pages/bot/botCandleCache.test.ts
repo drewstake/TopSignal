@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBotCandleCacheKey, mergeMarketCandles, upsertMarketCandles } from "./botCandleCache";
+import { buildBotCandleCacheKey, filterMarketCandlesForWindow, mergeMarketCandles, upsertMarketCandles } from "./botCandleCache";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
 function candle(timestamp: string, close: number, overrides: Partial<ProjectXMarketCandle> = {}): ProjectXMarketCandle {
@@ -66,6 +66,33 @@ describe("mergeMarketCandles", () => {
       "2026-04-26T13:50:00Z",
     ]);
     expect(rows.map((row) => row.close)).toEqual([103, 102, 104]);
+  });
+});
+
+describe("filterMarketCandlesForWindow", () => {
+  it("drops cached candles outside the current chart query window", () => {
+    const rows = filterMarketCandlesForWindow(
+      [
+        candle("2026-06-10T14:00:00Z", 100),
+        candle("2026-06-25T14:00:00Z", 101),
+        candle("2026-06-25T14:05:00Z", 102),
+      ],
+      {
+        start: "2026-06-25T13:55:00.000Z",
+        end: "2026-06-25T14:05:00.000Z",
+      },
+    );
+
+    expect(rows.map((row) => row.timestamp)).toEqual(["2026-06-25T14:00:00Z", "2026-06-25T14:05:00Z"]);
+  });
+
+  it("returns no cached candles for an invalid query window", () => {
+    const rows = filterMarketCandlesForWindow([candle("2026-06-25T14:00:00Z", 101)], {
+      start: "2026-06-25T14:05:00.000Z",
+      end: "2026-06-25T14:00:00.000Z",
+    });
+
+    expect(rows).toEqual([]);
   });
 });
 

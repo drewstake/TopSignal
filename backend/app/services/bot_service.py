@@ -1730,16 +1730,40 @@ def market_candle_cache_needs_refresh(
     if not cached_candles:
         return True
 
+    if market_candle_rows_are_stale(
+        cached_candles,
+        end=end,
+        unit=unit,
+        unit_number=unit_number,
+        include_partial_bar=include_partial_bar,
+    ):
+        return True
+
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
     end_utc = _as_utc(end)
-    if include_partial_bar:
-        return latest_timestamp + interval <= end_utc
-    if latest_timestamp + interval + interval <= end_utc:
-        return True
     if latest_timestamp + interval <= end_utc:
         return _market_candle_tail_revalidation_due(cached_candles)
     return False
+
+
+def market_candle_rows_are_stale(
+    candles: list[ProjectXMarketCandle],
+    *,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    include_partial_bar: bool = False,
+) -> bool:
+    if not candles:
+        return True
+
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    latest_timestamp = max(_as_utc(row.candle_timestamp) for row in candles)
+    end_utc = _as_utc(end)
+    if include_partial_bar:
+        return latest_timestamp + interval <= end_utc
+    return latest_timestamp + interval + interval <= end_utc
 
 
 def market_candle_cache_covers_request(

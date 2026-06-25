@@ -26,7 +26,14 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { botsApi, streamProjectXMarketPrice } from "../../lib/api";
 import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
-import { buildBotCandleCacheKey, mergeMarketCandles, readBotCandleCache, upsertMarketCandles, writeBotCandleCache } from "./botCandleCache";
+import {
+  buildBotCandleCacheKey,
+  filterMarketCandlesForWindow,
+  mergeMarketCandles,
+  readBotCandleCache,
+  upsertMarketCandles,
+  writeBotCandleCache,
+} from "./botCandleCache";
 import {
   buildGapRangeKey,
   buildGapRepairWindows,
@@ -700,7 +707,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         unitNumber: chartConfig.timeframe_unit_number,
       });
       const cachedEntry = forceRefresh ? null : readBotCandleCache(cacheKey);
-      const cachedCandles = cachedEntry?.candles ?? [];
+      const cachedCandles = cachedEntry ? filterMarketCandlesForWindow(cachedEntry.candles, queryWindow) : [];
       const hydrateFromCache = shouldHydrateChartFromCache(cachedCandles.length, queryWindow.limit);
 
       if (cachedEntry && hydrateFromCache) {

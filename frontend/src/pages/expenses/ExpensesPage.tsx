@@ -39,19 +39,12 @@ import {
   type ExpenseStage,
 } from "../../lib/expensePresets";
 import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
+import { buildNetRangeOptions, formatLocalIsoDate, getEarliestIsoDate, type NetRangeOption } from "./expenseNetRanges";
 
 const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
 const PAYOUT_PAGE_SIZE = 50;
-const NET_RANGE_OPTIONS = [
-  { key: "one_month", label: "1 Month", months: 1 },
-  { key: "three_months", label: "3 Months", months: 3 },
-  { key: "six_months", label: "6 Months", months: 6 },
-  { key: "year_to_date", label: "YTD", months: null },
-  { key: "one_year", label: "1 Year", months: 12 },
-  { key: "all_time", label: "All Time", months: null },
-] as const;
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -76,36 +69,6 @@ function formatCategoryLabel(category: string) {
 
 function getTodayLocalIsoDate() {
   return formatLocalIsoDate(new Date());
-}
-
-function formatLocalIsoDate(date: Date) {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function subtractLocalMonths(date: Date, months: number) {
-  const target = new Date(date.getFullYear(), date.getMonth() - months, 1);
-  const lastDayOfTargetMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-  target.setDate(Math.min(date.getDate(), lastDayOfTargetMonth));
-  return target;
-}
-
-function getTrailingDateRange(months: number) {
-  const end = new Date();
-  return {
-    startDate: formatLocalIsoDate(subtractLocalMonths(end, months)),
-    endDate: formatLocalIsoDate(end),
-  };
-}
-
-function getYearToDateRange() {
-  const end = new Date();
-  return {
-    startDate: `${end.getFullYear()}-01-01`,
-    endDate: formatLocalIsoDate(end),
-  };
 }
 
 function parsePositiveInt(value: string) {
@@ -251,6 +214,29 @@ interface NetRangeSummary {
   payoutCount: number;
 }
 
+async function getOldestExpenseDate() {
+  const firstPage = await listExpenses({ limit: 1, offset: 0 });
+  if (firstPage.total === 0) {
+    return null;
+  }
+  const oldestPage = firstPage.total === 1 ? firstPage : await listExpenses({ limit: 1, offset: firstPage.total - 1 });
+  return oldestPage.items[0]?.expense_date ?? null;
+}
+
+async function getOldestPayoutDate() {
+  const firstPage = await listPayouts({ limit: 1, offset: 0 });
+  if (firstPage.total === 0) {
+    return null;
+  }
+  const oldestPage = firstPage.total === 1 ? firstPage : await listPayouts({ limit: 1, offset: firstPage.total - 1 });
+  return oldestPage.items[0]?.payout_date ?? null;
+}
+
+async function getFirstCashFlowDate() {
+  const [oldestExpenseDate, oldestPayoutDate] = await Promise.all([getOldestExpenseDate(), getOldestPayoutDate()]);
+  return getEarliestIsoDate([oldestExpenseDate, oldestPayoutDate]);
+}
+
 function buildInitialAddPayoutState(): AddPayoutState {
   return {
     payoutDate: getTodayLocalIsoDate(),
@@ -291,6 +277,7 @@ export function ExpensesPage() {
   const [payoutTotals, setPayoutTotals] = useState<PayoutTotals | null>(null);
   const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(false);
   const [payoutTotalsError, setPayoutTotalsError] = useState<string | null>(null);
+  const [netRangeOptions, setNetRangeOptions] = useState<NetRangeOption[]>(() => buildNetRangeOptions(null));
   const [netRanges, setNetRanges] = useState<NetRangeSummary[]>([]);
   const [netRangesLoading, setNetRangesLoading] = useState(false);
   const [netRangesError, setNetRangesError] = useState<string | null>(null);
@@ -373,13 +360,15 @@ export function ExpensesPage() {
     setNetRangesLoading(true);
     setNetRangesError(null);
     try {
+      const firstCashFlowDate = await getFirstCashFlowDate();
+      const nextNetRangeOptions = buildNetRangeOptions(firstCashFlowDate);
+      setNetRangeOptions(nextNetRangeOptions);
+
       const summaries = await Promise.all(
-        NET_RANGE_OPTIONS.map(async (option) => {
-          const dateRange =
-            option.months !== null ? getTrailingDateRange(option.months) : option.key === "year_to_date" ? getYearToDateRange() : {};
+        nextNetRangeOptions.map(async (option) => {
           const [expenseTotal, payoutTotal] = await Promise.all([
-            getExpenseTotals(TOTAL_RANGE, dateRange),
-            getPayoutTotals(dateRange),
+            getExpenseTotals(TOTAL_RANGE, option.dateRange),
+            getPayoutTotals(option.dateRange),
           ]);
 
           return {
@@ -846,7 +835,7 @@ export function ExpensesPage() {
 
             {netRangesError ? <p className="text-xs text-rose-300">{netRangesError}</p> : null}
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-              {NET_RANGE_OPTIONS.map((option) => {
+              {netRangeOptions.map((option) => {
                 const summary = netRanges.find((item) => item.key === option.key);
                 return (
                   <div key={option.key} className="rounded-md border border-slate-800/80 bg-slate-950/40 p-3">

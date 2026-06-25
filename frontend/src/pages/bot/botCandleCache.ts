@@ -15,6 +15,11 @@ interface BotCandleCachePayload {
   candles: ProjectXMarketCandle[];
 }
 
+interface CandleQueryWindow {
+  start: string;
+  end: string;
+}
+
 export interface BotCandleCacheEntry {
   savedAt: Date | null;
   candles: ProjectXMarketCandle[];
@@ -99,6 +104,27 @@ export function mergeMarketCandles(
     byTimestamp.set(candle.timestamp, candle);
   }
   return trimCandlesForCache(Array.from(byTimestamp.values()), limit);
+}
+
+export function filterMarketCandlesForWindow(
+  candles: ProjectXMarketCandle[],
+  window: CandleQueryWindow,
+): ProjectXMarketCandle[] {
+  const startMs = Date.parse(window.start);
+  const endMs = Date.parse(window.end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+    return [];
+  }
+
+  return candles
+    .filter((candle) => {
+      if (!isCachedMarketCandle(candle)) {
+        return false;
+      }
+      const timestampMs = Date.parse(candle.timestamp);
+      return timestampMs >= startMs && timestampMs <= endMs;
+    })
+    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
 }
 
 /**
