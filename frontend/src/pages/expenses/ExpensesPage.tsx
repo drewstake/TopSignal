@@ -60,6 +60,14 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+function formatRecordDate(isoDate: string) {
+  return dateFormatter.format(new Date(`${isoDate}T00:00:00.000Z`));
+}
+
+function formatExpenseCount(count: number) {
+  return `${count.toLocaleString("en-US")} expense${count === 1 ? "" : "s"}`;
+}
+
 function formatCategoryLabel(category: string) {
   return category
     .split("_")
@@ -214,6 +222,13 @@ interface NetRangeSummary {
   payoutCount: number;
 }
 
+interface SpendSinceLastPayoutSummary {
+  lastPayoutDate: string | null;
+  totalAmount: number;
+  totalAmountCents: number;
+  expenseCount: number;
+}
+
 async function getOldestExpenseDate() {
   const firstPage = await listExpenses({ limit: 1, offset: 0 });
   if (firstPage.total === 0) {
@@ -277,6 +292,9 @@ export function ExpensesPage() {
   const [payoutTotals, setPayoutTotals] = useState<PayoutTotals | null>(null);
   const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(false);
   const [payoutTotalsError, setPayoutTotalsError] = useState<string | null>(null);
+  const [spendSinceLastPayout, setSpendSinceLastPayout] = useState<SpendSinceLastPayoutSummary | null>(null);
+  const [spendSinceLastPayoutLoading, setSpendSinceLastPayoutLoading] = useState(false);
+  const [spendSinceLastPayoutError, setSpendSinceLastPayoutError] = useState<string | null>(null);
   const [netRangeOptions, setNetRangeOptions] = useState<NetRangeOption[]>(() => buildNetRangeOptions(null));
   const [netRanges, setNetRanges] = useState<NetRangeSummary[]>([]);
   const [netRangesLoading, setNetRangesLoading] = useState(false);
@@ -353,6 +371,31 @@ export function ExpensesPage() {
       setPayoutTotalsError(err instanceof Error ? err.message : "Failed to load payout totals");
     } finally {
       setPayoutTotalsLoading(false);
+    }
+  }, []);
+
+  const loadSpendSinceLastPayout = useCallback(async () => {
+    setSpendSinceLastPayoutLoading(true);
+    setSpendSinceLastPayoutError(null);
+    try {
+      const latestPayoutPage = await listPayouts({ limit: 1, offset: 0 });
+      const lastPayoutDate = latestPayoutPage.items[0]?.payout_date ?? null;
+      const expenseTotals = await getExpenseTotals(
+        TOTAL_RANGE,
+        lastPayoutDate === null ? {} : { startDate: lastPayoutDate },
+      );
+
+      setSpendSinceLastPayout({
+        lastPayoutDate,
+        totalAmount: expenseTotals.total_amount,
+        totalAmountCents: expenseTotals.total_amount_cents,
+        expenseCount: expenseTotals.count,
+      });
+    } catch (err) {
+      setSpendSinceLastPayout(null);
+      setSpendSinceLastPayoutError(err instanceof Error ? err.message : "Failed to load spend since last payout");
+    } finally {
+      setSpendSinceLastPayoutLoading(false);
     }
   }, []);
 
@@ -560,7 +603,7 @@ export function ExpensesPage() {
         }
 
         if (didMutateExpenses) {
-          await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
+          await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
         }
 
         const failedCount = failedCreateCount + failedDeleteCount;
@@ -578,7 +621,7 @@ export function ExpensesPage() {
       setCombineSpendSnapshot(nextSnapshot);
       setCombineTrackerLoading(false);
     }
-  }, [listAllCombineRelevantExpenses, loadExpenses, loadNetRanges, loadTotals]);
+  }, [listAllCombineRelevantExpenses, loadExpenses, loadNetRanges, loadSpendSinceLastPayout, loadTotals]);
 
   useEffect(() => {
     void loadExpenses();
@@ -595,6 +638,10 @@ export function ExpensesPage() {
   useEffect(() => {
     void loadPayoutTotals();
   }, [loadPayoutTotals]);
+
+  useEffect(() => {
+    void loadSpendSinceLastPayout();
+  }, [loadSpendSinceLastPayout]);
 
   useEffect(() => {
     void loadNetRanges();
@@ -671,7 +718,7 @@ export function ExpensesPage() {
       if (isAutoTrackedCombineExpense(expense) && expense.account_id !== null) {
         setCombineSpendSnapshot(suppressEvaluationExpenseSync([expense.account_id]));
       }
-      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
+      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
       if (
         !isAutoTrackedCombineExpense(expense) &&
         (expense.category === "evaluation_fee" || expense.category === "activation_fee")
@@ -691,7 +738,7 @@ export function ExpensesPage() {
 
     try {
       await deletePayout(payout.id);
-      await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges()]);
+      await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
     } catch (err) {
       setPayoutError(err instanceof Error ? err.message : "Failed to delete payout");
     }
@@ -736,7 +783,7 @@ export function ExpensesPage() {
       });
 
       setAddOpen(false);
-      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges()]);
+      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
       if (addState.stage === "evaluation_fee" || addState.stage === "activation_fee") {
         await syncCombineTracker();
       }
@@ -777,9 +824,9 @@ export function ExpensesPage() {
       setAddPayoutOpen(false);
       if (payoutOffset !== 0) {
         setPayoutOffset(0);
-        await Promise.all([loadPayoutTotals(), loadNetRanges()]);
+        await Promise.all([loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
       } else {
-        await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges()]);
+        await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
       }
     } catch (err) {
       setAddPayoutError(err instanceof Error ? err.message : "Failed to create payout");
@@ -793,7 +840,7 @@ export function ExpensesPage() {
       <section className="grid gap-3">
         <Card>
           <CardContent className="space-y-5">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+            <div className="grid gap-5 lg:grid-cols-3">
               <div className="space-y-3">
                 <div>
                   <CardDescription>Recorded spend</CardDescription>
@@ -810,6 +857,32 @@ export function ExpensesPage() {
                   </Button>
                 </div>
                 {combineTrackerError ? <p className="text-xs text-rose-300">{combineTrackerError}</p> : null}
+              </div>
+
+              <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+                <div>
+                  <CardDescription>Spend since last payout</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {spendSinceLastPayoutLoading || !spendSinceLastPayout
+                      ? "..."
+                      : currencyFormatter.format(spendSinceLastPayout.totalAmount)}
+                  </CardTitle>
+                </div>
+                {spendSinceLastPayoutError ? (
+                  <p className="text-xs text-rose-300">{spendSinceLastPayoutError}</p>
+                ) : (
+                  <p className="text-xs text-slate-400">
+                    {spendSinceLastPayoutLoading || !spendSinceLastPayout
+                      ? "Calculating spend..."
+                      : spendSinceLastPayout.lastPayoutDate
+                        ? `${formatExpenseCount(spendSinceLastPayout.expenseCount)} from ${formatRecordDate(
+                            spendSinceLastPayout.lastPayoutDate,
+                          )} forward.`
+                        : `No payouts recorded; showing all recorded spend (${formatExpenseCount(
+                            spendSinceLastPayout.expenseCount,
+                          )}).`}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
@@ -834,7 +907,7 @@ export function ExpensesPage() {
             </div>
 
             {netRangesError ? <p className="text-xs text-rose-300">{netRangesError}</p> : null}
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               {netRangeOptions.map((option) => {
                 const summary = netRanges.find((item) => item.key === option.key);
                 return (
