@@ -38,12 +38,13 @@ Core features in the current routed app:
 - Local account display-name overrides
 - Manual trade sync from ProjectX
 - Account-level performance summaries
+- Analytics-only Copy Trade Mode for combined leader/follower dashboard views
 - Trading-day PnL calendar
 - Trade event feed with lifecycle-derived entry/exit fields
-- Expense CRUD and totals
-- Payout tracking and payout totals
+- Expense CRUD, spend summaries, and payout-minus-spend net ranges
+- Payout tracking, payout totals, and spend-since-last-payout context
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
-- Trading bot configuration, dry-run execution controls, signal charting, and bot activity review
+- Trading bot configuration, dry-run execution controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
 - Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 
@@ -53,7 +54,9 @@ The screenshots below are representative local captures from the routed app. Acc
 
 ### Dashboard
 
-The dashboard is the main account analytics surface. It is account-scoped and shows:
+The dashboard is the main account analytics surface. It is account-scoped by default and can switch into an analytics-only Copy Trade Mode for combined leader/follower account review.
+
+It shows:
 
 - headline performance and edge metrics
 - drawdown and risk-control context
@@ -63,6 +66,7 @@ The dashboard is the main account analytics surface. It is account-scoped and sh
 - a trading-day PnL calendar
 - a daily account-balance curve derived from the calendar
 - a recent trade-event feed
+- optional combined copied-account stats for leader/follower workflows
 
 Dashboard overview:
 
@@ -88,6 +92,10 @@ Important dashboard behaviors:
 - Calendar days can open or create a journal entry for that date/account.
 - `Summary` opens a coach-style trading summary for the selected dashboard range, including verdict, sample quality, top levers, risks, improvements, and a short action plan.
 - `Copy Full Stats` copies a text payload for the selected dashboard range.
+- `Copy Trade Mode` can combine the selected leader account with up to four follower accounts for adjusted dashboard totals.
+- When Copy Trade Mode is active and calculable, headline metrics, daily PnL, balance context, and calendar data use combined leader/follower results. Otherwise the dashboard shows the selected account only.
+- Copy Trade Mode shows leader contribution, follower contribution, copied account count, follower-only PnL, warnings, and resettable likely-uncopy event tracking.
+- Copy Trade Mode settings and uncopy-event reset timestamps are stored in browser storage. This mode does not place orders or enable live trade copying.
 - The dashboard uses `summary-with-point-bases` so it can render one summary request plus point-payoff comparisons instead of fanning out multiple summary calls.
 
 ### Accounts
@@ -115,6 +123,8 @@ TopSignal tracks four account states:
 - `LOCKED_OUT`: account exists but cannot trade
 - `HIDDEN`: provider returned it as not visible
 - `MISSING`: previously seen, now absent from provider results after a buffer window
+
+Account selectors prioritize the main account inside account-type groups so Express, combine, other, and practice accounts are easier to scan during trading workflows.
 
 ### Trades
 
@@ -152,12 +162,16 @@ A user can:
 - optionally associate an expense with an account, plan size, and account type
 - record payouts separately from expenses
 - view payout totals, averages, and counts
+- see recorded spend, spend since the latest payout, and net after payouts
+- compare payout-minus-spend cards for 1 month, 3 months, 6 months, YTD, 1 year, anniversary years from the first cash-flow date, and all time
 
 The page also contains a combine spend helper that:
 
 - infers active combine accounts from account-name prefixes
 - keeps a client-side spend ledger in browser storage
 - can sync inferred evaluation purchases into the `expenses` table
+- reconciles generated rows with manually logged or imported combine expenses
+- prefers a manual combine expense over a generated row for the same account
 
 This combine tracker is implemented on the frontend and is not a standalone backend subsystem.
 
@@ -210,9 +224,15 @@ A user can:
 - set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
 - start a dry-run bot run, evaluate the strategy once, or stop the latest run
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
+- inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
+- review trade-plan grades when a strategy produces entry, stop, and target prices
 - inspect recent decisions, order attempts, risk events, and run history
 
-The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, strategy overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, and y-axis fit controls.
+The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, strategy overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, data-gap repair, and y-axis fit controls.
+
+The Analysis panel is generated from backend bot evaluation output when available. If backend analysis is missing but enough chart data is loaded, the UI can fall back to local chart-context analysis. The panel marks stale evaluations when newer bars have printed since the last run. Directional probabilities are heuristic scenario weights, not predictions or financial advice.
+
+When a strategy emits a complete trade idea, bot evaluation can attach a trade-plan readout with a 0-100 score, letter grade, `take`/`wait`/`avoid` decision, confidence, risk-reward context, trend alignment, stop/ATR context, positives, warnings, and suggested adjustments.
 
 Important bot behaviors:
 
@@ -220,7 +240,7 @@ Important bot behaviors:
 - New configurations default to dry-run mode and are saved disabled.
 - The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
-- Candle reads use ProjectX market-data endpoints and a small frontend candle cache for chart responsiveness.
+- Candle reads use ProjectX market-data endpoints, backend `projectx_market_candles` storage, and a small frontend candle cache for chart responsiveness.
 
 ### Themes
 
@@ -300,6 +320,7 @@ Important implementation detail:
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
 - ProjectX market candles are cached in `projectx_market_candles` for bot charting and replay-style reads.
+- Expense rows include `source_id` so imported or generated rows can be deduplicated by source identity without colliding with a manual row that has the same date, amount, category, and account fields.
 
 ### External Integrations
 
@@ -327,6 +348,7 @@ Important implementation detail:
 - `backend/app/main.py`: FastAPI app and route definitions
 - `backend/app/models.py`: SQLAlchemy models
 - `backend/app/bot_schemas.py`: bot API request/response schemas
+- `backend/app/trade_plan_schemas.py`: trade-plan evaluation request/response schemas
 - `backend/app/db.py`: engine/session setup and startup schema compatibility patches
 - `backend/app/auth.py`: auth middleware helpers and JWT validation
 - `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, streaming, and bot helpers
@@ -368,17 +390,18 @@ If local history already exists and the request does not specify a custom start:
 - the backend checks the earliest and latest local timestamps
 - it may backfill older history if the local earliest timestamp is newer than the configured lookback floor
 - it always adds an incremental sync window from `latest_local - 5 minutes` to `now`
+- it refreshes a recent trailing window controlled by `PROJECTX_RECENT_REFRESH_DAYS` so late provider changes can fill in updated PnL, fees, or lifecycle fields
 
 That five-minute overlap makes ingestion more robust around provider timing drift and duplicate delivery.
 
 #### Chunking and deduplication
 
-Trade history requests are chunked by `PROJECTX_SYNC_CHUNK_DAYS`. Ingested events are deduplicated by:
+Trade history requests are chunked by `PROJECTX_SYNC_CHUNK_DAYS` and paged by `PROJECTX_DAY_SYNC_LIMIT`. Ingested events are deduplicated by:
 
 - `(user_id, account_id, source_trade_id)` when the provider gives a stable execution ID
 - otherwise `(user_id, account_id, order_id, trade_timestamp)`
 
-Voided or canceled provider rows are ignored.
+Voided or canceled provider rows are ignored. Existing local rows can be updated when ProjectX later returns completed PnL, fee, or lifecycle fields for rows that were previously incomplete.
 
 #### Single-day cache behavior
 
@@ -388,7 +411,7 @@ For single-day trade-range requests, TopSignal uses `projectx_trade_day_syncs` t
 - yesterday: refresh only if missing, partial, stale, or explicitly requested
 - older days: use the local cache when the day was previously marked `complete`, unless explicitly refreshed
 
-This keeps normal navigation cheap while still handling late-arriving fills around today and yesterday.
+Repeated or truncated provider pages keep the day marked `partial` rather than `complete`, which lets later sync attempts repair the day. This keeps normal navigation cheap while still handling late-arriving fills around today and yesterday.
 
 ### 3. Trade Analytics Flow
 
@@ -455,11 +478,20 @@ Expenses are CRUD records in the `expenses` table. Totals are aggregated server-
 
 Payouts are stored separately in the `payouts` table and summarized through payout-specific endpoints.
 
+The Expenses page combines those two tables into cash-flow summaries:
+
+- recorded spend
+- spend since the latest recorded payout
+- net after payouts
+- payout-minus-spend ranges for fixed windows, anniversary years, and all time
+
 The combine spend helper is separate from core expense storage:
 
 - it lives in browser storage
 - it infers combine purchases from active account names
 - it can create missing evaluation-fee rows in the backend
+- it reconciles account-inferred purchases with expense-derived purchases
+- it uses `source_id` and tags to avoid duplicate imported or generated combine rows
 
 ### 6. Bot Flow
 
@@ -470,12 +502,21 @@ Typical bot workflow:
 1. the frontend loads selectable accounts and `GET /api/bots`
 2. the user searches ProjectX contracts and saves a named bot configuration
 3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
-4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision and persists it
+4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision, persists it, and returns market analysis plus optional trade-plan evaluation
 5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
 6. `POST /api/bots/{id}/stop` stops the latest running bot run
 7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
 
 Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
+
+Trade-plan evaluation is also exposed directly through `POST /api/trade-plan/evaluate`. It scores a proposed trade plan against market context and returns score, grade, `take`/`wait`/`avoid` decision, confidence, reasons, warnings, positives, suggested adjustments, feature values, and category scores.
+
+ProjectX market-data reads have two refresh modes:
+
+- `refresh=true` forces a provider read for the requested edge of the chart window
+- `repair=true` forces a full-window fetch so interior candle gaps can be filled
+
+If a provider fetch fails but cached candles cover the request, the backend can return cached candles as a fallback. The chart also uses `/api/projectx/market-price/stream` when the optional streaming runtime is enabled, while keeping REST candles as the canonical closed-bar source.
 
 ### 7. Frontend Caching
 
@@ -568,6 +609,10 @@ That starts:
 - backend on `http://localhost:8000`
 - frontend on `http://localhost:5173`
 
+`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently.
+
+`npm run dev:backend` loads `backend/.env` before starting Uvicorn and defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` for faster startup. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
+
 ### Environment Variables
 
 The repo-level `.env.example` is the source of truth for starter env profiles. Important variables include:
@@ -590,6 +635,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Allows env credentials as fallback in authenticated deployments |
 | `ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY` | Allows local-only encryption-key fallback |
 | `PROJECTX_INITIAL_LOOKBACK_DAYS` | First-sync history window |
+| `PROJECTX_RECENT_REFRESH_DAYS` | Recent trailing sync window used to catch late provider updates |
 | `PROJECTX_SYNC_CHUNK_DAYS` | Trade-sync chunk size |
 | `PROJECTX_DAY_SYNC_LIMIT` | Per-page trade-day fetch limit |
 | `PROJECTX_YESTERDAY_REFRESH_MINUTES` | Staleness threshold for yesterday refresh |
@@ -605,6 +651,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
+| `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
 | `SUPABASE_STORAGE_BUCKET` | Storage bucket for journal images |
