@@ -12,6 +12,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 import app.main as main_module
 from app.db import Base
 from app.main import (
+    get_projectx_account_pnl_calendar,
     get_projectx_account_summary,
     get_projectx_account_summary_with_point_bases,
     list_projectx_account_trades,
@@ -19,6 +20,9 @@ from app.main import (
 from app.models import Account, ProjectXTradeDaySync, ProjectXTradeEvent
 from app.services.projectx_client import ProjectXClientError
 from app.services.trading_day import trading_day_bounds_utc
+
+
+OTHER_USER_ID = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture()
@@ -218,6 +222,44 @@ def test_summary_refresh_raises_when_provider_sync_crashes(db_session, monkeypat
             refresh=True,
             db=db_session,
         )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "kwargs"),
+    [
+        (get_projectx_account_summary, {}),
+        (get_projectx_account_summary_with_point_bases, {}),
+        (get_projectx_account_pnl_calendar, {}),
+    ],
+)
+def test_projectx_metric_routes_require_owned_account_before_provider_sync(
+    db_session,
+    monkeypatch,
+    endpoint,
+    kwargs,
+):
+    account_id = 7311
+    db_session.add(
+        Account(
+            user_id=OTHER_USER_ID,
+            provider="projectx",
+            external_id=str(account_id),
+            account_state="ACTIVE",
+            is_main=False,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("provider should not be called")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        endpoint(account_id=account_id, refresh=True, db=db_session, **kwargs)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Account not found."
 
 
 def test_trades_endpoint_falls_back_to_local_for_missing_account_on_provider_404(db_session, monkeypatch):

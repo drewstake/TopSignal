@@ -2267,6 +2267,7 @@ def get_projectx_account_summary(
         normalized_points_basis = normalize_points_basis(raw_points_basis)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     try:
         _ensure_trade_cache_or_fallback(
@@ -2301,6 +2302,7 @@ def get_projectx_account_summary_with_point_bases(
     user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     point_bases = [normalize_points_basis(basis) for basis in POINTS_BASIS_SYMBOLS]
 
@@ -2347,6 +2349,7 @@ def get_projectx_account_pnl_calendar(
     _validate_time_range(start=start, end=end)
     if all_time and (start is not None or end is not None):
         raise HTTPException(status_code=400, detail="all_time cannot be combined with start/end")
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
 
     use_default_window = not all_time and start is None and end is None
     if all_time:

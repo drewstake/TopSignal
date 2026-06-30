@@ -1,9 +1,32 @@
 backend/.venv/
 backend/.env
+backend/.env.*
 frontend/node_modules/
 frontend/.env.local
 frontend/.env
+frontend/.env.*
 __pycache__/
 *.pyc
 
 node_modules/
+
+.env
+.env.*
+!.env.example
+
+# Local runtime data and private exports
+storage/
+backend/storage/
+journal_images/
+backend/journal_images/
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.dump
+*.bak
+*.backup
+*backup*.json
+*.xlsx
+*.xls
+*.pdf
