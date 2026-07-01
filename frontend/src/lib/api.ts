@@ -47,6 +47,7 @@ import type {
   ProjectXCredentialsStatus,
   BotActivity,
   BotBacktestInput,
+  BotBacktestJob,
   BotBacktestResult,
   BotConfig,
   BotConfigInput,
@@ -69,6 +70,7 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
+const BACKTEST_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -1096,6 +1098,25 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
+async function runBacktestRequest(botConfigId: number, payload: BotBacktestInput): Promise<BotBacktestResult> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), BACKTEST_REQUEST_TIMEOUT_MS);
+  try {
+    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+      method: "POST",
+      body: payload,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error("Backtest timed out after 5 minutes. Try again after the server finishes caching candles, or narrow the date range.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export const botsApi = {
   searchContracts: (query: ContractSearchQuery) =>
     requestJson<ProjectXContract[]>("/api/projectx/contracts/search", {
@@ -1151,11 +1172,13 @@ export const botsApi = {
       method: "POST",
       body: botStartPayload(options),
     }),
-  runBacktest: (botConfigId: number, payload: BotBacktestInput) =>
-    requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+  runBacktest: runBacktestRequest,
+  startBacktest: (botConfigId: number, payload: BotBacktestInput) =>
+    requestJson<BotBacktestJob>(`/api/bots/${botConfigId}/backtest/jobs`, {
       method: "POST",
       body: payload,
     }),
+  getBacktestJob: (jobId: string) => requestJson<BotBacktestJob>(`/api/bots/backtests/${jobId}`),
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",

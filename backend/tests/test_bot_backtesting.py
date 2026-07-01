@@ -9,7 +9,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
 from app.models import BotConfig, ProjectXMarketCandle
+from app.services.bot_service import SignalResult
 from app.services.bot_backtesting import run_bot_backtest
+import app.services.bot_backtesting as bot_backtesting_module
 
 
 USER_ID = "00000000-0000-0000-0000-000000000000"
@@ -94,8 +96,11 @@ def test_run_bot_backtest_replays_cached_candles_and_returns_stats():
     assert result["summary"]["win_rate"] == 100.0
     assert result["summary"]["gross_pnl"] == 8.0
     assert result["summary"]["net_pnl"] == 8.0
+    assert result["analysis"]["by_side"]["BUY"]["trade_count"] == 1
+    assert result["analysis"]["best_trade"]["duration_minutes"] > 0
     assert result["trades"][0]["side"] == "BUY"
     assert result["trades"][0]["exit_reason"] == "end_of_backtest"
+    assert "max_favorable_points" in result["trades"][0]
 
 
 def test_run_bot_backtest_default_start_uses_farthest_timeframe_window():
@@ -145,3 +150,61 @@ def test_run_bot_backtest_default_start_uses_farthest_timeframe_window():
 
     assert result["start"] == start
     assert result["candles_processed"] == 100
+
+
+def test_run_bot_backtest_skips_signal_evaluation_outside_session(monkeypatch):
+    db = _make_db()
+    start = datetime(2026, 3, 2, 12, 0, tzinfo=timezone.utc)
+    config = BotConfig(
+        user_id=USER_ID,
+        account_id=1,
+        name="MNQ Session Skip Backtest",
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id="CON.F.US.MNQ.M26",
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=2,
+        slow_period=3,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=0,
+        max_open_position=1,
+        allowed_contracts=["CON.F.US.MNQ.M26"],
+        trading_start_time="09:30",
+        trading_end_time="15:45",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=600,
+        allow_market_depth=False,
+    )
+    db.add(config)
+    db.flush()
+    for index in range(50):
+        db.add(_candle(start + timedelta(minutes=5 * index), 10.0))
+    db.commit()
+
+    evaluated_at: list[datetime] = []
+
+    def fake_evaluate_strategy_signal(*, candles, **_kwargs):
+        timestamp = candles[-1].candle_timestamp
+        evaluated_at.append(timestamp)
+        return SignalResult(action="HOLD", reason="test hold", candle_timestamp=timestamp, price=10.0, raw_payload={})
+
+    monkeypatch.setattr(bot_backtesting_module, "_evaluate_strategy_signal", fake_evaluate_strategy_signal)
+
+    result = run_bot_backtest(
+        db,
+        user_id=USER_ID,
+        config=config,
+        client=object(),
+        start=start,
+        end=start + timedelta(minutes=5 * 49),
+        limit=100,
+    )
+
+    assert result["signals_evaluated"] == len(evaluated_at)
+    assert 0 < len(evaluated_at) < result["candles_processed"] - 25
+    assert all(timestamp.hour >= 14 and timestamp.minute >= 30 or timestamp.hour > 14 for timestamp in evaluated_at)

@@ -948,6 +948,10 @@ export interface BotBacktestTrade {
   fees: number;
   points: number;
   signal_reason: string;
+  duration_minutes?: number;
+  bars_held?: number;
+  max_favorable_points?: number;
+  max_adverse_points?: number;
 }
 
 export interface BotBacktestSummary {
@@ -982,6 +986,37 @@ export interface BotBacktestDailyPnl {
   net_pnl: number;
 }
 
+export interface BotBacktestBreakdownStats {
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;
+  net_pnl: number;
+  gross_profit: number;
+  gross_loss: number;
+  profit_factor: number;
+  avg_pnl: number;
+  avg_win: number;
+  avg_loss: number;
+  avg_duration_minutes: number;
+  avg_mfe_points: number;
+  avg_mae_points: number;
+}
+
+export interface BotBacktestAnalysis {
+  signals_per_trade?: number;
+  avg_duration_minutes?: number;
+  avg_bars_held?: number;
+  avg_mfe_points?: number;
+  avg_mae_points?: number;
+  best_trade?: BotBacktestTrade | null;
+  worst_trade?: BotBacktestTrade | null;
+  best_day?: BotBacktestDailyPnl | null;
+  worst_day?: BotBacktestDailyPnl | null;
+  by_side?: Record<"BUY" | "SELL", BotBacktestBreakdownStats>;
+  by_exit_reason?: Record<string, BotBacktestBreakdownStats>;
+}
+
 export interface BotBacktestResult {
   bot_config_id: number;
   bot_name: string;
@@ -996,6 +1031,7 @@ export interface BotBacktestResult {
   point_value: number;
   assumptions: Record<string, string>;
   summary: BotBacktestSummary;
+  analysis?: BotBacktestAnalysis;
   daily_pnl: BotBacktestDailyPnl[];
   trades: BotBacktestTrade[];
 }
@@ -1004,6 +1040,19 @@ export interface BotBacktestInput {
   start?: string;
   end?: string;
   limit?: number;
+}
+
+export interface BotBacktestJob {
+  job_id: string;
+  bot_config_id: number;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  stage: string;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  error: string | null;
+  result: BotBacktestResult | null;
 }
 
 export interface BotRun {

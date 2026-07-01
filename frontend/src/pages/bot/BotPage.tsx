@@ -5,6 +5,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
+import { Progress } from "../../components/ui/Progress";
 import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
@@ -14,7 +15,11 @@ import { getDemoAccountId, getDemoAccountLabel } from "../../lib/demoMode";
 import type {
   AccountInfo,
   BotActivity,
+  BotBacktestBreakdownStats,
+  BotBacktestDailyPnl,
+  BotBacktestJob,
   BotBacktestResult,
+  BotBacktestTrade,
   BotConfig,
   BotEvaluation,
   BotLiquiditySweepTargetMode,
@@ -58,6 +63,7 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
   { value: "vwap_gap_retrace", label: "VWAP Gap Retrace" },
 ];
 const EASTERN_TIME_ZONE = "America/New_York";
+const BACKTEST_POLL_INTERVAL_MS = 1000;
 const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 const DONCHIAN_DEFAULTS = {
   entryPeriod: "20",
@@ -881,6 +887,39 @@ function formatPlainNumber(value: number | null | undefined, digits = 2) {
   });
 }
 
+function formatDurationMinutes(value: number | null | undefined) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (numeric < 60) {
+    return `${Math.round(numeric)}m`;
+  }
+  const hours = Math.floor(numeric / 60);
+  const minutes = Math.round(numeric % 60);
+  if (hours < 24) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+function formatExitReason(value: string) {
+  return value
+    .replaceAll("_", " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function formatPoints(value: number | null | undefined) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return numeric > 0 ? `+${formatPlainNumber(numeric, 2)}` : formatPlainNumber(numeric, 2);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function botRunDetail(run: BotRun) {
   if (run.stop_reason) {
     return run.stop_reason;
@@ -1241,6 +1280,8 @@ export function BotPage() {
   const [lastBacktest, setLastBacktest] = useState<BotBacktestResult | null>(null);
   const [backtestStartDate, setBacktestStartDate] = useState(defaultBacktestStartDate);
   const [backtestEndDate, setBacktestEndDate] = useState(defaultBacktestEndDate);
+  const [backtestProgress, setBacktestProgress] = useState(0);
+  const [backtestStage, setBacktestStage] = useState("Queued");
   const [contracts, setContracts] = useState<ProjectXContract[]>([]);
   const [form, setForm] = useState<BotFormState>(() => buildInitialForm(accountFromQuery));
   const [loading, setLoading] = useState(true);
@@ -1335,6 +1376,14 @@ export function BotPage() {
     setFormError(null);
     setLastBacktest((current) => (current?.bot_config_id === selectedBot.id ? current : null));
   }, [selectedBot]);
+
+  useEffect(() => {
+    if (actionLoading !== "backtest") {
+      setBacktestProgress(0);
+      setBacktestStage("Queued");
+      return;
+    }
+  }, [actionLoading]);
 
   async function handleSearchContracts() {
     if (!form.contractSearch.trim()) {
@@ -2489,12 +2538,36 @@ export function BotPage() {
     }
   }
 
+  async function waitForBacktestJob(initialJob: BotBacktestJob) {
+    let job = initialJob;
+    while (true) {
+      setBacktestProgress(job.progress);
+      setBacktestStage(job.stage);
+
+      if (job.status === "completed") {
+        if (!job.result) {
+          throw new Error("Backtest completed without a result.");
+        }
+        return job.result;
+      }
+      if (job.status === "failed") {
+        throw new Error(job.error || "Backtest failed.");
+      }
+
+      await delay(BACKTEST_POLL_INTERVAL_MS);
+      job = await botsApi.getBacktestJob(job.job_id);
+    }
+  }
+
   async function runBotAction(kind: "start" | "evaluate" | "stop" | "backtest") {
     if (!selectedBot) {
       return;
     }
     setActionLoading(kind);
     setError(null);
+    if (kind === "backtest") {
+      setLastBacktest((current) => (current?.bot_config_id === selectedBot.id ? null : current));
+    }
     try {
       if (kind === "start") {
         const result = await botsApi.start(selectedBot.id, { dryRun: true, continuous: true, stopAtSessionEnd: true });
@@ -2503,11 +2576,12 @@ export function BotPage() {
         const result = await botsApi.evaluate(selectedBot.id, { dryRun: true, continuous: false });
         setLastEvaluation(result);
       } else if (kind === "backtest") {
-        const result = await botsApi.runBacktest(selectedBot.id, {
+        const job = await botsApi.startBacktest(selectedBot.id, {
           start: dateInputToIso(backtestStartDate, "start"),
           end: dateInputToIso(backtestEndDate, "end"),
           limit: 20000,
         });
+        const result = await waitForBacktestJob(job);
         setLastBacktest(result);
       } else {
         await botsApi.stop(selectedBot.id);
@@ -3971,7 +4045,11 @@ export function BotPage() {
                         </Button>
                       </div>
                     </div>
-                    {selectedBotBacktest ? <BacktestResultsPanel result={selectedBotBacktest} /> : null}
+                    {actionLoading === "backtest" ? (
+                      <BacktestProgressPanel value={backtestProgress} stage={backtestStage} />
+                    ) : selectedBotBacktest ? (
+                      <BacktestResultsPanel result={selectedBotBacktest} />
+                    ) : null}
                     {selectedBotEvaluation ? (
                       <div className="grid gap-3">
                         <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
@@ -4087,9 +4165,55 @@ export function BotPage() {
   );
 }
 
+function BacktestProgressPanel({ value, stage }: { value: number; stage: string }) {
+  const roundedValue = Math.round(value);
+  const waitingForCompletion = value >= 99 && roundedValue < 100;
+
+  return (
+    <div className="space-y-2 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3" role="status" aria-live="polite">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold text-slate-100 md:text-base">Running Backtest</h4>
+          <p className="text-xs text-slate-400">{stage}</p>
+        </div>
+        <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 font-mono text-xs text-cyan-100">
+          {roundedValue}%
+        </span>
+      </div>
+      <Progress
+        value={value}
+        className="h-2.5 bg-slate-950"
+        indicatorClassName={`bg-gradient-to-r from-cyan-300 to-emerald-300 ${waitingForCompletion ? "animate-pulse" : ""}`}
+        role="progressbar"
+        aria-label="Backtest progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={roundedValue}
+        aria-valuetext={`${roundedValue}% ${stage}`}
+      />
+      {waitingForCompletion ? (
+        <p className="text-[11px] text-slate-500">
+          Finalizing the saved result. The next poll should return the completed stats.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
   const summary = result.summary;
-  const trades = result.trades.slice(-8).reverse();
+  const analysis = result.analysis;
+  const trades = result.trades.slice(-25).reverse();
+  const sideRows: Array<{ label: string; stats: BotBacktestBreakdownStats }> = (["BUY", "SELL"] as const).flatMap((side) => {
+    const stats = analysis?.by_side?.[side];
+    return stats && stats.trade_count > 0 ? [{ label: side, stats }] : [];
+  });
+  const exitRows = Object.entries(analysis?.by_exit_reason ?? {})
+    .filter(([, stats]) => stats.trade_count > 0)
+    .sort(([, left], [, right]) => Math.abs(right.net_pnl) - Math.abs(left.net_pnl))
+    .map(([reason, stats]) => ({ label: formatExitReason(reason), stats }));
+  const recentDays = result.daily_pnl.slice(-10).reverse();
+  const reviewItems = buildBacktestReviewItems(result);
   return (
     <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -4114,10 +4238,38 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
         <Metric label="Max DD" value={formatCurrency(summary.max_drawdown)} />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Metric label="Expectancy" value={formatCurrency(summary.expectancy_per_trade)} />
+        <Metric label="Gross Loss" value={formatCurrency(summary.gross_loss)} />
+        <Metric label="Profit / Day" value={formatCurrency(summary.profit_per_day)} />
+        <Metric label="Signals / Trade" value={formatPlainNumber(analysis?.signals_per_trade, 2)} />
+        <Metric label="Avg Hold" value={formatDurationMinutes(analysis?.avg_duration_minutes)} />
+        <Metric label="Avg MFE" value={formatPoints(analysis?.avg_mfe_points)} />
+        <Metric label="Avg MAE" value={formatPoints(analysis?.avg_mae_points)} />
         <Metric label="Fees" value={formatCurrency(summary.fees)} />
-        <Metric label="Point Value" value={`$${formatPlainNumber(result.point_value, 2)} / point`} />
+      </div>
+
+      {reviewItems.length > 0 ? (
+        <div className="rounded-xl border border-amber-300/20 bg-amber-300/5 p-3">
+          <h5 className="text-sm font-semibold text-amber-100">Review Focus</h5>
+          <div className="mt-2 grid gap-2 md:grid-cols-3">
+            {reviewItems.map((item) => (
+              <p key={item} className="rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-300">
+                {item}
+              </p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        <BacktestBreakdownTable title="Long / Short" rows={sideRows} />
+        <BacktestBreakdownTable title="Exit Reasons" rows={exitRows} />
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-[1fr_1.2fr]">
+        <BacktestDayPanel analysis={analysis} days={recentDays} />
+        <BacktestTradeExtremes bestTrade={analysis?.best_trade ?? null} worstTrade={analysis?.worst_trade ?? null} />
       </div>
 
       {trades.length > 0 ? (
@@ -4125,12 +4277,15 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
           <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">
             Simulated Trades
           </div>
-          <div className="max-h-72 overflow-auto">
+          <div className="max-h-96 overflow-auto">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-20">Side</TableHead>
+                  <TableHead>Entry</TableHead>
                   <TableHead>Exit</TableHead>
+                  <TableHead className="text-right">Hold</TableHead>
+                  <TableHead className="text-right">MFE / MAE</TableHead>
                   <TableHead className="text-right">Points</TableHead>
                   <TableHead className="text-right">Net PnL</TableHead>
                 </TableRow>
@@ -4142,10 +4297,19 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
                       <Badge variant={trade.side === "BUY" ? "positive" : "negative"}>{trade.side}</Badge>
                     </TableCell>
                     <TableCell>
-                      <p className="text-xs text-slate-300">{trade.exit_reason.replaceAll("_", " ")}</p>
-                      <p className="text-[11px] text-slate-500">{formatDateTime(trade.exit_time)}</p>
+                      <p className="text-xs text-slate-300">{formatDateTime(trade.entry_time)}</p>
+                      <p className="text-[11px] text-slate-500">@ {formatPlainNumber(trade.entry_price, 2)}</p>
                     </TableCell>
-                    <TableCell className="text-right text-xs text-slate-300">{formatPlainNumber(trade.points, 2)}</TableCell>
+                    <TableCell className="max-w-[360px]">
+                      <p className="text-xs text-slate-300">{formatExitReason(trade.exit_reason)}</p>
+                      <p className="text-[11px] text-slate-500">{formatDateTime(trade.exit_time)}</p>
+                      <p className="truncate text-[11px] text-slate-500">{trade.signal_reason}</p>
+                    </TableCell>
+                    <TableCell className="text-right text-xs text-slate-300">{formatDurationMinutes(trade.duration_minutes)}</TableCell>
+                    <TableCell className="text-right text-xs text-slate-300">
+                      {formatPoints(trade.max_favorable_points)} / {formatPoints(trade.max_adverse_points)}
+                    </TableCell>
+                    <TableCell className="text-right text-xs text-slate-300">{formatPoints(trade.points)}</TableCell>
                     <TableCell className={`text-right text-xs font-semibold ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
                       {formatCurrency(trade.net_pnl)}
                     </TableCell>
@@ -4162,6 +4326,145 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
       )}
     </div>
   );
+}
+
+function BacktestBreakdownTable({ title, rows }: { title: string; rows: Array<{ label: string; stats: BotBacktestBreakdownStats }> }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800">
+      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}</div>
+      {rows.length === 0 ? (
+        <p className="px-3 py-4 text-sm text-slate-500">No rows</p>
+      ) : (
+        <div className="overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Group</TableHead>
+                <TableHead className="text-right">Trades</TableHead>
+                <TableHead className="text-right">WR</TableHead>
+                <TableHead className="text-right">PF</TableHead>
+                <TableHead className="text-right">Avg</TableHead>
+                <TableHead className="text-right">Net</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map(({ label, stats }) => (
+                <TableRow key={label}>
+                  <TableCell className="text-xs font-medium text-slate-200">{label}</TableCell>
+                  <TableCell className="text-right text-xs text-slate-300">{stats.trade_count}</TableCell>
+                  <TableCell className="text-right text-xs text-slate-300">{formatPercent(stats.win_rate)}</TableCell>
+                  <TableCell className="text-right text-xs text-slate-300">{formatPlainNumber(stats.profit_factor, 2)}</TableCell>
+                  <TableCell className="text-right text-xs text-slate-300">{formatCurrency(stats.avg_pnl)}</TableCell>
+                  <TableCell className={`text-right text-xs font-semibold ${stats.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                    {formatCurrency(stats.net_pnl)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BacktestDayPanel({ analysis, days }: { analysis: BotBacktestResult["analysis"]; days: BotBacktestDailyPnl[] }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800">
+      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">Daily PnL</div>
+      <div className="grid grid-cols-2 gap-3 border-b border-slate-800 p-3">
+        <Metric label="Best Day" value={analysis?.best_day ? formatCurrency(analysis.best_day.net_pnl) : "$0.00"} />
+        <Metric label="Worst Day" value={analysis?.worst_day ? formatCurrency(analysis.worst_day.net_pnl) : "$0.00"} />
+      </div>
+      <div className="max-h-64 overflow-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Date</TableHead>
+              <TableHead className="text-right">Trades</TableHead>
+              <TableHead className="text-right">Net</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {days.map((day) => (
+              <TableRow key={day.date}>
+                <TableCell className="text-xs text-slate-300">{day.date}</TableCell>
+                <TableCell className="text-right text-xs text-slate-300">{day.trade_count}</TableCell>
+                <TableCell className={`text-right text-xs font-semibold ${day.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                  {formatCurrency(day.net_pnl)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+function BacktestTradeExtremes({ bestTrade, worstTrade }: { bestTrade: BotBacktestTrade | null; worstTrade: BotBacktestTrade | null }) {
+  const rows = [
+    { label: "Best Trade", trade: bestTrade },
+    { label: "Worst Trade", trade: worstTrade },
+  ];
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800">
+      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">Trade Extremes</div>
+      <div className="grid gap-3 p-3 md:grid-cols-2">
+        {rows.map(({ label, trade }) => (
+          <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
+            {trade ? (
+              <>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <Badge variant={trade.side === "BUY" ? "positive" : "negative"}>{trade.side}</Badge>
+                  <span className={`text-sm font-semibold ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                    {formatCurrency(trade.net_pnl)}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-slate-300">
+                  {formatExitReason(trade.exit_reason)} - {formatDurationMinutes(trade.duration_minutes)}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  MFE {formatPoints(trade.max_favorable_points)} / MAE {formatPoints(trade.max_adverse_points)}
+                </p>
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-slate-500">No trade</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function buildBacktestReviewItems(result: BotBacktestResult) {
+  const summary = result.summary;
+  const analysis = result.analysis;
+  const items: string[] = [];
+  if (summary.profit_factor < 1) {
+    items.push(`Profit factor is ${formatPlainNumber(summary.profit_factor, 2)}; reduce losers or filter weak entries before increasing size.`);
+  }
+  if (summary.win_rate < 40) {
+    items.push(`Win rate is ${formatPercent(summary.win_rate)}; compare losing exit reasons against entry setup quality.`);
+  }
+  const weakestExit = Object.entries(analysis?.by_exit_reason ?? {})
+    .filter(([, stats]) => stats.trade_count > 0)
+    .sort(([, left], [, right]) => left.net_pnl - right.net_pnl)[0];
+  if (weakestExit) {
+    items.push(`${formatExitReason(weakestExit[0])} exits contributed ${formatCurrency(weakestExit[1].net_pnl)}.`);
+  }
+  const weakerSide = Object.entries(analysis?.by_side ?? {})
+    .filter(([, stats]) => stats.trade_count > 0)
+    .sort(([, left], [, right]) => left.net_pnl - right.net_pnl)[0];
+  if (weakerSide && weakerSide[1].net_pnl < 0) {
+    items.push(`${weakerSide[0]} trades lost ${formatCurrency(weakerSide[1].net_pnl)} with ${formatPercent(weakerSide[1].win_rate)} WR.`);
+  }
+  if (items.length === 0 && summary.trade_count > 0) {
+    items.push("Review trade extremes and daily PnL clusters before changing risk or filters.");
+  }
+  return items.slice(0, 3);
 }
 
 function EditIcon() {

@@ -5,10 +5,14 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from threading import Lock, Thread
 from time import perf_counter
+from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
@@ -66,6 +70,7 @@ from .journal_schemas import (
 from .bot_schemas import (
     BotActivityOut,
     BotBacktestIn,
+    BotBacktestJobOut,
     BotBacktestOut,
     BotConfigCreateIn,
     BotConfigListOut,
@@ -227,6 +232,26 @@ _ALLOWED_ORIGINS = [
 _ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
 _EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, Content-Length"
 _ALLOW_ORIGIN_PATTERN = re.compile(_ALLOW_ORIGIN_REGEX) if _ALLOW_ORIGIN_REGEX else None
+_BACKTEST_JOB_RETENTION = timedelta(minutes=30)
+
+
+@dataclass
+class _BacktestJob:
+    job_id: str
+    user_id: str
+    bot_config_id: int
+    status: str
+    progress: float
+    stage: str
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
+
+
+_BACKTEST_JOBS: dict[str, _BacktestJob] = {}
+_BACKTEST_JOBS_LOCK = Lock()
 
 
 @asynccontextmanager
@@ -1726,6 +1751,41 @@ def evaluate_trading_bot(
     return serialize_evaluation(result)
 
 
+@app.post("/api/bots/{bot_config_id}/backtest/jobs", response_model=BotBacktestJobOut)
+def start_backtest_job(
+    bot_config_id: int,
+    payload: BotBacktestIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    body = payload or BotBacktestIn()
+
+    config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="bot_config_not_found")
+    _require_owned_projectx_account(db, user_id=user_id, account_id=int(config.account_id))
+
+    job = _create_backtest_job(user_id=user_id, bot_config_id=bot_config_id)
+    worker = Thread(
+        target=_run_backtest_job,
+        args=(job.job_id, user_id, bot_config_id, body.start, body.end, body.limit),
+        daemon=True,
+    )
+    worker.start()
+    return _backtest_job_snapshot(job)
+
+
+@app.get("/api/bots/backtests/{job_id}", response_model=BotBacktestJobOut)
+def get_backtest_job(job_id: str):
+    user_id = get_authenticated_user_id()
+    job = _get_backtest_job_for_user(job_id=job_id, user_id=user_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="backtest_job_not_found")
+    return _backtest_job_snapshot(job)
+
+
 @app.post("/api/bots/{bot_config_id}/backtest", response_model=BotBacktestOut)
 def backtest_trading_bot(
     bot_config_id: int,
@@ -1807,6 +1867,152 @@ def get_trading_bot_activity(
         "order_attempts": [serialize_bot_order_attempt(row) for row in payload["order_attempts"]],
         "risk_events": [serialize_bot_risk_event(row) for row in payload["risk_events"]],
     }
+
+
+def _create_backtest_job(*, user_id: str, bot_config_id: int) -> _BacktestJob:
+    now = datetime.now(timezone.utc)
+    job = _BacktestJob(
+        job_id=uuid4().hex,
+        user_id=user_id,
+        bot_config_id=int(bot_config_id),
+        status="queued",
+        progress=0.0,
+        stage="Queued",
+        started_at=now,
+        updated_at=now,
+    )
+    with _BACKTEST_JOBS_LOCK:
+        _cleanup_backtest_jobs_locked(now)
+        _BACKTEST_JOBS[job.job_id] = job
+    return job
+
+
+def _get_backtest_job_for_user(*, job_id: str, user_id: str) -> _BacktestJob | None:
+    with _BACKTEST_JOBS_LOCK:
+        _cleanup_backtest_jobs_locked(datetime.now(timezone.utc))
+        job = _BACKTEST_JOBS.get(job_id)
+        if job is None or job.user_id != user_id:
+            return None
+        return job
+
+
+def _backtest_job_snapshot(job: _BacktestJob) -> dict[str, Any]:
+    with _BACKTEST_JOBS_LOCK:
+        return {
+            "job_id": job.job_id,
+            "bot_config_id": job.bot_config_id,
+            "status": job.status,
+            "progress": job.progress,
+            "stage": job.stage,
+            "started_at": job.started_at,
+            "updated_at": job.updated_at,
+            "completed_at": job.completed_at,
+            "error": job.error,
+            "result": job.result,
+        }
+
+
+def _cleanup_backtest_jobs_locked(now: datetime) -> None:
+    expired_job_ids = [
+        job_id
+        for job_id, job in _BACKTEST_JOBS.items()
+        if job.completed_at is not None and now - job.completed_at > _BACKTEST_JOB_RETENTION
+    ]
+    for job_id in expired_job_ids:
+        _BACKTEST_JOBS.pop(job_id, None)
+
+
+def _set_backtest_job_progress(job_id: str, progress: float, stage: str) -> None:
+    with _BACKTEST_JOBS_LOCK:
+        job = _BACKTEST_JOBS.get(job_id)
+        if job is None or job.status not in {"queued", "running"}:
+            return
+        job.status = "running"
+        job.progress = max(job.progress, min(99.0, max(0.0, float(progress))))
+        job.stage = stage
+        job.updated_at = datetime.now(timezone.utc)
+
+
+def _complete_backtest_job(job_id: str, result: dict[str, Any]) -> None:
+    now = datetime.now(timezone.utc)
+    with _BACKTEST_JOBS_LOCK:
+        job = _BACKTEST_JOBS.get(job_id)
+        if job is None:
+            return
+        job.status = "completed"
+        job.progress = 100.0
+        job.stage = "Backtest complete"
+        job.updated_at = now
+        job.completed_at = now
+        job.result = result
+
+
+def _fail_backtest_job(job_id: str, error: str) -> None:
+    now = datetime.now(timezone.utc)
+    with _BACKTEST_JOBS_LOCK:
+        job = _BACKTEST_JOBS.get(job_id)
+        if job is None:
+            return
+        job.status = "failed"
+        job.stage = "Backtest failed"
+        job.updated_at = now
+        job.completed_at = now
+        job.error = error
+
+
+def _run_backtest_job(
+    job_id: str,
+    user_id: str,
+    bot_config_id: int,
+    start: datetime | None,
+    end: datetime | None,
+    limit: int,
+) -> None:
+    db = SessionLocal()
+    try:
+        _set_backtest_job_progress(job_id, 1, "Starting backtest")
+        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        _require_owned_projectx_account(db, user_id=user_id, account_id=int(config.account_id))
+        client = _projectx_client_for_user(db, user_id=user_id)
+        result = run_bot_backtest(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            start=start,
+            end=end,
+            limit=limit,
+            progress=lambda value, stage: _set_backtest_job_progress(job_id, value, stage),
+        )
+        db.commit()
+        _complete_backtest_job(job_id, result)
+    except ProjectXClientError as exc:
+        db.rollback()
+        http_error = _to_http_exception(exc)
+        _fail_backtest_job(job_id, _error_detail_text(http_error.detail))
+    except HTTPException as exc:
+        db.rollback()
+        _fail_backtest_job(job_id, _error_detail_text(exc.detail))
+    except (LookupError, ValueError) as exc:
+        db.rollback()
+        _fail_backtest_job(job_id, str(exc))
+    except Exception as exc:
+        db.rollback()
+        logger.exception("backtest_job_failed", extra={"job_id": job_id, "bot_config_id": bot_config_id})
+        _fail_backtest_job(job_id, str(exc) or "Backtest failed")
+    finally:
+        db.close()
+
+
+def _error_detail_text(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail, default=str)
+    except TypeError:
+        return str(detail)
 
 
 @app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)

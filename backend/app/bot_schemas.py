@@ -221,6 +221,10 @@ class BotBacktestTradeOut(BaseModel):
     fees: float
     points: float
     signal_reason: str
+    duration_minutes: float = 0.0
+    bars_held: int = 0
+    max_favorable_points: float = 0.0
+    max_adverse_points: float = 0.0
 
 
 class BotBacktestOut(BaseModel):
@@ -237,8 +241,22 @@ class BotBacktestOut(BaseModel):
     point_value: float
     assumptions: dict[str, Any]
     summary: dict[str, Any]
+    analysis: dict[str, Any] = Field(default_factory=dict)
     daily_pnl: list[dict[str, Any]]
     trades: list[BotBacktestTradeOut]
+
+
+class BotBacktestJobOut(BaseModel):
+    job_id: str
+    bot_config_id: int
+    status: Literal["queued", "running", "completed", "failed"]
+    progress: float = Field(ge=0, le=100)
+    stage: str
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    error: str | None = None
+    result: BotBacktestOut | None = None
 
 
 class BotMarketAnalysisOut(BaseModel):
