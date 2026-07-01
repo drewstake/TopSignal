@@ -52,6 +52,25 @@ def _flat_candles(now: datetime) -> list[ProjectXMarketCandle]:
     ]
 
 
+def _bearish_trend_context(price: float, now: datetime) -> TopBotMarketContext:
+    return TopBotMarketContext(
+        latest_price=price,
+        candle_timestamp=now,
+        trend="bearish",
+        trend_strength=80,
+        volatility_state="normal",
+        volume_state="elevated",
+        market_regime="trend",
+        atr=1.0,
+        vwap=price + 1,
+        nearest_support=None,
+        nearest_resistance=price + 4,
+        active_fvg_count=0,
+        session_timing="ny_am",
+        warnings=[],
+    )
+
+
 def _config(**overrides) -> BotConfig:
     values = {
         "user_id": "00000000-0000-0000-0000-000000000000",
@@ -211,6 +230,48 @@ def test_topbot_adaptive_blocks_short_when_regime_is_unknown(monkeypatch):
     assert result.action == "HOLD"
     rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
     assert any("blocks SELL entries while regime is unknown" in reason for reason in rejections)
+
+
+def test_topbot_adaptive_blocks_short_entries_by_default(monkeypatch):
+    now = datetime(2026, 6, 15, 14, 45, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+    monkeypatch.setattr(bot_service_module, "_build_topbot_market_context", lambda *_args, **_kwargs: _bearish_trend_context(price, now))
+    signals = [
+        ("ema_trend_pullback", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("relative_strength_spy", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("pullback_trap_reversal", _signal("SELL", price, stop=price + 2, target=price - 4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(candles, strategy_signals=signals, config=_config(), now=now)
+
+    assert result.action == "HOLD"
+    payload = result.raw_payload["topbot_adaptive"]
+    assert payload["allow_short_entries"] is False
+    assert any("short-side filter blocks SELL entries" in reason for reason in payload["rejection_reasons"])
+
+
+def test_topbot_adaptive_allows_short_entries_when_enabled(monkeypatch):
+    now = datetime(2026, 6, 15, 14, 45, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+    monkeypatch.setattr(bot_service_module, "_build_topbot_market_context", lambda *_args, **_kwargs: _bearish_trend_context(price, now))
+    signals = [
+        ("ema_trend_pullback", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("relative_strength_spy", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("pullback_trap_reversal", _signal("SELL", price, stop=price + 2, target=price - 4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(
+        candles,
+        strategy_signals=signals,
+        strategy_params={"allow_short_entries": True},
+        config=_config(),
+        now=now,
+    )
+
+    assert result.action == "SELL"
+    assert result.raw_payload["topbot_adaptive"]["allow_short_entries"] is True
 
 
 def test_topbot_adaptive_requires_stronger_long_continuation_plan():

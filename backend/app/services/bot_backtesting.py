@@ -56,6 +56,9 @@ _BACKTEST_UNIT_SECONDS_BY_NAME = {
 }
 _MIN_BACKTEST_WARMUP_BARS = 25
 _MAX_SIGNAL_LOOKBACK_BARS = 500
+_DEFAULT_BACKTEST_BAR_LIMIT = 100_000
+_MAX_BACKTEST_BAR_LIMIT = 200_000
+_PROJECTX_BACKTEST_FETCH_LIMIT = 20_000
 _ENTRY_ACTIONS = {"BUY", "SELL"}
 BacktestProgressCallback = Callable[[float, str], None]
 
@@ -114,12 +117,12 @@ def run_bot_backtest(
     client: ProjectXClient,
     start: datetime | None = None,
     end: datetime | None = None,
-    limit: int = 20000,
+    limit: int = _DEFAULT_BACKTEST_BAR_LIMIT,
     progress: BacktestProgressCallback | None = None,
 ) -> dict[str, Any]:
     _report_progress(progress, 2, "Preparing backtest")
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
-    bounded_limit = max(100, min(int(limit), 20000))
+    bounded_limit = max(100, min(int(limit), _MAX_BACKTEST_BAR_LIMIT))
     start_utc = _as_utc(start) if start is not None else _max_backtest_start(config=config, end=end_utc, limit=bounded_limit)
     if start_utc >= end_utc:
         raise ValueError("backtest start must be before end")
@@ -186,7 +189,7 @@ def run_bot_backtest(
         "signals_evaluated": signals_evaluated,
         "point_value": _round(point_value, 4),
         "assumptions": {
-            "history_window": "Blank start uses the farthest window supported by the selected timeframe and 20,000-bar backtest cap.",
+            "history_window": "Blank start uses the farthest window supported by the selected timeframe and selected bar limit.",
             "entry_model": "Signals enter at the closed signal candle price.",
             "exit_model": "Stops and targets are filled if a later candle trades through them; same-bar stop/target conflicts use the stop first.",
             "managed_exit_model": "Break-even, profit-lock, trailing-stop, and time-stop payloads are applied after each completed replay bar.",
@@ -253,7 +256,7 @@ def _load_backtest_candles(
 
     try:
         _report_progress(progress, 10, "Fetching historical candles")
-        fetched = fetch_and_store_market_candles(
+        fetched = _fetch_and_store_backtest_candles(
             db,
             user_id=user_id,
             client=client,
@@ -292,14 +295,83 @@ def _load_backtest_candles(
     return combined or fetched
 
 
+def _fetch_and_store_backtest_candles(
+    db: Session,
+    *,
+    user_id: str,
+    client: ProjectXClient,
+    contract_id: str,
+    symbol: str | None,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+    include_partial_bar: bool = False,
+    progress: BacktestProgressCallback | None = None,
+) -> list[ProjectXMarketCandle]:
+    normalized_limit = max(1, int(limit))
+    fetch_limit = min(normalized_limit, _PROJECTX_BACKTEST_FETCH_LIMIT)
+    if normalized_limit <= fetch_limit:
+        return fetch_and_store_market_candles(
+            db,
+            user_id=user_id,
+            client=client,
+            contract_id=contract_id,
+            symbol=symbol,
+            live=live,
+            start=start,
+            end=end,
+            unit=unit,
+            unit_number=unit_number,
+            limit=fetch_limit,
+            include_partial_bar=include_partial_bar,
+        )
+
+    interval = _backtest_candle_interval(unit=unit, unit_number=unit_number)
+    chunk_span = interval * (fetch_limit - 1)
+    cursor = _as_utc(start)
+    end_utc = _as_utc(end)
+    stored: list[ProjectXMarketCandle] = []
+    chunk_index = 0
+    while cursor <= end_utc and len(stored) < normalized_limit:
+        chunk_index += 1
+        chunk_end = min(end_utc, cursor + chunk_span)
+        _report_progress(progress, 10, f"Fetching historical candles chunk {chunk_index}")
+        rows = fetch_and_store_market_candles(
+            db,
+            user_id=user_id,
+            client=client,
+            contract_id=contract_id,
+            symbol=symbol,
+            live=live,
+            start=cursor,
+            end=chunk_end,
+            unit=unit,
+            unit_number=unit_number,
+            limit=fetch_limit,
+            include_partial_bar=include_partial_bar,
+        )
+        stored.extend(rows)
+        cursor = chunk_end + interval
+
+    stored.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    return stored[-normalized_limit:]
+
+
 def _max_backtest_start(*, config: BotConfig, end: datetime, limit: int) -> datetime:
     unit = str(config.timeframe_unit).strip().lower()
-    unit_seconds = _BACKTEST_UNIT_SECONDS_BY_NAME.get(unit)
+    interval = _backtest_candle_interval(unit=unit, unit_number=int(config.timeframe_unit_number))
+    bar_count = max(1, int(limit) - 1)
+    return _as_utc(end) - interval * bar_count
+
+
+def _backtest_candle_interval(*, unit: str, unit_number: int) -> timedelta:
+    unit_seconds = _BACKTEST_UNIT_SECONDS_BY_NAME.get(str(unit).strip().lower())
     if unit_seconds is None:
         raise ValueError("unsupported candle unit")
-    unit_number = max(1, int(config.timeframe_unit_number))
-    bar_count = max(1, int(limit) - 1)
-    return _as_utc(end) - timedelta(seconds=unit_seconds * unit_number * bar_count)
+    return timedelta(seconds=unit_seconds * max(1, int(unit_number)))
 
 
 def _replay_bot(

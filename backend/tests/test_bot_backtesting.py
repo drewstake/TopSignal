@@ -75,6 +75,33 @@ def _config(name: str = "MNQ Backtest", *, strategy_type: str = "sma_cross", loo
     )
 
 
+class _FakeHistoricalClient:
+    def __init__(self):
+        self.calls = []
+
+    def retrieve_bars(self, **kwargs):
+        self.calls.append(kwargs)
+        unit_number = int(kwargs["unit_number"])
+        cursor = kwargs["start"]
+        end = kwargs["end"]
+        rows = []
+        while cursor <= end:
+            rows.append(
+                {
+                    "timestamp": cursor,
+                    "open": 10.0,
+                    "high": 10.0,
+                    "low": 10.0,
+                    "close": 10.0,
+                    "volume": 100,
+                    "is_partial": False,
+                    "raw_payload": {},
+                }
+            )
+            cursor += timedelta(minutes=unit_number)
+        return rows
+
+
 def test_run_bot_backtest_replays_cached_candles_and_returns_stats():
     db = _make_db()
     start = datetime(2026, 3, 1, 14, 0, tzinfo=timezone.utc)
@@ -131,6 +158,31 @@ def test_run_bot_backtest_replays_cached_candles_and_returns_stats():
     assert result["trades"][0]["side"] == "BUY"
     assert result["trades"][0]["exit_reason"] == "end_of_backtest"
     assert "max_favorable_points" in result["trades"][0]
+
+
+def test_load_backtest_candles_fetches_large_windows_in_projectx_chunks(monkeypatch):
+    db = _make_db()
+    config = _config()
+    client = _FakeHistoricalClient()
+    start = datetime(2026, 3, 1, 14, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    monkeypatch.setattr(bot_backtesting_module, "_PROJECTX_BACKTEST_FETCH_LIMIT", 3)
+
+    candles = bot_backtesting_module._load_backtest_candles(
+        db,
+        user_id=USER_ID,
+        config=config,
+        client=client,
+        start=start,
+        end=end,
+        limit=10,
+    )
+
+    assert len(client.calls) == 3
+    assert {call["limit"] for call in client.calls} == {3}
+    assert len(candles) == 7
+    assert candles[0].candle_timestamp == start
+    assert candles[-1].candle_timestamp == end
 
 
 def test_run_bot_backtest_default_start_uses_farthest_timeframe_window():

@@ -9,6 +9,7 @@ import { Progress } from "../../components/ui/Progress";
 import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
+import { Toggle } from "../../components/ui/Toggle";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
 import { accountsApi, botsApi } from "../../lib/api";
 import { getDemoAccountId, getDemoAccountLabel } from "../../lib/demoMode";
@@ -64,6 +65,7 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
 ];
 const EASTERN_TIME_ZONE = "America/New_York";
 const BACKTEST_POLL_INTERVAL_MS = 1000;
+const DEFAULT_BACKTEST_BAR_LIMIT = 100_000;
 const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 const DONCHIAN_DEFAULTS = {
   entryPeriod: "20",
@@ -271,6 +273,7 @@ const TOPBOT_ADAPTIVE_DEFAULTS = {
   minimumRewardRisk: "1.5",
   minimumDirectionalVotes: "2",
   maxOpposingVotes: "1",
+  allowShortEntries: false,
   trailingStopMode: "atr" as BotTrailingStopMode,
   trailingAtrMultiplier: "2",
   moveToBreakevenAtR: "0.75",
@@ -447,6 +450,7 @@ interface BotFormState {
   adaptiveMinimumRewardRisk: string;
   adaptiveMinimumDirectionalVotes: string;
   adaptiveMaxOpposingVotes: string;
+  adaptiveAllowShortEntries: boolean;
   adaptiveMoveToBreakevenAtR: string;
   adaptiveTimeStopBars: string;
 }
@@ -547,6 +551,7 @@ function buildInitialForm(accountId: number | null): BotFormState {
     adaptiveMinimumRewardRisk: TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
     adaptiveMinimumDirectionalVotes: TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
     adaptiveMaxOpposingVotes: TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
+    adaptiveAllowShortEntries: TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries,
     adaptiveMoveToBreakevenAtR: TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
     adaptiveTimeStopBars: TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars,
   };
@@ -796,6 +801,7 @@ function formFromBot(bot: BotConfig): BotFormState {
       bot.strategy_params?.minimum_directional_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
     ),
     adaptiveMaxOpposingVotes: String(bot.strategy_params?.max_opposing_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
+    adaptiveAllowShortEntries: Boolean(bot.strategy_params?.allow_short_entries ?? TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries),
     adaptiveMoveToBreakevenAtR: String(
       bot.strategy_params?.move_to_breakeven_at_r ?? TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
     ),
@@ -1470,6 +1476,7 @@ export function BotPage() {
           adaptiveMinimumRewardRisk: current.adaptiveMinimumRewardRisk || TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
           adaptiveMinimumDirectionalVotes: current.adaptiveMinimumDirectionalVotes || TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
           adaptiveMaxOpposingVotes: current.adaptiveMaxOpposingVotes || TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
+          adaptiveAllowShortEntries: current.adaptiveAllowShortEntries ?? TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries,
           trailingStopMode: TOPBOT_ADAPTIVE_DEFAULTS.trailingStopMode,
           trailingAtrMultiplier: current.trailingAtrMultiplier || TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier,
           adaptiveMoveToBreakevenAtR: current.adaptiveMoveToBreakevenAtR || TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
@@ -2307,6 +2314,7 @@ export function BotPage() {
               minimum_directional_votes:
                 adaptiveMinimumDirectionalVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes),
               max_opposing_votes: adaptiveMaxOpposingVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
+              allow_short_entries: form.adaptiveAllowShortEntries,
               enable_trailing_stop: false,
               trailing_stop_mode: form.trailingStopMode,
               trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier),
@@ -2615,7 +2623,7 @@ export function BotPage() {
         const job = await botsApi.startBacktest(selectedBot.id, {
           start: dateInputToIso(backtestStartDate, "start"),
           end: dateInputToIso(backtestEndDate, "end"),
-          limit: 20000,
+          limit: DEFAULT_BACKTEST_BAR_LIMIT,
         });
         const result = await waitForBacktestJob(job);
         setLastBacktest(result);
@@ -2759,6 +2767,14 @@ export function BotPage() {
                         onChange={(event) => setForm({ ...form, adaptiveMaxOpposingVotes: event.target.value })}
                       />
                     </label>
+                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2">
+                      <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Short Entries</span>
+                      <Toggle
+                        checked={form.adaptiveAllowShortEntries}
+                        onChange={(checked) => setForm({ ...form, adaptiveAllowShortEntries: checked })}
+                        label={form.adaptiveAllowShortEntries ? "Enabled" : "Blocked"}
+                      />
+                    </div>
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                       <span>Trail Mode</span>
                       <Select

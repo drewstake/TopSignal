@@ -733,6 +733,7 @@ export interface BotStrategyParams {
   block_outside_preferred_session?: boolean;
   preferred_session_start_minutes?: number;
   preferred_session_end_minutes?: number;
+  allow_short_entries?: boolean;
   block_short_unknown_regime?: boolean;
   early_session_minutes?: number;
   early_session_min_score?: number;

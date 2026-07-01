@@ -176,6 +176,7 @@ _TOPBOT_ADAPTIVE_DEFAULTS = {
     "block_outside_preferred_session": True,
     "preferred_session_start_minutes": 65,
     "preferred_session_end_minutes": 100,
+    "allow_short_entries": False,
     "block_short_unknown_regime": True,
     "early_session_minutes": 60,
     "early_session_min_score": 82.0,
@@ -974,6 +975,8 @@ class TopBotDecisionEngine:
                     "TopBot empirical session filter only allows entries from "
                     f"{_topbot_session_minute_label(start_minute)} to {_topbot_session_minute_label(end_minute)} ET."
                 )
+        if action == "SELL" and not bool(self.params.get("allow_short_entries")):
+            rejections.append("TopBot empirical short-side filter blocks SELL entries after recent backtest underperformance.")
         if action == "SELL" and context.market_regime == "unknown" and bool(self.params.get("block_short_unknown_regime")):
             rejections.append("TopBot empirical side filter blocks SELL entries while regime is unknown.")
         early_minutes = int(self.params["early_session_minutes"])
@@ -1049,6 +1052,7 @@ class TopBotDecisionEngine:
                 "minimum_score": self.params["minimum_score"],
                 "minimum_confidence": self.params["minimum_confidence"],
                 "minimum_reward_risk": self.params["minimum_reward_risk"],
+                "allow_short_entries": self.params["allow_short_entries"],
                 "market_context": context.to_payload(),
                 "risk_state": dict(risk_state or {}),
                 "selected_strategy": selected.strategy_type if selected is not None else None,
@@ -1303,6 +1307,7 @@ def _normalize_topbot_adaptive_params(params: Mapping[str, Any] | None) -> dict[
             minimum=0,
             maximum=390,
         ),
+        "allow_short_entries": bool(raw_params.get("allow_short_entries", _TOPBOT_ADAPTIVE_DEFAULTS["allow_short_entries"])),
         "block_short_unknown_regime": bool(
             raw_params.get("block_short_unknown_regime", _TOPBOT_ADAPTIVE_DEFAULTS["block_short_unknown_regime"])
         ),

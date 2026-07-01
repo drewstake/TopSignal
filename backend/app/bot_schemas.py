@@ -204,7 +204,7 @@ class BotStartIn(BaseModel):
 class BotBacktestIn(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
-    limit: int = Field(default=20000, ge=100, le=20000)
+    limit: int = Field(default=100000, ge=100, le=200000)
 
 
 class BotBacktestTradeOut(BaseModel):
