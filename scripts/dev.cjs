@@ -1,12 +1,10 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
+const { findAvailablePort, parseDotEnvFile, parsePort } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
-const commands = [
-  { name: "BACKEND", script: path.join(__dirname, "dev-backend.cjs") },
-  { name: "FRONTEND", script: path.join(__dirname, "dev-frontend.cjs") },
-];
+const backendDir = path.join(repoRoot, "backend");
 
 const children = new Map();
 const states = new Map();
@@ -76,7 +74,7 @@ function startCommand(command) {
   const state = states.get(command.name);
   const child = spawn(process.execPath, [command.script], {
     cwd: repoRoot,
-    env: process.env,
+    env: command.env,
     stdio: ["inherit", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -132,15 +130,6 @@ function startCommand(command) {
   });
 }
 
-for (const command of commands) {
-  states.set(command.name, {
-    child: null,
-    restartCount: 0,
-    startedAt: 0,
-  });
-  startCommand(command);
-}
-
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     if (shuttingDown) {
@@ -157,3 +146,66 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     maybeExit();
   });
 }
+
+async function resolveBackendPort() {
+  const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
+  const preferredPort = parsePort(
+    backendEnv.TOPSIGNAL_DEV_BACKEND_PORT ?? process.env.TOPSIGNAL_DEV_BACKEND_PORT,
+    8000,
+    "TOPSIGNAL_DEV_BACKEND_PORT",
+  );
+  const availablePort = await findAvailablePort(preferredPort);
+
+  if (availablePort !== preferredPort) {
+    process.stdout.write(
+      `[DEV] Backend port ${preferredPort} is in use; using http://127.0.0.1:${availablePort}.\n`,
+    );
+  }
+
+  return availablePort;
+}
+
+async function main() {
+  const backendPort = await resolveBackendPort();
+  const apiBaseUrl = process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
+  const commands = [
+    {
+      name: "BACKEND",
+      script: path.join(__dirname, "dev-backend.cjs"),
+      env: {
+        ...process.env,
+        TOPSIGNAL_DEV_BACKEND_PORT: String(backendPort),
+        TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "1",
+      },
+    },
+    {
+      name: "FRONTEND",
+      script: path.join(__dirname, "dev-frontend.cjs"),
+      env: {
+        ...process.env,
+        VITE_API_BASE_URL: apiBaseUrl,
+      },
+    },
+  ];
+
+  if (process.env.VITE_API_BASE_URL) {
+    process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL is set to ${process.env.VITE_API_BASE_URL}.\n`);
+  } else if (backendPort !== 8000) {
+    process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL set to ${apiBaseUrl}.\n`);
+  }
+
+  for (const command of commands) {
+    states.set(command.name, {
+      child: null,
+      restartCount: 0,
+      startedAt: 0,
+    });
+    startCommand(command);
+  }
+}
+
+main().catch((error) => {
+  clearInterval(keepAlive);
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});

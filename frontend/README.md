@@ -225,6 +225,10 @@ From the repo root, the combined dev command is:
 npm run dev
 ```
 
+The combined dev command injects the selected backend URL into Vite. If port
+`8000` is busy, the backend uses the next open port and the frontend is pointed
+at that port for the current process.
+
 ### Build And Test
 
 ```powershell

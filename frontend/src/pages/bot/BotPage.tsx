@@ -14,6 +14,7 @@ import { getDemoAccountId, getDemoAccountLabel } from "../../lib/demoMode";
 import type {
   AccountInfo,
   BotActivity,
+  BotBacktestResult,
   BotConfig,
   BotEvaluation,
   BotLiquiditySweepTargetMode,
@@ -336,6 +337,12 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
   second: "2-digit",
   hour12: true,
+  timeZone: EASTERN_TIME_ZONE,
+});
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
   timeZone: EASTERN_TIME_ZONE,
 });
 
@@ -826,6 +833,54 @@ function formatDateTime(value: string | null) {
   return `${dateTimeFormatter.format(date)} ET`;
 }
 
+function formatDateOnly(value: string | null) {
+  if (!value) {
+    return "None";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return dateFormatter.format(date);
+}
+
+function formatDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function defaultBacktestStartDate() {
+  return "";
+}
+
+function defaultBacktestEndDate() {
+  return formatDateInputValue(new Date());
+}
+
+function dateInputToIso(value: string, boundary: "start" | "end") {
+  if (!value) {
+    return undefined;
+  }
+  const suffix = boundary === "start" ? "T00:00:00.000" : "T23:59:59.999";
+  const date = new Date(`${value}${suffix}`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function formatPercent(value: number | null | undefined) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return `${numeric.toFixed(2)}%`;
+}
+
+function formatPlainNumber(value: number | null | undefined, digits = 2) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return numeric.toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  });
+}
+
 function botRunDetail(run: BotRun) {
   if (run.stop_reason) {
     return run.stop_reason;
@@ -1183,6 +1238,9 @@ export function BotPage() {
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
   const [lastEvaluation, setLastEvaluation] = useState<BotEvaluation | null>(null);
+  const [lastBacktest, setLastBacktest] = useState<BotBacktestResult | null>(null);
+  const [backtestStartDate, setBacktestStartDate] = useState(defaultBacktestStartDate);
+  const [backtestEndDate, setBacktestEndDate] = useState(defaultBacktestEndDate);
   const [contracts, setContracts] = useState<ProjectXContract[]>([]);
   const [form, setForm] = useState<BotFormState>(() => buildInitialForm(accountFromQuery));
   const [loading, setLoading] = useState(true);
@@ -1203,6 +1261,10 @@ export function BotPage() {
   const selectedBotEvaluation = useMemo(
     () => (selectedBot && lastEvaluation?.config.id === selectedBot.id ? lastEvaluation : null),
     [lastEvaluation, selectedBot],
+  );
+  const selectedBotBacktest = useMemo(
+    () => (selectedBot && lastBacktest?.bot_config_id === selectedBot.id ? lastBacktest : null),
+    [lastBacktest, selectedBot],
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
@@ -1271,6 +1333,7 @@ export function BotPage() {
     setForm(formFromBot(selectedBot));
     setContracts([]);
     setFormError(null);
+    setLastBacktest((current) => (current?.bot_config_id === selectedBot.id ? current : null));
   }, [selectedBot]);
 
   async function handleSearchContracts() {
@@ -2426,7 +2489,7 @@ export function BotPage() {
     }
   }
 
-  async function runBotAction(kind: "start" | "evaluate" | "stop") {
+  async function runBotAction(kind: "start" | "evaluate" | "stop" | "backtest") {
     if (!selectedBot) {
       return;
     }
@@ -2439,11 +2502,22 @@ export function BotPage() {
       } else if (kind === "evaluate") {
         const result = await botsApi.evaluate(selectedBot.id, { dryRun: true, continuous: false });
         setLastEvaluation(result);
+      } else if (kind === "backtest") {
+        const result = await botsApi.runBacktest(selectedBot.id, {
+          start: dateInputToIso(backtestStartDate, "start"),
+          end: dateInputToIso(backtestEndDate, "end"),
+          limit: 20000,
+        });
+        setLastBacktest(result);
       } else {
         await botsApi.stop(selectedBot.id);
       }
-      await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
-      setChartRefreshToken((current) => current + 1);
+      if (kind === "backtest") {
+        await loadConfigs();
+      } else {
+        await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
+        setChartRefreshToken((current) => current + 1);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Bot action failed");
     } finally {
@@ -3868,6 +3942,36 @@ export function BotPage() {
                         {actionLoading === "stop" ? "Stopping" : "Stop"}
                       </Button>
                     </div>
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+                      <div className="grid gap-2.5 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                        <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                          <span>Backtest Start</span>
+                          <Input
+                            type="date"
+                            value={backtestStartDate}
+                            onChange={(event) => setBacktestStartDate(event.target.value)}
+                          />
+                          <span className="block text-[11px] normal-case tracking-normal text-slate-500">Blank uses the earliest available window.</span>
+                        </label>
+                        <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                          <span>Backtest End</span>
+                          <Input
+                            type="date"
+                            value={backtestEndDate}
+                            onChange={(event) => setBacktestEndDate(event.target.value)}
+                          />
+                        </label>
+                        <Button
+                          className="w-full sm:w-auto"
+                          variant="secondary"
+                          onClick={() => void runBotAction("backtest")}
+                          disabled={actionLoading !== null}
+                        >
+                          {actionLoading === "backtest" ? "Running" : "Run Backtest"}
+                        </Button>
+                      </div>
+                    </div>
+                    {selectedBotBacktest ? <BacktestResultsPanel result={selectedBotBacktest} /> : null}
                     {selectedBotEvaluation ? (
                       <div className="grid gap-3">
                         <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
@@ -3979,6 +4083,83 @@ export function BotPage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
+  const summary = result.summary;
+  const trades = result.trades.slice(-8).reverse();
+  return (
+    <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-slate-100 md:text-base">Backtest Results</h4>
+          <p className="text-xs text-slate-400">
+            {formatDateOnly(result.start)} to {formatDateOnly(result.end)} · {result.candles_processed.toLocaleString()} candles ·{" "}
+            {result.signals_evaluated.toLocaleString()} signals
+          </p>
+        </div>
+        <Badge variant={summary.net_pnl >= 0 ? "positive" : "negative"}>{formatCurrency(summary.net_pnl)}</Badge>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Metric label="Win Rate" value={formatPercent(summary.win_rate)} />
+        <Metric label="Net PnL" value={formatCurrency(summary.net_pnl)} />
+        <Metric label="Gross Profit" value={formatCurrency(summary.gross_profit)} />
+        <Metric label="Profit Factor" value={formatPlainNumber(summary.profit_factor, 2)} />
+        <Metric label="Trades" value={String(summary.trade_count)} />
+        <Metric label="Avg Win" value={formatCurrency(summary.avg_win)} />
+        <Metric label="Avg Loss" value={formatCurrency(summary.avg_loss)} />
+        <Metric label="Max DD" value={formatCurrency(summary.max_drawdown)} />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Expectancy" value={formatCurrency(summary.expectancy_per_trade)} />
+        <Metric label="Fees" value={formatCurrency(summary.fees)} />
+        <Metric label="Point Value" value={`$${formatPlainNumber(result.point_value, 2)} / point`} />
+      </div>
+
+      {trades.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-slate-800">
+          <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">
+            Simulated Trades
+          </div>
+          <div className="max-h-72 overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-20">Side</TableHead>
+                  <TableHead>Exit</TableHead>
+                  <TableHead className="text-right">Points</TableHead>
+                  <TableHead className="text-right">Net PnL</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {trades.map((trade) => (
+                  <TableRow key={trade.id}>
+                    <TableCell>
+                      <Badge variant={trade.side === "BUY" ? "positive" : "negative"}>{trade.side}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <p className="text-xs text-slate-300">{trade.exit_reason.replaceAll("_", " ")}</p>
+                      <p className="text-[11px] text-slate-500">{formatDateTime(trade.exit_time)}</p>
+                    </TableCell>
+                    <TableCell className="text-right text-xs text-slate-300">{formatPlainNumber(trade.points, 2)}</TableCell>
+                    <TableCell className={`text-right text-xs font-semibold ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                      {formatCurrency(trade.net_pnl)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-4 text-sm text-slate-400">
+          No simulated trades were triggered in this backtest window.
+        </p>
+      )}
     </div>
   );
 }

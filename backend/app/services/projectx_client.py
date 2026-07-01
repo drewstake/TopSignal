@@ -21,6 +21,8 @@ class _TokenCache:
 _TOKEN_LOCK = Lock()
 _TOKEN_CACHE_BY_KEY: dict[str, _TokenCache] = {}
 _TOKEN_SAFETY_WINDOW = timedelta(seconds=60)
+_PROJECTX_ORDER_TYPES = {1, 2, 4, 5, 6, 7}
+_PROJECTX_ORDER_SIDES = {0, 1}
 
 
 class ProjectXClientError(RuntimeError):
@@ -213,12 +215,15 @@ class ProjectXClient:
         stop_loss_bracket: dict[str, Any] | None = None,
         take_profit_bracket: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        validated_order_type = _validate_projectx_order_type(order_type)
+        validated_side = _validate_projectx_order_side(side)
+        validated_size = _validate_projectx_order_size(size)
         payload: dict[str, Any] = {
             "accountId": int(account_id),
             "contractId": str(contract_id),
-            "type": int(order_type),
-            "side": int(side),
-            "size": int(size),
+            "type": validated_order_type,
+            "side": validated_side,
+            "size": validated_size,
         }
         if limit_price is not None:
             payload["limitPrice"] = float(limit_price)
@@ -586,6 +591,36 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _validate_projectx_order_type(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ProjectXClientError("Unsupported ProjectX order type.") from exc
+    if parsed not in _PROJECTX_ORDER_TYPES:
+        raise ProjectXClientError("Unsupported ProjectX order type.")
+    return parsed
+
+
+def _validate_projectx_order_side(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ProjectXClientError("Unsupported ProjectX order side.") from exc
+    if parsed not in _PROJECTX_ORDER_SIDES:
+        raise ProjectXClientError("Unsupported ProjectX order side.")
+    return parsed
+
+
+def _validate_projectx_order_size(value: Any) -> int:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ProjectXClientError("ProjectX order size must be a positive whole number.") from exc
+    if parsed != parsed or parsed <= 0 or abs(parsed - round(parsed)) > 1e-9:
+        raise ProjectXClientError("ProjectX order size must be a positive whole number.")
+    return int(round(parsed))
 
 
 def _safe_bool(value: Any) -> bool | None:

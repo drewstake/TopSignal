@@ -315,6 +315,86 @@ def test_place_order_uses_projectx_order_place_payload():
     assert response["order_id"] == "9056"
 
 
+def test_place_order_uses_projectx_sell_market_payload_with_brackets():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {"orderId": 9057, "success": True}
+
+    client = StubClient()
+
+    response = client.place_order(
+        account_id=123,
+        contract_id="CON.F.US.MNQ.M26",
+        order_type=2,
+        side=1,
+        size=2,
+        stop_loss_bracket={"ticks": 4, "type": 4},
+        take_profit_bracket={"ticks": 8, "type": 1},
+        custom_tag="bot-test-sell",
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/api/Order/place",
+            {
+                "accountId": 123,
+                "contractId": "CON.F.US.MNQ.M26",
+                "type": 2,
+                "side": 1,
+                "size": 2,
+                "customTag": "bot-test-sell",
+                "stopLossBracket": {"ticks": 4, "type": 4},
+                "takeProfitBracket": {"ticks": 8, "type": 1},
+            },
+            True,
+        )
+    ]
+    assert response["order_id"] == "9057"
+
+
+@pytest.mark.parametrize(
+    ("field", "kwargs", "message"),
+    [
+        ("order_type", {"order_type": 999}, "Unsupported ProjectX order type."),
+        ("side", {"side": 3}, "Unsupported ProjectX order side."),
+        ("size", {"size": 1.5}, "ProjectX order size must be a positive whole number."),
+        ("size", {"size": 0}, "ProjectX order size must be a positive whole number."),
+    ],
+)
+def test_place_order_validates_projectx_order_enums_and_size(field, kwargs, message):
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {"orderId": 9058, "success": True}
+
+    client = StubClient()
+    base_kwargs = {
+        "account_id": 123,
+        "contract_id": "CON.F.US.MNQ.M26",
+        "order_type": 2,
+        "side": 0,
+        "size": 1,
+    }
+    base_kwargs.update(kwargs)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client.place_order(**base_kwargs)
+
+    assert field in kwargs
+    assert str(exc_info.value) == message
+    assert client.calls == []
+
+
 def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
     class StubClient(ProjectXClient):
         def __init__(self):

@@ -934,6 +934,78 @@ export interface BotConfigListResponse {
   total: number;
 }
 
+export interface BotBacktestTrade {
+  id: number;
+  side: "BUY" | "SELL";
+  quantity: number;
+  entry_time: string;
+  entry_price: number;
+  exit_time: string;
+  exit_price: number;
+  exit_reason: string;
+  gross_pnl: number;
+  net_pnl: number;
+  fees: number;
+  points: number;
+  signal_reason: string;
+}
+
+export interface BotBacktestSummary {
+  realized_pnl: number;
+  gross_pnl: number;
+  fees: number;
+  net_pnl: number;
+  total_profit: number;
+  total_pnl: number;
+  gross_profit: number;
+  gross_loss: number;
+  win_rate: number;
+  win_count: number;
+  loss_count: number;
+  breakeven_count: number;
+  profit_factor: number;
+  avg_win: number;
+  avg_loss: number;
+  expectancy_per_trade: number;
+  max_drawdown: number;
+  trade_count: number;
+  active_days: number;
+  profit_per_day: number;
+  [key: string]: number | string | null | Record<string, unknown>;
+}
+
+export interface BotBacktestDailyPnl {
+  date: string;
+  trade_count: number;
+  gross_pnl: number;
+  fees: number;
+  net_pnl: number;
+}
+
+export interface BotBacktestResult {
+  bot_config_id: number;
+  bot_name: string;
+  strategy_type: BotStrategyType;
+  contract_id: string;
+  symbol: string | null;
+  start: string;
+  end: string;
+  generated_at: string;
+  candles_processed: number;
+  signals_evaluated: number;
+  point_value: number;
+  assumptions: Record<string, string>;
+  summary: BotBacktestSummary;
+  daily_pnl: BotBacktestDailyPnl[];
+  trades: BotBacktestTrade[];
+}
+
+export interface BotBacktestInput {
+  start?: string;
+  end?: string;
+  limit?: number;
+}
+
 export interface BotRun {
   id: number;
   bot_config_id: number;

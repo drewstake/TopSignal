@@ -606,12 +606,12 @@ npm run dev
 
 That starts:
 
-- backend on `http://localhost:8000`
-- frontend on `http://localhost:5173`
+- backend on `http://localhost:8000` when available, otherwise the next open port
+- frontend on `http://localhost:5173` when available, otherwise Vite's next open port
 
-`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently.
+`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently. It also selects the first open backend port at or above `TOPSIGNAL_DEV_BACKEND_PORT` (default `8000`) and passes the matching `VITE_API_BASE_URL` to the frontend process.
 
-`npm run dev:backend` loads `backend/.env` before starting Uvicorn and defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` for faster startup. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
+`npm run dev:backend` loads `backend/.env` before starting Uvicorn and defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` for faster startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
 
 ### Environment Variables
 
@@ -651,6 +651,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
+| `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |

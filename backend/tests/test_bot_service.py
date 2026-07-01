@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2988,6 +2989,46 @@ def test_fetch_market_candles_deduplicates_provider_timestamps():
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
         engine.dispose()
+
+
+def test_market_candle_postgres_upsert_batches_large_value_lists(monkeypatch):
+    batch_size = bot_service_module._MARKET_CANDLE_UPSERT_BATCH_SIZE
+    batch_lengths: list[int] = []
+    executed_statements: list[object] = []
+
+    class FakeInsert:
+        excluded = SimpleNamespace(
+            symbol="excluded.symbol",
+            open_price="excluded.open_price",
+            high_price="excluded.high_price",
+            low_price="excluded.low_price",
+            close_price="excluded.close_price",
+            volume="excluded.volume",
+            is_partial="excluded.is_partial",
+            raw_payload="excluded.raw_payload",
+            fetched_at="excluded.fetched_at",
+        )
+
+        def values(self, values):
+            batch_lengths.append(len(values))
+            return self
+
+        def on_conflict_do_update(self, **_kwargs):
+            return object()
+
+    class FakeDb:
+        def execute(self, statement):
+            executed_statements.append(statement)
+
+    monkeypatch.setattr(bot_service_module, "postgresql_insert", lambda _table: FakeInsert())
+
+    bot_service_module._upsert_market_candle_rows(
+        FakeDb(),
+        values=[{} for _ in range(batch_size * 2 + 17)],
+    )
+
+    assert batch_lengths == [batch_size, batch_size, 17]
+    assert len(executed_statements) == 3
 
 
 def test_list_market_candles_returns_cached_rows_sorted_with_limit():

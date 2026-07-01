@@ -201,6 +201,46 @@ class BotStartIn(BaseModel):
     stop_at_session_end: bool = True
 
 
+class BotBacktestIn(BaseModel):
+    start: datetime | None = None
+    end: datetime | None = None
+    limit: int = Field(default=20000, ge=100, le=20000)
+
+
+class BotBacktestTradeOut(BaseModel):
+    id: int
+    side: Literal["BUY", "SELL"]
+    quantity: float
+    entry_time: datetime
+    entry_price: float
+    exit_time: datetime
+    exit_price: float
+    exit_reason: str
+    gross_pnl: float
+    net_pnl: float
+    fees: float
+    points: float
+    signal_reason: str
+
+
+class BotBacktestOut(BaseModel):
+    bot_config_id: int
+    bot_name: str
+    strategy_type: BotStrategyType
+    contract_id: str
+    symbol: str | None = None
+    start: datetime
+    end: datetime
+    generated_at: datetime
+    candles_processed: int
+    signals_evaluated: int
+    point_value: float
+    assumptions: dict[str, Any]
+    summary: dict[str, Any]
+    daily_pnl: list[dict[str, Any]]
+    trades: list[BotBacktestTradeOut]
+
+
 class BotMarketAnalysisOut(BaseModel):
     current_price: float | None = None
     previous_close: float | None = None

@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { findAvailablePort, isPortAvailable, parseDotEnvFile, parsePort } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const backendDir = path.join(repoRoot, "backend");
@@ -14,50 +15,12 @@ if (!fs.existsSync(pythonPath)) {
   process.exit(1);
 }
 
-function parseDotEnvFile(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return {};
-  }
-
-  const env = {};
-  const content = fs.readFileSync(filePath, "utf8");
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const normalized = line.startsWith("export ") ? line.slice("export ".length) : line;
-    const equalsIndex = normalized.indexOf("=");
-    if (equalsIndex <= 0) {
-      continue;
-    }
-
-    const key = normalized.slice(0, equalsIndex).trim();
-    let value = normalized.slice(equalsIndex + 1).trim();
-    if (!key) {
-      continue;
-    }
-
-    const isWrappedInMatchingQuotes =
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"));
-    if (isWrappedInMatchingQuotes) {
-      value = value.slice(1, -1);
-    }
-
-    env[key] = value;
-  }
-
-  return env;
-}
-
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
 const childEnv = {
   ...process.env,
   ...backendEnv,
 };
+let backendPort = 8000;
 
 if (!childEnv.TOPSIGNAL_DB_SCHEMA_INIT) {
   childEnv.TOPSIGNAL_DB_SCHEMA_INIT = "skip";
@@ -99,7 +62,7 @@ let restartTimer = null;
 let watcher = null;
 
 function startBackend() {
-  const args = ["-m", "uvicorn", "app.main:app", "--port", "8000"];
+  const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(backendPort)];
   if (!useWrapperReload) {
     args.splice(3, 0, "--reload");
   }
@@ -215,5 +178,41 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, shutdown);
 }
 
-startBackend();
-startWrapperReloadWatcher();
+async function resolveBackendPort() {
+  const preferredPort = parsePort(
+    childEnv.TOPSIGNAL_DEV_BACKEND_PORT,
+    8000,
+    "TOPSIGNAL_DEV_BACKEND_PORT",
+  );
+  const strictPort = childEnv.TOPSIGNAL_DEV_BACKEND_PORT_STRICT === "1";
+
+  if (strictPort) {
+    if (!(await isPortAvailable(preferredPort))) {
+      throw new Error(
+        `Backend port ${preferredPort} is already in use on 127.0.0.1. ` +
+          "Stop that process or set TOPSIGNAL_DEV_BACKEND_PORT to another port.",
+      );
+    }
+
+    return preferredPort;
+  }
+
+  const availablePort = await findAvailablePort(preferredPort);
+  if (availablePort !== preferredPort) {
+    console.log(`Port ${preferredPort} is in use, using backend port ${availablePort}.`);
+  }
+
+  return availablePort;
+}
+
+async function main() {
+  backendPort = await resolveBackendPort();
+  console.log(`Backend API target: http://127.0.0.1:${backendPort}`);
+  startBackend();
+  startWrapperReloadWatcher();
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

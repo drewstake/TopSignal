@@ -53,12 +53,15 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_MARKET_CANDLE_UPSERT_BATCH_SIZE = 3000
 _MARKET_ANALYSIS_MIN_CANDLES = 10
 _MARKET_ANALYSIS_CONTEXT_BARS = 100
 _BOT_RUNTIME_MIN_POLL_SECONDS = 15
 _BOT_RUNTIME_MAX_POLL_SECONDS = 60 * 60
 _BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS = 5
+_ORDER_TYPE_LIMIT = 1
 _ORDER_TYPE_MARKET = 2
+_ORDER_TYPE_STOP = 4
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
 _STRATEGY_SMA_CROSS = "sma_cross"
@@ -3333,31 +3336,33 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
         return
 
     table = ProjectXMarketCandle.__table__
-    insert_stmt = postgresql_insert(table).values(values)
-    excluded = insert_stmt.excluded
-    db.execute(
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                table.c.user_id,
-                table.c.contract_id,
-                table.c.live,
-                table.c.unit,
-                table.c.unit_number,
-                table.c.candle_timestamp,
-            ],
-            set_={
-                "symbol": excluded.symbol,
-                "open_price": excluded.open_price,
-                "high_price": excluded.high_price,
-                "low_price": excluded.low_price,
-                "close_price": excluded.close_price,
-                "volume": excluded.volume,
-                "is_partial": excluded.is_partial,
-                "raw_payload": excluded.raw_payload,
-                "fetched_at": excluded.fetched_at,
-            },
+    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
+        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
+        insert_stmt = postgresql_insert(table).values(batch)
+        excluded = insert_stmt.excluded
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    table.c.user_id,
+                    table.c.contract_id,
+                    table.c.live,
+                    table.c.unit,
+                    table.c.unit_number,
+                    table.c.candle_timestamp,
+                ],
+                set_={
+                    "symbol": excluded.symbol,
+                    "open_price": excluded.open_price,
+                    "high_price": excluded.high_price,
+                    "low_price": excluded.low_price,
+                    "close_price": excluded.close_price,
+                    "volume": excluded.volume,
+                    "is_partial": excluded.is_partial,
+                    "raw_payload": excluded.raw_payload,
+                    "fetched_at": excluded.fetched_at,
+                },
+            )
         )
-    )
 
 
 def _query_market_candles_by_timestamps(
@@ -10759,10 +10764,10 @@ def _strategy_bracket_payloads(
         return {}
 
     stop_ticks = max(1, int(round(abs(float(entry_price) - float(stop_loss)) / tick_size)))
-    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks}}
+    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks, "type": _ORDER_TYPE_STOP}}
     if isinstance(take_profit, (int, float)):
         take_profit_ticks = max(1, int(round(abs(float(take_profit) - float(entry_price)) / tick_size)))
-        payload["takeProfitBracket"] = {"ticks": take_profit_ticks}
+        payload["takeProfitBracket"] = {"ticks": take_profit_ticks, "type": _ORDER_TYPE_LIMIT}
     return payload
 
 

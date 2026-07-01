@@ -65,6 +65,8 @@ from .journal_schemas import (
 )
 from .bot_schemas import (
     BotActivityOut,
+    BotBacktestIn,
+    BotBacktestOut,
     BotConfigCreateIn,
     BotConfigListOut,
     BotConfigOut,
@@ -204,6 +206,7 @@ from .services.bot_service import (
     stop_latest_bot_run,
     update_bot_config,
 )
+from .services.bot_backtesting import run_bot_backtest
 from .services.trade_plan_evaluator import MarketContext, TradePlan, TradePlanEvaluator
 
 logger = logging.getLogger(__name__)
@@ -1721,6 +1724,47 @@ def evaluate_trading_bot(
         db.rollback()
         raise
     return serialize_evaluation(result)
+
+
+@app.post("/api/bots/{bot_config_id}/backtest", response_model=BotBacktestOut)
+def backtest_trading_bot(
+    bot_config_id: int,
+    payload: BotBacktestIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    body = payload or BotBacktestIn()
+    try:
+        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        _require_owned_projectx_account(db, user_id=user_id, account_id=int(config.account_id))
+        client = _projectx_client_for_user(db, user_id=user_id)
+        result = run_bot_backtest(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            start=body.start,
+            end=body.end,
+            limit=body.limit,
+        )
+        db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return result
 
 
 @app.post("/api/bots/{bot_config_id}/stop", response_model=BotRunOut)

@@ -46,6 +46,8 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
   BotActivity,
+  BotBacktestInput,
+  BotBacktestResult,
   BotConfig,
   BotConfigInput,
   BotConfigListResponse,
@@ -1148,6 +1150,11 @@ export const botsApi = {
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
+    }),
+  runBacktest: (botConfigId: number, payload: BotBacktestInput) =>
+    requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+      method: "POST",
+      body: payload,
     }),
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
