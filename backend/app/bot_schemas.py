@@ -217,6 +217,7 @@ class BotMarketAnalysisOut(BaseModel):
     summary: str
     reasoning: list[str]
     risk_notes: list[str]
+    indicators: dict[str, Any] | None = None
     candle_timestamp: str | None = None
     generated_at: str | None = None
     trade_evaluation: TradeEvaluationResultOut | None = None

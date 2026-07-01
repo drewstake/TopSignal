@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import os
+import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
@@ -17,6 +19,83 @@ logger = logging.getLogger(__name__)
 _SIGNALR_RECORD_SEPARATOR = "\x1e"
 _MARKET_SUBSCRIBE_ENV = "PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE"
 _USER_SUBSCRIBE_ENV = "PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE"
+
+
+@dataclass
+class DispatchCircuitSnapshot:
+    name: str
+    state: str
+    consecutive_failures: int
+    total_failures: int
+    total_successes: int
+    skipped_dispatches: int
+    last_error: str | None
+
+
+class _DispatchCircuit:
+    """
+    Small per-stream circuit breaker for tracker dispatch.
+
+    This follows the same failure-isolation shape used by project-x-py's
+    realtime circuit breaker without pulling in the SDK dependency stack.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        failure_threshold: int,
+        recovery_seconds: float,
+        now: Callable[[], float] = time.monotonic,
+    ):
+        self._name = name
+        self._failure_threshold = max(1, int(failure_threshold))
+        self._recovery_seconds = max(0.1, float(recovery_seconds))
+        self._now = now
+        self._state = "closed"
+        self._opened_at: float | None = None
+        self._consecutive_failures = 0
+        self._total_failures = 0
+        self._total_successes = 0
+        self._skipped_dispatches = 0
+        self._last_error: str | None = None
+
+    def allow_dispatch(self) -> bool:
+        if self._state != "open":
+            return True
+
+        opened_at = self._opened_at
+        if opened_at is not None and self._now() - opened_at >= self._recovery_seconds:
+            self._state = "half_open"
+            return True
+
+        self._skipped_dispatches += 1
+        return False
+
+    def record_success(self) -> None:
+        self._state = "closed"
+        self._opened_at = None
+        self._consecutive_failures = 0
+        self._total_successes += 1
+
+    def record_failure(self, exc: Exception) -> None:
+        self._total_failures += 1
+        self._consecutive_failures += 1
+        self._last_error = str(exc)
+        if self._state == "half_open" or self._consecutive_failures >= self._failure_threshold:
+            self._state = "open"
+            self._opened_at = self._now()
+
+    def snapshot(self) -> DispatchCircuitSnapshot:
+        return DispatchCircuitSnapshot(
+            name=self._name,
+            state=self._state,
+            consecutive_failures=self._consecutive_failures,
+            total_failures=self._total_failures,
+            total_successes=self._total_successes,
+            skipped_dispatches=self._skipped_dispatches,
+            last_error=self._last_error,
+        )
 
 
 class ProjectXHubRunner:
@@ -36,6 +115,8 @@ class ProjectXHubRunner:
         user_hub_url: str | None = None,
         reconnect_base_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
+        dispatch_failure_threshold: int = 5,
+        dispatch_recovery_seconds: float = 30.0,
     ):
         self._tracker = tracker
         self._client_factory = client_factory
@@ -43,6 +124,9 @@ class ProjectXHubRunner:
         self._user_hub_url = user_hub_url or os.getenv("PROJECTX_USER_HUB_URL")
         self._reconnect_base_seconds = max(0.5, float(reconnect_base_seconds))
         self._reconnect_max_seconds = max(self._reconnect_base_seconds, float(reconnect_max_seconds))
+        self._dispatch_failure_threshold = max(1, int(dispatch_failure_threshold))
+        self._dispatch_recovery_seconds = max(0.1, float(dispatch_recovery_seconds))
+        self._dispatch_circuits: dict[str, _DispatchCircuit] = {}
 
     async def run_forever(self) -> None:
         tasks: list[asyncio.Task[Any]] = []
@@ -119,10 +203,53 @@ class ProjectXHubRunner:
                 self._dispatch_payload(stream_kind, argument)
 
     def _dispatch_payload(self, stream_kind: str, payload: Mapping[str, Any]) -> None:
-        if stream_kind == "market":
-            self._tracker.ingest_market_event(payload)
+        circuit = self._dispatch_circuit(stream_kind)
+        if not circuit.allow_dispatch():
+            logger.warning("[hubs] dispatch circuit open; dropping payload kind=%s", stream_kind)
             return
-        self._tracker.ingest_position_event(payload)
+
+        try:
+            if stream_kind == "market":
+                self._tracker.ingest_market_event(payload)
+            else:
+                self._tracker.ingest_position_event(payload)
+        except Exception as exc:
+            circuit.record_failure(exc)
+            snapshot = circuit.snapshot()
+            logger.exception(
+                "[hubs] dispatch failed kind=%s state=%s consecutive_failures=%s",
+                stream_kind,
+                snapshot.state,
+                snapshot.consecutive_failures,
+            )
+            return
+
+        circuit.record_success()
+
+    def _dispatch_circuit(self, stream_kind: str) -> _DispatchCircuit:
+        circuit = self._dispatch_circuits.get(stream_kind)
+        if circuit is None:
+            circuit = _DispatchCircuit(
+                name=stream_kind,
+                failure_threshold=self._dispatch_failure_threshold,
+                recovery_seconds=self._dispatch_recovery_seconds,
+            )
+            self._dispatch_circuits[stream_kind] = circuit
+        return circuit
+
+    def dispatch_health(self) -> dict[str, dict[str, int | str | None]]:
+        return {
+            name: {
+                "state": snapshot.state,
+                "consecutive_failures": snapshot.consecutive_failures,
+                "total_failures": snapshot.total_failures,
+                "total_successes": snapshot.total_successes,
+                "skipped_dispatches": snapshot.skipped_dispatches,
+                "last_error": snapshot.last_error,
+            }
+            for name, circuit in self._dispatch_circuits.items()
+            for snapshot in [circuit.snapshot()]
+        }
 
 
 async def _signalr_handshake(websocket: websockets.WebSocketClientProtocol) -> None:

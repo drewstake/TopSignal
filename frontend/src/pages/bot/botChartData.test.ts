@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BOT_CHART_INITIAL_BARS,
   BOT_CHART_MAX_BARS,
   BOT_CHART_MIN_BARS,
   buildBotChartQuery,
+  buildInitialBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
   buildEmaData,
@@ -296,6 +298,21 @@ describe("buildBotChartQuery", () => {
 
   it("keeps small lookbacks above the minimum chart size", () => {
     expect(buildBotChartQuery(botConfig({ lookback_bars: 25 })).limit).toBe(BOT_CHART_MIN_BARS);
+  });
+
+  it("uses a smaller first-paint window for cold chart loads", () => {
+    const window = buildInitialBotChartQuery(
+      botConfig({
+        timeframe_unit: "minute",
+        timeframe_unit_number: 5,
+        lookback_bars: 20_000,
+      }),
+      new Date("2026-04-26T14:00:00Z"),
+    );
+
+    expect(window.limit).toBe(BOT_CHART_INITIAL_BARS);
+    expect(window.start).toBe("2026-04-23T11:00:00.000Z");
+    expect(window.end).toBe("2026-04-26T14:00:00.000Z");
   });
 });
 

@@ -664,6 +664,29 @@ export interface TradeEvaluationResult {
   category_scores: Record<string, number>;
 }
 
+export interface ProjectXStyleIndicatorSnapshot {
+  rsi: number | null;
+  atr: number | null;
+  vwap: number | null;
+  bollinger: {
+    middle: number | null;
+    upper: number | null;
+    lower: number | null;
+  } | null;
+  fair_value_gaps: {
+    detected_count?: number;
+    active_count: number;
+    latest: Record<string, unknown> | null;
+  };
+  order_blocks: {
+    detected_count?: number;
+    active_count: number;
+    latest: Record<string, unknown> | null;
+  };
+  candlestick_patterns: Array<Record<string, unknown>>;
+  waddah_attar: Record<string, unknown> | null;
+}
+
 export interface BotAnalysis {
   current_price: number | null;
   previous_close: number | null;
@@ -686,6 +709,7 @@ export interface BotAnalysis {
   summary: string;
   reasoning: string[];
   risk_notes: string[];
+  indicators?: ProjectXStyleIndicatorSnapshot | null;
   /** Timestamp of the latest candle the analysis was computed from. */
   candle_timestamp?: string | null;
   generated_at?: string | null;

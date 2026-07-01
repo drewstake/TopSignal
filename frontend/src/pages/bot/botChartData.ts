@@ -4,6 +4,7 @@ import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXM
 
 export const BOT_CHART_MAX_BARS = 2_000;
 export const BOT_CHART_MIN_BARS = 300;
+export const BOT_CHART_INITIAL_BARS = BOT_CHART_MIN_BARS;
 const CHART_LOOKBACK_MULTIPLIER = 3;
 
 const UNIT_SECONDS_BY_NAME: Record<BotTimeframeUnit, number> = {
@@ -236,15 +237,24 @@ export function buildLiquidityLevels(
 export function buildBotChartQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
   const lookbackBars = Math.trunc(config.lookback_bars);
   const limit = Math.min(BOT_CHART_MAX_BARS, Math.max(BOT_CHART_MIN_BARS, lookbackBars * 4));
+  return buildBotChartQueryForLimit(config, limit, now);
+}
+
+export function buildInitialBotChartQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
+  return buildBotChartQueryForLimit(config, BOT_CHART_INITIAL_BARS, now);
+}
+
+function buildBotChartQueryForLimit(config: BotConfig, limit: number, now: Date): BotChartQueryWindow {
+  const normalizedLimit = Math.min(BOT_CHART_MAX_BARS, Math.max(1, Math.trunc(limit)));
   const timeframeSeconds =
     UNIT_SECONDS_BY_NAME[config.timeframe_unit] * Math.max(1, Math.trunc(config.timeframe_unit_number));
   const end = Number.isFinite(now.getTime()) ? now : new Date();
-  const start = new Date(end.getTime() - timeframeSeconds * limit * CHART_LOOKBACK_MULTIPLIER * 1000);
+  const start = new Date(end.getTime() - timeframeSeconds * normalizedLimit * CHART_LOOKBACK_MULTIPLIER * 1000);
 
   return {
     start: start.toISOString(),
     end: end.toISOString(),
-    limit,
+    limit: normalizedLimit,
   };
 }
 

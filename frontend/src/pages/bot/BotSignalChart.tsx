@@ -48,6 +48,7 @@ import {
   buildBotLivePriceQuery,
   buildCandlestickData,
   buildEmaData,
+  buildInitialBotChartQuery,
   buildLiquidityLevels,
   buildOlderCandlesQuery,
   buildSignalMarkers,
@@ -55,6 +56,7 @@ import {
   buildVwapData,
   buildLiveCandleFromPriceUpdate,
   toUtcTimestamp,
+  type BotChartQueryWindow,
   type LiquidityLevel,
   type LiquiditySide,
 } from "./botChartData";
@@ -330,6 +332,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   const appliedSeriesStateRef = useRef<AppliedSeriesState | null>(null);
   const requestSequenceRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const prefetchRequestAbortRef = useRef<AbortController | null>(null);
   const liveRequestSequenceRef = useRef(0);
   const liveRequestAbortRef = useRef<AbortController | null>(null);
   const lastLiveStreamEventAtRef = useRef(0);
@@ -675,12 +678,96 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     setDrawingOverlayRevision((current) => current + 1);
   }, [liquidityDragContextKey]);
 
+  const prefetchFullCandles = useCallback(
+    (input: {
+      config: BotConfig;
+      cacheKey: string;
+      queryWindow: BotChartQueryWindow;
+      requestId: number;
+    }) => {
+      prefetchRequestAbortRef.current?.abort();
+      const controller = new AbortController();
+      prefetchRequestAbortRef.current = controller;
+
+      window.setTimeout(() => {
+        void (async () => {
+          if (
+            controller.signal.aborted ||
+            requestSequenceRef.current !== input.requestId ||
+            prefetchRequestAbortRef.current !== controller
+          ) {
+            return;
+          }
+
+          const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+          setRefreshing(true);
+          try {
+            const rows = await botsApi.getCandles(
+              {
+                contractId: input.config.contract_id,
+                symbol: input.config.symbol ?? undefined,
+                start: input.queryWindow.start,
+                end: input.queryWindow.end,
+                live: false,
+                unit: input.config.timeframe_unit,
+                unitNumber: input.config.timeframe_unit_number,
+                limit: input.queryWindow.limit,
+                includePartialBar: false,
+              },
+              { signal: controller.signal },
+            );
+            if (
+              requestSequenceRef.current !== input.requestId ||
+              prefetchRequestAbortRef.current !== controller
+            ) {
+              return;
+            }
+
+            const cachedEntry = readBotCandleCache(input.cacheKey);
+            const cachedCandles = cachedEntry ? filterMarketCandlesForWindow(cachedEntry.candles, input.queryWindow) : [];
+            const mergedRows = mergeMarketCandles(cachedCandles, rows, input.queryWindow.limit);
+            const nextRows = upsertMarketCandles(
+              candlesRef.current.filter((row) => !row.is_partial),
+              mergedRows,
+              MAX_LOADED_BARS,
+            );
+            candlesRef.current = nextRows;
+            setCandles(nextRows);
+            writeBotCandleCache(input.cacheKey, mergedRows, input.queryWindow.limit);
+            setLastLoadedAt(new Date());
+            setServedFromCacheOnly(false);
+          } catch (err) {
+            if (
+              requestSequenceRef.current === input.requestId &&
+              prefetchRequestAbortRef.current === controller &&
+              !isAbortError(err) &&
+              candlesRef.current.length > 0
+            ) {
+              setServedFromCacheOnly(true);
+            }
+          } finally {
+            window.clearTimeout(timeoutId);
+            if (prefetchRequestAbortRef.current === controller) {
+              prefetchRequestAbortRef.current = null;
+            }
+            if (requestSequenceRef.current === input.requestId) {
+              setRefreshing(false);
+            }
+          }
+        })();
+      }, 0);
+    },
+    [],
+  );
+
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
       if (!chartConfig) {
         requestSequenceRef.current += 1;
         requestAbortRef.current?.abort();
         requestAbortRef.current = null;
+        prefetchRequestAbortRef.current?.abort();
+        prefetchRequestAbortRef.current = null;
         setCandles([]);
         setLiveCandle(null);
         setStreamPrice(null);
@@ -695,10 +782,12 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       const requestId = requestSequenceRef.current + 1;
       requestSequenceRef.current = requestId;
       requestAbortRef.current?.abort();
+      prefetchRequestAbortRef.current?.abort();
+      prefetchRequestAbortRef.current = null;
       const controller = new AbortController();
       requestAbortRef.current = controller;
       const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
-      const queryWindow = buildBotChartQuery(chartConfig);
+      const fullQueryWindow = buildBotChartQuery(chartConfig);
       const cacheKey = buildBotCandleCacheKey({
         contractId: chartConfig.contract_id,
         symbol: chartConfig.symbol,
@@ -707,8 +796,12 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         unitNumber: chartConfig.timeframe_unit_number,
       });
       const cachedEntry = forceRefresh ? null : readBotCandleCache(cacheKey);
-      const cachedCandles = cachedEntry ? filterMarketCandlesForWindow(cachedEntry.candles, queryWindow) : [];
-      const hydrateFromCache = shouldHydrateChartFromCache(cachedCandles.length, queryWindow.limit);
+      const cachedCandles = cachedEntry ? filterMarketCandlesForWindow(cachedEntry.candles, fullQueryWindow) : [];
+      const hydrateFromCache = shouldHydrateChartFromCache(cachedCandles.length, fullQueryWindow.limit);
+      const canUseFastInitialWindow = !silent && !forceRefresh && candlesRef.current.length === 0 && !hydrateFromCache;
+      const queryWindow = canUseFastInitialWindow
+        ? buildInitialBotChartQuery(chartConfig, new Date(fullQueryWindow.end))
+        : fullQueryWindow;
 
       if (cachedEntry && hydrateFromCache) {
         // Paint cached bars immediately on cold loads; when in-memory data already
@@ -747,16 +840,24 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         if (requestSequenceRef.current !== requestId) {
           return;
         }
-        const mergedRows = forceRefresh ? rows : mergeMarketCandles(cachedCandles, rows, queryWindow.limit);
+        const mergedRows = forceRefresh ? rows : mergeMarketCandles(cachedCandles, rows, fullQueryWindow.limit);
         // Keep older history the user already paged in; the fetch window only covers the recent range.
         const nextRows = forceRefresh
           ? mergedRows
           : upsertMarketCandles(candlesRef.current.filter((row) => !row.is_partial), mergedRows, MAX_LOADED_BARS);
         setCandles(nextRows);
         candlesRef.current = nextRows;
-        writeBotCandleCache(cacheKey, mergedRows, queryWindow.limit);
+        writeBotCandleCache(cacheKey, mergedRows, fullQueryWindow.limit);
         setLastLoadedAt(new Date());
         setServedFromCacheOnly(false);
+        if (canUseFastInitialWindow && fullQueryWindow.limit > queryWindow.limit) {
+          prefetchFullCandles({
+            config: chartConfig,
+            cacheKey,
+            queryWindow: fullQueryWindow,
+            requestId,
+          });
+        }
         if (forceRefresh) {
           // A forced refresh resets pagination and gap-repair bookkeeping.
           hasMoreHistoryRef.current = true;
@@ -792,7 +893,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         }
       }
     },
-    [chartConfig],
+    [chartConfig, prefetchFullCandles],
   );
 
   const loadLivePrice = useCallback(async ({ force = false }: LoadLivePriceOptions = {}) => {
@@ -2010,6 +2111,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   useEffect(() => {
     return () => {
       requestAbortRef.current?.abort();
+      prefetchRequestAbortRef.current?.abort();
       liveRequestAbortRef.current?.abort();
       historyRequestAbortRef.current?.abort();
       repairRequestAbortRef.current?.abort();

@@ -4,7 +4,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -21,9 +21,17 @@ from ..models import (
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
-from .instruments import load_instrument_specs, normalize_symbol_key
+from .instruments import DEFAULT_INSTRUMENT_SPECS, build_point_value_lookup, load_instrument_specs, normalize_symbol_key, resolve_point_value
 from .projectx_accounts import ACCOUNT_STATE_ACTIVE, get_projectx_account_row
-from .projectx_client import ProjectXClient
+from .projectx_client import ProjectXClient, ProjectXClientError
+from .technical_indicators import (
+    atr_series as indicator_atr_series,
+    bollinger_bands as indicator_bollinger_bands,
+    build_projectx_style_indicator_snapshot,
+    detect_fair_value_gaps as detect_projectx_style_fair_value_gaps,
+    ema_series as indicator_ema_series,
+    rsi_series as indicator_rsi_series,
+)
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
 from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
 
@@ -45,6 +53,8 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_MARKET_ANALYSIS_MIN_CANDLES = 10
+_MARKET_ANALYSIS_CONTEXT_BARS = 100
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
@@ -384,6 +394,12 @@ class FairValueGapZone:
     upper_price: float
     timestamp: datetime
     source_index: int
+    gap_size: float | None = None
+    gap_percent: float | None = None
+    mitigated: bool = False
+    mitigation_index: int | None = None
+    mitigation_timestamp: datetime | None = None
+    mitigation_level: float | None = None
 
 
 @dataclass(frozen=True)
@@ -652,7 +668,14 @@ def evaluate_bot_config(
     resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
     candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
-    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    analysis_candles = _market_analysis_candles_for_evaluation(
+        db,
+        user_id=user_id,
+        config=config,
+        client=client,
+        strategy_candles=candles,
+    )
+    analysis = build_bot_market_analysis(candles=analysis_candles, config=config, signal=signal)
     trade_evaluation = build_signal_trade_evaluation(candles=candles, config=config, signal=signal, analysis=analysis)
     if trade_evaluation is not None:
         analysis["trade_evaluation"] = trade_evaluation
@@ -695,6 +718,8 @@ def evaluate_bot_config(
             requested_order_size=signal_order_size,
             current_position_qty=current_position_qty,
             target_position_qty=target_position_qty,
+            signal_price=signal.price,
+            signal_payload=signal.raw_payload if isinstance(signal.raw_payload, Mapping) else None,
             dry_run=effective_dry_run,
             confirm_live_order_routing=confirm_live_order_routing,
         )
@@ -1110,6 +1135,36 @@ def fetch_candles_and_evaluate_strategy(
     return candles, signal
 
 
+def _market_analysis_candles_for_evaluation(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+    strategy_candles: list[ProjectXMarketCandle],
+) -> list[ProjectXMarketCandle]:
+    if _usable_market_analysis_candle_count(strategy_candles) >= _MARKET_ANALYSIS_MIN_CANDLES:
+        return strategy_candles
+
+    try:
+        context_candles = fetch_and_store_candles(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            minimum_lookback_bars=_MARKET_ANALYSIS_CONTEXT_BARS,
+        )
+    except ProjectXClientError:
+        return strategy_candles
+    if _usable_market_analysis_candle_count(context_candles) > _usable_market_analysis_candle_count(strategy_candles):
+        return context_candles
+    return strategy_candles
+
+
+def _usable_market_analysis_candle_count(candles: list[ProjectXMarketCandle]) -> int:
+    return len(_closed_candles(candles) or candles)
+
+
 def fetch_and_store_candles(
     db: Session,
     *,
@@ -1119,7 +1174,7 @@ def fetch_and_store_candles(
     minimum_lookback_bars: int | None = None,
 ) -> list[ProjectXMarketCandle]:
     now = datetime.now(timezone.utc)
-    target_bars = max(25, int(config.lookback_bars), int(minimum_lookback_bars or 0))
+    target_bars = max(_MARKET_ANALYSIS_CONTEXT_BARS, int(config.lookback_bars), int(minimum_lookback_bars or 0))
     unit_seconds = _UNIT_SECONDS_BY_NAME[str(config.timeframe_unit)]
     lookback_seconds = unit_seconds * int(config.timeframe_unit_number) * target_bars * 3
     start = now - timedelta(seconds=max(lookback_seconds, unit_seconds * int(config.timeframe_unit_number) * 25))
@@ -3100,37 +3155,23 @@ def _evaluate_single_fvg_gap(
 
 
 def _detect_fair_value_gaps(candles: list[ProjectXMarketCandle]) -> list[FairValueGapZone]:
-    gaps: list[FairValueGapZone] = []
-    for index in range(2, len(candles)):
-        left = candles[index - 2]
-        right = candles[index]
-        left_high = float(left.high_price)
-        left_low = float(left.low_price)
-        right_high = float(right.high_price)
-        right_low = float(right.low_price)
-        timestamp = _as_utc(right.candle_timestamp)
-
-        if right_low > left_high:
-            gaps.append(
-                FairValueGapZone(
-                    side="bullish",
-                    lower_price=left_high,
-                    upper_price=right_low,
-                    timestamp=timestamp,
-                    source_index=index,
-                )
-            )
-        if right_high < left_low:
-            gaps.append(
-                FairValueGapZone(
-                    side="bearish",
-                    lower_price=right_high,
-                    upper_price=left_low,
-                    timestamp=timestamp,
-                    source_index=index,
-                )
-            )
-    return gaps
+    gaps = detect_projectx_style_fair_value_gaps(candles, check_mitigation=True)
+    return [
+        FairValueGapZone(
+            side=gap.side,
+            lower_price=gap.lower_price,
+            upper_price=gap.upper_price,
+            timestamp=gap.timestamp,
+            source_index=gap.source_index,
+            gap_size=gap.gap_size,
+            gap_percent=gap.gap_percent,
+            mitigated=gap.mitigated,
+            mitigation_index=gap.mitigation_index,
+            mitigation_timestamp=gap.mitigation_timestamp,
+            mitigation_level=gap.mitigation_level,
+        )
+        for gap in gaps
+    ]
 
 
 def _find_fvg_invalidation_candle(
@@ -3297,6 +3338,12 @@ def _serialize_fair_value_gap(gap: FairValueGapZone) -> dict[str, Any]:
         "upper_price": gap.upper_price,
         "timestamp": gap.timestamp.isoformat(),
         "source_index": gap.source_index,
+        "gap_size": gap.gap_size,
+        "gap_percent": gap.gap_percent,
+        "mitigated": gap.mitigated,
+        "mitigation_index": gap.mitigation_index,
+        "mitigation_timestamp": gap.mitigation_timestamp.isoformat() if gap.mitigation_timestamp is not None else None,
+        "mitigation_level": gap.mitigation_level,
     }
 
 
@@ -6619,34 +6666,16 @@ def _bollinger_band_values(
     period: int,
     stddev_multiplier: float,
 ) -> tuple[list[float | None], list[float | None], list[float | None]]:
-    normalized_period = max(1, int(period))
-    middle: list[float | None] = [None] * len(closes)
-    upper: list[float | None] = [None] * len(closes)
-    lower: list[float | None] = [None] * len(closes)
-    if len(closes) < normalized_period:
-        return middle, upper, lower
-
-    for index in range(normalized_period - 1, len(closes)):
-        window = closes[index - normalized_period + 1 : index + 1]
-        average = _average(window)
-        variance = sum((value - average) ** 2 for value in window) / normalized_period
-        deviation = variance ** 0.5
-        middle[index] = average
-        upper[index] = average + deviation * stddev_multiplier
-        lower[index] = average - deviation * stddev_multiplier
-
-    return middle, upper, lower
+    bands = indicator_bollinger_bands(closes, period=period, stddev_multiplier=stddev_multiplier)
+    return (
+        [point.middle for point in bands],
+        [point.upper for point in bands],
+        [point.lower for point in bands],
+    )
 
 
 def _ema_series(values: list[float], *, period: int) -> list[float]:
-    if not values:
-        return []
-    normalized_period = max(1, int(period))
-    alpha = 2 / (normalized_period + 1)
-    output = [float(values[0])]
-    for value in values[1:]:
-        output.append((float(value) * alpha) + (output[-1] * (1 - alpha)))
-    return output
+    return [value for value in indicator_ema_series(values, period) if value is not None]
 
 
 def _normalized_strategy_period_values(strategy_type: str, *, fast_period: int, slow_period: int) -> tuple[int, int]:
@@ -7716,18 +7745,7 @@ def _aligned_candle_pairs_by_timestamp(
 
 
 def _ema_series(values: list[float], *, period: int) -> list[float | None]:
-    normalized_period = max(1, int(period))
-    output: list[float | None] = [None] * len(values)
-    if len(values) < normalized_period:
-        return output
-
-    multiplier = 2.0 / (normalized_period + 1)
-    ema = _average(values[:normalized_period])
-    output[normalized_period - 1] = ema
-    for index in range(normalized_period, len(values)):
-        ema = (values[index] - ema) * multiplier + ema
-        output[index] = ema
-    return output
+    return indicator_ema_series(values, period)
 
 
 def _macd_state(
@@ -7784,29 +7802,7 @@ def _macd_state(
 
 
 def _atr_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
-    normalized_period = max(1, int(period))
-    output: list[float | None] = [None] * len(candles)
-    if len(candles) < normalized_period:
-        return output
-
-    true_ranges: list[float] = []
-    previous_close: float | None = None
-    for candle in candles:
-        high = float(candle.high_price)
-        low = float(candle.low_price)
-        if previous_close is None:
-            true_range = high - low
-        else:
-            true_range = max(high - low, abs(high - previous_close), abs(low - previous_close))
-        true_ranges.append(true_range)
-        previous_close = float(candle.close_price)
-
-    atr = _average(true_ranges[:normalized_period])
-    output[normalized_period - 1] = atr
-    for index in range(normalized_period, len(candles)):
-        atr = ((atr * (normalized_period - 1)) + true_ranges[index]) / normalized_period
-        output[index] = atr
-    return output
+    return indicator_atr_series(candles, period)
 
 
 def _relative_volume_ratio(
@@ -7829,27 +7825,7 @@ def _relative_volume_ratio(
 
 
 def _rsi_series(closes: list[float], *, period: int) -> list[float | None]:
-    normalized_period = max(1, int(period))
-    output: list[float | None] = [None] * len(closes)
-    if len(closes) < normalized_period + 1:
-        return output
-
-    gains: list[float] = []
-    losses: list[float] = []
-    for index in range(1, len(closes)):
-        change = closes[index] - closes[index - 1]
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
-
-    average_gain = _average(gains[:normalized_period])
-    average_loss = _average(losses[:normalized_period])
-    output[normalized_period] = _wilder_rsi(average_gain, average_loss)
-    for index in range(normalized_period, len(gains)):
-        average_gain = ((average_gain * (normalized_period - 1)) + gains[index]) / normalized_period
-        average_loss = ((average_loss * (normalized_period - 1)) + losses[index]) / normalized_period
-        output[index + 1] = _wilder_rsi(average_gain, average_loss)
-
-    return output
+    return indicator_rsi_series(closes, period)
 
 
 def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
@@ -8108,19 +8084,7 @@ def _timeframe_from_seconds(seconds: int, *, allow_seconds: bool) -> tuple[str, 
 
 
 def _ema_series(values: list[float], period: int) -> list[float | None]:
-    normalized_period = max(1, int(period))
-    if len(values) < normalized_period:
-        return [None] * len(values)
-
-    seed = _average(values[:normalized_period])
-    multiplier = 2 / (normalized_period + 1)
-    output: list[float | None] = [None] * (normalized_period - 1)
-    output.append(seed)
-    current = seed
-    for value in values[normalized_period:]:
-        current = ((value - current) * multiplier) + current
-        output.append(current)
-    return output
+    return indicator_ema_series(values, period)
 
 
 def _absolute_percent_delta(left: float, right: float, *, reference: float) -> float:
@@ -8238,6 +8202,8 @@ def evaluate_risk_gates(
     requested_order_size: float | None = None,
     current_position_qty: float = 0.0,
     target_position_qty: float | None = None,
+    signal_price: float | None = None,
+    signal_payload: Mapping[str, Any] | None = None,
     dry_run: bool,
     confirm_live_order_routing: bool,
 ) -> list[RiskBlock]:
@@ -8288,6 +8254,22 @@ def evaluate_risk_gates(
     daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
     if daily_pnl <= -float(config.max_daily_loss):
         blocks.append(RiskBlock(code="max_daily_loss", message="Account has reached the configured daily loss limit.", severity="critical"))
+    blocks.extend(
+        _protective_order_risk_blocks(
+            db,
+            config=config,
+            action=action,
+            contract_id=contract_id,
+            symbol=symbol,
+            signal_price=signal_price,
+            signal_payload=signal_payload,
+            order_size=order_size,
+            current_position_qty=current_position_qty,
+            target_position_qty=target_position_qty,
+            daily_pnl=daily_pnl,
+            dry_run=dry_run,
+        )
+    )
     delayed_orb_loss_block = _delayed_orb_session_loss_block(db, user_id=user_id, config=config)
     if delayed_orb_loss_block is not None:
         blocks.append(delayed_orb_loss_block)
@@ -8304,6 +8286,143 @@ def evaluate_risk_gates(
         blocks.append(cooldown_block)
     if action not in {"BUY", "SELL"}:
         blocks.append(RiskBlock(code="unsupported_action", message="Only BUY and SELL actions can create order attempts."))
+    return blocks
+
+
+def _protective_order_risk_blocks(
+    db: Session,
+    *,
+    config: BotConfig,
+    action: str,
+    contract_id: str,
+    symbol: str | None,
+    signal_price: float | None,
+    signal_payload: Mapping[str, Any] | None,
+    order_size: float,
+    current_position_qty: float,
+    target_position_qty: float | None,
+    daily_pnl: float,
+    dry_run: bool,
+) -> list[RiskBlock]:
+    if action not in {"BUY", "SELL"}:
+        return []
+
+    payload = dict(signal_payload or {})
+    signal_category = str(payload.get("signal_category") or "").strip().lower()
+    if signal_category == "exit":
+        return []
+
+    signed_change = float(order_size) if action == "BUY" else -float(order_size)
+    resulting_position_qty = (
+        float(target_position_qty)
+        if target_position_qty is not None
+        else float(current_position_qty) + signed_change
+    )
+    risk_qty = abs(resulting_position_qty)
+    if risk_qty <= 1e-9:
+        return []
+
+    blocks: list[RiskBlock] = []
+    entry_price = _optional_float(payload.get("entry_price"))
+    if entry_price is None:
+        entry_price = _optional_float(signal_price)
+    stop_loss = _optional_float(payload.get("stop_loss"))
+
+    if stop_loss is None:
+        if not dry_run:
+            blocks.append(
+                RiskBlock(
+                    code="missing_protective_stop",
+                    message="Live bot orders require a strategy stop_loss before routing.",
+                    severity="critical",
+                )
+            )
+        return blocks
+
+    if entry_price is None:
+        if not dry_run:
+            blocks.append(
+                RiskBlock(
+                    code="missing_entry_price",
+                    message="Live bot orders require an entry price to validate stop risk.",
+                    severity="critical",
+                )
+            )
+        return blocks
+
+    stop_distance = abs(float(entry_price) - float(stop_loss))
+    if action == "BUY" and float(stop_loss) >= float(entry_price):
+        blocks.append(
+            RiskBlock(
+                code="invalid_protective_stop",
+                message="BUY orders require stop_loss below the entry price.",
+                severity="critical",
+            )
+        )
+    if action == "SELL" and float(stop_loss) <= float(entry_price):
+        blocks.append(
+            RiskBlock(
+                code="invalid_protective_stop",
+                message="SELL orders require stop_loss above the entry price.",
+                severity="critical",
+            )
+        )
+
+    take_profit = _optional_float(payload.get("take_profit"))
+    if take_profit is not None:
+        if action == "BUY" and float(take_profit) <= float(entry_price):
+            blocks.append(
+                RiskBlock(
+                    code="invalid_take_profit",
+                    message="BUY orders require take_profit above the entry price.",
+                    severity="critical",
+                )
+            )
+        if action == "SELL" and float(take_profit) >= float(entry_price):
+            blocks.append(
+                RiskBlock(
+                    code="invalid_take_profit",
+                    message="SELL orders require take_profit below the entry price.",
+                    severity="critical",
+                )
+            )
+
+    tick_size = _instrument_tick_size(db, symbol=symbol, contract_id=contract_id)
+    if tick_size is not None and tick_size > 0 and stop_distance + 1e-9 < tick_size:
+        blocks.append(
+            RiskBlock(
+                code="protective_stop_too_close",
+                message="Protective stop is closer than one instrument tick.",
+                severity="critical",
+            )
+        )
+
+    point_value = _instrument_point_value(db, symbol=symbol, contract_id=contract_id)
+    if point_value is None or point_value <= 0:
+        if not dry_run:
+            blocks.append(
+                RiskBlock(
+                    code="unknown_point_value",
+                    message="Live bot orders require instrument point value metadata to validate stop risk.",
+                    severity="critical",
+                )
+            )
+        return blocks
+
+    projected_stop_loss = stop_distance * risk_qty * point_value
+    remaining_daily_loss = max(0.0, float(config.max_daily_loss) + min(float(daily_pnl), 0.0))
+    if projected_stop_loss > remaining_daily_loss + 1e-9:
+        blocks.append(
+            RiskBlock(
+                code="stop_risk_exceeds_daily_budget",
+                message=(
+                    "Projected stop loss exceeds remaining daily loss budget "
+                    f"(${projected_stop_loss:.2f} risk vs ${remaining_daily_loss:.2f} remaining)."
+                ),
+                severity="critical",
+            )
+        )
+
     return blocks
 
 
@@ -8562,12 +8681,12 @@ def build_bot_market_analysis(
     if not closed_candles and candles:
         risk_notes.append("No closed candles were available, so the analysis used the available candle rows.")
 
-    if len(analysis_candles) < 10:
+    if len(analysis_candles) < _MARKET_ANALYSIS_MIN_CANDLES:
         return _neutral_market_analysis_payload(
             analysis_candles,
             risk_notes=[
                 *risk_notes,
-                f"Only {len(analysis_candles)} candle(s) were available; at least 10 are needed for a reliable heuristic read.",
+                f"Only {len(analysis_candles)} candle(s) were available; at least {_MARKET_ANALYSIS_MIN_CANDLES} are needed for a reliable heuristic read.",
             ],
         )
 
@@ -8591,6 +8710,7 @@ def build_bot_market_analysis(
 
     volume_ratio = _analysis_volume_ratio(analysis_candles)
     volume_state = _classify_analysis_volume(volume_ratio)
+    indicator_snapshot = build_projectx_style_indicator_snapshot(analysis_candles)
 
     requested_fast = int(getattr(config, "fast_period", 9) or 9)
     requested_slow = int(getattr(config, "slow_period", 21) or 21)
@@ -8657,6 +8777,7 @@ def build_bot_market_analysis(
             f"Latest volume is {float(latest.volume):.0f} versus recent average ratio "
             f"{_format_analysis_ratio(volume_ratio)}, classifying volume as {volume_state}."
         ),
+        _analysis_indicator_reasoning(indicator_snapshot),
         _analysis_level_reasoning(nearest_support=nearest_support, nearest_resistance=nearest_resistance),
         _analysis_signal_reasoning(signal.action),
     ]
@@ -8699,9 +8820,28 @@ def build_bot_market_analysis(
         "summary": summary,
         "reasoning": reasoning,
         "risk_notes": risk_notes,
+        "indicators": indicator_snapshot,
         "candle_timestamp": _as_utc(latest.candle_timestamp).isoformat(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _analysis_indicator_reasoning(indicators: dict[str, Any]) -> str:
+    fvg_state = indicators.get("fair_value_gaps") if isinstance(indicators.get("fair_value_gaps"), dict) else {}
+    order_block_state = indicators.get("order_blocks") if isinstance(indicators.get("order_blocks"), dict) else {}
+    patterns = indicators.get("candlestick_patterns") if isinstance(indicators.get("candlestick_patterns"), list) else []
+    waddah = indicators.get("waddah_attar") if isinstance(indicators.get("waddah_attar"), dict) else {}
+    active_fvg = int(fvg_state.get("active_count") or 0)
+    active_order_blocks = int(order_block_state.get("active_count") or 0)
+    pattern_names = ", ".join(str(pattern.get("name")) for pattern in patterns[:3] if isinstance(pattern, dict))
+    wae_direction = "bullish" if waddah.get("bullish") else "bearish" if waddah.get("bearish") else "neutral"
+    if not pattern_names:
+        pattern_names = "none on the latest candle"
+    return (
+        f"ProjectX-style confluence shows {active_fvg} active FVG(s), "
+        f"{active_order_blocks} active order block(s), latest candle pattern(s): {pattern_names}, "
+        f"and WAE momentum is {wae_direction}."
+    )
 
 
 def _neutral_market_analysis_payload(
@@ -8745,6 +8885,7 @@ def _neutral_market_analysis_payload(
             "Not enough candle history is available to calculate trend, volatility, volume, and swing levels together.",
         ],
         "risk_notes": risk_notes,
+        "indicators": build_projectx_style_indicator_snapshot(candles),
         "candle_timestamp": _as_utc(candles[-1].candle_timestamp).isoformat() if candles else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -9455,7 +9596,6 @@ def load_latest_bot_entry_plan(
 
 
 def _instrument_tick_size(db: Session, *, symbol: str | None, contract_id: str | None) -> float | None:
-    specs = load_instrument_specs(db)
     candidate_keys = _unique_text_values(
         [
             normalize_symbol_key(symbol),
@@ -9465,10 +9605,33 @@ def _instrument_tick_size(db: Session, *, symbol: str | None, contract_id: str |
         ]
     )
     for candidate in candidate_keys:
+        spec = DEFAULT_INSTRUMENT_SPECS.get(candidate)
+        if spec is not None and float(spec.tick_size) > 0:
+            return float(spec.tick_size)
+
+    specs = load_instrument_specs(db)
+    for candidate in candidate_keys:
         spec = specs.get(candidate)
         if spec is not None and float(spec.tick_size) > 0:
             return float(spec.tick_size)
     return None
+
+
+def _instrument_point_value(db: Session, *, symbol: str | None, contract_id: str | None) -> float | None:
+    default_point_value = resolve_point_value(
+        symbol=symbol,
+        contract_id=contract_id,
+        point_value_by_symbol=build_point_value_lookup(DEFAULT_INSTRUMENT_SPECS),
+    )
+    if default_point_value is not None and default_point_value > 0:
+        return default_point_value
+
+    specs = load_instrument_specs(db)
+    return resolve_point_value(
+        symbol=symbol,
+        contract_id=contract_id,
+        point_value_by_symbol=build_point_value_lookup(specs),
+    )
 
 
 def _stop_running_bot_runs(

@@ -41,3 +41,32 @@ def test_append_query_normalizes_documented_https_hub_url_to_wss():
         _append_query("https://rtc.topstepx.com/hubs/market", {"access_token": "token"})
         == "wss://rtc.topstepx.com/hubs/market?access_token=token"
     )
+
+
+def test_dispatch_circuit_isolates_repeated_tracker_failures():
+    class FailingTracker(StreamingPnlTracker):
+        def __init__(self):
+            super().__init__()
+            self.market_calls = 0
+
+        def ingest_market_event(self, payload):
+            self.market_calls += 1
+            raise ValueError("bad market payload")
+
+    tracker = FailingTracker()
+    runner = ProjectXHubRunner(
+        tracker=tracker,
+        market_hub_url="wss://example.test/hubs/market",
+        dispatch_failure_threshold=2,
+        dispatch_recovery_seconds=60,
+    )
+
+    runner._dispatch_payload("market", {"bad": True})
+    runner._dispatch_payload("market", {"bad": True})
+    runner._dispatch_payload("market", {"bad": True})
+
+    health = runner.dispatch_health()["market"]
+    assert tracker.market_calls == 2
+    assert health["state"] == "open"
+    assert health["total_failures"] == 2
+    assert health["skipped_dispatches"] == 1
