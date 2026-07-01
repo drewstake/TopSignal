@@ -70,6 +70,8 @@ class BacktestPosition:
     take_profit: float | None
     signal_reason: str
     raw_payload: Mapping[str, Any] | None
+    initial_stop_loss: float | None = None
+    stop_loss_reason: str = "stop_loss"
     bars_held: int = 0
     max_favorable_points: float = 0.0
     max_adverse_points: float = 0.0
@@ -187,6 +189,7 @@ def run_bot_backtest(
             "history_window": "Blank start uses the farthest window supported by the selected timeframe and 20,000-bar backtest cap.",
             "entry_model": "Signals enter at the closed signal candle price.",
             "exit_model": "Stops and targets are filled if a later candle trades through them; same-bar stop/target conflicts use the stop first.",
+            "managed_exit_model": "Break-even, profit-lock, trailing-stop, and time-stop payloads are applied after each completed replay bar.",
             "fees": "Net PnL applies the existing Topstep commission model with zero broker fee input.",
             "positioning": "The replay holds at most one simulated position at a time.",
         },
@@ -353,6 +356,22 @@ def _replay_bot(
                 daily_net_pnl[day_key] = daily_net_pnl.get(day_key, 0.0) + trade.net_pnl
                 last_exit_time = timestamp
                 position = None
+            else:
+                managed_exit = _apply_managed_position_controls(position, candle)
+                if managed_exit is not None:
+                    trade = _close_position(
+                        position,
+                        exit_time=timestamp,
+                        exit_price=managed_exit["price"],
+                        exit_reason=managed_exit["reason"],
+                        point_value=point_value,
+                        trade_id=len(trades) + 1,
+                        config=config,
+                    )
+                    trades.append(trade)
+                    daily_net_pnl[day_key] = daily_net_pnl.get(day_key, 0.0) + trade.net_pnl
+                    last_exit_time = timestamp
+                    position = None
 
         entry_allowed = _backtest_entry_allowed(
             config=config,
@@ -598,6 +617,7 @@ def _evaluate_non_topbot_signal(
 def _open_position(*, config: BotConfig, signal: SignalResult, candle: ProjectXMarketCandle) -> BacktestPosition:
     payload = signal.raw_payload if isinstance(signal.raw_payload, Mapping) else {}
     entry_price = _optional_float(payload.get("entry_price")) or _signal_price(signal, candle)
+    stop_loss = _optional_float(payload.get("stop_loss"))
     quantity = (
         _optional_float(payload.get("effective_order_size"))
         or _optional_float(payload.get("order_size"))
@@ -609,12 +629,13 @@ def _open_position(*, config: BotConfig, signal: SignalResult, candle: ProjectXM
         quantity=max(0.0, float(quantity)),
         entry_time=_as_utc(signal.candle_timestamp or candle.candle_timestamp),
         entry_price=float(entry_price),
-        stop_loss=_optional_float(payload.get("stop_loss")),
+        stop_loss=stop_loss,
         take_profit=_optional_float(payload.get("take_profit"))
         or _optional_float(payload.get("final_take_profit"))
         or _optional_float(payload.get("partial_take_profit")),
         signal_reason=signal.reason,
         raw_payload=payload,
+        initial_stop_loss=stop_loss,
     )
 
 
@@ -630,6 +651,127 @@ def _update_position_excursion(position: BacktestPosition, candle: ProjectXMarke
     position.max_favorable_points = max(position.max_favorable_points, favorable)
     position.max_adverse_points = min(position.max_adverse_points, adverse)
     position.bars_held += 1
+
+
+def _apply_managed_position_controls(
+    position: BacktestPosition,
+    candle: ProjectXMarketCandle,
+) -> dict[str, float | str] | None:
+    _apply_break_even_stop(position, candle)
+    _apply_profit_lock_stop(position, candle)
+    _apply_atr_trailing_stop(position, candle)
+    return _time_stop_exit(position, candle)
+
+
+def _apply_break_even_stop(position: BacktestPosition, candle: ProjectXMarketCandle) -> None:
+    payload = _position_payload(position)
+    break_even = _mapping_value(payload.get("break_even"))
+    if not bool(break_even.get("enabled")):
+        return
+    trigger_r = _optional_float(break_even.get("trigger_r"))
+    risk_points = _position_initial_risk_points(position)
+    if trigger_r is None or trigger_r <= 0 or risk_points is None:
+        return
+    if position.max_favorable_points >= risk_points * trigger_r:
+        _tighten_position_stop(position, position.entry_price, float(candle.close_price), reason="break_even")
+
+
+def _apply_profit_lock_stop(position: BacktestPosition, candle: ProjectXMarketCandle) -> None:
+    payload = _position_payload(position)
+    profit_lock = _mapping_value(payload.get("profit_lock"))
+    if not bool(profit_lock.get("enabled")):
+        return
+    trigger_r = _optional_float(profit_lock.get("trigger_r"))
+    lock_r = _optional_float(profit_lock.get("lock_r"))
+    risk_points = _position_initial_risk_points(position)
+    if trigger_r is None or trigger_r <= 0 or lock_r is None or lock_r <= 0 or risk_points is None:
+        return
+    if position.max_favorable_points < risk_points * trigger_r:
+        return
+    lock_points = risk_points * lock_r
+    candidate = position.entry_price + lock_points if position.side == "BUY" else position.entry_price - lock_points
+    _tighten_position_stop(position, candidate, float(candle.close_price), reason="profit_lock")
+
+
+def _apply_atr_trailing_stop(position: BacktestPosition, candle: ProjectXMarketCandle) -> None:
+    payload = _position_payload(position)
+    trailing_stop = _mapping_value(payload.get("trailing_stop"))
+    if not bool(trailing_stop.get("enabled")):
+        return
+    mode = str(trailing_stop.get("mode") or "").strip().lower()
+    if mode != "atr" or position.max_favorable_points <= 0:
+        return
+    atr_multiplier = _optional_float(trailing_stop.get("atr_multiplier"))
+    atr = _position_atr_reference(position)
+    if atr_multiplier is None or atr_multiplier <= 0 or atr is None or atr <= 0:
+        return
+    if position.side == "BUY":
+        candidate = position.entry_price + position.max_favorable_points - atr * atr_multiplier
+    else:
+        candidate = position.entry_price - position.max_favorable_points + atr * atr_multiplier
+    _tighten_position_stop(position, candidate, float(candle.close_price), reason="trailing_stop")
+
+
+def _time_stop_exit(position: BacktestPosition, candle: ProjectXMarketCandle) -> dict[str, float | str] | None:
+    payload = _position_payload(position)
+    time_stop = _mapping_value(payload.get("time_stop"))
+    if not bool(time_stop.get("enabled")):
+        return None
+    bars = int(_optional_float(time_stop.get("bars")) or 0)
+    if bars <= 0 or position.bars_held < bars:
+        return None
+    return {"price": float(candle.close_price), "reason": "time_stop"}
+
+
+def _tighten_position_stop(position: BacktestPosition, candidate: float, current_price: float, *, reason: str) -> None:
+    if not math.isfinite(float(candidate)) or not math.isfinite(float(current_price)):
+        return
+    if position.side == "BUY":
+        if current_price < candidate:
+            return
+        if position.stop_loss is None or candidate > position.stop_loss:
+            position.stop_loss = float(candidate)
+            position.stop_loss_reason = reason
+    else:
+        if current_price > candidate:
+            return
+        if position.stop_loss is None or candidate < position.stop_loss:
+            position.stop_loss = float(candidate)
+            position.stop_loss_reason = reason
+
+
+def _position_initial_risk_points(position: BacktestPosition) -> float | None:
+    stop_loss = position.initial_stop_loss if position.initial_stop_loss is not None else position.stop_loss
+    if stop_loss is None:
+        return None
+    risk_points = abs(float(position.entry_price) - float(stop_loss))
+    return risk_points if risk_points > 1e-9 and math.isfinite(risk_points) else None
+
+
+def _position_atr_reference(position: BacktestPosition) -> float | None:
+    payload = _position_payload(position)
+    trailing_stop = _mapping_value(payload.get("trailing_stop"))
+    candidates = [
+        trailing_stop.get("atr"),
+        payload.get("atr"),
+        payload.get("latest_atr"),
+    ]
+    topbot_payload = _mapping_value(payload.get("topbot_adaptive"))
+    market_context = _mapping_value(topbot_payload.get("market_context"))
+    candidates.append(market_context.get("atr"))
+    for value in candidates:
+        parsed = _optional_float(value)
+        if parsed is not None and parsed > 0:
+            return parsed
+    return None
+
+
+def _position_payload(position: BacktestPosition) -> Mapping[str, Any]:
+    return position.raw_payload if isinstance(position.raw_payload, Mapping) else {}
+
+
+def _mapping_value(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _close_position(
@@ -683,14 +825,14 @@ def _stop_or_target_exit(position: BacktestPosition, candle: ProjectXMarketCandl
         stop_hit = position.stop_loss is not None and low <= position.stop_loss
         target_hit = position.take_profit is not None and high >= position.take_profit
         if stop_hit:
-            return {"price": float(position.stop_loss), "reason": "stop_loss"}
+            return {"price": float(position.stop_loss), "reason": position.stop_loss_reason or "stop_loss"}
         if target_hit:
             return {"price": float(position.take_profit), "reason": "take_profit"}
     else:
         stop_hit = position.stop_loss is not None and high >= position.stop_loss
         target_hit = position.take_profit is not None and low <= position.take_profit
         if stop_hit:
-            return {"price": float(position.stop_loss), "reason": "stop_loss"}
+            return {"price": float(position.stop_loss), "reason": position.stop_loss_reason or "stop_loss"}
         if target_hit:
             return {"price": float(position.take_profit), "reason": "take_profit"}
     return None

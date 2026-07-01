@@ -164,12 +164,27 @@ _TOPBOT_ADAPTIVE_DEFAULTS = {
     "minimum_reward_risk": 1.5,
     "minimum_directional_votes": 2,
     "max_opposing_votes": 1,
-    "enable_trailing_stop": True,
+    "enable_trailing_stop": False,
     "trailing_stop_mode": "atr",
     "trailing_atr_multiplier": 2.0,
-    "move_to_breakeven_at_r": 1.0,
+    "move_to_breakeven_at_r": 0.75,
+    "profit_lock_at_r": 1.25,
+    "profit_lock_r": 0.25,
     "time_stop_bars": 6,
     "block_expired_contracts": False,
+    "enable_empirical_filters": True,
+    "block_outside_preferred_session": True,
+    "preferred_session_start_minutes": 65,
+    "preferred_session_end_minutes": 100,
+    "block_short_unknown_regime": True,
+    "early_session_minutes": 60,
+    "early_session_min_score": 82.0,
+    "early_session_min_confidence": 72.0,
+    "early_session_min_votes": 3,
+    "long_continuation_min_score": 82.0,
+    "long_continuation_min_confidence": 72.0,
+    "long_continuation_min_votes": 3,
+    "long_continuation_min_reward_risk": 2.0,
     "source_strategies": list(_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES),
 }
 _LEVEL_STRATEGY_TYPES = {
@@ -712,6 +727,8 @@ class TopBotDecisionEngine:
             aligned_votes=int(best_data["aligned_votes"]),
             opposing_votes=int(best_data["opposing_votes"]),
             required_votes=int(self.params["minimum_directional_votes"]),
+            action=best_action,
+            context=context,
         )
         selected_vote = best_data["selected_vote"] if isinstance(best_data["selected_vote"], TopBotStrategyVote) else None
         rejection_reasons: list[str] = []
@@ -730,6 +747,38 @@ class TopBotDecisionEngine:
         if confidence < float(self.params["minimum_confidence"]):
             rejection_reasons.append(
                 f"Confidence {confidence}/100 is below the {int(self.params['minimum_confidence'])}/100 threshold."
+            )
+        rejection_reasons.extend(
+            self._adaptive_filter_rejections(
+                action=best_action,
+                best_data=best_data,
+                selected_vote=selected_vote,
+                context=context,
+                score=best_score,
+                confidence=confidence,
+            )
+        )
+
+        plan_rejection = None
+        if (
+            selected_vote is not None
+            and best_score >= float(self.params["minimum_score"])
+            and confidence >= float(self.params["minimum_confidence"])
+        ):
+            plan_rejection = self._risk_plan_rejection(best_action, selected_vote)
+        if plan_rejection is not None:
+            return self._final_signal(
+                action="RISK_REJECT",
+                reason=f"TopBot risk-rejected: {plan_rejection}",
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=[plan_rejection],
+                selected=selected_vote,
+                long_score=long_score,
+                short_score=short_score,
+                confidence=confidence,
+                trade_decision="AVOID",
             )
 
         trade_decision = _topbot_trade_decision(score=best_score, confidence=confidence, rejection_reasons=rejection_reasons)
@@ -761,22 +810,6 @@ class TopBotDecisionEngine:
                 short_score=short_score,
                 confidence=confidence,
                 trade_decision=trade_decision,
-            )
-
-        plan_rejection = self._risk_plan_rejection(best_action, selected_vote)
-        if plan_rejection is not None:
-            return self._final_signal(
-                action="RISK_REJECT",
-                reason=f"TopBot risk-rejected: {plan_rejection}",
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=[plan_rejection],
-                selected=selected_vote,
-                long_score=long_score,
-                short_score=short_score,
-                confidence=confidence,
-                trade_decision="AVOID",
             )
 
         return self._final_signal(
@@ -911,6 +944,79 @@ class TopBotDecisionEngine:
             )
         return None
 
+    def _adaptive_filter_rejections(
+        self,
+        *,
+        action: str,
+        best_data: Mapping[str, Any],
+        selected_vote: TopBotStrategyVote | None,
+        context: TopBotMarketContext,
+        score: int,
+        confidence: int,
+    ) -> list[str]:
+        if not bool(self.params.get("enable_empirical_filters")):
+            return []
+
+        rejections: list[str] = []
+        aligned_votes = int(best_data.get("aligned_votes") or 0)
+        reward_r = (
+            _optional_float(selected_vote.risk_plan.get("reward_r_multiple"))
+            if selected_vote is not None and selected_vote.risk_plan is not None
+            else None
+        )
+
+        minutes_after_open = _topbot_minutes_after_regular_open(context)
+        if bool(self.params.get("block_outside_preferred_session")):
+            start_minute = int(self.params["preferred_session_start_minutes"])
+            end_minute = int(self.params["preferred_session_end_minutes"])
+            if minutes_after_open is None or minutes_after_open < start_minute or minutes_after_open > end_minute:
+                rejections.append(
+                    "TopBot empirical session filter only allows entries from "
+                    f"{_topbot_session_minute_label(start_minute)} to {_topbot_session_minute_label(end_minute)} ET."
+                )
+        if action == "SELL" and context.market_regime == "unknown" and bool(self.params.get("block_short_unknown_regime")):
+            rejections.append("TopBot empirical side filter blocks SELL entries while regime is unknown.")
+        early_minutes = int(self.params["early_session_minutes"])
+        if minutes_after_open is not None and 0 <= minutes_after_open < early_minutes:
+            min_votes = int(self.params["early_session_min_votes"])
+            min_score = float(self.params["early_session_min_score"])
+            min_confidence = float(self.params["early_session_min_confidence"])
+            if aligned_votes < min_votes:
+                rejections.append(
+                    f"Early-session trades require at least {min_votes} aligned votes after recent backtest underperformance."
+                )
+            if score < min_score:
+                rejections.append(
+                    f"Early-session score {score}/100 is below the stricter {int(min_score)}/100 threshold."
+                )
+            if confidence < min_confidence:
+                rejections.append(
+                    f"Early-session confidence {confidence}/100 is below the stricter {int(min_confidence)}/100 threshold."
+                )
+
+        if action == "BUY" and context.market_regime in {"breakout", "trend"}:
+            min_votes = int(self.params["long_continuation_min_votes"])
+            min_score = float(self.params["long_continuation_min_score"])
+            min_confidence = float(self.params["long_continuation_min_confidence"])
+            min_reward_r = float(self.params["long_continuation_min_reward_risk"])
+            if aligned_votes < min_votes:
+                rejections.append(
+                    f"Long {context.market_regime} trades require at least {min_votes} aligned votes after recent underperformance."
+                )
+            if score < min_score:
+                rejections.append(
+                    f"Long {context.market_regime} score {score}/100 is below the stricter {int(min_score)}/100 threshold."
+                )
+            if confidence < min_confidence:
+                rejections.append(
+                    f"Long {context.market_regime} confidence {confidence}/100 is below the stricter {int(min_confidence)}/100 threshold."
+                )
+            if reward_r is not None and reward_r >= float(self.params["minimum_reward_risk"]) and reward_r < min_reward_r:
+                rejections.append(
+                    f"Long {context.market_regime} reward/risk {reward_r or 0:.2f}R is below the stricter {min_reward_r:.2f}R minimum."
+                )
+        return rejections
+
     def _final_signal(
         self,
         *,
@@ -963,6 +1069,7 @@ class TopBotDecisionEngine:
                     "invalidation_level": selected_plan.get("stop_loss"),
                     "trailing_stop": _topbot_trailing_stop_payload(self.params, selected_plan),
                     "break_even": _topbot_break_even_payload(self.params),
+                    "profit_lock": _topbot_profit_lock_payload(self.params),
                     "time_stop": _topbot_time_stop_payload(self.params),
                 }
             )
@@ -1156,6 +1263,20 @@ def _normalize_topbot_adaptive_params(params: Mapping[str, Any] | None) -> dict[
             minimum=0,
             maximum=10,
         ),
+        "profit_lock_at_r": _bounded_float_param(
+            raw_params,
+            "profit_lock_at_r",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["profit_lock_at_r"]),
+            minimum=0,
+            maximum=20,
+        ),
+        "profit_lock_r": _bounded_float_param(
+            raw_params,
+            "profit_lock_r",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["profit_lock_r"]),
+            minimum=0,
+            maximum=10,
+        ),
         "time_stop_bars": _bounded_int_param(
             raw_params,
             "time_stop_bars",
@@ -1164,6 +1285,83 @@ def _normalize_topbot_adaptive_params(params: Mapping[str, Any] | None) -> dict[
             maximum=200,
         ),
         "block_expired_contracts": bool(raw_params.get("block_expired_contracts", _TOPBOT_ADAPTIVE_DEFAULTS["block_expired_contracts"])),
+        "enable_empirical_filters": bool(raw_params.get("enable_empirical_filters", _TOPBOT_ADAPTIVE_DEFAULTS["enable_empirical_filters"])),
+        "block_outside_preferred_session": bool(
+            raw_params.get("block_outside_preferred_session", _TOPBOT_ADAPTIVE_DEFAULTS["block_outside_preferred_session"])
+        ),
+        "preferred_session_start_minutes": _bounded_int_param(
+            raw_params,
+            "preferred_session_start_minutes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["preferred_session_start_minutes"]),
+            minimum=0,
+            maximum=390,
+        ),
+        "preferred_session_end_minutes": _bounded_int_param(
+            raw_params,
+            "preferred_session_end_minutes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["preferred_session_end_minutes"]),
+            minimum=0,
+            maximum=390,
+        ),
+        "block_short_unknown_regime": bool(
+            raw_params.get("block_short_unknown_regime", _TOPBOT_ADAPTIVE_DEFAULTS["block_short_unknown_regime"])
+        ),
+        "early_session_minutes": _bounded_int_param(
+            raw_params,
+            "early_session_minutes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_minutes"]),
+            minimum=0,
+            maximum=180,
+        ),
+        "early_session_min_score": _bounded_float_param(
+            raw_params,
+            "early_session_min_score",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_score"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "early_session_min_confidence": _bounded_float_param(
+            raw_params,
+            "early_session_min_confidence",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_confidence"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "early_session_min_votes": _bounded_int_param(
+            raw_params,
+            "early_session_min_votes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_votes"]),
+            minimum=1,
+            maximum=20,
+        ),
+        "long_continuation_min_score": _bounded_float_param(
+            raw_params,
+            "long_continuation_min_score",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_score"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "long_continuation_min_confidence": _bounded_float_param(
+            raw_params,
+            "long_continuation_min_confidence",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_confidence"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "long_continuation_min_votes": _bounded_int_param(
+            raw_params,
+            "long_continuation_min_votes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_votes"]),
+            minimum=1,
+            maximum=20,
+        ),
+        "long_continuation_min_reward_risk": _bounded_float_param(
+            raw_params,
+            "long_continuation_min_reward_risk",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_reward_risk"]),
+            minimum=0.1,
+            maximum=20,
+        ),
         "source_strategies": source_strategies,
         "source_strategy_params": raw_params.get("source_strategy_params") if isinstance(raw_params.get("source_strategy_params"), dict) else {},
     }
@@ -1303,7 +1501,14 @@ def _topbot_context_score(action: str, context: TopBotMarketContext) -> float:
             resistance_distance = context.nearest_resistance - context.latest_price
             if 0 <= resistance_distance <= context.atr * 1.5:
                 score += 4.0
-    if context.session_timing in {"open", "ny_am", "power_hour"}:
+    if action == "BUY" and context.market_regime in {"breakout", "trend"}:
+        score -= 6.0
+    elif action == "SELL" and context.market_regime == "trend":
+        score += 5.0
+    minutes_after_open = _topbot_minutes_after_regular_open(context)
+    if minutes_after_open is not None and 0 <= minutes_after_open < 60:
+        score -= 7.0
+    elif context.session_timing in {"ny_am", "power_hour"}:
         score += 3.0
     elif context.session_timing in {"lunch", "overnight"}:
         score -= 4.0
@@ -1348,6 +1553,23 @@ def _topbot_session_timing(timestamp: datetime) -> str:
     return "ny_pm"
 
 
+def _topbot_minutes_after_regular_open(context: TopBotMarketContext) -> int | None:
+    if context.candle_timestamp is None:
+        return None
+    local_timestamp = _as_utc(context.candle_timestamp).astimezone(TRADING_TZ)
+    session_open = local_timestamp.replace(hour=9, minute=30, second=0, microsecond=0)
+    return int((local_timestamp - session_open).total_seconds() // 60)
+
+
+def _topbot_session_minute_label(minutes_after_open: int) -> str:
+    total_minutes = 9 * 60 + 30 + int(minutes_after_open)
+    hour = (total_minutes // 60) % 24
+    minute = total_minutes % 60
+    suffix = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute:02d} {suffix}"
+
+
 def _topbot_confidence(
     *,
     score: int,
@@ -1355,11 +1577,21 @@ def _topbot_confidence(
     aligned_votes: int,
     opposing_votes: int,
     required_votes: int,
+    action: str,
+    context: TopBotMarketContext,
 ) -> int:
     margin = max(0, int(score) - int(opposing_score))
     vote_component = min(28.0, max(0, aligned_votes) / max(1, required_votes) * 22.0)
     conflict_penalty = min(20.0, opposing_votes * 7.0)
-    confidence = min(100.0, score * 0.55 + margin * 0.45 + vote_component - conflict_penalty)
+    reliability_penalty = 0.0
+    minutes_after_open = _topbot_minutes_after_regular_open(context)
+    if minutes_after_open is not None and 0 <= minutes_after_open < 60:
+        reliability_penalty += 10.0
+    if action == "BUY" and context.market_regime in {"breakout", "trend"}:
+        reliability_penalty += 10.0
+    if aligned_votes <= required_votes:
+        reliability_penalty += 4.0
+    confidence = min(100.0, score * 0.55 + margin * 0.45 + vote_component - conflict_penalty - reliability_penalty)
     return int(round(max(0.0, confidence)))
 
 
@@ -1417,6 +1649,16 @@ def _topbot_break_even_payload(params: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "enabled": trigger is not None and trigger > 0,
         "trigger_r": trigger,
+    }
+
+
+def _topbot_profit_lock_payload(params: Mapping[str, Any]) -> dict[str, Any]:
+    trigger = _optional_float(params.get("profit_lock_at_r"))
+    lock_r = _optional_float(params.get("profit_lock_r"))
+    return {
+        "enabled": trigger is not None and trigger > 0 and lock_r is not None and lock_r > 0,
+        "trigger_r": trigger,
+        "lock_r": lock_r,
     }
 
 

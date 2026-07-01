@@ -273,7 +273,7 @@ const TOPBOT_ADAPTIVE_DEFAULTS = {
   maxOpposingVotes: "1",
   trailingStopMode: "atr" as BotTrailingStopMode,
   trailingAtrMultiplier: "2",
-  moveToBreakevenAtR: "1",
+  moveToBreakevenAtR: "0.75",
   timeStopBars: "6",
   lookbackBars: "300",
   maxDataStalenessSeconds: "600",
@@ -914,6 +914,42 @@ function formatExitReason(value: string) {
 function formatPoints(value: number | null | undefined) {
   const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return numeric > 0 ? `+${formatPlainNumber(numeric, 2)}` : formatPlainNumber(numeric, 2);
+}
+
+async function fallbackCopyText(text: string) {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  textarea.style.top = "0";
+  textarea.style.left = "-9999px";
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = typeof document.execCommand === "function" ? document.execCommand("copy") : false;
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function copyTextToClipboard(text: string) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return fallbackCopyText(text);
+    }
+  }
+
+  return fallbackCopyText(text);
 }
 
 function delay(ms: number) {
@@ -2271,7 +2307,7 @@ export function BotPage() {
               minimum_directional_votes:
                 adaptiveMinimumDirectionalVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes),
               max_opposing_votes: adaptiveMaxOpposingVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
-              enable_trailing_stop: true,
+              enable_trailing_stop: false,
               trailing_stop_mode: form.trailingStopMode,
               trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier),
               move_to_breakeven_at_r:
@@ -4200,6 +4236,129 @@ function BacktestProgressPanel({ value, stage }: { value: number; stage: string 
   );
 }
 
+function buildBacktestCopyText(result: BotBacktestResult) {
+  const summary = result.summary;
+  const analysis = result.analysis;
+  const reviewItems = buildBacktestReviewItems(result);
+  const sideRows: Array<{ label: string; stats: BotBacktestBreakdownStats }> = (["BUY", "SELL"] as const).flatMap((side) => {
+    const stats = analysis?.by_side?.[side];
+    return stats && stats.trade_count > 0 ? [{ label: side, stats }] : [];
+  });
+  const exitRows = Object.entries(analysis?.by_exit_reason ?? {})
+    .filter(([, stats]) => stats.trade_count > 0)
+    .sort(([, left], [, right]) => Math.abs(right.net_pnl) - Math.abs(left.net_pnl))
+    .map(([reason, stats]) => ({ label: formatExitReason(reason), stats }));
+  const allTrades = [...result.trades].reverse();
+  const allDays = [...result.daily_pnl].reverse();
+  const assumptions = Object.entries(result.assumptions ?? {});
+
+  const lines: string[] = [
+    `${result.bot_name} Backtest Results`,
+    `Symbol: ${result.symbol ?? result.contract_id}`,
+    `Strategy: ${strategyLabel(result.strategy_type)}`,
+    `Window: ${formatDateOnly(result.start)} to ${formatDateOnly(result.end)}`,
+    `Generated: ${formatDateTime(result.generated_at)}`,
+    `Candles: ${result.candles_processed.toLocaleString()}`,
+    `Signals: ${result.signals_evaluated.toLocaleString()}`,
+    `Trades: ${summary.trade_count.toLocaleString()}`,
+    `Point Value: ${formatCurrency(result.point_value)} / point`,
+    "",
+    "Summary",
+    `Net PnL: ${formatCurrency(summary.net_pnl)}`,
+    `Win Rate: ${formatPercent(summary.win_rate)}`,
+    `Gross Profit: ${formatCurrency(summary.gross_profit)}`,
+    `Gross Loss: ${formatCurrency(summary.gross_loss)}`,
+    `Profit Factor: ${formatPlainNumber(summary.profit_factor, 2)}`,
+    `Avg Win: ${formatCurrency(summary.avg_win)}`,
+    `Avg Loss: ${formatCurrency(summary.avg_loss)}`,
+    `Expectancy: ${formatCurrency(summary.expectancy_per_trade)}`,
+    `Max Drawdown: ${formatCurrency(summary.max_drawdown)}`,
+    `Profit / Day: ${formatCurrency(summary.profit_per_day)}`,
+    `Fees: ${formatCurrency(summary.fees)}`,
+    "",
+    "Execution Quality",
+    `Signals / Trade: ${formatPlainNumber(analysis?.signals_per_trade, 2)}`,
+    `Avg Hold: ${formatDurationMinutes(analysis?.avg_duration_minutes)}`,
+    `Avg Bars Held: ${formatPlainNumber(analysis?.avg_bars_held, 1)}`,
+    `Avg MFE: ${formatPoints(analysis?.avg_mfe_points)} points`,
+    `Avg MAE: ${formatPoints(analysis?.avg_mae_points)} points`,
+  ];
+
+  if (reviewItems.length > 0) {
+    lines.push("", "Review Focus", ...reviewItems.map((item) => `- ${item}`));
+  }
+
+  lines.push("", "Long / Short");
+  if (sideRows.length > 0) {
+    lines.push(...sideRows.map(({ label, stats }) => formatBacktestBreakdownLine(label, stats)));
+  } else {
+    lines.push("No side breakdown available.");
+  }
+
+  lines.push("", "Exit Reasons");
+  if (exitRows.length > 0) {
+    lines.push(...exitRows.map(({ label, stats }) => formatBacktestBreakdownLine(label, stats)));
+  } else {
+    lines.push("No exit reason breakdown available.");
+  }
+
+  lines.push("", "Daily PnL");
+  lines.push(`Best Day: ${analysis?.best_day ? `${analysis.best_day.date} ${formatCurrency(analysis.best_day.net_pnl)}` : "None"}`);
+  lines.push(`Worst Day: ${analysis?.worst_day ? `${analysis.worst_day.date} ${formatCurrency(analysis.worst_day.net_pnl)}` : "None"}`);
+  if (allDays.length > 0) {
+    lines.push("All Days:");
+    lines.push("Date | Trades | Net PnL");
+    lines.push(...allDays.map((day) => `${day.date} | ${day.trade_count} | ${formatCurrency(day.net_pnl)}`));
+  }
+
+  lines.push("", "Trade Extremes");
+  lines.push(`Best Trade: ${analysis?.best_trade ? formatBacktestTradeLine(analysis.best_trade) : "None"}`);
+  lines.push(`Worst Trade: ${analysis?.worst_trade ? formatBacktestTradeLine(analysis.worst_trade) : "None"}`);
+
+  if (assumptions.length > 0) {
+    lines.push("", "Assumptions", ...assumptions.map(([key, value]) => `${formatExitReason(key)}: ${value}`));
+  }
+
+  lines.push("", `All Simulated Trades (${allTrades.length}, newest first)`);
+  if (allTrades.length > 0) {
+    lines.push("Side | Entry | Exit | Exit Reason | Hold | MFE | MAE | Points | Net PnL | Signal");
+    lines.push(...allTrades.map((trade) => formatBacktestTradeLine(trade)));
+  } else {
+    lines.push("No simulated trades were triggered.");
+  }
+
+  return lines.join("\n");
+}
+
+function formatBacktestBreakdownLine(label: string, stats: BotBacktestBreakdownStats) {
+  return [
+    `${label}:`,
+    `Trades ${stats.trade_count}`,
+    `WR ${formatPercent(stats.win_rate)}`,
+    `PF ${formatPlainNumber(stats.profit_factor, 2)}`,
+    `Net ${formatCurrency(stats.net_pnl)}`,
+    `Avg ${formatCurrency(stats.avg_pnl)}`,
+    `Avg Hold ${formatDurationMinutes(stats.avg_duration_minutes)}`,
+    `MFE ${formatPoints(stats.avg_mfe_points)}`,
+    `MAE ${formatPoints(stats.avg_mae_points)}`,
+  ].join(" ");
+}
+
+function formatBacktestTradeLine(trade: BotBacktestTrade) {
+  return [
+    trade.side,
+    formatDateTime(trade.entry_time),
+    formatDateTime(trade.exit_time),
+    formatExitReason(trade.exit_reason),
+    formatDurationMinutes(trade.duration_minutes),
+    formatPoints(trade.max_favorable_points),
+    formatPoints(trade.max_adverse_points),
+    formatPoints(trade.points),
+    formatCurrency(trade.net_pnl),
+    trade.signal_reason || "-",
+  ].join(" | ");
+}
+
 function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
   const summary = result.summary;
   const analysis = result.analysis;
@@ -4212,19 +4371,48 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
     .filter(([, stats]) => stats.trade_count > 0)
     .sort(([, left], [, right]) => Math.abs(right.net_pnl) - Math.abs(left.net_pnl))
     .map(([reason, stats]) => ({ label: formatExitReason(reason), stats }));
-  const recentDays = result.daily_pnl.slice(-10).reverse();
+  const allDays = [...result.daily_pnl].reverse();
   const reviewItems = buildBacktestReviewItems(result);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  useEffect(() => {
+    if (copyState === "idle") {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => setCopyState("idle"), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [copyState]);
+
+  const handleCopyBacktest = async () => {
+    const copied = await copyTextToClipboard(buildBacktestCopyText(result));
+    setCopyState(copied ? "copied" : "failed");
+  };
+
   return (
     <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h4 className="text-sm font-semibold text-slate-100 md:text-base">Backtest Results</h4>
           <p className="text-xs text-slate-400">
-            {formatDateOnly(result.start)} to {formatDateOnly(result.end)} · {result.candles_processed.toLocaleString()} candles ·{" "}
+            {formatDateOnly(result.start)} to {formatDateOnly(result.end)} - {result.candles_processed.toLocaleString()} candles -{" "}
             {result.signals_evaluated.toLocaleString()} signals
           </p>
         </div>
-        <Badge variant={summary.net_pnl >= 0 ? "positive" : "negative"}>{formatCurrency(summary.net_pnl)}</Badge>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 border-cyan-400/25 bg-slate-950/45 px-2.5 text-slate-200 hover:border-cyan-300/60 hover:bg-cyan-300/10 hover:text-cyan-100"
+            onClick={() => void handleCopyBacktest()}
+            aria-label="Copy backtest results"
+            title="Copy backtest results"
+          >
+            <CopyIcon />
+            <span>{copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}</span>
+          </Button>
+          <Badge variant={summary.net_pnl >= 0 ? "positive" : "negative"}>{formatCurrency(summary.net_pnl)}</Badge>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -4268,7 +4456,7 @@ function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
       </div>
 
       <div className="grid gap-3 xl:grid-cols-[1fr_1.2fr]">
-        <BacktestDayPanel analysis={analysis} days={recentDays} />
+        <BacktestDayPanel analysis={analysis} days={allDays} />
         <BacktestTradeExtremes bestTrade={analysis?.best_trade ?? null} worstTrade={analysis?.worst_trade ?? null} />
       </div>
 
@@ -4465,6 +4653,15 @@ function buildBacktestReviewItems(result: BotBacktestResult) {
     items.push("Review trade extremes and daily PnL clusters before changing risk or filters.");
   }
   return items.slice(0, 3);
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="8" y="8" width="11" height="11" rx="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function EditIcon() {

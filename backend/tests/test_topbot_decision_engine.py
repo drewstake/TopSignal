@@ -7,7 +7,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models import BotConfig, ProjectXMarketCandle
-from app.services.bot_service import SignalResult, evaluate_topbot_adaptive_strategy
+import app.services.bot_service as bot_service_module
+from app.services.bot_service import SignalResult, TopBotMarketContext, evaluate_topbot_adaptive_strategy
 
 
 def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMarketCandle:
@@ -102,7 +103,7 @@ def _signal(action: str, price: float, *, stop: float | None = None, target: flo
 
 
 def test_topbot_adaptive_strong_confluence_creates_buy_plan():
-    now = datetime(2026, 6, 15, 14, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 15, 14, 35, tzinfo=timezone.utc)
     candles = _rising_candles(now)
     price = float(candles[-1].close_price)
     signals = [
@@ -119,6 +120,7 @@ def test_topbot_adaptive_strong_confluence_creates_buy_plan():
     assert payload["grade"] in {"A", "B"}
     assert result.raw_payload["stop_loss"] == price - 2
     assert result.raw_payload["take_profit"] == price + 4
+    assert result.raw_payload["trailing_stop"]["enabled"] is False
     assert result.raw_payload["break_even"]["enabled"] is True
     assert result.raw_payload["time_stop"]["enabled"] is True
 
@@ -139,6 +141,93 @@ def test_topbot_adaptive_conflicting_signals_hold():
     assert result.action == "HOLD"
     rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
     assert any("Opposing strategy votes" in reason or "conflicted" in reason for reason in rejections)
+
+
+def test_topbot_adaptive_requires_extra_confirmation_during_early_session():
+    now = datetime(2026, 6, 15, 14, 0, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+    signals = [
+        ("ema_trend_pullback", _signal("BUY", price, stop=price - 2, target=price + 4)),
+        ("donchian_breakout", _signal("BUY", price, stop=price - 2, target=price + 4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(candles, strategy_signals=signals, config=_config(), now=now)
+
+    assert result.action == "HOLD"
+    rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
+    assert any("Early-session" in reason for reason in rejections)
+
+
+def test_topbot_adaptive_blocks_entries_outside_preferred_session_window():
+    now = datetime(2026, 6, 15, 17, 0, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+    signals = [
+        ("ema_trend_pullback", _signal("BUY", price, stop=price - 2, target=price + 4)),
+        ("relative_strength_spy", _signal("BUY", price, stop=price - 2, target=price + 4)),
+        ("donchian_breakout", _signal("BUY", price, stop=price - 2, target=price + 4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(candles, strategy_signals=signals, config=_config(), now=now)
+
+    assert result.action == "HOLD"
+    rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
+    assert any("empirical session filter" in reason for reason in rejections)
+
+
+def test_topbot_adaptive_blocks_short_when_regime_is_unknown(monkeypatch):
+    now = datetime(2026, 6, 15, 14, 45, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+
+    def fake_market_context(*_args, **_kwargs):
+        return TopBotMarketContext(
+            latest_price=price,
+            candle_timestamp=now,
+            trend="bearish",
+            trend_strength=50,
+            volatility_state="normal",
+            volume_state="normal",
+            market_regime="unknown",
+            atr=1.0,
+            vwap=price + 1,
+            nearest_support=None,
+            nearest_resistance=None,
+            active_fvg_count=0,
+            session_timing="ny_am",
+            warnings=[],
+        )
+
+    monkeypatch.setattr(bot_service_module, "_build_topbot_market_context", fake_market_context)
+    signals = [
+        ("ema_trend_pullback", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("relative_strength_spy", _signal("SELL", price, stop=price + 2, target=price - 4)),
+        ("donchian_breakout", _signal("SELL", price, stop=price + 2, target=price - 4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(candles, strategy_signals=signals, config=_config(), now=now)
+
+    assert result.action == "HOLD"
+    rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
+    assert any("blocks SELL entries while regime is unknown" in reason for reason in rejections)
+
+
+def test_topbot_adaptive_requires_stronger_long_continuation_plan():
+    now = datetime(2026, 6, 15, 15, 35, tzinfo=timezone.utc)
+    candles = _rising_candles(now)
+    price = float(candles[-1].close_price)
+    signals = [
+        ("ema_trend_pullback", _signal("BUY", price, stop=price - 2, target=price + 3.4)),
+        ("relative_strength_spy", _signal("BUY", price, stop=price - 2, target=price + 3.4)),
+        ("donchian_breakout", _signal("BUY", price, stop=price - 2, target=price + 3.4)),
+    ]
+
+    result = evaluate_topbot_adaptive_strategy(candles, strategy_signals=signals, config=_config(), now=now)
+
+    assert result.action == "HOLD"
+    rejections = result.raw_payload["topbot_adaptive"]["rejection_reasons"]
+    assert any("Long" in reason and "reward/risk" in reason for reason in rejections)
 
 
 def test_topbot_adaptive_low_reward_risk_is_rejected():
