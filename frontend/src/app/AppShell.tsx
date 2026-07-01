@@ -5,6 +5,7 @@ import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
 import { Skeleton } from "../components/ui/Skeleton";
 import { Tabs } from "../components/ui/Tabs";
+import { Toggle } from "../components/ui/Toggle";
 import { cn } from "../components/ui/cn";
 import {
   ACCOUNT_QUERY_PARAM,
@@ -17,6 +18,7 @@ import {
 } from "../lib/accountSelection";
 import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
+import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
@@ -45,6 +47,7 @@ export function AppShell() {
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const demoMode = useDemoMode();
 
   useEffect(() => {
     let isMounted = true;
@@ -118,6 +121,7 @@ export function AppShell() {
   const selectedAccountId = parseAccountId(selectedAccountValue);
   const accountSuffix = selectedAccountId ? `?${ACCOUNT_QUERY_PARAM}=${selectedAccountId}` : "";
   const currentUserEmail = getCurrentUserEmailSync();
+  const currentUserEmailDisplay = getDemoUserEmail(currentUserEmail);
   const isTradesRoute = location.pathname.startsWith("/trades");
 
   function handleAccountChange(rawValue: string) {
@@ -177,6 +181,13 @@ export function AppShell() {
     }
   }
 
+  function handleDemoModeChange(enabled: boolean) {
+    demoMode.setEnabled(enabled);
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-app-bg text-app-text">
       <header className="sticky top-0 z-30 border-b border-app-border/80 bg-app-bg/95">
@@ -202,7 +213,7 @@ export function AppShell() {
                     {!accountsLoading && orderedAccounts.length === 0 ? <option>No accounts</option> : null}
                     {orderedAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
-                        {account.name} ({account.id})
+                        {getDemoAccountLabel(account)}
                       </option>
                     ))}
                   </Select>
@@ -210,10 +221,17 @@ export function AppShell() {
                 <Button className="h-9 whitespace-nowrap" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
                   {syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
+                <Toggle
+                  className="h-9 self-end"
+                  checked={demoMode.enabled}
+                  onChange={handleDemoModeChange}
+                  label="Demo Mode"
+                  aria-label="Demo mode"
+                />
                 {hasSupabaseConfig ? (
                   <div className="flex h-9 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:max-w-[340px]">
-                    <span className="min-w-0 truncate" title={currentUserEmail ?? "Signed in"}>
-                      {currentUserEmail ?? "Signed in"}
+                    <span className="min-w-0 truncate" title={currentUserEmailDisplay}>
+                      {currentUserEmailDisplay}
                     </span>
                     <Button
                       className="h-7 shrink-0 px-2"

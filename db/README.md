@@ -69,6 +69,7 @@ Current migration list:
 20260510_add_ema_scalping_bot_strategy.sql
 20260510_add_pullback_trap_reversal_bot_strategy.sql
 20260511_add_opening_rvol_breakout_bot_strategy.sql
+20260630_add_topbot_adaptive_strategy.sql
 ```
 
 Example PowerShell application loop:
@@ -106,7 +107,8 @@ $migrations = @(
   "20260509_add_supertrend_pivot_bot_strategy.sql",
   "20260510_add_ema_scalping_bot_strategy.sql",
   "20260510_add_pullback_trap_reversal_bot_strategy.sql",
-  "20260511_add_opening_rvol_breakout_bot_strategy.sql"
+  "20260511_add_opening_rvol_breakout_bot_strategy.sql",
+  "20260630_add_topbot_adaptive_strategy.sql"
 )
 
 foreach ($name in $migrations) {

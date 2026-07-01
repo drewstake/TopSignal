@@ -670,6 +670,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `VITE_SUPABASE_URL` | Supabase project URL |
 | `VITE_SUPABASE_ANON_KEY` | Supabase anon key |
 | `VITE_PERF_LOGS` | Enable frontend API perf logging |
+| `VITE_DEMO_MODE` | Start the frontend in read-only demo mode with masked account, journal, and money fields |
 
 Frontend auth behavior:
 

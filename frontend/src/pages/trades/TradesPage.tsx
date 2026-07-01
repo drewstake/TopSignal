@@ -17,6 +17,7 @@ import {
 } from "../../lib/accountSelection";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import { accountsApi } from "../../lib/api";
+import { getDemoAccountId, getDemoAccountName, getDemoTradeId } from "../../lib/demoMode";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tradeSymbol";
@@ -566,7 +567,7 @@ export function TradesPage() {
 
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
-                {selectedAccount ? selectedAccount.name : "Trades"}
+                {selectedAccount ? getDemoAccountName(selectedAccount) : "Trades"}
               </h1>
               <p className="mt-1 text-sm text-slate-400">
                 {currentWindowLabel} <span className="text-slate-500">·</span>{" "}
@@ -599,7 +600,7 @@ export function TradesPage() {
           <HeroStat
             label="Balance"
             value={selectedAccount ? formatCurrency(selectedAccount.balance) : "No account"}
-            detail={selectedAccount ? `Account #${selectedAccount.id}` : "Choose an account"}
+            detail={selectedAccount ? `Account #${getDemoAccountId(selectedAccount.id)}` : "Choose an account"}
           />
           <HeroStat
             label="Window Net"
@@ -905,7 +906,7 @@ export function TradesPage() {
                                 <div className="flex items-center gap-2">
                                   <span>{getDisplayTradeSymbol(trade.symbol, trade.contract_id)}</span>
                                   <span className="truncate text-[10px] font-normal text-slate-500">
-                                    {trade.contract_id || trade.order_id}
+                                    {trade.contract_id || getDemoTradeId(trade.order_id)}
                                   </span>
                                 </div>
                               </td>
@@ -918,7 +919,7 @@ export function TradesPage() {
                               <td className="px-3 py-2 text-right text-slate-300">{formatFee(trade.fees)}</td>
                               <td className={cn("px-3 py-2 text-right font-semibold", pnlClass(pnlValue))}>{formatPnl(pnlValue)}</td>
                               <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">
-                                {trade.source_trade_id ?? trade.order_id}
+                                {getDemoTradeId(trade.source_trade_id ?? trade.order_id)}
                               </td>
                             </tr>
                           );
@@ -1070,7 +1071,7 @@ function TradeFeedCard({ trade }: TradeFeedCardProps) {
             </p>
             <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
           </div>
-          <p className="mt-0.5 truncate text-[10px] text-slate-500">{trade.source_trade_id ?? trade.order_id}</p>
+          <p className="mt-0.5 truncate text-[10px] text-slate-500">{getDemoTradeId(trade.source_trade_id ?? trade.order_id)}</p>
         </div>
 
         <div className="text-right">

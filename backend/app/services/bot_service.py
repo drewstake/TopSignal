@@ -55,6 +55,9 @@ _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
 _MARKET_ANALYSIS_MIN_CANDLES = 10
 _MARKET_ANALYSIS_CONTEXT_BARS = 100
+_BOT_RUNTIME_MIN_POLL_SECONDS = 15
+_BOT_RUNTIME_MAX_POLL_SECONDS = 60 * 60
+_BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS = 5
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
@@ -78,7 +81,9 @@ _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH = "atr_adjusted_relative_strength"
 _STRATEGY_RELATIVE_STRENGTH_SPY = "relative_strength_spy"
 _STRATEGY_PULLBACK_TRAP_REVERSAL = "pullback_trap_reversal"
 _STRATEGY_FVG_SWEEP_MSS = "fvg_sweep_mss"
+_STRATEGY_TOPBOT_ADAPTIVE = "topbot_adaptive"
 _SUPPORTED_STRATEGY_TYPES = {
+    _STRATEGY_TOPBOT_ADAPTIVE,
     _STRATEGY_SMA_CROSS,
     _STRATEGY_SUPPORT_RESISTANCE,
     _STRATEGY_LIQUIDITY_SWEEP_RETEST,
@@ -99,6 +104,70 @@ _SUPPORTED_STRATEGY_TYPES = {
     _STRATEGY_RELATIVE_STRENGTH_SPY,
     _STRATEGY_PULLBACK_TRAP_REVERSAL,
     _STRATEGY_FVG_SWEEP_MSS,
+}
+_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES = [
+    _STRATEGY_SMA_CROSS,
+    _STRATEGY_EMA_SCALPING,
+    _STRATEGY_EMA_TREND_PULLBACK,
+    _STRATEGY_SUPPORT_RESISTANCE,
+    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
+    _STRATEGY_FVG_SWEEP_MSS,
+    _STRATEGY_DONCHIAN_BREAKOUT,
+    _STRATEGY_OPENING_RVOL_BREAKOUT,
+    _STRATEGY_SUPERTREND_PIVOT,
+    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
+    _STRATEGY_BOLLINGER_RSI_REVERSAL,
+    _STRATEGY_BOLLINGER_MEAN_REVERSION,
+    _STRATEGY_MACD_SUPPORT_RESISTANCE,
+    _STRATEGY_ORB_FIBONACCI_PULLBACK,
+    _STRATEGY_DELAYED_ORB_CONFIRMATION,
+    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
+    _STRATEGY_RELATIVE_STRENGTH_SPY,
+    _STRATEGY_VWAP_GAP_RETRACE,
+    _STRATEGY_PULLBACK_TRAP_REVERSAL,
+    _STRATEGY_FISHER_MEAN_REVERSION,
+]
+_TOPBOT_TREND_STRATEGIES = {
+    _STRATEGY_SMA_CROSS,
+    _STRATEGY_EMA_SCALPING,
+    _STRATEGY_EMA_TREND_PULLBACK,
+    _STRATEGY_SUPERTREND_PIVOT,
+    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
+    _STRATEGY_RELATIVE_STRENGTH_SPY,
+    _STRATEGY_PULLBACK_TRAP_REVERSAL,
+}
+_TOPBOT_BREAKOUT_STRATEGIES = {
+    _STRATEGY_DONCHIAN_BREAKOUT,
+    _STRATEGY_OPENING_RVOL_BREAKOUT,
+    _STRATEGY_DELAYED_ORB_CONFIRMATION,
+    _STRATEGY_ORB_FIBONACCI_PULLBACK,
+    _STRATEGY_VWAP_GAP_RETRACE,
+}
+_TOPBOT_MEAN_REVERSION_STRATEGIES = {
+    _STRATEGY_BOLLINGER_MEAN_REVERSION,
+    _STRATEGY_BOLLINGER_RSI_REVERSAL,
+    _STRATEGY_FISHER_MEAN_REVERSION,
+    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
+}
+_TOPBOT_LIQUIDITY_STRATEGIES = {
+    _STRATEGY_SUPPORT_RESISTANCE,
+    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
+    _STRATEGY_FVG_SWEEP_MSS,
+    _STRATEGY_MACD_SUPPORT_RESISTANCE,
+}
+_TOPBOT_ADAPTIVE_DEFAULTS = {
+    "minimum_score": 70.0,
+    "minimum_confidence": 55.0,
+    "minimum_reward_risk": 1.5,
+    "minimum_directional_votes": 2,
+    "max_opposing_votes": 1,
+    "enable_trailing_stop": True,
+    "trailing_stop_mode": "atr",
+    "trailing_atr_multiplier": 2.0,
+    "move_to_breakeven_at_r": 1.0,
+    "time_stop_bars": 6,
+    "block_expired_contracts": False,
+    "source_strategies": list(_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES),
 }
 _LEVEL_STRATEGY_TYPES = {
     _STRATEGY_SUPPORT_RESISTANCE,
@@ -355,6 +424,55 @@ class SignalResult:
 
 
 @dataclass(frozen=True)
+class TopBotStrategyVote:
+    strategy_type: str
+    action: str
+    family: str
+    weight: float
+    score: float
+    reason: str
+    risk_plan: dict[str, Any] | None
+    key_levels: dict[str, Any]
+    raw_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TopBotMarketContext:
+    latest_price: float | None
+    candle_timestamp: datetime | None
+    trend: str
+    trend_strength: int
+    volatility_state: str
+    volume_state: str
+    market_regime: str
+    atr: float | None
+    vwap: float | None
+    nearest_support: float | None
+    nearest_resistance: float | None
+    active_fvg_count: int
+    session_timing: str
+    warnings: list[str]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "latest_price": _round_analysis_float(self.latest_price),
+            "candle_timestamp": _as_utc(self.candle_timestamp).isoformat() if self.candle_timestamp is not None else None,
+            "trend": self.trend,
+            "trend_strength": self.trend_strength,
+            "volatility_state": self.volatility_state,
+            "volume_state": self.volume_state,
+            "market_regime": self.market_regime,
+            "atr": _round_analysis_float(self.atr),
+            "vwap": _round_analysis_float(self.vwap),
+            "nearest_support": _round_analysis_float(self.nearest_support),
+            "nearest_resistance": _round_analysis_float(self.nearest_resistance),
+            "active_fvg_count": self.active_fvg_count,
+            "session_timing": self.session_timing,
+            "warnings": self.warnings,
+        }
+
+
+@dataclass(frozen=True)
 class RiskBlock:
     code: str
     message: str
@@ -469,6 +587,886 @@ class EvaluationResult:
     risk_events: list[BotRiskEvent]
     analysis: dict[str, Any]
     candles: list[ProjectXMarketCandle]
+
+
+class TopBotDecisionEngine:
+    """Aggregates strategy votes into one conservative, reviewable TopBot decision."""
+
+    def __init__(self, strategy_params: Mapping[str, Any] | None = None):
+        self.params = _normalize_topbot_adaptive_params(strategy_params)
+
+    def evaluate(
+        self,
+        *,
+        candles: list[ProjectXMarketCandle],
+        strategy_signals: Iterable[tuple[str, SignalResult]],
+        config: BotConfig | None = None,
+        risk_state: Mapping[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> SignalResult:
+        evaluation_now = now or datetime.now(timezone.utc)
+        context = _build_topbot_market_context(
+            candles,
+            config=config,
+            strategy_params=self.params,
+            now=evaluation_now,
+        )
+        votes = [self._build_vote(strategy_type, signal, context) for strategy_type, signal in strategy_signals]
+        if context.latest_price is None or context.candle_timestamp is None:
+            return self._final_signal(
+                action="HOLD",
+                reason="TopBot held because no candle data was available for adaptive evaluation.",
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=["No candles were available."],
+                selected=None,
+                long_score=0,
+                short_score=0,
+                confidence=0,
+                trade_decision="AVOID",
+            )
+
+        staleness_seconds = (evaluation_now - _as_utc(context.candle_timestamp)).total_seconds()
+        max_staleness = _topbot_max_staleness_seconds(config=config, strategy_params=self.params)
+        if staleness_seconds > max_staleness:
+            return self._final_signal(
+                action="HOLD",
+                reason=(
+                    "TopBot held because the latest candle is stale "
+                    f"({int(staleness_seconds)}s old vs {int(max_staleness)}s limit)."
+                ),
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=["Latest candle data is stale."],
+                selected=None,
+                long_score=0,
+                short_score=0,
+                confidence=0,
+                trade_decision="AVOID",
+            )
+
+        expired_warning = _topbot_contract_expiration_warning(config=config, now=evaluation_now)
+        if expired_warning is not None:
+            context = TopBotMarketContext(
+                latest_price=context.latest_price,
+                candle_timestamp=context.candle_timestamp,
+                trend=context.trend,
+                trend_strength=context.trend_strength,
+                volatility_state=context.volatility_state,
+                volume_state=context.volume_state,
+                market_regime=context.market_regime,
+                atr=context.atr,
+                vwap=context.vwap,
+                nearest_support=context.nearest_support,
+                nearest_resistance=context.nearest_resistance,
+                active_fvg_count=context.active_fvg_count,
+                session_timing=context.session_timing,
+                warnings=[*context.warnings, expired_warning],
+            )
+            if bool(self.params["block_expired_contracts"]):
+                return self._final_signal(
+                    action="RISK_REJECT",
+                    reason=f"TopBot blocked evaluation because {expired_warning}",
+                    context=context,
+                    votes=votes,
+                    risk_state=risk_state,
+                    rejection_reasons=[expired_warning],
+                    selected=None,
+                    long_score=0,
+                    short_score=0,
+                    confidence=0,
+                    trade_decision="AVOID",
+                )
+
+        if not votes:
+            return self._final_signal(
+                action="HOLD",
+                reason="TopBot held because no strategy votes were available.",
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=["No strategy evaluators returned a vote."],
+                selected=None,
+                long_score=0,
+                short_score=0,
+                confidence=0,
+                trade_decision="AVOID",
+            )
+
+        long_data = self._score_direction("BUY", votes, context)
+        short_data = self._score_direction("SELL", votes, context)
+        long_score = int(long_data["score"])
+        short_score = int(short_data["score"])
+        best_data = long_data if long_score >= short_score else short_data
+        best_action = str(best_data["action"])
+        best_score = int(best_data["score"])
+        opposing_score = short_score if best_action == "BUY" else long_score
+        confidence = _topbot_confidence(
+            score=best_score,
+            opposing_score=opposing_score,
+            aligned_votes=int(best_data["aligned_votes"]),
+            opposing_votes=int(best_data["opposing_votes"]),
+            required_votes=int(self.params["minimum_directional_votes"]),
+        )
+        selected_vote = best_data["selected_vote"] if isinstance(best_data["selected_vote"], TopBotStrategyVote) else None
+        rejection_reasons: list[str] = []
+        hard_risk_rejections = _topbot_runtime_risk_rejections(risk_state)
+        if hard_risk_rejections:
+            rejection_reasons.extend(hard_risk_rejections)
+
+        if int(best_data["opposing_votes"]) > int(self.params["max_opposing_votes"]):
+            rejection_reasons.append("Opposing strategy votes exceeded the configured conflict limit.")
+        if abs(long_score - short_score) < 12 and long_score >= 45 and short_score >= 45:
+            rejection_reasons.append("Directional scores are too close; confluence is conflicted.")
+        if best_score < float(self.params["minimum_score"]):
+            rejection_reasons.append(
+                f"Best directional score {best_score}/100 is below the {int(self.params['minimum_score'])}/100 threshold."
+            )
+        if confidence < float(self.params["minimum_confidence"]):
+            rejection_reasons.append(
+                f"Confidence {confidence}/100 is below the {int(self.params['minimum_confidence'])}/100 threshold."
+            )
+
+        trade_decision = _topbot_trade_decision(score=best_score, confidence=confidence, rejection_reasons=rejection_reasons)
+        if rejection_reasons:
+            hold_reason = f"TopBot held: {rejection_reasons[0]}"
+            if hard_risk_rejections:
+                return self._final_signal(
+                    action="RISK_REJECT",
+                    reason=f"TopBot risk-rejected: {hard_risk_rejections[0]}",
+                    context=context,
+                    votes=votes,
+                    risk_state=risk_state,
+                    rejection_reasons=rejection_reasons,
+                    selected=selected_vote,
+                    long_score=long_score,
+                    short_score=short_score,
+                    confidence=confidence,
+                    trade_decision="AVOID",
+                )
+            return self._final_signal(
+                action="HOLD",
+                reason=hold_reason,
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=rejection_reasons,
+                selected=selected_vote,
+                long_score=long_score,
+                short_score=short_score,
+                confidence=confidence,
+                trade_decision=trade_decision,
+            )
+
+        plan_rejection = self._risk_plan_rejection(best_action, selected_vote)
+        if plan_rejection is not None:
+            return self._final_signal(
+                action="RISK_REJECT",
+                reason=f"TopBot risk-rejected: {plan_rejection}",
+                context=context,
+                votes=votes,
+                risk_state=risk_state,
+                rejection_reasons=[plan_rejection],
+                selected=selected_vote,
+                long_score=long_score,
+                short_score=short_score,
+                confidence=confidence,
+                trade_decision="AVOID",
+            )
+
+        return self._final_signal(
+            action=best_action,
+            reason=(
+                f"TopBot {best_action}: {best_score}/100 score, {confidence}/100 confidence, "
+                f"{int(best_data['aligned_votes'])} aligned strategy vote(s), regime {context.market_regime}."
+            ),
+            context=context,
+            votes=votes,
+            risk_state=risk_state,
+            rejection_reasons=[],
+            selected=selected_vote,
+            long_score=long_score,
+            short_score=short_score,
+            confidence=confidence,
+            trade_decision="TAKE",
+        )
+
+    def _build_vote(self, strategy_type: str, signal: SignalResult, context: TopBotMarketContext) -> TopBotStrategyVote:
+        family = _topbot_strategy_family(strategy_type)
+        weight = _topbot_strategy_weight(strategy_type=strategy_type, family=family, context=context)
+        risk_plan = _topbot_extract_risk_plan(signal)
+        action = str(signal.action or "HOLD").upper()
+        score = 0.0
+        if action in {"BUY", "SELL"}:
+            score = 45.0
+            if risk_plan is not None:
+                score += 18.0
+                reward_r = _optional_float(risk_plan.get("reward_r_multiple"))
+                if reward_r is not None:
+                    score += min(17.0, max(0.0, (reward_r - 1.0) * 12.0))
+            if _topbot_action_aligns_with_trend(action, context):
+                score += 8.0
+            if context.volume_state == "elevated":
+                score += 5.0
+            elif context.volume_state == "low":
+                score -= 8.0
+            if context.volatility_state == "extreme":
+                score -= 10.0
+            elif context.volatility_state == "low":
+                score -= 4.0
+        elif action == "RISK_REJECT":
+            score = 20.0
+
+        return TopBotStrategyVote(
+            strategy_type=strategy_type,
+            action=action,
+            family=family,
+            weight=weight,
+            score=max(0.0, min(100.0, score)),
+            reason=signal.reason,
+            risk_plan=risk_plan,
+            key_levels=_topbot_key_levels(signal.raw_payload if isinstance(signal.raw_payload, dict) else {}),
+            raw_payload=signal.raw_payload if isinstance(signal.raw_payload, dict) else {},
+        )
+
+    def _score_direction(
+        self,
+        action: str,
+        votes: list[TopBotStrategyVote],
+        context: TopBotMarketContext,
+    ) -> dict[str, Any]:
+        opposing_action = "SELL" if action == "BUY" else "BUY"
+        aligned = [vote for vote in votes if vote.action == action]
+        opposing = [vote for vote in votes if vote.action == opposing_action]
+        required_votes = max(1, int(self.params["minimum_directional_votes"]))
+        selected_vote = max(
+            aligned,
+            key=lambda vote: (
+                1 if vote.risk_plan is not None else 0,
+                vote.score * vote.weight,
+                vote.score,
+            ),
+            default=None,
+        )
+        if not aligned:
+            return {
+                "action": action,
+                "score": max(0, _topbot_context_score(action, context) // 3),
+                "selected_vote": selected_vote,
+                "aligned_votes": 0,
+                "opposing_votes": len(opposing),
+                "reasons": [f"No {action} strategy votes were present."],
+            }
+
+        weighted_quality = sum(vote.score * vote.weight for vote in aligned)
+        total_weight = sum(vote.weight for vote in aligned) or 1.0
+        average_quality = weighted_quality / total_weight
+        participation = min(1.0, len(aligned) / required_votes)
+        vote_score = average_quality * 0.72 * participation
+        context_score = _topbot_context_score(action, context)
+        conflict_penalty = min(32.0, sum(vote.weight for vote in opposing) * 7.0 + len(opposing) * 4.0)
+        score = max(0.0, min(100.0, vote_score + context_score - conflict_penalty))
+        reasons = [
+            f"{len(aligned)} {action} vote(s) with average quality {average_quality:.0f}/100.",
+            f"Context contributed {context_score:.0f} points in {context.market_regime} regime.",
+        ]
+        if opposing:
+            reasons.append(f"{len(opposing)} opposing vote(s) subtracted {conflict_penalty:.0f} points.")
+        return {
+            "action": action,
+            "score": int(round(score)),
+            "selected_vote": selected_vote,
+            "aligned_votes": len(aligned),
+            "opposing_votes": len(opposing),
+            "reasons": reasons,
+        }
+
+    def _risk_plan_rejection(self, action: str, selected_vote: TopBotStrategyVote | None) -> str | None:
+        if selected_vote is None or selected_vote.risk_plan is None:
+            return "Selected trade direction did not include a complete entry, stop, and target."
+        plan = selected_vote.risk_plan
+        entry_price = _optional_float(plan.get("entry_price"))
+        stop_loss = _optional_float(plan.get("stop_loss"))
+        take_profit = _optional_float(plan.get("take_profit"))
+        reward_r = _optional_float(plan.get("reward_r_multiple"))
+        if entry_price is None or stop_loss is None or take_profit is None:
+            return "Selected trade plan is missing entry, stop, or target."
+        if action == "BUY" and stop_loss >= entry_price:
+            return "BUY trade plan stop must be below entry."
+        if action == "SELL" and stop_loss <= entry_price:
+            return "SELL trade plan stop must be above entry."
+        if action == "BUY" and take_profit <= entry_price:
+            return "BUY trade plan target must be above entry."
+        if action == "SELL" and take_profit >= entry_price:
+            return "SELL trade plan target must be below entry."
+        if reward_r is None or reward_r < float(self.params["minimum_reward_risk"]):
+            return (
+                f"Reward/risk {reward_r or 0:.2f}R is below the "
+                f"{float(self.params['minimum_reward_risk']):.2f}R minimum."
+            )
+        return None
+
+    def _final_signal(
+        self,
+        *,
+        action: str,
+        reason: str,
+        context: TopBotMarketContext,
+        votes: list[TopBotStrategyVote],
+        risk_state: Mapping[str, Any] | None,
+        rejection_reasons: list[str],
+        selected: TopBotStrategyVote | None,
+        long_score: int,
+        short_score: int,
+        confidence: int,
+        trade_decision: str,
+    ) -> SignalResult:
+        selected_plan = selected.risk_plan if selected is not None else None
+        grade = _topbot_grade(max(long_score, short_score))
+        raw_payload: dict[str, Any] = {
+            "strategy_type": _STRATEGY_TOPBOT_ADAPTIVE,
+            "signal_category": "entry" if action in {"BUY", "SELL"} else "decision",
+            "topbot_adaptive": {
+                "long_score": long_score,
+                "short_score": short_score,
+                "confidence": confidence,
+                "grade": grade,
+                "trade_decision": trade_decision,
+                "decision": "TAKE" if action in {"BUY", "SELL"} else trade_decision,
+                "final_action": action,
+                "direction_bias": _topbot_direction_bias(long_score, short_score),
+                "minimum_score": self.params["minimum_score"],
+                "minimum_confidence": self.params["minimum_confidence"],
+                "minimum_reward_risk": self.params["minimum_reward_risk"],
+                "market_context": context.to_payload(),
+                "risk_state": dict(risk_state or {}),
+                "selected_strategy": selected.strategy_type if selected is not None else None,
+                "selected_strategy_family": selected.family if selected is not None else None,
+                "rejection_reasons": rejection_reasons,
+                "votes": [_topbot_vote_payload(vote) for vote in votes],
+                "risk_plan": selected_plan,
+            },
+        }
+        if selected_plan is not None:
+            raw_payload.update(
+                {
+                    "entry_price": selected_plan.get("entry_price"),
+                    "stop_loss": selected_plan.get("stop_loss"),
+                    "take_profit": selected_plan.get("take_profit"),
+                    "risk": selected_plan.get("risk"),
+                    "reward_r_multiple": selected_plan.get("reward_r_multiple"),
+                    "invalidation_level": selected_plan.get("stop_loss"),
+                    "trailing_stop": _topbot_trailing_stop_payload(self.params, selected_plan),
+                    "break_even": _topbot_break_even_payload(self.params),
+                    "time_stop": _topbot_time_stop_payload(self.params),
+                }
+            )
+        return SignalResult(
+            action=action,
+            reason=reason,
+            candle_timestamp=context.candle_timestamp,
+            price=context.latest_price,
+            raw_payload=raw_payload,
+        )
+
+
+def evaluate_topbot_adaptive_strategy(
+    candles: list[ProjectXMarketCandle],
+    *,
+    strategy_signals: Iterable[tuple[str, SignalResult]],
+    strategy_params: Mapping[str, Any] | None = None,
+    config: BotConfig | None = None,
+    risk_state: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
+) -> SignalResult:
+    return TopBotDecisionEngine(strategy_params).evaluate(
+        candles=candles,
+        strategy_signals=strategy_signals,
+        config=config,
+        risk_state=risk_state,
+        now=now,
+    )
+
+
+def _build_topbot_market_context(
+    candles: list[ProjectXMarketCandle],
+    *,
+    config: BotConfig | None,
+    strategy_params: Mapping[str, Any],
+    now: datetime,
+) -> TopBotMarketContext:
+    warnings: list[str] = []
+    closed_candles = _closed_candles(candles)
+    analysis_candles = closed_candles or sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+    if not analysis_candles:
+        return TopBotMarketContext(
+            latest_price=None,
+            candle_timestamp=None,
+            trend="neutral",
+            trend_strength=0,
+            volatility_state="normal",
+            volume_state="normal",
+            market_regime="unknown",
+            atr=None,
+            vwap=None,
+            nearest_support=None,
+            nearest_resistance=None,
+            active_fvg_count=0,
+            session_timing="unknown",
+            warnings=["No candles were available."],
+        )
+    if len(analysis_candles) < _MARKET_ANALYSIS_MIN_CANDLES:
+        warnings.append(
+            f"Only {len(analysis_candles)} candle(s) were available; TopBot requires more history for high-confidence reads."
+        )
+
+    latest = analysis_candles[-1]
+    current_price = float(latest.close_price)
+    closes = [float(candle.close_price) for candle in analysis_candles]
+    true_ranges = _analysis_true_ranges(analysis_candles)
+    atr_period = min(14, len(analysis_candles))
+    atr_values = _atr_series(analysis_candles, period=atr_period)
+    latest_atr = _last_defined_float(atr_values)
+    if latest_atr is None:
+        latest_atr = _average(true_ranges[-min(len(true_ranges), atr_period) :])
+    atr_reference = max(latest_atr, _average(true_ranges), abs(current_price) * 0.001, 1e-9)
+    fast_period = min(max(2, int(getattr(config, "fast_period", 9) or 9)), max(2, len(closes) - 1))
+    slow_period = min(max(fast_period + 1, int(getattr(config, "slow_period", 21) or 21)), len(closes))
+    fast_ema = _ema_series(closes, fast_period)
+    slow_ema = _ema_series(closes, slow_period)
+    latest_fast = _last_defined_float(fast_ema) or current_price
+    latest_slow = _last_defined_float(slow_ema) or current_price
+    slow_prior = _prior_defined_float(slow_ema, lookback=5) or latest_slow
+    recent_lookback = min(5, len(closes) - 1)
+    recent_delta = current_price - closes[-(recent_lookback + 1)] if recent_lookback > 0 else 0.0
+    trend, trend_strength = _classify_analysis_trend(
+        ema_gap=latest_fast - latest_slow,
+        ema_slope=latest_slow - slow_prior,
+        recent_delta=recent_delta,
+        atr_reference=atr_reference,
+        recent_lookback=max(1, recent_lookback),
+    )
+    volatility_ratio = _analysis_volatility_ratio(true_ranges, latest_atr)
+    volatility_state = _classify_analysis_volatility(volatility_ratio)
+    volume_ratio = _analysis_volume_ratio(analysis_candles)
+    volume_state = _classify_analysis_volume(volume_ratio)
+    support_levels, resistance_levels = _analysis_support_resistance_levels(analysis_candles, current_price=current_price)
+    indicator_snapshot = build_projectx_style_indicator_snapshot(analysis_candles)
+    vwap = None
+    if isinstance(indicator_snapshot, dict):
+        vwap = _optional_float(indicator_snapshot.get("vwap"))
+    fvg_state = indicator_snapshot.get("fair_value_gaps") if isinstance(indicator_snapshot, dict) else {}
+    active_fvg_count = int(fvg_state.get("active_count") or 0) if isinstance(fvg_state, dict) else 0
+    market_regime = _topbot_market_regime(
+        trend=trend,
+        trend_strength=trend_strength,
+        volatility_state=volatility_state,
+        volume_state=volume_state,
+        active_fvg_count=active_fvg_count,
+    )
+    return TopBotMarketContext(
+        latest_price=current_price,
+        candle_timestamp=_as_utc(latest.candle_timestamp),
+        trend=trend,
+        trend_strength=trend_strength,
+        volatility_state=volatility_state,
+        volume_state=volume_state,
+        market_regime=market_regime,
+        atr=latest_atr,
+        vwap=vwap,
+        nearest_support=support_levels[0] if support_levels else None,
+        nearest_resistance=resistance_levels[0] if resistance_levels else None,
+        active_fvg_count=active_fvg_count,
+        session_timing=_topbot_session_timing(_as_utc(latest.candle_timestamp) or now),
+        warnings=warnings,
+    )
+
+
+def _normalize_topbot_adaptive_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw_params = params if isinstance(params, Mapping) else {}
+    source_values = raw_params.get("source_strategies")
+    source_strategies: list[str] = []
+    if isinstance(source_values, list):
+        for value in source_values:
+            try:
+                strategy_type = _validate_strategy_type(value)
+            except ValueError:
+                continue
+            if strategy_type != _STRATEGY_TOPBOT_ADAPTIVE and strategy_type not in source_strategies:
+                source_strategies.append(strategy_type)
+    if not source_strategies:
+        source_strategies = list(_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES)
+    trailing_stop_mode = str(raw_params.get("trailing_stop_mode", _TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])).strip()
+    if trailing_stop_mode not in _MACD_SUPPORT_RESISTANCE_TRAILING_STOP_MODES:
+        trailing_stop_mode = str(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
+    return {
+        "minimum_score": _bounded_float_param(
+            raw_params,
+            "minimum_score",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_score"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "minimum_confidence": _bounded_float_param(
+            raw_params,
+            "minimum_confidence",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_confidence"]),
+            minimum=1,
+            maximum=100,
+        ),
+        "minimum_reward_risk": _bounded_float_param(
+            raw_params,
+            "minimum_reward_risk",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_reward_risk"]),
+            minimum=0.1,
+            maximum=20,
+        ),
+        "minimum_directional_votes": _bounded_int_param(
+            raw_params,
+            "minimum_directional_votes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_directional_votes"]),
+            minimum=1,
+            maximum=20,
+        ),
+        "max_opposing_votes": _bounded_int_param(
+            raw_params,
+            "max_opposing_votes",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["max_opposing_votes"]),
+            minimum=0,
+            maximum=20,
+        ),
+        "enable_trailing_stop": bool(raw_params.get("enable_trailing_stop", _TOPBOT_ADAPTIVE_DEFAULTS["enable_trailing_stop"])),
+        "trailing_stop_mode": trailing_stop_mode,
+        "trailing_atr_multiplier": _bounded_float_param(
+            raw_params,
+            "trailing_atr_multiplier",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_atr_multiplier"]),
+            minimum=0.1,
+            maximum=20,
+        ),
+        "move_to_breakeven_at_r": _bounded_float_param(
+            raw_params,
+            "move_to_breakeven_at_r",
+            float(_TOPBOT_ADAPTIVE_DEFAULTS["move_to_breakeven_at_r"]),
+            minimum=0,
+            maximum=10,
+        ),
+        "time_stop_bars": _bounded_int_param(
+            raw_params,
+            "time_stop_bars",
+            int(_TOPBOT_ADAPTIVE_DEFAULTS["time_stop_bars"]),
+            minimum=0,
+            maximum=200,
+        ),
+        "block_expired_contracts": bool(raw_params.get("block_expired_contracts", _TOPBOT_ADAPTIVE_DEFAULTS["block_expired_contracts"])),
+        "source_strategies": source_strategies,
+        "source_strategy_params": raw_params.get("source_strategy_params") if isinstance(raw_params.get("source_strategy_params"), dict) else {},
+    }
+
+
+def _topbot_extract_risk_plan(signal: SignalResult) -> dict[str, Any] | None:
+    if signal.action not in {"BUY", "SELL"} or not isinstance(signal.raw_payload, dict):
+        return None
+    payload = signal.raw_payload
+    entry_price = _optional_float(payload.get("entry_price")) or _optional_float(signal.price)
+    stop_loss = _optional_float(payload.get("stop_loss"))
+    take_profit = (
+        _optional_float(payload.get("take_profit"))
+        or _optional_float(payload.get("final_take_profit"))
+        or _optional_float(payload.get("partial_take_profit"))
+    )
+    if entry_price is None or stop_loss is None or take_profit is None:
+        return None
+    risk = abs(float(entry_price) - float(stop_loss))
+    reward = abs(float(take_profit) - float(entry_price))
+    reward_r = reward / risk if risk > 1e-9 else None
+    return {
+        "action": signal.action,
+        "entry_price": _round_analysis_float(entry_price),
+        "stop_loss": _round_analysis_float(stop_loss),
+        "take_profit": _round_analysis_float(take_profit),
+        "risk": _round_analysis_float(risk),
+        "reward": _round_analysis_float(reward),
+        "reward_r_multiple": _round_analysis_float(reward_r),
+        "source_reason": signal.reason,
+    }
+
+
+def _topbot_key_levels(payload: Mapping[str, Any]) -> dict[str, Any]:
+    keys = [
+        "trigger_level",
+        "target_level",
+        "nearest_support",
+        "nearest_resistance",
+        "session_vwap",
+        "middle_band",
+        "upper_band",
+        "lower_band",
+        "opening_range",
+        "sweep_level",
+        "fair_value_gap",
+    ]
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _topbot_vote_payload(vote: TopBotStrategyVote) -> dict[str, Any]:
+    return {
+        "strategy_type": vote.strategy_type,
+        "action": vote.action,
+        "family": vote.family,
+        "weight": round(vote.weight, 3),
+        "score": round(vote.score, 2),
+        "reason": vote.reason,
+        "risk_plan": vote.risk_plan,
+        "key_levels": vote.key_levels,
+    }
+
+
+def _topbot_strategy_family(strategy_type: str) -> str:
+    if strategy_type in _TOPBOT_TREND_STRATEGIES:
+        return "trend"
+    if strategy_type in _TOPBOT_BREAKOUT_STRATEGIES:
+        return "breakout"
+    if strategy_type in _TOPBOT_MEAN_REVERSION_STRATEGIES:
+        return "mean_reversion"
+    if strategy_type in _TOPBOT_LIQUIDITY_STRATEGIES:
+        return "liquidity"
+    return "other"
+
+
+def _topbot_strategy_weight(*, strategy_type: str, family: str, context: TopBotMarketContext) -> float:
+    weight = 1.0
+    if context.market_regime == "trend":
+        if family == "trend":
+            weight += 0.25
+        elif family == "mean_reversion":
+            weight -= 0.25
+    elif context.market_regime in {"range", "chop"}:
+        if family == "mean_reversion":
+            weight += 0.2
+        elif family in {"breakout", "trend"}:
+            weight -= 0.2
+    elif context.market_regime == "breakout":
+        if family in {"breakout", "liquidity"}:
+            weight += 0.2
+        elif family == "mean_reversion":
+            weight -= 0.15
+    if context.volume_state == "low" and family in {"breakout", "trend"}:
+        weight -= 0.1
+    if strategy_type in {_STRATEGY_FVG_SWEEP_MSS, _STRATEGY_LIQUIDITY_SWEEP_RETEST} and context.active_fvg_count > 0:
+        weight += 0.1
+    return max(0.35, min(1.5, weight))
+
+
+def _topbot_context_score(action: str, context: TopBotMarketContext) -> float:
+    score = 8.0
+    if _topbot_action_aligns_with_trend(action, context):
+        score += 12.0 + min(8.0, context.trend_strength / 12.5)
+    elif context.trend in {"bullish", "bearish"}:
+        score -= 8.0
+    if context.volume_state == "elevated":
+        score += 6.0
+    elif context.volume_state == "low":
+        score -= 8.0
+    if context.volatility_state == "normal":
+        score += 4.0
+    elif context.volatility_state == "elevated":
+        score += 1.0
+    elif context.volatility_state == "low":
+        score -= 4.0
+    elif context.volatility_state == "extreme":
+        score -= 12.0
+    if context.vwap is not None and context.latest_price is not None:
+        if action == "BUY":
+            score += 5.0 if context.latest_price >= context.vwap else -4.0
+        else:
+            score += 5.0 if context.latest_price <= context.vwap else -4.0
+    if context.atr is not None and context.atr > 0 and context.latest_price is not None:
+        if action == "BUY" and context.nearest_resistance is not None:
+            resistance_distance = context.nearest_resistance - context.latest_price
+            if 0 <= resistance_distance <= context.atr:
+                score -= 7.0
+        if action == "BUY" and context.nearest_support is not None:
+            support_distance = context.latest_price - context.nearest_support
+            if 0 <= support_distance <= context.atr * 1.5:
+                score += 4.0
+        if action == "SELL" and context.nearest_support is not None:
+            support_distance = context.latest_price - context.nearest_support
+            if 0 <= support_distance <= context.atr:
+                score -= 7.0
+        if action == "SELL" and context.nearest_resistance is not None:
+            resistance_distance = context.nearest_resistance - context.latest_price
+            if 0 <= resistance_distance <= context.atr * 1.5:
+                score += 4.0
+    if context.session_timing in {"open", "ny_am", "power_hour"}:
+        score += 3.0
+    elif context.session_timing in {"lunch", "overnight"}:
+        score -= 4.0
+    return max(-20.0, min(40.0, score))
+
+
+def _topbot_action_aligns_with_trend(action: str, context: TopBotMarketContext) -> bool:
+    return (action == "BUY" and context.trend == "bullish") or (action == "SELL" and context.trend == "bearish")
+
+
+def _topbot_market_regime(
+    *,
+    trend: str,
+    trend_strength: int,
+    volatility_state: str,
+    volume_state: str,
+    active_fvg_count: int,
+) -> str:
+    if volatility_state == "extreme":
+        return "breakout" if volume_state == "elevated" else "chop"
+    if trend in {"bullish", "bearish"} and trend_strength >= 60:
+        return "trend"
+    if volume_state == "elevated" and active_fvg_count > 0:
+        return "breakout"
+    if trend == "neutral" and volatility_state in {"low", "normal"}:
+        return "range"
+    return "unknown"
+
+
+def _topbot_session_timing(timestamp: datetime) -> str:
+    local_time = _as_utc(timestamp).astimezone(TRADING_TZ).time()
+    if local_time < time(hour=9, minute=30) or local_time >= time(hour=16):
+        return "overnight"
+    if local_time < time(hour=10, minute=0):
+        return "open"
+    if local_time < time(hour=11, minute=30):
+        return "ny_am"
+    if local_time < time(hour=13, minute=30):
+        return "lunch"
+    if local_time >= time(hour=15, minute=0):
+        return "power_hour"
+    return "ny_pm"
+
+
+def _topbot_confidence(
+    *,
+    score: int,
+    opposing_score: int,
+    aligned_votes: int,
+    opposing_votes: int,
+    required_votes: int,
+) -> int:
+    margin = max(0, int(score) - int(opposing_score))
+    vote_component = min(28.0, max(0, aligned_votes) / max(1, required_votes) * 22.0)
+    conflict_penalty = min(20.0, opposing_votes * 7.0)
+    confidence = min(100.0, score * 0.55 + margin * 0.45 + vote_component - conflict_penalty)
+    return int(round(max(0.0, confidence)))
+
+
+def _topbot_grade(score: int) -> str:
+    if score >= 85:
+        return "A"
+    if score >= 75:
+        return "B"
+    if score >= 65:
+        return "C"
+    if score >= 50:
+        return "D"
+    return "F"
+
+
+def _topbot_trade_decision(*, score: int, confidence: int, rejection_reasons: list[str]) -> str:
+    if rejection_reasons:
+        return "AVOID" if score < 50 else "WAIT"
+    if score >= 70 and confidence >= 55:
+        return "TAKE"
+    if score >= 50:
+        return "WAIT"
+    return "AVOID"
+
+
+def _topbot_direction_bias(long_score: int, short_score: int) -> str:
+    if abs(long_score - short_score) < 8:
+        return "neutral"
+    return "long" if long_score > short_score else "short"
+
+
+def _topbot_runtime_risk_rejections(risk_state: Mapping[str, Any] | None) -> list[str]:
+    state = dict(risk_state or {})
+    rejections: list[str] = []
+    if bool(state.get("daily_loss_reached")):
+        rejections.append("Daily loss cap is reached.")
+    if bool(state.get("max_trades_reached")):
+        rejections.append("Maximum trades per day is reached.")
+    if bool(state.get("cooldown_active")):
+        rejections.append("Bot cooldown is active after a recent trade.")
+    return rejections
+
+
+def _topbot_trailing_stop_payload(params: Mapping[str, Any], risk_plan: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(params.get("enable_trailing_stop")),
+        "mode": params.get("trailing_stop_mode"),
+        "atr_multiplier": params.get("trailing_atr_multiplier"),
+        "initial_stop": risk_plan.get("stop_loss"),
+    }
+
+
+def _topbot_break_even_payload(params: Mapping[str, Any]) -> dict[str, Any]:
+    trigger = _optional_float(params.get("move_to_breakeven_at_r"))
+    return {
+        "enabled": trigger is not None and trigger > 0,
+        "trigger_r": trigger,
+    }
+
+
+def _topbot_time_stop_payload(params: Mapping[str, Any]) -> dict[str, Any]:
+    bars = int(params.get("time_stop_bars") or 0)
+    return {
+        "enabled": bars > 0,
+        "bars": bars,
+        "action": "flag_or_exit_stale_trade",
+    }
+
+
+def _topbot_max_staleness_seconds(*, config: BotConfig | None, strategy_params: Mapping[str, Any]) -> float:
+    param_value = _optional_float(strategy_params.get("max_data_staleness_seconds"))
+    if param_value is not None and param_value > 0:
+        return param_value
+    if config is not None:
+        return float(config.max_data_staleness_seconds)
+    return 600.0
+
+
+def _topbot_contract_expiration_warning(*, config: BotConfig | None, now: datetime) -> str | None:
+    if config is None:
+        return None
+    contract_text = str(config.contract_id or config.symbol or "")
+    match = re.search(r"\.([FGHJKMNQUVXZ])(\d{2})(?:\b|$)", contract_text.upper())
+    if not match:
+        return None
+    month_code, year_suffix = match.groups()
+    month_by_code = {
+        "F": 1,
+        "G": 2,
+        "H": 3,
+        "J": 4,
+        "K": 5,
+        "M": 6,
+        "N": 7,
+        "Q": 8,
+        "U": 9,
+        "V": 10,
+        "X": 11,
+        "Z": 12,
+    }
+    contract_month = month_by_code.get(month_code)
+    if contract_month is None:
+        return None
+    contract_year = 2000 + int(year_suffix)
+    next_month_year = contract_year + (1 if contract_month == 12 else 0)
+    next_month = 1 if contract_month == 12 else contract_month + 1
+    expiry_guard = datetime(next_month_year, next_month, 1, tzinfo=timezone.utc)
+    if _as_utc(now) >= expiry_guard:
+        return f"contract {contract_text} appears expired after {contract_year:04d}-{contract_month:02d}."
+    return None
 
 
 def list_bot_configs(
@@ -608,6 +1606,139 @@ def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
     db.flush()
 
 
+def default_bot_runtime_poll_interval_seconds(config: BotConfig) -> int:
+    try:
+        interval_seconds = int(
+            _market_candle_interval(
+                unit=str(config.timeframe_unit),
+                unit_number=int(config.timeframe_unit_number),
+            ).total_seconds()
+        )
+    except (TypeError, ValueError):
+        interval_seconds = 5 * 60
+    return max(_BOT_RUNTIME_MIN_POLL_SECONDS, min(_BOT_RUNTIME_MAX_POLL_SECONDS, interval_seconds))
+
+
+def bot_run_runtime_state(run: BotRun) -> dict[str, Any]:
+    return dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+
+
+def bot_run_is_supervised_dry_run(run: BotRun) -> bool:
+    state = bot_run_runtime_state(run)
+    return bool(run.dry_run) and state.get("runtime_mode") == "supervised_dry_run"
+
+
+def mark_bot_run_runtime_evaluated(run: BotRun, *, evaluated_at: datetime | None = None) -> None:
+    state = bot_run_runtime_state(run)
+    interval_seconds = _runtime_poll_interval_seconds_from_state(state)
+    now = evaluated_at or datetime.now(timezone.utc)
+    state["last_evaluation_at"] = _as_utc(now).isoformat()
+    state["next_evaluation_at"] = (_as_utc(now) + timedelta(seconds=interval_seconds)).isoformat()
+    state["consecutive_errors"] = 0
+    state.pop("last_error", None)
+    state.pop("last_error_at", None)
+    state.pop("runtime_status", None)
+    run.raw_state = state
+
+
+def mark_bot_run_runtime_waiting(run: BotRun, *, next_evaluation_at: datetime, reason: str) -> None:
+    state = bot_run_runtime_state(run)
+    state["next_evaluation_at"] = _as_utc(next_evaluation_at).isoformat()
+    state["runtime_status"] = reason
+    run.raw_state = state
+
+
+def mark_bot_run_runtime_error(
+    run: BotRun,
+    *,
+    error: str,
+    failed_at: datetime | None = None,
+) -> None:
+    state = bot_run_runtime_state(run)
+    now = _as_utc(failed_at or datetime.now(timezone.utc))
+    interval_seconds = _runtime_poll_interval_seconds_from_state(state)
+    previous_errors = _runtime_int_state_value(state, "consecutive_errors", default=0)
+    max_errors = _runtime_int_state_value(
+        state,
+        "max_consecutive_errors",
+        default=_BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS,
+    )
+    consecutive_errors = previous_errors + 1
+    state["consecutive_errors"] = consecutive_errors
+    state["last_error"] = str(error)[:500]
+    state["last_error_at"] = now.isoformat()
+
+    if consecutive_errors >= max(1, max_errors):
+        run.status = "error"
+        run.stopped_at = now
+        run.stop_reason = "supervised_runtime_errors"
+        state["runtime_status"] = "error"
+    else:
+        backoff_seconds = min(interval_seconds, max(30, consecutive_errors * 60))
+        state["next_evaluation_at"] = (now + timedelta(seconds=backoff_seconds)).isoformat()
+        state["runtime_status"] = "retry_scheduled"
+
+    run.raw_state = state
+
+
+def _bot_run_start_raw_state(
+    *,
+    config: BotConfig,
+    now: datetime,
+    effective_dry_run: bool,
+    continuous: bool,
+    poll_interval_seconds: int | None,
+    stop_at_session_end: bool,
+) -> dict[str, Any]:
+    if not effective_dry_run or not continuous:
+        return {"source": "manual_start", "runtime_mode": "one_shot"}
+
+    default_interval = default_bot_runtime_poll_interval_seconds(config)
+    interval_seconds = _bounded_runtime_poll_interval_seconds(
+        poll_interval_seconds,
+        default=default_interval,
+    )
+    next_evaluation_at = _as_utc(now) + timedelta(seconds=interval_seconds)
+    return {
+        "source": "manual_start",
+        "runtime_mode": "supervised_dry_run",
+        "poll_interval_seconds": interval_seconds,
+        "stop_at_session_end": bool(stop_at_session_end),
+        "max_consecutive_errors": _BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS,
+        "consecutive_errors": 0,
+        "last_evaluation_at": None,
+        "next_evaluation_at": next_evaluation_at.isoformat(),
+    }
+
+
+def _runtime_poll_interval_seconds_from_state(state: Mapping[str, Any]) -> int:
+    try:
+        return _bounded_runtime_poll_interval_seconds(
+            state.get("poll_interval_seconds"),
+            default=5 * 60,
+        )
+    except ValueError:
+        return 5 * 60
+
+
+def _bounded_runtime_poll_interval_seconds(value: Any, *, default: int) -> int:
+    if value is None:
+        interval_seconds = int(default)
+    else:
+        try:
+            interval_seconds = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("poll_interval_seconds must be an integer") from exc
+    return max(_BOT_RUNTIME_MIN_POLL_SECONDS, min(_BOT_RUNTIME_MAX_POLL_SECONDS, interval_seconds))
+
+
+def _runtime_int_state_value(state: Mapping[str, Any], key: str, *, default: int) -> int:
+    try:
+        return int(state.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def start_bot_run(
     db: Session,
     *,
@@ -616,6 +1747,9 @@ def start_bot_run(
     client: ProjectXClient,
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
+    continuous: bool = True,
+    poll_interval_seconds: int | None = None,
+    stop_at_session_end: bool = True,
 ) -> EvaluationResult:
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
@@ -638,11 +1772,18 @@ def start_bot_run(
         dry_run=effective_dry_run,
         started_at=now,
         last_heartbeat_at=now,
-        raw_state={"source": "manual_start"},
+        raw_state=_bot_run_start_raw_state(
+            config=config,
+            now=now,
+            effective_dry_run=effective_dry_run,
+            continuous=continuous,
+            poll_interval_seconds=poll_interval_seconds,
+            stop_at_session_end=stop_at_session_end,
+        ),
     )
     db.add(run)
     db.flush()
-    return evaluate_bot_config(
+    result = evaluate_bot_config(
         db,
         user_id=user_id,
         config=config,
@@ -652,6 +1793,10 @@ def start_bot_run(
         dry_run=effective_dry_run,
         confirm_live_order_routing=confirm_live_order_routing,
     )
+    if run.status == "running" and bot_run_is_supervised_dry_run(run):
+        mark_bot_run_runtime_evaluated(run, evaluated_at=datetime.now(timezone.utc))
+        db.flush()
+    return result
 
 
 def evaluate_bot_config(
@@ -692,7 +1837,7 @@ def evaluate_bot_config(
         account_id=int(config.account_id),
         contract_id=execution_contract_id,
         symbol=execution_symbol,
-        decision_type="signal",
+        decision_type="risk_reject" if signal.action == "RISK_REJECT" else "signal",
         action=signal.action,
         reason=signal.reason,
         candle_timestamp=signal.candle_timestamp,
@@ -745,7 +1890,7 @@ def evaluate_bot_config(
                     raw_payload={"risk_blocks": [block.__dict__ for block in blocks]},
                 )
             )
-            if run is not None:
+            if run is not None and not (effective_dry_run and bot_run_is_supervised_dry_run(run)):
                 run.status = "blocked"
                 run.stopped_at = datetime.now(timezone.utc)
                 run.stop_reason = "risk_gate_blocked_order"
@@ -895,6 +2040,9 @@ def fetch_candles_and_evaluate_strategy(
     client: ProjectXClient,
 ) -> tuple[list[ProjectXMarketCandle], SignalResult]:
     strategy_type = _validate_strategy_type(str(config.strategy_type))
+    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
+        return fetch_candles_and_evaluate_topbot_adaptive(db, user_id=user_id, config=config, client=client)
+
     if strategy_type == _STRATEGY_DELAYED_ORB_CONFIRMATION:
         strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
         candle_sets = fetch_and_store_delayed_orb_candles(
@@ -1133,6 +2281,152 @@ def fetch_candles_and_evaluate_strategy(
     else:
         signal = evaluate_sma_cross(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
     return candles, signal
+
+
+def fetch_candles_and_evaluate_topbot_adaptive(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+) -> tuple[list[ProjectXMarketCandle], SignalResult]:
+    strategy_params = _normalize_strategy_params(_STRATEGY_TOPBOT_ADAPTIVE, config.strategy_params)
+    source_results: list[tuple[str, SignalResult]] = []
+    primary_candles: list[ProjectXMarketCandle] = []
+    source_params_by_strategy = strategy_params.get("source_strategy_params")
+    if not isinstance(source_params_by_strategy, dict):
+        source_params_by_strategy = {}
+
+    for source_strategy in strategy_params["source_strategies"]:
+        source_params = (
+            source_params_by_strategy.get(source_strategy)
+            if isinstance(source_params_by_strategy.get(source_strategy), dict)
+            else {}
+        )
+        source_config = _strategy_config_view(
+            config,
+            strategy_type=source_strategy,
+            strategy_params=_normalize_strategy_params(source_strategy, source_params),
+        )
+        try:
+            candles, signal = fetch_candles_and_evaluate_strategy(
+                db,
+                user_id=user_id,
+                config=source_config,
+                client=client,
+            )
+        except Exception as exc:
+            candles = []
+            signal = SignalResult(
+                action="HOLD",
+                reason=f"{source_strategy} source unavailable: {exc}",
+                candle_timestamp=None,
+                price=None,
+                raw_payload={
+                    "strategy_type": source_strategy,
+                    "source_error": str(exc),
+                },
+            )
+        source_results.append((source_strategy, signal))
+        if _topbot_prefer_primary_candles(candles, primary_candles):
+            primary_candles = candles
+
+    if not primary_candles:
+        try:
+            primary_candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
+        except Exception:
+            primary_candles = []
+
+    signal = evaluate_topbot_adaptive_strategy(
+        primary_candles,
+        strategy_signals=source_results,
+        strategy_params=strategy_params,
+        config=config,
+        risk_state=_topbot_runtime_risk_state(db, user_id=user_id, config=config),
+    )
+    return primary_candles, signal
+
+
+def _strategy_config_view(config: BotConfig, *, strategy_type: str, strategy_params: dict[str, Any]) -> Any:
+    class StrategyConfigView:
+        pass
+
+    view = StrategyConfigView()
+    for attribute in [
+        "id",
+        "user_id",
+        "account_id",
+        "name",
+        "provider",
+        "enabled",
+        "execution_mode",
+        "contract_id",
+        "symbol",
+        "timeframe_unit",
+        "timeframe_unit_number",
+        "lookback_bars",
+        "fast_period",
+        "slow_period",
+        "order_size",
+        "max_contracts",
+        "max_daily_loss",
+        "max_trades_per_day",
+        "max_open_position",
+        "allowed_contracts",
+        "trading_start_time",
+        "trading_end_time",
+        "cooldown_seconds",
+        "max_data_staleness_seconds",
+        "allow_market_depth",
+        "created_at",
+        "updated_at",
+    ]:
+        setattr(view, attribute, getattr(config, attribute))
+    fast_period, slow_period = _normalized_strategy_period_values(
+        strategy_type,
+        fast_period=int(getattr(config, "fast_period", 9) or 9),
+        slow_period=int(getattr(config, "slow_period", 21) or 21),
+    )
+    view.strategy_type = strategy_type
+    view.strategy_params = strategy_params
+    view.fast_period = fast_period
+    view.slow_period = slow_period
+    return view
+
+
+def _topbot_prefer_primary_candles(
+    candidate: list[ProjectXMarketCandle],
+    current: list[ProjectXMarketCandle],
+) -> bool:
+    if not candidate:
+        return False
+    if not current:
+        return True
+    candidate_unit = str(candidate[-1].unit)
+    candidate_unit_number = int(candidate[-1].unit_number)
+    current_unit = str(current[-1].unit)
+    current_unit_number = int(current[-1].unit_number)
+    if candidate_unit == "minute" and candidate_unit_number == 5:
+        return True
+    if current_unit == "minute" and current_unit_number == 5:
+        return False
+    return len(candidate) > len(current)
+
+
+def _topbot_runtime_risk_state(db: Session, *, user_id: str, config: BotConfig) -> dict[str, Any]:
+    daily_trade_count = _todays_bot_trade_count(db, user_id=user_id, config=config)
+    daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
+    return {
+        "daily_trade_count": daily_trade_count,
+        "max_trades_per_day": int(config.max_trades_per_day),
+        "max_trades_reached": daily_trade_count >= int(config.max_trades_per_day),
+        "daily_pnl": daily_pnl,
+        "max_daily_loss": float(config.max_daily_loss),
+        "daily_loss_reached": daily_pnl <= -float(config.max_daily_loss),
+        "cooldown_active": cooldown_block is not None,
+        "cooldown_message": cooldown_block.message if cooldown_block is not None else None,
+    }
 
 
 def _market_analysis_candles_for_evaluation(
@@ -8470,6 +9764,7 @@ def serialize_bot_run(row: BotRun) -> dict[str, Any]:
         "stopped_at": _as_utc(row.stopped_at) if row.stopped_at is not None else None,
         "stop_reason": row.stop_reason,
         "last_heartbeat_at": _as_utc(row.last_heartbeat_at) if row.last_heartbeat_at is not None else None,
+        "raw_state": row.raw_state if isinstance(row.raw_state, dict) else None,
     }
 
 
@@ -8487,6 +9782,7 @@ def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
         "candle_timestamp": _as_utc(row.candle_timestamp) if row.candle_timestamp is not None else None,
         "price": float(row.price) if row.price is not None else None,
         "quantity": float(row.quantity) if row.quantity is not None else None,
+        "raw_payload": row.raw_payload if isinstance(row.raw_payload, dict) else None,
         "created_at": _as_utc(row.created_at),
     }
 
@@ -8629,6 +9925,15 @@ def _infer_trade_plan_market_regime(
         raw_regime = str(signal.raw_payload.get("market_regime") or "").strip().lower()
         if raw_regime in {"trend", "range", "chop", "breakout", "reversal", "unknown"}:
             return raw_regime
+        topbot_payload = signal.raw_payload.get("topbot_adaptive")
+        topbot_context = (
+            topbot_payload.get("market_context")
+            if isinstance(topbot_payload, dict) and isinstance(topbot_payload.get("market_context"), dict)
+            else None
+        )
+        nested_regime = str(topbot_context.get("market_regime") if topbot_context else "").strip().lower()
+        if nested_regime in {"trend", "range", "chop", "breakout", "reversal", "unknown"}:
+            return nested_regime
         chop_state = signal.raw_payload.get("chop")
         if isinstance(chop_state, dict) and bool(chop_state.get("is_choppy")):
             return "chop"
@@ -9902,6 +11207,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         return {}
 
     raw_params = params if isinstance(params, dict) else {}
+    if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
+        return _normalize_topbot_adaptive_params(raw_params)
+
     if normalized_strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
         long_rsi_min = _bounded_float_param(
             raw_params,

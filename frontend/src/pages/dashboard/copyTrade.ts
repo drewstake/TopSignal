@@ -1,3 +1,4 @@
+import { getDemoAccountName } from "../../lib/demoMode";
 import { tradingDayKey } from "../../lib/tradingDay";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 
@@ -544,7 +545,10 @@ function buildAccountRow(
 
   return {
     accountId: account.id,
-    accountName: account.name || account.provider_name || `Account ${account.id}`,
+    accountName: getDemoAccountName({
+      id: account.id,
+      name: account.name || account.provider_name || `Account ${account.id}`,
+    }),
     role,
     status,
     balance: safeNumber(account.balance),

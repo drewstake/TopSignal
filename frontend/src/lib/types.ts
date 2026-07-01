@@ -501,8 +501,9 @@ export interface ProjectXCredentialsStatus {
 
 export type BotExecutionMode = "dry_run" | "live";
 export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
-export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
+export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP" | "RISK_REJECT";
 export type BotStrategyType =
+  | "topbot_adaptive"
   | "sma_cross"
   | "support_resistance"
   | "donchian_breakout"
@@ -717,6 +718,17 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  minimum_score?: number;
+  minimum_confidence?: number;
+  minimum_reward_risk?: number;
+  minimum_directional_votes?: number;
+  max_opposing_votes?: number;
+  enable_trailing_stop?: boolean;
+  move_to_breakeven_at_r?: number;
+  time_stop_bars?: number;
+  block_expired_contracts?: boolean;
+  source_strategies?: BotStrategyType[];
+  source_strategy_params?: Record<string, BotStrategyParams>;
   entry_period?: number;
   exit_period?: number;
   bars_per_timeframe?: number;
@@ -932,6 +944,7 @@ export interface BotRun {
   stopped_at: string | null;
   stop_reason: string | null;
   last_heartbeat_at: string | null;
+  raw_state?: Record<string, unknown> | null;
 }
 
 export interface BotDecision {
@@ -947,6 +960,7 @@ export interface BotDecision {
   candle_timestamp: string | null;
   price: number | null;
   quantity: number | null;
+  raw_payload?: Record<string, unknown> | null;
   created_at: string;
 }
 

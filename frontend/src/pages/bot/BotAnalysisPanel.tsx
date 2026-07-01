@@ -214,6 +214,7 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loadi
             </div>
 
             {analysis.tradeEvaluation ? <TradeEvaluationSummary evaluation={analysis.tradeEvaluation} /> : null}
+            {evaluation ? <AdaptiveDecisionSummary evaluation={evaluation} /> : null}
 
             <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
               <AnalysisMetric
@@ -384,6 +385,68 @@ function TradeEvaluationSummary({ evaluation }: { evaluation: TradeEvaluationRes
         <CompactList title="Positives" items={evaluation.positives.slice(0, 3)} tone="positive" />
         <CompactList title="Warnings" items={evaluation.warnings.slice(0, 3)} tone="warning" />
         <CompactList title="Adjustments" items={evaluation.suggested_adjustments.slice(0, 3)} tone="neutral" />
+      </div>
+    </div>
+  );
+}
+
+function AdaptiveDecisionSummary({ evaluation }: { evaluation: BotEvaluation }) {
+  const payload = extractTopBotPayload(evaluation);
+  if (!payload) {
+    return null;
+  }
+  const longScore = recordNumber(payload, "long_score");
+  const shortScore = recordNumber(payload, "short_score");
+  const confidence = recordNumber(payload, "confidence");
+  const grade = recordText(payload, "grade");
+  const directionBias = recordText(payload, "direction_bias");
+  const tradeDecision = recordText(payload, "trade_decision") ?? recordText(payload, "decision");
+  const votes = recordArray(payload, "votes").slice(0, 6);
+  const riskPlan = recordObject(payload, "risk_plan");
+  const marketContext = recordObject(payload, "market_context");
+  const warnings = recordStringArray(marketContext, "warnings");
+  const rejections = recordStringArray(payload, "rejection_reasons");
+
+  return (
+    <div className="rounded-xl border border-slate-700 bg-slate-950/45 p-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">TopBot decision</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <Badge variant={evaluation.decision.action === "RISK_REJECT" ? "warning" : actionBadgeVariant(evaluation.decision.action)}>
+              {formatStateLabel(evaluation.decision.action)}
+            </Badge>
+            {grade ? <span className={cn("text-xl font-semibold", tradeGradeTextClassName(grade))}>{grade}</span> : null}
+            {tradeDecision ? <Badge variant={tradeDecision === "TAKE" ? "positive" : tradeDecision === "AVOID" ? "negative" : "neutral"}>{tradeDecision}</Badge> : null}
+            {directionBias ? <Badge variant="neutral">{formatStateLabel(directionBias)} bias</Badge> : null}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-right text-[11px] text-slate-400">
+          <MiniScore label="Long" value={formatScore(longScore)} />
+          <MiniScore label="Short" value={formatScore(shortScore)} />
+          <MiniScore label="Conf" value={formatScore(confidence)} />
+        </div>
+      </div>
+      <p className="text-sm leading-6 text-slate-300">{evaluation.decision.reason}</p>
+      {riskPlan ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-4">
+          <MiniScore label="Entry" value={formatPrice(recordNumber(riskPlan, "entry_price"))} />
+          <MiniScore label="Stop" value={formatPrice(recordNumber(riskPlan, "stop_loss"))} />
+          <MiniScore label="Target" value={formatPrice(recordNumber(riskPlan, "take_profit"))} />
+          <MiniScore label="R:R" value={formatRatio(recordNumber(riskPlan, "reward_r_multiple"))} />
+        </div>
+      ) : null}
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <CompactList
+          title="Signals"
+          items={votes.map((vote) => formatAdaptiveVote(vote)).filter((item): item is string => Boolean(item))}
+          tone="neutral"
+        />
+        <CompactList
+          title={rejections.length > 0 ? "Rejections" : "Warnings"}
+          items={(rejections.length > 0 ? rejections : warnings).slice(0, 5)}
+          tone={rejections.length > 0 ? "warning" : "neutral"}
+        />
       </div>
     </div>
   );
@@ -862,6 +925,83 @@ function buildFallbackRiskNotes(input: {
   ];
 }
 
+function extractTopBotPayload(evaluation: BotEvaluation): Record<string, unknown> | null {
+  const rawPayload = evaluation.decision.raw_payload;
+  if (!rawPayload || typeof rawPayload !== "object") {
+    return null;
+  }
+  const payload = (rawPayload as Record<string, unknown>).topbot_adaptive;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  return payload as Record<string, unknown>;
+}
+
+function recordObject(record: Record<string, unknown> | null, key: string): Record<string, unknown> | null {
+  if (!record) {
+    return null;
+  }
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function recordArray(record: Record<string, unknown> | null, key: string): Array<Record<string, unknown>> {
+  if (!record) {
+    return [];
+  }
+  const value = record[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+function recordStringArray(record: Record<string, unknown> | null, key: string): string[] {
+  if (!record) {
+    return [];
+  }
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function recordNumber(record: Record<string, unknown> | null, key: string): number | null {
+  if (!record) {
+    return null;
+  }
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function recordText(record: Record<string, unknown> | null, key: string): string | null {
+  if (!record) {
+    return null;
+  }
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function formatAdaptiveVote(vote: Record<string, unknown>): string | null {
+  const strategy = recordText(vote, "strategy_type");
+  const action = recordText(vote, "action");
+  const score = recordNumber(vote, "score");
+  const reason = recordText(vote, "reason");
+  if (!strategy || !action) {
+    return null;
+  }
+  const prefix = `${formatStateLabel(strategy) ?? strategy}: ${action}${score !== null ? ` ${Math.round(score)}/100` : ""}`;
+  return reason ? `${prefix} - ${reason}` : prefix;
+}
+
+function formatScore(value: number | null): string {
+  return value === null ? "-" : `${Math.round(value)}/100`;
+}
+
 function normalizeText(value: string | null | undefined): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed.length > 0 ? trimmed : null;
@@ -968,6 +1108,19 @@ function tradeDecisionBadgeVariant(value: TradeEvaluationResult["decision"]): Ba
   return "warning";
 }
 
+function actionBadgeVariant(value: string): BadgeVariant {
+  if (value === "BUY") {
+    return "positive";
+  }
+  if (value === "SELL" || value === "STOP") {
+    return "negative";
+  }
+  if (value === "RISK_REJECT") {
+    return "warning";
+  }
+  return "neutral";
+}
+
 function marketBiasTextClassName(value: BotMarketBias): string {
   if (value === "bullish") {
     return "text-emerald-300";
@@ -978,7 +1131,7 @@ function marketBiasTextClassName(value: BotMarketBias): string {
   return "text-amber-200";
 }
 
-function tradeGradeTextClassName(value: TradeEvaluationResult["grade"]): string {
+function tradeGradeTextClassName(value: string): string {
   if (value === "A" || value === "B") {
     return "text-emerald-300";
   }

@@ -59,6 +59,8 @@ import type {
   TradePlanEvaluationInput,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
+import { getDemoApiResponse } from "./demoData";
+import { isDemoModeEnabled, sanitizeDemoApiResponse } from "./demoMode";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
 
@@ -278,6 +280,15 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal } = options;
+  if (method !== "GET" && isDemoModeEnabled()) {
+    throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
+  }
+  if (method === "GET" && isDemoModeEnabled()) {
+    const demoResponse = getDemoApiResponse<T>(path, query);
+    if (demoResponse) {
+      return demoResponse.data;
+    }
+  }
   const accessToken = await getAccessToken();
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
@@ -328,11 +339,14 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  return sanitizeDemoApiResponse(path, (await response.json()) as T);
 }
 
 async function requestMultipart<T>(path: string, options: RequestMultipartOptions): Promise<T> {
   const { method = "POST", query, formData, signal } = options;
+  if (isDemoModeEnabled()) {
+    throw new ApiError("Demo mode is read-only. Turn it off to upload or save changes.", 409, null, null);
+  }
   const accessToken = await getAccessToken();
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
@@ -376,7 +390,7 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
     throw new ApiError(detail, response.status, errorBody, detailValue);
   }
 
-  return (await response.json()) as T;
+  return sanitizeDemoApiResponse(path, (await response.json()) as T);
 }
 
 export async function requestBlob(path: string, options: RequestBlobOptions = {}): Promise<Blob> {
@@ -940,12 +954,18 @@ interface MarketPriceStreamCallbacks {
 interface BotStartOptions {
   dryRun?: boolean;
   confirmLiveOrderRouting?: boolean;
+  continuous?: boolean;
+  pollIntervalSeconds?: number;
+  stopAtSessionEnd?: boolean;
 }
 
 function botStartPayload(options: BotStartOptions = {}) {
   return {
     dry_run: options.dryRun,
     confirm_live_order_routing: options.confirmLiveOrderRouting ?? false,
+    continuous: options.continuous,
+    poll_interval_seconds: options.pollIntervalSeconds,
+    stop_at_session_end: options.stopAtSessionEnd,
   };
 }
 

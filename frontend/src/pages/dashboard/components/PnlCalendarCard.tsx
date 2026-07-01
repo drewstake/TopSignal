@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { Skeleton } from "../../../components/ui/Skeleton";
+import { formatDemoPnl } from "../../../lib/demoMode";
 import { formatIsoDateUtc } from "../../../lib/tradingDay";
 import type { AccountPnlCalendarDay } from "../../../lib/types";
 
@@ -65,13 +66,17 @@ function parseIsoDate(value: string) {
 }
 
 function formatPnlCompact(value: number) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${compactCurrencyFormatter.format(value)}`;
+  return formatDemoPnl(value, (nextValue) => {
+    const prefix = nextValue > 0 ? "+" : "";
+    return `${prefix}${compactCurrencyFormatter.format(nextValue)}`;
+  });
 }
 
 function formatPnl(value: number) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${currencyFormatter.format(value)}`;
+  return formatDemoPnl(value, (nextValue) => {
+    const prefix = nextValue > 0 ? "+" : "";
+    return `${prefix}${currencyFormatter.format(nextValue)}`;
+  });
 }
 
 function pnlClass(value: number) {

@@ -27,6 +27,7 @@ import {
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { getDemoTradeId } from "../../lib/demoMode";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
@@ -2911,7 +2912,7 @@ export function DashboardPage() {
                         </td>
                         <td className={`px-2 py-2 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
                         <td className="px-2 py-2 text-right font-mono text-app-muted">
-                          {trade.source_trade_id ?? trade.order_id}
+                          {getDemoTradeId(trade.source_trade_id ?? trade.order_id)}
                         </td>
                       </tr>
                     );

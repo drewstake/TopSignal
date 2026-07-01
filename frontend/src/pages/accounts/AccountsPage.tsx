@@ -18,7 +18,9 @@ import {
 import { logPerfInfo } from "../../lib/perf";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { getDemoAccountId, getDemoAccountName } from "../../lib/demoMode";
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
+import { formatCurrency } from "../../utils/formatters";
 import { MergeJournalCard } from "./components/MergeJournalCard";
 import {
   type MergeJournalFormState,
@@ -28,13 +30,6 @@ import {
   reconcileMergeJournalForm,
   validateMergeJournalForm,
 } from "./mergeJournal";
-
-const currencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
 
 const lastTradeFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
@@ -354,7 +349,7 @@ export function AccountsPage() {
     [accounts, accountFromQuery],
   );
   const mergeAccountNamesById = useMemo(
-    () => new Map(orderedMergeAccounts.map((account) => [account.id, account.name] as const)),
+    () => new Map(orderedMergeAccounts.map((account) => [account.id, getDemoAccountName(account)] as const)),
     [orderedMergeAccounts],
   );
   const mergeValidationMessage = useMemo(() => validateMergeJournalForm(mergeForm), [mergeForm]);
@@ -469,6 +464,7 @@ export function AccountsPage() {
                     </tr>
                   ) : (
                     orderedAccounts.map((account) => {
+                      const accountDisplayName = getDemoAccountName(account);
                       const isActive = selectedAccount?.id === account.id;
                       const isMainAccount = account.is_main;
                       const isEditingName = editingAccountId === account.id;
@@ -518,7 +514,7 @@ export function AccountsPage() {
                                     }
                                   }}
                                   disabled={savingName}
-                                  aria-label={`Edit account name for ${account.provider_name}`}
+                                  aria-label={`Edit account name for ${accountDisplayName}`}
                                   className="h-8 min-w-0 flex-1 px-2.5"
                                 />
                                 <div className="flex shrink-0 items-center gap-1">
@@ -527,7 +523,7 @@ export function AccountsPage() {
                                     size="sm"
                                     className="h-7 w-7 rounded-lg px-0 text-emerald-300 hover:text-emerald-200"
                                     disabled={savingName}
-                                    aria-label={`Save account name for ${account.provider_name}`}
+                                    aria-label={`Save account name for ${accountDisplayName}`}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       void saveAccountName(account);
@@ -540,7 +536,7 @@ export function AccountsPage() {
                                     size="sm"
                                     className="h-7 w-7 rounded-lg px-0 text-slate-400 hover:text-slate-200"
                                     disabled={savingName}
-                                    aria-label={`Cancel editing account name for ${account.provider_name}`}
+                                    aria-label={`Cancel editing account name for ${accountDisplayName}`}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       cancelEditingAccountName();
@@ -557,7 +553,7 @@ export function AccountsPage() {
                                   size="sm"
                                   className="h-7 w-7 shrink-0 rounded-lg px-0 text-slate-400 hover:text-slate-100"
                                   disabled={renamingAccountId !== null}
-                                  aria-label={`Edit account name for ${account.name}`}
+                                  aria-label={`Edit account name for ${accountDisplayName}`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     startEditingAccountName(account);
@@ -565,7 +561,7 @@ export function AccountsPage() {
                                 >
                                   <PencilIcon />
                                 </Button>
-                                <span className="truncate">{account.name}</span>
+                                <span className="truncate">{accountDisplayName}</span>
                               </div>
                             )}
                             {savingName ? <p className="mt-1 text-[11px] font-normal text-slate-500">Saving...</p> : null}
@@ -573,9 +569,9 @@ export function AccountsPage() {
                               <p className="mt-1 text-[11px] font-normal text-rose-300">{renameErrorMessage}</p>
                             ) : null}
                           </td>
-                          <td className="px-3 py-3 text-right text-slate-300">{account.id}</td>
+                          <td className="px-3 py-3 text-right text-slate-300">{getDemoAccountId(account.id)}</td>
                           <td className="px-3 py-3 text-right font-mono text-slate-200">
-                            {currencyFormatter.format(account.balance)}
+                            {formatCurrency(account.balance)}
                           </td>
                           <td className="px-3 py-3 text-right text-slate-300">
                             {resolvedLastTradeAt ? (

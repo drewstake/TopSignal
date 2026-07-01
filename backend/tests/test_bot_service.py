@@ -4841,6 +4841,10 @@ def test_start_bot_run_supersedes_existing_running_run():
         assert len(runs) == 2
         assert [run.status for run in runs] == ["stopped", "running"]
         assert runs[0].stop_reason == "superseded_by_manual_start"
+        assert runs[1].raw_state["runtime_mode"] == "supervised_dry_run"
+        assert runs[1].raw_state["poll_interval_seconds"] == 300
+        assert runs[1].raw_state["stop_at_session_end"] is True
+        assert runs[1].raw_state["next_evaluation_at"] is not None
         assert db.query(BotRun).filter(BotRun.status == "running").count() == 1
     finally:
         db.close()

@@ -1,5 +1,6 @@
 import type { AccountSummary, AccountTrade, JournalEntry } from "../../lib/types";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
+import { formatDemoPnl } from "../../lib/demoMode";
 import { stripJournalImageMarkdown } from "./journalImages";
 import { hasJournalTradeStatsSnapshot } from "./journalUtils";
 
@@ -49,13 +50,15 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function formatSignedCurrency(value: number) {
-  if (value > 0) {
-    return `+${currencyFormatter.format(value)}`;
-  }
-  if (value < 0) {
-    return `-${currencyFormatter.format(Math.abs(value))}`;
-  }
-  return currencyFormatter.format(0);
+  return formatDemoPnl(value, (nextValue) => {
+    if (nextValue > 0) {
+      return `+${currencyFormatter.format(nextValue)}`;
+    }
+    if (nextValue < 0) {
+      return `-${currencyFormatter.format(Math.abs(nextValue))}`;
+    }
+    return currencyFormatter.format(0);
+  });
 }
 
 function formatPercent(value: number) {

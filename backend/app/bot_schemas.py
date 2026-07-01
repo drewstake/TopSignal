@@ -9,11 +9,12 @@ from .trade_plan_schemas import TradeEvaluationResultOut
 TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
-BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP"]
+BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP", "RISK_REJECT"]
 BotMarketTrend = Literal["bullish", "bearish", "neutral"]
 BotVolatilityState = Literal["low", "normal", "elevated", "extreme"]
 BotVolumeState = Literal["low", "normal", "elevated"]
 BotStrategyType = Literal[
+    "topbot_adaptive",
     "sma_cross",
     "support_resistance",
     "donchian_breakout",
@@ -144,6 +145,7 @@ class BotRunOut(BaseModel):
     stopped_at: datetime | None = None
     stop_reason: str | None = None
     last_heartbeat_at: datetime | None = None
+    raw_state: dict[str, Any] | None = None
 
 
 class BotDecisionOut(BaseModel):
@@ -159,6 +161,7 @@ class BotDecisionOut(BaseModel):
     candle_timestamp: datetime | None = None
     price: float | None = None
     quantity: float | None = None
+    raw_payload: dict[str, Any] | None = None
     created_at: datetime
 
 
@@ -193,6 +196,9 @@ class BotRiskEventOut(BaseModel):
 class BotStartIn(BaseModel):
     dry_run: bool | None = None
     confirm_live_order_routing: bool = False
+    continuous: bool = True
+    poll_interval_seconds: int | None = Field(default=None, ge=15, le=3600)
+    stop_at_session_end: bool = True
 
 
 class BotMarketAnalysisOut(BaseModel):

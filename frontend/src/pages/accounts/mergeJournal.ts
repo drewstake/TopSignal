@@ -3,6 +3,7 @@ import type {
   JournalMergeConflictStrategy,
   JournalMergeResult,
 } from "../../lib/types";
+import { getDemoAccountId } from "../../lib/demoMode";
 
 export interface MergeJournalFormState {
   fromAccountId: string;
@@ -93,8 +94,8 @@ export function buildMergeJournalSuccessMessage(
   result: JournalMergeResult,
   accountNamesById?: ReadonlyMap<number, string>,
 ): string {
-  const fromName = accountNamesById?.get(result.from_account_id) ?? `Account ${result.from_account_id}`;
-  const toName = accountNamesById?.get(result.to_account_id) ?? `Account ${result.to_account_id}`;
+  const fromName = accountNamesById?.get(result.from_account_id) ?? `Account ${getDemoAccountId(result.from_account_id)}`;
+  const toName = accountNamesById?.get(result.to_account_id) ?? `Account ${getDemoAccountId(result.to_account_id)}`;
   const transferredLabel = result.transferred_count === 1 ? "1 entry" : `${result.transferred_count} entries`;
   const parts = [`Merged ${transferredLabel} from ${fromName} into ${toName}.`];
 

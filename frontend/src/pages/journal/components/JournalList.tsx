@@ -4,6 +4,7 @@ import { Badge } from "../../../components/ui/Badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import type { JournalEntry } from "../../../lib/types";
+import { formatPnl } from "../../../utils/formatters";
 import { stripJournalImageMarkdown } from "../journalImages";
 import { hasJournalTradeStatsSnapshot } from "../journalUtils";
 
@@ -30,14 +31,6 @@ const entryDateFormatter = new Intl.DateTimeFormat("en-US", {
 
 function formatEntryDate(value: string) {
   return entryDateFormatter.format(new Date(`${value}T00:00:00.000Z`));
-}
-
-function formatCurrency(value: number) {
-  const normalized = Number.isFinite(value) ? value : 0;
-  return new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(normalized);
 }
 
 function buildPreview(body: string) {
@@ -107,7 +100,7 @@ function JournalListInner({ entries, selectedId, totalEntries, onSelect }: Journ
                                 : "border-rose-400/30 bg-rose-500/10 text-rose-300",
                           )}
                         >
-                          {statsNet === null ? "Not pulled" : `${statsNet > 0 ? "+" : ""}${formatCurrency(statsNet)}`}
+                          {statsNet === null ? "Not pulled" : formatPnl(statsNet)}
                         </span>
                       </div>
                     </div>

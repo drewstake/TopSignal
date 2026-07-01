@@ -709,7 +709,7 @@ def _ensure_bot_schema_compatibility() -> None:
                 text(
                     "update bot_configs set strategy_type = 'sma_cross' "
                     "where strategy_type is null or strategy_type not in "
-                    "('sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
+                    "('topbot_adaptive','sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
                     "'ema_trend_pullback','ema_scalping','vwap_atr_mean_reversion','fisher_transform_mean_reversion',"
                     "'atr_adjusted_relative_strength','relative_strength_spy',"
                     "'fvg_sweep_mss','orb_fibonacci_pullback','pullback_trap_reversal','supertrend_pivot',"
@@ -725,6 +725,7 @@ def _ensure_bot_schema_compatibility() -> None:
                     add constraint bot_configs_strategy_type_check
                     check (
                       strategy_type in (
+                        'topbot_adaptive',
                         'sma_cross',
                         'support_resistance',
                         'donchian_breakout',
@@ -835,6 +836,16 @@ def _ensure_bot_schema_compatibility() -> None:
             conn.execute(text("create index if not exists idx_bot_runs_account_status on bot_runs (user_id, account_id, status)"))
 
         if "bot_decisions" in table_names:
+            conn.execute(text("alter table bot_decisions drop constraint if exists bot_decisions_action_check"))
+            conn.execute(
+                text(
+                    """
+                    alter table bot_decisions
+                    add constraint bot_decisions_action_check
+                    check (action in ('BUY','SELL','HOLD','NONE','STOP','RISK_REJECT'))
+                    """
+                )
+            )
             conn.execute(text("create index if not exists idx_bot_decisions_config_created on bot_decisions (user_id, bot_config_id, created_at)"))
         if "bot_order_attempts" in table_names:
             conn.execute(text("create index if not exists idx_bot_order_attempts_config_created on bot_order_attempts (user_id, bot_config_id, created_at)"))

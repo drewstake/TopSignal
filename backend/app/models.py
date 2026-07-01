@@ -280,7 +280,7 @@ class BotConfig(Base):
         CheckConstraint("execution_mode in ('dry_run','live')", name="bot_configs_execution_mode_check"),
         CheckConstraint(
             "strategy_type in "
-            "('sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
+            "('topbot_adaptive','sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
             "'ema_trend_pullback','ema_scalping','vwap_atr_mean_reversion','fisher_transform_mean_reversion',"
             "'atr_adjusted_relative_strength','relative_strength_spy',"
             "'fvg_sweep_mss','orb_fibonacci_pullback','pullback_trap_reversal','supertrend_pivot','bollinger_mean_reversion',"
@@ -361,7 +361,7 @@ class BotDecision(Base):
             "decision_type in ('signal','risk_reject','order_attempt','lifecycle')",
             name="bot_decisions_type_check",
         ),
-        CheckConstraint("action in ('BUY','SELL','HOLD','NONE','STOP')", name="bot_decisions_action_check"),
+        CheckConstraint("action in ('BUY','SELL','HOLD','NONE','STOP','RISK_REJECT')", name="bot_decisions_action_check"),
         Index("idx_bot_decisions_config_created", "user_id", "bot_config_id", "created_at"),
     )
 

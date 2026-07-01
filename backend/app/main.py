@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from time import perf_counter
@@ -30,6 +30,7 @@ from .auth import (
     reset_authenticated_user,
 )
 from .db import (
+    SessionLocal,
     get_db,
     guard_against_local_database_url,
     init_db,
@@ -83,7 +84,7 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
+from .models import BotConfig, BotRun, Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
@@ -173,6 +174,8 @@ from .services.projectx_trades import (
 )
 from .services.bot_service import (
     _looks_like_projectx_contract_id,
+    bot_run_is_supervised_dry_run,
+    bot_run_runtime_state,
     create_bot_config,
     delete_bot_config,
     evaluate_bot_config,
@@ -195,6 +198,9 @@ from .services.bot_service import (
     serialize_evaluation,
     serialize_market_candle,
     start_bot_run,
+    mark_bot_run_runtime_error,
+    mark_bot_run_runtime_evaluated,
+    mark_bot_run_runtime_waiting,
     stop_latest_bot_run,
     update_bot_config,
 )
@@ -207,6 +213,9 @@ _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
 _streaming_runtime = None
+_bot_runtime_task: asyncio.Task | None = None
+_BOT_RUNTIME_TICK_SECONDS = 5
+_BOT_RUNTIME_BATCH_LIMIT = 20
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -223,9 +232,11 @@ async def app_lifespan(_: FastAPI):
     log_runtime_connection_targets()
     init_db()
     _start_streaming_runtime_if_enabled()
+    _start_bot_runtime_supervisor_if_enabled()
     try:
         yield
     finally:
+        await _stop_bot_runtime_supervisor()
         _stop_streaming_runtime()
 
 
@@ -1365,7 +1376,41 @@ def _should_fetch_active_symbol_contract_first(
     # Initial chart loads always ask for a window ending at "now"; try the
     # active symbol contract first so an expired saved futures contract cannot
     # hold the page in a slow history request.
-    return _as_utc(end) >= datetime.now(timezone.utc) - timedelta(days=1)
+    if _as_utc(end) >= datetime.now(timezone.utc) - timedelta(days=1):
+        return True
+    return _projectx_contract_expired_for_window(current_contract_id, end=end)
+
+
+def _projectx_contract_expired_for_window(contract_id: str, *, end: datetime) -> bool:
+    match = re.search(r"\.([FGHJKMNQUVXZ])(\d{2})(?:\b|$)", str(contract_id).upper())
+    if not match:
+        return False
+    month_code, year_suffix = match.groups()
+    month_by_code = {
+        "F": 1,
+        "G": 2,
+        "H": 3,
+        "J": 4,
+        "K": 5,
+        "M": 6,
+        "N": 7,
+        "Q": 8,
+        "U": 9,
+        "V": 10,
+        "X": 11,
+        "Z": 12,
+    }
+    month = month_by_code.get(month_code)
+    if month is None:
+        return False
+    year = 2000 + int(year_suffix)
+    first_day = datetime(year, month, 1, tzinfo=timezone.utc)
+    days_until_friday = (4 - first_day.weekday()) % 7
+    first_friday = first_day + timedelta(days=days_until_friday)
+    third_friday = first_friday + timedelta(days=14)
+    expiry_guard = third_friday + timedelta(days=1)
+    end_utc = _as_utc(end)
+    return expiry_guard <= end_utc <= expiry_guard + timedelta(days=21)
 
 
 def _fetch_active_symbol_market_candles(
@@ -1615,6 +1660,9 @@ def start_trading_bot(
             client=client,
             dry_run=body.dry_run,
             confirm_live_order_routing=body.confirm_live_order_routing,
+            continuous=body.continuous,
+            poll_interval_seconds=body.poll_interval_seconds,
+            stop_at_session_end=body.stop_at_session_end,
         )
         db.commit()
     except ProjectXClientError as exc:
@@ -2740,6 +2788,229 @@ def _read_bool_env(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _start_bot_runtime_supervisor_if_enabled() -> None:
+    global _bot_runtime_task
+    if not _read_bool_env("BOT_SUPERVISED_DRY_RUN_ENABLED", True):
+        return
+    if _bot_runtime_task is not None and not _bot_runtime_task.done():
+        return
+    _bot_runtime_task = asyncio.create_task(_bot_runtime_supervisor_loop())
+
+
+async def _stop_bot_runtime_supervisor() -> None:
+    global _bot_runtime_task
+    task = _bot_runtime_task
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    _bot_runtime_task = None
+
+
+async def _bot_runtime_supervisor_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_run_due_bot_runtime_evaluations)
+        except Exception:
+            logger.exception("bot_runtime_supervisor_tick_failed")
+        await asyncio.sleep(_BOT_RUNTIME_TICK_SECONDS)
+
+
+def _run_due_bot_runtime_evaluations(now: datetime | None = None) -> None:
+    effective_now = _as_utc(now or datetime.now(timezone.utc))
+    for run_id in _due_supervised_bot_run_ids(now=effective_now):
+        _evaluate_supervised_bot_run(run_id=run_id, now=effective_now)
+
+
+def _due_supervised_bot_run_ids(*, now: datetime) -> list[int]:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(BotRun)
+            .join(BotConfig, BotRun.bot_config_id == BotConfig.id)
+            .filter(BotRun.status == "running")
+            .filter(BotRun.dry_run.is_(True))
+            .filter(BotConfig.enabled.is_(True))
+            .order_by(BotRun.last_heartbeat_at.asc(), BotRun.started_at.asc(), BotRun.id.asc())
+            .limit(_BOT_RUNTIME_BATCH_LIMIT * 5)
+            .all()
+        )
+        due_ids: list[int] = []
+        for row in rows:
+            if not _bot_run_due_for_supervision(row, now=now):
+                continue
+            due_ids.append(int(row.id))
+            if len(due_ids) >= _BOT_RUNTIME_BATCH_LIMIT:
+                break
+        return due_ids
+    finally:
+        db.close()
+
+
+def _bot_run_due_for_supervision(run: BotRun, *, now: datetime) -> bool:
+    if not bot_run_is_supervised_dry_run(run):
+        return False
+    state = bot_run_runtime_state(run)
+    next_evaluation_at = _parse_runtime_datetime(state.get("next_evaluation_at"))
+    return next_evaluation_at is None or next_evaluation_at <= now
+
+
+def _evaluate_supervised_bot_run(*, run_id: int, now: datetime) -> None:
+    db = SessionLocal()
+    try:
+        run = db.query(BotRun).filter(BotRun.id == run_id).first()
+        if run is None or run.status != "running" or not bot_run_is_supervised_dry_run(run):
+            return
+        config = (
+            db.query(BotConfig)
+            .filter(BotConfig.id == int(run.bot_config_id))
+            .filter(BotConfig.user_id == str(run.user_id))
+            .first()
+        )
+        if config is None or not bool(config.enabled):
+            return
+
+        session_action = _apply_bot_runtime_session_control(db, run=run, config=config, now=now)
+        if session_action in {"stopped", "waiting"}:
+            db.commit()
+            return
+
+        account = _require_owned_projectx_account(db, user_id=str(run.user_id), account_id=int(config.account_id))
+        client = _projectx_client_for_user(db, user_id=str(run.user_id))
+        evaluate_bot_config(
+            db,
+            user_id=str(run.user_id),
+            config=config,
+            account=account,
+            client=client,
+            run=run,
+            dry_run=True,
+            confirm_live_order_routing=False,
+        )
+        if run.status == "running":
+            mark_bot_run_runtime_evaluated(run, evaluated_at=datetime.now(timezone.utc))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _record_bot_runtime_failure(run_id=run_id, error=_bot_runtime_error_text(exc))
+        logger.warning(
+            "bot_runtime_supervised_evaluation_failed",
+            extra={"run_id": run_id, "error_detail": _bot_runtime_error_text(exc)},
+        )
+    finally:
+        db.close()
+
+
+def _apply_bot_runtime_session_control(
+    db: Session,
+    *,
+    run: BotRun,
+    config: BotConfig,
+    now: datetime,
+) -> str:
+    state = bot_run_runtime_state(run)
+    if state.get("stop_at_session_end") is False:
+        return "active"
+    session_window = _bot_runtime_session_window_utc(config=config, now=now)
+    if session_window is None:
+        return "active"
+    session_start, session_end = session_window
+    if now < session_start:
+        mark_bot_run_runtime_waiting(run, next_evaluation_at=session_start, reason="waiting_for_session")
+        return "waiting"
+    if now >= session_end:
+        stop_latest_bot_run(
+            db,
+            user_id=str(run.user_id),
+            bot_config_id=int(config.id),
+            reason="session_end",
+        )
+        return "stopped"
+    return "active"
+
+
+def _bot_runtime_session_window_utc(
+    *,
+    config: BotConfig,
+    now: datetime,
+) -> tuple[datetime, datetime] | None:
+    try:
+        start_time = _parse_bot_runtime_session_time(str(config.trading_start_time))
+        end_time = _parse_bot_runtime_session_time(str(config.trading_end_time))
+    except ValueError:
+        return None
+
+    local_now = _as_utc(now).astimezone(_NEW_YORK_TZ)
+    if start_time <= end_time:
+        start_date = local_now.date()
+        end_date = local_now.date()
+    elif local_now.time().replace(second=0, microsecond=0) <= end_time:
+        start_date = local_now.date() - timedelta(days=1)
+        end_date = local_now.date()
+    else:
+        start_date = local_now.date()
+        end_date = local_now.date() + timedelta(days=1)
+
+    start_local = datetime.combine(start_date, start_time, tzinfo=_NEW_YORK_TZ)
+    end_local = datetime.combine(end_date, end_time, tzinfo=_NEW_YORK_TZ)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _parse_bot_runtime_session_time(value: str) -> time:
+    if not re.fullmatch(r"\d{2}:\d{2}", value):
+        raise ValueError("session times must use HH:MM format")
+    hour_text, minute_text = value.split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if hour > 23 or minute > 59:
+        raise ValueError("session times must use HH:MM format")
+    return time(hour=hour, minute=minute)
+
+
+def _parse_runtime_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _record_bot_runtime_failure(*, run_id: int, error: str) -> None:
+    db = SessionLocal()
+    try:
+        run = db.query(BotRun).filter(BotRun.id == run_id).first()
+        if run is None or run.status != "running" or not bot_run_is_supervised_dry_run(run):
+            return
+        mark_bot_run_runtime_error(run, error=error, failed_at=datetime.now(timezone.utc))
+        if run.status == "error":
+            config = (
+                db.query(BotConfig)
+                .filter(BotConfig.id == int(run.bot_config_id))
+                .filter(BotConfig.user_id == str(run.user_id))
+                .first()
+            )
+            if config is not None:
+                config.enabled = False
+                config.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("bot_runtime_failure_record_failed", extra={"run_id": run_id})
+    finally:
+        db.close()
+
+
+def _bot_runtime_error_text(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    text = str(exc).strip()
+    return text or exc.__class__.__name__
 
 
 def _start_streaming_runtime_if_enabled() -> None:

@@ -39,19 +39,13 @@ import {
   type ExpenseStage,
 } from "../../lib/expensePresets";
 import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
+import { formatCurrency } from "../../utils/formatters";
 import { buildNetRangeOptions, formatLocalIsoDate, getEarliestIsoDate, type NetRangeOption } from "./expenseNetRanges";
 
 const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
 const PAYOUT_PAGE_SIZE = 50;
-
-const currencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
@@ -122,10 +116,10 @@ function getNetProfitAmountClassName(amount: number) {
 
 function getNetProfitPositionLabel(amount: number) {
   if (amount > 0) {
-    return `Positive by ${currencyFormatter.format(amount)}`;
+    return `Positive by ${formatCurrency(amount)}`;
   }
   if (amount < 0) {
-    return `Negative by ${currencyFormatter.format(Math.abs(amount))}`;
+    return `Negative by ${formatCurrency(Math.abs(amount))}`;
   }
   return "Break-even";
 }
@@ -708,7 +702,7 @@ export function ExpensesPage() {
   }
 
   async function handleDeleteExpense(expense: ExpenseRecord) {
-    const confirmed = window.confirm(`Delete expense #${expense.id} for ${currencyFormatter.format(expense.amount)}?`);
+    const confirmed = window.confirm(`Delete expense #${expense.id} for ${formatCurrency(expense.amount)}?`);
     if (!confirmed) {
       return;
     }
@@ -731,7 +725,7 @@ export function ExpensesPage() {
   }
 
   async function handleDeletePayout(payout: PayoutRecord) {
-    const confirmed = window.confirm(`Delete payout #${payout.id} for ${currencyFormatter.format(payout.amount)}?`);
+    const confirmed = window.confirm(`Delete payout #${payout.id} for ${formatCurrency(payout.amount)}?`);
     if (!confirmed) {
       return;
     }
@@ -845,7 +839,7 @@ export function ExpensesPage() {
                 <div>
                   <CardDescription>Recorded spend</CardDescription>
                   <CardTitle className="text-2xl">
-                    {totalsLoading ? "..." : totals ? currencyFormatter.format(totals.total_amount) : "$0.00"}
+                    {totalsLoading ? "..." : totals ? formatCurrency(totals.total_amount) : "$0.00"}
                   </CardTitle>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
@@ -865,7 +859,7 @@ export function ExpensesPage() {
                   <CardTitle className="text-2xl">
                     {spendSinceLastPayoutLoading || !spendSinceLastPayout
                       ? "..."
-                      : currencyFormatter.format(spendSinceLastPayout.totalAmount)}
+                      : formatCurrency(spendSinceLastPayout.totalAmount)}
                   </CardTitle>
                 </div>
                 {spendSinceLastPayoutError ? (
@@ -889,7 +883,7 @@ export function ExpensesPage() {
                 <div>
                   <CardDescription>Net after payouts</CardDescription>
                   <CardTitle className={netProfitTitleClassName}>
-                    {netProfitLoading ? "..." : currencyFormatter.format(netProfitAmount)}
+                    {netProfitLoading ? "..." : formatCurrency(netProfitAmount)}
                   </CardTitle>
                 </div>
                 {totalsError || payoutTotalsError ? (
@@ -898,7 +892,7 @@ export function ExpensesPage() {
                   <p className="text-xs text-slate-400">
                     {netProfitLoading
                       ? "Calculating net..."
-                      : `${netProfitPositionLabel}. ${currencyFormatter.format(netPayoutTotalAmount)} payouts - ${currencyFormatter.format(
+                      : `${netProfitPositionLabel}. ${formatCurrency(netPayoutTotalAmount)} payouts - ${formatCurrency(
                           recordedSpendAmount,
                         )} recorded spend.`}
                   </p>
@@ -918,12 +912,12 @@ export function ExpensesPage() {
                         summary ? getNetProfitAmountClassName(summary.netAmount) : "text-slate-100"
                       }`}
                     >
-                      {netRangesLoading || !summary ? "..." : currencyFormatter.format(summary.netAmount)}
+                      {netRangesLoading || !summary ? "..." : formatCurrency(summary.netAmount)}
                     </p>
                     <p className="mt-1 text-[11px] text-slate-500">
                       {netRangesLoading || !summary
                         ? "Loading..."
-                        : `${currencyFormatter.format(summary.payoutAmount)} payouts - ${currencyFormatter.format(
+                        : `${formatCurrency(summary.payoutAmount)} payouts - ${formatCurrency(
                             summary.expenseAmount,
                           )} spend`}
                     </p>
@@ -935,7 +929,7 @@ export function ExpensesPage() {
               Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted:{" "}
               {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}. Standard activations:{" "}
               {combineSpendSnapshot.standardActivationCount} (
-              {currencyFormatter.format(combineSpendSnapshot.standardActivationCostCents / 100)}).
+              {formatCurrency(combineSpendSnapshot.standardActivationCostCents / 100)}).
             </p>
           </CardContent>
         </Card>
@@ -1025,7 +1019,7 @@ export function ExpensesPage() {
                     <TableRow key={expense.id}>
                       <TableCell>{dateFormatter.format(new Date(`${expense.expense_date}T00:00:00.000Z`))}</TableCell>
                       <TableCell>{formatCategoryLabel(expense.category)}</TableCell>
-                      <TableCell className="text-right font-mono">{currencyFormatter.format(expense.amount)}</TableCell>
+                      <TableCell className="text-right font-mono">{formatCurrency(expense.amount)}</TableCell>
                       <TableCell className="max-w-[240px] truncate" title={expense.description ?? undefined}>
                         {expense.description ?? "-"}
                       </TableCell>
@@ -1086,7 +1080,7 @@ export function ExpensesPage() {
             <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
               <p className="text-xs uppercase tracking-wide text-slate-500">Total Payouts</p>
               <p className="mt-2 text-2xl font-semibold text-slate-100">
-                {payoutTotalsLoading ? "..." : currencyFormatter.format(payoutTotals?.total_amount ?? 0)}
+                {payoutTotalsLoading ? "..." : formatCurrency(payoutTotals?.total_amount ?? 0)}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
@@ -1098,7 +1092,7 @@ export function ExpensesPage() {
             <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
               <p className="text-xs uppercase tracking-wide text-slate-500">Average Payout</p>
               <p className="mt-2 text-2xl font-semibold text-slate-100">
-                {payoutTotalsLoading ? "..." : currencyFormatter.format(payoutTotals?.average_amount ?? 0)}
+                {payoutTotalsLoading ? "..." : formatCurrency(payoutTotals?.average_amount ?? 0)}
               </p>
             </div>
           </div>
@@ -1138,7 +1132,7 @@ export function ExpensesPage() {
                   payoutItems.map((payout) => (
                     <TableRow key={payout.id}>
                       <TableCell>{dateFormatter.format(new Date(`${payout.payout_date}T00:00:00.000Z`))}</TableCell>
-                      <TableCell className="text-right font-mono">{currencyFormatter.format(payout.amount)}</TableCell>
+                      <TableCell className="text-right font-mono">{formatCurrency(payout.amount)}</TableCell>
                       <TableCell className="max-w-[360px] truncate" title={payout.notes ?? undefined}>
                         {payout.notes ?? "-"}
                       </TableCell>

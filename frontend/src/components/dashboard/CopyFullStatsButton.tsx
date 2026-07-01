@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 
 import type { ActivityMetrics } from "../../utils/activityMetrics";
 import type { SustainabilityResult } from "../../utils/sustainability";
+import { isDemoModeEnabled } from "../../lib/demoMode";
 import type { AccountPnlCalendarDay, AccountSummary } from "../../lib/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -296,6 +297,19 @@ function formatMoney(
 ) {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return "N/A";
+  }
+
+  if (isDemoModeEnabled()) {
+    if (options.forceNegative && Math.abs(value) > EPSILON) {
+      return "-$--";
+    }
+    if (value > EPSILON) {
+      return options.showPositiveSign === false ? "$--" : "+$--";
+    }
+    if (value < -EPSILON) {
+      return "-$--";
+    }
+    return "$--";
   }
 
   if (options.forceNegative) {

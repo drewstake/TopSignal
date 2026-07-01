@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { cn } from "../../../components/ui/cn";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/ui/Table";
 import { formatCurrency, formatInteger, formatNumber, formatPnl } from "../../../utils/formatters";
+import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
 import type { AccountInfo } from "../../../lib/types";
 import type { CopyTradeAccountRow, CopyTradeDriftSummary, CopyTradeStatus, CopyTradeTotals } from "../copyTrade";
 
@@ -194,7 +195,7 @@ export function CopyTradePanel({
                   <div key={account.id} className="min-w-0 rounded-lg border border-app-accent/45 bg-app-accent/10 px-2.5 py-2 text-xs">
                     <p className="truncate font-semibold text-app-text">{getAccountDisplayName(account)}</p>
                     <div className="mt-1 flex items-center gap-1.5 text-[10px] text-app-muted">
-                      <span>{`ID ${account.id}`}</span>
+                      <span>{`ID ${getDemoAccountId(account.id)}`}</span>
                       <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
                         {status}
                       </Badge>
@@ -230,7 +231,7 @@ export function CopyTradePanel({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-semibold">{getAccountDisplayName(account)}</span>
                       <span className="mt-1 flex items-center gap-1.5 text-[10px] text-app-muted">
-                        <span>{`ID ${account.id}`}</span>
+                        <span>{`ID ${getDemoAccountId(account.id)}`}</span>
                         <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
                           {status}
                         </Badge>
@@ -280,7 +281,7 @@ export function CopyTradePanel({
                         <p className={cn("truncate font-semibold", row.accountId === null ? "text-app-muted" : "text-app-text")}>
                           {row.accountName}
                         </p>
-                        <p className="text-[10px] text-app-muted">{row.accountId === null ? "Unassigned" : `ID ${row.accountId}`}</p>
+                        <p className="text-[10px] text-app-muted">{row.accountId === null ? "Unassigned" : `ID ${getDemoAccountId(row.accountId)}`}</p>
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
@@ -303,7 +304,10 @@ export function CopyTradePanel({
 }
 
 function getAccountDisplayName(account: AccountInfo) {
-  return account.name || account.provider_name || `Account ${account.id}`;
+  return getDemoAccountName({
+    id: account.id,
+    name: account.name || account.provider_name || `Account ${account.id}`,
+  });
 }
 
 function getAccountStatusLabel(account: AccountInfo) {

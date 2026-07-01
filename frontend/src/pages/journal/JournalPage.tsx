@@ -15,6 +15,7 @@ import {
 } from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { getDemoAccountName } from "../../lib/demoMode";
 import { getTradingDayBoundaryIso } from "../../lib/tradingDay";
 import type {
   AccountInfo,
@@ -1149,7 +1150,7 @@ export function JournalPage() {
           <Badge variant="accent">Journal</Badge>
           {selectedAccount ? (
             <span className="rounded-full border border-slate-800/80 bg-slate-950/45 px-3 py-1 text-xs text-slate-300">
-              {selectedAccount.name}
+              {getDemoAccountName(selectedAccount)}
             </span>
           ) : null}
         </div>

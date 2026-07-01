@@ -10,6 +10,7 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
 import { accountsApi, botsApi } from "../../lib/api";
+import { getDemoAccountId, getDemoAccountLabel } from "../../lib/demoMode";
 import type {
   AccountInfo,
   BotActivity,
@@ -18,6 +19,7 @@ import type {
   BotLiquiditySweepTargetMode,
   BotOrbStopMode,
   BotOrbTargetMode,
+  BotRun,
   BotTakeProfitMode,
   BotTrailingStopMode,
   BotStrategyType,
@@ -25,12 +27,14 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
+import { formatCurrency } from "../../utils/formatters";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
+  { value: "topbot_adaptive", label: "TopBot Adaptive Multi-Factor" },
   { value: "sma_cross", label: "SMA Cross" },
   { value: "ema_scalping", label: "9/15 EMA Scalping" },
   { value: "support_resistance", label: "Support/Resistance" },
@@ -254,7 +258,21 @@ const SUPERTREND_PIVOT_DEFAULTS = {
   lookbackBars: "250",
   maxDataStalenessSeconds: "1800",
 };
+const TOPBOT_ADAPTIVE_DEFAULTS = {
+  minimumScore: "70",
+  minimumConfidence: "55",
+  minimumRewardRisk: "1.5",
+  minimumDirectionalVotes: "2",
+  maxOpposingVotes: "1",
+  trailingStopMode: "atr" as BotTrailingStopMode,
+  trailingAtrMultiplier: "2",
+  moveToBreakevenAtR: "1",
+  timeStopBars: "6",
+  lookbackBars: "300",
+  maxDataStalenessSeconds: "600",
+};
 const STRATEGY_DEFAULT_NAMES: Partial<Record<BotStrategyType, string>> = {
+  topbot_adaptive: "MNQ TopBot Adaptive",
   sma_cross: "MNQ SMA Cross",
   support_resistance: "MNQ Support/Resistance",
   donchian_breakout: "MNQ Donchian Breakout",
@@ -411,6 +429,13 @@ interface BotFormState {
   tradingEndTime: string;
   cooldownSeconds: string;
   maxDataStalenessSeconds: string;
+  adaptiveMinimumScore: string;
+  adaptiveMinimumConfidence: string;
+  adaptiveMinimumRewardRisk: string;
+  adaptiveMinimumDirectionalVotes: string;
+  adaptiveMaxOpposingVotes: string;
+  adaptiveMoveToBreakevenAtR: string;
+  adaptiveTimeStopBars: string;
 }
 
 function buildInitialForm(accountId: number | null): BotFormState {
@@ -504,6 +529,13 @@ function buildInitialForm(accountId: number | null): BotFormState {
     tradingEndTime: "15:45",
     cooldownSeconds: "300",
     maxDataStalenessSeconds: "600",
+    adaptiveMinimumScore: TOPBOT_ADAPTIVE_DEFAULTS.minimumScore,
+    adaptiveMinimumConfidence: TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence,
+    adaptiveMinimumRewardRisk: TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
+    adaptiveMinimumDirectionalVotes: TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
+    adaptiveMaxOpposingVotes: TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
+    adaptiveMoveToBreakevenAtR: TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
+    adaptiveTimeStopBars: TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars,
   };
 }
 
@@ -741,9 +773,20 @@ function formFromBot(bot: BotConfig): BotFormState {
           ? SUPERTREND_PIVOT_DEFAULTS.maxDataStalenessSeconds
         : bot.strategy_type === "vwap_atr_mean_reversion" && bot.max_data_staleness_seconds < 600
           ? "600"
-          : bot.strategy_type === "ema_trend_pullback" && bot.max_data_staleness_seconds < Number(EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds)
+        : bot.strategy_type === "ema_trend_pullback" && bot.max_data_staleness_seconds < Number(EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds)
             ? EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds
           : String(bot.max_data_staleness_seconds),
+    adaptiveMinimumScore: String(bot.strategy_params?.minimum_score ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumScore),
+    adaptiveMinimumConfidence: String(bot.strategy_params?.minimum_confidence ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence),
+    adaptiveMinimumRewardRisk: String(bot.strategy_params?.minimum_reward_risk ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk),
+    adaptiveMinimumDirectionalVotes: String(
+      bot.strategy_params?.minimum_directional_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
+    ),
+    adaptiveMaxOpposingVotes: String(bot.strategy_params?.max_opposing_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
+    adaptiveMoveToBreakevenAtR: String(
+      bot.strategy_params?.move_to_breakeven_at_r ?? TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
+    ),
+    adaptiveTimeStopBars: String(bot.strategy_params?.time_stop_bars ?? TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars),
   };
 }
 
@@ -783,12 +826,29 @@ function formatDateTime(value: string | null) {
   return `${dateTimeFormatter.format(date)} ET`;
 }
 
+function botRunDetail(run: BotRun) {
+  if (run.stop_reason) {
+    return run.stop_reason;
+  }
+  const runtimeState = run.raw_state;
+  const runtimeMode = runtimeState && typeof runtimeState.runtime_mode === "string" ? runtimeState.runtime_mode : null;
+  if (runtimeMode === "supervised_dry_run") {
+    const nextEvaluation =
+      runtimeState && typeof runtimeState.next_evaluation_at === "string" ? formatDateTime(runtimeState.next_evaluation_at) : null;
+    return nextEvaluation ? `supervised dry_run · next ${nextEvaluation}` : "supervised dry_run";
+  }
+  return run.dry_run ? "dry_run" : "live";
+}
+
 function actionBadgeVariant(action: string) {
   if (action === "BUY") {
     return "positive" as const;
   }
   if (action === "SELL" || action === "STOP") {
     return "negative" as const;
+  }
+  if (action === "RISK_REJECT") {
+    return "warning" as const;
   }
   return "neutral" as const;
 }
@@ -859,6 +919,9 @@ function deriveFvgStructureTimeframe(unit: BotTimeframeUnit, unitNumber: number)
 }
 
 function strategyLabel(strategyType: BotStrategyType) {
+  if (strategyType === "topbot_adaptive") {
+    return "TopBot Adaptive";
+  }
   if (strategyType === "support_resistance") {
     return "Support/Resistance";
   }
@@ -921,6 +984,14 @@ function strategyDefaultName(strategyType: BotStrategyType) {
 }
 
 function strategySummary(bot: BotConfig) {
+  if (bot.strategy_type === "topbot_adaptive") {
+    const minimumScore = bot.strategy_params?.minimum_score ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumScore;
+    const minimumRewardRisk = bot.strategy_params?.minimum_reward_risk ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk;
+    return {
+      label: "Adaptive",
+      value: `Min ${minimumScore}/100 · ${minimumRewardRisk}R`,
+    };
+  }
   if (bot.strategy_type === "support_resistance") {
     return {
       label: "Level %",
@@ -1235,6 +1306,30 @@ export function BotPage() {
     setForm((current) => {
       const useDefaultName = Object.values(STRATEGY_DEFAULT_NAMES).includes(current.name);
       const nextName = useDefaultName ? strategyDefaultName(strategyType) : current.name;
+      if (strategyType === "topbot_adaptive") {
+        return {
+          ...current,
+          strategyType,
+          name: nextName,
+          timeframeUnit: "minute",
+          timeframeUnitNumber: "5",
+          lookbackBars:
+            current.lookbackBars === "100" ? TOPBOT_ADAPTIVE_DEFAULTS.lookbackBars : current.lookbackBars || TOPBOT_ADAPTIVE_DEFAULTS.lookbackBars,
+          fastPeriod: "9",
+          slowPeriod: "21",
+          adaptiveMinimumScore: current.adaptiveMinimumScore || TOPBOT_ADAPTIVE_DEFAULTS.minimumScore,
+          adaptiveMinimumConfidence: current.adaptiveMinimumConfidence || TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence,
+          adaptiveMinimumRewardRisk: current.adaptiveMinimumRewardRisk || TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
+          adaptiveMinimumDirectionalVotes: current.adaptiveMinimumDirectionalVotes || TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
+          adaptiveMaxOpposingVotes: current.adaptiveMaxOpposingVotes || TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
+          trailingStopMode: TOPBOT_ADAPTIVE_DEFAULTS.trailingStopMode,
+          trailingAtrMultiplier: current.trailingAtrMultiplier || TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier,
+          adaptiveMoveToBreakevenAtR: current.adaptiveMoveToBreakevenAtR || TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
+          adaptiveTimeStopBars: current.adaptiveTimeStopBars || TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars,
+          maxDataStalenessSeconds: TOPBOT_ADAPTIVE_DEFAULTS.maxDataStalenessSeconds,
+        };
+      }
+
       if (strategyType === "support_resistance") {
         return {
           ...current,
@@ -1729,6 +1824,13 @@ export function BotPage() {
     const maxOpenPosition = parsePositiveNumber(form.maxOpenPosition);
     const cooldownSeconds = parseNonNegativeInt(form.cooldownSeconds);
     const maxDataStalenessSeconds = parsePositiveInt(form.maxDataStalenessSeconds);
+    const adaptiveMinimumScore = parsePositiveNumber(form.adaptiveMinimumScore);
+    const adaptiveMinimumConfidence = parsePositiveNumber(form.adaptiveMinimumConfidence);
+    const adaptiveMinimumRewardRisk = parsePositiveNumber(form.adaptiveMinimumRewardRisk);
+    const adaptiveMinimumDirectionalVotes = parsePositiveInt(form.adaptiveMinimumDirectionalVotes);
+    const adaptiveMaxOpposingVotes = parseNonNegativeInt(form.adaptiveMaxOpposingVotes);
+    const adaptiveMoveToBreakevenAtR = parseNonNegativeNumber(form.adaptiveMoveToBreakevenAtR);
+    const adaptiveTimeStopBars = parseNonNegativeInt(form.adaptiveTimeStopBars);
     const normalizedName = form.name.trim().toLowerCase();
     const duplicateName = configs.some(
       (config) => config.id !== editingBotId && config.name.trim().toLowerCase() === normalizedName,
@@ -1772,6 +1874,31 @@ export function BotPage() {
       (form.timeframeUnit !== "minute" || (form.timeframeUnitNumber !== "3" && form.timeframeUnitNumber !== "5"))
     ) {
       setFormError("9/15 EMA scalping requires a 3-minute or 5-minute chart.");
+      return;
+    }
+    if (
+      form.strategyType === "topbot_adaptive" &&
+      (
+        adaptiveMinimumScore === null ||
+        adaptiveMinimumConfidence === null ||
+        adaptiveMinimumRewardRisk === null ||
+        adaptiveMinimumDirectionalVotes === null ||
+        adaptiveMaxOpposingVotes === null ||
+        trailingAtrMultiplier === null ||
+        adaptiveMoveToBreakevenAtR === null ||
+        adaptiveTimeStopBars === null
+      )
+    ) {
+      setFormError("TopBot adaptive thresholds must be valid numeric values.");
+      return;
+    }
+    if (
+      form.strategyType === "topbot_adaptive" &&
+      adaptiveMinimumScore !== null &&
+      adaptiveMinimumConfidence !== null &&
+      (adaptiveMinimumScore > 100 || adaptiveMinimumConfidence > 100)
+    ) {
+      setFormError("TopBot score and confidence thresholds must be 100 or lower.");
       return;
     }
     if (form.strategyType === "support_resistance" && levelTolerancePercent === null) {
@@ -2024,7 +2151,45 @@ export function BotPage() {
     setFormError(null);
     try {
       const strategyParams: BotConfig["strategy_params"] =
-        form.strategyType === "support_resistance"
+        form.strategyType === "topbot_adaptive"
+          ? {
+              minimum_score: adaptiveMinimumScore ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumScore),
+              minimum_confidence: adaptiveMinimumConfidence ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence),
+              minimum_reward_risk: adaptiveMinimumRewardRisk ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk),
+              minimum_directional_votes:
+                adaptiveMinimumDirectionalVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes),
+              max_opposing_votes: adaptiveMaxOpposingVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
+              enable_trailing_stop: true,
+              trailing_stop_mode: form.trailingStopMode,
+              trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier),
+              move_to_breakeven_at_r:
+                adaptiveMoveToBreakevenAtR ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR),
+              time_stop_bars: adaptiveTimeStopBars ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars),
+              block_expired_contracts: false,
+              source_strategies: [
+                "sma_cross",
+                "ema_scalping",
+                "ema_trend_pullback",
+                "support_resistance",
+                "liquidity_sweep_retest",
+                "fvg_sweep_mss",
+                "donchian_breakout",
+                "opening_rvol_breakout",
+                "supertrend_pivot",
+                "vwap_atr_mean_reversion",
+                "bollinger_rsi_reversal",
+                "bollinger_mean_reversion",
+                "macd_support_resistance",
+                "orb_fibonacci_pullback",
+                "delayed_orb_confirmation",
+                "atr_adjusted_relative_strength",
+                "relative_strength_spy",
+                "vwap_gap_retrace",
+                "pullback_trap_reversal",
+                "fisher_transform_mean_reversion",
+              ],
+            }
+        : form.strategyType === "support_resistance"
           ? {
               bars_per_timeframe: 100,
               swing_window: 5,
@@ -2269,10 +2434,10 @@ export function BotPage() {
     setError(null);
     try {
       if (kind === "start") {
-        const result = await botsApi.start(selectedBot.id, { dryRun: true });
+        const result = await botsApi.start(selectedBot.id, { dryRun: true, continuous: true, stopAtSessionEnd: true });
         setLastEvaluation(result);
       } else if (kind === "evaluate") {
-        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true });
+        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true, continuous: false });
         setLastEvaluation(result);
       } else {
         await botsApi.stop(selectedBot.id);
@@ -2327,7 +2492,7 @@ export function BotPage() {
                   <option value="">Select account</option>
                   {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
-                      {account.name} ({account.id})
+                      {getDemoAccountLabel(account)}
                     </option>
                   ))}
                 </Select>
@@ -2364,7 +2529,89 @@ export function BotPage() {
                 {form.contractId ? <p className="text-xs text-slate-500">{form.contractId}</p> : null}
               </div>
 
-              {isLevelStrategy(form.strategyType) ? (
+              {form.strategyType === "topbot_adaptive" ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Signal TF</span>
+                      <Input value="5m" readOnly disabled />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Lookback</span>
+                      <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Score</span>
+                      <Input
+                        value={form.adaptiveMinimumScore}
+                        onChange={(event) => setForm({ ...form, adaptiveMinimumScore: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Confidence</span>
+                      <Input
+                        value={form.adaptiveMinimumConfidence}
+                        onChange={(event) => setForm({ ...form, adaptiveMinimumConfidence: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min R:R</span>
+                      <Input
+                        value={form.adaptiveMinimumRewardRisk}
+                        onChange={(event) => setForm({ ...form, adaptiveMinimumRewardRisk: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Aligned Votes</span>
+                      <Input
+                        value={form.adaptiveMinimumDirectionalVotes}
+                        onChange={(event) => setForm({ ...form, adaptiveMinimumDirectionalVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Max Opposing</span>
+                      <Input
+                        value={form.adaptiveMaxOpposingVotes}
+                        onChange={(event) => setForm({ ...form, adaptiveMaxOpposingVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Trail Mode</span>
+                      <Select
+                        value={form.trailingStopMode}
+                        onChange={(event) => setForm({ ...form, trailingStopMode: event.target.value as BotTrailingStopMode })}
+                      >
+                        {trailingStopOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Trail ATR</span>
+                      <Input
+                        value={form.trailingAtrMultiplier}
+                        onChange={(event) => setForm({ ...form, trailingAtrMultiplier: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Breakeven R</span>
+                      <Input
+                        value={form.adaptiveMoveToBreakevenAtR}
+                        onChange={(event) => setForm({ ...form, adaptiveMoveToBreakevenAtR: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Time Stop Bars</span>
+                      <Input
+                        value={form.adaptiveTimeStopBars}
+                        onChange={(event) => setForm({ ...form, adaptiveTimeStopBars: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : isLevelStrategy(form.strategyType) ? (
                 <>
                   <div className="grid grid-cols-2 gap-2.5">
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -3602,13 +3849,13 @@ export function BotPage() {
                 {selectedBot ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3">
-                      <Metric label="Account" value={String(selectedBot.account_id)} />
+                      <Metric label="Account" value={getDemoAccountId(selectedBot.account_id)} />
                       <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
                       <Metric
                         label={selectedBotStrategySummary?.label ?? "Strategy"}
                         value={selectedBotStrategySummary?.value ?? "-"}
                       />
-                      <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
+                      <Metric label="Risk" value={formatCurrency(selectedBot.max_daily_loss)} />
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
@@ -3700,7 +3947,7 @@ export function BotPage() {
                         rows={activity.runs.slice(0, 8).map((run) => ({
                           id: run.id,
                           left: run.status,
-                          middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
+                          middle: botRunDetail(run),
                           right: formatDateTime(run.started_at),
                           badgeVariant: statusBadgeVariant(run.status),
                         }))}

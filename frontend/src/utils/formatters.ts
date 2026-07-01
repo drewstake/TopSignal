@@ -1,3 +1,5 @@
+import { formatDemoCurrency, formatDemoPnl } from "../lib/demoMode";
+
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -13,12 +15,14 @@ const pnlFormatter = new Intl.NumberFormat("en-US", {
 });
 
 export function formatCurrency(value: number) {
-  return currencyFormatter.format(value);
+  return formatDemoCurrency(value, (nextValue) => currencyFormatter.format(nextValue));
 }
 
 export function formatPnl(value: number) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${pnlFormatter.format(value)}`;
+  return formatDemoPnl(value, (nextValue) => {
+    const prefix = nextValue > 0 ? "+" : "";
+    return `${prefix}${pnlFormatter.format(nextValue)}`;
+  });
 }
 
 export function formatPercent(value: number, digits = 2) {
@@ -40,4 +44,3 @@ export function formatMinutes(value: number) {
   const seconds = totalSeconds % 60;
   return `${minutes} min ${seconds} sec`;
 }
-
