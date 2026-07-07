@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
@@ -31,10 +31,20 @@ interface WeeklySummary {
   netPnl: number;
 }
 
+type MonthCopyStatus = "idle" | "copied" | "failed";
+
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const COPY_FEEDBACK_MS = 1200;
 
 const monthLabelFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+const copyDayFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
   year: "numeric",
   timeZone: "UTC",
 });
@@ -77,6 +87,56 @@ function formatPnl(value: number) {
     const prefix = nextValue > 0 ? "+" : "";
     return `${prefix}${currencyFormatter.format(nextValue)}`;
   });
+}
+
+function formatCopyDay(value: string) {
+  return copyDayFormatter.format(parseIsoDate(value));
+}
+
+function buildPnlCalendarMonthCopyText(month: Date, netPnl: number, tradeDays: AccountPnlCalendarDay[]) {
+  return [
+    `Month: ${monthLabelFormatter.format(month)}`,
+    `Total amount made: ${formatPnl(netPnl)}`,
+    "",
+    "Traded days:",
+    ...(tradeDays.length > 0 ? tradeDays.map((day) => `${formatCopyDay(day.date)}: ${formatPnl(day.net_pnl)}`) : ["No traded days."]),
+  ].join("\n");
+}
+
+async function fallbackCopyText(text: string) {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  textarea.style.top = "0";
+  textarea.style.left = "-9999px";
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = typeof document.execCommand === "function" ? document.execCommand("copy") : false;
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function copyTextToClipboard(text: string) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return fallbackCopyText(text);
+    }
+  }
+
+  return fallbackCopyText(text);
 }
 
 function pnlClass(value: number) {
@@ -246,6 +306,38 @@ export function PnlCalendarCard({
     return maxAbs > 0 ? maxAbs : 1;
   }, [weeklySummaries]);
 
+  const currentMonthTradeDays = useMemo(() => {
+    return calendarCells.flatMap((cell) => (cell.point && cell.point.trade_count > 0 ? [cell.point] : []));
+  }, [calendarCells]);
+
+  const [monthCopyStatus, setMonthCopyStatus] = useState<MonthCopyStatus>("idle");
+  const copyFeedbackTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setMonthCopyStatus("idle");
+  }, [visibleMonth]);
+
+  const handleCopyVisibleMonth = async () => {
+    const success = await copyTextToClipboard(buildPnlCalendarMonthCopyText(visibleMonth, monthSummary.netPnl, currentMonthTradeDays));
+    setMonthCopyStatus(success ? "copied" : "failed");
+
+    if (copyFeedbackTimeoutRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimeoutRef.current);
+    }
+    copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+      setMonthCopyStatus("idle");
+      copyFeedbackTimeoutRef.current = null;
+    }, COPY_FEEDBACK_MS);
+  };
+
   const canGoPrev = visibleMonth.getTime() > monthBounds.min.getTime();
   const canGoNext = visibleMonth.getTime() < monthBounds.max.getTime();
   const hasCalendarData = !loading && !error && days.length > 0;
@@ -261,7 +353,7 @@ export function PnlCalendarCard({
                 {formatPnl(monthSummary.netPnl)} {" \u2022 "} {monthSummary.tradeCount} trades
               </p>
             </div>
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 variant="ghost"
                 size="sm"
@@ -280,6 +372,19 @@ export function PnlCalendarCard({
                 onClick={() => setVisibleMonth((current) => addUtcMonths(current, 1))}
               >
                 Next
+              </Button>
+              <Button
+                variant={monthCopyStatus === "copied" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => void handleCopyVisibleMonth()}
+                className={
+                  monthCopyStatus === "failed"
+                    ? "border-app-negative/50 text-app-negative hover:border-app-negative/70 hover:bg-app-negative/10 hover:text-app-negative"
+                    : undefined
+                }
+                title="Copy visible month PnL"
+              >
+                {monthCopyStatus === "copied" ? "Copied" : monthCopyStatus === "failed" ? "Copy failed" : "Copy Month PnL"}
               </Button>
             </div>
           </div>

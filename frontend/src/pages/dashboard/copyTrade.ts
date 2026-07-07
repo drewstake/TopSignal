@@ -190,9 +190,7 @@ export function prepareCopyTradeModeToggle(
   return {
     status: "ready",
     nextSettings: updateCopyTradeModeSetting(normalized, requestedModeEnabled),
-    message: requestedModeEnabled
-      ? "Copy Trade Mode enabled. Dashboard totals now include eligible follower accounts."
-      : "Copy Trade Mode disabled. Dashboard totals now show the selected account only.",
+    message: requestedModeEnabled ? "Copy Trade Mode enabled." : "Copy Trade Mode disabled. Dashboard totals now show the selected account only.",
   };
 }
 

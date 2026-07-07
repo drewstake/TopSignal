@@ -151,23 +151,11 @@ export function getDemoTradeId(value: string | number | null | undefined) {
 }
 
 export function formatDemoCurrency(value: number, formatter: (nextValue: number) => string) {
-  if (!isDemoModeEnabled()) {
-    return formatter(value);
-  }
-  return "$--";
+  return formatter(value);
 }
 
 export function formatDemoPnl(value: number, formatter: (nextValue: number) => string) {
-  if (!isDemoModeEnabled()) {
-    return formatter(value);
-  }
-  if (value > 0) {
-    return "+$--";
-  }
-  if (value < 0) {
-    return "-$--";
-  }
-  return "$--";
+  return formatter(value);
 }
 
 function isObject(value: unknown): value is JsonObject {

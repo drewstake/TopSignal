@@ -519,16 +519,35 @@ function getCopyTradeSettingsSaveErrorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : "Browser storage is unavailable.";
 }
 
-async function refreshCopyTradeCurrentTradingDay(accountIds: readonly number[], tradingDay: string) {
-  const tradingDayRange = getTradingDayRange(tradingDay);
-  if (!tradingDayRange || accountIds.length === 0) {
+function getCurrentTradingMonthRefreshQuery(currentTradingDay: string): Pick<MetricsRangeQuery, "start" | "end"> {
+  const [year, month] = currentTradingDay.split("-");
+  const monthStart = year && month ? getTradingDayBoundaryIso(`${year}-${month}-01`, false) : null;
+  return {
+    start: monthStart ?? undefined,
+    end: new Date().toISOString(),
+  };
+}
+
+function getCopyTradeRefreshQuery(range: MetricsRangeQuery, currentTradingDay: string): Pick<MetricsRangeQuery, "start" | "end"> {
+  if (range.allTime) {
+    return getCurrentTradingMonthRefreshQuery(currentTradingDay);
+  }
+
+  return {
+    start: range.start,
+    end: range.end,
+  };
+}
+
+async function refreshCopyTradeRange(accountIds: readonly number[], range: Pick<MetricsRangeQuery, "start" | "end">) {
+  if (accountIds.length === 0) {
     return;
   }
 
   await Promise.all(
     accountIds.map(async (accountId) => {
       try {
-        await accountsApi.refreshTrades(accountId, tradingDayRange);
+        await accountsApi.refreshTrades(accountId, range);
       } catch {
         // Fall back to the existing local cache for accounts that cannot refresh.
       }
@@ -722,7 +741,7 @@ export function DashboardPage() {
 
     try {
       if (copyTradeSettings.modeEnabled) {
-        await refreshCopyTradeCurrentTradingDay(copyTradeRosterAccountIds, currentTradingDayKey);
+        await refreshCopyTradeRange(copyTradeRosterAccountIds, getCopyTradeRefreshQuery(metricsRangeQuery, currentTradingDayKey));
       }
 
       const summaryQuery = {

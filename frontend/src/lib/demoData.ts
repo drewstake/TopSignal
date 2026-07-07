@@ -75,7 +75,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     is_main: true,
     can_trade: true,
     is_visible: true,
-    last_trade_at: "2026-06-30T15:42:00.000Z",
+    last_trade_at: "2026-07-07T15:37:00.000Z",
   },
   {
     id: FOLLOWER_ACCOUNT_ID,
@@ -88,7 +88,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     is_main: false,
     can_trade: true,
     is_visible: true,
-    last_trade_at: "2026-06-30T15:40:00.000Z",
+    last_trade_at: "2026-07-07T15:35:00.000Z",
   },
   {
     id: SWING_ACCOUNT_ID,
@@ -101,7 +101,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     is_main: false,
     can_trade: false,
     is_visible: true,
-    last_trade_at: "2026-06-27T18:35:00.000Z",
+    last_trade_at: "2026-07-06T18:35:00.000Z",
   },
   {
     id: PRACTICE_ACCOUNT_ID,
@@ -114,7 +114,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     is_main: false,
     can_trade: true,
     is_visible: true,
-    last_trade_at: "2026-06-24T14:18:00.000Z",
+    last_trade_at: "2026-07-02T14:18:00.000Z",
   },
   {
     id: MISSING_ACCOUNT_ID,
@@ -165,6 +165,16 @@ const PRIMARY_TRADE_SPECS: DemoTradeSpec[] = [
   { day: "2026-06-30", time: "09:34", symbol: "MNQ", side: "SHORT", size: 10, entry: 22235.75, points: 43.5, durationMinutes: 15, mfe: 51, mae: 8 },
   { day: "2026-06-30", time: "10:26", symbol: "MES", side: "SHORT", size: 4, entry: 5560.25, points: 8.75, durationMinutes: 19, mfe: 12, mae: 3 },
   { day: "2026-06-30", time: "14:11", symbol: "MNQ", side: "LONG", size: 5, entry: 22164.25, points: -12.5, durationMinutes: 9, mfe: 3, mae: 17 },
+  { day: "2026-07-01", time: "09:43", symbol: "MNQ", side: "LONG", size: 7, entry: 22204.5, points: 24.75, durationMinutes: 16, mfe: 31, mae: 6 },
+  { day: "2026-07-01", time: "11:18", symbol: "MES", side: "SHORT", size: 4, entry: 5572.75, points: -6.5, durationMinutes: 12, mfe: 3, mae: 9 },
+  { day: "2026-07-02", time: "09:39", symbol: "MNQ", side: "SHORT", size: 9, entry: 22282.25, points: 33.25, durationMinutes: 18, mfe: 41, mae: 7 },
+  { day: "2026-07-02", time: "13:48", symbol: "MGC", side: "LONG", size: 2, entry: 2395.8, points: 7.6, durationMinutes: 34, mfe: 10.2, mae: 3.1 },
+  { day: "2026-07-06", time: "09:35", symbol: "MNQ", side: "LONG", size: 8, entry: 22318.75, points: 38.5, durationMinutes: 21, mfe: 47, mae: 8 },
+  { day: "2026-07-06", time: "10:42", symbol: "MNQ", side: "SHORT", size: 6, entry: 22382.5, points: -17.25, durationMinutes: 10, mfe: 5, mae: 24 },
+  { day: "2026-07-06", time: "14:06", symbol: "MES", side: "LONG", size: 5, entry: 5591.25, points: 11.25, durationMinutes: 27, mfe: 15, mae: 4 },
+  { day: "2026-07-07", time: "09:37", symbol: "MNQ", side: "SHORT", size: 10, entry: 22406.25, points: 29.75, durationMinutes: 15, mfe: 36, mae: 7 },
+  { day: "2026-07-07", time: "10:21", symbol: "MNQ", side: "LONG", size: 7, entry: 22352, points: 18.5, durationMinutes: 13, mfe: 24, mae: 5 },
+  { day: "2026-07-07", time: "14:22", symbol: "MNQ", side: "SHORT", size: 5, entry: 22428.75, points: -11.25, durationMinutes: 8, mfe: 3, mae: 16 },
 ];
 
 const DEMO_EXPENSES: ExpenseRecord[] = [
@@ -343,7 +353,7 @@ function buildTrade(accountId: number, spec: DemoTradeSpec, index: number, point
 
 function buildTradesForAccount(accountId: number) {
   if (accountId === FOLLOWER_ACCOUNT_ID) {
-    return PRIMARY_TRADE_SPECS.slice(0, 27).map((spec, index) =>
+    return PRIMARY_TRADE_SPECS.map((spec, index) =>
       buildTrade(accountId, spec, index, index % 7 === 0 ? 0.85 : 0.92, 0.55),
     );
   }
@@ -355,7 +365,7 @@ function buildTradesForAccount(accountId: number) {
   }
 
   if (accountId === PRACTICE_ACCOUNT_ID) {
-    return PRIMARY_TRADE_SPECS.slice(8, 22).map((spec, index) => buildTrade(accountId, spec, index, 0.5, 0.35));
+    return PRIMARY_TRADE_SPECS.slice(8).map((spec, index) => buildTrade(accountId, spec, index, 0.5, 0.35));
   }
 
   return PRIMARY_TRADE_SPECS.map((spec, index) => buildTrade(PRIMARY_ACCOUNT_ID, spec, index));

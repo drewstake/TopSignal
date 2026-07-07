@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  formatDemoCurrency,
+  formatDemoPnl,
   getDemoAccountLabel,
   isDemoModeEnabled,
   sanitizeDemoApiResponse,
@@ -45,6 +47,15 @@ describe("demoMode", () => {
     expect(label).toContain("ACCT-");
     expect(label).not.toContain("Andrew");
     expect(label).not.toContain("12345678");
+  });
+
+  it("formats dummy money values instead of placeholders when enabled", () => {
+    setDemoModeEnabled(true);
+    const formatSignedCurrency = (value: number) => `${value > 0 ? "+" : value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+
+    expect(formatDemoCurrency(50123.45, (value) => `$${value.toFixed(2)}`)).toBe("$50123.45");
+    expect(formatDemoPnl(728.5, formatSignedCurrency)).toBe("+$728.50");
+    expect(formatDemoPnl(-95, formatSignedCurrency)).toBe("-$95.00");
   });
 
   it("sanitizes account, journal, trade, and money response fields without changing API ids", () => {

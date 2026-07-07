@@ -53,6 +53,27 @@ describe("demoData", () => {
     expect(calendar?.length).toBeGreaterThan(10);
   });
 
+  it("includes recent demo trades for short dashboard ranges", () => {
+    const trades = getDemoApiResponse<AccountTrade[]>("/api/accounts/910001/trades", {
+      start: "2026-07-01",
+      end: "2026-07-07",
+      limit: 200,
+    })?.data;
+    const summary = getDemoApiResponse<AccountSummary>("/api/accounts/910001/summary", {
+      start: "2026-07-01",
+      end: "2026-07-07",
+    })?.data;
+    const calendar = getDemoApiResponse<AccountPnlCalendarDay[]>("/api/accounts/910001/pnl-calendar", {
+      start: "2026-07-01",
+      end: "2026-07-07",
+    })?.data;
+
+    expect(trades?.length).toBeGreaterThan(8);
+    expect(summary?.trade_count).toBe(trades?.length);
+    expect(summary?.net_pnl).not.toBe(0);
+    expect(calendar?.map((day) => day.date)).toEqual(["2026-07-01", "2026-07-02", "2026-07-06", "2026-07-07"]);
+  });
+
   it("filters journal day fixtures by requested date range", () => {
     const response = getDemoApiResponse<JournalDaysResponse>("/api/accounts/910001/journal/days", {
       start_date: "2026-06-20",
