@@ -12,6 +12,7 @@ import {
   buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
   buildSmaData,
+  buildVisualContinuityCandlestickData,
   buildVwapData,
 } from "./botChartData";
 import type { BotConfig, BotDecision, ProjectXMarketCandle } from "../../lib/types";
@@ -103,8 +104,26 @@ describe("buildCandlestickData", () => {
     expect(rows.map((row) => Number(row.time))).toEqual([1777210500, 1777210800]);
   });
 
-  it("bridges consecutive intraday opens to the previous candle close", () => {
-    const rows = buildCandlestickData([
+  it("preserves canonical ProjectX OHLC without mutating the source rows", () => {
+    const source = [
+      candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
+      candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
+    ];
+    const before = structuredClone(source);
+
+    const rows = buildCandlestickData(source);
+
+    expect(rows[1]).toMatchObject({
+      open: 122,
+      high: 126,
+      low: 121,
+      close: 125,
+    });
+    expect(source).toEqual(before);
+  });
+
+  it("only bridges consecutive opens through the explicit display-only continuity helper", () => {
+    const rows = buildVisualContinuityCandlestickData([
       candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
       candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
     ]);
@@ -117,8 +136,8 @@ describe("buildCandlestickData", () => {
     });
   });
 
-  it("leaves missing intraday intervals as real gaps", () => {
-    const rows = buildCandlestickData([
+  it("does not apply display continuity across a missing interval", () => {
+    const rows = buildVisualContinuityCandlestickData([
       candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
       candle("2026-04-26T13:45:00Z", 125, { open: 122, high: 126, low: 121 }),
     ]);
@@ -131,21 +150,26 @@ describe("buildCandlestickData", () => {
     });
   });
 
-  it("can preserve raw opens for analytics that should not include display bridging", () => {
-    const rows = buildCandlestickData(
-      [
-        candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
-        candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
-      ],
-      { bridgeConsecutiveGaps: false },
-    );
-
-    expect(rows[1]).toMatchObject({
-      open: 122,
-      high: 126,
-      low: 121,
-      close: 125,
+  it.each([
+    ["closed then partial", false],
+    ["partial then closed", true],
+  ])("keeps the closed candle when duplicate input is %s", (_label, partialFirst) => {
+    const closed = candle("2026-04-26T13:40:00Z", 101, {
+      open: 100,
+      high: 102,
+      low: 99,
     });
+    const partial = candle("2026-04-26T13:40:00.000Z", 999, {
+      open: 998,
+      high: 1_000,
+      low: 997,
+      is_partial: true,
+    });
+
+    const rows = buildCandlestickData(partialFirst ? [partial, closed] : [closed, partial]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ open: 100, high: 102, low: 99, close: 101 });
   });
 });
 
@@ -226,6 +250,19 @@ describe("buildVwapData", () => {
     );
 
     expect(rows.map((row) => row.value)).toEqual([10, 20, 25]);
+  });
+
+  it.each([
+    ["closed then partial", false],
+    ["partial then closed", true],
+  ])("uses the closed duplicate for VWAP when input is %s", (_label, partialFirst) => {
+    const closed = candle("2026-04-26T13:35:00Z", 10, { volume: 100 });
+    const partial = candle("2026-04-26T13:35:00.000Z", 999, { volume: 100, is_partial: true });
+
+    const rows = buildVwapData(partialFirst ? [partial, closed] : [closed, partial]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toBe(10);
   });
 });
 
@@ -389,7 +426,7 @@ describe("buildLiveCandleFromPriceUpdate", () => {
     });
   });
 
-  it("uses the matching closed candle as the base for a streamed partial update", () => {
+  it("keeps the matching closed candle canonical when a newer tick shares its bucket", () => {
     const config = botConfig({ timeframe_unit: "minute", timeframe_unit_number: 5 });
     const base = candle("2026-04-26T14:05:00.000Z", 18449, {
       open: 18448,
@@ -411,12 +448,14 @@ describe("buildLiveCandleFromPriceUpdate", () => {
       fetchedAt: new Date("2026-04-26T14:08:00Z"),
     });
 
+    expect(live).toBe(base);
     expect(live).toMatchObject({
       open: 18448,
-      high: 18450.25,
+      high: 18449.5,
       low: 18447.75,
       volume: 22,
-      close: 18450.25,
+      close: 18449,
+      is_partial: false,
     });
   });
 
@@ -480,6 +519,10 @@ describe("buildSignalMarkers", () => {
       candles,
       activityDecisions: [latestDecision],
       lastEvaluation: {
+        status: "evaluated",
+        correlation_id: null,
+        idempotency_key: null,
+        duplicate_of_order_attempt_id: null,
         config: botConfig(),
         run: null,
         decision: latestDecision,

@@ -51,7 +51,7 @@ export function readBotCandleCache(cacheKey: string): BotCandleCacheEntry | null
     if (!Array.isArray(parsed.candles)) {
       return null;
     }
-    const candles = parsed.candles.filter(isCachedMarketCandle);
+    const candles = selectMarketCandles(parsed.candles, false);
     if (candles.length === 0) {
       return null;
     }
@@ -96,14 +96,7 @@ export function mergeMarketCandles(
   incomingCandles: ProjectXMarketCandle[],
   limit: number,
 ): ProjectXMarketCandle[] {
-  const byTimestamp = new Map<string, ProjectXMarketCandle>();
-  for (const candle of [...existingCandles, ...incomingCandles]) {
-    if (!isCachedMarketCandle(candle) || candle.is_partial) {
-      continue;
-    }
-    byTimestamp.set(candle.timestamp, candle);
-  }
-  return trimCandlesForCache(Array.from(byTimestamp.values()), limit);
+  return trimCandlesForCache([...existingCandles, ...incomingCandles], limit);
 }
 
 export function filterMarketCandlesForWindow(
@@ -116,15 +109,11 @@ export function filterMarketCandlesForWindow(
     return [];
   }
 
-  return candles
+  return selectMarketCandles(candles, true)
     .filter((candle) => {
-      if (!isCachedMarketCandle(candle)) {
-        return false;
-      }
       const timestampMs = Date.parse(candle.timestamp);
       return timestampMs >= startMs && timestampMs <= endMs;
-    })
-    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+    });
 }
 
 /**
@@ -138,26 +127,7 @@ export function upsertMarketCandles(
   incomingCandles: ProjectXMarketCandle[],
   limit?: number,
 ): ProjectXMarketCandle[] {
-  const byTimestamp = new Map<string, ProjectXMarketCandle>();
-  for (const candle of existingCandles) {
-    if (isCachedMarketCandle(candle)) {
-      byTimestamp.set(candle.timestamp, candle);
-    }
-  }
-  for (const candle of incomingCandles) {
-    if (!isCachedMarketCandle(candle)) {
-      continue;
-    }
-    const existing = byTimestamp.get(candle.timestamp);
-    if (existing && !existing.is_partial && candle.is_partial) {
-      continue;
-    }
-    byTimestamp.set(candle.timestamp, candle);
-  }
-
-  const sorted = Array.from(byTimestamp.values()).sort(
-    (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
-  );
+  const sorted = selectMarketCandles([...existingCandles, ...incomingCandles], true);
   if (limit === undefined) {
     return sorted;
   }
@@ -166,10 +136,32 @@ export function upsertMarketCandles(
 
 function trimCandlesForCache(candles: ProjectXMarketCandle[], limit: number): ProjectXMarketCandle[] {
   const boundedLimit = Math.max(1, Math.trunc(limit));
-  return candles
-    .filter((candle) => isCachedMarketCandle(candle) && !candle.is_partial)
-    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
-    .slice(-boundedLimit);
+  return selectMarketCandles(candles, false).slice(-boundedLimit);
+}
+
+/**
+ * Select one canonical row per instant without altering its provider OHLC.
+ * Closed rows always outrank partial rows, regardless of array order or ISO
+ * timestamp spelling; rows with equal completion state retain last-write-wins.
+ */
+function selectMarketCandles(candles: unknown[], includePartial: boolean): ProjectXMarketCandle[] {
+  const byTimestamp = new Map<number, ProjectXMarketCandle>();
+  for (const value of candles) {
+    if (!isCachedMarketCandle(value) || (!includePartial && value.is_partial)) {
+      continue;
+    }
+
+    const timestampMs = Date.parse(value.timestamp);
+    const existing = byTimestamp.get(timestampMs);
+    if (existing && !existing.is_partial && value.is_partial) {
+      continue;
+    }
+    byTimestamp.set(timestampMs, value);
+  }
+
+  return Array.from(byTimestamp.entries())
+    .sort(([leftTimestamp], [rightTimestamp]) => leftTimestamp - rightTimestamp)
+    .map(([, candle]) => candle);
 }
 
 function isCachedMarketCandle(value: unknown): value is ProjectXMarketCandle {
@@ -181,11 +173,11 @@ function isCachedMarketCandle(value: unknown): value is ProjectXMarketCandle {
     typeof candle.contract_id === "string" &&
     typeof candle.timestamp === "string" &&
     Number.isFinite(Date.parse(candle.timestamp)) &&
-    typeof candle.open === "number" &&
-    typeof candle.high === "number" &&
-    typeof candle.low === "number" &&
-    typeof candle.close === "number" &&
-    typeof candle.volume === "number" &&
+    typeof candle.open === "number" && Number.isFinite(candle.open) &&
+    typeof candle.high === "number" && Number.isFinite(candle.high) &&
+    typeof candle.low === "number" && Number.isFinite(candle.low) &&
+    typeof candle.close === "number" && Number.isFinite(candle.close) &&
+    typeof candle.volume === "number" && Number.isFinite(candle.volume) &&
     typeof candle.is_partial === "boolean"
   );
 }

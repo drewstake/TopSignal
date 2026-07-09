@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from numbers import Number
 from typing import Any, Iterable
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -22,10 +25,34 @@ from ..models import (
     ProjectXTradeEvent,
 )
 from .instruments import load_instrument_specs, normalize_symbol_key
-from .projectx_accounts import ACCOUNT_STATE_ACTIVE, get_projectx_account_row
+from .bot_market_analysis import build_market_analysis as build_canonical_market_analysis
+from .bot_execution_safety import (
+    EvaluationStatus,
+    build_action_idempotency_key,
+    effective_dry_run,
+    live_execution_environment_enabled,
+    log_bot_event,
+    new_correlation_id,
+    provider_custom_tag,
+    running_under_tests,
+    sanitize_error,
+    touch_bot_run,
+    transition_bot_run,
+)
+from .projectx_accounts import get_projectx_account_row
 from .projectx_client import ProjectXClient
+from .bot_strategy_registry import (
+    SUPPORTED_STRATEGY_IDENTIFIERS,
+    dispatch_strategy_evaluator,
+    get_strategy_definition,
+)
+from .bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
+from . import bot_serialization as _bot_serialization
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
 from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+
+
+logger = logging.getLogger(__name__)
 
 _PROJECTX_UNIT_BY_NAME = {
     "second": 1,
@@ -68,28 +95,7 @@ _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH = "atr_adjusted_relative_strength"
 _STRATEGY_RELATIVE_STRENGTH_SPY = "relative_strength_spy"
 _STRATEGY_PULLBACK_TRAP_REVERSAL = "pullback_trap_reversal"
 _STRATEGY_FVG_SWEEP_MSS = "fvg_sweep_mss"
-_SUPPORTED_STRATEGY_TYPES = {
-    _STRATEGY_SMA_CROSS,
-    _STRATEGY_SUPPORT_RESISTANCE,
-    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
-    _STRATEGY_DONCHIAN_BREAKOUT,
-    _STRATEGY_OPENING_RVOL_BREAKOUT,
-    _STRATEGY_BOLLINGER_RSI_REVERSAL,
-    _STRATEGY_BOLLINGER_MEAN_REVERSION,
-    _STRATEGY_MACD_SUPPORT_RESISTANCE,
-    _STRATEGY_DELAYED_ORB_CONFIRMATION,
-    _STRATEGY_ORB_FIBONACCI_PULLBACK,
-    _STRATEGY_SUPERTREND_PIVOT,
-    _STRATEGY_EMA_TREND_PULLBACK,
-    _STRATEGY_EMA_SCALPING,
-    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
-    _STRATEGY_VWAP_GAP_RETRACE,
-    _STRATEGY_FISHER_MEAN_REVERSION,
-    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
-    _STRATEGY_RELATIVE_STRENGTH_SPY,
-    _STRATEGY_PULLBACK_TRAP_REVERSAL,
-    _STRATEGY_FVG_SWEEP_MSS,
-}
+_SUPPORTED_STRATEGY_TYPES = set(SUPPORTED_STRATEGY_IDENTIFIERS)
 _LEVEL_STRATEGY_TYPES = {
     _STRATEGY_SUPPORT_RESISTANCE,
     _STRATEGY_LIQUIDITY_SWEEP_RETEST,
@@ -345,13 +351,6 @@ class SignalResult:
 
 
 @dataclass(frozen=True)
-class RiskBlock:
-    code: str
-    message: str
-    severity: str = "warning"
-
-
-@dataclass(frozen=True)
 class SupportResistanceLevel:
     side: str
     price: float
@@ -446,6 +445,10 @@ class OpenPositionState:
 
 @dataclass(frozen=True)
 class EvaluationResult:
+    status: EvaluationStatus
+    correlation_id: str
+    idempotency_key: str | None
+    duplicate_of_order_attempt_id: int | None
     config: BotConfig
     run: BotRun | None
     decision: BotDecision
@@ -453,6 +456,16 @@ class EvaluationResult:
     risk_events: list[BotRiskEvent]
     analysis: dict[str, Any]
     candles: list[ProjectXMarketCandle]
+
+
+class BotRunEvaluationError(RuntimeError):
+    """Carries a durable failed-run audit that the API layer must commit."""
+
+    def __init__(self, *, cause: BaseException, run: BotRun, correlation_id: str):
+        super().__init__(sanitize_error(cause))
+        self.cause = cause
+        self.run = run
+        self.correlation_id = correlation_id
 
 
 def list_bot_configs(
@@ -601,12 +614,13 @@ def start_bot_run(
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
 ) -> EvaluationResult:
+    correlation_id = new_correlation_id()
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     now = datetime.now(timezone.utc)
     config.enabled = True
     config.updated_at = now
-    effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     _stop_running_bot_runs(
         db,
         user_id=user_id,
@@ -614,28 +628,93 @@ def start_bot_run(
         reason="superseded_by_manual_start",
         now=now,
     )
+    # Release the partial active-run uniqueness slot before inserting the replacement.
+    db.flush()
     run = BotRun(
         user_id=user_id,
         bot_config_id=int(config.id),
         account_id=int(config.account_id),
         status="running",
-        dry_run=effective_dry_run,
+        dry_run=resolved_dry_run,
         started_at=now,
         last_heartbeat_at=now,
-        raw_state={"source": "manual_start"},
+        raw_state={
+            "source": "manual_start",
+            "phase": "evaluating",
+            "correlation_id": correlation_id,
+            "execution_mode": "dry_run" if resolved_dry_run else "live",
+        },
     )
-    db.add(run)
-    db.flush()
-    return evaluate_bot_config(
-        db,
-        user_id=user_id,
-        config=config,
-        account=account,
-        client=client,
-        run=run,
-        dry_run=effective_dry_run,
-        confirm_live_order_routing=confirm_live_order_routing,
-    )
+    try:
+        with db.begin_nested():
+            db.add(run)
+            db.flush()
+    except IntegrityError as exc:
+        active_run = (
+            db.query(BotRun.id)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.bot_config_id == int(config.id))
+            .filter(BotRun.status == "running")
+            .first()
+        )
+        if active_run is None:
+            raise
+        raise ValueError("bot_run_start_conflict: another request already started this bot") from exc
+    try:
+        if resolved_dry_run:
+            # Provider/data failures roll back evaluation writes while preserving the
+            # outer run row so it can be transitioned to a durable error audit.
+            with db.begin_nested():
+                result = evaluate_bot_config(
+                    db,
+                    user_id=user_id,
+                    config=config,
+                    account=account,
+                    client=client,
+                    run=run,
+                    dry_run=True,
+                    confirm_live_order_routing=confirm_live_order_routing,
+                    correlation_id=correlation_id,
+                )
+        else:
+            result = evaluate_bot_config(
+                db,
+                user_id=user_id,
+                config=config,
+                account=account,
+                client=client,
+                run=run,
+                dry_run=False,
+                confirm_live_order_routing=confirm_live_order_routing,
+                correlation_id=correlation_id,
+            )
+        return result
+    except Exception as exc:
+        if str(run.status) == "running":
+            transition_bot_run(
+                run,
+                "error",
+                reason="evaluation_failed",
+                error=exc,
+            )
+        config.enabled = False
+        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+        state["phase"] = "error"
+        run.raw_state = state
+        db.flush()
+        log_bot_event(
+            logger,
+            "bot_evaluation_failed",
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id),
+            account_id=int(config.account_id),
+            correlation_id=correlation_id,
+            execution_mode="dry_run" if resolved_dry_run else "live",
+            evaluation_status="error",
+            error_type=type(exc).__name__,
+        )
+        raise BotRunEvaluationError(cause=exc, run=run, correlation_id=correlation_id) from exc
 
 
 def evaluate_bot_config(
@@ -648,12 +727,88 @@ def evaluate_bot_config(
     run: BotRun | None = None,
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
+    correlation_id: str | None = None,
 ) -> EvaluationResult:
-    resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
-    effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
+    try:
+        return _evaluate_bot_config_impl(
+            db,
+            user_id=user_id,
+            config=config,
+            account=account,
+            client=client,
+            run=run,
+            dry_run=dry_run,
+            confirm_live_order_routing=confirm_live_order_routing,
+            correlation_id=correlation_id,
+        )
+    except Exception as exc:
+        if run is not None and db.is_active and str(run.status) == "running":
+            transition_bot_run(run, "error", reason="evaluation_failed", error=exc)
+            config.enabled = False
+            db.flush()
+        raise
+
+
+def _evaluate_bot_config_impl(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    account: Account | None,
+    client: ProjectXClient,
+    run: BotRun | None = None,
+    dry_run: bool | None = None,
+    confirm_live_order_routing: bool = False,
+    correlation_id: str | None = None,
+) -> EvaluationResult:
+    del account  # Ownership is always re-read under the caller's user scope.
+    correlation_id = correlation_id or new_correlation_id()
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=int(config.id),
+        lock_for_update=True,
+    )
+    resolved_account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
+    execution_mode = "dry_run" if resolved_dry_run else "live"
+    if run is not None:
+        run = _require_running_bot_run(
+            db,
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id),
+            lock_for_update=True,
+        )
+
     candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
     analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
-    trade_evaluation = build_signal_trade_evaluation(candles=candles, config=config, signal=signal, analysis=analysis)
+    instrument_spec = None
+    if signal.action in {"BUY", "SELL"}:
+        instrument_specs = load_instrument_specs(db)
+        instrument_spec = next(
+            (
+                instrument_specs[key]
+                for key in [normalize_symbol_key(config.symbol), normalize_symbol_key(config.contract_id)]
+                if key is not None and key in instrument_specs
+            ),
+            None,
+        )
+    evaluation_day_pnl = (
+        _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+        if signal.action in {"BUY", "SELL"}
+        else None
+    )
+    trade_evaluation = build_signal_trade_evaluation(
+        candles=candles,
+        config=config,
+        signal=signal,
+        analysis=analysis,
+        current_day_pnl=evaluation_day_pnl,
+        tick_size=float(instrument_spec.tick_size) if instrument_spec is not None else None,
+        tick_value=float(instrument_spec.tick_value) if instrument_spec is not None else None,
+        point_value=instrument_spec.point_value if instrument_spec is not None else None,
+    )
     if trade_evaluation is not None:
         analysis["trade_evaluation"] = trade_evaluation
     signal_order_size = _signal_order_size(config=config, signal=signal)
@@ -662,6 +817,22 @@ def evaluate_bot_config(
     latest_candle = candles[-1] if candles else None
     execution_contract_id = _execution_contract_id(config, latest_candle)
     execution_symbol = _execution_symbol(config, latest_candle)
+    actionable_candle_timestamp = _actionable_candle_timestamp(
+        signal=signal,
+        candles=candles,
+        latest_candle=latest_candle,
+    )
+    idempotency_key = (
+        build_action_idempotency_key(
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            candle_timestamp=actionable_candle_timestamp,
+            action=signal.action,
+            execution_mode=execution_mode,
+        )
+        if signal.action in {"BUY", "SELL"} and actionable_candle_timestamp is not None
+        else None
+    )
     decision = BotDecision(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -672,35 +843,70 @@ def evaluate_bot_config(
         decision_type="signal",
         action=signal.action,
         reason=signal.reason,
-        candle_timestamp=signal.candle_timestamp,
+        candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
         price=signal.price,
         quantity=signal_order_size if signal.action in {"BUY", "SELL"} else None,
-        raw_payload=signal.raw_payload,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        raw_payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else signal.raw_payload,
     )
     db.add(decision)
     db.flush()
 
     risk_events: list[BotRiskEvent] = []
     order_attempt: BotOrderAttempt | None = None
+    duplicate_of_order_attempt_id: int | None = None
+    evaluation_status: EvaluationStatus = "held" if signal.action == "HOLD" else "evaluated"
     if signal.action in {"BUY", "SELL"}:
-        blocks = evaluate_risk_gates(
+        existing_attempt = _find_order_attempt_by_idempotency_key(
             db,
             user_id=user_id,
-            config=config,
-            account=resolved_account,
-            latest_candle=latest_candle,
-            contract_id=execution_contract_id,
-            symbol=execution_symbol,
-            action=signal.action,
-            requested_order_size=signal_order_size,
-            current_position_qty=current_position_qty,
-            target_position_qty=target_position_qty,
-            dry_run=effective_dry_run,
-            confirm_live_order_routing=confirm_live_order_routing,
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
         )
-        if blocks:
+        if existing_attempt is not None:
+            duplicate_of_order_attempt_id = int(existing_attempt.id)
+            _mark_duplicate_decision(
+                decision,
+                existing_attempt=existing_attempt,
+                idempotency_key=idempotency_key,
+            )
+            evaluation_status = "duplicate_skipped"
+        else:
+            blocks = evaluate_risk_gates(
+                db,
+                user_id=user_id,
+                config=config,
+                account=resolved_account,
+                latest_candle=latest_candle,
+                contract_id=execution_contract_id,
+                symbol=execution_symbol,
+                action=signal.action,
+                requested_order_size=signal_order_size,
+                current_position_qty=current_position_qty,
+                target_position_qty=target_position_qty,
+                dry_run=resolved_dry_run,
+                confirm_live_order_routing=confirm_live_order_routing,
+            )
+            if idempotency_key is None:
+                blocks.append(
+                    RiskBlock(
+                        code="missing_actionable_candle_timestamp",
+                        message="Actionable signals require a closed candle timestamp.",
+                        severity="critical",
+                    )
+                )
+
+        if existing_attempt is None and blocks:
             risk_events = [
-                _create_risk_event(db, user_id=user_id, config=config, run=run, block=block)
+                _create_risk_event(
+                    db,
+                    user_id=user_id,
+                    config=config,
+                    run=run,
+                    block=block,
+                    correlation_id=correlation_id,
+                )
                 for block in blocks
             ]
             db.add(
@@ -714,18 +920,20 @@ def evaluate_bot_config(
                     decision_type="risk_reject",
                     action=signal.action,
                     reason="; ".join(block.message for block in blocks),
-                    candle_timestamp=signal.candle_timestamp,
+                    candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
                     price=signal.price,
                     quantity=signal_order_size,
+                    correlation_id=correlation_id,
+                    idempotency_key=idempotency_key,
                     raw_payload={"risk_blocks": [block.__dict__ for block in blocks]},
                 )
             )
+            evaluation_status = "risk_blocked"
             if run is not None:
-                run.status = "blocked"
-                run.stopped_at = datetime.now(timezone.utc)
-                run.stop_reason = "risk_gate_blocked_order"
-        else:
-            order_attempt = _create_order_attempt(
+                transition_bot_run(run, "blocked", reason="risk_gate_blocked_order")
+                config.enabled = False
+        elif existing_attempt is None:
+            order_attempt, raced_attempt = _claim_order_attempt(
                 db,
                 user_id=user_id,
                 config=config,
@@ -734,21 +942,114 @@ def evaluate_bot_config(
                 contract_id=execution_contract_id,
                 action=signal.action,
                 order_size=signal_order_size,
+                execution_mode=execution_mode,
+                correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
             )
-            db.flush()
-            if effective_dry_run:
+            if raced_attempt is not None:
+                duplicate_of_order_attempt_id = int(raced_attempt.id)
+                _mark_duplicate_decision(
+                    decision,
+                    existing_attempt=raced_attempt,
+                    idempotency_key=idempotency_key,
+                )
+                evaluation_status = "duplicate_skipped"
+            elif order_attempt is not None and resolved_dry_run:
                 order_attempt.status = "dry_run"
                 order_attempt.raw_response = {"dry_run": True, "message": "Order not sent to ProjectX."}
-            else:
+                evaluation_status = "dry_run_attempt"
+            elif order_attempt is not None:
                 # Persist the audit row before any possible external order submission.
+                order_attempt_id = int(order_attempt.id)
+                run_id = int(run.id) if run is not None else None
                 db.commit()
-                _submit_order_attempt(client=client, order_attempt=order_attempt)
+                config = _require_bot_config(
+                    db,
+                    user_id=user_id,
+                    bot_config_id=int(config.id),
+                    lock_for_update=True,
+                )
+                order_attempt = _require_order_attempt(
+                    db,
+                    user_id=user_id,
+                    bot_config_id=int(config.id),
+                    order_attempt_id=order_attempt_id,
+                )
+                run = (
+                    _find_bot_run(
+                        db,
+                        user_id=user_id,
+                        bot_config_id=int(config.id),
+                        bot_run_id=run_id,
+                        lock_for_update=True,
+                    )
+                    if run_id is not None
+                    else None
+                )
+                if not bool(config.enabled) or (run_id is not None and (run is None or run.status != "running")):
+                    order_attempt.status = "blocked"
+                    order_attempt.rejection_reason = "Bot execution state changed before provider routing."
+                    state_block = RiskBlock(
+                        code="execution_state_changed",
+                        message="Bot was stopped or disabled before provider routing.",
+                        severity="critical",
+                    )
+                    risk_events = [
+                        _create_risk_event(
+                            db,
+                            user_id=user_id,
+                            config=config,
+                            run=run,
+                            block=state_block,
+                            correlation_id=correlation_id,
+                        )
+                    ]
+                    evaluation_status = "risk_blocked"
+                else:
+                    # The config lock is held through the provider call, so stop cannot
+                    # overtake an already claimed submission.
+                    _submit_order_attempt(client=client, order_attempt=order_attempt)
+                    if order_attempt.status == "submitted":
+                        evaluation_status = "submitted"
+                    else:
+                        evaluation_status = "error"
+                        config.enabled = False
+                        if run is not None and run.status == "running":
+                            transition_bot_run(
+                                run,
+                                "error",
+                                reason="provider_order_submission_failed",
+                                error=order_attempt.rejection_reason or "Provider order submission failed.",
+                            )
             db.flush()
 
     if run is not None and run.status == "running":
-        run.last_heartbeat_at = datetime.now(timezone.utc)
+        touch_bot_run(run, candle_timestamp=actionable_candle_timestamp)
+        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+        state["phase"] = "idle"
+        state["last_evaluation_status"] = evaluation_status
+        run.raw_state = state
     db.flush()
+    log_bot_event(
+        logger,
+        "bot_evaluation_completed",
+        user_id=user_id,
+        bot_config_id=int(config.id),
+        bot_run_id=int(run.id) if run is not None else None,
+        account_id=int(config.account_id),
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        execution_mode=execution_mode,
+        action=signal.action,
+        evaluation_status=evaluation_status,
+        order_attempt_id=int(order_attempt.id) if order_attempt is not None else None,
+        duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
+    )
     return EvaluationResult(
+        status=evaluation_status,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
         config=config,
         run=run,
         decision=decision,
@@ -778,22 +1079,29 @@ def stop_latest_bot_run(
         .first()
     )
     if run is None:
-        run = BotRun(
-            user_id=user_id,
-            bot_config_id=bot_config_id,
-            account_id=int(config.account_id),
-            status="stopped",
-            dry_run=True,
-            started_at=datetime.now(timezone.utc),
-            stopped_at=datetime.now(timezone.utc),
-            stop_reason=reason,
+        run = (
+            db.query(BotRun)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.bot_config_id == bot_config_id)
+            .order_by(BotRun.started_at.desc(), BotRun.id.desc())
+            .first()
         )
-        db.add(run)
-        db.flush()
+        if run is None:
+            now = datetime.now(timezone.utc)
+            run = BotRun(
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                account_id=int(config.account_id),
+                status="stopped",
+                dry_run=True,
+                started_at=now,
+                stopped_at=now,
+                stop_reason=reason,
+            )
+            db.add(run)
+            db.flush()
     else:
-        run.status = "stopped"
-        run.stopped_at = datetime.now(timezone.utc)
-        run.stop_reason = reason
+        transition_bot_run(run, "stopped", reason=reason)
 
     db.add(
         BotDecision(
@@ -869,245 +1177,14 @@ def fetch_candles_and_evaluate_strategy(
     config: BotConfig,
     client: ProjectXClient,
 ) -> tuple[list[ProjectXMarketCandle], SignalResult]:
-    strategy_type = _validate_strategy_type(str(config.strategy_type))
-    if strategy_type == _STRATEGY_DELAYED_ORB_CONFIRMATION:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_delayed_orb_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_delayed_orb_confirmation(
-            candles=candle_sets.get("1m", []),
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candle_sets.get("1m", []), signal
+    from .bot_candle_acquisition import acquire_and_evaluate_strategy
 
-    if strategy_type == _STRATEGY_ORB_FIBONACCI_PULLBACK:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_orb_fibonacci_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_orb_fibonacci_pullback(
-            candles,
-            timeframe_unit=str(config.timeframe_unit),
-            timeframe_unit_number=int(config.timeframe_unit_number),
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-            session_end_time=str(config.trading_end_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_OPENING_RVOL_BREAKOUT:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_opening_rvol_breakout_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_opening_rvol_breakout(
-            candles,
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_VWAP_GAP_RETRACE:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_vwap_gap_retrace_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_vwap_gap_retrace(candles, strategy_params=strategy_params)
-        return candles, signal
-
-    if strategy_type in _LEVEL_STRATEGY_TYPES:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_support_resistance_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_type=strategy_type,
-            strategy_params=strategy_params,
-        )
-        candles_1h = candle_sets.get("1H", [])
-        if strategy_type == _STRATEGY_LIQUIDITY_SWEEP_RETEST:
-            signal = evaluate_liquidity_sweep_retest(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                fast_period=int(config.fast_period),
-                slow_period=int(config.slow_period),
-                strategy_params=strategy_params,
-            )
-        elif strategy_type == _STRATEGY_MACD_SUPPORT_RESISTANCE:
-            signal = evaluate_macd_support_resistance(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                fast_period=int(config.fast_period),
-                slow_period=int(config.slow_period),
-                strategy_params=strategy_params,
-            )
-        else:
-            signal = evaluate_support_resistance_levels(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                strategy_params=strategy_params,
-            )
-        return candles_1h, signal
-
-    if strategy_type == _STRATEGY_SUPERTREND_PIVOT:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_supertrend_pivot_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal_candles = candle_sets.get("signal", [])
-        signal = evaluate_supertrend_pivot_points(
-            signal_timeframe_candles=signal_candles,
-            daily_candles=candle_sets.get("1D", []),
-            strategy_params=strategy_params,
-        )
-        return signal_candles, signal
-
-    if strategy_type == _STRATEGY_FVG_SWEEP_MSS:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_fvg_sweep_mss_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        structure_candles = candle_sets.get("structure", [])
-        signal = evaluate_fvg_sweep_mss(
-            fvg_candles=candle_sets.get("fvg", []),
-            structure_candles=structure_candles,
-            strategy_params=strategy_params,
-        )
-        return structure_candles, signal
-
-    if strategy_type == _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
-        benchmark_candles = fetch_and_store_relative_strength_benchmark_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_atr_adjusted_relative_strength(
-            candles,
-            benchmark_candles=benchmark_candles,
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_RELATIVE_STRENGTH_SPY:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_relative_strength_spy_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        asset_candles = candle_sets.get("5m", [])
-        signal = evaluate_relative_strength_vs_spy(
-            asset_candles=asset_candles,
-            benchmark_candles=candle_sets.get("SPY", []),
-            strategy_params=strategy_params,
-        )
-        return asset_candles, signal
-
-    minimum_lookback_bars: int | None = None
-    if strategy_type == _STRATEGY_BOLLINGER_MEAN_REVERSION:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        minimum_lookback_bars = max(
-            int(strategy_params["bollinger_period"]) + 1,
-            int(strategy_params["atr_period"]),
-            25,
-        )
-
-    candles = fetch_and_store_candles(
+    return acquire_and_evaluate_strategy(
         db,
         user_id=user_id,
         config=config,
         client=client,
-        minimum_lookback_bars=minimum_lookback_bars,
     )
-    if strategy_type == _STRATEGY_DONCHIAN_BREAKOUT:
-        latest_candle = candles[-1] if candles else None
-        contract_id = _execution_contract_id(config, latest_candle)
-        symbol = _execution_symbol(config, latest_candle)
-        position_state = load_open_position_state(
-            db,
-            user_id=user_id,
-            account_id=int(config.account_id),
-            contract_id=contract_id,
-            symbol=symbol,
-        )
-        signal = evaluate_donchian_breakout(
-            candles,
-            strategy_params=config.strategy_params,
-            position_state=position_state,
-            latest_entry_plan=load_latest_bot_entry_plan(
-                db,
-                user_id=user_id,
-                bot_config_id=int(config.id),
-                position_state=position_state,
-            ),
-            base_order_size=float(config.order_size),
-        )
-    elif strategy_type == _STRATEGY_BOLLINGER_MEAN_REVERSION:
-        signal = evaluate_bollinger_mean_reversion(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_BOLLINGER_RSI_REVERSAL:
-        signal = evaluate_bollinger_rsi_reversal(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_EMA_SCALPING:
-        signal = evaluate_ema_scalping(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
-    elif strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
-        signal = evaluate_ema_trend_pullback(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    elif strategy_type == _STRATEGY_VWAP_ATR_MEAN_REVERSION:
-        signal = evaluate_vwap_atr_mean_reversion(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_FISHER_MEAN_REVERSION:
-        signal = evaluate_fisher_transform_mean_reversion(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    elif strategy_type == _STRATEGY_PULLBACK_TRAP_REVERSAL:
-        signal = evaluate_pullback_trap_reversal(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    else:
-        signal = evaluate_sma_cross(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
-    return candles, signal
 
 
 def fetch_and_store_candles(
@@ -8241,198 +8318,96 @@ def evaluate_risk_gates(
     dry_run: bool,
     confirm_live_order_routing: bool,
 ) -> list[RiskBlock]:
-    blocks: list[RiskBlock] = []
-    if not bool(config.enabled):
-        blocks.append(RiskBlock(code="bot_disabled", message="Bot is disabled.", severity="critical"))
-    if account.account_state != ACCOUNT_STATE_ACTIVE:
-        blocks.append(
-            RiskBlock(
-                code="account_not_active",
-                message=f"Account state is {account.account_state}; only ACTIVE accounts can execute bot orders.",
-                severity="critical",
-            )
-        )
-    if not dry_run and account.can_trade is False:
-        blocks.append(RiskBlock(code="account_cannot_trade", message="Provider marks this account as not tradable.", severity="critical"))
-    if not dry_run and _looks_like_live_funded_account(account):
-        blocks.append(
-            RiskBlock(
-                code="live_funded_api_blocked",
-                message="Live Funded Account naming detected; ProjectX API automation is blocked for this account type.",
-                severity="critical",
-            )
-        )
-    if not dry_run and not confirm_live_order_routing:
-        blocks.append(
-            RiskBlock(
-                code="live_order_confirmation_missing",
-                message="Live order routing requires explicit confirmation for this request.",
-                severity="critical",
-            )
-        )
-    if not _is_contract_allowed(config, contract_id=contract_id, symbol=symbol):
-        blocks.append(RiskBlock(code="contract_not_allowed", message="Contract is outside this bot's allowed contract list."))
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
     resulting_position_qty = float(target_position_qty) if target_position_qty is not None else float(current_position_qty) + signed_change
-    if order_size <= 0:
-        blocks.append(RiskBlock(code="invalid_order_size", message="Computed order size must be positive."))
-    if abs(order_size - round(order_size)) > 1e-9:
-        blocks.append(RiskBlock(code="fractional_contract_size", message="ProjectX futures order size must be a whole number."))
-    if abs(resulting_position_qty) > float(config.max_contracts):
-        blocks.append(RiskBlock(code="max_contracts", message="Resulting position exceeds max contracts."))
-    if abs(resulting_position_qty) > float(config.max_open_position):
-        blocks.append(RiskBlock(code="max_open_position", message="Resulting position exceeds max open position setting."))
-    if _todays_bot_trade_count(db, user_id=user_id, config=config) >= int(config.max_trades_per_day):
-        blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
     daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
-    if daily_pnl <= -float(config.max_daily_loss):
-        blocks.append(RiskBlock(code="max_daily_loss", message="Account has reached the configured daily loss limit.", severity="critical"))
-    delayed_orb_loss_block = _delayed_orb_session_loss_block(db, user_id=user_id, config=config)
-    if delayed_orb_loss_block is not None:
-        blocks.append(delayed_orb_loss_block)
-    if latest_candle is None:
-        blocks.append(RiskBlock(code="missing_market_data", message="No closed candle data is available.", severity="critical"))
-    else:
-        staleness = (datetime.now(timezone.utc) - _as_utc(latest_candle.candle_timestamp)).total_seconds()
-        if staleness > int(config.max_data_staleness_seconds):
-            blocks.append(RiskBlock(code="stale_market_data", message="Latest candle is stale.", severity="critical"))
-    if not _is_inside_trading_session(str(config.trading_start_time), str(config.trading_end_time)):
-        blocks.append(RiskBlock(code="outside_session", message="Current time is outside the bot trading session."))
-    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
-    if cooldown_block is not None:
-        blocks.append(cooldown_block)
-    if action not in {"BUY", "SELL"}:
-        blocks.append(RiskBlock(code="unsupported_action", message="Only BUY and SELL actions can create order attempts."))
-    return blocks
+    latest_candle_age_seconds = (
+        (datetime.now(timezone.utc) - _as_utc(latest_candle.candle_timestamp)).total_seconds()
+        if latest_candle is not None
+        else None
+    )
+    return evaluate_risk(
+        RiskEvaluationContext(
+            bot_enabled=bool(config.enabled),
+            account_state=str(account.account_state),
+            account_can_trade=account.can_trade,
+            live_funded_account=_looks_like_live_funded_account(account),
+            configured_execution_mode=str(config.execution_mode),
+            dry_run=dry_run,
+            confirm_live_order_routing=confirm_live_order_routing,
+            running_under_tests=running_under_tests(),
+            live_environment_enabled=live_execution_environment_enabled(),
+            contract_allowed=_is_contract_allowed(config, contract_id=contract_id, symbol=symbol),
+            action=action,
+            order_size=order_size,
+            resulting_position_qty=resulting_position_qty,
+            max_contracts=float(config.max_contracts),
+            max_open_position=float(config.max_open_position),
+            trades_today=_todays_bot_trade_count(db, user_id=user_id, config=config),
+            max_trades_per_day=int(config.max_trades_per_day),
+            daily_pnl=daily_pnl,
+            max_daily_loss=float(config.max_daily_loss),
+            latest_candle_age_seconds=latest_candle_age_seconds,
+            max_data_staleness_seconds=int(config.max_data_staleness_seconds),
+            inside_trading_session=_is_inside_trading_session(
+                str(config.trading_start_time),
+                str(config.trading_end_time),
+            ),
+            delayed_session_block=_delayed_orb_session_loss_block(db, user_id=user_id, config=config),
+            cooldown_block=_cooldown_block(db, user_id=user_id, config=config),
+        )
+    )
 
 
 def serialize_bot_config(row: BotConfig) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "name": row.name,
-        "account_id": int(row.account_id),
-        "provider": row.provider,
-        "enabled": bool(row.enabled),
-        "execution_mode": row.execution_mode,
-        "strategy_type": row.strategy_type,
-        "strategy_params": _normalize_strategy_params(row.strategy_type, row.strategy_params),
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "timeframe_unit": row.timeframe_unit,
-        "timeframe_unit_number": int(row.timeframe_unit_number),
-        "lookback_bars": int(row.lookback_bars),
-        "fast_period": int(row.fast_period),
-        "slow_period": int(row.slow_period),
-        "order_size": float(row.order_size),
-        "max_contracts": float(row.max_contracts),
-        "max_daily_loss": float(row.max_daily_loss),
-        "max_trades_per_day": int(row.max_trades_per_day),
-        "max_open_position": float(row.max_open_position),
-        "allowed_contracts": _normalize_allowed_contracts(row.allowed_contracts),
-        "trading_start_time": row.trading_start_time,
-        "trading_end_time": row.trading_end_time,
-        "cooldown_seconds": int(row.cooldown_seconds),
-        "max_data_staleness_seconds": int(row.max_data_staleness_seconds),
-        "allow_market_depth": bool(row.allow_market_depth),
-        "created_at": _as_utc(row.created_at),
-        "updated_at": _as_utc(row.updated_at),
-    }
+    return _bot_serialization.serialize_bot_config(row)
 
 
 def serialize_bot_run(row: BotRun) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "account_id": int(row.account_id),
-        "status": row.status,
-        "dry_run": bool(row.dry_run),
-        "started_at": _as_utc(row.started_at),
-        "stopped_at": _as_utc(row.stopped_at) if row.stopped_at is not None else None,
-        "stop_reason": row.stop_reason,
-        "last_heartbeat_at": _as_utc(row.last_heartbeat_at) if row.last_heartbeat_at is not None else None,
-    }
+    return _bot_serialization.serialize_bot_run(row)
 
 
 def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "account_id": int(row.account_id),
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "decision_type": row.decision_type,
-        "action": row.action,
-        "reason": row.reason,
-        "candle_timestamp": _as_utc(row.candle_timestamp) if row.candle_timestamp is not None else None,
-        "price": float(row.price) if row.price is not None else None,
-        "quantity": float(row.quantity) if row.quantity is not None else None,
-        "created_at": _as_utc(row.created_at),
-    }
+    return _bot_serialization.serialize_bot_decision(row)
 
 
 def serialize_bot_order_attempt(row: BotOrderAttempt) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "bot_decision_id": int(row.bot_decision_id) if row.bot_decision_id is not None else None,
-        "account_id": int(row.account_id),
-        "contract_id": row.contract_id,
-        "side": row.side,
-        "order_type": row.order_type,
-        "size": float(row.size),
-        "status": row.status,
-        "provider_order_id": row.provider_order_id,
-        "rejection_reason": row.rejection_reason,
-        "created_at": _as_utc(row.created_at),
-        "updated_at": _as_utc(row.updated_at),
-    }
+    return _bot_serialization.serialize_bot_order_attempt(row)
 
 
 def serialize_bot_risk_event(row: BotRiskEvent) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "account_id": int(row.account_id),
-        "severity": row.severity,
-        "code": row.code,
-        "message": row.message,
-        "created_at": _as_utc(row.created_at),
-    }
+    return _bot_serialization.serialize_bot_risk_event(row)
 
 
 def serialize_market_candle(row: ProjectXMarketCandle) -> dict[str, Any]:
-    return {
-        "id": int(row.id) if row.id is not None else None,
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "live": bool(row.live),
-        "unit": row.unit,
-        "unit_number": int(row.unit_number),
-        "timestamp": _as_utc(row.candle_timestamp),
-        "open": float(row.open_price),
-        "high": float(row.high_price),
-        "low": float(row.low_price),
-        "close": float(row.close_price),
-        "volume": float(row.volume),
-        "is_partial": bool(row.is_partial),
-        "fetched_at": _as_utc(row.fetched_at) if row.fetched_at is not None else None,
-    }
+    return _bot_serialization.serialize_market_candle(row)
 
 
 def serialize_evaluation(result: EvaluationResult) -> dict[str, Any]:
-    return {
-        "config": serialize_bot_config(result.config),
-        "run": serialize_bot_run(result.run) if result.run is not None else None,
-        "decision": serialize_bot_decision(result.decision),
-        "order_attempt": serialize_bot_order_attempt(result.order_attempt) if result.order_attempt is not None else None,
-        "risk_events": [serialize_bot_risk_event(row) for row in result.risk_events],
-        "analysis": result.analysis,
-        "candles": [serialize_market_candle(row) for row in result.candles[-50:]],
-    }
+    return _bot_serialization.serialize_evaluation(result)
+
+
+def serialize_bot_trade_levels(row: BotDecision) -> dict[str, float | None] | None:
+    """Expose persisted strategy levels without reconstructing strategy math."""
+
+    if row.action not in {"BUY", "SELL"}:
+        return None
+
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    entry = _finite_optional_float(payload.get("entry_price"))
+    if entry is None:
+        entry = _finite_optional_float(row.price)
+    stop = _finite_optional_float(payload.get("stop_loss"))
+    target = None
+    for key in ("take_profit", "final_take_profit", "partial_take_profit"):
+        target = _finite_optional_float(payload.get(key))
+        if target is not None:
+            break
+
+    if entry is None and stop is None and target is None:
+        return None
+    return {"entry": entry, "stop": stop, "target": target}
 
 
 def build_signal_trade_evaluation(
@@ -8441,6 +8416,10 @@ def build_signal_trade_evaluation(
     config: BotConfig,
     signal: SignalResult,
     analysis: dict[str, Any],
+    current_day_pnl: float | None = None,
+    tick_size: float | None = None,
+    tick_value: float | None = None,
+    point_value: float | None = None,
 ) -> dict[str, Any] | None:
     if signal.action not in {"BUY", "SELL"} or not isinstance(signal.raw_payload, dict):
         return None
@@ -8461,11 +8440,13 @@ def build_signal_trade_evaluation(
         or _optional_float(payload.get("order_size"))
         or float(config.order_size)
     )
+    closed_candles = _closed_candles(candles)
+    if not closed_candles:
+        return None
+
     timestamp = signal.candle_timestamp
-    if timestamp is None and candles:
-        timestamp = candles[-1].candle_timestamp
     if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
+        timestamp = closed_candles[-1].candle_timestamp
 
     market_context = build_market_context_from_ohlcv(
         [
@@ -8477,12 +8458,12 @@ def build_signal_trade_evaluation(
                 "close": float(candle.close_price),
                 "volume": float(candle.volume or 0),
             }
-            for candle in _closed_candles(candles) or candles
+            for candle in closed_candles
         ],
-        current_price=float(signal.price) if signal.price is not None else None,
-        timestamp=timestamp,
+        current_price=float(closed_candles[-1].close_price),
+        timestamp=closed_candles[-1].candle_timestamp,
         market_regime=_infer_trade_plan_market_regime(config=config, signal=signal, analysis=analysis),
-        news_risk="low",
+        news_risk="unknown",
     )
     if market_context is None:
         return None
@@ -8495,9 +8476,22 @@ def build_signal_trade_evaluation(
         take_profit=take_profit,
         quantity=quantity,
         timestamp=timestamp,
+        current_day_pnl=current_day_pnl,
         max_daily_loss=float(config.max_daily_loss),
+        tick_size=tick_size,
+        tick_value=tick_value,
+        point_value=point_value,
     )
-    return TradePlanEvaluator().evaluate(plan, market_context).to_payload()
+    try:
+        return TradePlanEvaluator().evaluate(plan, market_context).to_payload()
+    except ValueError as exc:
+        # Trade-plan scoring is advisory and must never change order-routing
+        # behavior. Surface the invalid plan as missing analysis context while
+        # leaving the existing signal/risk-gate path untouched.
+        risk_notes = analysis.get("risk_notes")
+        if isinstance(risk_notes, list):
+            risk_notes.append(f"Trade-plan evaluation unavailable: {exc}")
+        return None
 
 
 def _infer_trade_plan_market_regime(
@@ -8513,6 +8507,12 @@ def _infer_trade_plan_market_regime(
         chop_state = signal.raw_payload.get("chop")
         if isinstance(chop_state, dict) and bool(chop_state.get("is_choppy")):
             return "chop"
+
+    analysis_regime = str(analysis.get("market_regime") or "").strip().lower()
+    if analysis_regime in {"trend", "range", "chop"}:
+        return analysis_regime
+    if analysis_regime == "quiet":
+        return "range"
 
     strategy_type = str(config.strategy_type)
     if strategy_type in {
@@ -8552,591 +8552,15 @@ def build_bot_market_analysis(
     config: BotConfig,
     signal: SignalResult,
 ) -> dict[str, Any]:
-    closed_candles = _closed_candles(candles)
-    analysis_candles = closed_candles or sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
-    risk_notes = [
-        "Heuristic probabilities are not financial advice and are not guaranteed predictions.",
-    ]
-    if any(bool(candle.is_partial) for candle in candles):
-        risk_notes.append("Partial candles are excluded from the indicator read when closed candles are available.")
-    if not closed_candles and candles:
-        risk_notes.append("No closed candles were available, so the analysis used the available candle rows.")
-
-    if len(analysis_candles) < 10:
-        return _neutral_market_analysis_payload(
-            analysis_candles,
-            risk_notes=[
-                *risk_notes,
-                f"Only {len(analysis_candles)} candle(s) were available; at least 10 are needed for a reliable heuristic read.",
-            ],
-        )
-
-    latest = analysis_candles[-1]
-    previous = analysis_candles[-2]
-    current_price = float(latest.close_price)
-    previous_close = float(previous.close_price)
-    price_change = current_price - previous_close
-    price_change_percent = _analysis_percent_change(current_price, previous_close)
-    closes = [float(candle.close_price) for candle in analysis_candles]
-
-    true_ranges = _analysis_true_ranges(analysis_candles)
-    atr_period = min(14, len(analysis_candles))
-    atr_values = _atr_series(analysis_candles, period=atr_period)
-    latest_atr = _last_defined_float(atr_values)
-    if latest_atr is None:
-        latest_atr = _average(true_ranges[-min(len(true_ranges), atr_period) :])
-    atr_reference = max(latest_atr, _average(true_ranges), abs(current_price) * 0.001, 1e-9)
-    volatility_ratio = _analysis_volatility_ratio(true_ranges, latest_atr)
-    volatility_state = _classify_analysis_volatility(volatility_ratio)
-
-    volume_ratio = _analysis_volume_ratio(analysis_candles)
-    volume_state = _classify_analysis_volume(volume_ratio)
-
-    requested_fast = int(getattr(config, "fast_period", 9) or 9)
-    requested_slow = int(getattr(config, "slow_period", 21) or 21)
-    fast_period = min(max(2, requested_fast), max(2, len(closes) - 1))
-    slow_period = min(max(fast_period + 1, requested_slow), len(closes))
-    fast_ema = _ema_series(closes, fast_period)
-    slow_ema = _ema_series(closes, slow_period)
-    latest_fast = _last_defined_float(fast_ema) or current_price
-    latest_slow = _last_defined_float(slow_ema) or current_price
-    slow_prior = _prior_defined_float(slow_ema, lookback=5) or latest_slow
-    ema_gap = latest_fast - latest_slow
-    ema_slope = latest_slow - slow_prior
-    recent_lookback = min(5, len(closes) - 1)
-    recent_delta = current_price - closes[-(recent_lookback + 1)]
-    trend, trend_strength = _classify_analysis_trend(
-        ema_gap=ema_gap,
-        ema_slope=ema_slope,
-        recent_delta=recent_delta,
-        atr_reference=atr_reference,
-        recent_lookback=recent_lookback,
+    return build_canonical_market_analysis(
+        candles=candles,
+        timeframe_unit=str(config.timeframe_unit),
+        timeframe_unit_number=int(config.timeframe_unit_number),
+        fast_period=int(config.fast_period),
+        slow_period=int(config.slow_period),
+        signal_action=str(signal.action),
+        stale_after_seconds=int(config.max_data_staleness_seconds),
     )
-
-    support_levels, resistance_levels = _analysis_support_resistance_levels(
-        analysis_candles,
-        current_price=current_price,
-    )
-    nearest_support = support_levels[0] if support_levels else None
-    nearest_resistance = resistance_levels[0] if resistance_levels else None
-
-    probabilities = _analysis_probability_scores(
-        trend=trend,
-        trend_strength=trend_strength,
-        volatility_state=volatility_state,
-        volume_state=volume_state,
-        signal_action=signal.action,
-        current_price=current_price,
-        expected_move=latest_atr,
-        nearest_support=nearest_support,
-        nearest_resistance=nearest_resistance,
-    )
-    invalidation_level = _analysis_invalidation_level(
-        trend=trend,
-        signal_action=signal.action,
-        current_price=current_price,
-        expected_move=latest_atr,
-        nearest_support=nearest_support,
-        nearest_resistance=nearest_resistance,
-    )
-
-    reasoning = [
-        (
-            f"Latest close is {_format_strategy_price(current_price)} versus previous close "
-            f"{_format_strategy_price(previous_close)} ({_format_percent(price_change_percent or 0.0)}%)."
-        ),
-        (
-            f"Fast EMA({fast_period}) is {_format_strategy_price(latest_fast)} and slow EMA({slow_period}) "
-            f"is {_format_strategy_price(latest_slow)}, with slow EMA slope {_format_strategy_price(ema_slope)}."
-        ),
-        (
-            f"ATR({atr_period}) is {_format_strategy_price(latest_atr)} and recent range ratio is "
-            f"{_format_analysis_ratio(volatility_ratio)}, classifying volatility as {volatility_state}."
-        ),
-        (
-            f"Latest volume is {float(latest.volume):.0f} versus recent average ratio "
-            f"{_format_analysis_ratio(volume_ratio)}, classifying volume as {volume_state}."
-        ),
-        _analysis_level_reasoning(nearest_support=nearest_support, nearest_resistance=nearest_resistance),
-        _analysis_signal_reasoning(signal.action),
-    ]
-
-    if volatility_state in {"elevated", "extreme"}:
-        risk_notes.append(f"Volatility is {volatility_state}; expected move and level invalidation can be less stable.")
-    if volume_state == "low":
-        risk_notes.append("Low relative volume can make candle signals less reliable.")
-    if nearest_support is None or nearest_resistance is None:
-        risk_notes.append("One or more nearby support/resistance levels could not be detected from recent candles.")
-    risk_notes.append("The read uses recent ProjectX candle data only and does not include news, macro, or order-book context.")
-
-    summary = _analysis_summary(
-        trend=trend,
-        trend_strength=trend_strength,
-        probabilities=probabilities,
-    )
-    expected_move_percent = (
-        (latest_atr / abs(current_price)) * 100 if latest_atr is not None and abs(current_price) > 1e-9 else None
-    )
-    return {
-        "current_price": _round_analysis_float(current_price),
-        "previous_close": _round_analysis_float(previous_close),
-        "price_change": _round_analysis_float(price_change),
-        "price_change_percent": _round_analysis_float(price_change_percent),
-        "trend": trend,
-        "trend_strength": trend_strength,
-        "volatility_state": volatility_state,
-        "volume_state": volume_state,
-        "support_levels": support_levels,
-        "resistance_levels": resistance_levels,
-        "nearest_support": nearest_support,
-        "nearest_resistance": nearest_resistance,
-        "bullish_probability": probabilities["bullish"],
-        "bearish_probability": probabilities["bearish"],
-        "sideways_probability": probabilities["sideways"],
-        "expected_move": _round_analysis_float(latest_atr),
-        "expected_move_percent": _round_analysis_float(expected_move_percent),
-        "invalidation_level": invalidation_level,
-        "summary": summary,
-        "reasoning": reasoning,
-        "risk_notes": risk_notes,
-        "candle_timestamp": _as_utc(latest.candle_timestamp).isoformat(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _neutral_market_analysis_payload(
-    candles: list[ProjectXMarketCandle],
-    *,
-    risk_notes: list[str],
-) -> dict[str, Any]:
-    current_price: float | None = None
-    previous_close: float | None = None
-    price_change: float | None = None
-    price_change_percent: float | None = None
-    if candles:
-        current_price = float(candles[-1].close_price)
-    if len(candles) >= 2:
-        previous_close = float(candles[-2].close_price)
-    if current_price is not None and previous_close is not None:
-        price_change = current_price - previous_close
-        price_change_percent = _analysis_percent_change(current_price, previous_close)
-
-    return {
-        "current_price": _round_analysis_float(current_price),
-        "previous_close": _round_analysis_float(previous_close),
-        "price_change": _round_analysis_float(price_change),
-        "price_change_percent": _round_analysis_float(price_change_percent),
-        "trend": "neutral",
-        "trend_strength": 0,
-        "volatility_state": "normal",
-        "volume_state": "normal",
-        "support_levels": [],
-        "resistance_levels": [],
-        "nearest_support": None,
-        "nearest_resistance": None,
-        "bullish_probability": 33,
-        "bearish_probability": 33,
-        "sideways_probability": 34,
-        "expected_move": None,
-        "expected_move_percent": None,
-        "invalidation_level": None,
-        "summary": "Insufficient candle history for a directional read; heuristic probabilities are held neutral.",
-        "reasoning": [
-            "Not enough candle history is available to calculate trend, volatility, volume, and swing levels together.",
-        ],
-        "risk_notes": risk_notes,
-        "candle_timestamp": _as_utc(candles[-1].candle_timestamp).isoformat() if candles else None,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _analysis_percent_change(current_price: float, previous_close: float) -> float | None:
-    if abs(previous_close) <= 1e-9:
-        return None
-    return (current_price - previous_close) / previous_close * 100
-
-
-def _analysis_true_ranges(candles: list[ProjectXMarketCandle]) -> list[float]:
-    true_ranges: list[float] = []
-    previous_close: float | None = None
-    for candle in candles:
-        high_price = float(candle.high_price)
-        low_price = float(candle.low_price)
-        if previous_close is None:
-            true_range = high_price - low_price
-        else:
-            true_range = max(high_price - low_price, abs(high_price - previous_close), abs(low_price - previous_close))
-        true_ranges.append(max(0.0, true_range))
-        previous_close = float(candle.close_price)
-    return true_ranges or [0.0]
-
-
-def _analysis_volatility_ratio(true_ranges: list[float], latest_atr: float) -> float | None:
-    if len(true_ranges) < 2:
-        return None
-    baseline = true_ranges[-21:-1] if len(true_ranges) > 20 else true_ranges[:-1]
-    average_baseline = _average(baseline) if baseline else 0.0
-    if average_baseline <= 1e-9:
-        return None
-    return latest_atr / average_baseline
-
-
-def _classify_analysis_volatility(volatility_ratio: float | None) -> str:
-    if volatility_ratio is None:
-        return "normal"
-    if volatility_ratio < 0.7:
-        return "low"
-    if volatility_ratio < 1.35:
-        return "normal"
-    if volatility_ratio < 2.0:
-        return "elevated"
-    return "extreme"
-
-
-def _analysis_volume_ratio(candles: list[ProjectXMarketCandle]) -> float | None:
-    if len(candles) < 2:
-        return None
-    baseline_count = min(20, len(candles) - 1)
-    baseline = [float(candle.volume or 0) for candle in candles[-(baseline_count + 1) : -1]]
-    average_baseline = _average(baseline) if baseline else 0.0
-    if average_baseline <= 1e-9:
-        return None
-    return float(candles[-1].volume or 0) / average_baseline
-
-
-def _classify_analysis_volume(volume_ratio: float | None) -> str:
-    if volume_ratio is None:
-        return "normal"
-    if volume_ratio < 0.7:
-        return "low"
-    if volume_ratio > 1.5:
-        return "elevated"
-    return "normal"
-
-
-def _classify_analysis_trend(
-    *,
-    ema_gap: float,
-    ema_slope: float,
-    recent_delta: float,
-    atr_reference: float,
-    recent_lookback: int,
-) -> tuple[str, int]:
-    gap_units = ema_gap / atr_reference
-    slope_units = ema_slope / atr_reference
-    recent_units = recent_delta / (atr_reference * max(1, recent_lookback))
-    component_signs = [
-        _analysis_component_sign(gap_units, threshold=0.05),
-        _analysis_component_sign(slope_units, threshold=0.03),
-        _analysis_component_sign(recent_units, threshold=0.05),
-    ]
-    direction_score = sum(component_signs)
-    strength = int(
-        round(
-            min(
-                100.0,
-                (abs(gap_units) * 30.0)
-                + (abs(slope_units) * 25.0)
-                + (abs(recent_units) * 35.0),
-            )
-        )
-    )
-    if strength < 15 or abs(direction_score) < 2:
-        return "neutral", strength
-    if direction_score > 0:
-        return "bullish", strength
-    return "bearish", strength
-
-
-def _analysis_component_sign(value: float, *, threshold: float) -> int:
-    if value > threshold:
-        return 1
-    if value < -threshold:
-        return -1
-    return 0
-
-
-def _analysis_support_resistance_levels(
-    candles: list[ProjectXMarketCandle],
-    *,
-    current_price: float,
-) -> tuple[list[float], list[float]]:
-    recent_candles = candles[-min(80, len(candles)) :]
-    window_size = 5 if len(recent_candles) >= 15 else 3
-    timeframe = _candles_timeframe_label(recent_candles) or "analysis"
-    detected_levels = _filter_clustered_levels(
-        _detect_support_resistance_levels(recent_candles, timeframe=timeframe, window_size=window_size),
-        tolerance_percent=0.15,
-    )
-    support_candidates = [
-        level.price for level in detected_levels if level.side == "support" and level.price <= current_price
-    ]
-    resistance_candidates = [
-        level.price for level in detected_levels if level.side == "resistance" and level.price >= current_price
-    ]
-    support_candidates.extend(_analysis_fallback_levels(recent_candles, side="support", current_price=current_price))
-    resistance_candidates.extend(
-        _analysis_fallback_levels(recent_candles, side="resistance", current_price=current_price)
-    )
-    supports = _analysis_unique_level_prices(support_candidates, current_price=current_price, side="support")
-    resistances = _analysis_unique_level_prices(
-        resistance_candidates,
-        current_price=current_price,
-        side="resistance",
-    )
-    return supports, resistances
-
-
-def _analysis_fallback_levels(
-    candles: list[ProjectXMarketCandle],
-    *,
-    side: str,
-    current_price: float,
-) -> list[float]:
-    candidates: list[float] = []
-    for lookback in (5, 10, 20, 50):
-        subset = candles[-min(lookback, len(candles)) :]
-        if not subset:
-            continue
-        if side == "support":
-            price = min(float(candle.low_price) for candle in subset)
-            if price <= current_price:
-                candidates.append(price)
-        else:
-            price = max(float(candle.high_price) for candle in subset)
-            if price >= current_price:
-                candidates.append(price)
-    return candidates
-
-
-def _analysis_unique_level_prices(
-    values: list[float],
-    *,
-    current_price: float,
-    side: str,
-) -> list[float]:
-    ordered_values = sorted(
-        [value for value in values if math.isfinite(value)],
-        reverse=side == "support",
-    )
-    output: list[float] = []
-    for value in ordered_values:
-        if side == "support" and value > current_price:
-            continue
-        if side == "resistance" and value < current_price:
-            continue
-        if any(_level_distance_percent(value, existing) <= 0.1 for existing in output):
-            continue
-        rounded = _round_analysis_float(value)
-        if rounded is not None:
-            output.append(rounded)
-        if len(output) >= 5:
-            break
-    return output
-
-
-def _analysis_probability_scores(
-    *,
-    trend: str,
-    trend_strength: int,
-    volatility_state: str,
-    volume_state: str,
-    signal_action: str,
-    current_price: float,
-    expected_move: float,
-    nearest_support: float | None,
-    nearest_resistance: float | None,
-) -> dict[str, int]:
-    bullish = 33.0
-    bearish = 33.0
-    sideways = 34.0
-    trend_bias = min(32.0, max(0, trend_strength) * 0.4)
-    if trend == "bullish":
-        bullish += trend_bias
-        bearish -= trend_bias * 0.55
-        sideways -= trend_bias * 0.45
-    elif trend == "bearish":
-        bearish += trend_bias
-        bullish -= trend_bias * 0.55
-        sideways -= trend_bias * 0.45
-    else:
-        sideways += 6.0
-        bullish -= 3.0
-        bearish -= 3.0
-
-    if volatility_state == "low":
-        sideways += 4.0
-        bullish -= 2.0
-        bearish -= 2.0
-    elif volatility_state == "elevated":
-        sideways -= 4.0
-        if trend == "bullish":
-            bullish += 3.0
-            bearish += 1.0
-        elif trend == "bearish":
-            bearish += 3.0
-            bullish += 1.0
-        else:
-            bullish += 2.0
-            bearish += 2.0
-    elif volatility_state == "extreme":
-        sideways -= 8.0
-        bullish += 4.0
-        bearish += 4.0
-
-    if volume_state == "elevated" and trend == "bullish":
-        bullish += 5.0
-        bearish -= 2.0
-        sideways -= 3.0
-    elif volume_state == "elevated" and trend == "bearish":
-        bearish += 5.0
-        bullish -= 2.0
-        sideways -= 3.0
-    elif volume_state == "low":
-        sideways += 3.0
-        if trend == "bullish":
-            bullish -= 2.0
-            bearish -= 1.0
-        elif trend == "bearish":
-            bearish -= 2.0
-            bullish -= 1.0
-        else:
-            bullish -= 1.5
-            bearish -= 1.5
-
-    if signal_action == "BUY":
-        bullish += 4.0
-        bearish -= 2.0
-        sideways -= 2.0
-    elif signal_action == "SELL":
-        bearish += 4.0
-        bullish -= 2.0
-        sideways -= 2.0
-    elif signal_action in {"HOLD", "NONE"}:
-        sideways += 2.0
-        bullish -= 1.0
-        bearish -= 1.0
-
-    if expected_move > 0 and nearest_resistance is not None:
-        resistance_distance = nearest_resistance - current_price
-        if 0 <= resistance_distance <= expected_move:
-            bullish -= 4.0
-            bearish += 2.0
-            sideways += 2.0
-    if expected_move > 0 and nearest_support is not None:
-        support_distance = current_price - nearest_support
-        if 0 <= support_distance <= expected_move:
-            bearish -= 4.0
-            bullish += 2.0
-            sideways += 2.0
-
-    normalized = _normalize_analysis_probabilities(
-        {
-            "bullish": bullish,
-            "bearish": bearish,
-            "sideways": sideways,
-        }
-    )
-    return normalized
-
-
-def _normalize_analysis_probabilities(scores: dict[str, float]) -> dict[str, int]:
-    ordered_keys = ["bullish", "bearish", "sideways"]
-    positive_scores = {key: max(0.0, float(scores.get(key, 0.0))) for key in ordered_keys}
-    total = sum(positive_scores.values())
-    if total <= 1e-9:
-        return {"bullish": 33, "bearish": 33, "sideways": 34}
-
-    scaled = {key: positive_scores[key] / total * 100.0 for key in ordered_keys}
-    output = {key: int(math.floor(scaled[key])) for key in ordered_keys}
-    remainder = 100 - sum(output.values())
-    by_fraction = sorted(ordered_keys, key=lambda key: (scaled[key] - output[key], scaled[key]), reverse=True)
-    for index in range(remainder):
-        output[by_fraction[index % len(by_fraction)]] += 1
-    return output
-
-
-def _analysis_invalidation_level(
-    *,
-    trend: str,
-    signal_action: str,
-    current_price: float,
-    expected_move: float,
-    nearest_support: float | None,
-    nearest_resistance: float | None,
-) -> float | None:
-    effective_direction = trend
-    if signal_action == "BUY":
-        effective_direction = "bullish"
-    elif signal_action == "SELL":
-        effective_direction = "bearish"
-
-    if effective_direction == "bullish":
-        level = nearest_support if nearest_support is not None else current_price - expected_move
-        return _round_analysis_float(level)
-    if effective_direction == "bearish":
-        level = nearest_resistance if nearest_resistance is not None else current_price + expected_move
-        return _round_analysis_float(level)
-    return None
-
-
-def _analysis_summary(
-    *,
-    trend: str,
-    trend_strength: int,
-    probabilities: dict[str, int],
-) -> str:
-    if trend == "neutral":
-        return (
-            "Heuristic read is neutral, with sideways probability highest at "
-            f"{probabilities['sideways']}%. This is not financial advice."
-        )
-    return (
-        f"Heuristic read leans {trend} with {trend_strength}/100 trend strength and "
-        f"{probabilities[trend]}% {trend} probability. This is not financial advice."
-    )
-
-
-def _analysis_level_reasoning(*, nearest_support: float | None, nearest_resistance: float | None) -> str:
-    support_text = _format_strategy_price(nearest_support) if nearest_support is not None else "none detected"
-    resistance_text = _format_strategy_price(nearest_resistance) if nearest_resistance is not None else "none detected"
-    return f"Nearest support is {support_text}; nearest resistance is {resistance_text}."
-
-
-def _analysis_signal_reasoning(signal_action: str) -> str:
-    if signal_action in {"BUY", "SELL"}:
-        return f"Bot signal action is {signal_action}; probabilities use it as context, not as a guaranteed prediction."
-    return f"Bot signal action is {signal_action}; probabilities stay conservative without an active directional order signal."
-
-
-def _format_analysis_ratio(value: float | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"{value:.2f}x"
-
-
-def _last_defined_float(values: list[float | None]) -> float | None:
-    for value in reversed(values):
-        if value is not None and math.isfinite(value):
-            return float(value)
-    return None
-
-
-def _prior_defined_float(values: list[float | None], *, lookback: int) -> float | None:
-    defined = [(index, float(value)) for index, value in enumerate(values) if value is not None and math.isfinite(value)]
-    if not defined:
-        return None
-    latest_index = defined[-1][0]
-    target_index = latest_index - max(1, int(lookback))
-    prior_candidates = [value for index, value in defined if index <= target_index]
-    return prior_candidates[-1] if prior_candidates else defined[0][1]
-
-
-def _round_analysis_float(value: float | None, digits: int = 4) -> float | None:
-    if value is None or not math.isfinite(value):
-        return None
-    rounded = round(float(value), digits)
-    return 0.0 if rounded == 0 else rounded
 
 
 def _require_bot_config(
@@ -9159,6 +8583,172 @@ def _require_bot_config(
     return row
 
 
+def _find_bot_run(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    lock_for_update: bool = False,
+) -> BotRun | None:
+    query = (
+        db.query(BotRun)
+        .filter(BotRun.user_id == user_id)
+        .filter(BotRun.bot_config_id == bot_config_id)
+        .filter(BotRun.id == bot_run_id)
+    )
+    if lock_for_update and _session_dialect_name(db) == "postgresql":
+        query = query.with_for_update()
+    return query.one_or_none()
+
+
+def _require_running_bot_run(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    lock_for_update: bool = False,
+) -> BotRun:
+    run = _find_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        bot_run_id=bot_run_id,
+        lock_for_update=lock_for_update,
+    )
+    if run is None:
+        raise LookupError("bot_run_not_found")
+    if str(run.status) != "running":
+        raise ValueError(f"Bot run {run.id} is {run.status} and cannot be evaluated.")
+    return run
+
+
+def _actionable_candle_timestamp(
+    *,
+    signal: SignalResult,
+    candles: list[ProjectXMarketCandle],
+    latest_candle: ProjectXMarketCandle | None,
+) -> datetime | None:
+    if signal.candle_timestamp is not None:
+        signal_timestamp = _as_utc(signal.candle_timestamp)
+        if any(
+            not bool(candle.is_partial) and _as_utc(candle.candle_timestamp) == signal_timestamp
+            for candle in candles
+        ):
+            return signal_timestamp
+        return None
+    if latest_candle is not None and not bool(latest_candle.is_partial):
+        return _as_utc(latest_candle.candle_timestamp)
+    return None
+
+
+def _find_order_attempt_by_idempotency_key(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    idempotency_key: str | None,
+) -> BotOrderAttempt | None:
+    if not idempotency_key:
+        return None
+    return (
+        db.query(BotOrderAttempt)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.bot_config_id == bot_config_id)
+        .filter(BotOrderAttempt.idempotency_key == idempotency_key)
+        .one_or_none()
+    )
+
+
+def _require_order_attempt(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    order_attempt_id: int,
+) -> BotOrderAttempt:
+    row = (
+        db.query(BotOrderAttempt)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.bot_config_id == bot_config_id)
+        .filter(BotOrderAttempt.id == order_attempt_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise LookupError("bot_order_attempt_not_found")
+    return row
+
+
+def _mark_duplicate_decision(
+    decision: BotDecision,
+    *,
+    existing_attempt: BotOrderAttempt,
+    idempotency_key: str | None,
+) -> None:
+    original_reason = str(decision.reason)
+    decision.decision_type = "duplicate_skip"
+    decision.reason = f"Duplicate actionable signal skipped; original attempt #{int(existing_attempt.id)} already claimed."
+    payload = dict(decision.raw_payload) if isinstance(decision.raw_payload, dict) else {}
+    payload.update(
+        {
+            "duplicate_skipped": True,
+            "duplicate_of_order_attempt_id": int(existing_attempt.id),
+            "duplicate_of_order_attempt_status": str(existing_attempt.status),
+            "idempotency_key": idempotency_key,
+            "original_signal_reason": original_reason,
+        }
+    )
+    decision.raw_payload = payload
+
+
+def _claim_order_attempt(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    run: BotRun | None,
+    decision: BotDecision,
+    contract_id: str,
+    action: str,
+    order_size: float,
+    execution_mode: str,
+    correlation_id: str,
+    idempotency_key: str | None,
+) -> tuple[BotOrderAttempt | None, BotOrderAttempt | None]:
+    if not idempotency_key:
+        raise ValueError("An actionable order attempt requires an idempotency key.")
+    try:
+        with db.begin_nested():
+            row = _create_order_attempt(
+                db,
+                user_id=user_id,
+                config=config,
+                run=run,
+                decision=decision,
+                contract_id=contract_id,
+                action=action,
+                order_size=order_size,
+                execution_mode=execution_mode,
+                correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
+            )
+            db.flush()
+        return row, None
+    except IntegrityError:
+        # The SAVEPOINT contains the uniqueness failure, so the request can still
+        # persist its duplicate-skip decision in the surrounding transaction.
+        winner = _find_order_attempt_by_idempotency_key(
+            db,
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
+        )
+        if winner is None:
+            raise
+        return None, winner
+
+
 def _require_owned_account(db: Session, *, user_id: str, account_id: int) -> Account:
     account = get_projectx_account_row(db, account_id, user_id=user_id)
     if account is None:
@@ -9173,6 +8763,7 @@ def _create_risk_event(
     config: BotConfig,
     run: BotRun | None,
     block: RiskBlock,
+    correlation_id: str | None = None,
 ) -> BotRiskEvent:
     row = BotRiskEvent(
         user_id=user_id,
@@ -9182,7 +8773,7 @@ def _create_risk_event(
         severity=block.severity,
         code=block.code,
         message=block.message,
-        raw_payload=block.__dict__,
+        raw_payload={**block.__dict__, "correlation_id": correlation_id},
     )
     db.add(row)
     return row
@@ -9198,6 +8789,9 @@ def _create_order_attempt(
     contract_id: str,
     action: str,
     order_size: float,
+    execution_mode: str,
+    correlation_id: str,
+    idempotency_key: str,
 ) -> BotOrderAttempt:
     request_payload = {
         "accountId": int(config.account_id),
@@ -9205,7 +8799,10 @@ def _create_order_attempt(
         "type": _ORDER_TYPE_MARKET,
         "side": _SIDE_BY_ACTION[action],
         "size": int(round(float(order_size))),
-        "customTag": f"topsignal-bot-{int(config.id)}-{int(decision.id)}",
+        "customTag": provider_custom_tag(
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
+        ),
     }
     if isinstance(decision.raw_payload, dict):
         strategy_order_plan = {
@@ -9260,6 +8857,9 @@ def _create_order_attempt(
         bot_decision_id=int(decision.id),
         account_id=int(config.account_id),
         contract_id=contract_id,
+        execution_mode=execution_mode,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
         side=action,
         order_type="market",
         size=float(order_size),
@@ -9287,9 +8887,10 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.provider_order_id = response.get("order_id")
         order_attempt.raw_response = response.get("raw_payload")
     except Exception as exc:
+        safe_error = sanitize_error(exc)
         order_attempt.status = "error"
-        order_attempt.rejection_reason = str(exc)
-        order_attempt.raw_response = {"error": str(exc)}
+        order_attempt.rejection_reason = safe_error
+        order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
 
 
 def _strategy_bracket_payloads(
@@ -9488,9 +9089,7 @@ def _stop_running_bot_runs(
         .all()
     )
     for row in rows:
-        row.status = "stopped"
-        row.stopped_at = now
-        row.stop_reason = reason
+        transition_bot_run(row, "stopped", reason=reason, now=now)
 
 
 def _execution_contract_id(config: BotConfig, latest_candle: ProjectXMarketCandle | None) -> str:
@@ -9727,10 +9326,7 @@ def _validate_strategy_configuration(
 
 
 def _validate_strategy_type(value: Any) -> str:
-    strategy_type = str(value or _STRATEGY_SMA_CROSS).strip()
-    if strategy_type not in _SUPPORTED_STRATEGY_TYPES:
-        raise ValueError("unsupported bot strategy type")
-    return strategy_type
+    return get_strategy_definition(value).identifier
 
 
 def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any]:
@@ -10997,6 +10593,19 @@ def _optional_float(value: Any) -> float | None:
     if parsed != parsed:
         return None
     return parsed
+
+
+def _finite_optional_float(value: Any) -> float | None:
+    # JSON booleans are integers in Python (`float(True) == 1.0`), but they are
+    # not valid persisted price levels. Likewise, do not silently coerce
+    # strings or other malformed payload values into authoritative API prices.
+    if isinstance(value, bool) or not isinstance(value, Number):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _trade_side_sign(side: str | None) -> int:

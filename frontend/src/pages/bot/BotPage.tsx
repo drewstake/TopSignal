@@ -26,6 +26,7 @@ import type {
   ProjectXMarketCandle,
 } from "../../lib/types";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
+import { BotBacktestPanel } from "./BotBacktestPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
@@ -797,10 +798,17 @@ function statusBadgeVariant(status: string) {
   if (status === "running" || status === "dry_run" || status === "submitted") {
     return "positive" as const;
   }
-  if (status === "blocked" || status === "error" || status === "rejected") {
+  if (status === "blocked" || status === "risk_blocked" || status === "error" || status === "rejected") {
     return "negative" as const;
   }
+  if (status === "duplicate_skipped") {
+    return "warning" as const;
+  }
   return "neutral" as const;
+}
+
+function evaluationStatusLabel(status: string) {
+  return status.replaceAll("_", " ");
 }
 
 function isLevelStrategy(strategyType: BotStrategyType) {
@@ -1120,6 +1128,7 @@ export function BotPage() {
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [configWarnings, setConfigWarnings] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
@@ -1130,7 +1139,15 @@ export function BotPage() {
     [configs, selectedBotId],
   );
   const selectedBotEvaluation = useMemo(
-    () => (selectedBot && lastEvaluation?.config.id === selectedBot.id ? lastEvaluation : null),
+    () =>
+      selectedBot &&
+      lastEvaluation?.config.id === selectedBot.id &&
+      lastEvaluation.config.contract_id === selectedBot.contract_id &&
+      lastEvaluation.decision.contract_id === selectedBot.contract_id &&
+      lastEvaluation.config.timeframe_unit === selectedBot.timeframe_unit &&
+      lastEvaluation.config.timeframe_unit_number === selectedBot.timeframe_unit_number
+        ? lastEvaluation
+        : null,
     [lastEvaluation, selectedBot],
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
@@ -1147,6 +1164,7 @@ export function BotPage() {
       ]);
       setAccounts(accountRows);
       setConfigs(botRows.items);
+      setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
         if (current && botRows.items.some((item) => item.id === current)) {
           return current;
@@ -1159,6 +1177,7 @@ export function BotPage() {
         );
       }
     } catch (err) {
+      setConfigWarnings([]);
       setError(err instanceof Error ? err.message : "Failed to load bot data");
     } finally {
       if (showLoading) {
@@ -1189,7 +1208,14 @@ export function BotPage() {
 
   useEffect(() => {
     void loadActivity(selectedBot?.id ?? null);
-  }, [loadActivity, selectedBot?.id]);
+  }, [
+    loadActivity,
+    selectedBot?.contract_id,
+    selectedBot?.id,
+    selectedBot?.timeframe_unit,
+    selectedBot?.timeframe_unit_number,
+    selectedBot?.updated_at,
+  ]);
 
   useEffect(() => {
     if (!selectedBot) {
@@ -2298,6 +2324,11 @@ export function BotPage() {
   return (
     <div className="space-y-5 pb-8">
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+      {configWarnings.map((warning) => (
+        <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          {warning}
+        </div>
+      ))}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
@@ -3625,12 +3656,28 @@ export function BotPage() {
                       <div className="grid gap-3">
                         <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
                           <div className="mb-2 flex items-center justify-between gap-2">
-                            <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
-                              {selectedBotEvaluation.decision.action}
-                            </Badge>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
+                                {selectedBotEvaluation.decision.action}
+                              </Badge>
+                              <Badge variant={statusBadgeVariant(selectedBotEvaluation.status)}>
+                                {evaluationStatusLabel(selectedBotEvaluation.status)}
+                              </Badge>
+                            </div>
                             <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
                           </div>
                           <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
+                          {selectedBotEvaluation.correlation_id ? (
+                            <p className="mt-2 text-xs text-slate-500" title={selectedBotEvaluation.correlation_id}>
+                              Correlation: {selectedBotEvaluation.correlation_id.slice(0, 16)}
+                              {selectedBotEvaluation.correlation_id.length > 16 ? "…" : ""}
+                            </p>
+                          ) : null}
+                          {selectedBotEvaluation.status === "duplicate_skipped" && selectedBotEvaluation.duplicate_of_order_attempt_id ? (
+                            <p className="mt-2 text-xs text-amber-200">
+                              Duplicate skipped; original order attempt #{selectedBotEvaluation.duplicate_of_order_attempt_id}.
+                            </p>
+                          ) : null}
                           {selectedBotEvaluation.order_attempt ? (
                             <p className="mt-2 text-xs text-slate-400">
                               Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
@@ -3732,6 +3779,7 @@ export function BotPage() {
           </div>
         </div>
       </div>
+      <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
     </div>
   );
 }

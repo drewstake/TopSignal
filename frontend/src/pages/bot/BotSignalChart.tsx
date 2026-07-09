@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   CandlestickSeries,
   ColorType,
   CrosshairMode,
+  HistogramSeries,
   LineSeries,
   LineStyle,
   TickMarkType,
@@ -10,12 +11,12 @@ import {
   createSeriesMarkers,
   type AutoscaleInfo,
   type CandlestickData,
+  type HistogramData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type LineData,
-  type Logical,
   type LogicalRange,
   type MouseEventParams,
   type Time,
@@ -25,6 +26,7 @@ import {
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { botsApi, streamProjectXMarketPrice } from "../../lib/api";
+import { APP_THEME_CHANGED_EVENT } from "../../lib/theme";
 import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 import {
   buildBotCandleCacheKey,
@@ -38,12 +40,60 @@ import {
   buildGapRangeKey,
   buildGapRepairWindows,
   findCandleGaps,
+  isGapCoveredByRepairWindows,
   type CandleGap,
 } from "./botCandleGaps";
 import type { BotMarketSnapshot } from "./botMarketContext";
+import { BotChartStateOverlay, BotChartStatus } from "./BotChartStatus";
+import {
+  ChartToolButton,
+  ClearDrawingsIcon,
+  ComputeLiquidityIcon,
+  CursorToolIcon,
+  DrawingOverlay,
+  FitChartIcon,
+  HistoryIcon,
+  LegendDot,
+  LegendLine,
+  LineToolIcon,
+  OhlcReadout,
+  RectangleToolIcon,
+  RefreshIcon,
+  type HoveredCandle,
+} from "./BotChartPresentation";
+import {
+  buildDrawingOverlayState,
+  chartPanePointFromPointerEvent,
+  chartPaneYFromPointerEvent,
+  clampNumber,
+  constrainDrawingEndPoint,
+  drawingPointFromPanePoint,
+  drawingPointToPanePoint,
+  findDrawingHitTargetAtPanePoint,
+  isChartOverlayControlEventTarget,
+  isEditableEventTarget,
+  isMeaningfulDrawing,
+  isSameDrawingPoint,
+  normalizeDraggedLiquidityPrice,
+  normalizeDrawingPoint,
+  releaseChartPointerCapture,
+  snapDrawingPointToCandle,
+  type ChartPanePoint,
+  type DrawingAnchorPreview,
+  type DrawingDraft,
+  type DrawingEditMode,
+  type DrawingEditState,
+  type DrawingHitTarget,
+  type DrawingKind,
+  type DrawingModifiers,
+  type DrawingPlacementState,
+  type DrawingPoint,
+  type DrawingShape,
+  type DrawingTool,
+} from "./botChartDrawings";
+import { BotEvaluationOverlayStatus } from "./BotEvaluationOverlayStatus";
 import {
   BOT_CHART_MAX_BARS,
-  BOT_CHART_MIN_BARS,
   buildBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
@@ -58,6 +108,29 @@ import {
   type LiquidityLevel,
   type LiquiditySide,
 } from "./botChartData";
+import {
+  LatestRequestCoordinator,
+  getViewportRestoreRange,
+  invalidateChartRequestLanes,
+  type ChartViewportMutation,
+} from "./botChartLifecycle";
+import { readBotChartThemeColors } from "./botChartTheme";
+import { buildVolumeData } from "./botChartVolume";
+import { resolveBotChartViewState } from "./botChartViewState";
+import {
+  buildBotDrawingStorageKey,
+  clearBotDrawings,
+  readBotDrawings,
+  writeBotDrawings,
+  type BotDrawingStorageScope,
+} from "./botDrawingStorage";
+import {
+  buildEvaluationOverlayModel,
+  isActionableEvaluation,
+  selectLatestActionableEvaluation,
+  type EvaluationFreshnessStatus,
+  type EvaluationOverlayLevelRole,
+} from "./botEvaluationOverlay";
 
 const POLL_INTERVAL_MS = 30_000;
 const MARKET_SNAPSHOT_THROTTLE_MS = 1_000;
@@ -69,15 +142,11 @@ const MAX_GAP_REPAIR_WINDOWS = 3;
 const LIVE_PRICE_POLL_INTERVAL_MS = 10_000;
 const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
 const LIVE_PRICE_STREAM_STALE_MS = 5_000;
+const LIVE_PRICE_STALE_AFTER_MS = 2 * LIVE_PRICE_POLL_INTERVAL_MS + 5_000;
 const CANDLE_REQUEST_TIMEOUT_MS = 70_000;
 const LIVE_PRICE_REQUEST_TIMEOUT_MS = 12_000;
 const MIN_CACHED_CHART_HYDRATION_BARS = 25;
-const HISTORY_EXPANSION_REFIT_BAR_DELTA = 25;
 const LIQUIDITY_LINE_DRAG_HIT_RADIUS_PX = 8;
-const MIN_DRAWING_SIZE_PX = 4;
-const DRAWING_HIT_RADIUS_PX = 8;
-const DRAWING_ENDPOINT_HIT_RADIUS_PX = 14;
-const RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX = 22;
 const CHART_TIMEFRAME_OPTIONS = [
   { id: "1m", label: "1m", unit: "minute", unitNumber: 1 },
   { id: "5m", label: "5m", unit: "minute", unitNumber: 5 },
@@ -139,23 +208,10 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 4,
 });
-const signedPriceFormatter = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 4,
-  signDisplay: "exceptZero",
-});
-const signedPercentFormatter = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-  signDisplay: "exceptZero",
-});
-const volumeFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 2,
-});
-
 interface ChartHandles {
   chart: IChartApi;
   candleSeries: ISeriesApi<"Candlestick">;
+  volumeSeries: ISeriesApi<"Histogram">;
   fastSeries: ISeriesApi<"Line">;
   slowSeries: ISeriesApi<"Line">;
   vwapSeries: ISeriesApi<"Line">;
@@ -182,6 +238,7 @@ interface LoadLivePriceOptions {
 
 interface LivePricePoint {
   timestamp: string;
+  observedAt: string;
   price: number;
   isPartial: boolean;
 }
@@ -193,82 +250,8 @@ interface ChartTimeframeSelection {
 
 type LiquidityPriceOverrides = Partial<Record<LiquiditySide, number>>;
 type LiquidityPriceLineMap = Partial<Record<LiquiditySide, IPriceLine>>;
-type ChartLayerId = "fastSma" | "slowSma" | "vwap" | "buySignals" | "sellSignals" | "buyLiquidity" | "sellLiquidity";
-type DrawingTool = "cursor" | "line" | "rectangle";
-type DrawingKind = Exclude<DrawingTool, "cursor">;
-type DrawingEditMode = "start" | "end" | "left" | "right" | "body";
-
-interface ChartPanePoint {
-  x: number;
-  y: number;
-}
-
-interface DrawingPoint {
-  logical: Logical;
-  time: UTCTimestamp | null;
-  price: number;
-}
-
-interface DrawingShape {
-  id: string;
-  kind: DrawingKind;
-  start: DrawingPoint;
-  end: DrawingPoint;
-}
-
-type DrawingDraft = DrawingShape;
-
-interface DrawingPlacementState {
-  id: string;
-  kind: DrawingKind;
-  start: DrawingPoint;
-  lastPanePoint: ChartPanePoint;
-}
-
-interface DrawingEditState {
-  id: string;
-  mode: DrawingEditMode;
-  pointerId: number;
-  originPanePoint: ChartPanePoint;
-  originalDrawing: DrawingShape;
-}
-
-interface DrawingHitTarget {
-  id: string;
-  mode: DrawingEditMode;
-}
-
-interface DrawingModifiers {
-  ctrlKey: boolean;
-  shiftKey: boolean;
-}
-
-interface RenderableDrawing {
-  id: string;
-  kind: DrawingKind;
-  isDraft: boolean;
-  isSelected: boolean;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-}
-
-interface RenderableDrawingAnchor {
-  x: number;
-  y: number;
-}
-
-interface RenderableLivePriceLine {
-  x1: number;
-  x2: number;
-  y: number;
-}
-
-interface DrawingAnchorPreview {
-  point: DrawingPoint;
-}
-
+type EvaluationPriceLineMap = Partial<Record<EvaluationOverlayLevelRole, IPriceLine>>;
+type ChartLayerId = "fastSma" | "slowSma" | "vwap" | "volume" | "buySignals" | "sellSignals" | "buyLiquidity" | "sellLiquidity";
 interface FittedViewportState {
   key: string;
   candleCount: number;
@@ -277,28 +260,10 @@ interface FittedViewportState {
 interface AppliedSeriesState {
   timeframeKey: string;
   candles: CandlestickData<UTCTimestamp>[];
+  volume: HistogramData<UTCTimestamp>[];
   fast: LineData<UTCTimestamp>[];
   slow: LineData<UTCTimestamp>[];
   vwap: LineData<UTCTimestamp>[];
-}
-
-interface DrawingOverlayState {
-  width: number;
-  height: number;
-  items: RenderableDrawing[];
-  anchor: RenderableDrawingAnchor | null;
-  livePriceLine: RenderableLivePriceLine | null;
-}
-
-interface HoveredCandle {
-  time: UTCTimestamp;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  previousClose: number | null;
-  volume: number;
-  isPartial: boolean;
 }
 
 interface LiquidityDragState {
@@ -311,7 +276,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   const chartHandlesRef = useRef<ChartHandles | null>(null);
   const livePriceLineRef = useRef<IPriceLine | null>(null);
   const liquidityPriceLinesRef = useRef<LiquidityPriceLineMap>({});
+  const evaluationPriceLinesRef = useRef<EvaluationPriceLineMap>({});
   const liquidityLevelsRef = useRef<LiquidityLevel[]>([]);
+  const evaluationPricesRef = useRef<number[]>([]);
   const liquidityDragStateRef = useRef<LiquidityDragState | null>(null);
   const chartCandlesRef = useRef<CandlestickData<UTCTimestamp>[]>([]);
   const hoverCandlesByTimeRef = useRef<Map<number, HoveredCandle>>(new Map());
@@ -328,18 +295,20 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   const fittedViewportRef = useRef<FittedViewportState | null>(null);
   const autoHistoryHookRef = useRef<((range: LogicalRange | null) => void) | null>(null);
   const appliedSeriesStateRef = useRef<AppliedSeriesState | null>(null);
-  const requestSequenceRef = useRef(0);
-  const requestAbortRef = useRef<AbortController | null>(null);
-  const liveRequestSequenceRef = useRef(0);
-  const liveRequestAbortRef = useRef<AbortController | null>(null);
+  const candleRequestsRef = useRef(new LatestRequestCoordinator());
+  const liveRequestsRef = useRef(new LatestRequestCoordinator());
+  const historyRequestsRef = useRef(new LatestRequestCoordinator());
+  const repairRequestsRef = useRef(new LatestRequestCoordinator());
+  const requestTimeoutIdsRef = useRef<Set<number>>(new Set());
+  const pendingViewportRestoreRef = useRef<LogicalRange | null>(null);
+  const viewportRestoreFrameRef = useRef<number | null>(null);
   const lastLiveStreamEventAtRef = useRef(0);
   const pendingLiveStreamPriceRef = useRef<ProjectXMarketPrice | null>(null);
   const liveStreamRenderTimeoutRef = useRef<number | null>(null);
   const candlesRef = useRef<ProjectXMarketCandle[]>([]);
   const liveCandleRef = useRef<ProjectXMarketCandle | null>(null);
-  const historyRequestAbortRef = useRef<AbortController | null>(null);
-  const repairRequestAbortRef = useRef<AbortController | null>(null);
   const repairedGapKeysRef = useRef<Set<string>>(new Set());
+  const actionableEvaluationsRef = useRef<Map<number, BotEvaluation>>(new Map());
   const hasMoreHistoryRef = useRef(true);
   const marketSnapshotTimeoutRef = useRef<number | null>(null);
   const [candles, setCandles] = useState<ProjectXMarketCandle[]>([]);
@@ -361,6 +330,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     fastSma: true,
     slowSma: true,
     vwap: true,
+    volume: true,
     buySignals: true,
     sellSignals: true,
     buyLiquidity: true,
@@ -368,6 +338,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   });
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("cursor");
   const [drawings, setDrawings] = useState<DrawingShape[]>([]);
+  const [hydratedDrawingScopeKey, setHydratedDrawingScopeKey] = useState<string | null>(null);
   const [drawingDraft, setDrawingDraft] = useState<DrawingDraft | null>(null);
   const [drawingAnchorPreview, setDrawingAnchorPreview] = useState<DrawingAnchorPreview | null>(null);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
@@ -391,12 +362,28 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       timeframe_unit_number: chartTimeframe.unitNumber,
     };
   }, [bot, chartTimeframe]);
+  const chartViewportKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
+  const [marketDataContextKey, setMarketDataContextKey] = useState(chartViewportKey);
+  const marketDataMatchesContext = marketDataContextKey === chartViewportKey;
 
-  const visibleCandles = useMemo(() => mergeLiveCandle(candles, liveCandle), [candles, liveCandle]);
-  const hoverCandlesByTime = useMemo(() => buildHoverCandleMap(visibleCandles), [visibleCandles]);
-  const latestOhlcCandle = useMemo(() => getLatestHoveredCandle(hoverCandlesByTime), [hoverCandlesByTime]);
+  // State updates clear old rows after a market change. This render-time guard
+  // prevents the previous market from being applied or fitted under the new key
+  // during that intervening commit.
+  const visibleCandles = useMemo(
+    () => (marketDataMatchesContext ? mergeLiveCandle(candles, liveCandle) : []),
+    [candles, liveCandle, marketDataMatchesContext],
+  );
   const chartCandles = useMemo(() => buildCandlestickData(visibleCandles), [visibleCandles]);
-  const closedChartCandles = useMemo(() => buildCandlestickData(candles, { bridgeConsecutiveGaps: false }), [candles]);
+  const hoverCandlesByTime = useMemo(
+    () => buildHoverCandleMap(visibleCandles, chartCandles),
+    [chartCandles, visibleCandles],
+  );
+  const latestOhlcCandle = useMemo(() => getLatestHoveredCandle(hoverCandlesByTime), [hoverCandlesByTime]);
+  const volumeData = useMemo(() => buildVolumeData(visibleCandles), [visibleCandles]);
+  const closedChartCandles = useMemo(
+    () => buildCandlestickData(marketDataMatchesContext ? candles.filter((candle) => !candle.is_partial) : []),
+    [candles, marketDataMatchesContext],
+  );
   const usesEmaLayers =
     bot?.strategy_type === "pullback_trap_reversal" ||
     bot?.strategy_type === "ema_scalping" ||
@@ -439,12 +426,29 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     () =>
       buildSignalMarkers({
         candles: closedChartCandles,
-        activityDecisions: activity && activity.config.id === bot?.id ? activity.decisions : [],
-        lastEvaluation: lastEvaluation?.config.id === bot?.id ? lastEvaluation : null,
+        activityDecisions:
+          activity &&
+          bot &&
+          activity.config.id === bot.id &&
+          activity.config.contract_id === bot.contract_id &&
+          activity.config.timeframe_unit === bot.timeframe_unit &&
+          activity.config.timeframe_unit_number === bot.timeframe_unit_number
+            ? activity.decisions.filter((decision) => decision.contract_id === bot.contract_id)
+            : [],
+        lastEvaluation:
+          lastEvaluation &&
+          bot &&
+          lastEvaluation.config.id === bot.id &&
+          lastEvaluation.config.contract_id === bot.contract_id &&
+          lastEvaluation.decision.contract_id === bot.contract_id &&
+          lastEvaluation.config.timeframe_unit === bot.timeframe_unit &&
+          lastEvaluation.config.timeframe_unit_number === bot.timeframe_unit_number
+            ? lastEvaluation
+            : null,
         timeframeUnit: chartTimeframe.unit,
         timeframeUnitNumber: chartTimeframe.unitNumber,
       }),
-    [activity, bot?.id, chartTimeframe, closedChartCandles, lastEvaluation],
+    [activity, bot, chartTimeframe, closedChartCandles, lastEvaluation],
   );
   const visibleSignalMarkers = useMemo(
     () =>
@@ -459,10 +463,43 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       }),
     [signalMarkers, visibleChartLayers.buySignals, visibleChartLayers.sellSignals],
   );
+  useEffect(() => {
+    if (isActionableEvaluation(lastEvaluation)) {
+      actionableEvaluationsRef.current.set(lastEvaluation.config.id, lastEvaluation);
+    }
+  }, [lastEvaluation]);
+  const latestActionableEvaluation = useMemo(
+    () =>
+      selectLatestActionableEvaluation({
+        bot,
+        activity,
+        lastEvaluation,
+        cachedEvaluation: bot ? actionableEvaluationsRef.current.get(bot.id) ?? null : null,
+      }),
+    [activity, bot, lastEvaluation],
+  );
+  const latestClosedCandle = useMemo(
+    () =>
+      marketDataMatchesContext
+        ? [...candles].reverse().find((candle) => !candle.is_partial && isRenderableMarketCandle(candle)) ?? null
+        : null,
+    [candles, marketDataMatchesContext],
+  );
+  const evaluationOverlayModel = useMemo(
+    () =>
+      buildEvaluationOverlayModel(latestActionableEvaluation, {
+        latestClosedTimestamp: latestClosedCandle?.timestamp ?? null,
+      }),
+    [latestActionableEvaluation, latestClosedCandle?.timestamp],
+  );
   const livePricePoint = useMemo<LivePricePoint | null>(() => {
+    if (!marketDataMatchesContext) {
+      return null;
+    }
     if (streamPrice && Number.isFinite(streamPrice.price) && Number.isFinite(Date.parse(streamPrice.timestamp))) {
       return {
         timestamp: streamPrice.timestamp,
+        observedAt: streamPrice.timestamp,
         price: streamPrice.price,
         isPartial: true,
       };
@@ -470,15 +507,49 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     if (liveCandle && Number.isFinite(liveCandle.close) && Number.isFinite(Date.parse(liveCandle.timestamp))) {
       return {
         timestamp: liveCandle.timestamp,
+        observedAt: liveCandle.fetched_at ?? liveCandle.timestamp,
         price: liveCandle.close,
         isPartial: liveCandle.is_partial,
       };
     }
     return null;
-  }, [liveCandle, streamPrice]);
+  }, [liveCandle, marketDataMatchesContext, streamPrice]);
   const livePrice = livePricePoint?.price ?? null;
+  void freshnessTick; // Re-render trigger for data- and price-age status.
+  const livePriceObservedAtMs = livePricePoint ? Date.parse(livePricePoint.observedAt) : Number.NaN;
+  const livePriceIsStale =
+    livePricePoint !== null &&
+    (!Number.isFinite(livePriceObservedAtMs) || Date.now() - livePriceObservedAtMs > LIVE_PRICE_STALE_AFTER_MS);
   const liquidityDragContextKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
-  const chartViewportKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
+  const drawingStorageScope = useMemo<BotDrawingStorageScope | null>(
+    () =>
+      bot
+        ? {
+            botId: bot.id,
+            contractId: bot.contract_id,
+            timeframe: selectedTimeframeId,
+          }
+        : null,
+    [bot, selectedTimeframeId],
+  );
+  const drawingStorageScopeKey = drawingStorageScope ? buildBotDrawingStorageKey(drawingStorageScope) : null;
+  const chartViewportKeyRef = useRef(chartViewportKey);
+  chartViewportKeyRef.current = chartViewportKey;
+  const queueViewportRestore = useCallback(
+    (mutation: ChartViewportMutation, previousRows: ProjectXMarketCandle[], nextRows: ProjectXMarketCandle[]) => {
+      const handles = chartHandlesRef.current;
+      if (!handles || previousRows.length === 0 || nextRows.length === 0) {
+        return;
+      }
+      pendingViewportRestoreRef.current = getViewportRestoreRange(
+        mutation,
+        handles.chart.timeScale().getVisibleLogicalRange(),
+        marketCandleTimes(previousRows),
+        marketCandleTimes(nextRows),
+      );
+    },
+    [],
+  );
   const [repairVersion, setRepairVersion] = useState(0);
   const candleGaps = useMemo<CandleGap[]>(
     () => (chartConfig ? findCandleGaps(candles, chartConfig.timeframe_unit, chartConfig.timeframe_unit_number) : []),
@@ -555,15 +626,35 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
 
   // Reset per-market transient state when the chart context changes.
   useEffect(() => {
+    setMarketDataContextKey(chartViewportKey);
+    candlesRef.current = [];
+    liveCandleRef.current = null;
+    setCandles([]);
+    setLiveCandle(null);
+    setStreamPrice(null);
+    setError(null);
+    setLivePriceError(null);
+    setLastLoadedAt(null);
     repairedGapKeysRef.current = new Set();
     hasMoreHistoryRef.current = true;
     setHasMoreHistory(true);
     setServedFromCacheOnly(false);
     setRepairVersion(0);
-    historyRequestAbortRef.current?.abort();
-    historyRequestAbortRef.current = null;
-    repairRequestAbortRef.current?.abort();
-    repairRequestAbortRef.current = null;
+    invalidateChartRequestLanes([
+      candleRequestsRef.current,
+      liveRequestsRef.current,
+      historyRequestsRef.current,
+      repairRequestsRef.current,
+    ]);
+    for (const timeoutId of requestTimeoutIdsRef.current) {
+      window.clearTimeout(timeoutId);
+    }
+    requestTimeoutIdsRef.current.clear();
+    pendingViewportRestoreRef.current = null;
+    if (viewportRestoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(viewportRestoreFrameRef.current);
+      viewportRestoreFrameRef.current = null;
+    }
     setHistoryLoading(false);
     setGapRepairing(false);
   }, [chartViewportKey]);
@@ -669,18 +760,25 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     setDrawingDraft(null);
     setDrawingAnchorPreview(null);
     setSelectedDrawingId(null);
-    drawingsRef.current = [];
-    setDrawings([]);
+    const storedDrawings = drawingStorageScope ? readBotDrawings(drawingStorageScope) : [];
+    drawingsRef.current = storedDrawings;
+    setDrawings(storedDrawings);
+    setHydratedDrawingScopeKey(drawingStorageScopeKey);
     chartHandlesRef.current?.chart.clearCrosshairPosition();
     setDrawingOverlayRevision((current) => current + 1);
-  }, [liquidityDragContextKey]);
+  }, [drawingStorageScope, drawingStorageScopeKey, liquidityDragContextKey]);
+
+  useEffect(() => {
+    if (!drawingStorageScope || !drawingStorageScopeKey || hydratedDrawingScopeKey !== drawingStorageScopeKey) {
+      return;
+    }
+    writeBotDrawings(drawingStorageScope, drawings);
+  }, [drawingStorageScope, drawingStorageScopeKey, drawings, hydratedDrawingScopeKey]);
 
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
       if (!chartConfig) {
-        requestSequenceRef.current += 1;
-        requestAbortRef.current?.abort();
-        requestAbortRef.current = null;
+        candleRequestsRef.current.invalidate();
         setCandles([]);
         setLiveCandle(null);
         setStreamPrice(null);
@@ -692,12 +790,22 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         return;
       }
 
-      const requestId = requestSequenceRef.current + 1;
-      requestSequenceRef.current = requestId;
-      requestAbortRef.current?.abort();
-      const controller = new AbortController();
-      requestAbortRef.current = controller;
-      const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+      if (forceRefresh) {
+        // Every lane can touch canonical candle state. Supersede older additive
+        // work before a full refresh so late history/repair/live responses cannot
+        // mutate the refreshed chart, even if their transport ignores abort.
+        invalidateChartRequestLanes([
+          historyRequestsRef.current,
+          repairRequestsRef.current,
+          liveRequestsRef.current,
+        ]);
+        setHistoryLoading(false);
+        setGapRepairing(false);
+      }
+
+      const request = candleRequestsRef.current.begin(chartViewportKey);
+      const timeoutId = window.setTimeout(() => request.controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+      requestTimeoutIdsRef.current.add(timeoutId);
       const queryWindow = buildBotChartQuery(chartConfig);
       const cacheKey = buildBotCandleCacheKey({
         contractId: chartConfig.contract_id,
@@ -743,29 +851,28 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
           limit: queryWindow.limit,
           includePartialBar: false,
           refresh: forceRefresh,
-        }, { signal: controller.signal });
-        if (requestSequenceRef.current !== requestId) {
+        }, { signal: request.signal });
+        if (!candleRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
           return;
         }
         const mergedRows = forceRefresh ? rows : mergeMarketCandles(cachedCandles, rows, queryWindow.limit);
         // Keep older history the user already paged in; the fetch window only covers the recent range.
-        const nextRows = forceRefresh
-          ? mergedRows
-          : upsertMarketCandles(candlesRef.current.filter((row) => !row.is_partial), mergedRows, MAX_LOADED_BARS);
+        // Rolled partials also remain until ProjectX returns their authoritative
+        // closed replacement; upsert precedence guarantees closed always wins.
+        const nextRows = upsertMarketCandles(candlesRef.current, mergedRows, MAX_LOADED_BARS);
+        queueViewportRestore(forceRefresh ? "refresh" : "live", candlesRef.current, nextRows);
         setCandles(nextRows);
         candlesRef.current = nextRows;
         writeBotCandleCache(cacheKey, mergedRows, queryWindow.limit);
         setLastLoadedAt(new Date());
         setServedFromCacheOnly(false);
         if (forceRefresh) {
-          // A forced refresh resets pagination and gap-repair bookkeeping.
-          hasMoreHistoryRef.current = true;
-          setHasMoreHistory(true);
+          // Retry previously confirmed-empty holes after an explicit provider refresh.
           repairedGapKeysRef.current = new Set();
           setRepairVersion((current) => current + 1);
         }
       } catch (err) {
-        if (requestSequenceRef.current !== requestId) {
+        if (!candleRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
           return;
         }
         if (silent && !forceRefresh && candlesRef.current.length > 0) {
@@ -783,42 +890,32 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         }
       } finally {
         window.clearTimeout(timeoutId);
-        if (requestAbortRef.current === controller) {
-          requestAbortRef.current = null;
-        }
-        if (requestSequenceRef.current === requestId) {
+        requestTimeoutIdsRef.current.delete(timeoutId);
+        if (candleRequestsRef.current.finish(request)) {
           setLoading(false);
           setRefreshing(false);
         }
       }
     },
-    [chartConfig],
+    [chartConfig, chartViewportKey, queueViewportRestore],
   );
 
   const loadLivePrice = useCallback(async ({ force = false }: LoadLivePriceOptions = {}) => {
     if (!chartConfig) {
-      liveRequestSequenceRef.current += 1;
-      liveRequestAbortRef.current?.abort();
-      liveRequestAbortRef.current = null;
+      liveRequestsRef.current.invalidate();
       setLiveCandle(null);
       setStreamPrice(null);
       setLivePriceError(null);
       return;
     }
 
-    if (liveRequestAbortRef.current) {
-      if (!force) {
-        return;
-      }
-      liveRequestSequenceRef.current += 1;
-      liveRequestAbortRef.current.abort();
+    if (liveRequestsRef.current.hasActiveRequest && !force) {
+      return;
     }
 
-    const requestId = liveRequestSequenceRef.current + 1;
-    liveRequestSequenceRef.current = requestId;
-    const controller = new AbortController();
-    liveRequestAbortRef.current = controller;
-    const timeoutId = window.setTimeout(() => controller.abort(), LIVE_PRICE_REQUEST_TIMEOUT_MS);
+    const request = liveRequestsRef.current.begin(chartViewportKey);
+    const timeoutId = window.setTimeout(() => request.controller.abort(), LIVE_PRICE_REQUEST_TIMEOUT_MS);
+    requestTimeoutIdsRef.current.add(timeoutId);
     const queryWindow = buildBotLivePriceQuery(chartConfig);
 
     try {
@@ -833,16 +930,19 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         limit: queryWindow.limit,
         includePartialBar: true,
         refresh: true,
-      }, { signal: controller.signal });
-      if (liveRequestSequenceRef.current !== requestId) {
+      }, { signal: request.signal });
+      if (!liveRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
         return;
       }
 
       // Promote closed candles from the live window into the chart immediately so a
       // just-finished bar does not vanish until the next slow poll.
-      const closedRows = rows.filter((row) => !row.is_partial);
+      const closedRows = rows
+        .filter((row) => !row.is_partial)
+        .filter((row) => !hasClosedCandleAtTimestamp(candlesRef.current, row));
       if (closedRows.length > 0) {
         const merged = upsertMarketCandles(candlesRef.current, closedRows, MAX_LOADED_BARS);
+        queueViewportRestore("live", candlesRef.current, merged);
         candlesRef.current = merged;
         setCandles(merged);
       }
@@ -853,7 +953,15 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         if (!latest) {
           return current;
         }
+        const canonicalClosed = candlesRef.current.find(
+          (row) => !row.is_partial && marketCandlesShareTimestamp(row, latest),
+        );
+        if (latest.is_partial && canonicalClosed) {
+          liveCandleRef.current = canonicalClosed;
+          return canonicalClosed;
+        }
         if (!current) {
+          liveCandleRef.current = latest;
           return latest;
         }
         const currentMs = Date.parse(current.timestamp);
@@ -861,21 +969,32 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         if (Number.isFinite(currentMs) && Number.isFinite(latestMs) && latestMs < currentMs) {
           return current;
         }
+        if (!current.is_partial && latest.is_partial && marketCandlesShareTimestamp(current, latest)) {
+          return current;
+        }
+        if (
+          current.is_partial &&
+          latest.is_partial &&
+          marketCandlesShareTimestamp(current, latest) &&
+          marketCandleFetchedAtMs(current) > marketCandleFetchedAtMs(latest)
+        ) {
+          return current;
+        }
+        liveCandleRef.current = latest;
         return latest;
       });
       setLivePriceError(latest ? null : "No live price was returned.");
     } catch (err) {
-      if (liveRequestSequenceRef.current !== requestId) {
+      if (!liveRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
         return;
       }
       setLivePriceError(isAbortError(err) ? "Timed out loading live price." : err instanceof Error ? err.message : "Failed to load live price.");
     } finally {
       window.clearTimeout(timeoutId);
-      if (liveRequestAbortRef.current === controller) {
-        liveRequestAbortRef.current = null;
-      }
+      requestTimeoutIdsRef.current.delete(timeoutId);
+      liveRequestsRef.current.finish(request);
     }
-  }, [chartConfig]);
+  }, [chartConfig, chartViewportKey, queueViewportRestore]);
 
   const loadOlderCandles = useCallback(async () => {
     const config = chartConfigRef.current;
@@ -885,7 +1004,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       loadedCandles.length === 0 ||
       loadedCandles.length >= MAX_LOADED_BARS ||
       !hasMoreHistoryRef.current ||
-      historyRequestAbortRef.current
+      historyRequestsRef.current.hasActiveRequest
     ) {
       return;
     }
@@ -896,9 +1015,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       return;
     }
 
-    const controller = new AbortController();
-    historyRequestAbortRef.current = controller;
-    const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+    const contextKey = chartViewportKeyRef.current;
+    const request = historyRequestsRef.current.begin(contextKey);
+    const timeoutId = window.setTimeout(() => request.controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+    requestTimeoutIdsRef.current.add(timeoutId);
     setHistoryLoading(true);
     try {
       const rows = await botsApi.getCandles({
@@ -911,7 +1031,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         unitNumber: config.timeframe_unit_number,
         limit: queryWindow.limit,
         includePartialBar: false,
-      }, { signal: controller.signal });
+      }, { signal: request.signal });
+      if (!historyRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
+        return;
+      }
 
       const earliestMs = Date.parse(earliest.timestamp);
       const olderRows = rows.filter((row) => {
@@ -924,40 +1047,30 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         return;
       }
 
-      const handles = chartHandlesRef.current;
-      const previousVisibleRange = handles?.chart.timeScale().getVisibleRange() ?? null;
       const merged = upsertMarketCandles(candlesRef.current, olderRows, MAX_LOADED_BARS);
+      queueViewportRestore("pagination", candlesRef.current, merged);
       candlesRef.current = merged;
       setCandles(merged);
-      // Prepending shifts logical indices; restore the time-based viewport so the
-      // chart does not jump.
-      if (handles && previousVisibleRange) {
-        window.requestAnimationFrame(() => {
-          if (chartHandlesRef.current === handles) {
-            handles.chart.timeScale().setVisibleRange(previousVisibleRange);
-          }
-        });
-      }
       if (merged.length >= MAX_LOADED_BARS) {
         hasMoreHistoryRef.current = false;
         setHasMoreHistory(false);
       }
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (historyRequestsRef.current.accepts(request, chartViewportKeyRef.current) && !isAbortError(err)) {
         setError(err instanceof Error ? err.message : "Failed to load older candles");
       }
     } finally {
       window.clearTimeout(timeoutId);
-      if (historyRequestAbortRef.current === controller) {
-        historyRequestAbortRef.current = null;
+      requestTimeoutIdsRef.current.delete(timeoutId);
+      if (historyRequestsRef.current.finish(request)) {
+        setHistoryLoading(false);
       }
-      setHistoryLoading(false);
     }
-  }, []);
+  }, [queueViewportRestore]);
 
   const repairDataGaps = useCallback(async () => {
     const config = chartConfigRef.current;
-    if (!config || repairRequestAbortRef.current) {
+    if (!config || repairRequestsRef.current.hasActiveRequest) {
       return;
     }
 
@@ -973,11 +1086,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       return;
     }
 
-    const controller = new AbortController();
-    repairRequestAbortRef.current = controller;
-    const timeoutId = window.setTimeout(() => controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+    const contextKey = chartViewportKeyRef.current;
+    const request = repairRequestsRef.current.begin(contextKey);
+    const timeoutId = window.setTimeout(() => request.controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
+    requestTimeoutIdsRef.current.add(timeoutId);
     setGapRepairing(true);
     try {
+      const repairedRows: ProjectXMarketCandle[] = [];
       for (const window_ of windows) {
         const rows = await botsApi.getCandles({
           contractId: config.contract_id,
@@ -990,35 +1105,45 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
           limit: BOT_CHART_MAX_BARS,
           includePartialBar: false,
           repair: true,
-        }, { signal: controller.signal });
+        }, { signal: request.signal });
+        if (!repairRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
+          return;
+        }
         if (rows.length > 0) {
-          const merged = upsertMarketCandles(candlesRef.current, rows, MAX_LOADED_BARS);
-          candlesRef.current = merged;
-          setCandles(merged);
+          repairedRows.push(...rows);
         }
       }
+      if (repairedRows.length > 0) {
+        const additiveRepairRows = repairedRows.filter(
+          (row) => row.is_partial || !hasClosedCandleAtTimestamp(candlesRef.current, row),
+        );
+        const merged = upsertMarketCandles(candlesRef.current, additiveRepairRows, MAX_LOADED_BARS);
+        queueViewportRestore("pagination", candlesRef.current, merged);
+        candlesRef.current = merged;
+        setCandles(merged);
+      }
 
-      // Whatever is still missing after a backfill pass is confirmed empty at the
-      // provider (holiday/no-trade); stop flagging it as repairable.
+      // Only gaps covered by this bounded pass can be confirmed empty. Remaining
+      // unattempted windows stay visible and repairable.
       const remaining = findCandleGaps(candlesRef.current, config.timeframe_unit, config.timeframe_unit_number);
       for (const gap of remaining) {
-        if (gap.kind === "data") {
+        if (gap.kind === "data" && isGapCoveredByRepairWindows(gap, windows)) {
           repairedGapKeysRef.current.add(buildGapRangeKey(gap));
         }
       }
       setRepairVersion((current) => current + 1);
     } catch (err) {
-      if (!isAbortError(err)) {
+      if (repairRequestsRef.current.accepts(request, chartViewportKeyRef.current) && !isAbortError(err)) {
         setError(err instanceof Error ? err.message : "Failed to backfill candle gaps");
       }
     } finally {
       window.clearTimeout(timeoutId);
-      if (repairRequestAbortRef.current === controller) {
-        repairRequestAbortRef.current = null;
+      requestTimeoutIdsRef.current.delete(timeoutId);
+      if (repairRequestsRef.current.finish(request)) {
+        setGapRepairing(false);
       }
-      setGapRepairing(false);
     }
-  }, []);
+  }, [queueViewportRestore]);
 
   const applyLiveStreamPrice = useCallback(
     (price: ProjectXMarketPrice) => {
@@ -1043,16 +1168,19 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         return;
       }
 
+      const previousVisibleRows = mergeLiveCandle(candlesRef.current, currentLiveCandle);
       // On bucket rollover, keep the finished partial bar on the chart until an
       // authoritative closed bar replaces it.
-      if (currentLiveCandle && currentLiveCandle.timestamp !== nextLiveCandle.timestamp) {
+      if (currentLiveCandle && !marketCandlesShareTimestamp(currentLiveCandle, nextLiveCandle)) {
         const merged = upsertMarketCandles(candlesRef.current, [currentLiveCandle], MAX_LOADED_BARS);
         candlesRef.current = merged;
         setCandles(merged);
       }
+      queueViewportRestore("live", previousVisibleRows, mergeLiveCandle(candlesRef.current, nextLiveCandle));
+      liveCandleRef.current = nextLiveCandle;
       setLiveCandle(nextLiveCandle);
     },
-    [chartConfig],
+    [chartConfig, queueViewportRestore],
   );
 
   const flushPendingLiveStreamPrice = useCallback(() => {
@@ -1086,17 +1214,18 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       return;
     }
     const eventSurface = container.parentElement instanceof HTMLElement ? container.parentElement : container;
+    const theme = readBotChartThemeColors();
 
     const chart = createChart(container, {
-      width: Math.max(container.clientWidth, 320),
+      width: Math.max(container.clientWidth, 1),
       height: Math.max(container.clientHeight, 320),
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "rgb(148,163,184)",
+        textColor: theme.label,
       },
       grid: {
-        vertLines: { color: "rgba(51,65,85,0.35)" },
-        horzLines: { color: "rgba(51,65,85,0.35)" },
+        vertLines: { color: theme.grid },
+        horzLines: { color: theme.grid },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -1106,14 +1235,14 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         timeFormatter: formatEasternCrosshairTime,
       },
       rightPriceScale: {
-        borderColor: "rgba(71,85,105,0.55)",
+        borderColor: theme.border,
         scaleMargins: {
           top: 0.08,
           bottom: 0.12,
         },
       },
       timeScale: {
-        borderColor: "rgba(71,85,105,0.55)",
+        borderColor: theme.border,
         timeVisible: true,
         secondsVisible: true,
         tickMarkFormatter: formatEasternTickMark,
@@ -1121,36 +1250,80 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "rgb(34,197,94)",
-      downColor: "rgb(244,63,94)",
-      borderUpColor: "rgb(34,197,94)",
-      borderDownColor: "rgb(244,63,94)",
-      wickUpColor: "rgb(34,197,94)",
-      wickDownColor: "rgb(244,63,94)",
+      upColor: theme.positive,
+      downColor: theme.negative,
+      borderUpColor: theme.positive,
+      borderDownColor: theme.negative,
+      wickUpColor: theme.positive,
+      wickDownColor: theme.negative,
       priceLineVisible: false,
       lastValueVisible: false,
-      autoscaleInfoProvider: () => buildVisibleCandleAutoscaleInfo(chartCandlesRef.current, chart.timeScale().getVisibleLogicalRange()),
+      autoscaleInfoProvider: () =>
+        buildVisibleCandleAutoscaleInfo(
+          chartCandlesRef.current,
+          chart.timeScale().getVisibleLogicalRange(),
+          evaluationPricesRef.current,
+        ),
     });
     const fastSeries = chart.addSeries(LineSeries, {
-      color: "rgb(34,211,238)",
+      color: theme.accent,
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const slowSeries = chart.addSeries(LineSeries, {
-      color: "rgb(250,204,21)",
+      color: theme.warning,
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
     });
     const vwapSeries = chart.addSeries(LineSeries, {
-      color: "rgb(244,114,182)",
+      color: theme.secondary,
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
     });
+    const volumeSeries = chart.addSeries(
+      HistogramSeries,
+      {
+        priceFormat: { type: "volume" },
+        priceLineVisible: false,
+        lastValueVisible: false,
+      },
+      1,
+    );
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: {
+        top: 0.12,
+        bottom: 0,
+      },
+    });
+    const panes = chart.panes();
+    panes[0]?.setStretchFactor(4);
+    panes[1]?.setStretchFactor(1);
     const markers = createSeriesMarkers(candleSeries);
-    chartHandlesRef.current = { chart, candleSeries, fastSeries, slowSeries, vwapSeries, markers };
+    chartHandlesRef.current = { chart, candleSeries, volumeSeries, fastSeries, slowSeries, vwapSeries, markers };
+    const handleThemeChange = () => {
+      const nextTheme = readBotChartThemeColors();
+      chart.applyOptions({
+        layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: nextTheme.label },
+        grid: { vertLines: { color: nextTheme.grid }, horzLines: { color: nextTheme.grid } },
+        rightPriceScale: { borderColor: nextTheme.border },
+        timeScale: { borderColor: nextTheme.border },
+      });
+      candleSeries.applyOptions({
+        upColor: nextTheme.positive,
+        downColor: nextTheme.negative,
+        borderUpColor: nextTheme.positive,
+        borderDownColor: nextTheme.negative,
+        wickUpColor: nextTheme.positive,
+        wickDownColor: nextTheme.negative,
+      });
+      fastSeries.applyOptions({ color: nextTheme.accent });
+      slowSeries.applyOptions({ color: nextTheme.warning });
+      vwapSeries.applyOptions({ color: nextTheme.secondary });
+    };
+    window.addEventListener(APP_THEME_CHANGED_EVENT, handleThemeChange);
 
     const clearHoveredCandle = () => {
       if (hoveredCandleTimeRef.current !== null) {
@@ -1191,7 +1364,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     };
 
     const resize = () => {
-      chart.resize(Math.max(container.clientWidth, 320), Math.max(container.clientHeight, 320));
+      chart.resize(Math.max(container.clientWidth, 1), Math.max(container.clientHeight, 240));
       requestDrawingOverlayUpdate();
     };
     resize();
@@ -1332,11 +1505,6 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         setDrawingAnchorPreview(preview);
       }
       chart.setCrosshairPosition(snappedPoint.price, snappedTime, candleSeries);
-      window.requestAnimationFrame(() => {
-        if (drawingAnchorPreviewRef.current && isSameDrawingPoint(drawingAnchorPreviewRef.current.point, snappedPoint)) {
-          chart.setCrosshairPosition(snappedPoint.price, snappedTime, candleSeries);
-        }
-      });
     };
 
     const findDrawingHitTargetAtPointer = (event: PointerEvent): DrawingHitTarget | null => {
@@ -1606,6 +1774,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         return;
       }
 
+      container.focus({ preventScroll: true });
+
       const drawingTool = drawingToolRef.current;
       if (drawingTool !== "cursor") {
         const placementState = drawingPlacementStateRef.current;
@@ -1770,7 +1940,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     };
 
     const handleModifierKeyChange = (event: KeyboardEvent) => {
-      if ((event.key === "Backspace" || event.key === "Delete") && selectedDrawingIdRef.current && !isEditableEventTarget(event.target)) {
+      const chartHasFocus = document.activeElement === container || container.contains(document.activeElement);
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        chartHasFocus &&
+        selectedDrawingIdRef.current &&
+        !isEditableEventTarget(event.target)
+      ) {
         event.preventDefault();
         const selectedDrawingId = selectedDrawingIdRef.current;
         selectedDrawingIdRef.current = null;
@@ -1828,6 +2004,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       eventSurface.removeEventListener("pointerleave", handlePointerLeave, pointerListenerOptions);
       window.removeEventListener("keydown", handleModifierKeyChange);
       window.removeEventListener("keyup", handleModifierKeyChange);
+      window.removeEventListener(APP_THEME_CHANGED_EVENT, handleThemeChange);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(requestDrawingOverlayUpdate);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeForHistory);
@@ -1846,6 +2023,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       appliedSeriesStateRef.current = null;
       livePriceLineRef.current = null;
       liquidityPriceLinesRef.current = {};
+      evaluationPriceLinesRef.current = {};
+      evaluationPricesRef.current = [];
       liquidityLevelsRef.current = [];
       liquidityDragStateRef.current = null;
       drawingPlacementStateRef.current = null;
@@ -1876,10 +2055,11 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       return;
     }
 
-    const timeframeKey = `${chartViewportKey}:${visibleChartLayers.fastSma}:${visibleChartLayers.slowSma}:${visibleChartLayers.vwap}`;
+    const timeframeKey = chartViewportKey;
     const nextState: AppliedSeriesState = {
       timeframeKey,
       candles: chartCandles,
+      volume: visibleChartLayers.volume ? volumeData : [],
       fast: visibleChartLayers.fastSma ? fastAverage : [],
       slow: visibleChartLayers.slowSma ? slowAverage : [],
       vwap: visibleChartLayers.vwap ? vwap : [],
@@ -1888,21 +2068,47 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     const incremental = previousState !== null && previousState.timeframeKey === timeframeKey;
 
     applySeriesData(handles.candleSeries, incremental ? previousState.candles : null, nextState.candles);
+    applySeriesData(handles.volumeSeries, incremental ? previousState.volume : null, nextState.volume);
     applySeriesData(handles.fastSeries, incremental ? previousState.fast : null, nextState.fast);
     applySeriesData(handles.slowSeries, incremental ? previousState.slow : null, nextState.slow);
     applySeriesData(handles.vwapSeries, incremental ? previousState.vwap : null, nextState.vwap);
     appliedSeriesStateRef.current = nextState;
+    const restoreRange = pendingViewportRestoreRef.current;
+    pendingViewportRestoreRef.current = null;
+    if (viewportRestoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(viewportRestoreFrameRef.current);
+      viewportRestoreFrameRef.current = null;
+    }
+    if (restoreRange) {
+      viewportRestoreFrameRef.current = window.requestAnimationFrame(() => {
+        viewportRestoreFrameRef.current = null;
+        if (chartHandlesRef.current === handles) {
+          handles.chart.timeScale().setVisibleLogicalRange(restoreRange);
+        }
+      });
+    }
     setDrawingOverlayRevision((current) => current + 1);
   }, [
     chartViewportKey,
     chartCandles,
     fastAverage,
     slowAverage,
+    volumeData,
     visibleChartLayers.fastSma,
     visibleChartLayers.slowSma,
+    visibleChartLayers.volume,
     visibleChartLayers.vwap,
     vwap,
   ]);
+
+  useEffect(() => {
+    const panes = chartHandlesRef.current?.chart.panes();
+    if (!panes) {
+      return;
+    }
+    panes[0]?.setStretchFactor(visibleChartLayers.volume ? 4 : 1);
+    panes[1]?.setStretchFactor(visibleChartLayers.volume ? 1 : 0.01);
+  }, [visibleChartLayers.volume]);
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
@@ -1940,21 +2146,57 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
 
   useEffect(() => {
     const handles = chartHandlesRef.current;
+    if (!handles) {
+      return;
+    }
+
+    const levels: Partial<Record<EvaluationOverlayLevelRole, { price: number } | null>> = evaluationOverlayModel
+      ? {
+          entry: evaluationOverlayModel.geometry.entry,
+          stop: evaluationOverlayModel.geometry.stop,
+          target: evaluationOverlayModel.geometry.target,
+        }
+      : {};
+    evaluationPricesRef.current = [levels.entry?.price, levels.stop?.price, levels.target?.price].filter(
+      (price): price is number => typeof price === "number" && Number.isFinite(price),
+    );
+    for (const role of ["entry", "stop", "target"] as const) {
+      const level = levels[role];
+      const existingLine = evaluationPriceLinesRef.current[role];
+      if (!level) {
+        if (existingLine) {
+          handles.candleSeries.removePriceLine(existingLine);
+          delete evaluationPriceLinesRef.current[role];
+        }
+        continue;
+      }
+
+      const options = evaluationLevelToPriceLineOptions(
+        role,
+        level.price,
+        evaluationOverlayModel?.staleness.status ?? "unknown",
+      );
+      if (existingLine) {
+        existingLine.applyOptions(options);
+      } else {
+        evaluationPriceLinesRef.current[role] = handles.candleSeries.createPriceLine(options);
+      }
+    }
+  }, [evaluationOverlayModel]);
+
+  useEffect(() => {
+    const handles = chartHandlesRef.current;
     if (!handles || !bot || closedChartCandles.length === 0) {
       return;
     }
 
-    const candleCount = closedChartCandles.length;
     const fittedViewport = fittedViewportRef.current;
-    if (
-      fittedViewport?.key === chartViewportKey &&
-      !shouldRefitViewportForExpandedHistory(fittedViewport.candleCount, candleCount)
-    ) {
+    if (fittedViewport?.key === chartViewportKey) {
       return;
     }
 
     handles.chart.timeScale().fitContent();
-    fittedViewportRef.current = { key: chartViewportKey, candleCount };
+    fittedViewportRef.current = { key: chartViewportKey, candleCount: closedChartCandles.length };
   }, [bot, chartViewportKey, closedChartCandles.length]);
 
   useEffect(() => {
@@ -1973,13 +2215,13 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
 
     const priceLineOptions = {
       price: livePrice,
-      color: "rgb(56,189,248)",
+      color: livePriceIsStale ? "rgb(245,158,11)" : "rgb(56,189,248)",
       lineWidth: 2 as const,
       lineStyle: LineStyle.Dashed,
       lineVisible: false,
       axisLabelVisible: true,
-      title: livePricePoint?.isPartial ? "Live" : "Last",
-      axisLabelColor: "rgb(8,145,178)",
+      title: livePriceIsStale ? "Stale" : livePricePoint?.isPartial ? "Live" : "Last",
+      axisLabelColor: livePriceIsStale ? "rgb(217,119,6)" : "rgb(8,145,178)",
       axisLabelTextColor: "rgb(240,249,255)",
     };
 
@@ -1988,14 +2230,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     } else {
       livePriceLineRef.current = handles.candleSeries.createPriceLine(priceLineOptions);
     }
-  }, [livePrice, livePricePoint?.isPartial]);
+  }, [livePrice, livePriceIsStale, livePricePoint?.isPartial]);
 
   useEffect(() => {
     let active = true;
-    setCandles([]);
-    setLiveCandle(null);
-    setStreamPrice(null);
-    setLivePriceError(null);
     void loadCandles().finally(() => {
       if (active) {
         void loadLivePrice({ force: true });
@@ -2008,11 +2246,24 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   }, [loadCandles, loadLivePrice, refreshToken]);
 
   useEffect(() => {
+    const candleRequests = candleRequestsRef.current;
+    const liveRequests = liveRequestsRef.current;
+    const historyRequests = historyRequestsRef.current;
+    const repairRequests = repairRequestsRef.current;
+    const requestTimeoutIds = requestTimeoutIdsRef.current;
     return () => {
-      requestAbortRef.current?.abort();
-      liveRequestAbortRef.current?.abort();
-      historyRequestAbortRef.current?.abort();
-      repairRequestAbortRef.current?.abort();
+      candleRequests.dispose();
+      liveRequests.dispose();
+      historyRequests.dispose();
+      repairRequests.dispose();
+      for (const timeoutId of requestTimeoutIds) {
+        window.clearTimeout(timeoutId);
+      }
+      requestTimeoutIds.clear();
+      if (viewportRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(viewportRestoreFrameRef.current);
+        viewportRestoreFrameRef.current = null;
+      }
       if (liveStreamRenderTimeoutRef.current !== null) {
         window.clearTimeout(liveStreamRenderTimeoutRef.current);
         liveStreamRenderTimeoutRef.current = null;
@@ -2120,17 +2371,18 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       [layer]: !current[layer],
     }));
   }, []);
-  void freshnessTick; // re-render trigger so the data-age text stays current
   const dataAgeMs = lastLoadedAt ? Date.now() - lastLoadedAt.getTime() : null;
   const dataIsStale = servedFromCacheOnly || (dataAgeMs !== null && dataAgeMs > STALE_DATA_AFTER_MS);
-  const freshnessText =
-    dataAgeMs === null ? null : refreshing ? "Refreshing" : `${dataIsStale ? "Stale" : "Updated"} ${formatDataAge(dataAgeMs)}`;
+  const lastRefreshText = dataAgeMs === null ? null : refreshing ? "Refreshing" : `Refreshed ${formatDataAge(dataAgeMs)}`;
   const freshnessTitle = lastLoadedAt
     ? `Closed candles loaded ${lastLoadedFormatter.format(lastLoadedAt)} ET${
         servedFromCacheOnly ? ". Last refresh failed; showing cached data." : ""
       }`
     : undefined;
-  const livePriceText = livePrice !== null ? `${livePricePoint?.isPartial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}` : null;
+  const livePriceText =
+    livePrice !== null
+      ? `${livePriceIsStale ? "Stale" : livePricePoint?.isPartial ? "Live" : "Last"} ${priceFormatter.format(livePrice)}`
+      : null;
   const livePriceTitle = livePricePoint
     ? `Price timestamp ${lastLoadedFormatter.format(new Date(livePricePoint.timestamp))} ET (${
         streamActive ? "streaming" : "polling"
@@ -2155,6 +2407,16 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       ? "Move Buy liq and Sell liq to their computed swing liquidity levels"
       : "No computed liquidity levels are available yet";
   const drawingToolsDisabled = !bot || chartCandles.length === 0;
+  const connectionState =
+    !bot || livePrice === null ? "unavailable" : livePriceIsStale ? "stale" : streamActive ? "live" : "delayed";
+  const latestBarState = latestOhlcCandle ? (latestOhlcCandle.isPartial ? "partial" : "closed") : "none";
+  const keyboardHelpId = `bot-chart-keyboard-help-${bot?.id ?? "none"}`;
+  const chartViewState = resolveBotChartViewState({
+    hasBot: bot !== null,
+    loading,
+    error,
+    candleCount: chartCandles.length,
+  });
   const fitPriceScaleToVisibleRange = useCallback(() => {
     const handles = chartHandlesRef.current;
     if (!handles || chartCandlesRef.current.length === 0) {
@@ -2164,6 +2426,68 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     handles.candleSeries.priceScale().setAutoScale(true);
     setDrawingOverlayRevision((current) => current + 1);
   }, []);
+  const handleChartKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || isEditableEventTarget(event.target)) {
+        return;
+      }
+      const handles = chartHandlesRef.current;
+      if (!handles) {
+        return;
+      }
+
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const chartRows = chartCandlesRef.current;
+        if (chartRows.length === 0) {
+          return;
+        }
+        const currentIndex =
+          hoveredCandleTimeRef.current === null
+            ? chartRows.length - 1
+            : chartRows.findIndex((row) => Number(row.time) === hoveredCandleTimeRef.current);
+        const nextIndex = clampNumber(
+          (currentIndex < 0 ? chartRows.length - 1 : currentIndex) + (event.key === "ArrowLeft" ? -1 : 1),
+          0,
+          chartRows.length - 1,
+        );
+        const nextRow = chartRows[nextIndex];
+        handles.chart.setCrosshairPosition(nextRow.close, nextRow.time, handles.candleSeries);
+        hoveredCandleTimeRef.current = Number(nextRow.time);
+        setHoveredCandle(hoverCandlesByTimeRef.current.get(Number(nextRow.time)) ?? null);
+        handles.chart.timeScale().scrollToPosition(
+          handles.chart.timeScale().scrollPosition() + (event.key === "ArrowLeft" ? 1 : -1),
+          false,
+        );
+        return;
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        handles.chart.timeScale().fitContent();
+        return;
+      }
+      if (event.key === "End") {
+        event.preventDefault();
+        handles.chart.timeScale().scrollToRealTime();
+        const latestRow = chartCandlesRef.current[chartCandlesRef.current.length - 1];
+        if (latestRow) {
+          handles.chart.setCrosshairPosition(latestRow.close, latestRow.time, handles.candleSeries);
+          hoveredCandleTimeRef.current = Number(latestRow.time);
+          setHoveredCandle(hoverCandlesByTimeRef.current.get(Number(latestRow.time)) ?? null);
+        }
+        return;
+      }
+      if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        fitPriceScaleToVisibleRange();
+        return;
+      }
+      if (event.key === "Escape") {
+        setDrawingTool("cursor");
+      }
+    },
+    [fitPriceScaleToVisibleRange],
+  );
   const activeOhlcCandle = hoveredCandle ?? latestOhlcCandle;
   const drawingOverlay = useMemo(
     () =>
@@ -2186,19 +2510,36 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
           <div className="min-w-0">
             <CardTitle>Signal Chart</CardTitle>
             <CardDescription className="mt-1">{subtitle}</CardDescription>
+            <div className="mt-2">
+              <BotChartStatus
+                connection={connectionState}
+                connectionTitle={livePriceError ?? livePriceTitle ?? undefined}
+                barState={latestBarState}
+                lastRefreshText={lastRefreshText}
+                lastRefreshTitle={freshnessTitle}
+                stale={dataIsStale}
+                unrepairedGapCount={unrepairedDataGaps.length}
+                timeframeLabel={chartTimeframe.label}
+                timezoneLabel="ET"
+              />
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 md:justify-end">
             {livePriceText ? (
               <span
-                className="inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border border-cyan-400/30 bg-cyan-400/10 px-2.5 text-xs font-semibold text-cyan-100"
-                title={livePriceTitle}
+                className={`inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border px-2.5 text-xs font-semibold ${
+                  livePriceIsStale || livePriceError
+                    ? "border-app-warning/35 bg-app-warning/10 text-app-warning"
+                    : "border-app-accent/35 bg-app-accent/10 text-app-accent"
+                }`}
+                title={livePriceError ?? livePriceTitle}
               >
-                <span className={`h-2 w-2 rounded-full bg-cyan-300 ${streamActive ? "animate-pulse" : "opacity-50"}`} />
+                <span className={`h-2 w-2 rounded-full bg-current ${streamActive && !livePriceIsStale ? "animate-pulse" : "opacity-50"}`} />
                 {livePriceText}
               </span>
             ) : bot && livePriceError ? (
               <span
-                className="inline-flex h-8 items-center rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 text-xs font-semibold text-amber-200"
+                className="inline-flex h-8 items-center rounded-md border border-app-warning/35 bg-app-warning/10 px-2.5 text-xs font-semibold text-app-warning"
                 title={livePriceError}
               >
                 Live price unavailable
@@ -2206,7 +2547,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
             ) : null}
             {bot && unrepairedDataGaps.length > 0 ? (
               <span
-                className="inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border border-amber-400/30 bg-amber-500/10 pl-2.5 pr-1 text-xs font-semibold text-amber-200"
+                className="inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border border-app-warning/35 bg-app-warning/10 pl-2.5 pr-1 text-xs font-semibold text-app-warning"
                 title={gapChipTitle}
               >
                 {unrepairedDataGaps.length} data gap{unrepairedDataGaps.length === 1 ? "" : "s"}
@@ -2214,22 +2555,10 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                   type="button"
                   onClick={() => void repairDataGaps()}
                   disabled={gapRepairing}
-                  className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-400/25 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded bg-app-warning/15 px-1.5 py-0.5 text-[11px] font-semibold text-app-warning transition hover:bg-app-warning/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {gapRepairing ? "Backfilling" : "Backfill"}
                 </button>
-              </span>
-            ) : null}
-            {freshnessText ? (
-              <span
-                className={`inline-flex h-8 items-center whitespace-nowrap rounded-md border px-2.5 text-xs ${
-                  dataIsStale
-                    ? "border-amber-400/30 bg-amber-500/10 font-semibold text-amber-200"
-                    : "border-slate-800 bg-slate-950/65 text-slate-400"
-                }`}
-                title={freshnessTitle}
-              >
-                {freshnessText}
               </span>
             ) : null}
           </div>
@@ -2243,6 +2572,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                   <button
                     key={option.id}
                     type="button"
+                    aria-pressed={active}
+                    aria-label={`Show ${option.label} candles`}
                     onClick={() => setTimeframeSelection({ key: botTimeframeSelectionKey, id: option.id })}
                     disabled={!bot}
                     className={`min-w-11 border-r border-app-border/80 px-2.5 text-xs font-semibold transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -2296,6 +2627,9 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                   setDrawingDraft(null);
                   setDrawingAnchorPreview(null);
                   setSelectedDrawingId(null);
+                  if (drawingStorageScope) {
+                    clearBotDrawings(drawingStorageScope);
+                  }
                   drawingsRef.current = [];
                   setDrawings([]);
                   chartHandlesRef.current?.chart.applyOptions({ handleScroll: true, handleScale: true });
@@ -2342,7 +2676,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
                 void loadCandles({ silent: true, forceRefresh: true });
                 void loadLivePrice({ force: true });
               }}
-              disabled={!bot || loading || refreshing}
+              disabled={!bot || loading || refreshing || historyLoading || gapRepairing}
             >
               <RefreshIcon />
               <span>{refreshing ? "Refreshing" : "Refresh"}</span>
@@ -2351,7 +2685,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         </div>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-col">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2 text-xs text-slate-400">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-app-border bg-app-bg/35 px-3 py-2 text-xs text-app-muted">
           {showAverageLayers ? (
             <>
               <LegendDot
@@ -2369,6 +2703,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
             </>
           ) : null}
           <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label="VWAP" onClick={() => toggleChartLayer("vwap")} />
+          <LegendDot active={visibleChartLayers.volume} className="bg-app-muted" label="Volume" onClick={() => toggleChartLayer("volume")} />
           <LegendDot
             active={visibleChartLayers.buySignals}
             className="bg-emerald-500"
@@ -2394,35 +2729,28 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
             onClick={() => toggleChartLayer("sellLiquidity")}
           />
         </div>
-        <div className="relative h-[420px] overflow-hidden rounded-xl border border-slate-800 bg-slate-950/45 md:h-[560px]">
-          <div ref={containerRef} className="h-full w-full" />
+        <div className="relative h-[420px] overflow-hidden rounded-xl border border-app-border bg-app-bg/45 md:h-[560px]">
+          <div
+            ref={containerRef}
+            className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent/60"
+            role="region"
+            tabIndex={0}
+            aria-label={`${subtitle} candlestick and volume chart`}
+            aria-describedby={keyboardHelpId}
+            onKeyDown={handleChartKeyDown}
+          />
+          <span id={keyboardHelpId} className="sr-only">
+            Use Left and Right Arrow to inspect adjacent candles and pan, Home to fit all data, End to inspect the latest candle, and F to fit the price scale.
+          </span>
           <OhlcReadout candle={activeOhlcCandle} />
+          <BotEvaluationOverlayStatus model={evaluationOverlayModel} />
           <DrawingOverlay overlay={drawingOverlay} />
-          {loading ? (
-            <div className="absolute inset-0 grid place-items-center bg-slate-950/50 text-sm text-slate-300">
-              Loading candles
-            </div>
-          ) : null}
+          <BotChartStateOverlay state={chartViewState} />
           {historyLoading ? (
-            <span className="absolute bottom-3 left-3 z-30 inline-flex h-7 items-center gap-2 rounded-md border border-slate-700 bg-slate-950/85 px-2.5 text-[11px] font-medium text-slate-300 shadow-lg shadow-slate-950/30 backdrop-blur">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
+            <span className="absolute bottom-3 left-3 z-30 inline-flex h-7 items-center gap-2 rounded-md border border-app-border-strong bg-app-bg/85 px-2.5 text-[11px] font-medium text-app-text-soft shadow-lg shadow-app-bg/30 backdrop-blur" role="status">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-app-accent" />
               Loading older candles
             </span>
-          ) : null}
-          {!loading && !error && bot && chartCandles.length === 0 ? (
-            <div className="absolute inset-0 grid place-items-center text-sm text-slate-400">
-              <span className="block max-w-[18rem] px-4 text-center">No candles returned for this chart window.</span>
-            </div>
-          ) : null}
-          {!bot ? (
-            <div className="absolute inset-0 grid place-items-center text-sm text-slate-400">
-              <span className="block max-w-[18rem] px-4 text-center">Select or save a bot to load its ProjectX candles.</span>
-            </div>
-          ) : null}
-          {error ? (
-            <div className="absolute inset-x-4 top-4 rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-              {error}
-            </div>
           ) : null}
           <button
             type="button"
@@ -2480,6 +2808,7 @@ interface ChartSeriesPoint {
   low?: number;
   close?: number;
   value?: number;
+  color?: string;
 }
 
 /**
@@ -2536,21 +2865,15 @@ function isSameSeriesPoint(left: ChartSeriesPoint, right: ChartSeriesPoint): boo
     left.high === right.high &&
     left.low === right.low &&
     left.close === right.close &&
-    left.value === right.value
+    left.value === right.value &&
+    left.color === right.color
   );
-}
-
-function shouldRefitViewportForExpandedHistory(previousCandleCount: number, currentCandleCount: number): boolean {
-  if (currentCandleCount <= previousCandleCount || previousCandleCount >= BOT_CHART_MIN_BARS) {
-    return false;
-  }
-
-  return currentCandleCount >= BOT_CHART_MIN_BARS || currentCandleCount - previousCandleCount >= HISTORY_EXPANSION_REFIT_BAR_DELTA;
 }
 
 function buildVisibleCandleAutoscaleInfo(
   candles: CandlestickData<UTCTimestamp>[],
   logicalRange: LogicalRange | null,
+  additionalPrices: readonly number[] = [],
 ): AutoscaleInfo | null {
   if (candles.length === 0) {
     return null;
@@ -2572,6 +2895,12 @@ function buildVisibleCandleAutoscaleInfo(
 
     minValue = Math.min(minValue, candle.low);
     maxValue = Math.max(maxValue, candle.high);
+  }
+  for (const price of additionalPrices) {
+    if (Number.isFinite(price)) {
+      minValue = Math.min(minValue, price);
+      maxValue = Math.max(maxValue, price);
+    }
   }
 
   if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
@@ -2636,25 +2965,6 @@ function compactMeridiem(value: string): string {
   return value.replace(/\s(AM|PM)$/, "$1");
 }
 
-function chartPaneYFromPointerEvent(event: PointerEvent, container: HTMLDivElement, chart: IChartApi): number | null {
-  const paneHeight = chart.paneSize().height;
-  if (paneHeight <= 0) {
-    return null;
-  }
-
-  const y = event.clientY - container.getBoundingClientRect().top;
-  if (y < 0 || y > paneHeight) {
-    return null;
-  }
-
-  return y;
-}
-
-function normalizeDraggedLiquidityPrice(price: number): number {
-  const roundedPrice = Math.round(price * 10_000) / 10_000;
-  return Object.is(roundedPrice, -0) ? 0 : roundedPrice;
-}
-
 function buildChartSubtitle(bot: BotConfig, chartTimeframe: ChartTimeframeOption): string {
   const market = bot.symbol ?? bot.contract_id;
   const botTimeframeLabel = formatTimeframeLabel(bot.timeframe_unit, bot.timeframe_unit_number);
@@ -2701,36 +3011,62 @@ function liquidityLevelToPriceLineOptions(level: LiquidityLevel) {
   };
 }
 
+function evaluationLevelToPriceLineOptions(
+  role: EvaluationOverlayLevelRole,
+  price: number,
+  freshness: EvaluationFreshnessStatus,
+) {
+  const colors: Record<EvaluationOverlayLevelRole, { line: string; axis: string }> = {
+    entry: { line: "rgb(56,189,248)", axis: "rgb(2,132,199)" },
+    stop: { line: "rgb(251,113,133)", axis: "rgb(225,29,72)" },
+    target: { line: "rgb(52,211,153)", axis: "rgb(5,150,105)" },
+  };
+  const labels: Record<EvaluationOverlayLevelRole, string> = {
+    entry: "Entry",
+    stop: "Stop",
+    target: "Target",
+  };
+  const color = colors[role];
+  const stale = freshness === "stale";
+  const freshnessPrefix = stale ? "Stale " : freshness === "unknown" ? "Freshness unknown · " : "";
+  return {
+    id: `evaluation-${role}`,
+    price,
+    color: stale ? "rgba(251,191,36,0.8)" : color.line,
+    lineWidth: role === "entry" ? (2 as const) : (1 as const),
+    lineStyle: role === "entry" ? LineStyle.Solid : LineStyle.Dashed,
+    lineVisible: true,
+    axisLabelVisible: true,
+    title: `${freshnessPrefix}${labels[role]}`,
+    axisLabelColor: stale ? "rgb(217,119,6)" : color.axis,
+    axisLabelTextColor: "rgb(255,255,255)",
+  };
+}
+
 function mergeLiveCandle(candles: ProjectXMarketCandle[], liveCandle: ProjectXMarketCandle | null): ProjectXMarketCandle[] {
   if (!liveCandle || !isRenderableMarketCandle(liveCandle)) {
     return candles;
   }
-
-  const byTimestamp = new Map<string, ProjectXMarketCandle>();
-  for (const candle of candles) {
-    if (isRenderableMarketCandle(candle)) {
-      byTimestamp.set(candle.timestamp, candle);
-    }
-  }
-
-  // Overlay rules for the active bucket: a partial live bar wins over a closed
-  // bar only when it was built after that bar was fetched (i.e. a newer tick);
-  // a stale live copy never masks fresher closed data.
-  const existing = byTimestamp.get(liveCandle.timestamp);
-  const liveWins =
-    !existing ||
-    existing.is_partial ||
-    (liveCandle.is_partial && candleFetchedAtMs(liveCandle) >= candleFetchedAtMs(existing));
-  if (liveWins) {
-    byTimestamp.set(liveCandle.timestamp, liveCandle);
-  }
-
-  return Array.from(byTimestamp.values()).sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+  return upsertMarketCandles(candles, [liveCandle]);
 }
 
-function candleFetchedAtMs(candle: ProjectXMarketCandle): number {
-  const ms = candle.fetched_at ? Date.parse(candle.fetched_at) : Number.NaN;
-  return Number.isFinite(ms) ? ms : 0;
+function marketCandleTimes(candles: ProjectXMarketCandle[]): UTCTimestamp[] {
+  return buildCandlestickData(candles).map((candle) => candle.time);
+}
+
+function marketCandlesShareTimestamp(left: ProjectXMarketCandle, right: ProjectXMarketCandle): boolean {
+  const leftMs = Date.parse(left.timestamp);
+  const rightMs = Date.parse(right.timestamp);
+  return Number.isFinite(leftMs) && leftMs === rightMs;
+}
+
+function hasClosedCandleAtTimestamp(candles: readonly ProjectXMarketCandle[], candidate: ProjectXMarketCandle): boolean {
+  return candles.some((candle) => !candle.is_partial && marketCandlesShareTimestamp(candle, candidate));
+}
+
+function marketCandleFetchedAtMs(candle: ProjectXMarketCandle): number {
+  const fetchedAtMs = candle.fetched_at ? Date.parse(candle.fetched_at) : Number.NaN;
+  return Number.isFinite(fetchedAtMs) ? fetchedAtMs : 0;
 }
 
 function getLatestMarketCandle(candles: ProjectXMarketCandle[]): ProjectXMarketCandle | null {
@@ -2746,7 +3082,10 @@ function isRenderableMarketCandle(candle: ProjectXMarketCandle): boolean {
   );
 }
 
-function buildHoverCandleMap(candles: ProjectXMarketCandle[]): Map<number, HoveredCandle> {
+function buildHoverCandleMap(
+  candles: ProjectXMarketCandle[],
+  displayCandles: CandlestickData<UTCTimestamp>[] = buildCandlestickData(candles),
+): Map<number, HoveredCandle> {
   const sourceCandlesByTime = new Map<number, ProjectXMarketCandle>();
   const byTime = new Map<number, HoveredCandle>();
 
@@ -2763,11 +3102,9 @@ function buildHoverCandleMap(candles: ProjectXMarketCandle[]): Map<number, Hover
     sourceCandlesByTime.set(Number(time), candle);
   }
 
-  const chartCandles = buildCandlestickData(candles);
-
-  chartCandles.forEach((candle, index) => {
+  displayCandles.forEach((candle, index) => {
     const sourceCandle = sourceCandlesByTime.get(Number(candle.time)) ?? null;
-    const previousCandle = index > 0 ? chartCandles[index - 1] : null;
+    const previousCandle = index > 0 ? displayCandles[index - 1] : null;
     byTime.set(Number(candle.time), {
       time: candle.time,
       open: candle.open,
@@ -2836,731 +3173,6 @@ function isCrosshairCandlestickData(data: unknown): data is CandlestickData<UTCT
   );
 }
 
-function chartPanePointFromPointerEvent(
-  event: PointerEvent,
-  container: HTMLDivElement,
-  chart: IChartApi,
-  clamp = false,
-): ChartPanePoint | null {
-  const paneSize = chart.paneSize();
-  if (paneSize.width <= 0 || paneSize.height <= 0) {
-    return null;
-  }
-
-  const rect = container.getBoundingClientRect();
-  const rawX = event.clientX - rect.left;
-  const rawY = event.clientY - rect.top;
-  if (!clamp && (rawX < 0 || rawX > paneSize.width || rawY < 0 || rawY > paneSize.height)) {
-    return null;
-  }
-
-  return {
-    x: clampNumber(rawX, 0, paneSize.width),
-    y: clampNumber(rawY, 0, paneSize.height),
-  };
-}
-
-function drawingPointFromPanePoint(
-  panePoint: ChartPanePoint,
-  chart: IChartApi,
-  candleSeries: ISeriesApi<"Candlestick">,
-): DrawingPoint | null {
-  const logical = chart.timeScale().coordinateToLogical(panePoint.x);
-  const price = candleSeries.coordinateToPrice(panePoint.y);
-  if (logical === null || typeof price !== "number" || !Number.isFinite(price)) {
-    return null;
-  }
-
-  return normalizeDrawingPoint({ logical, time: null, price });
-}
-
-function drawingPointToPanePoint(
-  point: DrawingPoint,
-  chart: IChartApi,
-  candleSeries: ISeriesApi<"Candlestick">,
-): ChartPanePoint | null {
-  const x = drawingPointXToPaneCoordinate(point, chart);
-  const y = candleSeries.priceToCoordinate(point.price);
-  if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) {
-    return null;
-  }
-
-  return { x, y };
-}
-
-function drawingPointXToPaneCoordinate(point: DrawingPoint, chart: IChartApi): number | null {
-  if (point.time !== null) {
-    const timeCoordinate = chart.timeScale().timeToCoordinate(point.time);
-    if (timeCoordinate !== null && Number.isFinite(timeCoordinate)) {
-      return timeCoordinate;
-    }
-  }
-
-  const logical = Number(point.logical);
-  if (!Number.isFinite(logical)) {
-    return null;
-  }
-
-  const logicalCoordinate = chart.timeScale().logicalToCoordinate(logical as Logical);
-  return logicalCoordinate !== null && Number.isFinite(logicalCoordinate) ? logicalCoordinate : null;
-}
-
-function snapDrawingPointToCandle(
-  panePoint: ChartPanePoint,
-  chart: IChartApi,
-  candleSeries: ISeriesApi<"Candlestick">,
-  candles: CandlestickData<UTCTimestamp>[],
-): DrawingPoint | null {
-  let closestPoint: DrawingPoint | null = null;
-  let closestDistance = Number.POSITIVE_INFINITY;
-
-  for (const candle of candles) {
-    const x = chart.timeScale().timeToCoordinate(candle.time);
-    if (x === null || !Number.isFinite(x)) {
-      continue;
-    }
-    const logical = chart.timeScale().coordinateToLogical(x);
-    if (logical === null) {
-      continue;
-    }
-
-    for (const price of [candle.high, candle.low, candle.open, candle.close]) {
-      if (!Number.isFinite(price)) {
-        continue;
-      }
-      const y = candleSeries.priceToCoordinate(price);
-      if (y === null || !Number.isFinite(y)) {
-        continue;
-      }
-
-      const distance = Math.hypot(x - panePoint.x, y - panePoint.y);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closestPoint = normalizeDrawingPoint({ logical, time: candle.time, price });
-      }
-    }
-  }
-
-  return closestPoint;
-}
-
-function constrainDrawingEndPoint(kind: DrawingKind, start: ChartPanePoint, end: ChartPanePoint): ChartPanePoint {
-  if (kind === "rectangle") {
-    return constrainRectangleEndPoint(start, end);
-  }
-  return constrainLineEndPoint(start, end);
-}
-
-function constrainLineEndPoint(start: ChartPanePoint, end: ChartPanePoint): ChartPanePoint {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return end;
-  }
-
-  const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
-  return {
-    x: start.x + Math.cos(snappedAngle) * length,
-    y: start.y + Math.sin(snappedAngle) * length,
-  };
-}
-
-function constrainRectangleEndPoint(start: ChartPanePoint, end: ChartPanePoint): ChartPanePoint {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const size = Math.max(Math.abs(dx), Math.abs(dy));
-  return {
-    x: start.x + Math.sign(dx || 1) * size,
-    y: start.y + Math.sign(dy || 1) * size,
-  };
-}
-
-function isMeaningfulDrawing(
-  drawing: DrawingShape,
-  chart: IChartApi,
-  candleSeries: ISeriesApi<"Candlestick">,
-): boolean {
-  const start = drawingPointToPanePoint(drawing.start, chart, candleSeries);
-  const end = drawingPointToPanePoint(drawing.end, chart, candleSeries);
-  if (!start || !end) {
-    return false;
-  }
-
-  if (drawing.kind === "line") {
-    return Math.hypot(end.x - start.x, end.y - start.y) >= MIN_DRAWING_SIZE_PX;
-  }
-
-  return Math.abs(end.x - start.x) >= MIN_DRAWING_SIZE_PX && Math.abs(end.y - start.y) >= MIN_DRAWING_SIZE_PX;
-}
-
-function buildDrawingOverlayState(
-  handles: ChartHandles | null,
-  drawings: DrawingShape[],
-  draft: DrawingDraft | null,
-  anchorPreview: DrawingAnchorPreview | null,
-  selectedDrawingId: string | null,
-  revision: number,
-  livePricePoint: LivePricePoint | null,
-): DrawingOverlayState {
-  void revision;
-  if (!handles) {
-    return { width: 0, height: 0, items: [], anchor: null, livePriceLine: null };
-  }
-
-  const paneSize = handles.chart.paneSize();
-  if (paneSize.width <= 0 || paneSize.height <= 0) {
-    return { width: 0, height: 0, items: [], anchor: null, livePriceLine: null };
-  }
-
-  const items: RenderableDrawing[] = [];
-  for (const drawing of drawings) {
-    const item = toRenderableDrawing(drawing, handles, false, drawing.id === selectedDrawingId);
-    if (item) {
-      items.push(item);
-    }
-  }
-  if (draft) {
-    const item = toRenderableDrawing(draft, handles, true, false);
-    if (item) {
-      items.push(item);
-    }
-  }
-
-  const anchor = anchorPreview ? drawingPointToPanePoint(anchorPreview.point, handles.chart, handles.candleSeries) : null;
-  const livePriceLine = toRenderableLivePriceLine(livePricePoint, handles, paneSize);
-  return { width: paneSize.width, height: paneSize.height, items, anchor, livePriceLine };
-}
-
-function toRenderableLivePriceLine(
-  livePricePoint: LivePricePoint | null,
-  handles: ChartHandles,
-  paneSize: { width: number; height: number },
-): RenderableLivePriceLine | null {
-  if (!livePricePoint || !Number.isFinite(livePricePoint.price)) {
-    return null;
-  }
-
-  const time = toUtcTimestamp(livePricePoint.timestamp);
-  if (time === null) {
-    return null;
-  }
-
-  const x = handles.chart.timeScale().timeToCoordinate(time);
-  const y = handles.candleSeries.priceToCoordinate(livePricePoint.price);
-  if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) {
-    return null;
-  }
-
-  if (x < 0 || x >= paneSize.width - 1 || y < 0 || y > paneSize.height) {
-    return null;
-  }
-
-  return {
-    x1: x,
-    x2: paneSize.width,
-    y,
-  };
-}
-
-function toRenderableDrawing(
-  drawing: DrawingShape,
-  handles: ChartHandles,
-  isDraft: boolean,
-  isSelected: boolean,
-): RenderableDrawing | null {
-  const start = drawingPointToPanePoint(drawing.start, handles.chart, handles.candleSeries);
-  const end = drawingPointToPanePoint(drawing.end, handles.chart, handles.candleSeries);
-  if (!start || !end) {
-    return null;
-  }
-
-  return {
-    id: drawing.id,
-    kind: drawing.kind,
-    isDraft,
-    isSelected,
-    x1: start.x,
-    y1: start.y,
-    x2: end.x,
-    y2: end.y,
-  };
-}
-
-function findDrawingHitTargetAtPanePoint(
-  panePoint: ChartPanePoint,
-  handles: ChartHandles | null,
-  drawings: DrawingShape[],
-): DrawingHitTarget | null {
-  if (!handles) {
-    return null;
-  }
-
-  for (let index = drawings.length - 1; index >= 0; index -= 1) {
-    const item = toRenderableDrawing(drawings[index], handles, false, false);
-    if (!item) {
-      continue;
-    }
-
-    if (Math.hypot(panePoint.x - item.x1, panePoint.y - item.y1) <= DRAWING_ENDPOINT_HIT_RADIUS_PX) {
-      return { id: item.id, mode: "start" };
-    }
-    if (Math.hypot(panePoint.x - item.x2, panePoint.y - item.y2) <= DRAWING_ENDPOINT_HIT_RADIUS_PX) {
-      return { id: item.id, mode: "end" };
-    }
-    const rectangleSideMode = findRectangleSideResizeMode(panePoint, item);
-    if (rectangleSideMode) {
-      return { id: item.id, mode: rectangleSideMode };
-    }
-    if (isPointOnRenderableDrawing(panePoint, item)) {
-      return { id: item.id, mode: "body" };
-    }
-  }
-
-  return null;
-}
-
-function findRectangleSideResizeMode(point: ChartPanePoint, item: RenderableDrawing): Extract<DrawingEditMode, "left" | "right"> | null {
-  if (item.kind !== "rectangle") {
-    return null;
-  }
-
-  const left = Math.min(item.x1, item.x2);
-  const right = Math.max(item.x1, item.x2);
-  const top = Math.min(item.y1, item.y2);
-  const bottom = Math.max(item.y1, item.y2);
-  const middleY = top + (bottom - top) / 2;
-  const leftHandleDistance = Math.hypot(point.x - left, point.y - middleY);
-  const rightHandleDistance = Math.hypot(point.x - right, point.y - middleY);
-
-  if (leftHandleDistance <= DRAWING_ENDPOINT_HIT_RADIUS_PX || rightHandleDistance <= DRAWING_ENDPOINT_HIT_RADIUS_PX) {
-    return leftHandleDistance <= rightHandleDistance ? "left" : "right";
-  }
-
-  if (point.y < top - RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX || point.y > bottom + RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX) {
-    return null;
-  }
-
-  const leftEdgeDistance = Math.abs(point.x - left);
-  const rightEdgeDistance = Math.abs(point.x - right);
-  if (leftEdgeDistance <= RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX || rightEdgeDistance <= RECTANGLE_SIDE_RESIZE_HIT_RADIUS_PX) {
-    return leftEdgeDistance <= rightEdgeDistance ? "left" : "right";
-  }
-
-  return null;
-}
-
-function isPointOnRenderableDrawing(point: ChartPanePoint, item: RenderableDrawing): boolean {
-  if (item.kind === "line") {
-    return distanceToLineSegment(point, { x: item.x1, y: item.y1 }, { x: item.x2, y: item.y2 }) <= DRAWING_HIT_RADIUS_PX;
-  }
-
-  const left = Math.min(item.x1, item.x2);
-  const right = Math.max(item.x1, item.x2);
-  const top = Math.min(item.y1, item.y2);
-  const bottom = Math.max(item.y1, item.y2);
-  const nearVerticalEdge =
-    point.y >= top - DRAWING_HIT_RADIUS_PX &&
-    point.y <= bottom + DRAWING_HIT_RADIUS_PX &&
-    (Math.abs(point.x - left) <= DRAWING_HIT_RADIUS_PX || Math.abs(point.x - right) <= DRAWING_HIT_RADIUS_PX);
-  const nearHorizontalEdge =
-    point.x >= left - DRAWING_HIT_RADIUS_PX &&
-    point.x <= right + DRAWING_HIT_RADIUS_PX &&
-    (Math.abs(point.y - top) <= DRAWING_HIT_RADIUS_PX || Math.abs(point.y - bottom) <= DRAWING_HIT_RADIUS_PX);
-  return nearVerticalEdge || nearHorizontalEdge;
-}
-
-function distanceToLineSegment(point: ChartPanePoint, start: ChartPanePoint, end: ChartPanePoint): number {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) {
-    return Math.hypot(point.x - start.x, point.y - start.y);
-  }
-
-  const segmentPosition = clampNumber(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
-  const projectedX = start.x + segmentPosition * dx;
-  const projectedY = start.y + segmentPosition * dy;
-  return Math.hypot(point.x - projectedX, point.y - projectedY);
-}
-
-function normalizeDrawingPoint(point: DrawingPoint): DrawingPoint {
-  return {
-    logical: point.logical,
-    time: point.time,
-    price: normalizeDraggedLiquidityPrice(point.price),
-  };
-}
-
-function isSameDrawingPoint(left: DrawingPoint, right: DrawingPoint): boolean {
-  return Number(left.logical) === Number(right.logical) && left.price === right.price;
-}
-
-function releaseChartPointerCapture(container: HTMLElement | null, pointerId: number) {
-  if (!container) {
-    return;
-  }
-
-  if (container.hasPointerCapture(pointerId)) {
-    container.releasePointerCapture(pointerId);
-  }
-
-  const eventSurface = container.parentElement;
-  if (eventSurface?.hasPointerCapture(pointerId)) {
-    eventSurface.releasePointerCapture(pointerId);
-  }
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function isEditableEventTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-
-  const tagName = target.tagName.toLowerCase();
-  return tagName === "input" || tagName === "textarea" || tagName === "select" || target.isContentEditable;
-}
-
-function isChartOverlayControlEventTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && target.closest("[data-chart-overlay-control='true']") !== null;
-}
-
-function OhlcReadout({ candle }: { candle: HoveredCandle | null }) {
-  if (!candle) {
-    return null;
-  }
-
-  const valueClassName = candle.close >= candle.open ? "text-emerald-300" : "text-rose-300";
-  const previousClose = candle.previousClose;
-  const change = previousClose !== null ? candle.close - previousClose : null;
-  const changePercent = previousClose !== null && previousClose !== 0 ? ((candle.close - previousClose) / Math.abs(previousClose)) * 100 : null;
-  const changeClassName = change === null || change === 0 ? "text-slate-200" : change > 0 ? "text-emerald-300" : "text-rose-300";
-  const changeText =
-    change === null
-      ? null
-      : changePercent === null
-        ? signedPriceFormatter.format(change)
-        : `${signedPriceFormatter.format(change)} (${signedPercentFormatter.format(changePercent)}%)`;
-
-  return (
-    <div className="pointer-events-none absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-slate-800/80 bg-slate-950/80 px-2.5 py-1.5 text-[11px] font-medium shadow-lg shadow-slate-950/30 backdrop-blur">
-      <OhlcField label="O" value={priceFormatter.format(candle.open)} valueClassName={valueClassName} />
-      <OhlcField label="H" value={priceFormatter.format(candle.high)} valueClassName={valueClassName} />
-      <OhlcField label="L" value={priceFormatter.format(candle.low)} valueClassName={valueClassName} />
-      <OhlcField label="C" value={priceFormatter.format(candle.close)} valueClassName={valueClassName} />
-      {changeText ? <OhlcField value={changeText} valueClassName={changeClassName} /> : null}
-      <OhlcField label="Vol" value={volumeFormatter.format(candle.volume)} />
-      {candle.isPartial ? <span className="text-cyan-200">Live</span> : null}
-    </div>
-  );
-}
-
-function OhlcField({
-  label,
-  value,
-  valueClassName = "text-slate-200",
-}: {
-  label?: string;
-  value: string;
-  valueClassName?: string;
-}) {
-  return (
-    <span className="inline-flex items-baseline gap-1 tabular-nums">
-      {label ? <span className="text-slate-500">{label}</span> : null}
-      <span className={valueClassName}>{value}</span>
-    </span>
-  );
-}
-
-function DrawingOverlay({ overlay }: { overlay: DrawingOverlayState }) {
-  if (overlay.width <= 0 || overlay.height <= 0 || (overlay.items.length === 0 && !overlay.anchor && !overlay.livePriceLine)) {
-    return null;
-  }
-
-  return (
-    <svg
-      aria-hidden="true"
-      className="pointer-events-none absolute left-0 top-0"
-      width={overlay.width}
-      height={overlay.height}
-      viewBox={`0 0 ${overlay.width} ${overlay.height}`}
-    >
-      {overlay.livePriceLine ? <LivePriceOverlayLine line={overlay.livePriceLine} /> : null}
-      {overlay.items.map((item) => (
-        <DrawingOverlayItem key={`${item.id}:${item.isDraft ? "draft" : "final"}`} item={item} />
-      ))}
-      {overlay.anchor ? <DrawingAnchorPreviewMark anchor={overlay.anchor} /> : null}
-    </svg>
-  );
-}
-
-function LivePriceOverlayLine({ line }: { line: RenderableLivePriceLine }) {
-  return (
-    <line
-      x1={line.x1}
-      y1={line.y}
-      x2={line.x2}
-      y2={line.y}
-      stroke="rgb(56,189,248)"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeDasharray="6 5"
-      vectorEffect="non-scaling-stroke"
-    />
-  );
-}
-
-function DrawingOverlayItem({ item }: { item: RenderableDrawing }) {
-  const stroke = item.isDraft ? "rgba(125,211,252,0.85)" : item.isSelected ? "rgb(34,211,238)" : "rgba(226,232,240,0.88)";
-  const strokeDasharray = item.isDraft ? "6 4" : undefined;
-  const strokeWidth = item.isSelected ? "3" : "2";
-
-  if (item.kind === "rectangle") {
-    const x = Math.min(item.x1, item.x2);
-    const y = Math.min(item.y1, item.y2);
-    const width = Math.abs(item.x2 - item.x1);
-    const height = Math.abs(item.y2 - item.y1);
-    const middleY = y + height / 2;
-    return (
-      <g>
-        <rect
-          x={x}
-          y={y}
-          width={width}
-          height={height}
-          rx="2"
-          fill={item.isDraft ? "rgba(56,189,248,0.08)" : "rgba(148,163,184,0.08)"}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-          strokeDasharray={strokeDasharray}
-          vectorEffect="non-scaling-stroke"
-        />
-        <DrawingEndpoint x={item.x1} y={item.y1} draft={item.isDraft} selected={item.isSelected} />
-        <DrawingEndpoint x={item.x2} y={item.y2} draft={item.isDraft} selected={item.isSelected} />
-        <DrawingEndpoint x={x} y={middleY} draft={item.isDraft} selected={item.isSelected} />
-        <DrawingEndpoint x={x + width} y={middleY} draft={item.isDraft} selected={item.isSelected} />
-      </g>
-    );
-  }
-
-  return (
-    <g>
-      <line
-        x1={item.x1}
-        y1={item.y1}
-        x2={item.x2}
-        y2={item.y2}
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-        strokeDasharray={strokeDasharray}
-        vectorEffect="non-scaling-stroke"
-      />
-      <DrawingEndpoint x={item.x1} y={item.y1} draft={item.isDraft} selected={item.isSelected} />
-      <DrawingEndpoint x={item.x2} y={item.y2} draft={item.isDraft} selected={item.isSelected} />
-    </g>
-  );
-}
-
-function DrawingAnchorPreviewMark({ anchor }: { anchor: RenderableDrawingAnchor }) {
-  return (
-    <g>
-      <circle
-        cx={anchor.x}
-        cy={anchor.y}
-        r="5"
-        fill="rgba(34,211,238,0.18)"
-        stroke="rgb(125,211,252)"
-        strokeWidth="2"
-        vectorEffect="non-scaling-stroke"
-      />
-      <path
-        d={`M ${anchor.x - 8} ${anchor.y} L ${anchor.x + 8} ${anchor.y} M ${anchor.x} ${anchor.y - 8} L ${anchor.x} ${anchor.y + 8}`}
-        stroke="rgba(240,249,255,0.9)"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        vectorEffect="non-scaling-stroke"
-      />
-    </g>
-  );
-}
-
-function DrawingEndpoint({ x, y, draft, selected }: { x: number; y: number; draft: boolean; selected: boolean }) {
-  return (
-    <circle
-      cx={x}
-      cy={y}
-      r={selected ? "4" : "3"}
-      fill={draft || selected ? "rgb(125,211,252)" : "rgb(226,232,240)"}
-      stroke="rgb(15,23,42)"
-      strokeWidth="1.5"
-      vectorEffect="non-scaling-stroke"
-    />
-  );
-}
-
-function ChartToolButton({
-  active = false,
-  disabled = false,
-  label,
-  onClick,
-  children,
-}: {
-  active?: boolean;
-  disabled?: boolean;
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-pressed={active}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={`grid h-8 w-9 place-items-center border-r border-app-border/80 text-app-text-soft transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45 ${
-        active
-          ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]"
-          : "hover:bg-app-accent/10 hover:text-app-text"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function CursorToolIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M6 3l11 10-6 1.5L8 21 6 3z" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function LineToolIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M5 18 19 6" strokeLinecap="round" />
-      <circle cx="5" cy="18" r="1.7" fill="currentColor" stroke="none" />
-      <circle cx="19" cy="6" r="1.7" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function RectangleToolIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <rect x="5" y="6" width="14" height="12" rx="1.5" />
-    </svg>
-  );
-}
-
-function ClearDrawingsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M6 7h12" strokeLinecap="round" />
-      <path d="M9 7V5h6v2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M9 10v7" strokeLinecap="round" />
-      <path d="M15 10v7" strokeLinecap="round" />
-      <path d="M8 7l1 13h6l1-13" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function FitChartIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M8 4H4v4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 4l5 5" strokeLinecap="round" />
-      <path d="M16 4h4v4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20 4l-5 5" strokeLinecap="round" />
-      <path d="M8 20H4v-4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 20l5-5" strokeLinecap="round" />
-      <path d="M16 20h4v-4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20 20l-5-5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ComputeLiquidityIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M5 7h14" strokeLinecap="round" />
-      <path d="M5 17h14" strokeLinecap="round" />
-      <path d="M8 4v6" strokeLinecap="round" />
-      <path d="M16 14v6" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M20 11a8 8 0 0 0-14.4-4.8L4 8" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 4v4h4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 13a8 8 0 0 0 14.4 4.8L20 16" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20 20v-4h-4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function LegendDot({
-  active,
-  className,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  className: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${
-        active ? "text-slate-300 hover:bg-slate-900/80" : "text-slate-600 hover:bg-slate-900/70 hover:text-slate-400"
-      }`}
-    >
-      <span className={`h-2.5 w-2.5 rounded-full ${className} ${active ? "" : "opacity-25 grayscale"}`} />
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function LegendLine({
-  active,
-  className,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  className: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${
-        active ? "text-slate-300 hover:bg-slate-900/80" : "text-slate-600 hover:bg-slate-900/70 hover:text-slate-400"
-      }`}
-    >
-      <span className={`h-0 w-5 border-t-2 border-dotted ${className} ${active ? "" : "opacity-25 grayscale"}`} />
-      <span>{label}</span>
-    </button>
-  );
-}
-
 function formatDataAge(ageMs: number): string {
   const seconds = Math.max(0, Math.round(ageMs / 1000));
   if (seconds < 60) {
@@ -3572,16 +3184,6 @@ function formatDataAge(ageMs: number): string {
   }
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m ago`;
-}
-
-function HistoryIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M4 5v5h5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4.6 14a8 8 0 1 0 1.7-7.4L4 9" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12 8v4l3 2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
 }
 
 function isAbortError(value: unknown): boolean {

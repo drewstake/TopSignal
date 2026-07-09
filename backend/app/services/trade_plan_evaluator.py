@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timezone
+from decimal import Decimal, ROUND_HALF_UP
+from math import isclose, isfinite
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from .instruments import DEFAULT_INSTRUMENT_SPECS, normalize_symbol_key
+
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _EPSILON = 1e-9
+TRADE_PLAN_SCORING_MODEL_VERSION = "trade_plan_v2.0.0"
 
 TradeDirection = str
 TrendDirection = str
@@ -28,6 +33,9 @@ class TradePlan:
     current_day_pnl: float | None = None
     max_daily_loss: float | None = None
     trailing_drawdown: float | None = None
+    tick_size: float | None = None
+    tick_value: float | None = None
+    point_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -52,10 +60,10 @@ class MarketContext:
     ma200_15m: float | None = None
     ma200_1h: float | None = None
     ma200_4h: float | None = None
-    trend5m: TrendDirection = "neutral"
-    trend15m: TrendDirection = "neutral"
-    trend1h: TrendDirection = "neutral"
-    trend4h: TrendDirection = "neutral"
+    trend5m: TrendDirection = "unknown"
+    trend15m: TrendDirection = "unknown"
+    trend1h: TrendDirection = "unknown"
+    trend4h: TrendDirection = "unknown"
     atr1m: float | None = None
     atr5m: float | None = None
     atr15m: float | None = None
@@ -68,7 +76,7 @@ class MarketContext:
     cumulative_delta: float | None = None
     time_of_day: TimeOfDay = "overnight"
     market_regime: MarketRegime = "unknown"
-    news_risk: NewsRisk = "low"
+    news_risk: NewsRisk = "unknown"
     es_trend: TrendDirection | None = None
     nq_trend: TrendDirection | None = None
     vix_trend: TrendDirection | None = None
@@ -79,10 +87,24 @@ class MarketContext:
 
 @dataclass(frozen=True)
 class TradePlanFeatures:
+    geometry_valid: bool
+    geometry_issues: list[str]
+    tick_size: float | None
+    tick_value: float | None
+    point_value: float | None
+    normalized_entry_price: float
+    normalized_stop_loss: float
+    normalized_take_profit: float
+    prices_normalized_to_tick: bool
     risk_points: float
     reward_points: float
+    risk_ticks: float | None
+    reward_ticks: float | None
     risk_reward_ratio: float | None
+    r_multiple: float | None
     breakeven_win_rate: float | None
+    estimated_dollar_risk: float | None
+    estimated_dollar_reward: float | None
     is_long: bool
     is_short: bool
     price_above_vwap: bool | None
@@ -112,15 +134,35 @@ class TradePlanFeatures:
     has_room_to_target: bool
     bad_location: bool
     max_loss_risk_percent: float | None
+    account_risk_percent: float | None
+    projected_day_pnl: float | None
+    daily_loss_remaining_before_trade: float | None
+    daily_loss_remaining_after_trade: float | None
     daily_loss_danger: bool | None
+    drawdown_risk_percent: float | None
+    drawdown_danger: bool | None
     should_reduce_size: bool | None
 
     def to_payload(self) -> dict[str, Any]:
         return {
+            "geometry_valid": self.geometry_valid,
+            "geometry_issues": self.geometry_issues,
+            "tick_size": _round_optional(self.tick_size),
+            "tick_value": _round_optional(self.tick_value),
+            "point_value": _round_optional(self.point_value),
+            "normalized_entry_price": _round_optional(self.normalized_entry_price),
+            "normalized_stop_loss": _round_optional(self.normalized_stop_loss),
+            "normalized_take_profit": _round_optional(self.normalized_take_profit),
+            "prices_normalized_to_tick": self.prices_normalized_to_tick,
             "risk_points": _round_optional(self.risk_points),
             "reward_points": _round_optional(self.reward_points),
+            "risk_ticks": _round_optional(self.risk_ticks),
+            "reward_ticks": _round_optional(self.reward_ticks),
             "risk_reward_ratio": _round_optional(self.risk_reward_ratio),
+            "r_multiple": _round_optional(self.r_multiple),
             "breakeven_win_rate": _round_optional(self.breakeven_win_rate),
+            "estimated_dollar_risk": _round_optional(self.estimated_dollar_risk),
+            "estimated_dollar_reward": _round_optional(self.estimated_dollar_reward),
             "is_long": self.is_long,
             "is_short": self.is_short,
             "price_above_vwap": self.price_above_vwap,
@@ -150,7 +192,13 @@ class TradePlanFeatures:
             "has_room_to_target": self.has_room_to_target,
             "bad_location": self.bad_location,
             "max_loss_risk_percent": _round_optional(self.max_loss_risk_percent),
+            "account_risk_percent": _round_optional(self.account_risk_percent),
+            "projected_day_pnl": _round_optional(self.projected_day_pnl),
+            "daily_loss_remaining_before_trade": _round_optional(self.daily_loss_remaining_before_trade),
+            "daily_loss_remaining_after_trade": _round_optional(self.daily_loss_remaining_after_trade),
             "daily_loss_danger": self.daily_loss_danger,
+            "drawdown_risk_percent": _round_optional(self.drawdown_risk_percent),
+            "drawdown_danger": self.drawdown_danger,
             "should_reduce_size": self.should_reduce_size,
         }
 
@@ -164,6 +212,17 @@ class ScoringWeights:
     volatility_atr_fit: int = 10
     time_regime: int = 10
     account_news_penalty: int = 5
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "risk_reward": self.risk_reward,
+            "vwap_location": self.vwap_location,
+            "multi_timeframe_trend": self.multi_timeframe_trend,
+            "stop_target_quality": self.stop_target_quality,
+            "volatility_atr_fit": self.volatility_atr_fit,
+            "time_regime": self.time_regime,
+            "account_news_penalty": self.account_news_penalty,
+        }
 
 
 @dataclass(frozen=True)
@@ -180,8 +239,60 @@ class TradeScoringConfig:
 
 
 @dataclass(frozen=True)
+class ScorePenalty:
+    code: str
+    category: str | None
+    points_deducted: int
+    reason: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "category": self.category,
+            "points_deducted": self.points_deducted,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class ScoreCap:
+    code: str
+    maximum: int
+    reason: str
+    score_before: int
+    score_after: int
+    applied: bool
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "maximum": self.maximum,
+            "reason": self.reason,
+            "score_before": self.score_before,
+            "score_after": self.score_after,
+            "applied": self.applied,
+        }
+
+
+@dataclass(frozen=True)
+class EvaluationDimension:
+    awarded_points: int
+    maximum_points: int
+
+    def to_payload(self) -> dict[str, int]:
+        score_percent = int(round((self.awarded_points / self.maximum_points) * 100))
+        return {
+            "awarded_points": self.awarded_points,
+            "maximum_points": self.maximum_points,
+            "score_percent": max(0, min(100, score_percent)),
+        }
+
+
+@dataclass(frozen=True)
 class TradeEvaluationResult:
+    scoring_model_version: str
     total_score: int
+    score_before_caps: int
     grade: str
     decision: str
     confidence: str
@@ -192,11 +303,22 @@ class TradeEvaluationResult:
     suggested_adjustments: list[str]
     features: TradePlanFeatures
     category_scores: dict[str, int]
+    category_maximums: dict[str, int]
+    penalties: list[ScorePenalty]
+    caps: list[ScoreCap]
+    missing_inputs: list[str]
+    top_positive_drivers: list[str]
+    top_negative_drivers: list[str]
+    evaluation_dimensions: dict[str, EvaluationDimension]
+    data_confidence: str
+    data_confidence_score: int
 
     def to_payload(self) -> dict[str, Any]:
         return {
+            "scoring_model_version": self.scoring_model_version,
             "total_score": self.total_score,
             "score": self.total_score,
+            "score_before_caps": self.score_before_caps,
             "grade": self.grade,
             "decision": self.decision,
             "confidence": self.confidence,
@@ -207,6 +329,18 @@ class TradeEvaluationResult:
             "suggested_adjustments": self.suggested_adjustments,
             "features": self.features.to_payload(),
             "category_scores": self.category_scores,
+            "category_maximums": self.category_maximums,
+            "category_awarded_points": self.category_scores,
+            "penalties": [penalty.to_payload() for penalty in self.penalties],
+            "caps": [cap.to_payload() for cap in self.caps],
+            "missing_inputs": self.missing_inputs,
+            "top_positive_drivers": self.top_positive_drivers,
+            "top_negative_drivers": self.top_negative_drivers,
+            "evaluation_dimensions": {
+                name: dimension.to_payload() for name, dimension in self.evaluation_dimensions.items()
+            },
+            "data_confidence": self.data_confidence,
+            "data_confidence_score": self.data_confidence_score,
         }
 
 
@@ -218,17 +352,58 @@ class FeatureCalculator:
         direction = _normalize_direction(plan.direction)
         is_long = direction == "long"
         is_short = direction == "short"
-        risk_points = _directional_risk(plan, is_long=is_long)
-        reward_points = _directional_reward(plan, is_long=is_long)
-        risk_reward_ratio = reward_points / risk_points if risk_points > _EPSILON else None
+        tick_size, tick_value, point_value = _resolve_instrument_values(plan)
+        normalized_entry_price = _round_to_tick(plan.entry_price, tick_size)
+        normalized_stop_loss = _round_to_tick(plan.stop_loss, tick_size)
+        normalized_take_profit = _round_to_tick(plan.take_profit, tick_size)
+        prices_normalized_to_tick = any(
+            abs(normalized - original) > _EPSILON
+            for normalized, original in [
+                (normalized_entry_price, float(plan.entry_price)),
+                (normalized_stop_loss, float(plan.stop_loss)),
+                (normalized_take_profit, float(plan.take_profit)),
+            ]
+        )
+        evaluation_plan = replace(
+            plan,
+            entry_price=normalized_entry_price,
+            stop_loss=normalized_stop_loss,
+            take_profit=normalized_take_profit,
+            tick_size=tick_size,
+            tick_value=tick_value,
+            point_value=point_value,
+        )
+        geometry_issues = _geometry_issues(evaluation_plan, is_long=is_long)
+        geometry_valid = not geometry_issues
+        raw_risk_points = _directional_risk(evaluation_plan, is_long=is_long)
+        raw_reward_points = _directional_reward(evaluation_plan, is_long=is_long)
+        risk_points = max(0.0, raw_risk_points)
+        reward_points = max(0.0, raw_reward_points)
+        risk_reward_ratio = (
+            reward_points / risk_points
+            if risk_points > _EPSILON and reward_points > _EPSILON
+            else None
+        )
         breakeven_win_rate = 100 / (1 + risk_reward_ratio) if risk_reward_ratio and risk_reward_ratio > 0 else None
+        risk_ticks = risk_points / tick_size if tick_size is not None else None
+        reward_ticks = reward_points / tick_size if tick_size is not None else None
+        estimated_dollar_risk = (
+            risk_points * float(plan.quantity) * point_value
+            if risk_points > _EPSILON and point_value is not None
+            else None
+        )
+        estimated_dollar_reward = (
+            reward_points * float(plan.quantity) * point_value
+            if reward_points > _EPSILON and point_value is not None
+            else None
+        )
         atr = _positive_float(context.atr5m)
-        level_threshold = _level_threshold(plan.entry_price, atr, self.config)
+        level_threshold = _level_threshold(evaluation_plan.entry_price, atr, self.config)
 
         vwap = _positive_or_zero_float(context.vwap)
-        price_above_vwap = plan.entry_price > vwap if vwap is not None else None
-        price_below_vwap = plan.entry_price < vwap if vwap is not None else None
-        entry_distance_from_vwap_points = plan.entry_price - vwap if vwap is not None else None
+        price_above_vwap = evaluation_plan.entry_price > vwap if vwap is not None else None
+        price_below_vwap = evaluation_plan.entry_price < vwap if vwap is not None else None
+        entry_distance_from_vwap_points = evaluation_plan.entry_price - vwap if vwap is not None else None
         entry_distance_from_vwap_atr = (
             entry_distance_from_vwap_points / atr
             if entry_distance_from_vwap_points is not None and atr is not None and atr > _EPSILON
@@ -239,16 +414,16 @@ class FeatureCalculator:
             vwap_supports_direction = price_above_vwap if is_long else price_below_vwap
 
         distance_from_high_of_day = (
-            context.high_of_day - plan.entry_price if context.high_of_day is not None else None
+            context.high_of_day - evaluation_plan.entry_price if context.high_of_day is not None else None
         )
         distance_from_low_of_day = (
-            plan.entry_price - context.low_of_day if context.low_of_day is not None else None
+            evaluation_plan.entry_price - context.low_of_day if context.low_of_day is not None else None
         )
         distance_from_previous_day_high = (
-            context.previous_day_high - plan.entry_price if context.previous_day_high is not None else None
+            context.previous_day_high - evaluation_plan.entry_price if context.previous_day_high is not None else None
         )
         distance_from_previous_day_low = (
-            plan.entry_price - context.previous_day_low if context.previous_day_low is not None else None
+            evaluation_plan.entry_price - context.previous_day_low if context.previous_day_low is not None else None
         )
         entry_near_high_of_day = (
             is_long
@@ -263,13 +438,13 @@ class FeatureCalculator:
         take_profit_blocked_by_high_of_day = (
             is_long
             and context.high_of_day is not None
-            and plan.entry_price < context.high_of_day < plan.take_profit
+            and evaluation_plan.entry_price < context.high_of_day < evaluation_plan.take_profit
             and context.market_regime not in {"breakout", "trend"}
         )
         take_profit_blocked_by_low_of_day = (
             is_short
             and context.low_of_day is not None
-            and plan.take_profit < context.low_of_day < plan.entry_price
+            and evaluation_plan.take_profit < context.low_of_day < evaluation_plan.entry_price
             and context.market_regime not in {"breakout", "trend"}
         )
 
@@ -284,9 +459,9 @@ class FeatureCalculator:
         )
 
         trend_alignment_score, aligned_timeframes, conflicting_timeframes, higher_timeframe_conflict = (
-            _trend_alignment(plan=plan, context=context)
+            _trend_alignment(plan=evaluation_plan, context=context)
         )
-        stop_behind_structure = _stop_behind_structure(plan=plan, context=context, is_long=is_long)
+        stop_behind_structure = _stop_behind_structure(plan=evaluation_plan, context=context, is_long=is_long)
         entry_chasing = _entry_chasing(
             is_long=is_long,
             entry_distance_from_vwap_atr=entry_distance_from_vwap_atr,
@@ -294,7 +469,7 @@ class FeatureCalculator:
             entry_near_low_of_day=entry_near_low_of_day,
             config=self.config,
         )
-        has_room_to_target = _has_room_to_target(plan=plan, context=context, is_long=is_long)
+        has_room_to_target = _has_room_to_target(plan=evaluation_plan, context=context, is_long=is_long)
         bad_location = _bad_location(
             is_long=is_long,
             context=context,
@@ -306,25 +481,58 @@ class FeatureCalculator:
             take_profit_blocked_by_low_of_day=take_profit_blocked_by_low_of_day,
         )
 
-        max_loss = risk_points * max(float(plan.quantity), 0.0) if risk_points > 0 else 0.0
-        max_loss_risk_percent = (
-            (max_loss / float(plan.account_balance)) * 100
-            if plan.account_balance is not None and float(plan.account_balance) > _EPSILON and max_loss > 0
+        account_risk_percent = (
+            (estimated_dollar_risk / float(plan.account_balance)) * 100
+            if plan.account_balance is not None
+            and float(plan.account_balance) > _EPSILON
+            and estimated_dollar_risk is not None
             else None
         )
-        daily_loss_danger = _daily_loss_danger(plan=plan, max_loss=max_loss)
+        (
+            projected_day_pnl,
+            daily_loss_remaining_before_trade,
+            daily_loss_remaining_after_trade,
+            daily_loss_danger,
+        ) = _daily_loss_context(plan=plan, estimated_dollar_risk=estimated_dollar_risk)
+        drawdown_risk_percent, drawdown_danger = _drawdown_context(
+            plan=plan,
+            estimated_dollar_risk=estimated_dollar_risk,
+        )
+        sizing_context_available = any(
+            value is not None for value in [account_risk_percent, daily_loss_danger, drawdown_danger]
+        )
         should_reduce_size = (
-            True
-            if daily_loss_danger is True
-            or (max_loss_risk_percent is not None and max_loss_risk_percent > self.config.high_risk_percent)
+            (
+                daily_loss_danger is True
+                or drawdown_danger is True
+                or (
+                    account_risk_percent is not None
+                    and account_risk_percent > self.config.high_risk_percent
+                )
+            )
+            if sizing_context_available
             else None
         )
 
         return TradePlanFeatures(
-            risk_points=max(0.0, risk_points),
-            reward_points=max(0.0, reward_points),
+            geometry_valid=geometry_valid,
+            geometry_issues=geometry_issues,
+            tick_size=tick_size,
+            tick_value=tick_value,
+            point_value=point_value,
+            normalized_entry_price=normalized_entry_price,
+            normalized_stop_loss=normalized_stop_loss,
+            normalized_take_profit=normalized_take_profit,
+            prices_normalized_to_tick=prices_normalized_to_tick,
+            risk_points=risk_points,
+            reward_points=reward_points,
+            risk_ticks=risk_ticks,
+            reward_ticks=reward_ticks,
             risk_reward_ratio=risk_reward_ratio,
+            r_multiple=risk_reward_ratio,
             breakeven_win_rate=breakeven_win_rate,
+            estimated_dollar_risk=estimated_dollar_risk,
+            estimated_dollar_reward=estimated_dollar_reward,
             is_long=is_long,
             is_short=is_short,
             price_above_vwap=price_above_vwap,
@@ -353,8 +561,14 @@ class FeatureCalculator:
             entry_chasing=entry_chasing,
             has_room_to_target=has_room_to_target,
             bad_location=bad_location,
-            max_loss_risk_percent=max_loss_risk_percent,
+            max_loss_risk_percent=account_risk_percent,
+            account_risk_percent=account_risk_percent,
+            projected_day_pnl=projected_day_pnl,
+            daily_loss_remaining_before_trade=daily_loss_remaining_before_trade,
+            daily_loss_remaining_after_trade=daily_loss_remaining_after_trade,
             daily_loss_danger=daily_loss_danger,
+            drawdown_risk_percent=drawdown_risk_percent,
+            drawdown_danger=drawdown_danger,
             should_reduce_size=should_reduce_size,
         )
 
@@ -364,6 +578,7 @@ class TradeScoringEngine:
         self.config = config or TradeScoringConfig()
 
     def score(self, plan: TradePlan, context: MarketContext, features: TradePlanFeatures) -> TradeEvaluationResult:
+        category_maximums = self.config.weights.to_dict()
         category_scores = {
             "risk_reward": self._score_risk_reward(features),
             "vwap_location": self._score_vwap_location(context, features),
@@ -373,15 +588,35 @@ class TradeScoringEngine:
             "time_regime": self._score_time_regime(context),
             "account_news_penalty": self._score_account_news(context, features),
         }
-        total_score = max(0, min(100, int(round(sum(category_scores.values())))))
-        total_score = _apply_score_caps(total_score, context=context, features=features)
+        score_before_caps = max(0, min(100, int(round(sum(category_scores.values())))))
+        missing_inputs = _missing_inputs(plan=plan, context=context, features=features)
+        data_confidence_score, data_confidence = _data_confidence(missing_inputs)
+        total_score, caps = _apply_score_caps(
+            score_before_caps,
+            context=context,
+            features=features,
+            data_confidence=data_confidence,
+        )
         warnings = self._warnings(plan=plan, context=context, features=features)
         positives = self._positives(context=context, features=features)
         reasons = self._reasons(context=context, features=features, category_scores=category_scores)
         suggested_adjustments = self._suggested_adjustments(context=context, features=features)
+        penalties = _category_penalties(category_scores, category_maximums)
+        dimensions = _evaluation_dimensions(category_scores, category_maximums)
+        top_positive_drivers, top_negative_drivers = _top_score_drivers(
+            positives=positives,
+            warnings=warnings,
+            penalties=penalties,
+            caps=caps,
+        )
         grade = _grade_for_score(total_score)
         decision = _decision_for_score(total_score, features=features, context=context)
-        confidence = _confidence_for_score(total_score, warnings=warnings, features=features)
+        confidence = _confidence_for_score(
+            total_score,
+            warnings=warnings,
+            features=features,
+            data_confidence=data_confidence,
+        )
         summary = _summary(
             plan=plan,
             context=context,
@@ -392,7 +627,9 @@ class TradeScoringEngine:
         )
 
         return TradeEvaluationResult(
+            scoring_model_version=TRADE_PLAN_SCORING_MODEL_VERSION,
             total_score=total_score,
+            score_before_caps=score_before_caps,
             grade=grade,
             decision=decision,
             confidence=confidence,
@@ -403,6 +640,15 @@ class TradeScoringEngine:
             suggested_adjustments=suggested_adjustments,
             features=features,
             category_scores=category_scores,
+            category_maximums=category_maximums,
+            penalties=penalties,
+            caps=caps,
+            missing_inputs=missing_inputs,
+            top_positive_drivers=top_positive_drivers,
+            top_negative_drivers=top_negative_drivers,
+            evaluation_dimensions=dimensions,
+            data_confidence=data_confidence,
+            data_confidence_score=data_confidence_score,
         )
 
     def _score_risk_reward(self, features: TradePlanFeatures) -> int:
@@ -499,11 +745,25 @@ class TradeScoringEngine:
     def _score_account_news(self, context: MarketContext, features: TradePlanFeatures) -> int:
         weight = self.config.weights.account_news_penalty
         score = weight
+        if context.news_risk not in {"low", "medium", "high"}:
+            score -= 1
+        account_context_known = any(
+            value is not None
+            for value in [
+                features.account_risk_percent,
+                features.daily_loss_danger,
+                features.drawdown_danger,
+            ]
+        )
+        if not account_context_known:
+            score -= 1
         if context.news_risk == "high":
             score -= 5
         elif context.news_risk == "medium":
             score -= 2
         if features.daily_loss_danger:
+            score -= 4
+        elif features.drawdown_danger:
             score -= 4
         elif features.should_reduce_size:
             score -= 2
@@ -511,10 +771,13 @@ class TradeScoringEngine:
 
     def _warnings(self, *, plan: TradePlan, context: MarketContext, features: TradePlanFeatures) -> list[str]:
         warnings: list[str] = []
+        warnings.extend(features.geometry_issues)
         if features.risk_points <= 0:
             warnings.append("Stop loss is not on the correct side of the entry.")
         if features.reward_points <= 0:
             warnings.append("Take profit is not on the reward side of the entry.")
+        if features.prices_normalized_to_tick:
+            warnings.append("Entry, stop, or target was normalized to the instrument tick size before evaluation.")
         if features.risk_reward_ratio is not None and features.risk_reward_ratio < 1:
             warnings.append(f"Risk/reward is only {features.risk_reward_ratio:.2f}R, which is below 1.0R.")
         if features.vwap_supports_direction is False:
@@ -544,6 +807,8 @@ class TradeScoringEngine:
             warnings.append("News risk is medium; size and timing should be more conservative.")
         if features.daily_loss_danger:
             warnings.append("The planned loss could push the account near or through the daily loss limit.")
+        elif features.drawdown_danger:
+            warnings.append("The planned loss would consume at least 90% of the provided trailing drawdown allowance.")
         elif features.should_reduce_size:
             warnings.append("The planned loss is large relative to account risk; consider reducing size.")
         return _dedupe(warnings)
@@ -616,7 +881,7 @@ class TradeScoringEngine:
             suggestions.append("Avoid trend entries in chop; wait for range edges or a clean regime shift.")
         if context.news_risk == "high":
             suggestions.append("Stand aside until the news window passes and spreads/volatility normalize.")
-        if features.daily_loss_danger or features.should_reduce_size:
+        if features.daily_loss_danger or features.drawdown_danger or features.should_reduce_size:
             suggestions.append("Reduce size or stop trading for the session if account risk limits are close.")
         return _dedupe(suggestions)
 
@@ -641,7 +906,23 @@ class TradePlanEvaluator:
             current_day_pnl=plan.current_day_pnl,
             max_daily_loss=plan.max_daily_loss,
             trailing_drawdown=plan.trailing_drawdown,
+            tick_size=plan.tick_size,
+            tick_value=plan.tick_value,
+            point_value=plan.point_value,
         )
+        tick_size, _, _ = _resolve_instrument_values(normalized_plan)
+        geometry_plan = replace(
+            normalized_plan,
+            entry_price=_round_to_tick(normalized_plan.entry_price, tick_size),
+            stop_loss=_round_to_tick(normalized_plan.stop_loss, tick_size),
+            take_profit=_round_to_tick(normalized_plan.take_profit, tick_size),
+        )
+        geometry_issues = _geometry_issues(
+            geometry_plan,
+            is_long=normalized_plan.direction == "long",
+        )
+        if geometry_issues:
+            raise ValueError(f"Invalid trade geometry: {' '.join(geometry_issues)}")
         features = self.feature_calculator.calculate(normalized_plan, context)
         return self.scoring_engine.score(normalized_plan, context, features)
 
@@ -652,7 +933,7 @@ def build_market_context_from_ohlcv(
     current_price: float | None = None,
     timestamp: datetime | None = None,
     market_regime: MarketRegime = "unknown",
-    news_risk: NewsRisk = "low",
+    news_risk: NewsRisk = "unknown",
 ) -> MarketContext | None:
     rows = _normalize_candles(candles)
     if not rows:
@@ -718,10 +999,35 @@ def _validate_plan(plan: TradePlan) -> None:
         raise ValueError("symbol is required")
     for name in ["entry_price", "stop_loss", "take_profit", "quantity"]:
         value = getattr(plan, name)
-        if not isinstance(value, (int, float)) or float(value) != float(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
             raise ValueError(f"{name} must be a finite number")
+    for name in ["entry_price", "stop_loss", "take_profit"]:
+        if float(getattr(plan, name)) <= 0:
+            raise ValueError(f"{name} must be greater than zero")
     if float(plan.quantity) <= 0:
         raise ValueError("quantity must be greater than zero")
+    for name in [
+        "account_balance",
+        "current_day_pnl",
+        "max_daily_loss",
+        "trailing_drawdown",
+        "tick_size",
+        "tick_value",
+        "point_value",
+    ]:
+        value = getattr(plan, name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
+            raise ValueError(f"{name} must be a finite number when provided")
+    for name in ["account_balance", "tick_size", "tick_value", "point_value"]:
+        value = getattr(plan, name)
+        if value is not None and float(value) <= 0:
+            raise ValueError(f"{name} must be greater than zero when provided")
+    for name in ["max_daily_loss", "trailing_drawdown"]:
+        value = getattr(plan, name)
+        if value is not None and float(value) < 0:
+            raise ValueError(f"{name} must be non-negative when provided")
 
 
 def _normalize_direction(direction: str) -> str:
@@ -739,6 +1045,72 @@ def _directional_risk(plan: TradePlan, *, is_long: bool) -> float:
 
 def _directional_reward(plan: TradePlan, *, is_long: bool) -> float:
     return plan.take_profit - plan.entry_price if is_long else plan.entry_price - plan.take_profit
+
+
+def _resolve_instrument_values(plan: TradePlan) -> tuple[float | None, float | None, float | None]:
+    symbol_key = normalize_symbol_key(plan.symbol)
+    default_spec = DEFAULT_INSTRUMENT_SPECS.get(symbol_key or "")
+    explicit_tick_size = _positive_float(plan.tick_size)
+    explicit_tick_value = _positive_float(plan.tick_value)
+    explicit_point_value = _positive_float(plan.point_value)
+    tick_size = explicit_tick_size
+    if tick_size is None and default_spec is not None:
+        tick_size = float(default_spec.tick_size)
+
+    if (
+        explicit_tick_value is not None
+        and explicit_point_value is not None
+        and tick_size is not None
+        and not isclose(
+            explicit_tick_value,
+            explicit_point_value * tick_size,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+    ):
+        raise ValueError(
+            "tick_value must equal tick_size multiplied by point_value when all instrument values are available"
+        )
+
+    if explicit_point_value is not None:
+        point_value = explicit_point_value
+        tick_value = explicit_tick_value
+        if tick_value is None and tick_size is not None:
+            tick_value = point_value * tick_size
+    elif explicit_tick_value is not None:
+        tick_value = explicit_tick_value
+        point_value = tick_value / tick_size if tick_size is not None else None
+    elif default_spec is not None:
+        point_value = float(default_spec.point_value)
+        tick_value = point_value * tick_size if tick_size is not None else float(default_spec.tick_value)
+    else:
+        tick_value = None
+        point_value = None
+    return tick_size, tick_value, point_value
+
+
+def _round_to_tick(value: float, tick_size: float | None) -> float:
+    parsed = float(value)
+    if tick_size is None:
+        return parsed
+    tick = Decimal(str(tick_size))
+    ticks = (Decimal(str(parsed)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return float(ticks * tick)
+
+
+def _geometry_issues(plan: TradePlan, *, is_long: bool) -> list[str]:
+    issues: list[str] = []
+    if is_long:
+        if plan.stop_loss >= plan.entry_price:
+            issues.append("Long stop must be below entry after tick normalization.")
+        if plan.take_profit <= plan.entry_price:
+            issues.append("Long target must be above entry after tick normalization.")
+    else:
+        if plan.stop_loss <= plan.entry_price:
+            issues.append("Short stop must be above entry after tick normalization.")
+        if plan.take_profit >= plan.entry_price:
+            issues.append("Short target must be below entry after tick normalization.")
+    return issues
 
 
 def _positive_float(value: float | None) -> float | None:
@@ -788,7 +1160,7 @@ def _trend_alignment(plan: TradePlan, context: MarketContext) -> tuple[int, int,
 
 
 def _normalize_trend(trend: str | None) -> str:
-    normalized = str(trend or "neutral").strip().lower()
+    normalized = str(trend or "unknown").strip().lower()
     if normalized in {"bull", "up", "long"}:
         return "bullish"
     if normalized in {"bear", "down", "short"}:
@@ -883,12 +1255,38 @@ def _bad_location(
     return False
 
 
-def _daily_loss_danger(*, plan: TradePlan, max_loss: float) -> bool | None:
-    if plan.max_daily_loss is None or float(plan.max_daily_loss) <= _EPSILON:
-        return None
-    current_day_pnl = float(plan.current_day_pnl or 0.0)
-    projected_pnl = current_day_pnl - max_loss
-    return projected_pnl <= -abs(float(plan.max_daily_loss)) * 0.9
+def _daily_loss_context(
+    *,
+    plan: TradePlan,
+    estimated_dollar_risk: float | None,
+) -> tuple[float | None, float | None, float | None, bool | None]:
+    if (
+        plan.max_daily_loss is None
+        or plan.current_day_pnl is None
+        or estimated_dollar_risk is None
+    ):
+        return None, None, None, None
+    loss_limit = abs(float(plan.max_daily_loss))
+    current_day_pnl = float(plan.current_day_pnl)
+    projected_pnl = current_day_pnl - estimated_dollar_risk
+    remaining_before = loss_limit + current_day_pnl
+    remaining_after = loss_limit + projected_pnl
+    danger = projected_pnl <= -(loss_limit * 0.9)
+    return projected_pnl, remaining_before, remaining_after, danger
+
+
+def _drawdown_context(
+    *,
+    plan: TradePlan,
+    estimated_dollar_risk: float | None,
+) -> tuple[float | None, bool | None]:
+    if plan.trailing_drawdown is None or estimated_dollar_risk is None:
+        return None, None
+    drawdown_allowance = float(plan.trailing_drawdown)
+    if drawdown_allowance <= _EPSILON:
+        return None, estimated_dollar_risk > _EPSILON
+    risk_percent = (estimated_dollar_risk / drawdown_allowance) * 100
+    return risk_percent, risk_percent >= 90
 
 
 def _grade_for_score(score: int) -> str:
@@ -911,6 +1309,7 @@ def _decision_for_score(score: int, *, features: TradePlanFeatures, context: Mar
         or (features.risk_reward_ratio is not None and features.risk_reward_ratio < 1)
         or context.news_risk == "high"
         or features.daily_loss_danger
+        or features.drawdown_danger
     ):
         return "avoid"
     if context.market_regime == "chop":
@@ -920,12 +1319,24 @@ def _decision_for_score(score: int, *, features: TradePlanFeatures, context: Mar
     return "wait"
 
 
-def _confidence_for_score(score: int, *, warnings: list[str], features: TradePlanFeatures) -> str:
+def _confidence_for_score(
+    score: int,
+    *,
+    warnings: list[str],
+    features: TradePlanFeatures,
+    data_confidence: str,
+) -> str:
     if score >= 80 and len(warnings) <= 2 and not features.higher_timeframe_conflict:
-        return "high"
-    if score < 55 or len(warnings) >= 5:
+        confidence = "high"
+    elif score < 55 or len(warnings) >= 5:
+        confidence = "low"
+    else:
+        confidence = "medium"
+    if data_confidence == "low":
         return "low"
-    return "medium"
+    if data_confidence == "medium" and confidence == "high":
+        return "medium"
+    return confidence
 
 
 def _summary(
@@ -966,19 +1377,202 @@ def _clamp_score(value: float | int, max_value: int) -> int:
     return max(0, min(max_value, int(round(value))))
 
 
-def _apply_score_caps(score: int, *, context: MarketContext, features: TradePlanFeatures) -> int:
+def _apply_score_caps(
+    score: int,
+    *,
+    context: MarketContext,
+    features: TradePlanFeatures,
+    data_confidence: str,
+) -> tuple[int, list[ScoreCap]]:
     capped = score
-    if features.risk_points <= 0 or features.reward_points <= 0:
-        capped = min(capped, 39)
-    if features.risk_reward_ratio is not None and features.risk_reward_ratio < 1:
-        capped = min(capped, 54)
-    if context.market_regime == "chop":
-        capped = min(capped, 69)
-    if context.news_risk == "high":
-        capped = min(capped, 60)
-    if features.daily_loss_danger:
-        capped = min(capped, 54)
-    return capped
+    caps: list[ScoreCap] = []
+    candidates = [
+        (
+            not features.geometry_valid or features.risk_points <= 0 or features.reward_points <= 0,
+            "invalid_geometry",
+            39,
+            "Directional entry, stop, and target geometry must be valid.",
+        ),
+        (
+            features.risk_reward_ratio is not None and features.risk_reward_ratio < 1,
+            "sub_one_r",
+            54,
+            "Plans below 1.0R cannot receive a take-grade score.",
+        ),
+        (
+            data_confidence == "low",
+            "insufficient_data",
+            69,
+            "Low data confidence prevents an actionable take-grade evaluation.",
+        ),
+        (
+            context.market_regime == "chop",
+            "chop_regime",
+            69,
+            "Chop caps the score below the take threshold.",
+        ),
+        (
+            context.news_risk == "high",
+            "high_news_risk",
+            60,
+            "Known high news risk limits setup confidence.",
+        ),
+        (
+            features.daily_loss_danger is True,
+            "daily_loss_danger",
+            54,
+            "Projected loss approaches or breaches the provided daily loss limit.",
+        ),
+        (
+            features.drawdown_danger is True,
+            "drawdown_danger",
+            54,
+            "Projected loss consumes most or all of the provided drawdown allowance.",
+        ),
+    ]
+    for triggered, code, maximum, reason in candidates:
+        if not triggered:
+            continue
+        before = capped
+        capped = min(capped, maximum)
+        caps.append(
+            ScoreCap(
+                code=code,
+                maximum=maximum,
+                reason=reason,
+                score_before=before,
+                score_after=capped,
+                applied=capped < before,
+            )
+        )
+    return capped, caps
+
+
+def _missing_inputs(
+    *,
+    plan: TradePlan,
+    context: MarketContext,
+    features: TradePlanFeatures,
+) -> list[str]:
+    missing: list[str] = []
+    checks = [
+        (context.vwap is None, "market_context.vwap"),
+        (context.atr5m is None, "market_context.atr5m"),
+        (context.high_of_day is None, "market_context.high_of_day"),
+        (context.low_of_day is None, "market_context.low_of_day"),
+        (_normalize_trend(context.trend5m) == "unknown", "market_context.trend5m"),
+        (_normalize_trend(context.trend15m) == "unknown", "market_context.trend15m"),
+        (_normalize_trend(context.trend1h) == "unknown", "market_context.trend1h"),
+        (_normalize_trend(context.trend4h) == "unknown", "market_context.trend4h"),
+        (context.market_regime == "unknown", "market_context.market_regime"),
+        (context.news_risk not in {"low", "medium", "high"}, "market_context.news_risk"),
+        (features.tick_size is None, "trade_plan.tick_size"),
+        (features.point_value is None, "trade_plan.point_value"),
+        (plan.account_balance is None, "trade_plan.account_balance"),
+        (plan.current_day_pnl is None, "trade_plan.current_day_pnl"),
+        (plan.max_daily_loss is None, "trade_plan.max_daily_loss"),
+        (plan.trailing_drawdown is None, "trade_plan.trailing_drawdown"),
+    ]
+    for is_missing, name in checks:
+        if is_missing:
+            missing.append(name)
+    return missing
+
+
+def _data_confidence(missing_inputs: list[str]) -> tuple[int, str]:
+    deductions = {
+        "market_context.vwap": 12,
+        "market_context.atr5m": 12,
+        "market_context.high_of_day": 4,
+        "market_context.low_of_day": 4,
+        "market_context.trend5m": 5,
+        "market_context.trend15m": 5,
+        "market_context.trend1h": 5,
+        "market_context.trend4h": 5,
+        "market_context.market_regime": 8,
+        "market_context.news_risk": 5,
+        "trade_plan.tick_size": 4,
+        "trade_plan.point_value": 8,
+        "trade_plan.account_balance": 5,
+        "trade_plan.current_day_pnl": 5,
+        "trade_plan.max_daily_loss": 5,
+        "trade_plan.trailing_drawdown": 4,
+    }
+    score = max(0, 100 - sum(deductions.get(name, 0) for name in missing_inputs))
+    if score >= 90:
+        return score, "high"
+    if score >= 65:
+        return score, "medium"
+    return score, "low"
+
+
+def _category_penalties(
+    category_scores: Mapping[str, int],
+    category_maximums: Mapping[str, int],
+) -> list[ScorePenalty]:
+    reason_by_category = {
+        "risk_reward": "Risk/reward did not earn the category maximum.",
+        "vwap_location": "VWAP or nearby price location reduced setup quality.",
+        "multi_timeframe_trend": "Timeframe alignment was incomplete or conflicting.",
+        "stop_target_quality": "Stop placement, target realism, or intervening structure reduced the score.",
+        "volatility_atr_fit": "Stop/target distances were not an ideal ATR fit or ATR was unavailable.",
+        "time_regime": "The market regime or time of day reduced expected follow-through.",
+        "account_news_penalty": "Known risk or missing account/news context limited awarded points.",
+    }
+    penalties: list[ScorePenalty] = []
+    for category, maximum in category_maximums.items():
+        deducted = max(0, int(maximum) - int(category_scores.get(category, 0)))
+        if deducted <= 0:
+            continue
+        penalties.append(
+            ScorePenalty(
+                code=f"{category}_shortfall",
+                category=category,
+                points_deducted=deducted,
+                reason=reason_by_category[category],
+            )
+        )
+    return penalties
+
+
+def _evaluation_dimensions(
+    category_scores: Mapping[str, int],
+    category_maximums: Mapping[str, int],
+) -> dict[str, EvaluationDimension]:
+    category_groups = {
+        "setup_quality": ["risk_reward", "stop_target_quality"],
+        "market_direction_bias": ["vwap_location", "multi_timeframe_trend", "time_regime"],
+        "execution_risk": ["volatility_atr_fit", "account_news_penalty"],
+    }
+    return {
+        name: EvaluationDimension(
+            awarded_points=sum(category_scores[category] for category in categories),
+            maximum_points=sum(category_maximums[category] for category in categories),
+        )
+        for name, categories in category_groups.items()
+    }
+
+
+def _top_score_drivers(
+    *,
+    positives: list[str],
+    warnings: list[str],
+    penalties: list[ScorePenalty],
+    caps: list[ScoreCap],
+) -> tuple[list[str], list[str]]:
+    positive_drivers = _dedupe(positives)[:3]
+    negative_candidates = [
+        *[cap.reason for cap in caps],
+        *warnings,
+        *[
+            penalty.reason
+            for penalty in sorted(
+                penalties,
+                key=lambda item: (-item.points_deducted, item.code),
+            )
+        ],
+    ]
+    return positive_drivers, _dedupe(negative_candidates)[:3]
 
 
 def _round_optional(value: float | None) -> float | None:

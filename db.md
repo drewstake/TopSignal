@@ -15,6 +15,7 @@ It persists:
 - expenses and payouts
 - optional per-user encrypted provider credentials
 - optional position lifecycle snapshots from the streaming runtime
+- user-scoped bot configurations, deterministic backtest snapshots, lifecycle runs, decisions, risk events, and order-attempt audit records
 
 The main analytics path today is `projectx_trade_events`, not the legacy `trades` table.
 
@@ -34,6 +35,7 @@ The startup compatibility code currently backfills:
 - journal versioning and image-storage support
 - multi-tenant `user_id` columns and related indexes
 - `provider_credentials`
+- bot run error/evaluation fields and bot execution idempotency indexes
 - default `instrument_metadata`
 
 Those startup patches help older dev databases boot, but they are not a replacement for keeping the schema current.
@@ -144,6 +146,70 @@ Important columns:
 - `mfe_points`
 
 These rows are not required for the core routed product.
+
+### `bot_configs`
+
+Server-owned, user-scoped TopBot configuration. Important columns include `user_id`, provider account ID, contract and symbol, `strategy_type`, normalized `strategy_params`, timeframe and history settings, risk limits, trading-session controls, `enabled`, and `execution_mode`.
+
+`execution_mode` defaults to `dry_run`. It does not authorize live routing on its own: live execution also requires an explicit live request, explicit per-request confirmation, the disabled-by-default server environment gate, a non-test runtime, an eligible account, and all normal risk gates.
+
+### `bot_backtests`
+
+Immutable, user-scoped evidence for completed deterministic replays. Important columns include:
+
+- `user_id`, nullable `bot_config_id`, and the snapshotted `account_id`
+- `engine_version`, `strategy_type`, contract, symbol, and timeframe
+- requested and actual start/end timestamps
+- starting balance, per-side commission, slippage ticks, tick size, and tick value
+- replayed bar count and SHA-256 `input_fingerprint`
+- JSON snapshots of the replay-relevant bot configuration, execution assumptions, and returned result
+
+The input fingerprint covers the ordered closed warm-up and execution candles used by the engine. The result snapshot contains metrics, equity and drawdown series, daily/monthly aggregates, trade ledger, and sample-quality warnings. Together with the engine version and assumptions, these values make a saved run auditable without depending on the bot configuration's later mutable state.
+
+`bot_config_id` is nullable and uses `on delete set null`; removing a bot configuration therefore preserves historical results. Reads and writes are scoped by `user_id`. Backtest rows are never order attempts and do not authorize or record live routing.
+
+### `bot_runs`
+
+Lifecycle and health record for a started bot. Important columns include:
+
+- `user_id`, `bot_config_id`, and `account_id`
+- `status` and `dry_run`
+- `started_at` and `stopped_at`
+- `last_heartbeat_at` and `last_evaluated_at`
+- `stop_reason` and sanitized `last_error`
+- `raw_state`, including the current phase and last closed-candle checkpoint
+
+The valid forward transitions are `running -> stopped`, `running -> blocked`, and `running -> error`. Terminal rows never transition back to running; a later start creates a new row. `uq_bot_runs_one_running_per_config` is a partial unique index over `(user_id, bot_config_id)` for rows whose status is `running`.
+
+### `bot_decisions`
+
+Replayable, user-scoped signal and lifecycle audit records. Signal decisions store the closed-candle timestamp, action, reason, price, quantity, correlation ID, and actionable idempotency key when one exists. Decision types are `signal`, `risk_reject`, `order_attempt`, `lifecycle`, and `duplicate_skip`.
+
+When a repeated or racing evaluation loses the actionable-attempt uniqueness claim, its decision is retained as `duplicate_skip`. Its audit payload references the original attempt and records the same idempotency key, while no second order-attempt row or provider call is created.
+
+### `bot_order_attempts`
+
+Durable execution claims written before any external order submission. Important columns include:
+
+- user, bot, run, decision, account, and contract identifiers
+- `execution_mode`, side, type, size, and status
+- `correlation_id` and `idempotency_key`
+- provider order ID and rejection reason
+- request/response audit payloads and timestamps
+
+For an actionable BUY or SELL, the server derives a versioned key from `(user_id, bot_config_id, closed_candle_timestamp_utc, action, execution_mode)`. `uq_bot_order_attempts_idempotency_key` uniquely constrains `(user_id, bot_config_id, idempotency_key)` when the key is non-null. The insert is attempted inside a savepoint so a uniqueness race can be converted into a durable duplicate-skip decision without rolling back the surrounding evaluation audit.
+
+Attempt statuses are `pending`, `dry_run`, `submitted`, `blocked`, `rejected`, and `error`. A `pending` attempt is deliberately never auto-retried. It may represent a crash between the durable local claim and final local recording of the provider result, including the ambiguous case where ProjectX accepted the order. Operators must reconcile the deterministic provider custom tag plus the local correlation/idempotency identifiers before any manual recovery.
+
+### `bot_risk_events`
+
+User-scoped hard-gate audit events tied to a bot and optional run. These rows preserve severity, stable code, human-readable message, and non-secret supporting payload. Risk-blocked evaluations return `risk_blocked`; a started run transitions to `blocked` and the bot configuration is disabled.
+
+### Bot execution operation contract
+
+Evaluation responses expose `evaluated`, `held`, `risk_blocked`, `duplicate_skipped`, `dry_run_attempt`, `submitted`, or `error`, along with a request correlation ID and any actionable idempotency/original-attempt reference. The same identifiers connect API responses, structured application logs, decisions, and attempts.
+
+There is no continuous bot scheduler or automatic pending-attempt reconciliation worker. Start and evaluate each perform one request-driven evaluation. The optional ProjectX streaming runtime is separate and does not route or schedule TopBot orders.
 
 ### `journal_entries`
 
@@ -341,6 +407,7 @@ The ordered migration list is documented in [db/README.md](db/README.md).
 - Local anonymous mode uses the synthetic default UUID `00000000-0000-0000-0000-000000000000`
 - The backend contains compatibility patches for older Postgres dev databases
 - The main routed analytics read from `projectx_trade_events`
+- Backtests read closed, non-live rows from `projectx_market_candles` and persist completed evidence in `bot_backtests`
 - The legacy `/metrics/*` routes still read from `trades`
 
 ## Where To Inspect In Code
@@ -348,6 +415,7 @@ The ordered migration list is documented in [db/README.md](db/README.md).
 - models: `backend/app/models.py`
 - DB setup and compatibility patches: `backend/app/db.py`
 - API routes: `backend/app/main.py`
+- backtest replay and snapshot rules: `backend/app/services/bot_backtesting.py`
 - trade sync and summary logic: `backend/app/services/projectx_trades.py`
 - journal services: `backend/app/services/journal.py`
 - credentials storage: `backend/app/services/projectx_credentials.py`

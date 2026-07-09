@@ -46,6 +46,8 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
   BotActivity,
+  BotBacktestInput,
+  BotBacktestResult,
   BotConfig,
   BotConfigInput,
   BotConfigListResponse,
@@ -1138,6 +1140,11 @@ export const botsApi = {
       query: {
         limit,
       },
+    }),
+  runBacktest: (botConfigId: number, payload: BotBacktestInput) =>
+    requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
+      method: "POST",
+      body: payload,
     }),
   evaluateTradePlan: (payload: TradePlanEvaluationInput) =>
     requestJson<TradeEvaluationResult>("/api/trade-plan/evaluate", {

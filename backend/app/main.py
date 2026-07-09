@@ -64,6 +64,8 @@ from .journal_schemas import (
 )
 from .bot_schemas import (
     BotActivityOut,
+    BotBacktestIn,
+    BotBacktestOut,
     BotConfigCreateIn,
     BotConfigListOut,
     BotConfigOut,
@@ -173,6 +175,7 @@ from .services.projectx_trades import (
 )
 from .services.bot_service import (
     _looks_like_projectx_contract_id,
+    BotRunEvaluationError,
     create_bot_config,
     delete_bot_config,
     evaluate_bot_config,
@@ -198,6 +201,15 @@ from .services.bot_service import (
     stop_latest_bot_run,
     update_bot_config,
 )
+from .services.bot_backtesting import (
+    BacktestError,
+    InsufficientBacktestDataError,
+    MalformedBacktestDataError,
+    UnsupportedBacktestStrategyError,
+    create_bot_backtest,
+    serialize_bot_backtest,
+)
+from .services.bot_serialization import serialize_supported_bot_configs
 from .services.trade_plan_evaluator import MarketContext, TradePlan, TradePlanEvaluator
 
 logger = logging.getLogger(__name__)
@@ -1224,6 +1236,14 @@ def get_projectx_market_candles(
             current_contract_id=resolved_contract_id,
             lookup_symbol=active_lookup_symbol,
             end=end_utc,
+            cached_rows_are_stale=bool(cached_candles)
+            and market_candle_rows_are_stale(
+                cached_candles,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                include_partial_bar=include_partial_bar,
+            ),
         ):
             active_contract_lookup_attempted = True
             candles = _fetch_active_symbol_market_candles(
@@ -1358,6 +1378,7 @@ def _should_fetch_active_symbol_contract_first(
     current_contract_id: str,
     lookup_symbol: str | None,
     end: datetime,
+    cached_rows_are_stale: bool = False,
 ) -> bool:
     if not lookup_symbol or not _looks_like_projectx_contract_id(current_contract_id):
         return False
@@ -1365,7 +1386,7 @@ def _should_fetch_active_symbol_contract_first(
     # Initial chart loads always ask for a window ending at "now"; try the
     # active symbol contract first so an expired saved futures contract cannot
     # hold the page in a slow history request.
-    return _as_utc(end) >= datetime.now(timezone.utc) - timedelta(days=1)
+    return bool(cached_rows_are_stale) or _as_utc(end) >= datetime.now(timezone.utc) - timedelta(days=1)
 
 
 def _fetch_active_symbol_market_candles(
@@ -1525,9 +1546,13 @@ def list_trading_bots(
     if account_id is not None:
         _validate_account_id(account_id)
     rows = list_bot_configs(db, user_id=user_id, account_id=account_id)
+    items, warnings = serialize_supported_bot_configs(rows)
+    for warning in warnings:
+        logger.warning("Skipping incompatible bot config for user %s: %s", user_id, warning)
     return {
-        "items": [serialize_bot_config(row) for row in rows],
-        "total": len(rows),
+        "items": items,
+        "total": len(items),
+        "warnings": warnings,
     }
 
 
@@ -1596,6 +1621,47 @@ def delete_trading_bot(
     return Response(status_code=204)
 
 
+@app.post(
+    "/api/bots/{bot_config_id}/backtests",
+    response_model=BotBacktestOut,
+    status_code=201,
+)
+def create_trading_bot_backtest(
+    bot_config_id: int,
+    payload: BotBacktestIn,
+    db: Session = Depends(get_db),
+):
+    """Replay stored candles without fetching data or invoking any order path."""
+
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    try:
+        row = create_bot_backtest(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            payload=payload,
+        )
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UnsupportedBacktestStrategyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (InsufficientBacktestDataError, MalformedBacktestDataError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BacktestError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return serialize_bot_backtest(row)
+
+
 @app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)
 def start_trading_bot(
     bot_config_id: int,
@@ -1617,6 +1683,26 @@ def start_trading_bot(
             confirm_live_order_routing=body.confirm_live_order_routing,
         )
         db.commit()
+    except BotRunEvaluationError as exc:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        detail = {
+            "status": "error",
+            "correlation_id": exc.correlation_id,
+            "message": str(exc),
+        }
+        if isinstance(exc.cause, ProjectXClientError):
+            http_error = _to_http_exception(exc.cause)
+            http_error.detail = detail
+            raise http_error from exc
+        if isinstance(exc.cause, LookupError):
+            raise HTTPException(status_code=404, detail=detail) from exc
+        if isinstance(exc.cause, ValueError):
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(status_code=500, detail=detail) from exc
     except ProjectXClientError as exc:
         db.rollback()
         raise _to_http_exception(exc) from exc

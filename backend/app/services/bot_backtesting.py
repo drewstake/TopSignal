@@ -1,0 +1,1640 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_EVEN
+from typing import Any, Callable
+
+from sqlalchemy.orm import Session
+
+from ..models import BotBacktest, BotConfig, ProjectXMarketCandle
+from .bot_service import (
+    SignalResult,
+    evaluate_bollinger_mean_reversion,
+    evaluate_bollinger_rsi_reversal,
+    evaluate_ema_trend_pullback,
+    evaluate_orb_fibonacci_pullback,
+    evaluate_pullback_trap_reversal,
+    evaluate_sma_cross,
+    evaluate_vwap_atr_mean_reversion,
+    _session_window_utc_for_reference,
+)
+from .instruments import load_instrument_specs, normalize_symbol_key
+from .bot_strategy_registry import (
+    BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
+    get_strategy_definition,
+)
+from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+
+
+BACKTEST_ENGINE_VERSION = "1.0.0"
+MAX_BACKTEST_BARS = 20_000
+MAX_BACKTEST_RANGE_DAYS = 366
+MAX_EVALUATOR_BAR_OPERATIONS = 10_000_000
+MIN_EXECUTION_BARS = 2
+
+# These evaluators can be replayed from one exact candle stream and have exit
+# semantics that match the current live/dry-run bracket payloads. Strategies
+# needing synchronized secondary streams or unimplemented discretionary exits
+# are rejected instead of being approximated.
+SUPPORTED_BACKTEST_STRATEGIES = BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS
+
+UNSUPPORTED_BACKTEST_STRATEGY_REASONS: dict[str, str] = {
+    "support_resistance": "requires synchronized closed 4-hour and 1-hour candle streams",
+    "liquidity_sweep_retest": "requires synchronized closed 4-hour and 1-hour candle streams",
+    "macd_support_resistance": "requires synchronized higher timeframes and exact trailing-stop replay",
+    "opening_rvol_breakout": "requires its fixed 5-minute multi-session dataset",
+    "delayed_orb_confirmation": "requires its fixed 1-minute stream and per-session loss-stop state",
+    "supertrend_pivot": "requires synchronized signal-timeframe and closed daily candles",
+    "fvg_sweep_mss": "requires synchronized FVG and lower-timeframe structure streams",
+    "atr_adjusted_relative_strength": "requires an exactly aligned benchmark candle stream",
+    "relative_strength_spy": "requires an exactly aligned SPY candle stream",
+    "vwap_gap_retrace": "requires fixed 1-minute data and alternative exit-path replay",
+    "donchian_breakout": "requires stateful channel, trailing-stop, sizing, and entry-plan replay",
+    "ema_scalping": "requires exact strong-opposite-candle exit replay",
+    "fisher_transform_mean_reversion": "requires exact Fisher-neutral exit replay",
+}
+
+_BRACKET_REQUIRED_STRATEGIES = SUPPORTED_BACKTEST_STRATEGIES - {"sma_cross"}
+_TRADING_DAY_VWAP_STRATEGIES = {
+    "vwap_atr_mean_reversion",
+    "bollinger_mean_reversion",
+    "bollinger_rsi_reversal",
+}
+_UNIT_SECONDS = {
+    "second": 1,
+    "minute": 60,
+    "hour": 60 * 60,
+    "day": 24 * 60 * 60,
+    "week": 7 * 24 * 60 * 60,
+}
+
+
+class BacktestError(ValueError):
+    """Base error for deterministic, user-correctable backtest failures."""
+
+
+class UnsupportedBacktestStrategyError(BacktestError):
+    pass
+
+
+class InsufficientBacktestDataError(BacktestError):
+    pass
+
+
+class MalformedBacktestDataError(BacktestError):
+    pass
+
+
+class BacktestConfigurationError(BacktestError):
+    pass
+
+
+@dataclass(frozen=True)
+class BacktestSettings:
+    start: datetime
+    end: datetime
+    starting_balance: float
+    commission_per_contract: float
+    slippage_ticks: float
+    tick_size: float
+    tick_value: float
+    force_close_at_end: bool = True
+
+
+@dataclass(frozen=True)
+class _PendingSignal:
+    action: str
+    signal_timestamp: datetime
+    signal_price: float | None
+    reason: str
+    payload: dict[str, Any]
+
+
+@dataclass
+class _OpenTrade:
+    side: str
+    quantity: float
+    signal_timestamp: datetime
+    entry_timestamp: datetime
+    entry_price: float
+    entry_commission: float
+    stop_loss: float | None
+    take_profit: float | None
+    mae: float = 0.0
+    mfe: float = 0.0
+    bars_held: int = 0
+
+
+SignalEvaluator = Callable[[list[ProjectXMarketCandle]], SignalResult]
+
+
+class BacktestEngine:
+    """Closed-bar, event-driven simulator with no live-order dependencies."""
+
+    def __init__(
+        self,
+        *,
+        config: BotConfig,
+        candles: list[ProjectXMarketCandle],
+        settings: BacktestSettings,
+        signal_evaluator: SignalEvaluator | None = None,
+    ) -> None:
+        self.config = config
+        self.settings = _validate_settings(settings)
+        self.strategy_type = str(config.strategy_type)
+        _require_supported_strategy(self.strategy_type)
+        _validate_replay_configuration(config)
+        uses_real_evaluator = signal_evaluator is None
+        self.signal_evaluator = signal_evaluator or self._evaluate_real_strategy
+
+        self.all_candles, excluded_partial = _validate_and_sort_candles(candles, config=config)
+        self.execution_candles = [
+            candle
+            for candle in self.all_candles
+            if _as_utc(candle.candle_timestamp) >= self.settings.start
+            and _candle_close_time(candle) <= self.settings.end
+        ]
+        if len(self.execution_candles) < MIN_EXECUTION_BARS:
+            raise InsufficientBacktestDataError(
+                "insufficient_backtest_data: at least 2 closed execution bars are required "
+                f"inside the requested range; found {len(self.execution_candles)}"
+            )
+        if uses_real_evaluator and self.strategy_type != "orb_fibonacci_pullback":
+            hard_minimum = _strategy_history_bars(config, hard_minimum=True)
+            first_event = _candle_close_time(self.execution_candles[0])
+            closed_by_first_event = sum(
+                1 for candle in self.all_candles if _candle_close_time(candle) <= first_event
+            )
+            if closed_by_first_event < hard_minimum:
+                raise InsufficientBacktestDataError(
+                    "insufficient_backtest_data: insufficient_strategy_warmup: "
+                    f"{self.strategy_type} requires at least {hard_minimum} bars closed by the "
+                    f"first replay event; found {closed_by_first_event}"
+                )
+        if len(self.execution_candles) > MAX_BACKTEST_BARS:
+            raise BacktestConfigurationError(
+                f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}; "
+                f"found {len(self.execution_candles)}"
+            )
+        self.evaluator_history_limit = min(
+            MAX_BACKTEST_BARS,
+            max(
+                int(config.lookback_bars),
+                _strategy_history_bars(config, hard_minimum=False),
+            ),
+        )
+        self.max_evaluator_input_bars = _max_evaluator_input_bars(
+            config,
+            rolling_limit=self.evaluator_history_limit,
+        )
+        estimated_operations = len(self.execution_candles) * min(
+            len(self.all_candles), self.max_evaluator_input_bars
+        )
+        if estimated_operations > MAX_EVALUATOR_BAR_OPERATIONS:
+            raise BacktestConfigurationError(
+                "backtest_computation_limit_exceeded: reduce the date range or bot lookback; "
+                f"estimated evaluator bar-visits {estimated_operations:,} exceed "
+                f"{MAX_EVALUATOR_BAR_OPERATIONS:,}"
+            )
+
+        self.warnings: list[str] = []
+        if excluded_partial:
+            self.warnings.append(f"Excluded {excluded_partial} partial candle(s); only closed bars were replayed.")
+        self._add_data_quality_warnings()
+
+        self.cash = float(self.settings.starting_balance)
+        self.position: _OpenTrade | None = None
+        self.pending: _PendingSignal | None = None
+        self.trades: list[dict[str, Any]] = []
+        self.equity_curve: list[dict[str, Any]] = [
+            {
+                "timestamp": self.settings.start.isoformat(),
+                "equity": _clean(self.settings.starting_balance),
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+            }
+        ]
+        self.exposed_bar_indexes: set[int] = set()
+        self.daily_entry_counts: dict[Any, int] = defaultdict(int)
+        self.daily_net_activity: dict[Any, float] = defaultdict(float)
+        self.last_loss_at: datetime | None = None
+        self.block_counts: dict[str, int] = defaultdict(int)
+        self.unfilled_final_signals = 0
+
+    def run(self) -> dict[str, Any]:
+        closed_history: list[ProjectXMarketCandle] = []
+        history_cursor = 0
+        for index, candle in enumerate(self.execution_candles):
+            candle_start = _as_utc(candle.candle_timestamp)
+            event_time = _candle_close_time(candle)
+
+            counted_position = self.position
+            if counted_position is not None:
+                self.exposed_bar_indexes.add(index)
+                counted_position.bars_held += 1
+                self._process_open_gap(candle)
+
+            if self.pending is not None:
+                pending = self.pending
+                self.pending = None
+                self._fill_pending_signal(pending, candle=candle, bar_index=index)
+
+            if self.position is not None:
+                self.exposed_bar_indexes.add(index)
+                if self.position is not counted_position:
+                    self.position.bars_held += 1
+                self._process_intrabar_bracket(candle)
+
+            while (
+                history_cursor < len(self.all_candles)
+                and _candle_close_time(self.all_candles[history_cursor]) <= event_time
+            ):
+                closed_history.append(self.all_candles[history_cursor])
+                history_cursor += 1
+            signal = self.signal_evaluator(self._evaluator_input(closed_history))
+            if signal.action in {"BUY", "SELL"}:
+                self.pending = _PendingSignal(
+                    action=signal.action,
+                    signal_timestamp=candle_start,
+                    signal_price=float(signal.price) if signal.price is not None else None,
+                    reason=signal.reason,
+                    payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else {},
+                )
+
+            self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+
+        if self.pending is not None:
+            self.unfilled_final_signals += 1
+            self.pending = None
+
+        if self.position is not None and self.settings.force_close_at_end:
+            final_candle = self.execution_candles[-1]
+            final_time = _candle_close_time(final_candle)
+            self._update_excursion(float(final_candle.close_price), float(final_candle.close_price))
+            self._close_position(
+                raw_exit_price=float(final_candle.close_price),
+                exit_timestamp=final_time,
+                exit_reason="forced_end_of_test",
+            )
+            self._replace_last_equity(event_time=final_time)
+        elif self.position is not None:
+            self.warnings.append(
+                "A position remained open because force_close_at_end was false; closed-trade metrics exclude it."
+            )
+
+        self._append_run_warnings()
+        drawdown_series = _build_drawdown_series(self.equity_curve)
+        metrics = _build_metrics(
+            self.trades,
+            equity_curve=self.equity_curve,
+            drawdown_series=drawdown_series,
+            exposure_percent=(len(self.exposed_bar_indexes) / len(self.execution_candles) * 100.0),
+        )
+        return {
+            "range": {
+                "start": self.settings.start.isoformat(),
+                "end": self.settings.end.isoformat(),
+                "bar_count": len(self.execution_candles),
+            },
+            "config_snapshot": _config_snapshot(self.config),
+            "assumptions": _assumptions_snapshot(self.config, self.settings),
+            "metrics": metrics,
+            "equity_curve": self.equity_curve,
+            "drawdown_series": drawdown_series,
+            "daily_results": _period_results(self.trades, monthly=False),
+            "monthly_results": _period_results(self.trades, monthly=True),
+            "trades": self.trades,
+            "warnings": self.warnings,
+        }
+
+    def _evaluator_input(
+        self,
+        closed_history: list[ProjectXMarketCandle],
+    ) -> list[ProjectXMarketCandle]:
+        if not closed_history:
+            return []
+        latest_timestamp = _as_utc(closed_history[-1].candle_timestamp)
+        rolling_start = max(0, len(closed_history) - self.evaluator_history_limit)
+
+        if self.strategy_type == "orb_fibonacci_pullback":
+            session_start, session_end = _session_window_utc_for_reference(
+                latest_timestamp,
+                start_text=str(self.config.trading_start_time),
+                end_text=str(self.config.trading_end_time),
+            )
+            if latest_timestamp < session_start:
+                return []
+            if latest_timestamp > session_end:
+                return []
+            session_start_index = _first_index_at_or_after(closed_history, session_start)
+            session_rows = closed_history[session_start_index:]
+            _require_complete_session_prefix(
+                session_rows,
+                expected_start=session_start,
+                strategy_type=self.strategy_type,
+                enforce=True,
+                expected_interval_seconds=None,
+            )
+            _require_complete_orb_opening_range(
+                session_rows,
+                config=self.config,
+                session_start=session_start,
+                latest_timestamp=latest_timestamp,
+            )
+            return session_rows
+
+        if self.strategy_type in _TRADING_DAY_VWAP_STRATEGIES:
+            session_start, _session_end = trading_day_bounds_utc(
+                trading_day_date(latest_timestamp)
+            )
+            session_start_index = _first_index_at_or_after(closed_history, session_start)
+            _require_complete_session_prefix(
+                closed_history[session_start_index:],
+                expected_start=session_start,
+                strategy_type=self.strategy_type,
+                enforce=_is_intraday_timeframe(self.config),
+                expected_interval_seconds=_timeframe_seconds(
+                    str(self.config.timeframe_unit),
+                    int(self.config.timeframe_unit_number),
+                ),
+            )
+            return closed_history[min(rolling_start, session_start_index) :]
+
+        return closed_history[rolling_start:]
+
+    def _evaluate_real_strategy(self, candles: list[ProjectXMarketCandle]) -> SignalResult:
+        params = self.config.strategy_params
+        if self.strategy_type == "sma_cross":
+            return evaluate_sma_cross(
+                candles,
+                fast_period=int(self.config.fast_period),
+                slow_period=int(self.config.slow_period),
+            )
+        if self.strategy_type == "ema_trend_pullback":
+            return evaluate_ema_trend_pullback(
+                candles,
+                fast_period=int(self.config.fast_period),
+                slow_period=int(self.config.slow_period),
+                strategy_params=params,
+            )
+        if self.strategy_type == "pullback_trap_reversal":
+            return evaluate_pullback_trap_reversal(
+                candles,
+                fast_period=int(self.config.fast_period),
+                slow_period=int(self.config.slow_period),
+                strategy_params=params,
+            )
+        if self.strategy_type == "bollinger_mean_reversion":
+            return evaluate_bollinger_mean_reversion(candles, strategy_params=params)
+        if self.strategy_type == "bollinger_rsi_reversal":
+            return evaluate_bollinger_rsi_reversal(candles, strategy_params=params)
+        if self.strategy_type == "vwap_atr_mean_reversion":
+            return evaluate_vwap_atr_mean_reversion(candles, strategy_params=params)
+        if self.strategy_type == "orb_fibonacci_pullback":
+            return evaluate_orb_fibonacci_pullback(
+                candles,
+                timeframe_unit=str(self.config.timeframe_unit),
+                timeframe_unit_number=int(self.config.timeframe_unit_number),
+                strategy_params=params,
+                session_start_time=str(self.config.trading_start_time),
+                session_end_time=str(self.config.trading_end_time),
+            )
+        raise UnsupportedBacktestStrategyError(
+            f"strategy_not_supported_for_backtesting:{self.strategy_type}"
+        )
+
+    def _fill_pending_signal(
+        self,
+        pending: _PendingSignal,
+        *,
+        candle: ProjectXMarketCandle,
+        bar_index: int,
+    ) -> None:
+        fill_time = _as_utc(candle.candle_timestamp)
+        if not _signal_fill_is_in_same_session(
+            pending.signal_timestamp,
+            fill_time,
+            start_text=str(self.config.trading_start_time),
+            end_text=str(self.config.trading_end_time),
+        ):
+            self.block_counts["stale_session_signal"] += 1
+            return
+        desired_side = "long" if pending.action == "BUY" else "short"
+        signal_category = str(pending.payload.get("signal_category") or "entry")
+        is_exit_only = signal_category == "exit"
+
+        if self.position is not None and self.position.side != desired_side:
+            self.exposed_bar_indexes.add(bar_index)
+            self._update_excursion(float(candle.open_price), float(candle.open_price))
+            exit_reason = str(pending.payload.get("exit_reason") or "position_reversal")
+            self._close_position(
+                raw_exit_price=float(candle.open_price),
+                exit_timestamp=fill_time,
+                exit_reason=exit_reason,
+            )
+
+        if is_exit_only or self.position is not None:
+            return
+
+        if not self._can_enter(fill_time):
+            return
+
+        planned_stop, planned_target = _extract_bracket(pending)
+        if self.strategy_type in _BRACKET_REQUIRED_STRATEGIES and (
+            planned_stop is None or planned_target is None
+        ):
+            self.block_counts["invalid_signal_plan"] += 1
+            return
+        if not _bracket_is_valid(
+            action=pending.action,
+            signal_price=pending.signal_price,
+            stop_loss=planned_stop,
+            take_profit=planned_target,
+        ):
+            self.block_counts["invalid_signal_plan"] += 1
+            return
+
+        quantity = _entry_quantity(self.config, pending.payload)
+        if quantity <= 0 or abs(quantity - round(quantity)) > 1e-9:
+            self.block_counts["invalid_quantity"] += 1
+            return
+        if quantity > float(self.config.max_contracts):
+            self.block_counts["max_contracts"] += 1
+            return
+        if quantity > float(self.config.max_open_position):
+            self.block_counts["max_open_position"] += 1
+            return
+
+        entry_price = self._slipped_price(float(candle.open_price), action=pending.action)
+        stop_loss, take_profit = _anchor_bracket_to_fill(
+            action=pending.action,
+            signal_price=pending.signal_price,
+            entry_price=entry_price,
+            planned_stop=planned_stop,
+            planned_target=planned_target,
+            tick_size=self.settings.tick_size,
+        )
+        entry_commission = self.settings.commission_per_contract * quantity
+        self.cash -= entry_commission
+        session_day = trading_day_date(fill_time)
+        self.daily_net_activity[session_day] -= entry_commission
+        self.daily_entry_counts[session_day] += 1
+        self.position = _OpenTrade(
+            side=desired_side,
+            quantity=quantity,
+            signal_timestamp=pending.signal_timestamp,
+            entry_timestamp=fill_time,
+            entry_price=entry_price,
+            entry_commission=entry_commission,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+        self.exposed_bar_indexes.add(bar_index)
+
+    def _can_enter(self, timestamp: datetime) -> bool:
+        if not _contract_is_allowed(self.config):
+            self.block_counts["contract_not_allowed"] += 1
+            return False
+        if not _inside_session(
+            timestamp,
+            start_text=str(self.config.trading_start_time),
+            end_text=str(self.config.trading_end_time),
+        ):
+            self.block_counts["outside_session"] += 1
+            return False
+
+        session_day = trading_day_date(timestamp)
+        if self.daily_entry_counts[session_day] >= int(self.config.max_trades_per_day):
+            self.block_counts["max_trades_per_day"] += 1
+            return False
+        if self.daily_net_activity[session_day] <= -float(self.config.max_daily_loss):
+            self.block_counts["max_daily_loss"] += 1
+            return False
+        if self.last_loss_at is not None:
+            elapsed = (timestamp - self.last_loss_at).total_seconds()
+            if elapsed < int(self.config.cooldown_seconds):
+                self.block_counts["cooldown_after_loss"] += 1
+                return False
+        return True
+
+    def _process_open_gap(self, candle: ProjectXMarketCandle) -> None:
+        position = self.position
+        if position is None:
+            return
+        raw_open = float(candle.open_price)
+        stop = position.stop_loss
+        target = position.take_profit
+        exit_price: float | None = None
+        exit_reason: str | None = None
+        if position.side == "long":
+            if stop is not None and raw_open <= stop:
+                exit_price, exit_reason = raw_open, "stop_loss_gap"
+            elif target is not None and raw_open >= target:
+                exit_price, exit_reason = target, "take_profit"
+        else:
+            if stop is not None and raw_open >= stop:
+                exit_price, exit_reason = raw_open, "stop_loss_gap"
+            elif target is not None and raw_open <= target:
+                exit_price, exit_reason = target, "take_profit"
+        if exit_price is None:
+            return
+        self._update_excursion(exit_price, exit_price)
+        self._close_position(
+            raw_exit_price=exit_price,
+            exit_timestamp=_as_utc(candle.candle_timestamp),
+            exit_reason=str(exit_reason),
+        )
+
+    def _process_intrabar_bracket(self, candle: ProjectXMarketCandle) -> None:
+        position = self.position
+        if position is None:
+            return
+
+        raw_open = float(candle.open_price)
+        raw_high = float(candle.high_price)
+        raw_low = float(candle.low_price)
+        stop = position.stop_loss
+        target = position.take_profit
+        if position.side == "long":
+            stop_touched = stop is not None and raw_low <= stop
+            target_touched = target is not None and raw_high >= target
+        else:
+            stop_touched = stop is not None and raw_high >= stop
+            target_touched = target is not None and raw_low <= target
+        both_touched = bool(stop_touched and target_touched)
+        exit_price = stop if stop_touched else target if target_touched else None
+        exit_reason = "stop_loss" if stop_touched else "take_profit" if target_touched else None
+
+        if exit_price is None:
+            self._update_excursion(raw_low, raw_high)
+            return
+
+        # Intrabar path is unknowable from OHLC. Stop-first is the documented
+        # conservative rule; excursion is bounded consistently with that rule.
+        if exit_reason == "stop_loss":
+            if position.side == "long":
+                self._update_excursion(exit_price, raw_open)
+            else:
+                self._update_excursion(raw_open, exit_price)
+        elif position.side == "long":
+            self._update_excursion(raw_low, exit_price)
+        else:
+            self._update_excursion(exit_price, raw_high)
+        self._close_position(
+            raw_exit_price=exit_price,
+            exit_timestamp=_as_utc(candle.candle_timestamp),
+            exit_reason="stop_loss_same_bar_conservative" if both_touched else str(exit_reason),
+        )
+
+    def _update_excursion(self, raw_low: float, raw_high: float) -> None:
+        position = self.position
+        if position is None:
+            return
+        if position.side == "long":
+            favorable = _price_pnl(
+                side="long",
+                entry=position.entry_price,
+                exit=raw_high,
+                quantity=position.quantity,
+                tick_size=self.settings.tick_size,
+                tick_value=self.settings.tick_value,
+            )
+            adverse = _price_pnl(
+                side="long",
+                entry=position.entry_price,
+                exit=raw_low,
+                quantity=position.quantity,
+                tick_size=self.settings.tick_size,
+                tick_value=self.settings.tick_value,
+            )
+        else:
+            favorable = _price_pnl(
+                side="short",
+                entry=position.entry_price,
+                exit=raw_low,
+                quantity=position.quantity,
+                tick_size=self.settings.tick_size,
+                tick_value=self.settings.tick_value,
+            )
+            adverse = _price_pnl(
+                side="short",
+                entry=position.entry_price,
+                exit=raw_high,
+                quantity=position.quantity,
+                tick_size=self.settings.tick_size,
+                tick_value=self.settings.tick_value,
+            )
+        position.mfe = max(position.mfe, favorable, 0.0)
+        position.mae = max(position.mae, -adverse, 0.0)
+
+    def _close_position(
+        self,
+        *,
+        raw_exit_price: float,
+        exit_timestamp: datetime,
+        exit_reason: str,
+    ) -> None:
+        position = self.position
+        if position is None:
+            return
+        exit_action = "SELL" if position.side == "long" else "BUY"
+        exit_price = self._slipped_price(raw_exit_price, action=exit_action)
+        gross_pnl = _price_pnl(
+            side=position.side,
+            entry=position.entry_price,
+            exit=exit_price,
+            quantity=position.quantity,
+            tick_size=self.settings.tick_size,
+            tick_value=self.settings.tick_value,
+        )
+        exit_commission = self.settings.commission_per_contract * position.quantity
+        total_commission = position.entry_commission + exit_commission
+        net_pnl = gross_pnl - total_commission
+        if net_pnl < 0:
+            self.last_loss_at = _as_utc(exit_timestamp)
+        self.cash += gross_pnl - exit_commission
+        self.daily_net_activity[trading_day_date(exit_timestamp)] += gross_pnl - exit_commission
+        self.trades.append(
+            {
+                "id": len(self.trades) + 1,
+                "side": position.side,
+                "quantity": _clean(position.quantity),
+                "signal_timestamp": position.signal_timestamp.isoformat(),
+                "entry_timestamp": position.entry_timestamp.isoformat(),
+                "entry_price": _clean(position.entry_price),
+                "exit_timestamp": _as_utc(exit_timestamp).isoformat(),
+                "exit_price": _clean(exit_price),
+                "exit_reason": exit_reason,
+                "gross_pnl": _clean(gross_pnl),
+                "commission": _clean(total_commission),
+                "net_pnl": _clean(net_pnl),
+                "mae": _clean(position.mae),
+                "mfe": _clean(position.mfe),
+                "bars_held": position.bars_held,
+            }
+        )
+        self.position = None
+
+    def _slipped_price(self, raw_price: float, *, action: str) -> float:
+        raw = Decimal(str(raw_price))
+        slip = Decimal(str(self.settings.slippage_ticks)) * Decimal(
+            str(self.settings.tick_size)
+        )
+        return float(raw + slip if action == "BUY" else raw - slip)
+
+    def _record_equity(self, *, event_time: datetime, mark_price: float) -> None:
+        unrealized = 0.0
+        if self.position is not None:
+            unrealized = _price_pnl(
+                side=self.position.side,
+                entry=self.position.entry_price,
+                exit=mark_price,
+                quantity=self.position.quantity,
+                tick_size=self.settings.tick_size,
+                tick_value=self.settings.tick_value,
+            )
+        realized = self.cash - self.settings.starting_balance
+        self.equity_curve.append(
+            {
+                "timestamp": _as_utc(event_time).isoformat(),
+                "equity": _clean(self.cash + unrealized),
+                "realized_pnl": _clean(realized),
+                "unrealized_pnl": _clean(unrealized),
+            }
+        )
+
+    def _replace_last_equity(self, *, event_time: datetime) -> None:
+        point = {
+            "timestamp": _as_utc(event_time).isoformat(),
+            "equity": _clean(self.cash),
+            "realized_pnl": _clean(self.cash - self.settings.starting_balance),
+            "unrealized_pnl": 0.0,
+        }
+        if self.equity_curve:
+            self.equity_curve[-1] = point
+        else:
+            self.equity_curve.append(point)
+
+    def _add_data_quality_warnings(self) -> None:
+        warmup_count = sum(
+            1
+            for row in self.all_candles
+            if _as_utc(row.candle_timestamp) < self.settings.start
+            and _candle_close_time(row) <= _candle_close_time(self.execution_candles[0])
+        )
+        requested_warmup = min(
+            MAX_BACKTEST_BARS,
+            max(
+                int(self.config.lookback_bars),
+                _strategy_history_bars(self.config, hard_minimum=False),
+            ),
+        )
+        if warmup_count < requested_warmup:
+            self.warnings.append(
+                f"Only {warmup_count} of {requested_warmup} configured warmup bars were available before the test range."
+            )
+        if len(self.execution_candles) < 100:
+            self.warnings.append(
+                f"Small bar sample ({len(self.execution_candles)} bars); performance estimates may be unstable."
+            )
+        zero_volume = sum(1 for row in self.execution_candles if float(row.volume or 0) == 0)
+        if zero_volume:
+            self.warnings.append(f"{zero_volume} execution candle(s) have zero volume.")
+        expected_seconds = _timeframe_seconds(
+            str(self.config.timeframe_unit), int(self.config.timeframe_unit_number)
+        )
+        if expected_seconds is not None:
+            gaps = 0
+            for previous, current in zip(self.execution_candles, self.execution_candles[1:]):
+                delta = (_as_utc(current.candle_timestamp) - _as_utc(previous.candle_timestamp)).total_seconds()
+                if delta > expected_seconds * 1.5:
+                    gaps += 1
+            if gaps:
+                self.warnings.append(
+                    f"Detected {gaps} candle gap(s); the engine used the next available bar without interpolation."
+                )
+
+    def _append_run_warnings(self) -> None:
+        if self.unfilled_final_signals:
+            self.warnings.append(
+                "The final-bar signal was not filled because no next bar existed in the test range."
+            )
+        for code in sorted(self.block_counts):
+            count = self.block_counts[code]
+            label = code.replace("_", " ")
+            self.warnings.append(f"Blocked {count} pending signal(s) due to {label}.")
+        if not self.trades:
+            self.warnings.append("No closed trades were produced in the requested range.")
+        elif len(self.trades) < 30:
+            self.warnings.append(
+                f"Small trade sample ({len(self.trades)} trades); win rate and profit factor may be unreliable."
+            )
+        if self.trades and not any(float(trade["net_pnl"]) < 0 for trade in self.trades):
+            self.warnings.append(
+                "Profit factor and payoff ratio are undefined because the sample has no net losing trades."
+            )
+        elif self.trades and not any(float(trade["net_pnl"]) > 0 for trade in self.trades):
+            self.warnings.append(
+                "Payoff ratio is undefined because the sample has no net winning trades."
+            )
+
+
+def run_backtest(
+    *,
+    config: BotConfig,
+    candles: list[ProjectXMarketCandle],
+    start: datetime,
+    end: datetime,
+    starting_balance: float,
+    commission_per_contract: float,
+    slippage_ticks: float,
+    tick_size: float,
+    tick_value: float,
+    force_close_at_end: bool = True,
+    signal_evaluator: SignalEvaluator | None = None,
+) -> dict[str, Any]:
+    """Run a pure replay. This function cannot create or route an order."""
+
+    return BacktestEngine(
+        config=config,
+        candles=candles,
+        settings=BacktestSettings(
+            start=start,
+            end=end,
+            starting_balance=starting_balance,
+            commission_per_contract=commission_per_contract,
+            slippage_ticks=slippage_ticks,
+            tick_size=tick_size,
+            tick_value=tick_value,
+            force_close_at_end=force_close_at_end,
+        ),
+        signal_evaluator=signal_evaluator,
+    ).run()
+
+
+def create_bot_backtest(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    payload: Any,
+) -> BotBacktest:
+    config = (
+        db.query(BotConfig)
+        .filter(BotConfig.user_id == user_id)
+        .filter(BotConfig.id == bot_config_id)
+        .one_or_none()
+    )
+    if config is None:
+        raise LookupError("bot_config_not_found")
+    _require_supported_strategy(str(config.strategy_type))
+
+    start = _as_utc(payload.start)
+    end = _as_utc(payload.end)
+    if end <= start:
+        raise BacktestConfigurationError("backtest end must be after start")
+    if end - start > timedelta(days=MAX_BACKTEST_RANGE_DAYS):
+        raise BacktestConfigurationError(
+            f"backtest range cannot exceed {MAX_BACKTEST_RANGE_DAYS} days"
+        )
+
+    specs = load_instrument_specs(db)
+    symbol_key = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
+    spec = specs.get(symbol_key or "")
+    if spec is None:
+        raise BacktestConfigurationError(
+            f"instrument_metadata_missing:{symbol_key or config.contract_id}"
+        )
+
+    execution_query = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
+        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+        .filter(ProjectXMarketCandle.candle_timestamp >= start)
+        .filter(ProjectXMarketCandle.candle_timestamp <= end)
+        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+        .limit(MAX_BACKTEST_BARS + 1)
+    )
+    execution_rows = execution_query.all()
+    execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
+    if len(execution_rows) > MAX_BACKTEST_BARS:
+        raise BacktestConfigurationError(
+            f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}"
+        )
+
+    rolling_warmup_limit = min(
+        MAX_BACKTEST_BARS,
+        max(
+            int(config.lookback_bars),
+            _strategy_history_bars(config, hard_minimum=False),
+        ),
+    )
+    warmup_limit = _max_evaluator_input_bars(
+        config,
+        rolling_limit=rolling_warmup_limit,
+    )
+    warmup_rows = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
+        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+        .filter(ProjectXMarketCandle.candle_timestamp < start)
+        .order_by(ProjectXMarketCandle.candle_timestamp.desc())
+        .limit(warmup_limit)
+        .all()
+    )
+    warmup_rows.reverse()
+    replay_rows = [*warmup_rows, *execution_rows]
+
+    result = run_backtest(
+        config=config,
+        candles=replay_rows,
+        start=start,
+        end=end,
+        starting_balance=float(payload.starting_balance),
+        commission_per_contract=float(payload.commission_per_contract),
+        slippage_ticks=float(payload.slippage_ticks),
+        tick_size=spec.tick_size,
+        tick_value=spec.tick_value,
+        force_close_at_end=bool(payload.force_close_at_end),
+    )
+    input_fingerprint = candle_input_fingerprint(replay_rows)
+    assumptions = result["assumptions"]
+    snapshot = result["config_snapshot"]
+    row = BotBacktest(
+        user_id=user_id,
+        bot_config_id=int(config.id),
+        account_id=int(config.account_id),
+        engine_version=BACKTEST_ENGINE_VERSION,
+        strategy_type=str(config.strategy_type),
+        contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        timeframe_unit=str(config.timeframe_unit),
+        timeframe_unit_number=int(config.timeframe_unit_number),
+        requested_start=start,
+        requested_end=end,
+        actual_start=_as_utc(execution_rows[0].candle_timestamp) if execution_rows else start,
+        actual_end=_candle_close_time(execution_rows[-1]) if execution_rows else end,
+        starting_balance=float(payload.starting_balance),
+        commission_per_contract=float(payload.commission_per_contract),
+        slippage_ticks=float(payload.slippage_ticks),
+        tick_size=spec.tick_size,
+        tick_value=spec.tick_value,
+        bar_count=int(result["range"]["bar_count"]),
+        input_fingerprint=input_fingerprint,
+        config_snapshot=snapshot,
+        assumptions_snapshot=assumptions,
+        result_snapshot=result,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def serialize_bot_backtest(row: BotBacktest) -> dict[str, Any]:
+    payload = dict(row.result_snapshot or {})
+    payload.update(
+        {
+            "id": int(row.id),
+            "bot_config_id": int(row.bot_config_id) if row.bot_config_id is not None else None,
+            "engine_version": row.engine_version,
+            "input_fingerprint": row.input_fingerprint,
+            "created_at": _as_utc(row.created_at).isoformat(),
+        }
+    )
+    return payload
+
+
+def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
+    canonical = [
+        {
+            "contract_id": str(row.contract_id),
+            "live": bool(row.live),
+            "unit": str(row.unit),
+            "unit_number": int(row.unit_number),
+            "timestamp": _as_utc(row.candle_timestamp).isoformat(),
+            "open": str(row.open_price),
+            "high": str(row.high_price),
+            "low": str(row.low_price),
+            "close": str(row.close_price),
+            "volume": str(row.volume),
+            "is_partial": bool(row.is_partial),
+        }
+        for row in sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+        if not bool(row.is_partial)
+    ]
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_supported_strategy(strategy_type: str) -> None:
+    if strategy_type in SUPPORTED_BACKTEST_STRATEGIES:
+        return
+    reason = UNSUPPORTED_BACKTEST_STRATEGY_REASONS.get(
+        strategy_type, "no exact historical replay adapter is implemented"
+    )
+    raise UnsupportedBacktestStrategyError(
+        f"strategy_not_supported_for_backtesting:{strategy_type}: {reason}"
+    )
+
+
+def _validate_replay_configuration(config: BotConfig) -> None:
+    try:
+        get_strategy_definition(str(config.strategy_type)).configuration_validator(
+            timeframe_unit=str(config.timeframe_unit),
+            timeframe_unit_number=int(config.timeframe_unit_number),
+            fast_period=int(config.fast_period),
+            slow_period=int(config.slow_period),
+        )
+    except ValueError as exc:
+        raise BacktestConfigurationError(
+            f"invalid_backtest_strategy_configuration:{exc}"
+        ) from exc
+    if str(config.strategy_type) == "orb_fibonacci_pullback":
+        if str(config.timeframe_unit) != "minute":
+            raise BacktestConfigurationError(
+                "invalid_backtest_strategy_configuration: ORB Fibonacci Pullback requires minute candles"
+            )
+        params = get_strategy_definition(
+            "orb_fibonacci_pullback"
+        ).parameter_normalizer(config.strategy_params)
+        opening_minutes = int(params["opening_range_minutes"])
+        bucket = int(config.timeframe_unit_number)
+        if opening_minutes % bucket != 0:
+            raise BacktestConfigurationError(
+                "invalid_backtest_strategy_configuration: opening range must align to the minute bucket"
+            )
+
+
+def _contract_is_allowed(config: BotConfig) -> bool:
+    raw_values = config.allowed_contracts if isinstance(config.allowed_contracts, list) else []
+    allowed = {str(value).strip() for value in raw_values if str(value).strip()}
+    if not allowed:
+        return True
+    candidates = {
+        str(value).strip()
+        for value in (config.contract_id, config.symbol)
+        if value is not None and str(value).strip()
+    }
+    return bool(allowed.intersection(candidates))
+
+
+def _validate_settings(settings: BacktestSettings) -> BacktestSettings:
+    normalized = BacktestSettings(
+        start=_as_utc(settings.start),
+        end=_as_utc(settings.end),
+        starting_balance=float(settings.starting_balance),
+        commission_per_contract=float(settings.commission_per_contract),
+        slippage_ticks=float(settings.slippage_ticks),
+        tick_size=float(settings.tick_size),
+        tick_value=float(settings.tick_value),
+        force_close_at_end=bool(settings.force_close_at_end),
+    )
+    if normalized.end <= normalized.start:
+        raise BacktestConfigurationError("backtest end must be after start")
+    if normalized.end - normalized.start > timedelta(days=MAX_BACKTEST_RANGE_DAYS):
+        raise BacktestConfigurationError(
+            f"backtest range cannot exceed {MAX_BACKTEST_RANGE_DAYS} days"
+        )
+    for name in ["starting_balance", "tick_size", "tick_value"]:
+        value = getattr(normalized, name)
+        if not math.isfinite(value) or value <= 0:
+            raise BacktestConfigurationError(f"{name} must be a finite positive number")
+    for name in ["commission_per_contract", "slippage_ticks"]:
+        value = getattr(normalized, name)
+        if not math.isfinite(value) or value < 0:
+            raise BacktestConfigurationError(f"{name} must be a finite non-negative number")
+    return normalized
+
+
+def _validate_and_sort_candles(
+    candles: list[ProjectXMarketCandle],
+    *,
+    config: BotConfig,
+) -> tuple[list[ProjectXMarketCandle], int]:
+    closed = [row for row in candles if not bool(row.is_partial)]
+    excluded_partial = len(candles) - len(closed)
+    closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    seen: set[datetime] = set()
+    previous_close_time: datetime | None = None
+    for row in closed:
+        timestamp = _as_utc(row.candle_timestamp)
+        if timestamp in seen:
+            raise MalformedBacktestDataError(
+                f"duplicate_candle_timestamp:{timestamp.isoformat()}"
+            )
+        seen.add(timestamp)
+        if str(row.contract_id) != str(config.contract_id):
+            raise MalformedBacktestDataError(
+                f"mixed_contract_candles:{timestamp.isoformat()}"
+            )
+        if bool(row.live):
+            raise MalformedBacktestDataError(
+                f"live_candle_not_allowed:{timestamp.isoformat()}"
+            )
+        if config.user_id is not None and str(row.user_id) != str(config.user_id):
+            raise MalformedBacktestDataError(
+                f"mixed_user_candles:{timestamp.isoformat()}"
+            )
+        if str(row.unit) != str(config.timeframe_unit) or int(row.unit_number) != int(
+            config.timeframe_unit_number
+        ):
+            raise MalformedBacktestDataError(
+                "mixed_timeframe_candles: every replay candle must match the bot timeframe"
+            )
+        if previous_close_time is not None and timestamp < previous_close_time:
+            raise MalformedBacktestDataError(
+                f"overlapping_candles:{timestamp.isoformat()}"
+            )
+        previous_close_time = _candle_close_time(row)
+        values = {
+            "open": float(row.open_price),
+            "high": float(row.high_price),
+            "low": float(row.low_price),
+            "close": float(row.close_price),
+            "volume": float(row.volume or 0),
+        }
+        if not all(math.isfinite(value) for value in values.values()):
+            raise MalformedBacktestDataError(
+                f"non_finite_candle_value:{timestamp.isoformat()}"
+            )
+        if min(values["open"], values["high"], values["low"], values["close"]) <= 0:
+            raise MalformedBacktestDataError(
+                f"non_positive_candle_price:{timestamp.isoformat()}"
+            )
+        if values["high"] < max(values["open"], values["close"], values["low"]):
+            raise MalformedBacktestDataError(f"invalid_candle_high:{timestamp.isoformat()}")
+        if values["low"] > min(values["open"], values["close"], values["high"]):
+            raise MalformedBacktestDataError(f"invalid_candle_low:{timestamp.isoformat()}")
+        if values["volume"] < 0:
+            raise MalformedBacktestDataError(f"negative_candle_volume:{timestamp.isoformat()}")
+    return closed, excluded_partial
+
+
+def _candle_close_time(candle: ProjectXMarketCandle) -> datetime:
+    timestamp = _as_utc(candle.candle_timestamp)
+    unit = str(candle.unit)
+    unit_number = int(candle.unit_number)
+    if unit == "month":
+        return _add_months(timestamp, unit_number)
+    seconds = _UNIT_SECONDS.get(unit)
+    if seconds is None:
+        raise MalformedBacktestDataError(f"unsupported_candle_unit:{unit}")
+    return timestamp + timedelta(seconds=seconds * unit_number)
+
+
+def _add_months(value: datetime, months: int) -> datetime:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1, tzinfo=value.tzinfo)
+    else:
+        next_month = datetime(year, month + 1, 1, tzinfo=value.tzinfo)
+    month_start = datetime(year, month, 1, tzinfo=value.tzinfo)
+    last_day = (next_month - month_start).days
+    return value.replace(year=year, month=month, day=min(value.day, last_day))
+
+
+def _extract_bracket(pending: _PendingSignal) -> tuple[float | None, float | None]:
+    stop = _finite_optional_float(pending.payload.get("stop_loss"))
+    target = _finite_optional_float(
+        pending.payload.get("take_profit")
+        if pending.payload.get("take_profit") is not None
+        else pending.payload.get("final_take_profit")
+    )
+    return stop, target
+
+
+def _anchor_bracket_to_fill(
+    *,
+    action: str,
+    signal_price: float | None,
+    entry_price: float,
+    planned_stop: float | None,
+    planned_target: float | None,
+    tick_size: float,
+) -> tuple[float | None, float | None]:
+    """Mirror live ProjectX bracket distances, then anchor them to the fill.
+
+    Live routing converts evaluator levels to whole-tick distances from the
+    signal price. ProjectX attaches those distances to the eventual market
+    fill, so a gap does not leave stale absolute stop/target prices behind.
+    """
+
+    if signal_price is None:
+        return None, None
+    signal = Decimal(str(signal_price))
+    entry = Decimal(str(entry_price))
+    tick = Decimal(str(tick_size))
+
+    def distance_ticks(level: float | None) -> int | None:
+        if level is None:
+            return None
+        distance = abs(Decimal(str(level)) - signal) / tick
+        return max(1, int(distance.to_integral_value(rounding=ROUND_HALF_EVEN)))
+
+    stop_ticks = distance_ticks(planned_stop)
+    target_ticks = distance_ticks(planned_target)
+    direction = Decimal("1") if action == "BUY" else Decimal("-1")
+    stop = entry - direction * stop_ticks * tick if stop_ticks is not None else None
+    target = entry + direction * target_ticks * tick if target_ticks is not None else None
+    return (
+        float(stop) if stop is not None else None,
+        float(target) if target is not None else None,
+    )
+
+
+def _bracket_is_valid(
+    *,
+    action: str,
+    signal_price: float | None,
+    stop_loss: float | None,
+    take_profit: float | None,
+) -> bool:
+    if signal_price is None:
+        return stop_loss is None and take_profit is None
+    if stop_loss is not None:
+        if action == "BUY" and stop_loss >= signal_price:
+            return False
+        if action == "SELL" and stop_loss <= signal_price:
+            return False
+    if take_profit is not None:
+        if action == "BUY" and take_profit <= signal_price:
+            return False
+        if action == "SELL" and take_profit >= signal_price:
+            return False
+    return stop_loss is None or take_profit is None or stop_loss != take_profit
+
+
+def _strategy_history_bars(config: BotConfig, *, hard_minimum: bool) -> int:
+    definition = get_strategy_definition(str(config.strategy_type))
+    requirements = definition.minimum_history(
+        strategy_params=config.strategy_params,
+        fast_period=int(config.fast_period),
+        slow_period=int(config.slow_period),
+        timeframe_unit=str(config.timeframe_unit),
+        timeframe_unit_number=int(config.timeframe_unit_number),
+    )
+    signal_requirement = next(
+        (requirement for requirement in requirements if requirement.role == "signal"),
+        requirements[0],
+    )
+    value = (
+        signal_requirement.hard_minimum_bars
+        if hard_minimum
+        else signal_requirement.minimum_bars
+    )
+    return max(1, int(value or 1))
+
+
+def _entry_quantity(config: BotConfig, payload: dict[str, Any]) -> float:
+    target = _finite_optional_float(payload.get("target_position_qty"))
+    return abs(target) if target is not None and target != 0 else float(config.order_size)
+
+
+def _inside_session(timestamp: datetime, *, start_text: str, end_text: str) -> bool:
+    local_time = _as_utc(timestamp).astimezone(TRADING_TZ).time().replace(tzinfo=None)
+    start = _parse_time(start_text)
+    end = _parse_time(end_text)
+    if start <= end:
+        return start <= local_time <= end
+    return local_time >= start or local_time <= end
+
+
+def _signal_fill_is_in_same_session(
+    signal_timestamp: datetime,
+    fill_timestamp: datetime,
+    *,
+    start_text: str,
+    end_text: str,
+) -> bool:
+    session_start, session_end = _session_window_utc_for_reference(
+        _as_utc(signal_timestamp),
+        start_text=start_text,
+        end_text=end_text,
+    )
+    signal = _as_utc(signal_timestamp)
+    fill = _as_utc(fill_timestamp)
+    return session_start <= signal <= session_end and session_start <= fill <= session_end
+
+
+def _parse_time(value: str) -> time:
+    try:
+        return time.fromisoformat(value)
+    except ValueError as exc:
+        raise BacktestConfigurationError("session times must use HH:MM format") from exc
+
+
+def _price_pnl(
+    *,
+    side: str,
+    entry: float,
+    exit: float,
+    quantity: float,
+    tick_size: float,
+    tick_value: float,
+) -> float:
+    direction = Decimal("1") if side == "long" else Decimal("-1")
+    value = (
+        (Decimal(str(exit)) - Decimal(str(entry)))
+        / Decimal(str(tick_size))
+        * Decimal(str(tick_value))
+        * Decimal(str(quantity))
+        * direction
+    )
+    return float(value)
+
+
+def _build_metrics(
+    trades: list[dict[str, Any]],
+    *,
+    equity_curve: list[dict[str, Any]],
+    drawdown_series: list[dict[str, Any]],
+    exposure_percent: float,
+) -> dict[str, Any]:
+    overall = _trade_breakdown(trades)
+    consecutive_wins = 0
+    consecutive_losses = 0
+    max_wins = 0
+    max_losses = 0
+    for trade in trades:
+        net = float(trade["net_pnl"])
+        if net > 0:
+            consecutive_wins += 1
+            consecutive_losses = 0
+        elif net < 0:
+            consecutive_losses += 1
+            consecutive_wins = 0
+        else:
+            consecutive_wins = 0
+            consecutive_losses = 0
+        max_wins = max(max_wins, consecutive_wins)
+        max_losses = max(max_losses, consecutive_losses)
+
+    max_drawdown_dollars = max(
+        (float(point["drawdown_dollars"]) for point in drawdown_series), default=0.0
+    )
+    max_drawdown_percent = max(
+        (float(point["drawdown_percent"]) for point in drawdown_series), default=0.0
+    )
+    total_commission = sum(float(trade["commission"]) for trade in trades)
+    return {
+        "gross_pnl": overall["gross_pnl"],
+        "net_pnl": overall["net_pnl"],
+        "total_commission": _clean(total_commission),
+        "trade_count": overall["trade_count"],
+        "winning_trades": overall["winning_trades"],
+        "losing_trades": overall["losing_trades"],
+        "win_rate": overall["win_rate"],
+        "profit_factor": overall["profit_factor"],
+        "expectancy": overall["expectancy"],
+        "average_win": overall["average_win"],
+        "average_loss": overall["average_loss"],
+        "payoff_ratio": overall["payoff_ratio"],
+        "max_drawdown_dollars": _clean(max_drawdown_dollars),
+        "max_drawdown_percent": _clean(max_drawdown_percent),
+        "average_mae": _clean(
+            sum(float(trade["mae"]) for trade in trades) / len(trades) if trades else 0.0
+        ),
+        "average_mfe": _clean(
+            sum(float(trade["mfe"]) for trade in trades) / len(trades) if trades else 0.0
+        ),
+        "max_consecutive_wins": max_wins,
+        "max_consecutive_losses": max_losses,
+        "exposure_percent": _clean(exposure_percent),
+        "long": _trade_breakdown([trade for trade in trades if trade["side"] == "long"]),
+        "short": _trade_breakdown([trade for trade in trades if trade["side"] == "short"]),
+    }
+
+
+def _trade_breakdown(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    winners = [float(trade["net_pnl"]) for trade in trades if float(trade["net_pnl"]) > 0]
+    losers = [float(trade["net_pnl"]) for trade in trades if float(trade["net_pnl"]) < 0]
+    gross_profit = sum(winners)
+    gross_loss = abs(sum(losers))
+    average_win = sum(winners) / len(winners) if winners else 0.0
+    average_loss = sum(losers) / len(losers) if losers else 0.0
+    return {
+        "trade_count": len(trades),
+        "winning_trades": len(winners),
+        "losing_trades": len(losers),
+        "win_rate": _clean(len(winners) / len(trades) * 100.0 if trades else 0.0),
+        "gross_pnl": _clean(sum(float(trade["gross_pnl"]) for trade in trades)),
+        "net_pnl": _clean(sum(float(trade["net_pnl"]) for trade in trades)),
+        "profit_factor": _clean(gross_profit / gross_loss) if gross_loss > 0 else None,
+        "expectancy": _clean(
+            sum(float(trade["net_pnl"]) for trade in trades) / len(trades) if trades else 0.0
+        ),
+        "average_win": _clean(average_win),
+        "average_loss": _clean(average_loss),
+        "payoff_ratio": (
+            _clean(average_win / abs(average_loss)) if winners and average_loss < 0 else None
+        ),
+    }
+
+
+def _build_drawdown_series(equity_curve: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    peak: float | None = None
+    output: list[dict[str, Any]] = []
+    for point in equity_curve:
+        equity = float(point["equity"])
+        peak = equity if peak is None else max(peak, equity)
+        drawdown = max(0.0, peak - equity)
+        percent = drawdown / peak * 100.0 if peak > 0 else 0.0
+        output.append(
+            {
+                "timestamp": point["timestamp"],
+                "equity": _clean(equity),
+                "drawdown_dollars": _clean(drawdown),
+                "drawdown_percent": _clean(percent),
+            }
+        )
+    return output
+
+
+def _period_results(trades: list[dict[str, Any]], *, monthly: bool) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for trade in trades:
+        timestamp = datetime.fromisoformat(str(trade["exit_timestamp"]))
+        day = trading_day_date(timestamp)
+        key = day.strftime("%Y-%m") if monthly else day.isoformat()
+        grouped[key].append(trade)
+    output: list[dict[str, Any]] = []
+    for period in sorted(grouped):
+        rows = grouped[period]
+        output.append(
+            {
+                "period": period,
+                "gross_pnl": _clean(sum(float(row["gross_pnl"]) for row in rows)),
+                "net_pnl": _clean(sum(float(row["net_pnl"]) for row in rows)),
+                "commission": _clean(sum(float(row["commission"]) for row in rows)),
+                "trade_count": len(rows),
+                "wins": sum(1 for row in rows if float(row["net_pnl"]) > 0),
+                "losses": sum(1 for row in rows if float(row["net_pnl"]) < 0),
+            }
+        )
+    return output
+
+
+def _config_snapshot(config: BotConfig) -> dict[str, Any]:
+    return {
+        "id": int(config.id) if config.id is not None else None,
+        "account_id": int(config.account_id),
+        "name": str(config.name),
+        "provider": str(config.provider),
+        "enabled": bool(config.enabled),
+        "execution_mode_at_run": str(config.execution_mode),
+        "strategy_type": str(config.strategy_type),
+        "strategy_params": _json_safe(config.strategy_params or {}),
+        "contract_id": str(config.contract_id),
+        "symbol": config.symbol,
+        "timeframe_unit": str(config.timeframe_unit),
+        "timeframe_unit_number": int(config.timeframe_unit_number),
+        "lookback_bars": int(config.lookback_bars),
+        "fast_period": int(config.fast_period),
+        "slow_period": int(config.slow_period),
+        "order_size": float(config.order_size),
+        "max_contracts": float(config.max_contracts),
+        "max_daily_loss": float(config.max_daily_loss),
+        "max_trades_per_day": int(config.max_trades_per_day),
+        "max_open_position": float(config.max_open_position),
+        "allowed_contracts": _json_safe(config.allowed_contracts or []),
+        "trading_start_time": str(config.trading_start_time),
+        "trading_end_time": str(config.trading_end_time),
+        "cooldown_seconds": int(config.cooldown_seconds),
+        "max_data_staleness_seconds": int(config.max_data_staleness_seconds),
+        "allow_market_depth": bool(config.allow_market_depth),
+        "created_at": (
+            _as_utc(config.created_at).isoformat() if config.created_at is not None else None
+        ),
+        "updated_at": (
+            _as_utc(config.updated_at).isoformat() if config.updated_at is not None else None
+        ),
+    }
+
+
+def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict[str, Any]:
+    return {
+        "fill_model": "next_bar_open_market",
+        "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
+        "event_order": "resting_gap_brackets_then_pending_open_fill_then_intrabar_brackets_then_close_signal",
+        "same_bar_exit_rule": "stop_first_when_stop_and_target_are_both_touched",
+        "bracket_rule": "evaluator_levels_become_whole_tick_distances_anchored_to_actual_entry_fill",
+        "gap_rule": "stops_fill_at_adverse_gap_open; targets receive no favorable price improvement",
+        "final_position_handling": (
+            "forced_close_at_last_bar_close" if settings.force_close_at_end else "left_open"
+        ),
+        "position_rule": (
+            "signals_target_direction; same-side_duplicates_do_not_pyramid; opposites_reverse; "
+            "oversized_entries_are_blocked_not_capped"
+        ),
+        "session_rule": (
+            "entries_obey_bot_session_after-loss_cooldown_daily-trade_and_daily-loss_limits; "
+            "counters_reset_at_requested_start_and_loss_uses_isolated_simulated_realized_net_pnl"
+        ),
+        "commission_rule": "commission_per_contract_is_charged_per_side",
+        "slippage_rule": "configured_ticks_are_applied_adversely_to_every_entry_and_exit_fill",
+        "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
+        "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
+        "market_data": "stored_user_scoped_non_live_closed_candles_only; no_provider_fetch",
+        "live_order_routing": "disabled_by_architecture",
+        "timezone": str(getattr(TRADING_TZ, "key", "America/New_York")),
+        "commission_per_contract": _clean(settings.commission_per_contract),
+        "slippage_ticks": _clean(settings.slippage_ticks),
+        "tick_size": _clean(settings.tick_size),
+        "tick_value": _clean(settings.tick_value),
+        "engine_version": BACKTEST_ENGINE_VERSION,
+        "configured_execution_mode_was_ignored": str(config.execution_mode),
+    }
+
+
+def _timeframe_seconds(unit: str, unit_number: int) -> int | None:
+    seconds = _UNIT_SECONDS.get(unit)
+    return seconds * unit_number if seconds is not None else None
+
+
+def _max_evaluator_input_bars(config: BotConfig, *, rolling_limit: int) -> int:
+    timeframe_seconds = _timeframe_seconds(
+        str(config.timeframe_unit), int(config.timeframe_unit_number)
+    )
+    if timeframe_seconds is None or timeframe_seconds <= 0:
+        return MAX_BACKTEST_BARS
+    if str(config.strategy_type) in _TRADING_DAY_VWAP_STRATEGIES:
+        # A New York trading day spans 25 real hours across the fall DST change.
+        session_capacity = math.ceil((25 * 60 * 60) / timeframe_seconds) + 2
+        return min(MAX_BACKTEST_BARS, max(rolling_limit, session_capacity))
+    if str(config.strategy_type) == "orb_fibonacci_pullback":
+        start = _parse_time(str(config.trading_start_time))
+        end = _parse_time(str(config.trading_end_time))
+        start_seconds = start.hour * 3600 + start.minute * 60 + start.second
+        end_seconds = end.hour * 3600 + end.minute * 60 + end.second
+        duration = end_seconds - start_seconds
+        if duration < 0:
+            duration += 24 * 60 * 60
+        # Overnight configured windows can also cross a fall DST transition.
+        session_capacity = math.ceil((duration + 60 * 60) / timeframe_seconds) + 2
+        return min(MAX_BACKTEST_BARS, max(1, session_capacity))
+    return rolling_limit
+
+
+def _first_index_at_or_after(
+    candles: list[ProjectXMarketCandle],
+    timestamp: datetime,
+) -> int:
+    target = _as_utc(timestamp)
+    low = 0
+    high = len(candles)
+    while low < high:
+        middle = (low + high) // 2
+        if _as_utc(candles[middle].candle_timestamp) < target:
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+
+def _require_complete_session_prefix(
+    candles: list[ProjectXMarketCandle],
+    *,
+    expected_start: datetime,
+    strategy_type: str,
+    enforce: bool,
+    expected_interval_seconds: int | None,
+) -> None:
+    if not enforce:
+        return
+    if not candles or _as_utc(candles[0].candle_timestamp) != _as_utc(expected_start):
+        raise InsufficientBacktestDataError(
+            "insufficient_backtest_data: incomplete_session_history: "
+            f"{strategy_type} requires the session-opening candle at "
+            f"{_as_utc(expected_start).isoformat()}"
+        )
+    if expected_interval_seconds is None:
+        return
+    for previous, current in zip(candles, candles[1:]):
+        delta = (
+            _as_utc(current.candle_timestamp) - _as_utc(previous.candle_timestamp)
+        ).total_seconds()
+        if delta != expected_interval_seconds:
+            raise InsufficientBacktestDataError(
+                "insufficient_backtest_data: incomplete_session_history: "
+                f"{strategy_type} has a missing session candle after "
+                f"{_as_utc(previous.candle_timestamp).isoformat()}"
+            )
+
+
+def _require_complete_orb_opening_range(
+    candles: list[ProjectXMarketCandle],
+    *,
+    config: BotConfig,
+    session_start: datetime,
+    latest_timestamp: datetime,
+) -> None:
+    params = get_strategy_definition("orb_fibonacci_pullback").parameter_normalizer(
+        config.strategy_params
+    )
+    opening_minutes = int(params["opening_range_minutes"])
+    range_end = _as_utc(session_start) + timedelta(minutes=opening_minutes)
+    if _as_utc(latest_timestamp) < range_end:
+        return
+    timeframe_seconds = _timeframe_seconds(
+        str(config.timeframe_unit), int(config.timeframe_unit_number)
+    )
+    if timeframe_seconds is None or timeframe_seconds <= 0:
+        raise MalformedBacktestDataError("orb_fibonacci_pullback requires an intraday timeframe")
+    expected_bars = math.ceil(opening_minutes * 60 / timeframe_seconds)
+    if len(candles) < expected_bars:
+        raise InsufficientBacktestDataError(
+            "insufficient_backtest_data: incomplete_session_history: "
+            "orb_fibonacci_pullback opening range is incomplete"
+        )
+    for index in range(expected_bars):
+        expected = _as_utc(session_start) + timedelta(seconds=timeframe_seconds * index)
+        actual = _as_utc(candles[index].candle_timestamp)
+        if actual != expected:
+            raise InsufficientBacktestDataError(
+                "insufficient_backtest_data: incomplete_session_history: "
+                f"orb_fibonacci_pullback is missing opening-range candle {expected.isoformat()}"
+            )
+
+
+def _is_intraday_timeframe(config: BotConfig) -> bool:
+    return str(config.timeframe_unit) in {"second", "minute", "hour"}
+
+
+def _finite_optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        return None
+    return converted if math.isfinite(converted) else None
+
+
+def _clean(value: float) -> float:
+    rounded = round(float(value), 10)
+    return 0.0 if rounded == 0 else rounded
+
+
+def _json_safe(value: Any) -> Any:
+    return json.loads(json.dumps(value, sort_keys=True, default=str))
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

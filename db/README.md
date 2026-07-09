@@ -69,6 +69,9 @@ Current migration list:
 20260510_add_ema_scalping_bot_strategy.sql
 20260510_add_pullback_trap_reversal_bot_strategy.sql
 20260511_add_opening_rvol_breakout_bot_strategy.sql
+20260522_add_expense_source_id.sql
+20260709_add_bot_execution_safety.sql
+20260709_add_bot_backtests.sql
 ```
 
 Example PowerShell application loop:
@@ -106,7 +109,10 @@ $migrations = @(
   "20260509_add_supertrend_pivot_bot_strategy.sql",
   "20260510_add_ema_scalping_bot_strategy.sql",
   "20260510_add_pullback_trap_reversal_bot_strategy.sql",
-  "20260511_add_opening_rvol_breakout_bot_strategy.sql"
+  "20260511_add_opening_rvol_breakout_bot_strategy.sql",
+  "20260522_add_expense_source_id.sql",
+  "20260709_add_bot_execution_safety.sql",
+  "20260709_add_bot_backtests.sql"
 )
 
 foreach ($name in $migrations) {
@@ -124,6 +130,8 @@ Those patches currently help older dev databases by:
 - backfilling journal versioning and image support
 - ensuring multi-tenant `user_id` columns and related indexes
 - creating `provider_credentials` when absent
+- adding the bot run error/heartbeat fields and bot execution idempotency indexes
+- preserving unsupported legacy bot strategy rows without silently converting their strategy type
 - seeding default `instrument_metadata`
 
 Treat those patches as a safety net, not as the primary schema-upgrade path.
@@ -133,6 +141,25 @@ For faster local dev startup, the root `npm run dev` backend wrapper sets `TOPSI
 ```powershell
 npm run db:init
 ```
+
+### Bot execution-safety migration
+
+`20260709_add_bot_execution_safety.sql` must be applied to existing databases before running the new execution code when startup compatibility initialization is disabled. It:
+
+- adds `last_evaluated_at` and `last_error` to `bot_runs`
+- closes older duplicate running rows and installs a partial unique index allowing one running run per user and bot configuration
+- adds correlation and idempotency identifiers to bot decisions
+- adds `duplicate_skip` to the decision-type constraint
+- adds execution mode, correlation, and idempotency identifiers to order attempts
+- backfills legacy attempt execution mode conservatively and installs the partial unique actionable-attempt index
+
+The migration does not resubmit or otherwise reinterpret existing `pending` attempts. Reconcile those rows with ProjectX before manual intervention; automatic retry is intentionally unsafe when the provider outcome is unknown.
+
+### Bot backtest migration
+
+`20260709_add_bot_backtests.sql` creates the user-scoped `bot_backtests` table and its lookup indexes. Each row preserves the bot and execution-setting snapshots, requested and actual ranges, instrument tick metadata, the SHA-256 candle-input fingerprint, engine version, metrics, equity/drawdown series, period summaries, trade ledger, and warnings returned by one completed replay. `bot_config_id` uses `on delete set null`, so deleting a mutable bot configuration does not destroy its historical backtest evidence.
+
+Apply this migration before using `POST /api/bots/{id}/backtests` when startup compatibility initialization is disabled. Backtests read stored candles; the migration does not fetch market data, rerun historical results, or invoke an order path.
 
 ## Verifying The Schema
 
@@ -151,6 +178,42 @@ select count(*) from projectx_trade_events;
 select count(*) from journal_entries;
 select count(*) from expenses;
 select count(*) from payouts;
+select count(*) from bot_runs;
+select count(*) from bot_order_attempts;
+select count(*) from bot_backtests;
+```
+
+Bot safety-index checks:
+
+```sql
+select indexname, indexdef
+from pg_indexes
+where indexname in (
+  'uq_bot_runs_one_running_per_config',
+  'uq_bot_order_attempts_idempotency_key'
+);
+
+select id, user_id, bot_config_id, correlation_id, idempotency_key, created_at
+from bot_order_attempts
+where status = 'pending'
+order by created_at;
+```
+
+Backtest snapshot checks:
+
+```sql
+select
+  id,
+  user_id,
+  bot_config_id,
+  engine_version,
+  strategy_type,
+  bar_count,
+  input_fingerprint,
+  created_at
+from bot_backtests
+order by created_at desc
+limit 20;
 ```
 
 Recent trade-event sample:

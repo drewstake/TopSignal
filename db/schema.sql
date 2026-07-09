@@ -396,6 +396,54 @@ create index if not exists idx_bot_configs_user_enabled
 
 
 -- ============================================
+-- TABLE: bot_backtests
+-- Immutable inputs and results for deterministic bot replays.
+-- ============================================
+create table if not exists bot_backtests (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  bot_config_id bigint references bot_configs(id) on delete set null,
+  account_id bigint not null,
+  engine_version text not null,
+  strategy_type text not null,
+  contract_id text not null,
+  symbol text,
+  timeframe_unit text not null,
+  timeframe_unit_number integer not null,
+  requested_start timestamptz not null,
+  requested_end timestamptz not null,
+  actual_start timestamptz not null,
+  actual_end timestamptz not null,
+  starting_balance numeric(18,6) not null,
+  commission_per_contract numeric(18,6) not null default 0,
+  slippage_ticks numeric(18,6) not null default 0,
+  tick_size numeric(18,6) not null,
+  tick_value numeric(18,6) not null,
+  bar_count integer not null,
+  input_fingerprint text not null,
+  config_snapshot jsonb not null,
+  assumptions_snapshot jsonb not null,
+  result_snapshot jsonb not null,
+  created_at timestamptz not null default now(),
+  constraint bot_backtests_requested_range_check check (requested_end > requested_start),
+  constraint bot_backtests_actual_range_check check (actual_end >= actual_start),
+  constraint bot_backtests_starting_balance_positive_check check (starting_balance > 0),
+  constraint bot_backtests_commission_nonnegative_check check (commission_per_contract >= 0),
+  constraint bot_backtests_slippage_nonnegative_check check (slippage_ticks >= 0),
+  constraint bot_backtests_tick_size_positive_check check (tick_size > 0),
+  constraint bot_backtests_tick_value_positive_check check (tick_value > 0),
+  constraint bot_backtests_timeframe_positive_check check (timeframe_unit_number > 0),
+  constraint bot_backtests_bar_count_positive_check check (bar_count > 0)
+);
+
+create index if not exists idx_bot_backtests_user_config_created
+  on bot_backtests (user_id, bot_config_id, created_at desc);
+
+create index if not exists idx_bot_backtests_user_created
+  on bot_backtests (user_id, created_at desc);
+
+
+-- ============================================
 -- TABLE: bot_runs
 -- Deployment/run records for bot lifecycle control.
 -- ============================================
@@ -410,6 +458,8 @@ create table if not exists bot_runs (
   stopped_at timestamptz,
   stop_reason text,
   last_heartbeat_at timestamptz,
+  last_evaluated_at timestamptz,
+  last_error text,
   raw_state jsonb
 );
 
@@ -418,6 +468,10 @@ create index if not exists idx_bot_runs_config_started
 
 create index if not exists idx_bot_runs_account_status
   on bot_runs (user_id, account_id, status);
+
+create unique index if not exists uq_bot_runs_one_running_per_config
+  on bot_runs (user_id, bot_config_id)
+  where status = 'running';
 
 
 -- ============================================
@@ -432,12 +486,14 @@ create table if not exists bot_decisions (
   account_id bigint not null,
   contract_id text not null,
   symbol text,
-  decision_type text not null check (decision_type in ('signal','risk_reject','order_attempt','lifecycle')),
+  decision_type text not null check (decision_type in ('signal','risk_reject','order_attempt','lifecycle','duplicate_skip')),
   action text not null check (action in ('BUY','SELL','HOLD','NONE','STOP')),
   reason text not null,
   candle_timestamp timestamptz,
   price numeric(18,6),
   quantity numeric(18,6),
+  correlation_id text,
+  idempotency_key text,
   raw_payload jsonb,
   created_at timestamptz not null default now()
 );
@@ -458,6 +514,9 @@ create table if not exists bot_order_attempts (
   bot_decision_id bigint references bot_decisions(id) on delete set null,
   account_id bigint not null,
   contract_id text not null,
+  execution_mode text not null default 'dry_run' check (execution_mode in ('dry_run','live')),
+  correlation_id text,
+  idempotency_key text,
   side text not null check (side in ('BUY','SELL')),
   order_type text not null default 'market' check (order_type in ('market','limit','stop','trailing_stop')),
   size numeric(18,6) not null check (size > 0),
@@ -478,6 +537,10 @@ create index if not exists idx_bot_order_attempts_config_created
 
 create index if not exists idx_bot_order_attempts_account_created
   on bot_order_attempts (user_id, account_id, created_at);
+
+create unique index if not exists uq_bot_order_attempts_idempotency_key
+  on bot_order_attempts (user_id, bot_config_id, idempotency_key)
+  where idempotency_key is not null;
 
 
 -- ============================================

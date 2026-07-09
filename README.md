@@ -44,7 +44,7 @@ Core features in the current routed app:
 - Expense CRUD, spend summaries, and payout-minus-spend net ranges
 - Payout tracking, payout totals, and spend-since-last-payout context
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
-- Trading bot configuration, dry-run execution controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
+- Trading bot configuration, dry-run execution controls, deterministic backtesting, signal charting, market analysis, trade-plan evaluation, and bot activity review
 - Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 
@@ -223,6 +223,8 @@ A user can:
 - choose from multiple strategy types, including SMA Cross, EMA Scalping, Support/Resistance, Donchian Breakout, FVG Sweep + MSS, Liquidity Sweep + Retest, Supertrend Pivot, RVOL Breakout, relative-strength strategies, Bollinger/VWAP/Fisher mean reversion, ORB variants, and pullback/trap strategies
 - set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
 - start a dry-run bot run, evaluate the strategy once, or stop the latest run
+- run a bounded historical replay with configurable starting balance, per-contract commission, slippage, and final-position handling
+- inspect backtest summary metrics, equity/drawdown charts, daily and monthly results, warnings, and the complete trade ledger
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
 - inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
 - review trade-plan grades when a strategy produces entry, stop, and target prices
@@ -230,17 +232,94 @@ A user can:
 
 The page also includes a Signal Chart backed by ProjectX candles. It supports selectable chart timeframes, live/last price display, strategy overlays, VWAP, buy/sell signal markers, computed buy-side and sell-side liquidity levels, drawing tools, refresh, data-gap repair, and y-axis fit controls.
 
-The Analysis panel is generated from backend bot evaluation output when available. If backend analysis is missing but enough chart data is loaded, the UI can fall back to local chart-context analysis. The panel marks stale evaluations when newer bars have printed since the last run. Directional probabilities are heuristic scenario weights, not predictions or financial advice.
+The Analysis panel consumes the versioned backend market-analysis contract when available. It reports the closed and partial candle counts, source timeframe, latest closed-candle timestamp, data age, staleness threshold, detected gaps, missing inputs, and an explicit data-confidence read. Indicator features use closed bars only and include trend strength, regime, ATR/volatility percentile, relative volume, VWAP location, multi-timeframe alignment, and nearby support/resistance. The panel separates setup quality, market direction, execution risk, and data confidence so a high directional tilt is not confused with a safe or complete setup.
 
-When a strategy emits a complete trade idea, bot evaluation can attach a trade-plan readout with a 0-100 score, letter grade, `take`/`wait`/`avoid` decision, confidence, risk-reward context, trend alignment, stop/ATR context, positives, warnings, and suggested adjustments.
+If backend analysis is absent, the UI may show a clearly labeled **Local fallback analysis** derived from the closed candles already loaded in the chart. The fallback follows the same scenario-weight terminology and never substitutes a partial bar for missing closed history. `probability_method: "heuristic_scenario_weight"` identifies the weighting method; bullish, bearish, and sideways scenario weights are normalized to exactly 100 and are not calibrated outcome probabilities, predictions, or financial advice.
+
+When a strategy emits a complete trade idea, bot evaluation can attach a versioned trade-plan readout with a 0-100 score, letter grade, `take`/`wait`/`avoid` decision, and separate setup-quality, direction, execution-risk, and data-confidence dimensions. It validates long/short entry-stop-target geometry, normalizes prices to the instrument tick when metadata is known, and exposes risk points/ticks, reward points/ticks, R multiple, break-even win rate, estimated dollar risk/reward, and available daily-loss or drawdown context. The response also includes category maximums and awarded points, explicit penalties and score caps, missing inputs, and the strongest positive and negative drivers. Unknown account, instrument, or news inputs remain unknown rather than being synthesized.
 
 Important bot behaviors:
 
 - The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
 - New configurations default to dry-run mode and are saved disabled.
-- The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
+- The current UI only starts dry-run runs; live order routing is not exposed by the page controls.
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
+- Completed backtests are persisted separately in `bot_backtests` with their engine, configuration, assumptions, market-input fingerprint, and result snapshots.
 - Candle reads use ProjectX market-data endpoints, backend `projectx_market_candles` storage, and a small frontend candle cache for chart responsiveness.
+
+#### Strategy registry
+
+`backend/app/services/bot_strategy_registry.py` is the authoritative strategy catalog. Each immutable registry entry records the strategy identifier, parameter normalizer, configuration validator, required timeframe or timeframes, conservative and hard minimum-history requirements, evaluator, auxiliary-data requirements, and whether registry-level backtesting is supported.
+
+The registry contains all 20 configured strategy identifiers:
+
+`sma_cross`, `support_resistance`, `liquidity_sweep_retest`, `donchian_breakout`, `opening_rvol_breakout`, `bollinger_rsi_reversal`, `bollinger_mean_reversion`, `macd_support_resistance`, `delayed_orb_confirmation`, `orb_fibonacci_pullback`, `supertrend_pivot`, `ema_trend_pullback`, `ema_scalping`, `vwap_atr_mean_reversion`, `vwap_gap_retrace`, `fisher_transform_mean_reversion`, `atr_adjusted_relative_strength`, `relative_strength_spy`, `pullback_trap_reversal`, and `fvg_sweep_mss`.
+
+Dispatch is being replaced incrementally to protect characterized strategy behavior. Supported-strategy validation and evaluator selection now come from the registry. Strategy-specific candle acquisition and argument assembly remain explicit where a strategy needs fixed, derived, daily, benchmark, session, position, or other auxiliary data. Existing formula helpers remain in `bot_service.py` and are invoked lazily through the registry rather than being broadly rewritten.
+
+#### Deterministic backtesting
+
+The Bot page and authenticated `POST /api/bots/{id}/backtests` endpoint run the event-driven engine in `backend/app/services/bot_backtesting.py`. The endpoint selects the bot by both ID and authenticated `user_id`, then reads only that user's stored `projectx_market_candles` rows for the configured contract and exact timeframe where `live=false` and `is_partial=false`. It never fetches provider data, creates an order attempt, or calls live/dry-run routing code.
+
+The currently replayable strategies are exactly:
+
+- `sma_cross`
+- `ema_trend_pullback`
+- `pullback_trap_reversal`
+- `bollinger_mean_reversion`
+- `bollinger_rsi_reversal`
+- `vwap_atr_mean_reversion`
+- `orb_fibonacci_pullback`
+
+These paths call the same evaluator functions used by normal bot evaluation. Every other configured strategy fails explicitly with `strategy_not_supported_for_backtesting`; none is approximated:
+
+| Unsupported strategy | Exact replay capability still required |
+| --- | --- |
+| `support_resistance` | Synchronized closed 4-hour and 1-hour candle streams |
+| `liquidity_sweep_retest` | Synchronized closed 4-hour and 1-hour candle streams |
+| `macd_support_resistance` | Synchronized higher timeframes and exact trailing-stop replay |
+| `opening_rvol_breakout` | Its fixed 5-minute multi-session dataset |
+| `delayed_orb_confirmation` | Its fixed 1-minute stream and per-session loss-stop state |
+| `supertrend_pivot` | Synchronized signal-timeframe and closed daily candles |
+| `fvg_sweep_mss` | Synchronized FVG and lower-timeframe structure streams |
+| `atr_adjusted_relative_strength` | An exactly aligned benchmark candle stream |
+| `relative_strength_spy` | An exactly aligned SPY candle stream |
+| `vwap_gap_retrace` | Fixed 1-minute data and alternative exit-path replay |
+| `donchian_breakout` | Stateful channel, trailing-stop, sizing, and entry-plan replay |
+| `ema_scalping` | Exact strong-opposite-candle exit replay |
+| `fisher_transform_mean_reversion` | Exact Fisher-neutral exit replay |
+
+Replay assumptions are deliberately explicit and are returned and persisted with every result:
+
+- A strategy is evaluated only after each bar closes and receives only bars whose close time is at or before that event. Partial bars are excluded. A signal from bar T can fill no earlier than the next available bar's open.
+- Market fills default to next-bar open. Configured slippage ticks move every entry and exit adversely, and commission per contract is charged on both entry and exit.
+- At a new bar, an existing position's resting stop/target gap is resolved before a queued market reversal; the queued fill is then processed, followed by that bar's intrabar stop/target range and finally its close signal. Pending signals expire at the configured session boundary.
+- P&L is `(exit - entry) / tick_size * tick_value * quantity`, with direction inverted for shorts. Tick size and tick value come from required `instrument_metadata`.
+- Bracket stops and targets come from the real evaluator payload. As in live routing, each level is converted to a whole-tick distance from the signal price and that distance is anchored to the actual next-bar fill. All supported strategies except `sma_cross` require a valid stop and target; an incomplete or invalid signal plan is blocked and reported instead of inferred.
+- If stop and target are both touched inside one OHLC bar, the stop is assumed to fill first. An adverse stop gap fills at the bar open; a target receives no favorable price improvement.
+- Opposite signals close and reverse at the next bar open. Same-side signals do not pyramid. Entry size uses the evaluator's target quantity when supplied, otherwise the bot order size; a size over the max-contract or max-open-position setting is blocked rather than silently reduced.
+- Entries obey the bot's New York session, after-loss cooldown, max-trades-per-day, and realized daily-loss limits. These counters reset at the requested start, and the loss gate uses only this isolated simulation's realized net P&L rather than pre-existing account-wide P&L. Missing bars are not interpolated; the next stored bar is used and a gap warning is returned. Strategies that depend on a session prefix fail explicitly if the required opening candle is absent.
+- Open positions are force-closed at the final bar's close by default. If disabled, the open position remains excluded from closed-trade metrics and the result includes a warning. A final-bar signal is never filled without a following bar.
+
+Requests are limited to 366 days and 20,000 execution bars, require at least two closed execution bars, and are rejected when the range multiplied by the evaluator history window would exceed the 10,000,000 bar-visit computation budget. The strategy's hard minimum history must already be closed at the first replay event (except ORB's intentional in-session opening-range formation); earlier closed bars are loaded only as evaluator warm-up, with a warning when the configured/conservative warm-up is incomplete. Results include gross/net P&L, fees, count, win rate, profit factor, expectancy, average win/loss, payoff ratio, dollar/percent drawdown, MAE/MFE, long/short breakdowns, streaks, exposure, equity/drawdown series, daily/monthly aggregates, a trade ledger, and sample/data-quality warnings. Drawdown uses bar-close mark-to-market equity, exposure is the percentage of replay bars with any position exposure, MAE/MFE are tick-value-aware dollars before commission, and daily/monthly rows group closed trades by their New York trading-day exit.
+
+Each `bot_backtests` row records engine version `1.0.0`, the bot configuration at run time, all execution assumptions, requested/actual range, instrument metadata, and a SHA-256 fingerprint of the ordered warm-up and execution candle inputs. Reproducing the same numbers requires the same engine version, configuration and assumptions snapshots, and candle input set. The model intentionally does not simulate order-book liquidity, queue position, latency, partial fills, or intrabar paths beyond the conservative OHLC rules above.
+
+#### Execution safety and idempotency
+
+Omitting `dry_run` always resolves to dry-run. A live order can reach the provider only when all live gates pass: the request explicitly sends `dry_run=false`, the saved bot configuration has `execution_mode=live`, the request explicitly confirms live routing, `TOPSIGNAL_LIVE_EXECUTION_ENABLED` is enabled, the process is not running under tests, the account is active and tradable, the funded/live-account restriction does not match, and all ordinary contract, position, session, staleness, cooldown, trade-count, and loss gates pass. Setting the environment flag alone is never sufficient. The `/evaluate` endpoint remains dry-run-only.
+
+Every actionable BUY or SELL signal receives a server-generated, versioned idempotency key derived from this tuple:
+
+`(user_id, bot_config_id, closed_candle_timestamp_utc, action, execution_mode)`
+
+The key is stored on the signal decision and order attempt. A partial unique database index on `(user_id, bot_config_id, idempotency_key)` is the final concurrency guard. If two evaluations race, only the winner can create the actionable attempt. The losing evaluation is preserved as a `duplicate_skip` decision and returns the original attempt ID; it never routes a second provider order. Provider custom tags are derived from the same key so an operator can reconcile the local attempt with ProjectX without exposing user or account data in the tag.
+
+Evaluation responses include a top-level `status`, `correlation_id`, optional `idempotency_key`, and optional `duplicate_of_order_attempt_id`. Status is one of `evaluated`, `held`, `risk_blocked`, `duplicate_skipped`, `dry_run_attempt`, `submitted`, or `error`. Correlation and idempotency identifiers are also attached to the relevant audit rows and structured, allow-listed logs; credentials and raw provider payloads are not included in those logs.
+
+Run transitions are constrained to `running -> stopped`, `running -> blocked`, or `running -> error`; terminal runs do not transition back to running. Starting again creates a new run, and a partial unique index permits at most one running row per user and bot configuration. Heartbeats, `last_evaluated_at`, `stop_reason`, and sanitized `last_error` make terminal and failure state inspectable. A blocked or failed run disables its bot configuration, and a failed start is retained as an error audit rather than being left running.
+
+There is no continuous TopBot runner in this release. Start and evaluate are request-driven, single-evaluation operations, and the optional ProjectX streaming runtime does not schedule bot evaluations. If continuous execution is added later, it must remain disabled by default, dry-run-only initially, and advance only on newly closed candles.
 
 ### Themes
 
@@ -267,7 +346,7 @@ The current router includes these product surfaces:
 - `/trades`: execution review
 - `/expenses`: expenses and payouts
 - `/journal`: daily journal
-- `/bot`: bot configuration and dry-run review
+- `/bot`: bot configuration, dry-run review, and deterministic backtesting
 - `/themes`: appearance and palette selection
 
 There are no separate `overview/` or `analytics/` prototype route directories in the current tree.
@@ -319,7 +398,8 @@ Important implementation detail:
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
-- ProjectX market candles are cached in `projectx_market_candles` for bot charting and replay-style reads.
+- Completed replay snapshots use `bot_backtests`; their source ProjectX candles remain in `projectx_market_candles`.
+- ProjectX market candles are cached in `projectx_market_candles` for bot charting and backtesting reads.
 - Expense rows include `source_id` so imported or generated rows can be deduplicated by source identity without colliding with a manual row that has the same date, amount, category, and account fields.
 
 ### External Integrations
@@ -337,7 +417,7 @@ Important implementation detail:
 
 - `frontend/src/app/`: app shell and router
 - `frontend/src/pages/`: routed product pages
-- `frontend/src/pages/bot/`: bot configuration page, signal chart, candle cache, and chart data helpers
+- `frontend/src/pages/bot/`: bot configuration, backtest panel, signal chart, candle cache, and chart data helpers
 - `frontend/src/pages/themes/`: theme gallery and live appearance preview
 - `frontend/src/lib/api.ts`: shared API client, request helpers, caches, and in-flight dedupe
 - `frontend/src/lib/types.ts`: frontend API types
@@ -349,9 +429,18 @@ Important implementation detail:
 - `backend/app/models.py`: SQLAlchemy models
 - `backend/app/bot_schemas.py`: bot API request/response schemas
 - `backend/app/trade_plan_schemas.py`: trade-plan evaluation request/response schemas
+- `backend/app/services/bot_strategy_registry.py`: immutable strategy metadata, validation adapters, and evaluator dispatch
+- `backend/app/services/bot_candle_acquisition.py`: strategy-specific candle and auxiliary-series acquisition
+- `backend/app/services/bot_market_analysis.py`: canonical closed-bar market-analysis contract and deterministic feature model
+- `backend/app/services/bot_risk.py`: pure, ordered execution-risk policy
+- `backend/app/services/bot_execution_safety.py`: idempotency keys, run transitions, live gates, correlation IDs, and safe logging
+- `backend/app/services/bot_serialization.py`: bot audit and API serialization
+- `backend/app/services/bot_backtesting.py`: closed-bar replay for registry-marked supported strategies; it has no order-routing dependency
+- `backend/app/services/bot_service.py`: compatibility facade, execution orchestration, and still-characterized strategy formulas awaiting safe incremental extraction
+- `backend/app/services/trade_plan_evaluator.py`: versioned trade geometry, risk, and scoring model
 - `backend/app/db.py`: engine/session setup and startup schema compatibility patches
 - `backend/app/auth.py`: auth middleware helpers and JWT validation
-- `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, streaming, and bot helpers
+- `backend/app/services/`: ProjectX sync, analytics, journaling, image storage, payout, streaming, bot evaluation, and backtesting helpers
 
 ### Database
 
@@ -502,14 +591,17 @@ Typical bot workflow:
 1. the frontend loads selectable accounts and `GET /api/bots`
 2. the user searches ProjectX contracts and saves a named bot configuration
 3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
-4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision, persists it, and returns market analysis plus optional trade-plan evaluation
-5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
-6. `POST /api/bots/{id}/stop` stops the latest running bot run
-7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
+4. `POST /api/bots/{id}/backtests` replays a bounded range of already stored, closed non-live candles and persists the reproducibility and result snapshots
+5. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision in dry-run mode, persists it, and returns market analysis plus optional trade-plan evaluation
+6. `POST /api/bots/{id}/start` creates a run, evaluates the selected strategy once, and records any dry-run attempt, live submission, duplicate skip, risk block, or error
+7. `POST /api/bots/{id}/stop` stops the latest running bot run
+8. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
 
 Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
 
-Trade-plan evaluation is also exposed directly through `POST /api/trade-plan/evaluate`. It scores a proposed trade plan against market context and returns score, grade, `take`/`wait`/`avoid` decision, confidence, reasons, warnings, positives, suggested adjustments, feature values, and category scores.
+An order-attempt row in `pending` means the durable local claim was written before provider routing, but no final provider result was committed locally. This state is intentionally not auto-retried: the provider may have accepted the order before a process or database failure made the outcome ambiguous. Reconcile the deterministic provider custom tag and the local correlation/idempotency identifiers against ProjectX before taking any manual recovery action. No background retry or reconciliation worker currently exists.
+
+Trade-plan evaluation is also exposed directly through `POST /api/trade-plan/evaluate`. Legacy fields such as `score`, `total_score`, `category_scores`, `risk_reward_ratio`, and the three `*_probability` analysis keys remain available for compatibility. New consumers should use the scoring-model version, category maximum/award maps, cap and penalty records, missing-input list, driver lists, `r_multiple`, and `scenario_weights` fields.
 
 ProjectX market-data reads have two refresh modes:
 
@@ -651,6 +743,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
+| `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
@@ -689,7 +782,8 @@ Frontend auth behavior:
 | `npm --prefix frontend run build` | Production frontend build |
 | `npm --prefix frontend run lint` | Frontend lint |
 | `npm --prefix frontend run test` | Frontend tests |
-| `backend\.venv\Scripts\python -m pytest backend\tests` | Backend tests |
+| `cd backend && .venv/bin/python -m pytest tests` | Backend tests (macOS/Linux) |
+| `cd backend; .venv\Scripts\python -m pytest tests` | Backend tests (Windows PowerShell) |
 
 ## Current Limitations
 
@@ -699,6 +793,7 @@ Frontend auth behavior:
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
 - The optional streaming lifecycle runtime persists position data, but the current UI does not expose those records directly.
 - The bot page exposes dry-run start/evaluate/stop controls, while live order routing remains backend-gated and intentionally absent from the current UI.
+- TopBot has no continuous evaluation worker, and ambiguous `pending` attempts require provider reconciliation rather than automatic retry.
 - There is no formal migration runner; schema evolution relies on raw SQL plus startup compatibility helpers.
 - Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
 

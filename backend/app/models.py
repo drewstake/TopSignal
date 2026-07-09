@@ -307,6 +307,57 @@ class BotConfig(Base):
     )
 
 
+class BotBacktest(Base):
+    __tablename__ = "bot_backtests"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="SET NULL"), nullable=True)
+    account_id = Column(BigInteger, nullable=False)
+    engine_version = Column(Text, nullable=False)
+    strategy_type = Column(Text, nullable=False)
+    contract_id = Column(Text, nullable=False)
+    symbol = Column(Text, nullable=True)
+    timeframe_unit = Column(Text, nullable=False)
+    timeframe_unit_number = Column(Integer, nullable=False)
+    requested_start = Column(DateTime(timezone=True), nullable=False)
+    requested_end = Column(DateTime(timezone=True), nullable=False)
+    actual_start = Column(DateTime(timezone=True), nullable=False)
+    actual_end = Column(DateTime(timezone=True), nullable=False)
+    starting_balance = Column(Numeric(18, 6), nullable=False)
+    commission_per_contract = Column(Numeric(18, 6), nullable=False, server_default="0")
+    slippage_ticks = Column(Numeric(18, 6), nullable=False, server_default="0")
+    tick_size = Column(Numeric(18, 6), nullable=False)
+    tick_value = Column(Numeric(18, 6), nullable=False)
+    bar_count = Column(Integer, nullable=False)
+    input_fingerprint = Column(Text, nullable=False)
+    config_snapshot = Column(JSON, nullable=False)
+    assumptions_snapshot = Column(JSON, nullable=False)
+    result_snapshot = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("requested_end > requested_start", name="bot_backtests_requested_range_check"),
+        CheckConstraint("actual_end >= actual_start", name="bot_backtests_actual_range_check"),
+        CheckConstraint("starting_balance > 0", name="bot_backtests_starting_balance_positive_check"),
+        CheckConstraint(
+            "commission_per_contract >= 0",
+            name="bot_backtests_commission_nonnegative_check",
+        ),
+        CheckConstraint("slippage_ticks >= 0", name="bot_backtests_slippage_nonnegative_check"),
+        CheckConstraint("tick_size > 0", name="bot_backtests_tick_size_positive_check"),
+        CheckConstraint("tick_value > 0", name="bot_backtests_tick_value_positive_check"),
+        CheckConstraint("timeframe_unit_number > 0", name="bot_backtests_timeframe_positive_check"),
+        CheckConstraint("bar_count > 0", name="bot_backtests_bar_count_positive_check"),
+        Index("idx_bot_backtests_user_config_created", "user_id", "bot_config_id", created_at.desc()),
+        Index("idx_bot_backtests_user_created", "user_id", created_at.desc()),
+    )
+
+
 class BotRun(Base):
     __tablename__ = "bot_runs"
 
@@ -324,12 +375,22 @@ class BotRun(Base):
     stopped_at = Column(DateTime(timezone=True), nullable=True)
     stop_reason = Column(Text, nullable=True)
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    last_evaluated_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
     raw_state = Column(JSON, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status in ('running','stopped','blocked','error')", name="bot_runs_status_check"),
         Index("idx_bot_runs_config_started", "user_id", "bot_config_id", "started_at"),
         Index("idx_bot_runs_account_status", "user_id", "account_id", "status"),
+        Index(
+            "uq_bot_runs_one_running_per_config",
+            "user_id",
+            "bot_config_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
+        ),
     )
 
 
@@ -353,12 +414,14 @@ class BotDecision(Base):
     candle_timestamp = Column(DateTime(timezone=True), nullable=True)
     price = Column(Numeric(18, 6), nullable=True)
     quantity = Column(Numeric(18, 6), nullable=True)
+    correlation_id = Column(Text, nullable=True)
+    idempotency_key = Column(Text, nullable=True)
     raw_payload = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint(
-            "decision_type in ('signal','risk_reject','order_attempt','lifecycle')",
+            "decision_type in ('signal','risk_reject','order_attempt','lifecycle','duplicate_skip')",
             name="bot_decisions_type_check",
         ),
         CheckConstraint("action in ('BUY','SELL','HOLD','NONE','STOP')", name="bot_decisions_action_check"),
@@ -380,6 +443,9 @@ class BotOrderAttempt(Base):
     bot_decision_id = Column(BigInteger, ForeignKey("bot_decisions.id", ondelete="SET NULL"), nullable=True)
     account_id = Column(BigInteger, nullable=False)
     contract_id = Column(Text, nullable=False)
+    execution_mode = Column(Text, nullable=False, default="dry_run", server_default="dry_run")
+    correlation_id = Column(Text, nullable=True)
+    idempotency_key = Column(Text, nullable=True)
     side = Column(Text, nullable=False)
     order_type = Column(Text, nullable=False, default="market", server_default="market")
     size = Column(Numeric(18, 6), nullable=False)
@@ -395,6 +461,10 @@ class BotOrderAttempt(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
 
     __table_args__ = (
+        CheckConstraint(
+            "execution_mode in ('dry_run','live')",
+            name="bot_order_attempts_execution_mode_check",
+        ),
         CheckConstraint("side in ('BUY','SELL')", name="bot_order_attempts_side_check"),
         CheckConstraint("order_type in ('market','limit','stop','trailing_stop')", name="bot_order_attempts_order_type_check"),
         CheckConstraint(
@@ -404,6 +474,15 @@ class BotOrderAttempt(Base):
         CheckConstraint("size > 0", name="bot_order_attempts_size_positive_check"),
         Index("idx_bot_order_attempts_config_created", "user_id", "bot_config_id", "created_at"),
         Index("idx_bot_order_attempts_account_created", "user_id", "account_id", "created_at"),
+        Index(
+            "uq_bot_order_attempts_idempotency_key",
+            "user_id",
+            "bot_config_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key is not null"),
+            sqlite_where=text("idempotency_key is not null"),
+        ),
     )
 
 

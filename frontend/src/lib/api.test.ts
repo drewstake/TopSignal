@@ -4,7 +4,7 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi } from "./api";
+import { accountsApi, botsApi } from "./api";
 
 describe("accountsApi", () => {
   beforeEach(() => {
@@ -55,6 +55,30 @@ describe("accountsApi", () => {
       entry_date: "2026-05-12",
       mode: "append_or_create",
       include_existing_notes: true,
+    });
+  });
+
+  it("posts a typed backtest request to the selected bot", async () => {
+    await botsApi.runBacktest(42, {
+      start: "2026-01-01T00:00:00.000Z",
+      end: "2026-01-31T23:59:59.999Z",
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/bots/42/backtests");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      start: "2026-01-01T00:00:00.000Z",
+      end: "2026-01-31T23:59:59.999Z",
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
     });
   });
 });

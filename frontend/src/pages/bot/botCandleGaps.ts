@@ -41,6 +41,15 @@ export interface GapRepairWindow {
   end: string;
 }
 
+/** Whether a gap was actually included in one of the bounded repair requests. */
+export function isGapCoveredByRepairWindows(gap: CandleGap, windows: readonly GapRepairWindow[]): boolean {
+  return windows.some((window_) => {
+    const startMs = Date.parse(window_.start);
+    const endMs = Date.parse(window_.end);
+    return Number.isFinite(startMs) && Number.isFinite(endMs) && gap.fromMs >= startMs && gap.toMs <= endMs;
+  });
+}
+
 const UNIT_SECONDS_BY_NAME: Record<BotTimeframeUnit, number> = {
   second: 1,
   minute: 60,
@@ -269,14 +278,18 @@ export function buildGapRangeKey(gap: CandleGap): string {
 }
 
 function dedupeSortedTimestamps(candles: ProjectXMarketCandle[]): { ms: number; iso: string }[] {
-  const byMs = new Map<number, string>();
+  const byMs = new Map<number, { iso: string; isPartial: boolean }>();
   for (const candle of candles) {
     const ms = Date.parse(candle.timestamp);
     if (Number.isFinite(ms)) {
-      byMs.set(ms, candle.timestamp);
+      const existing = byMs.get(ms);
+      if (existing && !existing.isPartial && candle.is_partial) {
+        continue;
+      }
+      byMs.set(ms, { iso: candle.timestamp, isPartial: candle.is_partial });
     }
   }
   return Array.from(byMs.entries())
-    .map(([ms, iso]) => ({ ms, iso }))
+    .map(([ms, row]) => ({ ms, iso: row.iso }))
     .sort((left, right) => left.ms - right.ms);
 }
