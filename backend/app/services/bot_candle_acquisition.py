@@ -46,6 +46,44 @@ def _service() -> Any:
     return import_module(".bot_service", package=__package__)
 
 
+def _canonical_candles(service: Any, candles: list[Any]) -> list[Any]:
+    """Defense-in-depth before any strategy consumes an acquired stream."""
+
+    # Registry adapter tests intentionally use opaque sentinels to assert
+    # argument identity. Real acquisition rows are always candle models.
+    if candles and all(not hasattr(row, "candle_timestamp") for row in candles):
+        return candles
+    closed = [row for row in candles if not bool(getattr(row, "is_partial", False))]
+    closed.sort(key=lambda row: service._as_utc(row.candle_timestamp))
+    seen: set[Any] = set()
+    previous_close = None
+    for row in closed:
+        timestamp = service._as_utc(row.candle_timestamp)
+        if timestamp in seen:
+            raise service.CandleIntegrityError(
+                f"duplicate_candle_timestamp:{timestamp.isoformat()}"
+            )
+        seen.add(timestamp)
+        if service.validate_candle_ohlcv(row) is not None:
+            raise service.CandleIntegrityError(
+                f"invalid_candle_ohlc:{timestamp.isoformat()}"
+            )
+        if previous_close is not None and timestamp < previous_close:
+            raise service.CandleIntegrityError(
+                f"overlapping_candles:{timestamp.isoformat()}"
+            )
+        previous_close = service.integrity_candle_close_time(
+            timestamp,
+            unit=str(row.unit),
+            unit_number=int(row.unit_number),
+        )
+    return closed
+
+
+def _canonical_candle_sets(service: Any, candle_sets: dict[str, list[Any]]) -> dict[str, list[Any]]:
+    return {key: _canonical_candles(service, rows) for key, rows in candle_sets.items()}
+
+
 def acquire_and_evaluate_strategy(
     db: Any,
     *,
@@ -74,6 +112,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candle_sets = _canonical_candle_sets(service, candle_sets)
         candles = candle_sets.get("1m", [])
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
@@ -91,6 +130,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candles = _canonical_candles(service, candles)
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
             candles,
@@ -110,6 +150,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candles = _canonical_candles(service, candles)
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
             candles,
@@ -126,6 +167,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candles = _canonical_candles(service, candles)
         return candles, service.dispatch_strategy_evaluator(
             strategy_type,
             candles,
@@ -141,6 +183,7 @@ def acquire_and_evaluate_strategy(
             strategy_type=strategy_type,
             strategy_params=strategy_params,
         )
+        candle_sets = _canonical_candle_sets(service, candle_sets)
         signal_candles = candle_sets.get("1H", [])
         evaluator_args: dict[str, Any] = {
             "higher_timeframe_candles": candle_sets.get("4H", []),
@@ -163,6 +206,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candle_sets = _canonical_candle_sets(service, candle_sets)
         signal_candles = candle_sets.get("signal", [])
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
@@ -180,6 +224,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candle_sets = _canonical_candle_sets(service, candle_sets)
         structure_candles = candle_sets.get("structure", [])
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
@@ -190,7 +235,10 @@ def acquire_and_evaluate_strategy(
         return structure_candles, signal
 
     if strategy_type == "atr_adjusted_relative_strength":
-        candles = service.fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
+        candles = _canonical_candles(
+            service,
+            service.fetch_and_store_candles(db, user_id=user_id, config=config, client=client),
+        )
         benchmark_candles = service.fetch_and_store_relative_strength_benchmark_candles(
             db,
             user_id=user_id,
@@ -198,6 +246,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        benchmark_candles = _canonical_candles(service, benchmark_candles)
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
             candles,
@@ -215,6 +264,7 @@ def acquire_and_evaluate_strategy(
             client=client,
             strategy_params=strategy_params,
         )
+        candle_sets = _canonical_candle_sets(service, candle_sets)
         asset_candles = candle_sets.get("5m", [])
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
@@ -238,6 +288,7 @@ def acquire_and_evaluate_strategy(
         client=client,
         minimum_lookback_bars=minimum_lookback_bars,
     )
+    candles = _canonical_candles(service, candles)
 
     if strategy_type == "donchian_breakout":
         latest_candle = candles[-1] if candles else None
@@ -289,6 +340,7 @@ def _acquire_and_evaluate_topbot(
         client=client,
         minimum_lookback_bars=300,
     )
+    main_candles = _canonical_candles(service, main_candles)
     source_overrides = strategy_params.get("source_strategy_params") or {}
     source_results: list[dict[str, Any]] = []
 

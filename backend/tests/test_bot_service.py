@@ -3242,7 +3242,12 @@ def test_candles_endpoint_returns_local_cache_without_provider_call(monkeypatch)
     )
 
     try:
-        db.add(_make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10))
+        db.add_all(
+            [
+                _make_candle(datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc), 9),
+                _make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 10),
+            ]
+        )
         db.commit()
 
         payload = main_module.get_projectx_market_candles(
@@ -3256,8 +3261,7 @@ def test_candles_endpoint_returns_local_cache_without_provider_call(monkeypatch)
             db=db,
         )
 
-        assert len(payload) == 1
-        assert payload[0]["close"] == 10.0
+        assert [row["close"] for row in payload] == [9.0, 10.0]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
@@ -3513,7 +3517,7 @@ def test_candles_endpoint_resolves_legacy_symbol_to_cached_contract(monkeypatch)
         payload = main_module.get_projectx_market_candles(
             contract_id="MNQ",
             symbol="MNQ",
-            start=datetime(2026, 4, 1, 9, 55, tzinfo=timezone.utc),
+            start=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
             end=datetime(2026, 4, 1, 10, 5, tzinfo=timezone.utc),
             unit="minute",
             unit_number=5,
@@ -3727,7 +3731,7 @@ def test_candles_endpoint_tries_active_symbol_contract_when_saved_contract_histo
             if kwargs["contract_id"] == "CON.F.US.MNQ.U26":
                 return [
                     {
-                        "timestamp": datetime(2026, 6, 25, 14, 0, tzinfo=timezone.utc),
+                        "timestamp": datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc),
                         "open": 20,
                         "high": 21,
                         "low": 19,
@@ -3889,7 +3893,7 @@ def test_candles_endpoint_refresh_replaces_cached_window(monkeypatch):
         engine.dispose()
 
 
-def test_candles_endpoint_partial_refresh_does_not_prune_closed_cache(monkeypatch):
+def test_candles_endpoint_rejects_stale_partial_without_pruning_closed_cache(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -3954,7 +3958,6 @@ def test_candles_endpoint_partial_refresh_does_not_prune_closed_cache(monkeypatc
         assert [_as_test_utc(row.candle_timestamp) for row in cached_rows] == [
             datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
             datetime(2026, 4, 1, 10, 1, tzinfo=timezone.utc),
-            datetime(2026, 4, 1, 10, 2, tzinfo=timezone.utc),
         ]
     finally:
         db.close()
@@ -4046,11 +4049,12 @@ def test_dry_run_evaluation_logs_order_attempt_without_submitting():
         place_order_called = False
 
         def retrieve_bars(self, **_kwargs):
+            base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=5)
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": base - timedelta(minutes=15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=10), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=5), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": base, "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -4146,7 +4150,7 @@ def test_macd_support_resistance_evaluation_serializes_trailing_stop_plan_into_o
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = SessionLocal()
 
-    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=20)
     higher_timeframe = [
         _make_hour_candle(base + timedelta(hours=index * 4), close=120 + index, low=118 + index, high=122 + index, unit_number=4)
         for index in range(5)
@@ -4267,7 +4271,7 @@ def test_donchian_reversal_uses_double_size_to_flip_position_without_risk_block(
 
     class StubClient:
         def retrieve_bars(self, **_kwargs):
-            base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+            base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=105)
             rows = [
                 {"timestamp": base + timedelta(minutes=index * 5), "open": 100, "high": 102, "low": 98, "close": 100, "volume": 1}
                 for index in range(20)
@@ -4384,11 +4388,12 @@ def test_live_evaluation_is_blocked_without_explicit_confirmation():
 
     class StubClient:
         def retrieve_bars(self, **_kwargs):
+            base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=5)
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": base - timedelta(minutes=15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=10), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=5), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": base, "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -4500,11 +4505,12 @@ def test_evaluation_uses_resolved_contract_for_decision_and_order_attempt():
 
         def retrieve_bars(self, **kwargs):
             assert kwargs["contract_id"] == "CON.F.US.MNQ.M26"
+            base = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=5)
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": base - timedelta(minutes=15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=10), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": base - timedelta(minutes=5), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": base, "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -4670,7 +4676,7 @@ def test_stop_without_active_run_links_lifecycle_decision_to_created_run():
         engine.dispose()
 
 
-def test_candles_endpoint_serves_cache_with_interior_gap_without_repair(monkeypatch):
+def test_candles_endpoint_automatically_repairs_interior_gap(monkeypatch):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -4682,15 +4688,38 @@ def test_candles_endpoint_serves_cache_with_interior_gap_without_repair(monkeypa
 
     user_id = "00000000-0000-0000-0000-000000000000"
     monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
-    monkeypatch.setattr(
-        main_module,
-        "_projectx_client_for_user",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider should not be called")),
-    )
+    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+
+    class StubClient:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "timestamp": base + timedelta(minutes=10),
+                    "open": 11.5,
+                    "high": 11.8,
+                    "low": 11.2,
+                    "close": 11.6,
+                    "volume": 5,
+                },
+                {
+                    "timestamp": base + timedelta(minutes=15),
+                    "open": 11.6,
+                    "high": 12.0,
+                    "low": 11.4,
+                    "close": 11.9,
+                    "volume": 6,
+                },
+            ]
+
+    client = StubClient()
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: client)
 
     try:
         fetched_at = datetime.now(timezone.utc)
-        base = fetched_at.replace(second=0, microsecond=0) - timedelta(minutes=30)
         # Interior hole: base+10m and base+15m are missing.
         for offset, close in ((0, 10), (5, 11), (20, 12), (25, 13)):
             db.add(_make_candle(base + timedelta(minutes=offset), close, fetched_at=fetched_at))
@@ -4707,9 +4736,8 @@ def test_candles_endpoint_serves_cache_with_interior_gap_without_repair(monkeypa
             db=db,
         )
 
-        # Documents the fast path: a covering, fresh cache is returned as-is even
-        # when it has interior holes. Backfill requires repair=True.
-        assert len(payload) == 4
+        assert len(client.calls) == 1
+        assert [row["close"] for row in payload] == [10.0, 11.0, 11.6, 11.9, 12.0, 13.0]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])

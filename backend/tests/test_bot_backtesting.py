@@ -767,6 +767,29 @@ def test_malformed_candle_streams_are_rejected(bars, error_fragment: str):
         _run(bars, evaluator=_hold)
 
 
+def test_backtest_gap_detection_ignores_futures_weekend_and_maintenance():
+    friday_close = datetime(2026, 4, 10, 20, 55, tzinfo=timezone.utc)
+    sunday_open = datetime(2026, 4, 12, 22, 0, tzinfo=timezone.utc)
+    maintenance_close = datetime(2026, 4, 13, 20, 55, tzinfo=timezone.utc)
+    maintenance_reopen = datetime(2026, 4, 13, 22, 0, tzinfo=timezone.utc)
+
+    assert backtesting_module._count_futures_session_gaps(
+        [_candle(friday_close), _candle(sunday_open)],
+        expected_seconds=5 * 60,
+        symbol="MNQ",
+    ) == 0
+    assert backtesting_module._count_futures_session_gaps(
+        [_candle(maintenance_close), _candle(maintenance_reopen)],
+        expected_seconds=5 * 60,
+        symbol="MNQ",
+    ) == 0
+    assert backtesting_module._count_futures_session_gaps(
+        [_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=10))],
+        expected_seconds=5 * 60,
+        symbol="MNQ",
+    ) == 1
+
+
 def test_unsupported_strategy_fails_explicitly_without_approximation():
     bars = [_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=5))]
 
@@ -1036,6 +1059,151 @@ def test_orb_rejects_an_incompatible_non_minute_timeframe():
             evaluator=_hold,
             end=BASE_TIME + timedelta(hours=2),
         )
+
+
+def test_backtest_route_repairs_missing_execution_bar_before_replay(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session)
+    timestamps = [
+        BASE_TIME - timedelta(minutes=10),
+        BASE_TIME - timedelta(minutes=5),
+        BASE_TIME,
+        BASE_TIME + timedelta(minutes=10),
+        BASE_TIME + timedelta(minutes=15),
+    ]
+    db_session.add_all(
+        [_candle(timestamp, close_price=100 + index) for index, timestamp in enumerate(timestamps)]
+    )
+    db_session.commit()
+
+    authoritative_timestamps = [
+        BASE_TIME - timedelta(minutes=10),
+        BASE_TIME - timedelta(minutes=5),
+        BASE_TIME,
+        BASE_TIME + timedelta(minutes=5),
+        BASE_TIME + timedelta(minutes=10),
+        BASE_TIME + timedelta(minutes=15),
+    ]
+
+    class StubClient:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "timestamp": timestamp,
+                    "open": 100 + index,
+                    "high": 101 + index,
+                    "low": 99 + index,
+                    "close": 100 + index,
+                    "volume": 10,
+                }
+                for index, timestamp in enumerate(authoritative_timestamps)
+                if kwargs["start"] <= timestamp <= kwargs["end"]
+            ]
+
+    client = StubClient()
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: client)
+
+    response = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=BotBacktestIn(
+            start=BASE_TIME,
+            end=BASE_TIME + timedelta(minutes=20),
+            commission_per_contract=0,
+            slippage_ticks=0,
+        ),
+        db=db_session,
+    )
+
+    assert len(client.calls) == 1
+    assert response["range"]["bar_count"] == 4
+    repaired = (
+        db_session.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.candle_timestamp == BASE_TIME + timedelta(minutes=5))
+        .one()
+    )
+    assert float(repaired.close_price) == 103.0
+    assert db_session.query(BotBacktest).count() == 1
+
+
+def test_backtest_route_does_not_persist_when_integrity_remains_unresolved(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session)
+    db_session.add_all(
+        [
+            _candle(BASE_TIME - timedelta(minutes=10)),
+            _candle(BASE_TIME - timedelta(minutes=5)),
+            _candle(BASE_TIME, high_price=99, low_price=98, close_price=100),
+            _candle(BASE_TIME + timedelta(minutes=5)),
+        ]
+    )
+    db_session.commit()
+
+    class EmptyClient:
+        calls = 0
+
+        def retrieve_bars(self, **_kwargs):
+            self.calls += 1
+            return []
+
+    client = EmptyClient()
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", lambda *_args, **_kwargs: client)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main_module.create_trading_bot_backtest(
+            bot_config_id=config.id,
+            payload=BotBacktestIn(
+                start=BASE_TIME,
+                end=BASE_TIME + timedelta(minutes=10),
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "candle_integrity_unresolved" in str(exc_info.value.detail)
+    assert client.calls == 1
+    assert db_session.query(BotBacktest).count() == 0
+
+
+def test_topbot_backtest_preflight_repairs_every_required_stream(db_session, monkeypatch):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["support_resistance"],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+            "minimum_reward_risk": 1.5,
+        },
+    )
+    observed: list[tuple[str, int]] = []
+
+    def record_ensure(*_args, **kwargs):
+        observed.append((kwargs["unit"], kwargs["unit_number"]))
+        assert kwargs["strict_integrity"] is True
+        return []
+
+    monkeypatch.setattr(backtesting_module.bot_service_module, "ensure_market_candles", record_ensure)
+
+    backtesting_module._ensure_backtest_candle_integrity(
+        db_session,
+        user_id=OWNER_ID,
+        config=config,
+        client=object(),
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=20),
+        primary_warmup_bars=25,
+    )
+
+    assert observed == [("minute", 5), ("hour", 4), ("hour", 1)]
 
 
 def test_authenticated_route_reuses_real_strategy_and_never_routes_orders(

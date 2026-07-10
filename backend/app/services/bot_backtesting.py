@@ -36,7 +36,12 @@ from .bot_strategy_registry import (
     BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
     get_strategy_definition,
 )
-from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+from .trading_day import (
+    TRADING_TZ,
+    is_expected_futures_candle,
+    trading_day_bounds_utc,
+    trading_day_date,
+)
 
 
 BACKTEST_ENGINE_VERSION = "1.1.0"
@@ -1293,11 +1298,11 @@ class BacktestEngine:
             str(self.config.timeframe_unit), int(self.config.timeframe_unit_number)
         )
         if expected_seconds is not None:
-            gaps = 0
-            for previous, current in zip(self.execution_candles, self.execution_candles[1:]):
-                delta = (_as_utc(current.candle_timestamp) - _as_utc(previous.candle_timestamp)).total_seconds()
-                if delta > expected_seconds * 1.5:
-                    gaps += 1
+            gaps = _count_futures_session_gaps(
+                self.execution_candles,
+                expected_seconds=expected_seconds,
+                symbol=self.config.symbol,
+            )
             if gaps:
                 self.warnings.append(
                     f"Detected {gaps} candle gap(s); the engine used the next available bar without interpolation."
@@ -1334,14 +1339,10 @@ class BacktestEngine:
                     if _as_utc(row.candle_timestamp) >= self.settings.start
                     and _candle_close_time(row) <= self.settings.end
                 ]
-                gaps = sum(
-                    1
-                    for previous, current in zip(execution_rows, execution_rows[1:])
-                    if (
-                        _as_utc(current.candle_timestamp)
-                        - _as_utc(previous.candle_timestamp)
-                    ).total_seconds()
-                    > expected * 1.5
+                gaps = _count_futures_session_gaps(
+                    execution_rows,
+                    expected_seconds=expected,
+                    symbol=spec.symbol or self.config.symbol,
                 )
                 if gaps:
                     self.warnings.append(
@@ -1899,12 +1900,160 @@ def run_backtest(
     ).run()
 
 
+def _ensure_backtest_candle_integrity(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: Any,
+    start: datetime,
+    end: datetime,
+    primary_warmup_bars: int,
+) -> None:
+    """Repair every stored stream before the pure replay reads its snapshot."""
+
+    primary_unit = str(config.timeframe_unit)
+    primary_unit_number = int(config.timeframe_unit_number)
+    primary_start = _cached_backtest_repair_start(
+        db,
+        user_id=user_id,
+        contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        unit=primary_unit,
+        unit_number=primary_unit_number,
+        start=start,
+        warmup_bars=primary_warmup_bars,
+        minimum_warmup_bars=max(
+            0,
+            _strategy_history_bars(config, hard_minimum=True) - 1,
+        ),
+    )
+    try:
+        bot_service_module.ensure_market_candles(
+            db,
+            user_id=user_id,
+            client=client,
+            contract_id=str(config.contract_id),
+            symbol=config.symbol,
+            live=False,
+            start=primary_start,
+            end=end,
+            unit=primary_unit,
+            unit_number=primary_unit_number,
+            limit=MAX_BACKTEST_BARS,
+            include_partial_bar=False,
+            strict_integrity=True,
+        )
+
+        if str(config.strategy_type) != _TOPBOT_STRATEGY:
+            return
+        primary_key = _topbot_asset_stream_key(primary_unit, primary_unit_number)
+        for key, stream_spec in _topbot_stream_specs(config).items():
+            if key == primary_key:
+                continue
+            identifier = stream_spec.contract_id or stream_spec.symbol
+            if identifier is None:
+                raise InsufficientBacktestDataError(
+                    f"candle_integrity_unresolved:{key}: missing contract or symbol"
+                )
+            stream_start = _cached_backtest_repair_start(
+                db,
+                user_id=user_id,
+                contract_id=stream_spec.contract_id,
+                symbol=stream_spec.symbol,
+                unit=stream_spec.unit,
+                unit_number=stream_spec.unit_number,
+                start=start,
+                warmup_bars=stream_spec.warmup_bars,
+                minimum_warmup_bars=stream_spec.warmup_bars,
+            )
+            bot_service_module.ensure_market_candles(
+                db,
+                user_id=user_id,
+                client=client,
+                contract_id=identifier,
+                symbol=stream_spec.symbol,
+                live=False,
+                start=stream_start,
+                end=end,
+                unit=stream_spec.unit,
+                unit_number=stream_spec.unit_number,
+                limit=min(MAX_TOPBOT_REPLAY_STREAM_BARS, MAX_BACKTEST_BARS),
+                include_partial_bar=False,
+                strict_integrity=True,
+            )
+    except bot_service_module.CandleIntegrityError as exc:
+        raise InsufficientBacktestDataError(str(exc)) from exc
+
+
+def _backtest_repair_start(
+    start: datetime,
+    *,
+    unit: str,
+    unit_number: int,
+    warmup_bars: int,
+) -> datetime:
+    seconds = _timeframe_seconds(unit, unit_number)
+    if seconds is None:
+        seconds = 31 * 24 * 60 * 60 * max(1, int(unit_number))
+    lookback = timedelta(seconds=seconds * max(1, int(warmup_bars)) * 3)
+    if unit in {"second", "minute", "hour"}:
+        lookback = max(lookback, timedelta(days=7))
+    return _as_utc(start) - lookback
+
+
+def _cached_backtest_repair_start(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str | None,
+    symbol: str | None,
+    unit: str,
+    unit_number: int,
+    start: datetime,
+    warmup_bars: int,
+    minimum_warmup_bars: int,
+) -> datetime:
+    query = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == unit)
+        .filter(ProjectXMarketCandle.unit_number == unit_number)
+        .filter(ProjectXMarketCandle.candle_timestamp < start)
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+    )
+    if contract_id is not None:
+        query = query.filter(ProjectXMarketCandle.contract_id == contract_id)
+    elif symbol is not None:
+        query = query.filter(
+            or_(
+                ProjectXMarketCandle.contract_id == symbol,
+                ProjectXMarketCandle.symbol == symbol,
+            )
+        )
+    cached = (
+        query.order_by(ProjectXMarketCandle.candle_timestamp.desc())
+        .limit(max(1, int(warmup_bars)))
+        .all()
+    )
+    if len(cached) >= max(0, int(minimum_warmup_bars)) and cached:
+        return min(_as_utc(row.candle_timestamp) for row in cached)
+    return _backtest_repair_start(
+        start,
+        unit=unit,
+        unit_number=unit_number,
+        warmup_bars=warmup_bars,
+    )
+
+
 def create_bot_backtest(
     db: Session,
     *,
     user_id: str,
     bot_config_id: int,
     payload: Any,
+    client: Any | None = None,
 ) -> BotBacktest:
     config = (
         db.query(BotConfig)
@@ -1933,26 +2082,6 @@ def create_bot_backtest(
             f"instrument_metadata_missing:{symbol_key or config.contract_id}"
         )
 
-    execution_query = (
-        db.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.user_id == user_id)
-        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-        .filter(ProjectXMarketCandle.live.is_(False))
-        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-        .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp >= start)
-        .filter(ProjectXMarketCandle.candle_timestamp <= end)
-        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .limit(MAX_BACKTEST_BARS + 1)
-    )
-    execution_rows = execution_query.all()
-    execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
-    if len(execution_rows) > MAX_BACKTEST_BARS:
-        raise BacktestConfigurationError(
-            f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}"
-        )
-
     rolling_warmup_limit = min(
         MAX_BACKTEST_BARS,
         max(
@@ -1974,6 +2103,38 @@ def create_bot_backtest(
         config,
         rolling_limit=rolling_warmup_limit,
     )
+
+    if client is not None:
+        _ensure_backtest_candle_integrity(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            start=start,
+            end=end,
+            primary_warmup_bars=warmup_limit,
+        )
+
+    execution_query = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
+        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+        .filter(ProjectXMarketCandle.candle_timestamp >= start)
+        .filter(ProjectXMarketCandle.candle_timestamp <= end)
+        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+        .limit(MAX_BACKTEST_BARS + 1)
+    )
+    execution_rows = execution_query.all()
+    execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
+    if len(execution_rows) > MAX_BACKTEST_BARS:
+        raise BacktestConfigurationError(
+            f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}"
+        )
+
     warmup_rows = (
         db.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.user_id == user_id)
@@ -2632,7 +2793,7 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
         "slippage_rule": "configured_ticks_are_applied_adversely_to_every_entry_and_exit_fill",
         "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
         "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
-        "market_data": "stored_user_scoped_non_live_closed_candles_only; no_provider_fetch",
+        "market_data": "backend_repaired_user_scoped_non_live_closed_candles; replay_has_no_provider_access",
         "live_order_routing": "disabled_by_architecture",
         "timezone": str(getattr(TRADING_TZ, "key", "America/New_York")),
         "commission_per_contract": _clean(settings.commission_per_contract),
@@ -2647,6 +2808,41 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
 def _timeframe_seconds(unit: str, unit_number: int) -> int | None:
     seconds = _UNIT_SECONDS.get(unit)
     return seconds * unit_number if seconds is not None else None
+
+
+def _range_contains_expected_futures_gap(
+    previous_timestamp: datetime,
+    current_timestamp: datetime,
+    *,
+    expected_seconds: int,
+    symbol: str | None,
+) -> bool:
+    interval = timedelta(seconds=max(1, int(expected_seconds)))
+    missing_start = _as_utc(previous_timestamp) + interval
+    missing_end = _as_utc(current_timestamp)
+    return missing_start < missing_end and is_expected_futures_candle(
+        missing_start,
+        missing_end,
+        symbol=symbol,
+    )
+
+
+def _count_futures_session_gaps(
+    candles: list[ProjectXMarketCandle],
+    *,
+    expected_seconds: int,
+    symbol: str | None,
+) -> int:
+    return sum(
+        1
+        for previous, current in zip(candles, candles[1:])
+        if _range_contains_expected_futures_gap(
+            _as_utc(previous.candle_timestamp),
+            _as_utc(current.candle_timestamp),
+            expected_seconds=expected_seconds,
+            symbol=symbol or getattr(previous, "symbol", None),
+        )
+    )
 
 
 def _max_evaluator_input_bars(config: BotConfig, *, rolling_limit: int) -> int:
@@ -2711,7 +2907,12 @@ def _require_complete_session_prefix(
         delta = (
             _as_utc(current.candle_timestamp) - _as_utc(previous.candle_timestamp)
         ).total_seconds()
-        if delta != expected_interval_seconds:
+        if delta != expected_interval_seconds and _range_contains_expected_futures_gap(
+            _as_utc(previous.candle_timestamp),
+            _as_utc(current.candle_timestamp),
+            expected_seconds=expected_interval_seconds,
+            symbol=getattr(previous, "symbol", None),
+        ):
             raise InsufficientBacktestDataError(
                 "insufficient_backtest_data: incomplete_session_history: "
                 f"{strategy_type} has a missing session candle after "

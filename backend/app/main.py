@@ -185,10 +185,9 @@ from .services.bot_service import (
     list_market_candles,
     list_bot_configs,
     market_candle_cache_covers_request,
+    market_candle_cache_integrity_report,
     market_candle_cache_needs_refresh,
     market_candle_rows_are_stale,
-    next_market_candle_fetch_start,
-    prune_market_candle_cache_range,
     resolve_market_contract,
     serialize_bot_config,
     serialize_bot_decision,
@@ -1122,11 +1121,11 @@ def get_projectx_market_candles(
     repair: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Serve candles from the per-user cache, fetching from ProjectX when needed.
+    """Serve backend-validated candles, repairing the per-user cache as needed.
 
-    `refresh` forces a full re-fetch and prunes cached rows the provider no longer
-    returns. `repair` also forces a full-window fetch (so interior holes in the
-    cache get backfilled) but merges with existing cache instead of pruning.
+    Integrity repair is automatic. ``repair`` remains a compatibility flag that
+    forces a full-window audit/fetch, while ``refresh`` additionally treats the
+    provider's non-empty response as authoritative for pruning that window.
     """
     user_id = get_authenticated_user_id()
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
@@ -1146,11 +1145,21 @@ def get_projectx_market_candles(
             unit=unit,
             unit_number=unit_number,
             limit=limit,
-            include_partial_bar=include_partial_bar,
+            include_partial_bar=True,
         )
-        fallback_candles = cached_candles
-        cached_covers_request = market_candle_cache_covers_request(
+        cached_integrity = market_candle_cache_integrity_report(
             cached_candles,
+            start=start_utc,
+            end=end_utc,
+            unit=unit,
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+            symbol=requested_symbol,
+        )
+        fallback_candles = list(cached_integrity.valid_rows)
+        cached_covers_request = market_candle_cache_covers_request(
+            list(cached_integrity.valid_rows),
             start=start_utc,
             unit=unit,
             unit_number=unit_number,
@@ -1161,15 +1170,16 @@ def get_projectx_market_candles(
             and not refresh
             and not repair
             and cached_covers_request
+            and cached_integrity.is_complete
             and not market_candle_cache_needs_refresh(
-                cached_candles,
+                list(cached_integrity.valid_rows),
                 end=end_utc,
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
             )
         ):
-            return [serialize_market_candle(row) for row in cached_candles]
+            return [serialize_market_candle(row) for row in cached_integrity.valid_rows]
 
         client = _projectx_client_for_user(db, user_id=user_id)
         resolved_contract_id, resolved_symbol = resolve_market_contract(
@@ -1189,12 +1199,22 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 limit=limit,
-                include_partial_bar=include_partial_bar,
+                include_partial_bar=True,
             )
-            if cached_candles:
-                fallback_candles = cached_candles
-            cached_covers_request = market_candle_cache_covers_request(
+            cached_integrity = market_candle_cache_integrity_report(
                 cached_candles,
+                start=start_utc,
+                end=end_utc,
+                unit=unit,
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+                symbol=resolved_symbol or requested_symbol,
+            )
+            if cached_integrity.valid_rows:
+                fallback_candles = list(cached_integrity.valid_rows)
+            cached_covers_request = market_candle_cache_covers_request(
+                list(cached_integrity.valid_rows),
                 start=start_utc,
                 unit=unit,
                 unit_number=unit_number,
@@ -1205,28 +1225,18 @@ def get_projectx_market_candles(
                 and not refresh
                 and not repair
                 and cached_covers_request
+                and cached_integrity.is_complete
                 and not market_candle_cache_needs_refresh(
-                    cached_candles,
+                    list(cached_integrity.valid_rows),
                     end=end_utc,
                     unit=unit,
                     unit_number=unit_number,
                     include_partial_bar=include_partial_bar,
                 )
             ):
-                return [serialize_market_candle(row) for row in cached_candles]
+                return [serialize_market_candle(row) for row in cached_integrity.valid_rows]
 
         fetch_start_utc = start_utc
-        # A repair request always fetches the full window so interior cache holes
-        # are refilled; the normal path only extends the cached tail.
-        if cached_candles and not refresh and not repair and cached_covers_request:
-            fetch_start_utc = next_market_candle_fetch_start(
-                cached_candles,
-                start=start_utc,
-                unit=unit,
-                unit_number=unit_number,
-            )
-            if fetch_start_utc > end_utc:
-                return [serialize_market_candle(row) for row in cached_candles]
 
         active_lookup_symbol = requested_symbol or resolved_symbol
         active_contract_fallback_attempted = False
@@ -1259,6 +1269,8 @@ def get_projectx_market_candles(
                 unit_number=unit_number,
                 limit=limit,
                 include_partial_bar=include_partial_bar,
+                force_refresh=refresh,
+                force_full_repair=repair,
             )
 
         if not candles:
@@ -1276,6 +1288,8 @@ def get_projectx_market_candles(
                     unit_number=unit_number,
                     limit=limit,
                     include_partial_bar=include_partial_bar,
+                    force_refresh=refresh,
+                    force_full_repair=repair,
                 )
             except ProjectXClientError:
                 active_contract_fallback_attempted = True
@@ -1294,6 +1308,8 @@ def get_projectx_market_candles(
                         unit_number=unit_number,
                         limit=limit,
                         include_partial_bar=include_partial_bar,
+                        force_refresh=refresh,
+                        force_full_repair=repair,
                     )
                 if not active_candles:
                     raise
@@ -1325,40 +1341,13 @@ def get_projectx_market_candles(
                 unit_number=unit_number,
                 limit=limit,
                 include_partial_bar=include_partial_bar,
+                force_refresh=refresh,
+                force_full_repair=repair,
             )
             if _market_candle_rows_have_newer_tail(active_candles, candles):
                 candles = active_candles
 
-        response_contract_id = str(candles[-1].contract_id) if candles else resolved_contract_id
-        if refresh and not include_partial_bar:
-            prune_contract_id = response_contract_id
-            prune_market_candle_cache_range(
-                db,
-                user_id=user_id,
-                contract_id=prune_contract_id,
-                live=live,
-                start=start_utc,
-                end=end_utc,
-                unit=unit,
-                unit_number=unit_number,
-                keep_timestamps=[row.candle_timestamp for row in candles],
-            )
         db.commit()
-        if cached_candles and not refresh:
-            combined_candles = list_market_candles(
-                db,
-                user_id=user_id,
-                contract_id=response_contract_id,
-                live=live,
-                start=start_utc,
-                end=end_utc,
-                unit=unit,
-                unit_number=unit_number,
-                limit=limit,
-                include_partial_bar=include_partial_bar,
-            )
-            if combined_candles:
-                return [serialize_market_candle(row) for row in combined_candles]
     except ProjectXClientError as exc:
         db.rollback()
         if fallback_candles:
@@ -1403,6 +1392,8 @@ def _fetch_active_symbol_market_candles(
     unit_number: int,
     limit: int,
     include_partial_bar: bool,
+    force_refresh: bool = False,
+    force_full_repair: bool = False,
 ) -> list[ProjectXMarketCandle]:
     normalized_symbol = str(lookup_symbol or "").strip()
     if not normalized_symbol or not _looks_like_projectx_contract_id(current_contract_id):
@@ -1441,6 +1432,8 @@ def _fetch_active_symbol_market_candles(
         unit_number=unit_number,
         limit=limit,
         include_partial_bar=include_partial_bar,
+        force_refresh=force_refresh,
+        force_full_repair=force_full_repair,
     )
 
 
@@ -1631,17 +1624,26 @@ def create_trading_bot_backtest(
     payload: BotBacktestIn,
     db: Session = Depends(get_db),
 ):
-    """Replay stored candles without fetching data or invoking any order path."""
+    """Repair stored candles when possible, then replay without any order path."""
 
     user_id = get_authenticated_user_id()
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     try:
+        client: ProjectXClient | None = None
+        try:
+            client = _projectx_client_for_user(db, user_id=user_id)
+        except Exception as exc:
+            # A complete local snapshot remains replayable when credentials are
+            # temporarily unavailable. The replay validators still reject bad
+            # or insufficient cached data.
+            logger.warning("Backtest candle repair unavailable; using vetted cache: %s", exc)
         row = create_bot_backtest(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
             payload=payload,
+            client=client,
         )
         db.commit()
     except LookupError as exc:
@@ -1656,6 +1658,9 @@ def create_trading_bot_backtest(
     except BacktestError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
     except Exception:
         db.rollback()
         raise

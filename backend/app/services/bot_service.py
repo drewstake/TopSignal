@@ -8,7 +8,7 @@ from datetime import datetime, time, timedelta, timezone
 from numbers import Number
 from typing import Any, Iterable
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -41,6 +41,19 @@ from .bot_execution_safety import (
 )
 from .projectx_accounts import get_projectx_account_row
 from .projectx_client import ProjectXClient, ProjectXClientError
+from .candle_integrity import (
+    CandleIntegrityReport,
+    CandleRepairRange,
+    audit_candle_rows,
+    candle_close_time as integrity_candle_close_time,
+    candle_interval,
+    clear_failed_repair,
+    normalize_provider_bars,
+    note_failed_repair,
+    repair_request_in_cooldown,
+    retrieve_bars_singleflight,
+    validate_candle_ohlcv,
+)
 from .bot_strategy_registry import (
     SUPPORTED_STRATEGY_IDENTIFIERS,
     dispatch_strategy_evaluator,
@@ -72,6 +85,8 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_MARKET_CANDLE_PROVIDER_LIMIT = 20_000
+_MARKET_CANDLE_INTEGRITY_QUERY_PADDING = 64
 _EVALUATION_INTRADAY_LOOKBACK_FLOOR = timedelta(days=7)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
@@ -505,6 +520,10 @@ class BotRunEvaluationError(RuntimeError):
         self.cause = cause
         self.run = run
         self.correlation_id = correlation_id
+
+
+class CandleIntegrityError(RuntimeError):
+    """A strict consumer could not obtain a complete authoritative candle stream."""
 
 
 def list_bot_configs(
@@ -1326,25 +1345,20 @@ def fetch_and_store_fvg_sweep_mss_candles(
         unit_seconds = _UNIT_SECONDS_BY_NAME[unit]
         lookback_seconds = unit_seconds * unit_number * limit * 3
         start = now - timedelta(seconds=max(lookback_seconds, unit_seconds * unit_number * 25))
-        bars = client.retrieve_bars(
-            contract_id=contract_id,
-            live=False,
-            start=start,
-            end=now,
-            unit=_PROJECTX_UNIT_BY_NAME[unit],
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=False,
-        )
-        candle_sets[key] = store_market_candles(
+        candle_sets[key] = fetch_and_store_market_candles(
             db,
             user_id=user_id,
+            client=client,
             contract_id=contract_id,
             symbol=symbol,
             live=False,
+            start=start,
+            end=now,
             unit=unit,
             unit_number=unit_number,
-            bars=bars,
+            limit=limit,
+            include_partial_bar=False,
+            preserve_cached_history=True,
         )
 
     return candle_sets
@@ -1519,25 +1533,20 @@ def fetch_and_store_support_resistance_candles(
         unit_seconds = _UNIT_SECONDS_BY_NAME[unit]
         lookback_seconds = unit_seconds * unit_number * bars_per_timeframe * 3
         start = now - timedelta(seconds=lookback_seconds)
-        bars = client.retrieve_bars(
-            contract_id=contract_id,
-            live=False,
-            start=start,
-            end=now,
-            unit=_PROJECTX_UNIT_BY_NAME[unit],
-            unit_number=unit_number,
-            limit=bars_per_timeframe,
-            include_partial_bar=False,
-        )
-        candle_sets[label] = store_market_candles(
+        candle_sets[label] = fetch_and_store_market_candles(
             db,
             user_id=user_id,
+            client=client,
             contract_id=contract_id,
             symbol=symbol,
             live=False,
+            start=start,
+            end=now,
             unit=unit,
             unit_number=unit_number,
-            bars=bars,
+            limit=bars_per_timeframe,
+            include_partial_bar=False,
+            preserve_cached_history=True,
         )
 
     return candle_sets
@@ -1567,51 +1576,43 @@ def fetch_and_store_supertrend_pivot_candles(
     signal_unit_seconds = _UNIT_SECONDS_BY_NAME[signal_unit]
     signal_lookback_seconds = signal_unit_seconds * signal_unit_number * lookback_bars * 3
     signal_start = now - timedelta(seconds=signal_lookback_seconds)
-    signal_bars = client.retrieve_bars(
+    signal_candles = fetch_and_store_market_candles(
+        db,
+        user_id=user_id,
+        client=client,
         contract_id=contract_id,
+        symbol=symbol,
         live=False,
         start=signal_start,
         end=now,
-        unit=_PROJECTX_UNIT_BY_NAME[signal_unit],
+        unit=signal_unit,
         unit_number=signal_unit_number,
         limit=lookback_bars,
         include_partial_bar=False,
+        preserve_cached_history=True,
     )
 
     daily_lookback_seconds = _UNIT_SECONDS_BY_NAME["day"] * daily_bars * 3
     daily_start = now - timedelta(seconds=daily_lookback_seconds)
-    daily_bars_payload = client.retrieve_bars(
+    daily_candles = fetch_and_store_market_candles(
+        db,
+        user_id=user_id,
+        client=client,
         contract_id=contract_id,
+        symbol=symbol,
         live=False,
         start=daily_start,
         end=now,
-        unit=_PROJECTX_UNIT_BY_NAME["day"],
+        unit="day",
         unit_number=1,
         limit=daily_bars,
         include_partial_bar=False,
+        preserve_cached_history=True,
     )
 
     return {
-        "signal": store_market_candles(
-            db,
-            user_id=user_id,
-            contract_id=contract_id,
-            symbol=symbol,
-            live=False,
-            unit=signal_unit,
-            unit_number=signal_unit_number,
-            bars=signal_bars,
-        ),
-        "1D": store_market_candles(
-            db,
-            user_id=user_id,
-            contract_id=contract_id,
-            symbol=symbol,
-            live=False,
-            unit="day",
-            unit_number=1,
-            bars=daily_bars_payload,
-        ),
+        "signal": signal_candles,
+        "1D": daily_candles,
     }
 
 
@@ -1634,32 +1635,28 @@ def fetch_and_store_delayed_orb_candles(
         symbol=config.symbol,
         live=False,
     )
-    intraday_bars: list[dict[str, Any]] = []
+    intraday_candles: list[ProjectXMarketCandle] = []
     if session_start <= now:
         minimum_required_bars = opening_range_minutes + confirmation_minutes + 5
         minutes_since_session_start = max(0, int((now - session_start).total_seconds() // 60) + 1)
         limit = max(minimum_required_bars, minutes_since_session_start + 5)
-        intraday_bars = client.retrieve_bars(
-            contract_id=contract_id,
-            live=False,
-            start=session_start,
-            end=now,
-            unit=_PROJECTX_UNIT_BY_NAME["minute"],
-            unit_number=1,
-            limit=limit,
-            include_partial_bar=False,
-        )
-    return {
-        "1m": store_market_candles(
+        intraday_candles = fetch_and_store_market_candles(
             db,
             user_id=user_id,
+            client=client,
             contract_id=contract_id,
             symbol=symbol,
             live=False,
+            start=session_start,
+            end=now,
             unit="minute",
             unit_number=1,
-            bars=intraday_bars,
-        ),
+            limit=limit,
+            include_partial_bar=False,
+            preserve_cached_history=True,
+        )
+    return {
+        "1m": intraday_candles,
         "1D": [],
     }
 
@@ -1693,25 +1690,20 @@ def fetch_and_store_orb_fibonacci_candles(
         symbol=config.symbol,
         live=False,
     )
-    bars = client.retrieve_bars(
-        contract_id=contract_id,
-        live=False,
-        start=session_start,
-        end=now,
-        unit=_PROJECTX_UNIT_BY_NAME["minute"],
-        unit_number=unit_number,
-        limit=limit,
-        include_partial_bar=False,
-    )
-    return store_market_candles(
+    return fetch_and_store_market_candles(
         db,
         user_id=user_id,
+        client=client,
         contract_id=contract_id,
         symbol=symbol,
         live=False,
+        start=session_start,
+        end=now,
         unit="minute",
         unit_number=unit_number,
-        bars=bars,
+        limit=limit,
+        include_partial_bar=False,
+        preserve_cached_history=True,
     )
 
 
@@ -1731,12 +1723,65 @@ def fetch_and_store_market_candles(
     include_partial_bar: bool = False,
     prefer_current_contract: bool = False,
     preserve_cached_history: bool = False,
+    force_refresh: bool = False,
+    force_full_repair: bool = False,
+    strict_integrity: bool = False,
 ) -> list[ProjectXMarketCandle]:
+    return ensure_market_candles(
+        db,
+        user_id=user_id,
+        client=client,
+        contract_id=contract_id,
+        symbol=symbol,
+        live=live,
+        start=start,
+        end=end,
+        unit=unit,
+        unit_number=unit_number,
+        limit=limit,
+        include_partial_bar=include_partial_bar,
+        prefer_current_contract=prefer_current_contract,
+        force_refresh=force_refresh,
+        force_full_repair=force_full_repair,
+        strict_integrity=strict_integrity,
+    )
+
+
+def ensure_market_candles(
+    db: Session,
+    *,
+    user_id: str,
+    client: ProjectXClient,
+    contract_id: str,
+    symbol: str | None,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+    include_partial_bar: bool = False,
+    prefer_current_contract: bool = False,
+    force_refresh: bool = False,
+    force_full_repair: bool = False,
+    strict_integrity: bool = False,
+) -> list[ProjectXMarketCandle]:
+    """Return canonical cached candles after one bounded authoritative repair pass.
+
+    Provider bars are the only source of replacements. Missing slots are never
+    synthesized, and a usable vetted cache remains available when ProjectX is
+    temporarily unavailable.
+    """
+
     normalized_unit = str(unit).strip().lower()
     if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
         raise ValueError("unsupported candle unit")
-    if start > end:
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    if start_utc > end_utc:
         raise ValueError("start must be before end")
+    normalized_unit_number = max(1, int(unit_number))
+    normalized_limit = max(1, min(int(limit), _MARKET_CANDLE_PROVIDER_LIMIT))
     resolver = resolve_current_market_contract if prefer_current_contract else resolve_market_contract
     resolved_contract_id, resolved_symbol = resolver(
         client,
@@ -1744,69 +1789,385 @@ def fetch_and_store_market_candles(
         symbol=symbol,
         live=live,
     )
-    cached = (
-        list_market_candles(
-            db,
-            user_id=user_id,
-            contract_id=resolved_contract_id,
-            live=live,
-            start=start,
-            end=end,
-            unit=normalized_unit,
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=include_partial_bar,
-        )
-        if preserve_cached_history
-        else []
-    )
-    try:
-        bars = client.retrieve_bars(
-            contract_id=resolved_contract_id,
-            live=live,
-            start=start,
-            end=end,
-            unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=include_partial_bar,
-        )
-    except ProjectXClientError:
-        if cached:
-            return cached
-        raise
-    stored = store_market_candles(
-        db,
-        user_id=user_id,
-        contract_id=resolved_contract_id,
-        symbol=resolved_symbol,
-        live=live,
-        unit=normalized_unit,
-        unit_number=unit_number,
-        bars=bars,
-    )
-    if not preserve_cached_history:
-        return stored
 
-    combined = list_market_candles(
+    cached = _list_market_candles_for_integrity(
         db,
         user_id=user_id,
         contract_id=resolved_contract_id,
         live=live,
+        start=start_utc,
+        end=end_utc,
+        unit=normalized_unit,
+        unit_number=normalized_unit_number,
+        limit=normalized_limit,
+    )
+    report = audit_candle_rows(
+        cached,
+        start=start_utc,
+        end=end_utc,
+        unit=normalized_unit,
+        unit_number=normalized_unit_number,
+        limit=normalized_limit,
+        include_partial_bar=include_partial_bar,
+        symbol=resolved_symbol or symbol,
+    )
+
+    if force_refresh or force_full_repair or not cached:
+        repair_ranges = [
+            CandleRepairRange(
+                start=start_utc,
+                end=end_utc,
+                reasons=("refresh" if force_refresh else "full_repair",),
+            )
+        ]
+    else:
+        repair_ranges = list(report.repair_ranges)
+        interval = candle_interval(unit=normalized_unit, unit_number=normalized_unit_number)
+        near_live_tail = interval is not None and end_utc >= datetime.now(timezone.utc) - interval * 2
+        if (
+            not repair_ranges
+            and near_live_tail
+            and report.valid_rows
+            and _market_candle_tail_revalidation_due(list(report.valid_rows))
+        ):
+            fetch_start = next_market_candle_fetch_start(
+                list(report.valid_rows),
+                start=start_utc,
+                unit=normalized_unit,
+                unit_number=normalized_unit_number,
+            )
+            repair_ranges = [
+                CandleRepairRange(
+                    start=fetch_start,
+                    end=end_utc,
+                    reasons=("tail_revalidation",),
+                )
+            ]
+
+    repair_ranges = _pad_and_coalesce_market_repair_ranges(
+        repair_ranges,
+        start=start_utc,
+        end=end_utc,
+        interval=candle_interval(unit=normalized_unit, unit_number=normalized_unit_number),
+    )
+
+    last_provider_error: ProjectXClientError | None = None
+    for repair_range in repair_ranges:
+        request_limit = _market_candle_repair_limit(
+            repair_range,
+            unit=normalized_unit,
+            unit_number=normalized_unit_number,
+            requested_limit=normalized_limit,
+            full_window=repair_range.start == start_utc and repair_range.end == end_utc,
+        )
+        request_key = _market_candle_request_key(
+            user_id=user_id,
+            client=client,
+            contract_id=resolved_contract_id,
+            live=live,
+            unit=normalized_unit,
+            unit_number=normalized_unit_number,
+            start=repair_range.start,
+            end=repair_range.end,
+            limit=request_limit,
+            include_partial_bar=include_partial_bar,
+        )
+        if repair_request_in_cooldown(request_key):
+            continue
+
+        try:
+            raw_bars = retrieve_bars_singleflight(
+                key=request_key,
+                retrieve=lambda repair_range=repair_range, request_limit=request_limit: client.retrieve_bars(
+                    contract_id=resolved_contract_id,
+                    live=live,
+                    start=repair_range.start,
+                    end=repair_range.end,
+                    unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
+                    unit_number=normalized_unit_number,
+                    limit=request_limit,
+                    include_partial_bar=include_partial_bar,
+                ),
+            )
+        except ProjectXClientError as exc:
+            last_provider_error = exc
+            note_failed_repair(request_key)
+            continue
+
+        normalized_bars = normalize_provider_bars(
+            raw_bars,
+            unit=normalized_unit,
+            unit_number=normalized_unit_number,
+            request_start=repair_range.start,
+            request_end=repair_range.end,
+            include_partial_bar=include_partial_bar,
+        )
+        if raw_bars and not normalized_bars:
+            note_failed_repair(request_key)
+            continue
+
+        authoritative_timestamps = {
+            _as_utc(bar["timestamp"])
+            for bar in normalized_bars
+        }
+        _delete_repaired_duplicate_candle_rows(
+            db,
+            report=report,
+            repair_range=repair_range,
+        )
+        db.flush()
+        if normalized_bars:
+            store_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                symbol=resolved_symbol,
+                live=live,
+                unit=normalized_unit,
+                unit_number=normalized_unit_number,
+                bars=normalized_bars,
+            )
+            clear_failed_repair(request_key)
+        else:
+            note_failed_repair(request_key)
+
+        _delete_repaired_bad_candle_rows(
+            db,
+            report=report,
+            repair_range=repair_range,
+            authoritative_timestamps=authoritative_timestamps,
+        )
+        if force_refresh and normalized_bars:
+            prune_market_candle_cache_range(
+                db,
+                user_id=user_id,
+                contract_id=resolved_contract_id,
+                live=live,
+                start=repair_range.start,
+                end=repair_range.end,
+                unit=normalized_unit,
+                unit_number=normalized_unit_number,
+                keep_timestamps=authoritative_timestamps,
+            )
+
+    db.flush()
+    final_rows = _list_market_candles_for_integrity(
+        db,
+        user_id=user_id,
+        contract_id=resolved_contract_id,
+        live=live,
+        start=start_utc,
+        end=end_utc,
+        unit=normalized_unit,
+        unit_number=normalized_unit_number,
+        limit=normalized_limit,
+    )
+    final_report = audit_candle_rows(
+        final_rows,
+        start=start_utc,
+        end=end_utc,
+        unit=normalized_unit,
+        unit_number=normalized_unit_number,
+        limit=normalized_limit,
+        include_partial_bar=include_partial_bar,
+        symbol=resolved_symbol or symbol,
+    )
+    vetted_rows = list(final_report.valid_rows)
+    if strict_integrity and not final_report.is_complete:
+        raise CandleIntegrityError(
+            "candle_integrity_unresolved:" + ",".join(final_report.issue_codes)
+        )
+    if not vetted_rows and last_provider_error is not None:
+        raise last_provider_error
+    return vetted_rows
+
+
+def market_candle_cache_integrity_report(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+    include_partial_bar: bool = False,
+    symbol: str | None = None,
+) -> CandleIntegrityReport:
+    return audit_candle_rows(
+        cached_candles,
         start=start,
         end=end,
-        unit=normalized_unit,
+        unit=unit,
         unit_number=unit_number,
         limit=limit,
         include_partial_bar=include_partial_bar,
+        symbol=symbol,
     )
-    by_timestamp = {
-        _as_utc(row.candle_timestamp): row
-        for row in [*cached, *combined, *stored]
-        if include_partial_bar or not bool(row.is_partial)
+
+
+def _list_market_candles_for_integrity(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str,
+    live: bool,
+    start: datetime,
+    end: datetime,
+    unit: str,
+    unit_number: int,
+    limit: int,
+) -> list[ProjectXMarketCandle]:
+    audit_limit = min(
+        _MARKET_CANDLE_PROVIDER_LIMIT,
+        max(limit + _MARKET_CANDLE_INTEGRITY_QUERY_PADDING, limit * 2),
+    )
+    rows = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == contract_id)
+        .filter(ProjectXMarketCandle.live == bool(live))
+        .filter(ProjectXMarketCandle.unit == unit)
+        .filter(ProjectXMarketCandle.unit_number == unit_number)
+        .filter(ProjectXMarketCandle.candle_timestamp >= start)
+        .filter(ProjectXMarketCandle.candle_timestamp <= end)
+        .order_by(ProjectXMarketCandle.candle_timestamp.desc())
+        .limit(audit_limit)
+        .all()
+    )
+    rows.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    return rows
+
+
+def _market_candle_repair_limit(
+    repair_range: CandleRepairRange,
+    *,
+    unit: str,
+    unit_number: int,
+    requested_limit: int,
+    full_window: bool,
+) -> int:
+    if full_window:
+        return max(1, min(requested_limit, _MARKET_CANDLE_PROVIDER_LIMIT))
+    interval = candle_interval(unit=unit, unit_number=unit_number)
+    if interval is None:
+        return max(1, min(requested_limit, _MARKET_CANDLE_PROVIDER_LIMIT))
+    slots = max(1, math.ceil((repair_range.end - repair_range.start) / interval))
+    return min(_MARKET_CANDLE_PROVIDER_LIMIT, max(5, slots + 2))
+
+
+def _market_candle_request_key(
+    *,
+    user_id: str,
+    client: ProjectXClient,
+    contract_id: str,
+    live: bool,
+    unit: str,
+    unit_number: int,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    include_partial_bar: bool,
+) -> tuple[Any, ...]:
+    return (
+        "projectx_market_candles",
+        str(user_id),
+        _market_candle_client_identity(client),
+        str(contract_id),
+        bool(live),
+        str(unit),
+        int(unit_number),
+        _as_utc(start).isoformat(),
+        _as_utc(end).isoformat(),
+        int(limit),
+        bool(include_partial_bar),
+    )
+
+
+def _market_candle_client_identity(client: ProjectXClient) -> tuple[str, str]:
+    base_url = str(getattr(client, "base_url", "") or "")
+    username = str(getattr(client, "username", "") or "")
+    if base_url or username:
+        return base_url, username
+    client_type = type(client)
+    return client_type.__module__, client_type.__qualname__
+
+
+def _pad_and_coalesce_market_repair_ranges(
+    ranges: list[CandleRepairRange],
+    *,
+    start: datetime,
+    end: datetime,
+    interval: timedelta | None,
+) -> list[CandleRepairRange]:
+    if not ranges:
+        return []
+    padding = (interval * _MARKET_CANDLE_TAIL_REVALIDATION_BARS) if interval else timedelta(0)
+    padded = [
+        CandleRepairRange(
+            start=max(start, item.start - padding),
+            end=min(end, item.end + padding),
+            reasons=item.reasons,
+        )
+        for item in ranges
+    ]
+    merged: list[CandleRepairRange] = []
+    for item in sorted(padded, key=lambda value: (value.start, value.end)):
+        if not merged or item.start > merged[-1].end:
+            merged.append(item)
+            continue
+        previous = merged[-1]
+        merged[-1] = CandleRepairRange(
+            start=previous.start,
+            end=max(previous.end, item.end),
+            reasons=tuple(sorted(set((*previous.reasons, *item.reasons)))),
+        )
+    return merged
+
+
+def _delete_repaired_bad_candle_rows(
+    db: Session,
+    *,
+    report: CandleIntegrityReport,
+    repair_range: CandleRepairRange,
+    authoritative_timestamps: set[datetime],
+) -> None:
+    deleted_ids: set[int] = set()
+    duplicate_ids = {
+        int(row.id)
+        for row in report.duplicate_rows
+        if getattr(row, "id", None) is not None
     }
-    ordered = [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
-    return ordered[-max(1, int(limit)):]
+    for row in report.bad_rows:
+        row_id = getattr(row, "id", None)
+        timestamp = getattr(row, "candle_timestamp", None)
+        if row_id is None or not isinstance(timestamp, datetime):
+            continue
+        if int(row_id) in duplicate_ids:
+            continue
+        timestamp_utc = _as_utc(timestamp)
+        if not (repair_range.start <= timestamp_utc <= repair_range.end):
+            continue
+        if int(row_id) in deleted_ids:
+            continue
+        if timestamp_utc in authoritative_timestamps:
+            continue
+        deleted_ids.add(int(row_id))
+        db.delete(row)
+
+
+def _delete_repaired_duplicate_candle_rows(
+    db: Session,
+    *,
+    report: CandleIntegrityReport,
+    repair_range: CandleRepairRange,
+) -> None:
+    for row in report.duplicate_rows:
+        timestamp = getattr(row, "candle_timestamp", None)
+        if getattr(row, "id", None) is None or not isinstance(timestamp, datetime):
+            continue
+        timestamp_utc = _as_utc(timestamp)
+        if repair_range.start <= timestamp_utc <= repair_range.end:
+            db.delete(row)
 
 
 def list_market_candles(
@@ -2141,12 +2502,17 @@ def store_market_candles(
                 candle_timestamp=timestamp,
             )
             db.add(row)
+        elif not bool(row.is_partial) and bool(bar.get("is_partial")):
+            # A late or racing partial response can never regress a bar that
+            # has already been observed as authoritatively closed.
+            output.append(row)
+            continue
         row.symbol = symbol
-        row.open_price = float(bar.get("open") or 0.0)
-        row.high_price = float(bar.get("high") or 0.0)
-        row.low_price = float(bar.get("low") or 0.0)
-        row.close_price = float(bar.get("close") or 0.0)
-        row.volume = float(bar.get("volume") or 0.0)
+        row.open_price = float(bar["open"])
+        row.high_price = float(bar["high"])
+        row.low_price = float(bar["low"])
+        row.close_price = float(bar["close"])
+        row.volume = float(bar["volume"])
         row.is_partial = bool(bar.get("is_partial") or False)
         row.raw_payload = bar.get("raw_payload")
         row.fetched_at = fetched_at
@@ -2166,8 +2532,29 @@ def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str,
         if not isinstance(timestamp, datetime):
             continue
         timestamp_utc = _as_utc(timestamp)
-        by_timestamp[timestamp_utc] = {**bar, "timestamp": timestamp_utc}
+        candidate = {
+            **bar,
+            "timestamp": timestamp_utc,
+            "volume": bar.get("volume", 0.0),
+            "is_partial": bool(bar.get("is_partial")),
+        }
+        if validate_candle_ohlcv(candidate) is not None:
+            continue
+        existing = by_timestamp.get(timestamp_utc)
+        if existing is None or _provider_candle_rank(candidate) >= _provider_candle_rank(existing):
+            by_timestamp[timestamp_utc] = candidate
     return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+
+
+def _provider_candle_rank(bar: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        int(not bool(bar.get("is_partial"))),
+        float(bar["open"]),
+        float(bar["high"]),
+        float(bar["low"]),
+        float(bar["close"]),
+        float(bar["volume"]),
+    )
 
 
 def _session_dialect_name(db: Session) -> str:
@@ -2194,11 +2581,11 @@ def _market_candle_insert_values(
         "unit": unit,
         "unit_number": unit_number,
         "candle_timestamp": bar["timestamp"],
-        "open_price": float(bar.get("open") or 0.0),
-        "high_price": float(bar.get("high") or 0.0),
-        "low_price": float(bar.get("low") or 0.0),
-        "close_price": float(bar.get("close") or 0.0),
-        "volume": float(bar.get("volume") or 0.0),
+        "open_price": float(bar["open"]),
+        "high_price": float(bar["high"]),
+        "low_price": float(bar["low"]),
+        "close_price": float(bar["close"]),
+        "volume": float(bar["volume"]),
         "is_partial": bool(bar.get("is_partial") or False),
         "raw_payload": bar.get("raw_payload"),
         "fetched_at": fetched_at,
@@ -2212,6 +2599,7 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
     table = ProjectXMarketCandle.__table__
     insert_stmt = postgresql_insert(table).values(values)
     excluded = insert_stmt.excluded
+    preserve_closed = table.c.is_partial.is_(False) & excluded.is_partial.is_(True)
     db.execute(
         insert_stmt.on_conflict_do_update(
             index_elements=[
@@ -2223,15 +2611,15 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
                 table.c.candle_timestamp,
             ],
             set_={
-                "symbol": excluded.symbol,
-                "open_price": excluded.open_price,
-                "high_price": excluded.high_price,
-                "low_price": excluded.low_price,
-                "close_price": excluded.close_price,
-                "volume": excluded.volume,
-                "is_partial": excluded.is_partial,
-                "raw_payload": excluded.raw_payload,
-                "fetched_at": excluded.fetched_at,
+                "symbol": case((preserve_closed, table.c.symbol), else_=excluded.symbol),
+                "open_price": case((preserve_closed, table.c.open_price), else_=excluded.open_price),
+                "high_price": case((preserve_closed, table.c.high_price), else_=excluded.high_price),
+                "low_price": case((preserve_closed, table.c.low_price), else_=excluded.low_price),
+                "close_price": case((preserve_closed, table.c.close_price), else_=excluded.close_price),
+                "volume": case((preserve_closed, table.c.volume), else_=excluded.volume),
+                "is_partial": case((preserve_closed, table.c.is_partial), else_=excluded.is_partial),
+                "raw_payload": case((preserve_closed, table.c.raw_payload), else_=excluded.raw_payload),
+                "fetched_at": case((preserve_closed, table.c.fetched_at), else_=excluded.fetched_at),
             },
         )
     )
