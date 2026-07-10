@@ -2001,9 +2001,35 @@ def _load_topbot_replay_streams(
     )
     streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
     total_rows = len(primary_rows)
+    specs = _topbot_stream_specs(config)
 
-    for key, spec in _topbot_stream_specs(config).items():
+    def stream_identity(spec: _TopBotReplayStreamSpec) -> tuple[str, str, int]:
+        return (
+            str(spec.contract_id or spec.symbol),
+            str(spec.unit),
+            int(spec.unit_number),
+        )
+
+    max_warmup_by_identity: dict[tuple[str, str, int], int] = {}
+    for spec in specs.values():
+        identity = stream_identity(spec)
+        max_warmup_by_identity[identity] = max(
+            max_warmup_by_identity.get(identity, 0),
+            int(spec.warmup_bars),
+        )
+
+    primary_spec = specs[primary_key]
+    rows_by_identity: dict[
+        tuple[str, str, int], list[ProjectXMarketCandle]
+    ] = {stream_identity(primary_spec): primary_rows}
+
+    for key, spec in specs.items():
         if key == primary_key:
+            continue
+        identity = stream_identity(spec)
+        cached_rows = rows_by_identity.get(identity)
+        if cached_rows is not None:
+            streams[key] = cached_rows
             continue
         query = (
             db.query(ProjectXMarketCandle)
@@ -2042,11 +2068,17 @@ def _load_topbot_replay_streams(
             # One candle can start before the requested range while closing
             # after the first replay event. Overfetch it so the requested
             # number of genuinely closed warmup bars remains available.
-            .limit(min(MAX_TOPBOT_REPLAY_STREAM_BARS, max(1, spec.warmup_bars + 1)))
+            .limit(
+                min(
+                    MAX_TOPBOT_REPLAY_STREAM_BARS,
+                    max(1, max_warmup_by_identity[identity] + 1),
+                )
+            )
             .all()
         )
         warmup_rows.reverse()
         rows = [*warmup_rows, *execution_rows]
+        rows_by_identity[identity] = rows
         streams[key] = rows
         total_rows += len(rows)
         if total_rows > MAX_TOPBOT_REPLAY_TOTAL_BARS:
@@ -2147,14 +2179,20 @@ def prepare_bot_backtest_data(
         interval_seconds = _timeframe_seconds(unit, unit_number)
         assert interval_seconds is not None
         identity = (contract_id, unit, unit_number)
-        primary_cache_is_clean = not any(
-            _cached_candle_was_fetched_before_nominal_close(row)
-            for row in primary_execution_rows
-        ) and not _candle_stream_has_overlaps(primary_execution_rows)
         if (
             identity == primary_identity
-            and len(primary_execution_rows) >= MIN_EXECUTION_BARS
-            and primary_cache_is_clean
+            and _cached_primary_stream_covers(
+                db,
+                user_id=user_id,
+                contract_id=contract_id,
+                unit=unit,
+                unit_number=unit_number,
+                fetch_start=fetch_start,
+                requested_start=start,
+                requested_end=fetch_end,
+                warmup_bars=warmup_bars,
+                execution_rows=primary_execution_rows,
+            )
         ):
             continue
         if identity != primary_identity and primary_execution_rows and _cached_replay_stream_covers(
@@ -2220,6 +2258,61 @@ def prepare_bot_backtest_data(
     return prepared_count
 
 
+def _cached_primary_stream_covers(
+    db: Session,
+    *,
+    user_id: str,
+    contract_id: str,
+    unit: str,
+    unit_number: int,
+    fetch_start: datetime,
+    requested_start: datetime,
+    requested_end: datetime,
+    warmup_bars: int,
+    execution_rows: list[ProjectXMarketCandle],
+) -> bool:
+    interval_seconds = _timeframe_seconds(unit, unit_number)
+    if interval_seconds is None or len(execution_rows) < MIN_EXECUTION_BARS:
+        return False
+    if any(_cached_candle_is_effectively_partial(row) for row in execution_rows):
+        return False
+    if _candle_stream_has_overlaps(execution_rows):
+        return False
+    if _count_futures_session_gaps(
+        execution_rows,
+        interval_seconds=interval_seconds,
+    ):
+        return False
+
+    first_start = _as_utc(execution_rows[0].candle_timestamp)
+    last_close = _candle_close_time(execution_rows[-1])
+    if _has_missing_boundary_slot(
+        requested_start,
+        first_start,
+        interval_seconds=interval_seconds,
+    ):
+        return False
+    if _has_missing_boundary_slot(
+        last_close,
+        requested_end,
+        interval_seconds=interval_seconds,
+    ):
+        return False
+
+    return _cached_replay_stream_covers(
+        db,
+        user_id=user_id,
+        contract_id=contract_id,
+        unit=unit,
+        unit_number=unit_number,
+        fetch_start=fetch_start,
+        requested_start=requested_start,
+        first_event=_candle_close_time(execution_rows[0]),
+        last_event=last_close,
+        warmup_bars=warmup_bars,
+    )
+
+
 def _cached_replay_stream_covers(
     db: Session,
     *,
@@ -2236,6 +2329,10 @@ def _cached_replay_stream_covers(
     interval_seconds = _timeframe_seconds(unit, unit_number)
     if interval_seconds is None:
         return False
+    fetch_start_utc = _as_utc(fetch_start)
+    requested_start_utc = _as_utc(requested_start)
+    first_event_utc = _as_utc(first_event)
+    last_event_utc = _as_utc(last_event)
     rows = (
         db.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.user_id == user_id)
@@ -2244,8 +2341,8 @@ def _cached_replay_stream_covers(
         .filter(ProjectXMarketCandle.unit == unit)
         .filter(ProjectXMarketCandle.unit_number == unit_number)
         .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp >= fetch_start)
-        .filter(ProjectXMarketCandle.candle_timestamp <= last_event)
+        .filter(ProjectXMarketCandle.candle_timestamp >= fetch_start_utc)
+        .filter(ProjectXMarketCandle.candle_timestamp <= last_event_utc)
         .order_by(ProjectXMarketCandle.candle_timestamp.asc())
         .all()
     )
@@ -2253,17 +2350,24 @@ def _cached_replay_stream_covers(
         return False
     if _candle_stream_has_overlaps(rows):
         return False
-    closed_by_first = [row for row in rows if _candle_close_time(row) <= first_event]
+    if _count_futures_session_gaps(rows, interval_seconds=interval_seconds):
+        return False
+    closed_by_first = [
+        row for row in rows if _candle_close_time(row) <= first_event_utc
+    ]
     warmup_count = sum(
-        _as_utc(row.candle_timestamp) < requested_start
+        _as_utc(row.candle_timestamp) < requested_start_utc
         for row in closed_by_first
     )
     if warmup_count < max(1, int(warmup_bars)):
         return False
 
     for event, candidates in (
-        (first_event, closed_by_first),
-        (last_event, [row for row in rows if _candle_close_time(row) <= last_event]),
+        (first_event_utc, closed_by_first),
+        (
+            last_event_utc,
+            [row for row in rows if _candle_close_time(row) <= last_event_utc],
+        ),
     ):
         if not candidates:
             return False
@@ -2493,7 +2597,7 @@ def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
             "is_partial": bool(row.is_partial),
         }
         for row in sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
-        if not bool(row.is_partial)
+        if not _cached_candle_is_effectively_partial(row)
     ]
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -2519,7 +2623,7 @@ def candle_stream_input_fingerprint(
         }
         for key in sorted(streams)
         for row in sorted(streams[key], key=lambda candle: _as_utc(candle.candle_timestamp))
-        if not bool(row.is_partial)
+        if not _cached_candle_is_effectively_partial(row)
     ]
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -3126,6 +3230,23 @@ def _has_open_futures_interval(
         return False
     return _contains_open_futures_timestamp(
         cursor + timedelta(seconds=interval_seconds),
+        end_utc,
+        step_seconds=interval_seconds,
+    )
+
+
+def _has_missing_boundary_slot(
+    start: datetime,
+    end: datetime,
+    *,
+    interval_seconds: int,
+) -> bool:
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    if end_utc - start_utc < timedelta(seconds=interval_seconds):
+        return False
+    return _contains_open_futures_timestamp(
+        start_utc,
         end_utc,
         step_seconds=interval_seconds,
     )

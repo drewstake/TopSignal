@@ -1,5 +1,5 @@
 import type { Logical, LogicalRange, UTCTimestamp } from "lightweight-charts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   LatestRequestCoordinator,
@@ -7,6 +7,7 @@ import {
   invalidateChartRequestLanes,
   isViewportAtLiveEdge,
   preserveLogicalViewport,
+  runChartContextLoadsInParallel,
 } from "./botChartLifecycle";
 
 function logicalRange(from: number, to: number): LogicalRange {
@@ -113,6 +114,36 @@ describe("LatestRequestCoordinator", () => {
     expect(live.accepts(liveRequest, "bot-a:MNQ:5m")).toBe(false);
     expect(history.accepts(historyRequest, "bot-a:MNQ:5m")).toBe(false);
     expect(repair.accepts(repairRequest, "bot-a:MNQ:5m")).toBe(false);
+  });
+});
+
+describe("runChartContextLoadsInParallel", () => {
+  it("starts exactly one history and one live request together so live is not delayed by history", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const delayed = (name: string, milliseconds: number) => () => {
+      events.push(`${name}:start`);
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          events.push(`${name}:end`);
+          resolve();
+        }, milliseconds);
+      });
+    };
+
+    try {
+      const load = runChartContextLoadsInParallel(delayed("history", 250), delayed("live", 100));
+      expect(events).toEqual(["history:start", "live:start"]);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(events).toEqual(["history:start", "live:start", "live:end"]);
+
+      await vi.advanceTimersByTimeAsync(150);
+      await load;
+      expect(events).toEqual(["history:start", "live:start", "live:end", "history:end"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

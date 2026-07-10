@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { Badge } from "../../components/ui/Badge";
@@ -9,7 +9,7 @@ import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
-import { accountsApi, botsApi } from "../../lib/api";
+import { accountsApi, botsApi, getAuthenticatedCacheScope } from "../../lib/api";
 import type {
   AccountInfo,
   BotActivity,
@@ -1188,6 +1188,12 @@ export function BotPage() {
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
+  const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
+  const accountsRequestSequence = useRef(0);
+  const configsRequestSequence = useRef(0);
+  const activityRequestSequence = useRef(0);
+  const activityRequestController = useRef<AbortController | null>(null);
+  const selectedBotIdRef = useRef<number | null>(null);
 
   const selectedBot = useMemo(
     () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
@@ -1204,19 +1210,57 @@ export function BotPage() {
         : null,
     [lastEvaluation, selectedBot],
   );
+  selectedBotIdRef.current = selectedBot?.id ?? null;
+  const selectedBotActivity = useMemo(
+    () =>
+      selectedBot &&
+      activity?.config.id === selectedBot.id &&
+      activity.config.contract_id === selectedBot.contract_id &&
+      activity.config.timeframe_unit === selectedBot.timeframe_unit &&
+      activity.config.timeframe_unit_number === selectedBot.timeframe_unit_number
+        ? activity
+        : null,
+    [activity, selectedBot],
+  );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
+  const loadAccounts = useCallback(async () => {
+    const sequence = accountsRequestSequence.current + 1;
+    accountsRequestSequence.current = sequence;
+    try {
+      const accountRows = await accountsApi.getSelectableAccounts();
+      if (accountsRequestSequence.current !== sequence) {
+        return;
+      }
+      setAccounts(accountRows);
+      if (accountRows.length > 0) {
+        setForm((current) =>
+          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
+        );
+      }
+    } catch (err) {
+      if (accountsRequestSequence.current === sequence) {
+        setError(err instanceof Error ? err.message : "Failed to load accounts");
+      }
+    }
+  }, [accountFromQuery]);
+
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
+    const sequence = configsRequestSequence.current + 1;
+    configsRequestSequence.current = sequence;
     if (showLoading) {
       setLoading(true);
     }
     setError(null);
     try {
-      const [accountRows, botRows] = await Promise.all([
-        accountsApi.getSelectableAccounts(),
+      const [botRows, cacheScope] = await Promise.all([
         botsApi.listConfigs(),
+        getAuthenticatedCacheScope(),
       ]);
-      setAccounts(accountRows);
+      if (configsRequestSequence.current !== sequence) {
+        return;
+      }
+      setAuthenticatedCacheScope(cacheScope);
       setConfigs(botRows.items);
       setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
@@ -1225,40 +1269,68 @@ export function BotPage() {
         }
         return botRows.items[0]?.id ?? null;
       });
-      if (accountRows.length > 0) {
-        setForm((current) =>
-          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
-        );
-      }
     } catch (err) {
-      setConfigWarnings([]);
-      setError(err instanceof Error ? err.message : "Failed to load bot data");
+      if (configsRequestSequence.current === sequence) {
+        setConfigWarnings([]);
+        setError(err instanceof Error ? err.message : "Failed to load bot data");
+      }
     } finally {
-      if (showLoading) {
+      if (showLoading && configsRequestSequence.current === sequence) {
         setLoading(false);
       }
     }
-  }, [accountFromQuery]);
+  }, []);
 
   const loadActivity = useCallback(async (botId: number | null) => {
+    const sequence = activityRequestSequence.current + 1;
+    activityRequestSequence.current = sequence;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
     if (!botId) {
       setActivity(null);
+      setActivityLoading(false);
       return;
     }
+    if (selectedBotIdRef.current !== botId) {
+      return;
+    }
+    const controller = new AbortController();
+    activityRequestController.current = controller;
+    setActivity(null);
     setActivityLoading(true);
     try {
-      const payload = await botsApi.getActivity(botId);
-      setActivity(payload);
+      const payload = await botsApi.getActivity(botId, 50, { signal: controller.signal });
+      if (activityRequestSequence.current === sequence && selectedBotIdRef.current === botId) {
+        setActivity(payload);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load bot activity");
+      if (
+        activityRequestSequence.current === sequence &&
+        selectedBotIdRef.current === botId &&
+        !(err instanceof Error && err.name === "AbortError")
+      ) {
+        setError(err instanceof Error ? err.message : "Failed to load bot activity");
+      }
     } finally {
-      setActivityLoading(false);
+      if (activityRequestSequence.current === sequence) {
+        setActivityLoading(false);
+        activityRequestController.current = null;
+      }
     }
   }, []);
 
   useEffect(() => {
+    void loadAccounts();
     void loadConfigs({ showLoading: true });
-  }, [loadConfigs]);
+  }, [loadAccounts, loadConfigs]);
+
+  useEffect(() => () => {
+    accountsRequestSequence.current += 1;
+    configsRequestSequence.current += 1;
+    activityRequestSequence.current += 1;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
+  }, []);
 
   useEffect(() => {
     void loadActivity(selectedBot?.id ?? null);
@@ -3953,11 +4025,11 @@ export function BotPage() {
                   </div>
                   {activityLoading ? (
                     <Skeleton className="h-64" />
-                  ) : activity ? (
+                  ) : selectedBotActivity ? (
                     <div className="grid gap-4 xl:grid-cols-2">
                       <ActivityTable
                         title="Decisions"
-                        rows={activity.decisions.slice(0, 8).map((decision) => ({
+                        rows={selectedBotActivity.decisions.slice(0, 8).map((decision) => ({
                           id: decision.id,
                           left: decision.action,
                           middle: decision.reason,
@@ -3967,7 +4039,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Orders"
-                        rows={activity.order_attempts.slice(0, 8).map((attempt) => ({
+                        rows={selectedBotActivity.order_attempts.slice(0, 8).map((attempt) => ({
                           id: attempt.id,
                           left: attempt.status,
                           middle: `${attempt.side} ${attempt.size} ${attempt.contract_id}`,
@@ -3977,7 +4049,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Risk"
-                        rows={activity.risk_events.slice(0, 8).map((risk) => ({
+                        rows={selectedBotActivity.risk_events.slice(0, 8).map((risk) => ({
                           id: risk.id,
                           left: risk.severity,
                           middle: `${risk.code}: ${risk.message}`,
@@ -3987,7 +4059,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Runs"
-                        rows={activity.runs.slice(0, 8).map((run) => ({
+                        rows={selectedBotActivity.runs.slice(0, 8).map((run) => ({
                           id: run.id,
                           left: run.status,
                           middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
@@ -4007,7 +4079,8 @@ export function BotPage() {
           <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
             <BotSignalChart
               bot={selectedBot}
-              activity={activity}
+              authenticatedCacheScope={authenticatedCacheScope}
+              activity={selectedBotActivity}
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
               onMarketData={setMarketSnapshot}

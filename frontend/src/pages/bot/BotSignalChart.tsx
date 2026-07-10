@@ -31,6 +31,7 @@ import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXM
 import {
   buildBotCandleCacheKey,
   filterMarketCandlesForWindow,
+  invalidateLegacyBotCandleCache,
   mergeMarketCandles,
   readBotCandleCache,
   upsertMarketCandles,
@@ -112,6 +113,7 @@ import {
   LatestRequestCoordinator,
   getViewportRestoreRange,
   invalidateChartRequestLanes,
+  runChartContextLoadsInParallel,
   type ChartViewportMutation,
 } from "./botChartLifecycle";
 import { readBotChartThemeColors } from "./botChartTheme";
@@ -221,6 +223,8 @@ interface ChartHandles {
 
 interface BotSignalChartProps {
   bot: BotConfig | null;
+  /** Stable non-secret namespace for persisted per-user chart state. */
+  authenticatedCacheScope: string | null;
   activity: BotActivity | null;
   lastEvaluation: BotEvaluation | null;
   refreshToken: number;
@@ -272,7 +276,7 @@ interface LiquidityDragState {
   pointerId: number;
 }
 
-export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
+export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
   const livePriceLineRef = useRef<IPriceLine | null>(null);
@@ -309,6 +313,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   const candlesRef = useRef<ProjectXMarketCandle[]>([]);
   const liveCandleRef = useRef<ProjectXMarketCandle | null>(null);
   const repairedGapKeysRef = useRef<Set<string>>(new Set());
+  const automaticRepairLoadVersionRef = useRef(-1);
   const actionableEvaluationsRef = useRef<Map<number, BotEvaluation>>(new Map());
   const hasMoreHistoryRef = useRef(true);
   const marketSnapshotTimeoutRef = useRef<number | null>(null);
@@ -363,7 +368,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       timeframe_unit_number: chartTimeframe.unitNumber,
     };
   }, [bot, chartTimeframe]);
-  const chartViewportKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
+  const chartViewportKey = `${authenticatedCacheScope ?? "scope-pending"}:${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${bot?.symbol ?? ""}:${selectedTimeframeId}`;
   const [marketDataContextKey, setMarketDataContextKey] = useState(chartViewportKey);
   const marketDataMatchesContext = marketDataContextKey === chartViewportKey;
 
@@ -521,17 +526,18 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   const livePriceIsStale =
     livePricePoint !== null &&
     (!Number.isFinite(livePriceObservedAtMs) || Date.now() - livePriceObservedAtMs > LIVE_PRICE_STALE_AFTER_MS);
-  const liquidityDragContextKey = `${bot?.id ?? "none"}:${bot?.contract_id ?? ""}:${selectedTimeframeId}`;
+  const liquidityDragContextKey = chartViewportKey;
   const drawingStorageScope = useMemo<BotDrawingStorageScope | null>(
     () =>
-      bot
+      bot && authenticatedCacheScope
         ? {
+            userScope: authenticatedCacheScope,
             botId: bot.id,
             contractId: bot.contract_id,
             timeframe: selectedTimeframeId,
           }
         : null,
-    [bot, selectedTimeframeId],
+    [authenticatedCacheScope, bot, selectedTimeframeId],
   );
   const drawingStorageScopeKey = drawingStorageScope ? buildBotDrawingStorageKey(drawingStorageScope) : null;
   const chartViewportKeyRef = useRef(chartViewportKey);
@@ -552,6 +558,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     [],
   );
   const [repairVersion, setRepairVersion] = useState(0);
+  const [canonicalLoadVersion, setCanonicalLoadVersion] = useState(0);
   const candleGaps = useMemo<CandleGap[]>(
     () => (chartConfig ? findCandleGaps(candles, chartConfig.timeframe_unit, chartConfig.timeframe_unit_number) : []),
     [candles, chartConfig],
@@ -637,10 +644,12 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     setLivePriceError(null);
     setLastLoadedAt(null);
     repairedGapKeysRef.current = new Set();
+    automaticRepairLoadVersionRef.current = -1;
     hasMoreHistoryRef.current = true;
     setHasMoreHistory(true);
     setServedFromCacheOnly(false);
     setRepairVersion(0);
+    setCanonicalLoadVersion(0);
     invalidateChartRequestLanes([
       candleRequestsRef.current,
       liveRequestsRef.current,
@@ -778,7 +787,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
 
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
-      if (!chartConfig) {
+      if (!chartConfig || !authenticatedCacheScope) {
         candleRequestsRef.current.invalidate();
         setCandles([]);
         setLiveCandle(null);
@@ -808,15 +817,20 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       const timeoutId = window.setTimeout(() => request.controller.abort(), CANDLE_REQUEST_TIMEOUT_MS);
       requestTimeoutIdsRef.current.add(timeoutId);
       const queryWindow = buildBotChartQuery(chartConfig);
-      const cacheKey = buildBotCandleCacheKey({
+      const cacheKeyInput = {
+        userScope: authenticatedCacheScope,
         contractId: chartConfig.contract_id,
         symbol: chartConfig.symbol,
         live: false,
         unit: chartConfig.timeframe_unit,
         unitNumber: chartConfig.timeframe_unit_number,
-      });
+      } as const;
+      invalidateLegacyBotCandleCache(cacheKeyInput);
+      const cacheKey = buildBotCandleCacheKey(cacheKeyInput);
       const cachedEntry = forceRefresh ? null : readBotCandleCache(cacheKey);
-      const cachedCandles = cachedEntry ? filterMarketCandlesForWindow(cachedEntry.candles, queryWindow) : [];
+      const cachedCandles = cachedEntry
+        ? filterCandlesForChartContext(filterMarketCandlesForWindow(cachedEntry.candles, queryWindow), chartConfig)
+        : [];
       const hydrateFromCache = shouldHydrateChartFromCache(cachedCandles.length, queryWindow.limit);
 
       if (cachedEntry && hydrateFromCache) {
@@ -841,7 +855,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       setError(null);
 
       try {
-        const rows = await botsApi.getCandles({
+        const fetchedRows = await botsApi.getCandles({
           contractId: chartConfig.contract_id,
           symbol: chartConfig.symbol ?? undefined,
           start: queryWindow.start,
@@ -856,6 +870,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         if (!candleRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
           return;
         }
+        const rows = filterCandlesForChartContext(fetchedRows, chartConfig);
         const mergedRows = forceRefresh ? rows : mergeMarketCandles(cachedCandles, rows, queryWindow.limit);
         // Keep older history the user already paged in; the fetch window only covers the recent range.
         // Rolled partials also remain until ProjectX returns their authoritative
@@ -864,6 +879,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         queueViewportRestore(forceRefresh ? "refresh" : "live", candlesRef.current, nextRows);
         setCandles(nextRows);
         candlesRef.current = nextRows;
+        setCanonicalLoadVersion((current) => current + 1);
         writeBotCandleCache(cacheKey, mergedRows, queryWindow.limit);
         setLastLoadedAt(new Date());
         setServedFromCacheOnly(false);
@@ -898,11 +914,11 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         }
       }
     },
-    [chartConfig, chartViewportKey, queueViewportRestore],
+    [authenticatedCacheScope, chartConfig, chartViewportKey, queueViewportRestore],
   );
 
   const loadLivePrice = useCallback(async ({ force = false }: LoadLivePriceOptions = {}) => {
-    if (!chartConfig) {
+    if (!chartConfig || !authenticatedCacheScope) {
       liveRequestsRef.current.invalidate();
       setLiveCandle(null);
       setStreamPrice(null);
@@ -920,7 +936,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     const queryWindow = buildBotLivePriceQuery(chartConfig);
 
     try {
-      const rows = await botsApi.getCandles({
+      const fetchedRows = await botsApi.getCandles({
         contractId: chartConfig.contract_id,
         symbol: chartConfig.symbol ?? undefined,
         start: queryWindow.start,
@@ -935,6 +951,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       if (!liveRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
         return;
       }
+      const rows = filterCandlesForChartContext(fetchedRows, chartConfig);
 
       // Promote closed candles from the live window into the chart immediately so a
       // just-finished bar does not vanish until the next slow poll.
@@ -995,7 +1012,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       requestTimeoutIdsRef.current.delete(timeoutId);
       liveRequestsRef.current.finish(request);
     }
-  }, [chartConfig, chartViewportKey, queueViewportRestore]);
+  }, [authenticatedCacheScope, chartConfig, chartViewportKey, queueViewportRestore]);
 
   const loadOlderCandles = useCallback(async () => {
     const config = chartConfigRef.current;
@@ -1022,7 +1039,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     requestTimeoutIdsRef.current.add(timeoutId);
     setHistoryLoading(true);
     try {
-      const rows = await botsApi.getCandles({
+      const fetchedRows = await botsApi.getCandles({
         contractId: config.contract_id,
         symbol: config.symbol ?? undefined,
         start: queryWindow.start,
@@ -1036,6 +1053,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
       if (!historyRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
         return;
       }
+      const rows = filterCandlesForChartContext(fetchedRows, config);
 
       const earliestMs = Date.parse(earliest.timestamp);
       const olderRows = rows.filter((row) => {
@@ -1095,7 +1113,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
     try {
       const repairedRows: ProjectXMarketCandle[] = [];
       for (const window_ of windows) {
-        const rows = await botsApi.getCandles({
+        const fetchedRows = await botsApi.getCandles({
           contractId: config.contract_id,
           symbol: config.symbol ?? undefined,
           start: window_.start,
@@ -1110,6 +1128,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         if (!repairRequestsRef.current.accepts(request, chartViewportKeyRef.current)) {
           return;
         }
+        const rows = filterCandlesForChartContext(fetchedRows, config);
         if (rows.length > 0) {
           repairedRows.push(...rows);
         }
@@ -2234,17 +2253,33 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   }, [livePrice, livePriceIsStale, livePricePoint?.isPartial]);
 
   useEffect(() => {
-    let active = true;
-    void loadCandles().finally(() => {
-      if (active) {
-        void loadLivePrice({ force: true });
-      }
-    });
-
-    return () => {
-      active = false;
-    };
+    // These requests use independent latest-wins lanes and merge with
+    // closed-over-partial precedence, so starting them together gives a cached
+    // chart its live quote immediately instead of waiting for history refresh.
+    void runChartContextLoadsInParallel(
+      () => loadCandles(),
+      () => loadLivePrice({ force: true }),
+    );
   }, [loadCandles, loadLivePrice, refreshToken]);
+
+  useEffect(() => {
+    if (
+      canonicalLoadVersion <= 0 ||
+      automaticRepairLoadVersionRef.current === canonicalLoadVersion ||
+      unrepairedDataGaps.length === 0 ||
+      loading ||
+      refreshing ||
+      historyLoading ||
+      gapRepairing
+    ) {
+      return;
+    }
+
+    // One bounded automatic pass per canonical load. Further holes remain
+    // eligible on the next poll or through the explicit Backfill control.
+    automaticRepairLoadVersionRef.current = canonicalLoadVersion;
+    void repairDataGaps();
+  }, [canonicalLoadVersion, gapRepairing, historyLoading, loading, refreshing, repairDataGaps, unrepairedDataGaps.length]);
 
   useEffect(() => {
     const candleRequests = candleRequestsRef.current;
@@ -2287,7 +2322,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   // Poll closed candles for any selected bot. Review of a stopped bot still
   // needs a fresh chart; the backend serves cached rows cheaply when fresh.
   useEffect(() => {
-    if (!bot) {
+    if (!bot || !authenticatedCacheScope) {
       return;
     }
 
@@ -2344,7 +2379,7 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
         liveStreamRenderTimeoutRef.current = null;
       }
     };
-  }, [bot, scheduleLiveStreamPrice]);
+  }, [authenticatedCacheScope, bot, scheduleLiveStreamPrice]);
 
   useEffect(() => {
     if (!bot) {
@@ -3059,6 +3094,27 @@ function marketCandlesShareTimestamp(left: ProjectXMarketCandle, right: ProjectX
   const leftMs = Date.parse(left.timestamp);
   const rightMs = Date.parse(right.timestamp);
   return Number.isFinite(leftMs) && leftMs === rightMs;
+}
+
+function filterCandlesForChartContext(
+  candles: readonly ProjectXMarketCandle[],
+  config: BotConfig,
+): ProjectXMarketCandle[] {
+  const contractId = config.contract_id.trim().toUpperCase();
+  const symbol = config.symbol?.trim().toUpperCase() ?? null;
+  return candles.filter((candle) => {
+    if (
+      candle.live ||
+      candle.unit !== config.timeframe_unit ||
+      candle.unit_number !== config.timeframe_unit_number
+    ) {
+      return false;
+    }
+    const candleSymbol = candle.symbol?.trim().toUpperCase() ?? null;
+    return symbol && candleSymbol
+      ? candleSymbol === symbol
+      : candle.contract_id.trim().toUpperCase() === contractId;
+  });
 }
 
 function hasClosedCandleAtTimestamp(candles: readonly ProjectXMarketCandle[], candidate: ProjectXMarketCandle): boolean {

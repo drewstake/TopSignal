@@ -1,8 +1,11 @@
 import type { BotTimeframeUnit, ProjectXMarketCandle } from "../../lib/types";
 
-const STORAGE_KEY_PREFIX = "topsignal:bot-candles:v1:";
+const STORAGE_KEY_PREFIX = "topsignal:bot-candles:v2:";
+const LEGACY_STORAGE_KEY_PREFIX = "topsignal:bot-candles:v1:";
 
-interface BotCandleCacheKeyInput {
+export interface BotCandleCacheKeyInput {
+  /** Stable non-secret authenticated-user namespace. */
+  userScope: string;
   contractId: string;
   symbol?: string | null;
   live: boolean;
@@ -27,6 +30,7 @@ export interface BotCandleCacheEntry {
 
 export function buildBotCandleCacheKey(input: BotCandleCacheKeyInput): string {
   const parts = [
+    input.userScope.trim(),
     input.live ? "live" : "practice",
     input.contractId.trim().toUpperCase(),
     (input.symbol ?? "").trim().toUpperCase(),
@@ -34,6 +38,19 @@ export function buildBotCandleCacheKey(input: BotCandleCacheKeyInput): string {
     String(Math.max(1, Math.trunc(input.unitNumber))),
   ];
   return `${STORAGE_KEY_PREFIX}${encodeURIComponent(parts.join("|"))}`;
+}
+
+/** Remove v1 entries rather than assigning their unknown owner to this user. */
+export function invalidateLegacyBotCandleCache(input: BotCandleCacheKeyInput): void {
+  const storage = getLocalStorage();
+  if (!storage) {
+    return;
+  }
+  try {
+    storage.removeItem(buildLegacyBotCandleCacheKey(input));
+  } catch {
+    // localStorage may be blocked; the scoped network path still works.
+  }
 }
 
 export function readBotCandleCache(cacheKey: string): BotCandleCacheEntry | null {
@@ -191,4 +208,15 @@ function getLocalStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+function buildLegacyBotCandleCacheKey(input: BotCandleCacheKeyInput): string {
+  const parts = [
+    input.live ? "live" : "practice",
+    input.contractId.trim().toUpperCase(),
+    (input.symbol ?? "").trim().toUpperCase(),
+    input.unit,
+    String(Math.max(1, Math.trunc(input.unitNumber))),
+  ];
+  return `${LEGACY_STORAGE_KEY_PREFIX}${encodeURIComponent(parts.join("|"))}`;
 }

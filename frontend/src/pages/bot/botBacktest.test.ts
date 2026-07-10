@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { BotBacktestDrawdownPoint, BotBacktestEquityPoint } from "../../lib/types";
-import { buildBacktestChartPaths, validateBacktestForm, type BotBacktestFormState } from "./botBacktest";
+import {
+  BACKTEST_MAX_RENDERED_CHART_POINTS,
+  buildBacktestChartPaths,
+  validateBacktestForm,
+  type BotBacktestFormState,
+} from "./botBacktest";
 
 const validForm: BotBacktestFormState = {
   startDate: "2026-01-01",
@@ -52,5 +57,30 @@ describe("buildBacktestChartPaths", () => {
     expect(first.equityMin).toBe(50_000);
     expect(first.equityMax).toBe(50_100);
     expect(first.drawdownMax).toBe(2);
+  });
+
+  it("bounds SVG work for full-history results without discarding source counts or extrema", () => {
+    const pointCount = 100_000;
+    const equity = Array.from({ length: pointCount }, (_, index): BotBacktestEquityPoint => ({
+      timestamp: new Date(Date.UTC(2020, 0, 1, 0, index)).toISOString(),
+      equity: index === 54_321 ? 90_000 : 50_000 + (index % 100),
+      realized_pnl: 0,
+      unrealized_pnl: 0,
+    }));
+    const drawdown = equity.map((point, index): BotBacktestDrawdownPoint => ({
+      timestamp: point.timestamp,
+      equity: point.equity,
+      drawdown_dollars: index === 12_345 ? 5_000 : index % 50,
+      drawdown_percent: index === 12_345 ? 10 : (index % 50) / 10,
+    }));
+
+    const paths = buildBacktestChartPaths(equity, drawdown);
+
+    expect(paths.equitySourcePointCount).toBe(pointCount);
+    expect(paths.drawdownSourcePointCount).toBe(pointCount);
+    expect(paths.equityRenderedPointCount).toBeLessThanOrEqual(BACKTEST_MAX_RENDERED_CHART_POINTS);
+    expect(paths.drawdownRenderedPointCount).toBeLessThanOrEqual(BACKTEST_MAX_RENDERED_CHART_POINTS);
+    expect(paths.equityMax).toBe(90_000);
+    expect(paths.drawdownMax).toBe(10);
   });
 });

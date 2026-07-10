@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildBotCandleCacheKey, filterMarketCandlesForWindow, mergeMarketCandles, upsertMarketCandles } from "./botCandleCache";
+import {
+  buildBotCandleCacheKey,
+  filterMarketCandlesForWindow,
+  invalidateLegacyBotCandleCache,
+  mergeMarketCandles,
+  upsertMarketCandles,
+  type BotCandleCacheKeyInput,
+} from "./botCandleCache";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
 function candle(timestamp: string, close: number, overrides: Partial<ProjectXMarketCandle> = {}): ProjectXMarketCandle {
@@ -24,9 +31,12 @@ function candle(timestamp: string, close: number, overrides: Partial<ProjectXMar
 }
 
 describe("buildBotCandleCacheKey", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("normalizes equivalent bot market inputs to the same key", () => {
     expect(
       buildBotCandleCacheKey({
+        userScope: "user:one",
         contractId: " con.f.us.mnq.m26 ",
         symbol: " mnq ",
         live: false,
@@ -35,6 +45,7 @@ describe("buildBotCandleCacheKey", () => {
       }),
     ).toBe(
       buildBotCandleCacheKey({
+        userScope: "user:one",
         contractId: "CON.F.US.MNQ.M26",
         symbol: "MNQ",
         live: false,
@@ -42,6 +53,40 @@ describe("buildBotCandleCacheKey", () => {
         unitNumber: 5,
       }),
     );
+  });
+
+  it("isolates persisted candles by authenticated user", () => {
+    const input: BotCandleCacheKeyInput = {
+      userScope: "user:one",
+      contractId: "CON.F.US.MNQ.M26",
+      symbol: "MNQ",
+      live: false,
+      unit: "minute",
+      unitNumber: 5,
+    };
+
+    expect(buildBotCandleCacheKey({ ...input, userScope: "user:two" })).not.toBe(buildBotCandleCacheKey(input));
+    expect(buildBotCandleCacheKey(input)).toContain("topsignal:bot-candles:v2:");
+  });
+
+  it("deletes the unscoped v1 entry instead of assigning it to the current user", () => {
+    const removed: string[] = [];
+    vi.stubGlobal("window", {
+      localStorage: {
+        removeItem: (key: string) => removed.push(key),
+      },
+    });
+
+    invalidateLegacyBotCandleCache({
+      userScope: "user:one",
+      contractId: "CON.F.US.MNQ.M26",
+      symbol: "MNQ",
+      live: false,
+      unit: "minute",
+      unitNumber: 5,
+    });
+
+    expect(removed).toEqual(["topsignal:bot-candles:v1:practice%7CCON.F.US.MNQ.M26%7CMNQ%7Cminute%7C5"]);
   });
 });
 

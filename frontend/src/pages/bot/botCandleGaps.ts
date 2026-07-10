@@ -243,11 +243,14 @@ export function buildGapRepairWindows(
   unitNumber: number,
   maxWindows = 3,
 ): GapRepairWindow[] {
+  if (maxWindows <= 0) {
+    return [];
+  }
   const intervalMs = intervalSecondsFor(unit, unitNumber) * 1000;
   const dataGaps = gaps
     .filter((gap) => gap.kind === "data")
     .sort((left, right) => right.missingSessionBars - left.missingSessionBars)
-    .slice(0, Math.max(1, maxWindows));
+    .slice(0, Math.max(1, Math.trunc(maxWindows)));
 
   const ranges = dataGaps
     .map((gap) => ({

@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,12 @@ from .bot_strategy_registry import (
 from .bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
 from . import bot_serialization as _bot_serialization
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
-from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+from .trading_day import (
+    TRADING_TZ,
+    futures_session_is_open,
+    trading_day_bounds_utc,
+    trading_day_date,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1938,7 +1944,13 @@ def market_candle_cache_needs_refresh(
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
     end_utc = _as_utc(end)
-    if latest_timestamp + interval <= end_utc:
+    if latest_timestamp + interval <= end_utc and _market_candle_range_contains_open_slot(
+        latest_timestamp + interval,
+        end_utc,
+        interval=interval,
+        include_end=True,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+    ):
         return _market_candle_tail_revalidation_due(cached_candles)
     return False
 
@@ -1957,9 +1969,14 @@ def market_candle_rows_are_stale(
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in candles)
     end_utc = _as_utc(end)
-    if include_partial_bar:
-        return latest_timestamp + interval <= end_utc
-    return latest_timestamp + interval + interval <= end_utc
+    latest_expected_start = end_utc if include_partial_bar else end_utc - interval
+    return _market_candle_range_contains_open_slot(
+        latest_timestamp + interval,
+        latest_expected_start,
+        interval=interval,
+        include_end=True,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+    )
 
 
 def market_candle_cache_covers_request(
@@ -1973,13 +1990,81 @@ def market_candle_cache_covers_request(
     if not cached_candles:
         return False
 
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    if _market_candle_rows_have_open_session_gap(
+        cached_candles,
+        interval=interval,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+    ):
+        return False
+
     normalized_limit = max(1, int(limit))
     if len(cached_candles) >= normalized_limit:
         return True
 
-    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     earliest_timestamp = min(_as_utc(row.candle_timestamp) for row in cached_candles)
-    return earliest_timestamp <= _as_utc(start) + interval
+    first_expected_timestamp = _as_utc(start) + interval
+    if earliest_timestamp <= first_expected_timestamp:
+        return True
+    return not _market_candle_range_contains_open_slot(
+        first_expected_timestamp,
+        earliest_timestamp,
+        interval=interval,
+        include_end=False,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+    )
+
+
+def _market_candle_rows_have_open_session_gap(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    interval: timedelta,
+    closure_aware: bool,
+) -> bool:
+    timestamps = sorted({_as_utc(row.candle_timestamp) for row in cached_candles})
+    for previous, current in zip(timestamps, timestamps[1:]):
+        if _market_candle_range_contains_open_slot(
+            previous + interval,
+            current,
+            interval=interval,
+            include_end=False,
+            closure_aware=closure_aware,
+        ):
+            return True
+    return False
+
+
+def _market_candle_range_contains_open_slot(
+    start: datetime,
+    end: datetime,
+    *,
+    interval: timedelta,
+    include_end: bool,
+    closure_aware: bool,
+) -> bool:
+    cursor = _as_utc(start)
+    end_utc = _as_utc(end)
+    if cursor > end_utc or (cursor == end_utc and not include_end):
+        return False
+    if not closure_aware:
+        return True
+
+    # Futures closures are minute-aligned. Scanning at minute granularity keeps
+    # second-bar cache checks bounded across a weekend while preserving whether
+    # any tradable slot exists inside the missing range.
+    step = max(interval, timedelta(minutes=1))
+    while cursor < end_utc or (include_end and cursor == end_utc):
+        if futures_session_is_open(cursor):
+            return True
+        cursor += step
+    return False
+
+
+def _market_candle_unit_is_closure_aware(unit: str) -> bool:
+    # Daily bars are UTC-date stamped, but their missing weekend buckets still
+    # land inside the regular Globex close. Weekly/monthly buckets are calendar
+    # aggregates and are not meaningful inputs to the slot-by-slot session scan.
+    return str(unit).strip().lower() in {"second", "minute", "hour", "day"}
 
 
 def next_market_candle_fetch_start(
@@ -2115,23 +2200,25 @@ def store_market_candles(
     timestamps = [bar["timestamp"] for bar in normalized]
     fetched_at = datetime.now(timezone.utc)
 
-    if _session_dialect_name(db) == "postgresql":
-        _upsert_market_candle_rows(
-            db,
-            values=[
-                _market_candle_insert_values(
-                    user_id=user_id,
-                    contract_id=contract_id,
-                    symbol=symbol,
-                    live=live,
-                    unit=unit,
-                    unit_number=unit_number,
-                    bar=bar,
-                    fetched_at=fetched_at,
-                )
-                for bar in normalized
-            ],
-        )
+    dialect_name = _session_dialect_name(db)
+    if dialect_name in {"postgresql", "sqlite"}:
+        values = [
+            _market_candle_insert_values(
+                user_id=user_id,
+                contract_id=contract_id,
+                symbol=symbol,
+                live=live,
+                unit=unit,
+                unit_number=unit_number,
+                bar=bar,
+                fetched_at=fetched_at,
+            )
+            for bar in normalized
+        ]
+        if dialect_name == "postgresql":
+            _upsert_market_candle_rows(db, values=values)
+        else:
+            _upsert_sqlite_market_candle_rows(db, values=values)
         return _query_market_candles_by_timestamps(
             db,
             user_id=user_id,
@@ -2158,6 +2245,10 @@ def store_market_candles(
     for bar in normalized:
         timestamp = bar["timestamp"]
         row = existing_by_timestamp.get(timestamp)
+        incoming_is_partial = bool(bar.get("is_partial") or False)
+        if row is not None and not bool(row.is_partial) and incoming_is_partial:
+            output.append(row)
+            continue
         if row is None:
             row = ProjectXMarketCandle(
                 user_id=user_id,
@@ -2174,7 +2265,7 @@ def store_market_candles(
         row.low_price = float(bar.get("low") or 0.0)
         row.close_price = float(bar.get("close") or 0.0)
         row.volume = float(bar.get("volume") or 0.0)
-        row.is_partial = bool(bar.get("is_partial") or False)
+        row.is_partial = incoming_is_partial
         row.raw_payload = bar.get("raw_payload")
         row.fetched_at = fetched_at
         output.append(row)
@@ -2193,7 +2284,15 @@ def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str,
         if not isinstance(timestamp, datetime):
             continue
         timestamp_utc = _as_utc(timestamp)
-        by_timestamp[timestamp_utc] = {**bar, "timestamp": timestamp_utc}
+        candidate = {**bar, "timestamp": timestamp_utc}
+        existing = by_timestamp.get(timestamp_utc)
+        if (
+            existing is not None
+            and not bool(existing.get("is_partial") or False)
+            and bool(candidate.get("is_partial") or False)
+        ):
+            continue
+        by_timestamp[timestamp_utc] = candidate
     return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
 
 
@@ -2262,6 +2361,42 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
                     "raw_payload": excluded.raw_payload,
                     "fetched_at": excluded.fetched_at,
                 },
+                where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
+            )
+        )
+
+
+def _upsert_sqlite_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> None:
+    if not values:
+        return
+
+    table = ProjectXMarketCandle.__table__
+    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
+        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
+        insert_stmt = sqlite_insert(table).values(batch)
+        excluded = insert_stmt.excluded
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    table.c.user_id,
+                    table.c.contract_id,
+                    table.c.live,
+                    table.c.unit,
+                    table.c.unit_number,
+                    table.c.candle_timestamp,
+                ],
+                set_={
+                    "symbol": excluded.symbol,
+                    "open_price": excluded.open_price,
+                    "high_price": excluded.high_price,
+                    "low_price": excluded.low_price,
+                    "close_price": excluded.close_price,
+                    "volume": excluded.volume,
+                    "is_partial": excluded.is_partial,
+                    "raw_payload": excluded.raw_payload,
+                    "fetched_at": excluded.fetched_at,
+                },
+                where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
             )
         )
 

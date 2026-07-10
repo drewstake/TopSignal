@@ -1126,8 +1126,8 @@ def get_projectx_market_candles(
     """Serve candles from the per-user cache, fetching from ProjectX when needed.
 
     `refresh` forces a full re-fetch and prunes cached rows the provider no longer
-    returns. `repair` also forces a full-window fetch (so interior holes in the
-    cache get backfilled) but merges with existing cache instead of pruning.
+    returns. Open-session holes are repaired automatically. `repair` remains an
+    explicit full-window merge for callers that want to revalidate every row.
     """
     user_id = get_authenticated_user_id()
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)

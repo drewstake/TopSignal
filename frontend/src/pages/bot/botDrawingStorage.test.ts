@@ -14,6 +14,7 @@ import {
 } from "./botDrawingStorage";
 
 const scope: BotDrawingStorageScope = {
+  userScope: "user:one",
   botId: 42,
   contractId: "CON.F.US.MNQ.U26",
   timeframe: "5m",
@@ -22,13 +23,15 @@ const scope: BotDrawingStorageScope = {
 describe("buildBotDrawingStorageKey", () => {
   it("normalizes casing but keeps bot, contract, and timeframe scopes isolated", () => {
     expect(buildBotDrawingStorageKey(scope)).toBe(
-      buildBotDrawingStorageKey({ botId: 42, contractId: " con.f.us.mnq.u26 ", timeframe: " 5M " }),
+      buildBotDrawingStorageKey({ userScope: "user:one", botId: 42, contractId: " con.f.us.mnq.u26 ", timeframe: " 5M " }),
     );
     expect(buildBotDrawingStorageKey({ ...scope, botId: 43 })).not.toBe(buildBotDrawingStorageKey(scope));
     expect(buildBotDrawingStorageKey({ ...scope, contractId: "CON.F.US.ES.U26" })).not.toBe(
       buildBotDrawingStorageKey(scope),
     );
     expect(buildBotDrawingStorageKey({ ...scope, timeframe: "15m" })).not.toBe(buildBotDrawingStorageKey(scope));
+    expect(buildBotDrawingStorageKey({ ...scope, userScope: "user:two" })).not.toBe(buildBotDrawingStorageKey(scope));
+    expect(buildBotDrawingStorageKey(scope)).toContain("topsignal:bot-chart-drawings:v2:");
   });
 });
 
@@ -45,6 +48,15 @@ describe("drawing persistence", () => {
 
     expect(clearBotDrawings(scope, storage)).toBe(true);
     expect(readBotDrawings(scope, storage)).toEqual([]);
+  });
+
+  it("invalidates an unscoped v1 payload instead of migrating it to a user", () => {
+    const storage = new MemoryStorage();
+    const legacyKey = "topsignal:bot-chart-drawings:v1:42%7CCON.F.US.MNQ.U26%7C5m";
+    storage.setItem(legacyKey, JSON.stringify({ version: 1, drawings: [drawing("legacy", "line")] }));
+
+    expect(readBotDrawings(scope, storage)).toEqual([]);
+    expect(storage.getItem(legacyKey)).toBeNull();
   });
 
   it("returns an empty collection for malformed JSON, unsupported versions, and invalid envelopes", () => {

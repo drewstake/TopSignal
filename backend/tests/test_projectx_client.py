@@ -311,6 +311,11 @@ def test_retrieve_bars_infers_an_unmarked_intraday_tail_is_partial():
     assert len(included) == 1
     assert included[0]["is_partial"] is True
 
+    closed_request = {**request, "end": datetime(2026, 4, 27, 4, 0, tzinfo=timezone.utc)}
+    closed = client.retrieve_bars(**closed_request, include_partial_bar=False)
+    assert len(closed) == 1
+    assert closed[0]["is_partial"] is False
+
 
 def test_place_order_uses_projectx_order_place_payload():
     class StubClient(ProjectXClient):

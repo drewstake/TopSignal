@@ -64,9 +64,12 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
 
   useEffect(() => () => {
     requestSequence.current += 1;
+    requestController.current?.abort();
+    requestController.current = null;
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -84,6 +87,9 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
 
     const sequence = requestSequence.current + 1;
     requestSequence.current = sequence;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
     setRunning(true);
     setError(null);
     try {
@@ -96,9 +102,9 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         force_close_at_end: true,
       };
       if (bot.strategy_type === "topbot_adaptive") {
-        await botsApi.prepareBacktest(bot.id, payload);
+        await botsApi.prepareBacktest(bot.id, payload, { signal: controller.signal });
       }
-      const nextResult = await botsApi.runBacktest(bot.id, payload);
+      const nextResult = await botsApi.runBacktest(bot.id, payload, { signal: controller.signal });
       if (requestSequence.current === sequence) {
         setResult(nextResult);
       }
@@ -109,6 +115,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
     } finally {
       if (requestSequence.current === sequence) {
         setRunning(false);
+        requestController.current = null;
       }
     }
   }
@@ -324,6 +331,9 @@ function EquityDrawdownChart({ equity, drawdown }: { equity: BotBacktestEquityPo
   const paths = useMemo(() => buildBacktestChartPaths(equity, drawdown), [drawdown, equity]);
   const firstTimestamp = equity[0]?.timestamp ?? drawdown[0]?.timestamp ?? null;
   const lastTimestamp = equity[equity.length - 1]?.timestamp ?? drawdown[drawdown.length - 1]?.timestamp ?? null;
+  const chartWasSampled =
+    paths.equityRenderedPointCount < paths.equitySourcePointCount ||
+    paths.drawdownRenderedPointCount < paths.drawdownSourcePointCount;
 
   return (
     <div className="min-w-0 rounded-xl border border-app-border bg-app-bg/30 p-4">
@@ -338,22 +348,29 @@ function EquityDrawdownChart({ equity, drawdown }: { equity: BotBacktestEquityPo
         </div>
       </div>
       {paths.equity || paths.drawdown ? (
-        <svg viewBox={`0 0 ${BACKTEST_CHART_WIDTH} 270`} className="h-auto w-full" role="img" aria-labelledby="backtest-chart-title backtest-chart-description">
-          <title id="backtest-chart-title">Backtest equity and drawdown chart</title>
-          <desc id="backtest-chart-description">Equity ranges from {formatCurrency(paths.equityMin)} to {formatCurrency(paths.equityMax)}. Maximum drawdown is {formatPercent(paths.drawdownMax)}.</desc>
-          {[BACKTEST_EQUITY_TOP, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT / 2, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT, BACKTEST_DRAWDOWN_TOP, BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT].map((y) => (
-            <line key={y} x1="0" x2={BACKTEST_CHART_WIDTH} y1={y} y2={y} stroke="rgb(var(--theme-chart-grid) / 0.5)" strokeWidth="1" />
-          ))}
-          {paths.equityFill ? <path d={paths.equityFill} fill="rgb(var(--theme-accent) / 0.09)" /> : null}
-          {paths.equity ? <path d={paths.equity} fill="none" stroke="rgb(var(--theme-accent))" strokeWidth="2.25" vectorEffect="non-scaling-stroke" /> : null}
-          {paths.drawdown ? <path d={paths.drawdown} fill="none" stroke="rgb(var(--theme-negative))" strokeWidth="1.75" vectorEffect="non-scaling-stroke" /> : null}
-          <text x="4" y="10" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMax)}</text>
-          <text x="4" y={BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMin)}</text>
-          <text x="4" y={BACKTEST_DRAWDOWN_TOP - 7} fill="rgb(var(--theme-chart-label))" fontSize="11">Drawdown</text>
-          <text x="4" y={BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatPercent(paths.drawdownMax)}</text>
-          {firstTimestamp ? <text x="0" y="266" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(firstTimestamp)}</text> : null}
-          {lastTimestamp ? <text x={BACKTEST_CHART_WIDTH} y="266" textAnchor="end" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(lastTimestamp)}</text> : null}
-        </svg>
+        <>
+          <svg viewBox={`0 0 ${BACKTEST_CHART_WIDTH} 270`} className="h-auto w-full" role="img" aria-labelledby="backtest-chart-title backtest-chart-description">
+            <title id="backtest-chart-title">Backtest equity and drawdown chart</title>
+            <desc id="backtest-chart-description">Equity ranges from {formatCurrency(paths.equityMin)} to {formatCurrency(paths.equityMax)}. Maximum drawdown is {formatPercent(paths.drawdownMax)}.</desc>
+            {[BACKTEST_EQUITY_TOP, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT / 2, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT, BACKTEST_DRAWDOWN_TOP, BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT].map((y) => (
+              <line key={y} x1="0" x2={BACKTEST_CHART_WIDTH} y1={y} y2={y} stroke="rgb(var(--theme-chart-grid) / 0.5)" strokeWidth="1" />
+            ))}
+            {paths.equityFill ? <path d={paths.equityFill} fill="rgb(var(--theme-accent) / 0.09)" /> : null}
+            {paths.equity ? <path d={paths.equity} fill="none" stroke="rgb(var(--theme-accent))" strokeWidth="2.25" vectorEffect="non-scaling-stroke" /> : null}
+            {paths.drawdown ? <path d={paths.drawdown} fill="none" stroke="rgb(var(--theme-negative))" strokeWidth="1.75" vectorEffect="non-scaling-stroke" /> : null}
+            <text x="4" y="10" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMax)}</text>
+            <text x="4" y={BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMin)}</text>
+            <text x="4" y={BACKTEST_DRAWDOWN_TOP - 7} fill="rgb(var(--theme-chart-label))" fontSize="11">Drawdown</text>
+            <text x="4" y={BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatPercent(paths.drawdownMax)}</text>
+            {firstTimestamp ? <text x="0" y="266" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(firstTimestamp)}</text> : null}
+            {lastTimestamp ? <text x={BACKTEST_CHART_WIDTH} y="266" textAnchor="end" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(lastTimestamp)}</text> : null}
+          </svg>
+          {chartWasSampled ? (
+            <p className="mt-2 text-[11px] text-app-muted">
+              Chart rendering is deterministically sampled to {integerFormatter.format(paths.equityRenderedPointCount)} of {integerFormatter.format(paths.equitySourcePointCount)} equity points for display; all returned points remain included in backtest results and metrics.
+            </p>
+          ) : null}
+        </>
       ) : (
         <div className="grid h-56 place-items-center text-sm text-app-muted">No equity points returned.</div>
       )}

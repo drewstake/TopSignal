@@ -84,6 +84,14 @@ export function invalidateChartRequestLanes(lanes: readonly LatestRequestCoordin
   }
 }
 
+/** Start independent chart-history and live-price lanes without serial latency. */
+export async function runChartContextLoadsInParallel(
+  loadCandles: () => Promise<unknown>,
+  loadLivePrice: () => Promise<unknown>,
+): Promise<void> {
+  await Promise.allSettled([loadCandles(), loadLivePrice()]);
+}
+
 export type ChartViewportMutation = "refresh" | "pagination" | "live";
 
 export interface PreservedLogicalViewport {

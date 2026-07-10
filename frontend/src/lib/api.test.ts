@@ -5,6 +5,7 @@ vi.mock("./supabase", () => ({
 }));
 
 import { accountsApi, botsApi } from "./api";
+import { getAccessToken } from "./supabase";
 
 function installDemoModeStorage(enabled: boolean) {
   vi.stubGlobal("localStorage", {
@@ -17,6 +18,7 @@ function installDemoModeStorage(enabled: boolean) {
 
 describe("accountsApi", () => {
   beforeEach(() => {
+    vi.mocked(getAccessToken).mockResolvedValue(null);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -110,10 +112,49 @@ describe("accountsApi", () => {
     expect(calendar.length).toBeGreaterThan(10);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("deduplicates within one user while isolating cache and in-flight work across auth switches", async () => {
+    installDemoModeStorage(false);
+    const tokenOne = jwt("user-one");
+    const tokenTwo = jwt("user-two");
+    const pending = new Map<string, (response: Response) => void>();
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      const authorization = (init?.headers as Record<string, string> | undefined)?.Authorization ?? "";
+      return new Promise<Response>((resolve) => pending.set(authorization, resolve));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    vi.mocked(getAccessToken).mockResolvedValue(tokenOne);
+    const userOneFirst = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    const userOneDeduped = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    vi.mocked(getAccessToken).mockResolvedValue(tokenTwo);
+    const userTwoFirst = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    pending.get(`Bearer ${tokenTwo}`)?.(jsonResponse([{ id: 2, account_state: "ACTIVE" }]));
+    await expect(userTwoFirst).resolves.toEqual([{ id: 2, account_state: "ACTIVE" }]);
+    pending.get(`Bearer ${tokenOne}`)?.(jsonResponse([{ id: 1, account_state: "ACTIVE" }]));
+    await expect(Promise.all([userOneFirst, userOneDeduped])).resolves.toEqual([
+      [{ id: 1, account_state: "ACTIVE" }],
+      [{ id: 1, account_state: "ACTIVE" }],
+    ]);
+
+    await expect(accountsApi.getAccounts({ showInactive: true, showMissing: true })).resolves.toEqual([
+      { id: 2, account_state: "ACTIVE" },
+    ]);
+    vi.mocked(getAccessToken).mockResolvedValue(tokenOne);
+    await expect(accountsApi.getAccounts({ showInactive: true, showMissing: true })).resolves.toEqual([
+      { id: 1, account_state: "ACTIVE" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("botsApi", () => {
   beforeEach(() => {
+    vi.mocked(getAccessToken).mockResolvedValue(null);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -132,7 +173,7 @@ describe("botsApi", () => {
 
   it("posts backtests to the plural backend route", async () => {
     const payload = {
-      start: "2026-07-01T00:00:00.000Z",
+      start: "2019-01-01T00:00:00.000Z",
       end: "2026-07-08T23:59:59.999Z",
       starting_balance: 50_000,
       commission_per_contract: 1.2,
@@ -148,6 +189,9 @@ describe("botsApi", () => {
     expect(url).toBe("http://127.0.0.1:8000/api/bots/42/backtests");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual(payload);
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("limit");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("max_bars");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("confirm_live_order_routing");
   });
 
   it("prepares TopBot replay data through the dedicated cache route", async () => {
@@ -170,3 +214,16 @@ describe("botsApi", () => {
     expect(JSON.parse(String(init?.body))).toEqual(payload);
   });
 });
+
+function jwt(subject: string): string {
+  const header = globalThis.btoa(JSON.stringify({ alg: "none", typ: "JWT" }));
+  const payload = globalThis.btoa(JSON.stringify({ iss: "https://auth.example.test", sub: subject }));
+  return `${header}.${payload}.signature`;
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}

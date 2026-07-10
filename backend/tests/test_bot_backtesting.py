@@ -772,6 +772,24 @@ def test_insufficient_closed_data_is_rejected_and_partial_bars_are_never_replaye
     assert any("Excluded 1 partial candle" in warning for warning in result["warnings"])
 
 
+def test_input_fingerprints_exclude_effectively_partial_cached_bars():
+    premature = _candle(BASE_TIME)
+    premature.fetched_at = BASE_TIME + timedelta(minutes=1)
+    premature.raw_payload = {"t": BASE_TIME.isoformat()}
+    closed = _candle(BASE_TIME + timedelta(minutes=5))
+    closed.fetched_at = BASE_TIME + timedelta(minutes=10)
+    closed.raw_payload = {"t": closed.candle_timestamp.isoformat()}
+
+    assert backtesting_module.candle_input_fingerprint(
+        [premature, closed]
+    ) == backtesting_module.candle_input_fingerprint([closed])
+    assert backtesting_module.candle_stream_input_fingerprint(
+        {"asset:minute:5": [premature, closed]}
+    ) == backtesting_module.candle_stream_input_fingerprint(
+        {"asset:minute:5": [closed]}
+    )
+
+
 @pytest.mark.parametrize(
     ("bars", "error_fragment"),
     [
@@ -1160,6 +1178,196 @@ def test_topbot_cache_preparation_skips_streams_that_already_cover_the_replay(
     assert prepared == 0
 
 
+def test_topbot_cache_preparation_refetches_a_truncated_primary_stream(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(
+        db_session,
+        strategy_type="topbot_adaptive",
+        strategy_params={"source_strategies": ["sma_cross"]},
+        lookback_bars=25,
+    )
+    db_session.add_all(
+        [
+            _candle(BASE_TIME),
+            _candle(BASE_TIME + timedelta(minutes=5)),
+        ]
+    )
+    db_session.commit()
+    fetches: list[dict[str, Any]] = []
+
+    def record_fetch(*_args, **kwargs):
+        fetches.append(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "fetch_and_store_market_candles",
+        record_fetch,
+    )
+
+    prepared = backtesting_module.prepare_bot_backtest_data(
+        db_session,
+        user_id=OWNER_ID,
+        bot_config_id=config.id,
+        payload=BotBacktestIn(
+            start=BASE_TIME,
+            end=BASE_TIME + timedelta(minutes=20),
+        ),
+        client=object(),
+    )
+
+    assert prepared == 1
+    assert len(fetches) == 1
+    assert fetches[0]["contract_id"] == CONTRACT_ID
+
+
+@pytest.mark.parametrize(
+    "execution_offsets",
+    [
+        [5, 10, 15],
+        [0, 5, 10],
+    ],
+    ids=["leading-bar", "trailing-bar"],
+)
+def test_primary_cache_coverage_rejects_one_missing_boundary_bar(
+    db_session,
+    monkeypatch,
+    execution_offsets,
+):
+    monkeypatch.setattr(
+        backtesting_module,
+        "_cached_replay_stream_covers",
+        lambda *_args, **_kwargs: True,
+    )
+    execution_rows = [
+        _candle(BASE_TIME + timedelta(minutes=offset))
+        for offset in execution_offsets
+    ]
+
+    assert not backtesting_module._cached_primary_stream_covers(
+        db_session,
+        user_id=OWNER_ID,
+        contract_id=CONTRACT_ID,
+        unit="minute",
+        unit_number=5,
+        fetch_start=BASE_TIME - timedelta(days=1),
+        requested_start=BASE_TIME,
+        requested_end=BASE_TIME + timedelta(minutes=20),
+        warmup_bars=1,
+        execution_rows=execution_rows,
+    )
+
+
+def test_topbot_cache_preparation_pages_the_entire_provider_range(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(
+        db_session,
+        strategy_type="topbot_adaptive",
+        strategy_params={"source_strategies": ["sma_cross"]},
+        lookback_bars=25,
+    )
+    primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
+    primary_spec = backtesting_module._TopBotReplayStreamSpec(
+        key=primary_key,
+        unit="minute",
+        unit_number=5,
+        warmup_bars=1,
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+    )
+    fetches: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        backtesting_module,
+        "_topbot_stream_specs",
+        lambda _config: {primary_key: primary_spec},
+    )
+    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 20)
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "fetch_and_store_market_candles",
+        lambda *_args, **kwargs: fetches.append(kwargs) or [],
+    )
+
+    prepared = backtesting_module.prepare_bot_backtest_data(
+        db_session,
+        user_id=OWNER_ID,
+        bot_config_id=config.id,
+        payload=BotBacktestIn(
+            start=BASE_TIME,
+            end=BASE_TIME + timedelta(minutes=50),
+        ),
+        client=object(),
+    )
+
+    assert prepared == 1
+    assert len(fetches) == 5
+    assert fetches[0]["start"] == BASE_TIME - timedelta(minutes=375)
+    assert fetches[-1]["end"] == BASE_TIME + timedelta(minutes=50)
+    assert all(call["limit"] == 20 for call in fetches)
+    assert all(
+        current["start"] == previous["end"]
+        for previous, current in zip(fetches, fetches[1:])
+    )
+
+
+def test_topbot_replay_loader_queries_a_shared_benchmark_identity_once(db_session):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": [
+                "atr_adjusted_relative_strength",
+                "relative_strength_spy",
+            ],
+        },
+        lookback_bars=25,
+    )
+    benchmark_rows = [
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            contract_id="CON.F.US.MES.M26",
+            symbol="F.US.MES",
+        )
+        for index in range(-3, 2)
+    ]
+    db_session.add_all(benchmark_rows)
+    db_session.commit()
+    select_count = 0
+
+    def count_candle_selects(_conn, _cursor, statement, _parameters, _context, _many):
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT") and "projectx_market_candles" in statement:
+            select_count += 1
+
+    from sqlalchemy import event
+
+    event.listen(db_session.bind, "before_cursor_execute", count_candle_selects)
+    try:
+        streams = backtesting_module._load_topbot_replay_streams(
+            db_session,
+            user_id=OWNER_ID,
+            config=config,
+            start=BASE_TIME,
+            end=BASE_TIME + timedelta(minutes=10),
+            primary_rows=[_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=5))],
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", count_candle_selects)
+
+    left = streams[
+        backtesting_module._topbot_benchmark_stream_key("atr_adjusted_relative_strength")
+    ]
+    right = streams[
+        backtesting_module._topbot_benchmark_stream_key("relative_strength_spy")
+    ]
+    assert left is right
+    assert select_count == 2
+
+
 def test_topbot_cache_coverage_rejects_overlapping_candles(db_session):
     canonical = [
         _candle(
@@ -1188,6 +1396,52 @@ def test_topbot_cache_coverage_rejects_overlapping_candles(db_session):
         first_event=BASE_TIME + timedelta(minutes=5),
         last_event=BASE_TIME + timedelta(minutes=10),
         warmup_bars=25,
+    )
+
+
+def test_topbot_cache_coverage_rejects_an_open_session_gap(db_session):
+    db_session.add_all(
+        [
+            _candle(BASE_TIME - timedelta(minutes=5)),
+            _candle(BASE_TIME),
+            _candle(BASE_TIME + timedelta(minutes=10)),
+        ]
+    )
+    db_session.commit()
+
+    assert not backtesting_module._cached_replay_stream_covers(
+        db_session,
+        user_id=OWNER_ID,
+        contract_id=CONTRACT_ID,
+        unit="minute",
+        unit_number=5,
+        fetch_start=BASE_TIME - timedelta(minutes=5),
+        requested_start=BASE_TIME,
+        first_event=BASE_TIME + timedelta(minutes=5),
+        last_event=BASE_TIME + timedelta(minutes=15),
+        warmup_bars=1,
+    )
+
+
+def test_topbot_cache_coverage_accepts_a_weekend_market_closure(db_session):
+    friday_tail = _candle(datetime(2026, 7, 10, 20, 55, tzinfo=timezone.utc))
+    sunday_open = _candle(datetime(2026, 7, 12, 22, 0, tzinfo=timezone.utc))
+    for row in (friday_tail, sunday_open):
+        row.raw_payload = {"isPartial": False}
+    db_session.add_all([friday_tail, sunday_open])
+    db_session.commit()
+
+    assert backtesting_module._cached_replay_stream_covers(
+        db_session,
+        user_id=OWNER_ID,
+        contract_id=CONTRACT_ID,
+        unit="minute",
+        unit_number=5,
+        fetch_start=friday_tail.candle_timestamp,
+        requested_start=sunday_open.candle_timestamp,
+        first_event=_utc(sunday_open.candle_timestamp) + timedelta(minutes=5),
+        last_event=_utc(sunday_open.candle_timestamp) + timedelta(minutes=5),
+        warmup_bars=1,
     )
 
 
@@ -1625,6 +1879,37 @@ def test_authenticated_route_reuses_real_strategy_and_never_routes_orders(
     assert response["assumptions"]["live_order_routing"] == "disabled_by_architecture"
     assert evaluator_calls
     assert db_session.query(BotBacktest).count() == 1
+
+
+def test_authenticated_backtest_rejects_the_bar_cap_instead_of_truncating(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session)
+    db_session.add_all(
+        [
+            _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100 + index)
+            for index in range(4)
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(backtesting_module, "MAX_BACKTEST_BARS", 3)
+
+    with pytest.raises(
+        backtesting_module.BacktestConfigurationError,
+        match="backtest_bar_limit_exceeded: maximum is 3",
+    ):
+        backtesting_module.create_bot_backtest(
+            db_session,
+            user_id=OWNER_ID,
+            bot_config_id=config.id,
+            payload=BotBacktestIn(
+                start=BASE_TIME,
+                end=BASE_TIME + timedelta(minutes=20),
+            ),
+        )
+
+    assert db_session.query(BotBacktest).count() == 0
 
 
 def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(

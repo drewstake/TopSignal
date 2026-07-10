@@ -6,6 +6,7 @@ import {
   findCandleGaps,
   isGapCoveredByRepairWindows,
   isFuturesSessionOpen,
+  type CandleGap,
 } from "./botCandleGaps";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
@@ -197,6 +198,25 @@ describe("findCandleGaps", () => {
 });
 
 describe("buildGapRepairWindows", () => {
+  it("plans zero closure repairs and exactly one request per bounded data-gap window", () => {
+    const base = Date.parse("2026-06-09T13:00:00Z");
+    const gap = (index: number, kind: CandleGap["kind"]): CandleGap => ({
+      kind,
+      fromMs: base + index * 2 * 60 * 60_000,
+      toMs: base + index * 2 * 60 * 60_000 + 10 * 60_000,
+      missingBars: 2,
+      missingSessionBars: kind === "data" ? 2 : 0,
+      beforeTimestamp: new Date(base + index * 2 * 60 * 60_000 - 5 * 60_000).toISOString(),
+      afterTimestamp: new Date(base + index * 2 * 60 * 60_000 + 10 * 60_000).toISOString(),
+    });
+
+    expect(buildGapRepairWindows([gap(0, "session"), gap(1, "session")], "minute", 5, 3)).toHaveLength(0);
+    expect(
+      buildGapRepairWindows([gap(0, "data"), gap(1, "data"), gap(2, "data"), gap(3, "data")], "minute", 5, 3),
+    ).toHaveLength(3);
+    expect(buildGapRepairWindows([gap(0, "data")], "minute", 5, 0)).toHaveLength(0);
+  });
+
   it("builds padded windows for data gaps only and merges overlapping ranges", () => {
     const gaps = findCandleGaps(
       [
