@@ -23,6 +23,11 @@ import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
 
+export interface AppShellOutletContext {
+  accounts: AccountInfo[];
+  accountsLoading: boolean;
+}
+
 function AppShellRouteFallback() {
   return (
     <div className="space-y-5 pb-8">
@@ -123,6 +128,10 @@ export function AppShell() {
   const currentUserEmail = getCurrentUserEmailSync();
   const currentUserEmailDisplay = getDemoUserEmail(currentUserEmail);
   const isTradesRoute = location.pathname.startsWith("/trades");
+  const outletContext = useMemo<AppShellOutletContext>(
+    () => ({ accounts: orderedAccounts, accountsLoading }),
+    [accountsLoading, orderedAccounts],
+  );
 
   function handleAccountChange(rawValue: string) {
     const nextAccountId = parseAccountId(rawValue);
@@ -275,7 +284,7 @@ export function AppShell() {
         )}
       >
         <Suspense fallback={<AppShellRouteFallback />}>
-          <Outlet />
+          <Outlet context={outletContext} />
         </Suspense>
       </main>
     </div>

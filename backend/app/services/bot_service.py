@@ -6,10 +6,12 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
-from typing import Any, Iterable
+from threading import Event, Lock
+from typing import Any, Callable, Iterable
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -49,7 +51,12 @@ from .bot_strategy_registry import (
 from .bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
 from . import bot_serialization as _bot_serialization
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
-from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+from .trading_day import (
+    TRADING_TZ,
+    futures_session_is_open,
+    trading_day_bounds_utc,
+    trading_day_date,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +79,8 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_MARKET_CANDLE_UPSERT_BATCH_SIZE = 1_000
+_MARKET_CANDLE_SINGLEFLIGHT_WAIT_SECONDS = 75
 _EVALUATION_INTRADAY_LOOKBACK_FLOOR = timedelta(days=7)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
@@ -301,7 +310,7 @@ _FVG_SWEEP_MSS_DEFAULTS = {
     "target_mode": _FVG_TARGET_MODE_NEXT_LIQUIDITY,
 }
 _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
-    "benchmark_symbol": "SPY",
+    "benchmark_symbol": "MES",
     "move_lookback_bars": 3,
     "atr_period": 14,
     "relative_volume_period": 20,
@@ -314,7 +323,7 @@ _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
     "take_profit_r_multiple": 2.0,
 }
 _RELATIVE_STRENGTH_SPY_DEFAULTS = {
-    "benchmark_symbol": "SPY",
+    "benchmark_symbol": "MES",
     "comparison_bars": 12,
     "pullback_lookback_bars": 3,
     "relative_volume_period": 20,
@@ -378,6 +387,17 @@ _TOPBOT_ADAPTIVE_DEFAULTS = {
     "move_to_breakeven_at_r": 1.0,
     "block_expired_contracts": False,
 }
+
+
+@dataclass
+class _CandleProviderFlight:
+    event: Event
+    result: list[dict[str, Any]] | None = None
+    error: Exception | None = None
+
+
+_CANDLE_PROVIDER_FLIGHT_LOCK = Lock()
+_CANDLE_PROVIDER_FLIGHTS: dict[tuple[Any, ...], _CandleProviderFlight] = {}
 
 
 @dataclass(frozen=True)
@@ -1476,7 +1496,7 @@ def fetch_and_store_relative_strength_spy_candles(
             prefer_current_contract=True,
             preserve_cached_history=True,
         ),
-        "SPY": fetch_and_store_market_candles(
+        "benchmark": fetch_and_store_market_candles(
             db,
             user_id=user_id,
             client=client,
@@ -1715,6 +1735,42 @@ def fetch_and_store_orb_fibonacci_candles(
     )
 
 
+def _retrieve_market_bars_singleflight(
+    key: tuple[Any, ...],
+    retrieve: Callable[[], list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    owner = False
+    with _CANDLE_PROVIDER_FLIGHT_LOCK:
+        flight = _CANDLE_PROVIDER_FLIGHTS.get(key)
+        if flight is None:
+            flight = _CandleProviderFlight(event=Event())
+            _CANDLE_PROVIDER_FLIGHTS[key] = flight
+            owner = True
+
+    if not owner:
+        if not flight.event.wait(timeout=_MARKET_CANDLE_SINGLEFLIGHT_WAIT_SECONDS):
+            raise ProjectXClientError(
+                "Timed out waiting for an identical candle request.",
+                status_code=504,
+            )
+        if flight.error is not None:
+            raise flight.error
+        return [dict(row) for row in (flight.result or [])]
+
+    try:
+        result = retrieve()
+        flight.result = [dict(row) for row in result]
+        return [dict(row) for row in result]
+    except Exception as exc:
+        flight.error = exc
+        raise
+    finally:
+        flight.event.set()
+        with _CANDLE_PROVIDER_FLIGHT_LOCK:
+            if _CANDLE_PROVIDER_FLIGHTS.get(key) is flight:
+                _CANDLE_PROVIDER_FLIGHTS.pop(key, None)
+
+
 def fetch_and_store_market_candles(
     db: Session,
     *,
@@ -1731,6 +1787,7 @@ def fetch_and_store_market_candles(
     include_partial_bar: bool = False,
     prefer_current_contract: bool = False,
     preserve_cached_history: bool = False,
+    authoritative_refresh: bool = False,
 ) -> list[ProjectXMarketCandle]:
     normalized_unit = str(unit).strip().lower()
     if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
@@ -1761,15 +1818,29 @@ def fetch_and_store_market_candles(
         else []
     )
     try:
-        bars = client.retrieve_bars(
-            contract_id=resolved_contract_id,
-            live=live,
-            start=start,
-            end=end,
-            unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=include_partial_bar,
+        request_key = (
+            str(user_id),
+            resolved_contract_id,
+            bool(live),
+            normalized_unit,
+            int(unit_number),
+            _as_utc(start).isoformat(),
+            _as_utc(end).isoformat(),
+            int(limit),
+            bool(include_partial_bar),
+        )
+        bars = _retrieve_market_bars_singleflight(
+            request_key,
+            lambda: client.retrieve_bars(
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start,
+                end=end,
+                unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            ),
         )
     except ProjectXClientError:
         if cached:
@@ -1785,6 +1856,31 @@ def fetch_and_store_market_candles(
         unit_number=unit_number,
         bars=bars,
     )
+    if authoritative_refresh and stored:
+        provider_timestamps = [_as_utc(row.candle_timestamp) for row in stored]
+        provider_timestamp_set = set(provider_timestamps)
+        provider_start = min(provider_timestamps)
+        provider_end = max(provider_timestamps)
+        prune_market_candle_cache_range(
+            db,
+            user_id=user_id,
+            contract_id=resolved_contract_id,
+            live=live,
+            start=provider_start,
+            end=provider_end,
+            unit=normalized_unit,
+            unit_number=unit_number,
+            keep_timestamps=provider_timestamps,
+        )
+        cached = [
+            row
+            for row in cached
+            if (
+                _as_utc(row.candle_timestamp) < provider_start
+                or _as_utc(row.candle_timestamp) > provider_end
+                or _as_utc(row.candle_timestamp) in provider_timestamp_set
+            )
+        ]
     if not preserve_cached_history:
         return stored
 
@@ -1895,6 +1991,7 @@ def market_candle_cache_needs_refresh(
     unit: str,
     unit_number: int,
     include_partial_bar: bool = False,
+    symbol: str | None = None,
 ) -> bool:
     if not cached_candles:
         return True
@@ -1905,13 +2002,21 @@ def market_candle_cache_needs_refresh(
         unit=unit,
         unit_number=unit_number,
         include_partial_bar=include_partial_bar,
+        symbol=symbol,
     ):
         return True
 
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in cached_candles)
     end_utc = _as_utc(end)
-    if latest_timestamp + interval <= end_utc:
+    if latest_timestamp + interval <= end_utc and _market_candle_range_contains_open_slot(
+        latest_timestamp + interval,
+        end_utc,
+        interval=interval,
+        include_end=True,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
+    ):
         return _market_candle_tail_revalidation_due(cached_candles)
     return False
 
@@ -1923,6 +2028,7 @@ def market_candle_rows_are_stale(
     unit: str,
     unit_number: int,
     include_partial_bar: bool = False,
+    symbol: str | None = None,
 ) -> bool:
     if not candles:
         return True
@@ -1930,9 +2036,15 @@ def market_candle_rows_are_stale(
     interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     latest_timestamp = max(_as_utc(row.candle_timestamp) for row in candles)
     end_utc = _as_utc(end)
-    if include_partial_bar:
-        return latest_timestamp + interval <= end_utc
-    return latest_timestamp + interval + interval <= end_utc
+    latest_expected_start = end_utc if include_partial_bar else end_utc - interval
+    return _market_candle_range_contains_open_slot(
+        latest_timestamp + interval,
+        latest_expected_start,
+        interval=interval,
+        include_end=True,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
+    )
 
 
 def market_candle_cache_covers_request(
@@ -1942,17 +2054,91 @@ def market_candle_cache_covers_request(
     unit: str,
     unit_number: int,
     limit: int,
+    symbol: str | None = None,
 ) -> bool:
     if not cached_candles:
+        return False
+
+    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
+    if _market_candle_rows_have_open_session_gap(
+        cached_candles,
+        interval=interval,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
+    ):
         return False
 
     normalized_limit = max(1, int(limit))
     if len(cached_candles) >= normalized_limit:
         return True
 
-    interval = _market_candle_interval(unit=unit, unit_number=unit_number)
     earliest_timestamp = min(_as_utc(row.candle_timestamp) for row in cached_candles)
-    return earliest_timestamp <= _as_utc(start) + interval
+    first_expected_timestamp = _as_utc(start) + interval
+    if earliest_timestamp <= first_expected_timestamp:
+        return True
+    return not _market_candle_range_contains_open_slot(
+        first_expected_timestamp,
+        earliest_timestamp,
+        interval=interval,
+        include_end=False,
+        closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
+    )
+
+
+def _market_candle_rows_have_open_session_gap(
+    cached_candles: list[ProjectXMarketCandle],
+    *,
+    interval: timedelta,
+    closure_aware: bool,
+    symbol: str | None = None,
+) -> bool:
+    timestamps = sorted({_as_utc(row.candle_timestamp) for row in cached_candles})
+    for previous, current in zip(timestamps, timestamps[1:]):
+        if _market_candle_range_contains_open_slot(
+            previous + interval,
+            current,
+            interval=interval,
+            include_end=False,
+            closure_aware=closure_aware,
+            symbol=symbol,
+        ):
+            return True
+    return False
+
+
+def _market_candle_range_contains_open_slot(
+    start: datetime,
+    end: datetime,
+    *,
+    interval: timedelta,
+    include_end: bool,
+    closure_aware: bool,
+    symbol: str | None = None,
+) -> bool:
+    cursor = _as_utc(start)
+    end_utc = _as_utc(end)
+    if cursor > end_utc or (cursor == end_utc and not include_end):
+        return False
+    if not closure_aware:
+        return True
+
+    # Futures closures are minute-aligned. Scanning at minute granularity keeps
+    # second-bar cache checks bounded across a weekend while preserving whether
+    # any tradable slot exists inside the missing range.
+    step = max(interval, timedelta(minutes=1))
+    while cursor < end_utc or (include_end and cursor == end_utc):
+        if futures_session_is_open(cursor, symbol=symbol):
+            return True
+        cursor += step
+    return False
+
+
+def _market_candle_unit_is_closure_aware(unit: str) -> bool:
+    # Daily bars are UTC-date stamped, but their missing weekend buckets still
+    # land inside the regular Globex close. Weekly/monthly buckets are calendar
+    # aggregates and are not meaningful inputs to the slot-by-slot session scan.
+    return str(unit).strip().lower() in {"second", "minute", "hour", "day"}
 
 
 def next_market_candle_fetch_start(
@@ -2088,23 +2274,25 @@ def store_market_candles(
     timestamps = [bar["timestamp"] for bar in normalized]
     fetched_at = datetime.now(timezone.utc)
 
-    if _session_dialect_name(db) == "postgresql":
-        _upsert_market_candle_rows(
-            db,
-            values=[
-                _market_candle_insert_values(
-                    user_id=user_id,
-                    contract_id=contract_id,
-                    symbol=symbol,
-                    live=live,
-                    unit=unit,
-                    unit_number=unit_number,
-                    bar=bar,
-                    fetched_at=fetched_at,
-                )
-                for bar in normalized
-            ],
-        )
+    dialect_name = _session_dialect_name(db)
+    if dialect_name in {"postgresql", "sqlite"}:
+        values = [
+            _market_candle_insert_values(
+                user_id=user_id,
+                contract_id=contract_id,
+                symbol=symbol,
+                live=live,
+                unit=unit,
+                unit_number=unit_number,
+                bar=bar,
+                fetched_at=fetched_at,
+            )
+            for bar in normalized
+        ]
+        if dialect_name == "postgresql":
+            _upsert_market_candle_rows(db, values=values)
+        else:
+            _upsert_sqlite_market_candle_rows(db, values=values)
         return _query_market_candles_by_timestamps(
             db,
             user_id=user_id,
@@ -2131,6 +2319,10 @@ def store_market_candles(
     for bar in normalized:
         timestamp = bar["timestamp"]
         row = existing_by_timestamp.get(timestamp)
+        incoming_is_partial = bool(bar.get("is_partial") or False)
+        if row is not None and not bool(row.is_partial) and incoming_is_partial:
+            output.append(row)
+            continue
         if row is None:
             row = ProjectXMarketCandle(
                 user_id=user_id,
@@ -2147,7 +2339,7 @@ def store_market_candles(
         row.low_price = float(bar.get("low") or 0.0)
         row.close_price = float(bar.get("close") or 0.0)
         row.volume = float(bar.get("volume") or 0.0)
-        row.is_partial = bool(bar.get("is_partial") or False)
+        row.is_partial = incoming_is_partial
         row.raw_payload = bar.get("raw_payload")
         row.fetched_at = fetched_at
         output.append(row)
@@ -2166,7 +2358,15 @@ def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str,
         if not isinstance(timestamp, datetime):
             continue
         timestamp_utc = _as_utc(timestamp)
-        by_timestamp[timestamp_utc] = {**bar, "timestamp": timestamp_utc}
+        candidate = {**bar, "timestamp": timestamp_utc}
+        existing = by_timestamp.get(timestamp_utc)
+        if (
+            existing is not None
+            and not bool(existing.get("is_partial") or False)
+            and bool(candidate.get("is_partial") or False)
+        ):
+            continue
+        by_timestamp[timestamp_utc] = candidate
     return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
 
 
@@ -2210,31 +2410,69 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
         return
 
     table = ProjectXMarketCandle.__table__
-    insert_stmt = postgresql_insert(table).values(values)
-    excluded = insert_stmt.excluded
-    db.execute(
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                table.c.user_id,
-                table.c.contract_id,
-                table.c.live,
-                table.c.unit,
-                table.c.unit_number,
-                table.c.candle_timestamp,
-            ],
-            set_={
-                "symbol": excluded.symbol,
-                "open_price": excluded.open_price,
-                "high_price": excluded.high_price,
-                "low_price": excluded.low_price,
-                "close_price": excluded.close_price,
-                "volume": excluded.volume,
-                "is_partial": excluded.is_partial,
-                "raw_payload": excluded.raw_payload,
-                "fetched_at": excluded.fetched_at,
-            },
+    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
+        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
+        insert_stmt = postgresql_insert(table).values(batch)
+        excluded = insert_stmt.excluded
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    table.c.user_id,
+                    table.c.contract_id,
+                    table.c.live,
+                    table.c.unit,
+                    table.c.unit_number,
+                    table.c.candle_timestamp,
+                ],
+                set_={
+                    "symbol": excluded.symbol,
+                    "open_price": excluded.open_price,
+                    "high_price": excluded.high_price,
+                    "low_price": excluded.low_price,
+                    "close_price": excluded.close_price,
+                    "volume": excluded.volume,
+                    "is_partial": excluded.is_partial,
+                    "raw_payload": excluded.raw_payload,
+                    "fetched_at": excluded.fetched_at,
+                },
+                where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
+            )
         )
-    )
+
+
+def _upsert_sqlite_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> None:
+    if not values:
+        return
+
+    table = ProjectXMarketCandle.__table__
+    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
+        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
+        insert_stmt = sqlite_insert(table).values(batch)
+        excluded = insert_stmt.excluded
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    table.c.user_id,
+                    table.c.contract_id,
+                    table.c.live,
+                    table.c.unit,
+                    table.c.unit_number,
+                    table.c.candle_timestamp,
+                ],
+                set_={
+                    "symbol": excluded.symbol,
+                    "open_price": excluded.open_price,
+                    "high_price": excluded.high_price,
+                    "low_price": excluded.low_price,
+                    "close_price": excluded.close_price,
+                    "volume": excluded.volume,
+                    "is_partial": excluded.is_partial,
+                    "raw_payload": excluded.raw_payload,
+                    "fetched_at": excluded.fetched_at,
+                },
+                where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
+            )
+        )
 
 
 def _query_market_candles_by_timestamps(
@@ -2269,8 +2507,11 @@ def evaluate_sma_cross(
     slow_period: int,
 ) -> SignalResult:
     _validate_strategy_periods(fast_period, slow_period)
-    closed = [candle for candle in candles if not bool(candle.is_partial)]
-    closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        closed = candles
+    else:
+        closed = [candle for candle in candles if not bool(candle.is_partial)]
+        closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
     if len(closed) < slow_period + 1:
         return SignalResult(
             action="HOLD",
@@ -2628,6 +2869,7 @@ def evaluate_relative_strength_vs_spy(
     strategy_params: dict[str, Any] | None = None,
 ) -> SignalResult:
     params = _normalize_strategy_params(_STRATEGY_RELATIVE_STRENGTH_SPY, strategy_params)
+    benchmark_name = str(params["benchmark_symbol"])
     comparison_bars = int(params["comparison_bars"])
     pullback_lookback_bars = int(params["pullback_lookback_bars"])
     relative_volume_period = int(params["relative_volume_period"])
@@ -2661,7 +2903,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="HOLD",
             reason=(
-                f"Need at least {minimum_required} aligned closed 5-minute candles for the symbol and SPY; "
+                f"Need at least {minimum_required} aligned closed 5-minute candles for the symbol and {benchmark_name}; "
                 f"found {len(aligned_asset)}."
             ),
             candle_timestamp=latest_timestamp,
@@ -2750,7 +2992,8 @@ def evaluate_relative_strength_vs_spy(
             return SignalResult(
                 action="HOLD",
                 reason=(
-                    f"Symbol outperformed SPY over {comparison_bars} candles, but SPY is not in a meaningful pullback "
+                    f"Symbol outperformed {benchmark_name} over {comparison_bars} candles, but "
+                    f"{benchmark_name} is not in a meaningful pullback "
                     f"({_format_percent(benchmark_recent_move_percent)}% over the last {pullback_lookback_bars} candles)."
                 ),
                 candle_timestamp=latest_timestamp,
@@ -2760,7 +3003,10 @@ def evaluate_relative_strength_vs_spy(
         if asset_recent_move_percent <= benchmark_recent_move_percent:
             return SignalResult(
                 action="HOLD",
-                reason="Symbol outperformed SPY overall, but it did not hold up better during the latest SPY pullback.",
+                reason=(
+                    f"Symbol outperformed {benchmark_name} overall, but it did not hold up better "
+                    f"during the latest {benchmark_name} pullback."
+                ),
                 candle_timestamp=latest_timestamp,
                 price=price,
                 raw_payload=raw_payload,
@@ -2807,7 +3053,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="BUY",
             reason=(
-                f"BUY on relative strength vs SPY: {_format_percent(asset_move_percent)}% vs "
+                f"BUY on relative strength vs {benchmark_name}: {_format_percent(asset_move_percent)}% vs "
                 f"{_format_percent(benchmark_move_percent)}% over {comparison_bars} candles, "
                 f"RVOL {_format_percent(relative_volume)}x, entry at {long_entry[0]} "
                 f"{_format_strategy_price(long_entry[1])}. SL {_format_strategy_price(stop_loss)}, "
@@ -2823,7 +3069,8 @@ def evaluate_relative_strength_vs_spy(
             return SignalResult(
                 action="HOLD",
                 reason=(
-                    f"Symbol lagged SPY over {comparison_bars} candles, but SPY is not in a meaningful bounce "
+                    f"Symbol lagged {benchmark_name} over {comparison_bars} candles, but "
+                    f"{benchmark_name} is not in a meaningful bounce "
                     f"({_format_percent(benchmark_recent_move_percent)}% over the last {pullback_lookback_bars} candles)."
                 ),
                 candle_timestamp=latest_timestamp,
@@ -2833,7 +3080,10 @@ def evaluate_relative_strength_vs_spy(
         if asset_recent_move_percent >= benchmark_recent_move_percent:
             return SignalResult(
                 action="HOLD",
-                reason="Symbol lagged SPY overall, but it bounced too much during the latest SPY rebound.",
+                reason=(
+                    f"Symbol lagged {benchmark_name} overall, but it bounced too much during the "
+                    f"latest {benchmark_name} rebound."
+                ),
                 candle_timestamp=latest_timestamp,
                 price=price,
                 raw_payload=raw_payload,
@@ -2880,7 +3130,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="SELL",
             reason=(
-                f"SELL on relative weakness vs SPY: {_format_percent(asset_move_percent)}% vs "
+                f"SELL on relative weakness vs {benchmark_name}: {_format_percent(asset_move_percent)}% vs "
                 f"{_format_percent(benchmark_move_percent)}% over {comparison_bars} candles, "
                 f"RVOL {_format_percent(relative_volume)}x, entry at {short_entry[0]} "
                 f"{_format_strategy_price(short_entry[1])}. SL {_format_strategy_price(stop_loss)}, "
@@ -8083,6 +8333,8 @@ def _serialize_pivot_level(level: PivotLevel) -> dict[str, Any]:
 
 
 def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketCandle]:
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        return candles
     closed = [candle for candle in candles if not bool(candle.is_partial)]
     closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
     return closed
@@ -9633,6 +9885,8 @@ def _validate_strategy_configuration(
     slow_period: int,
 ) -> None:
     _validate_strategy_periods(fast_period, slow_period)
+    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE and str(timeframe_unit) == "month":
+        raise ValueError("TopBot Adaptive does not support month candles.")
     if strategy_type != _STRATEGY_EMA_SCALPING:
         return
     if str(timeframe_unit) != "minute" or int(timeframe_unit_number) not in _EMA_SCALPING_ALLOWED_MINUTE_BUCKETS:
@@ -9852,8 +10106,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         }
 
     if normalized_strategy_type == _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH:
-        benchmark_symbol = _normalized_optional_text(raw_params.get("benchmark_symbol")) or str(
-            _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS["benchmark_symbol"]
+        benchmark_symbol = _normalize_projectx_benchmark_symbol(
+            raw_params.get("benchmark_symbol"),
+            default=str(_ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS["benchmark_symbol"]),
         )
         benchmark_contract_id = _normalized_optional_text(raw_params.get("benchmark_contract_id"))
         return {
@@ -9932,8 +10187,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         }
 
     if normalized_strategy_type == _STRATEGY_RELATIVE_STRENGTH_SPY:
-        benchmark_symbol = _normalized_optional_text(raw_params.get("benchmark_symbol")) or str(
-            _RELATIVE_STRENGTH_SPY_DEFAULTS["benchmark_symbol"]
+        benchmark_symbol = _normalize_projectx_benchmark_symbol(
+            raw_params.get("benchmark_symbol"),
+            default=str(_RELATIVE_STRENGTH_SPY_DEFAULTS["benchmark_symbol"]),
         )
         benchmark_contract_id = _normalized_optional_text(raw_params.get("benchmark_contract_id"))
         swing_window = _bounded_int_param(
@@ -10902,6 +11158,15 @@ def _validate_unique_bot_name(
 
 def _looks_like_projectx_contract_id(value: str) -> bool:
     return value.upper().startswith("CON.")
+
+
+def _normalize_projectx_benchmark_symbol(value: Any, *, default: str) -> str:
+    """Map the legacy SPY benchmark to the MES futures feed ProjectX supports."""
+
+    normalized = _normalized_optional_text(value) or str(default)
+    if normalized.strip().upper() in {"SPY", "F.US.SPY"}:
+        return "MES"
+    return normalized.strip().upper()
 
 
 def _pick_market_contract(rows: Iterable[dict[str, Any]]) -> dict[str, Any] | None:

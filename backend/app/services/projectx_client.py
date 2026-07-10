@@ -23,6 +23,8 @@ _TOKEN_CACHE_BY_KEY: dict[str, _TokenCache] = {}
 _TOKEN_SAFETY_WINDOW = timedelta(seconds=60)
 _PROJECTX_ORDER_TYPES = {1, 2, 4, 5, 6, 7}
 _PROJECTX_ORDER_SIDES = {0, 1}
+_PROJECTX_INTRADAY_UNIT_SECONDS = {1: 1, 2: 60, 3: 60 * 60}
+_PARTIAL_BAR_KEYS = ("isPartial", "is_partial", "partial")
 
 
 class ProjectXClientError(RuntimeError):
@@ -183,6 +185,15 @@ class ProjectXClient:
             timestamp = _parse_datetime(_first_value(row, ["t", "timestamp", "time"]))
             if timestamp is None:
                 continue
+            has_partial_marker = any(key in row for key in _PARTIAL_BAR_KEYS)
+            is_partial = _is_truthy(_first_value(row, list(_PARTIAL_BAR_KEYS)))
+            interval_seconds = _PROJECTX_INTRADAY_UNIT_SECONDS.get(int(unit))
+            if not has_partial_marker and interval_seconds is not None:
+                is_partial = timestamp + timedelta(
+                    seconds=interval_seconds * max(1, int(unit_number))
+                ) > _as_utc(end)
+            if is_partial and not include_partial_bar:
+                continue
 
             output.append(
                 {
@@ -192,7 +203,7 @@ class ProjectXClient:
                     "low": _safe_float(_first_value(row, ["l", "low"])),
                     "close": _safe_float(_first_value(row, ["c", "close"])),
                     "volume": _safe_float(_first_value(row, ["v", "volume"])),
-                    "is_partial": _is_truthy(_first_value(row, ["isPartial", "is_partial", "partial"])),
+                    "is_partial": is_partial,
                     "raw_payload": row,
                 }
             )

@@ -6,6 +6,8 @@ import {
   findCandleGaps,
   isGapCoveredByRepairWindows,
   isFuturesSessionOpen,
+  planBotCandleFetches,
+  type CandleGap,
 } from "./botCandleGaps";
 import type { ProjectXMarketCandle } from "../../lib/types";
 
@@ -48,6 +50,194 @@ describe("isFuturesSessionOpen", () => {
     expect(isFuturesSessionOpen(Date.parse("2026-06-06T15:00:00Z"))).toBe(false); // Saturday
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T21:55:00Z"))).toBe(false); // Sun 17:55 ET
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T22:00:00Z"))).toBe(true); // Sun 18:00 ET
+  });
+
+  it("applies the equity-index daily halt only to recognized equity products", () => {
+    const halt = Date.parse("2026-07-06T20:15:00Z"); // Mon 16:15 ET
+    expect(isFuturesSessionOpen(halt, "CON.F.US.MNQ.U26")).toBe(false);
+    expect(isFuturesSessionOpen(halt, "UNKNOWN")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-06T20:30:00Z"), "MNQ")).toBe(true);
+  });
+
+  it("applies recurring equity-index holiday closes", () => {
+    expect(isFuturesSessionOpen(Date.parse("2026-04-03T13:14:00Z"), "MNQ")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-04-03T13:15:00Z"), "MNQ")).toBe(false);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T16:55:00Z"), "MNQ")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T17:00:00Z"), "MNQ")).toBe(false);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T17:00:00Z"), "UNKNOWN")).toBe(true);
+  });
+});
+
+describe("planBotCandleFetches", () => {
+  const targetWindow = {
+    start: "2026-06-09T11:00:00Z",
+    end: "2026-06-09T14:30:00Z",
+    limit: 600,
+  };
+  const initialWindow = {
+    start: "2026-06-09T13:00:00Z",
+    end: "2026-06-09T14:30:00Z",
+    limit: 300,
+  };
+
+  it("plans a cold load as a 300-bar foreground fetch before older history", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: null,
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("cold");
+    expect(plan.cacheUsable).toBe(false);
+    expect(plan.foreground).toEqual([
+      {
+        reason: "cold",
+        priority: "foreground",
+        window: {
+          start: "2026-06-09T13:00:00.000Z",
+          end: "2026-06-09T14:30:00.000Z",
+        },
+        limit: 300,
+        repair: false,
+      },
+    ]);
+    expect(plan.background[0]).toMatchObject({
+      reason: "missing-history",
+      priority: "background",
+      repair: false,
+    });
+    expect(plan.requests.map((request) => request.priority)).toEqual(["foreground", "background"]);
+  });
+
+  it("plans a warm load with fresh covered cache without a full foreground fetch", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        // Fewer than 25 rows is still a valid immediate SWR hydration.
+        candles: [candle("2026-06-09T14:25:00Z")],
+        savedAt: new Date("2026-06-09T14:29:55Z"),
+        coverage: targetWindow,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("warm-fresh");
+    expect(plan.cacheUsable).toBe(true);
+    expect(plan.requests).toEqual([]);
+  });
+
+  it("plans missing-history work in the background without repair mode", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        candles: [candle("2026-06-09T13:00:00Z"), candle("2026-06-09T13:05:00Z")],
+        savedAt: "2026-06-09T14:29:55Z",
+        coverage: {
+          start: "2026-06-09T13:00:00Z",
+          end: "2026-06-09T14:30:00Z",
+        },
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.foreground).toEqual([]);
+    expect(plan.background).toHaveLength(1);
+    expect(plan.background[0]).toMatchObject({
+      reason: "missing-history",
+      priority: "background",
+      repair: false,
+      window: {
+        start: "2026-06-09T11:00:00.000Z",
+        end: "2026-06-09T13:00:00.000Z",
+      },
+    });
+  });
+
+  it("plans stale tail revalidation as a small overlapping foreground fetch", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        candles: [candle("2026-06-09T14:20:00Z"), candle("2026-06-09T14:25:00Z")],
+        savedAt: "2026-06-09T14:20:00Z",
+        coverage: targetWindow,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("warm-stale");
+    expect(plan.foreground).toHaveLength(1);
+    expect(plan.foreground[0]).toMatchObject({
+      reason: "stale-tail",
+      priority: "foreground",
+      limit: 8,
+      repair: false,
+    });
+    expect(Date.parse(plan.foreground[0].window.start)).toBeGreaterThan(Date.parse(targetWindow.start));
+  });
+
+  it("suppresses stale tail revalidation during a known closed futures session", () => {
+    const weekendTarget = {
+      start: "2026-06-05T14:00:00Z",
+      end: "2026-06-06T15:00:00Z",
+      limit: 300,
+    };
+    const plan = planBotCandleFetches({
+      targetWindow: weekendTarget,
+      initialWindow: weekendTarget,
+      cache: {
+        candles: [candle("2026-06-05T20:55:00Z")],
+        savedAt: "2026-06-05T21:00:00Z",
+        coverage: weekendTarget,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-06T15:00:00Z"),
+    });
+
+    expect(plan.isStale).toBe(true);
+    expect(plan.foreground).toEqual([]);
+  });
+
+  it("plans bounded interior data-gap repair in the background with repair mode", () => {
+    const gapTarget = {
+      start: "2026-06-09T13:55:00Z",
+      end: "2026-06-09T14:25:00Z",
+      limit: 300,
+    };
+    const plan = planBotCandleFetches({
+      targetWindow: gapTarget,
+      initialWindow: gapTarget,
+      cache: {
+        candles: [candle("2026-06-09T14:00:00Z"), candle("2026-06-09T14:20:00Z")],
+        savedAt: "2026-06-09T14:24:55Z",
+        coverage: gapTarget,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:25:00Z"),
+      maxRepairBars: 10,
+    });
+
+    expect(plan.foreground).toEqual([]);
+    expect(plan.background).toHaveLength(1);
+    expect(plan.background[0]).toMatchObject({
+      reason: "interior-gap",
+      priority: "background",
+      repair: true,
+    });
+    expect(plan.background[0].limit).toBeLessThanOrEqual(10);
   });
 });
 
@@ -103,6 +293,18 @@ describe("findCandleGaps", () => {
     expect(gaps[0].missingSessionBars).toBe(0);
   });
 
+  it("classifies an equity holiday early close through the weekend as a session gap", () => {
+    const gaps = findCandleGaps(
+      [candle("2026-07-03T16:55:00Z"), candle("2026-07-05T22:00:00Z")],
+      "minute",
+      5,
+    );
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].kind).toBe("session");
+    expect(gaps[0].missingSessionBars).toBe(0);
+  });
+
   it("classifies a gap spanning closure plus trading hours as a data gap", () => {
     // Fri 16:50 ET -> Mon 10:00 ET: the Sunday evening + Monday morning buckets are in session.
     const gaps = findCandleGaps(
@@ -139,6 +341,21 @@ describe("findCandleGaps", () => {
     );
     expect(midweek).toHaveLength(1);
     expect(midweek[0].kind).toBe("data");
+  });
+
+  it("treats a full equity holiday plus its weekend as a daily session gap", () => {
+    const gaps = findCandleGaps(
+      [
+        candle("2026-12-24T00:00:00Z", { unit: "day", unit_number: 1 }),
+        candle("2026-12-28T00:00:00Z", { unit: "day", unit_number: 1 }),
+      ],
+      "day",
+      1,
+    );
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].kind).toBe("session");
+    expect(gaps[0].missingSessionBars).toBe(0);
   });
 
   it("skips week and month units", () => {
@@ -197,6 +414,25 @@ describe("findCandleGaps", () => {
 });
 
 describe("buildGapRepairWindows", () => {
+  it("plans zero closure repairs and exactly one request per bounded data-gap window", () => {
+    const base = Date.parse("2026-06-09T13:00:00Z");
+    const gap = (index: number, kind: CandleGap["kind"]): CandleGap => ({
+      kind,
+      fromMs: base + index * 2 * 60 * 60_000,
+      toMs: base + index * 2 * 60 * 60_000 + 10 * 60_000,
+      missingBars: 2,
+      missingSessionBars: kind === "data" ? 2 : 0,
+      beforeTimestamp: new Date(base + index * 2 * 60 * 60_000 - 5 * 60_000).toISOString(),
+      afterTimestamp: new Date(base + index * 2 * 60 * 60_000 + 10 * 60_000).toISOString(),
+    });
+
+    expect(buildGapRepairWindows([gap(0, "session"), gap(1, "session")], "minute", 5, 3)).toHaveLength(0);
+    expect(
+      buildGapRepairWindows([gap(0, "data"), gap(1, "data"), gap(2, "data"), gap(3, "data")], "minute", 5, 3),
+    ).toHaveLength(3);
+    expect(buildGapRepairWindows([gap(0, "data")], "minute", 5, 0)).toHaveLength(0);
+  });
+
   it("builds padded windows for data gaps only and merges overlapping ranges", () => {
     const gaps = findCandleGaps(
       [

@@ -5,6 +5,8 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
+from .trading_day import futures_session_is_open
+
 
 ANALYSIS_VERSION = "market_analysis_v2"
 PROBABILITY_METHOD = "heuristic_scenario_weight"
@@ -523,7 +525,7 @@ def _detect_gaps(rows: list[dict[str, Any]], interval_seconds: int) -> list[dict
         missing = sum(
             1
             for index in range(1, raw_missing + 1)
-            if _is_futures_session_open(previous["timestamp"] + timedelta(seconds=interval_seconds * index))
+            if futures_session_is_open(previous["timestamp"] + timedelta(seconds=interval_seconds * index))
         )
         if missing <= 0:
             continue
@@ -535,21 +537,6 @@ def _detect_gaps(rows: list[dict[str, Any]], interval_seconds: int) -> list[dict
             }
         )
     return gaps[:20]
-
-
-def _is_futures_session_open(timestamp: datetime) -> bool:
-    local = timestamp.astimezone(_NEW_YORK)
-    weekday = local.weekday()
-    local_time = local.time()
-    if weekday == 5:
-        return False
-    if weekday == 6 and local_time < time(18, 0):
-        return False
-    if weekday == 4 and local_time >= time(17, 0):
-        return False
-    if time(17, 0) <= local_time < time(18, 0):
-        return False
-    return True
 
 
 def _true_ranges(rows: list[dict[str, Any]]) -> list[float]:

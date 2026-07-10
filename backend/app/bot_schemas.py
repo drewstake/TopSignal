@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -434,15 +434,38 @@ class BotActivityOut(BaseModel):
 
 
 class BotBacktestIn(BaseModel):
-    start: datetime
-    end: datetime
+    start: datetime | None = None
+    end: datetime | None = None
     starting_balance: float = Field(default=50_000, gt=0, le=1_000_000_000)
     commission_per_contract: float = Field(default=0, ge=0, le=10_000)
     slippage_ticks: float = Field(default=0, ge=0, le=1_000)
     force_close_at_end: bool = True
 
+    @model_validator(mode="after")
+    def validate_optional_range(self):
+        if (self.start is None) != (self.end is None):
+            raise ValueError("backtest start and end must be provided together")
+        if self.start is not None and self.end is not None:
+            start = (
+                self.start.replace(tzinfo=timezone.utc)
+                if self.start.tzinfo is None
+                else self.start.astimezone(timezone.utc)
+            )
+            end = (
+                self.end.replace(tzinfo=timezone.utc)
+                if self.end.tzinfo is None
+                else self.end.astimezone(timezone.utc)
+            )
+            if end <= start:
+                raise ValueError("backtest end must be after start")
+        return self
+
 
 class BotBacktestRangeOut(BaseModel):
+    contract_id: str
+    symbol: str | None = None
+    timeframe_unit: TimeframeUnit
+    timeframe_unit_number: int = Field(gt=0)
     start: datetime
     end: datetime
     bar_count: int = Field(ge=1)

@@ -1125,13 +1125,14 @@ def get_projectx_market_candles(
     """Serve candles from the per-user cache, fetching from ProjectX when needed.
 
     `refresh` forces a full re-fetch and prunes cached rows the provider no longer
-    returns. `repair` also forces a full-window fetch (so interior holes in the
-    cache get backfilled) but merges with existing cache instead of pruning.
+    returns. Open-session holes are repaired automatically. `repair` remains an
+    explicit full-window merge for callers that want to revalidate every row.
     """
     user_id = get_authenticated_user_id()
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
     start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
     requested_symbol = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
+    session_symbol = requested_symbol or contract_id
     _validate_time_range(start=start_utc, end=end_utc)
 
     fallback_candles = []
@@ -1155,6 +1156,7 @@ def get_projectx_market_candles(
             unit=unit,
             unit_number=unit_number,
             limit=limit,
+            symbol=session_symbol,
         )
         if (
             cached_candles
@@ -1167,6 +1169,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             )
         ):
             return [serialize_market_candle(row) for row in cached_candles]
@@ -1178,6 +1181,7 @@ def get_projectx_market_candles(
             symbol=requested_symbol,
             live=live,
         )
+        session_symbol = resolved_symbol or requested_symbol or resolved_contract_id
         if resolved_contract_id != contract_id:
             cached_candles = list_market_candles(
                 db,
@@ -1199,6 +1203,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 limit=limit,
+                symbol=session_symbol,
             )
             if (
                 cached_candles
@@ -1211,6 +1216,7 @@ def get_projectx_market_candles(
                     unit=unit,
                     unit_number=unit_number,
                     include_partial_bar=include_partial_bar,
+                    symbol=session_symbol,
                 )
             ):
                 return [serialize_market_candle(row) for row in cached_candles]
@@ -1243,6 +1249,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             ),
         ):
             active_contract_lookup_attempted = True
@@ -1310,6 +1317,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             )
         ):
             active_candles = _fetch_active_symbol_market_candles(
@@ -1631,19 +1639,31 @@ def create_trading_bot_backtest(
     payload: BotBacktestIn,
     db: Session = Depends(get_db),
 ):
-    """Replay stored candles without fetching data or invoking any order path."""
+    """Prepare required TopBot history, then replay closed candles without routing orders."""
 
     user_id = get_authenticated_user_id()
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     try:
+        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        client = (
+            _projectx_client_for_user(db, user_id=user_id)
+            if str(config.strategy_type) == "topbot_adaptive"
+            else None
+        )
         row = create_bot_backtest(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
             payload=payload,
+            client=client,
         )
         db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc

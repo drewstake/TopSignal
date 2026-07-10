@@ -69,7 +69,7 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
-const BACKTEST_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const BACKTEST_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -78,6 +78,8 @@ interface RequestJsonOptions {
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
+  /** Reuse the token captured while selecting a user-scoped cache lane. */
+  accessTokenOverride?: string | null;
 }
 
 interface RequestMultipartOptions {
@@ -123,6 +125,16 @@ interface TimedCachedRequestOptions<T> {
   bypassCache?: boolean;
 }
 
+interface UserScopedTimedCachedRequestOptions<T> extends Omit<TimedCachedRequestOptions<T>, "cacheKey" | "load"> {
+  cacheKey: string;
+  load: (accessToken: string | null) => Promise<T>;
+}
+
+interface RequestAuthContext {
+  accessToken: string | null;
+  cacheScope: string;
+}
+
 function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promise<T> {
   const { cache, inFlight, cacheKey, ttlMs, load, bypassCache = false } = options;
   if (!bypassCache) {
@@ -148,13 +160,93 @@ function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promis
   });
 
   inFlight.set(cacheKey, request);
-  void request.finally(() => {
+  const clearIfCurrent = () => {
     if (inFlight.get(cacheKey) === request) {
       inFlight.delete(cacheKey);
     }
-  });
+  };
+  // Avoid a detached `finally()` promise: if `request` rejects, that child
+  // promise would otherwise surface an unhandled rejection even when the
+  // caller handles the original request.
+  void request.then(clearIfCurrent, clearIfCurrent);
 
   return request;
+}
+
+async function getUserScopedTimedCachedRequest<T>(options: UserScopedTimedCachedRequestOptions<T>): Promise<T> {
+  const auth = await getRequestAuthContext();
+  return getTimedCachedRequest({
+    ...options,
+    cacheKey: `${options.cacheKey}|scope:${auth.cacheScope}`,
+    load: () => options.load(auth.accessToken),
+  });
+}
+
+/**
+ * Stable, non-secret namespace for browser caches. Supabase access tokens are
+ * JWTs, so issuer + subject remain stable across token refreshes without ever
+ * storing the credential itself. Opaque-token fallback is intentionally
+ * session-scoped rather than exposing or persisting the token.
+ */
+export async function getAuthenticatedCacheScope(): Promise<string> {
+  return (await getRequestAuthContext()).cacheScope;
+}
+
+async function getRequestAuthContext(): Promise<RequestAuthContext> {
+  if (isDemoModeEnabled()) {
+    return { accessToken: null, cacheScope: "demo" };
+  }
+
+  const accessToken = await getAccessToken();
+  if (!accessToken) {
+    return { accessToken: null, cacheScope: "anonymous" };
+  }
+
+  return {
+    accessToken,
+    cacheScope: getJwtUserScope(accessToken) ?? await getOpaqueTokenScope(accessToken),
+  };
+}
+
+function getJwtUserScope(accessToken: string): string | null {
+  const payload = accessToken.split(".")[1];
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const normalized = payload.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = JSON.parse(globalThis.atob(padded)) as { iss?: unknown; sub?: unknown };
+    if (typeof decoded.sub !== "string" || decoded.sub.trim() === "") {
+      return null;
+    }
+    const issuer = typeof decoded.iss === "string" ? decoded.iss : "supabase";
+    return `user:${encodeURIComponent(issuer)}:${encodeURIComponent(decoded.sub)}`;
+  } catch {
+    return null;
+  }
+}
+
+async function getOpaqueTokenScope(accessToken: string): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const bytes = new TextEncoder().encode(accessToken);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    const fingerprint = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+    return `opaque:${fingerprint}`;
+  }
+
+  // Legacy-browser fallback. This never persists the credential itself; two
+  // independent 32-bit accumulators make accidental cross-user collisions
+  // vanishingly unlikely until Web Crypto is available.
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < accessToken.length; index += 1) {
+    const value = accessToken.charCodeAt(index);
+    left = Math.imul(left ^ value, 0x01000193) >>> 0;
+    right = Math.imul(right ^ value, 0x85ebca6b) >>> 0;
+  }
+  return `opaque:${left.toString(16).padStart(8, "0")}${right.toString(16).padStart(8, "0")}`;
 }
 
 function buildUrl(path: string, query?: Record<string, QueryValue>) {
@@ -282,7 +374,7 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 }
 
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
-  const { method = "GET", query, body, signal } = options;
+  const { method = "GET", query, body, signal, accessTokenOverride } = options;
   if (method !== "GET" && isDemoModeEnabled()) {
     throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
   }
@@ -292,7 +384,7 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
       return demoResponse.data;
     }
   }
-  const accessToken = await getAccessToken();
+  const accessToken = accessTokenOverride === undefined ? await getAccessToken() : accessTokenOverride;
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
     method,
@@ -574,36 +666,21 @@ function invalidateAccountsListCaches() {
 
 function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
   const cacheKey = accountsQueryCacheKey(options);
-  const now = Date.now();
-  const cached = accountsCacheByQuery.get(cacheKey);
-  if (!options.bypassCache && cached && cached.expiresAtMs > now) {
-    return Promise.resolve(cached.value);
-  }
-
-  const inFlight = inFlightAccountsByQuery.get(cacheKey);
-  if (!options.bypassCache && inFlight) {
-    return inFlight;
-  }
-
-  const request = requestJson<AccountInfo[]>("/api/accounts", {
-    query: {
-      show_inactive: options.showInactive,
-      show_missing: options.showMissing,
-    },
-  })
-    .then((accounts) => {
-      accountsCacheByQuery.set(cacheKey, {
-        value: accounts,
-        expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
-      });
-      return accounts;
-    })
-    .finally(() => {
-      inFlightAccountsByQuery.delete(cacheKey);
-    });
-
-  inFlightAccountsByQuery.set(cacheKey, request);
-  return request;
+  return getUserScopedTimedCachedRequest({
+    cache: accountsCacheByQuery,
+    inFlight: inFlightAccountsByQuery,
+    cacheKey,
+    ttlMs: ACCOUNTS_CACHE_TTL_MS,
+    bypassCache: options.bypassCache,
+    load: (accessToken) =>
+      requestJson<AccountInfo[]>("/api/accounts", {
+        query: {
+          show_inactive: options.showInactive,
+          show_missing: options.showMissing,
+        },
+        accessTokenOverride: accessToken,
+      }),
+  });
 }
 
 function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
@@ -735,15 +812,16 @@ export const accountsApi = {
       symbol: requestQuery.symbol,
       include_lifecycle: requestQuery.include_lifecycle,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountTradesCacheByQuery,
       inFlight: inFlightAccountTradesByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -759,15 +837,16 @@ export const accountsApi = {
       end: requestQuery.end,
       pointsBasis: requestQuery.pointsBasis,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountSummaryCacheByQuery,
       inFlight: inFlightAccountSummaryByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -781,15 +860,16 @@ export const accountsApi = {
       start: requestQuery.start,
       end: requestQuery.end,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountSummaryWithPointBasesCacheByQuery,
       inFlight: inFlightAccountSummaryWithPointBasesByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountSummaryWithPointBases>(`/api/accounts/${accountId}/summary-with-point-bases`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -805,15 +885,16 @@ export const accountsApi = {
       end: requestQuery.end,
       all_time: requestQuery.all_time,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountPnlCalendarCacheByQuery,
       inFlight: inFlightAccountPnlCalendarByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -861,14 +942,15 @@ export const accountsApi = {
       include_archived: query.include_archived,
     };
     const cacheKey = accountJournalReadQueryCacheKey(accountId, requestQuery);
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountJournalDaysCacheByQuery,
       inFlight: inFlightAccountJournalDaysByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
-      load: () =>
+      load: (accessToken) =>
         requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -928,7 +1010,7 @@ interface ContractSearchQuery {
   live?: boolean;
 }
 
-interface CandleQuery {
+export interface CandleQuery {
   contractId: string;
   symbol?: string;
   start?: string;
@@ -941,6 +1023,65 @@ interface CandleQuery {
   refresh?: boolean;
   /** Force a full-window upstream fetch to backfill missing bars without pruning cache. */
   repair?: boolean;
+}
+
+const CANDLE_UNIT_MS: Record<BotTimeframeUnit, number> = {
+  second: 1_000,
+  minute: 60_000,
+  hour: 60 * 60_000,
+  day: 24 * 60 * 60_000,
+  week: 7 * 24 * 60 * 60_000,
+  month: 31 * 24 * 60 * 60_000,
+};
+
+function projectXCandleQueryParams(query: CandleQuery): Record<string, QueryValue> {
+  return {
+    contract_id: query.contractId,
+    symbol: query.symbol,
+    start: query.start,
+    end: query.end,
+    live: query.live ?? false,
+    unit: query.unit ?? "minute",
+    unit_number: query.unitNumber ?? 5,
+    limit: query.limit ?? 500,
+    include_partial_bar: query.includePartialBar ?? false,
+    refresh: query.refresh ?? false,
+    repair: query.repair ?? false,
+  };
+}
+
+/**
+ * Stable identity for deduplicating equivalent candle reads. Closed-candle
+ * ranges are bucketed to their chart interval: two callers within the same
+ * active bar need the same closed history even if their `Date` values differ by
+ * a few milliseconds. Partial/live reads retain exact timestamps.
+ */
+export function buildProjectXCandleRequestKey(query: CandleQuery): string {
+  const params = projectXCandleQueryParams(query);
+  if (!(query.includePartialBar ?? false)) {
+    const unit = query.unit ?? "minute";
+    const intervalMs = CANDLE_UNIT_MS[unit] * Math.max(1, Math.trunc(query.unitNumber ?? 5));
+    params.start = normalizeCandleRequestTimestamp(query.start, intervalMs);
+    params.end = normalizeCandleRequestTimestamp(query.end, intervalMs);
+  }
+  params.contract_id = query.contractId.trim().toUpperCase();
+  params.symbol = query.symbol?.trim().toUpperCase();
+  return `projectx-candles:${toSortedQueryCacheKey(params)}`;
+}
+
+export function buildUserScopedProjectXCandleRequestKey(cacheScope: string, query: CandleQuery): string {
+  return `scope:${encodeURIComponent(cacheScope)}|${buildProjectXCandleRequestKey(query)}`;
+}
+
+function normalizeCandleRequestTimestamp(value: string | undefined, intervalMs: number): string | undefined {
+  if (!value) {
+    return value;
+  }
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return value;
+  }
+  return new Date(Math.floor(timestampMs / intervalMs) * intervalMs).toISOString();
 }
 
 interface MarketPriceStreamQuery {
@@ -975,8 +1116,16 @@ function botStartPayload(options: BotStartOptions = {}) {
 export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
   const controller = new AbortController();
   let closed = false;
+  const guardedCallbacks: MarketPriceStreamCallbacks = {
+    ...callbacks,
+    onPrice: (price) => {
+      if (!closed) {
+        callbacks.onPrice(price);
+      }
+    },
+  };
 
-  void runProjectXMarketPriceStream(query, callbacks, controller.signal).catch((error) => {
+  void runProjectXMarketPriceStream(query, guardedCallbacks, controller.signal).catch((error) => {
     if (!closed && !isAbortError(error)) {
       callbacks.onError?.(error);
     }
@@ -1036,12 +1185,19 @@ async function runProjectXMarketPriceStream(
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       const price = parseMarketPriceSseFrame(frame);
-      if (price) {
+      if (price && marketPriceMatchesStreamQuery(price, query)) {
         callbacks.onPrice(price);
       }
       boundary = buffer.indexOf("\n\n");
     }
   }
+}
+
+function marketPriceMatchesStreamQuery(price: ProjectXMarketPrice, query: MarketPriceStreamQuery): boolean {
+  if (query.symbol && price.symbol) {
+    return price.symbol.trim().toUpperCase() === query.symbol.trim().toUpperCase();
+  }
+  return price.contract_id.trim().toUpperCase() === query.contractId.trim().toUpperCase();
 }
 
 function parseMarketPriceSseFrame(frame: string): ProjectXMarketPrice | null {
@@ -1097,22 +1253,37 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-async function runBacktestRequest(botConfigId: number, payload: BotBacktestInput): Promise<BotBacktestResult> {
+async function runBacktestRequest(
+  botConfigId: number,
+  payload: BotBacktestInput,
+  options: RequestSignalOptions = {},
+): Promise<BotBacktestResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), BACKTEST_REQUEST_TIMEOUT_MS);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (options.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, BACKTEST_REQUEST_TIMEOUT_MS);
   try {
-    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
       method: "POST",
       body: payload,
       signal: controller.signal,
     });
   } catch (error) {
-    if (isAbortError(error)) {
-      throw new Error("Backtest timed out after 5 minutes. Try again after the server finishes caching candles, or narrow the date range.");
+    if (isAbortError(error) && timedOut) {
+      throw new Error("Full-history backtest timed out after 15 minutes. Try again after the server finishes preparing candles.");
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -1126,19 +1297,7 @@ export const botsApi = {
     }),
   getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
     requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
-      query: {
-        contract_id: query.contractId,
-        symbol: query.symbol,
-        start: query.start,
-        end: query.end,
-        live: query.live ?? false,
-        unit: query.unit ?? "minute",
-        unit_number: query.unitNumber ?? 5,
-        limit: query.limit ?? 500,
-        include_partial_bar: query.includePartialBar ?? false,
-        refresh: query.refresh ?? false,
-        repair: query.repair ?? false,
-      },
+      query: projectXCandleQueryParams(query),
       signal: options.signal,
     }),
   listConfigs: (accountId?: number) =>
@@ -1147,6 +1306,16 @@ export const botsApi = {
         account_id: accountId,
       },
     }),
+  listConfigsWithCacheScope: async (accountId?: number) => {
+    const auth = await getRequestAuthContext();
+    const configs = await requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+      accessTokenOverride: auth.accessToken,
+    });
+    return { configs, cacheScope: auth.cacheScope };
+  },
   createConfig: (payload: BotConfigInput) =>
     requestJson<BotConfig>("/api/bots", {
       method: "POST",
@@ -1176,11 +1345,12 @@ export const botsApi = {
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",
     }),
-  getActivity: (botConfigId: number, limit = 50) =>
+  getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
       query: {
         limit,
       },
+      signal: options.signal,
     }),
   evaluateTradePlan: (payload: TradePlanEvaluationInput) =>
     requestJson<TradeEvaluationResult>("/api/trade-plan/evaluate", {

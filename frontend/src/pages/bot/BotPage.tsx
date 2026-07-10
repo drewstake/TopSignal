@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 
+import type { AppShellOutletContext } from "../../app/AppShell";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -9,9 +10,8 @@ import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
-import { accountsApi, botsApi } from "../../lib/api";
+import { botsApi } from "../../lib/api";
 import type {
-  AccountInfo,
   BotActivity,
   BotConfig,
   BotEvaluation,
@@ -25,10 +25,15 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { BotAnalysisPanel } from "./BotAnalysisPanel";
-import { BotBacktestPanel } from "./BotBacktestPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
+
+const BotAnalysisPanel = lazy(() =>
+  import("./BotAnalysisPanel").then((module) => ({ default: module.BotAnalysisPanel })),
+);
+const BotBacktestPanel = lazy(() =>
+  import("./BotBacktestPanel").then((module) => ({ default: module.BotBacktestPanel })),
+);
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
@@ -42,7 +47,7 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
   { value: "supertrend_pivot", label: "Supertrend + Pivot Points" },
   { value: "opening_rvol_breakout", label: "Opening 5m RVOL Breakout" },
   { value: "atr_adjusted_relative_strength", label: "ATR-Adjusted Relative Strength" },
-  { value: "relative_strength_spy", label: "Relative Strength vs SPY" },
+  { value: "relative_strength_spy", label: "Relative Strength vs MES" },
   { value: "pullback_trap_reversal", label: "Pullback Trap Reversal" },
   { value: "bollinger_mean_reversion", label: "Bollinger Band Mean Reversion" },
   { value: "bollinger_rsi_reversal", label: "Bollinger RSI Reversal" },
@@ -203,7 +208,7 @@ const VWAP_GAP_RETRACE_DEFAULTS = {
   maxDataStalenessSeconds: "180",
 };
 const ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
-  benchmarkSymbol: "SPY",
+  benchmarkSymbol: "MES",
   moveLookbackBars: "3",
   atrPeriod: "14",
   relativeVolumePeriod: "20",
@@ -218,7 +223,7 @@ const ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
   maxDataStalenessSeconds: "600",
 };
 const RELATIVE_STRENGTH_SPY_DEFAULTS = {
-  benchmarkSymbol: "SPY",
+  benchmarkSymbol: "MES",
   comparisonBars: "12",
   pullbackLookbackBars: "3",
   relativeVolumePeriod: "20",
@@ -278,8 +283,8 @@ const STRATEGY_DEFAULT_NAMES: Partial<Record<BotStrategyType, string>> = {
   liquidity_sweep_retest: "MNQ Liquidity Sweep + Zone Retest",
   supertrend_pivot: "MNQ Supertrend + Pivot Points",
   opening_rvol_breakout: "MNQ Opening 5m RVOL Breakout",
-  atr_adjusted_relative_strength: "AAPL ATR-Adjusted Relative Strength",
-  relative_strength_spy: "AAPL Relative Strength vs SPY",
+  atr_adjusted_relative_strength: "MNQ ATR-Adjusted Relative Strength",
+  relative_strength_spy: "MNQ Relative Strength vs MES",
   pullback_trap_reversal: "MNQ Pullback Trap Reversal",
   bollinger_mean_reversion: "MNQ Bollinger Band Mean Reversion",
   bollinger_rsi_reversal: "MNQ Bollinger RSI Reversal",
@@ -935,7 +940,7 @@ function strategyLabel(strategyType: BotStrategyType) {
     return "ATR-Adjusted Relative Strength";
   }
   if (strategyType === "relative_strength_spy") {
-    return "Relative Strength vs SPY";
+    return "Relative Strength vs MES";
   }
   if (strategyType === "pullback_trap_reversal") {
     return "Pullback Trap Reversal";
@@ -1047,7 +1052,7 @@ function strategySummary(bot: BotConfig) {
     const window = bot.strategy_params?.comparison_bars ?? RELATIVE_STRENGTH_SPY_DEFAULTS.comparisonBars;
     const rvol = bot.strategy_params?.minimum_relative_volume ?? RELATIVE_STRENGTH_SPY_DEFAULTS.minimumRelativeVolume;
     return {
-      label: "RS/SPY",
+      label: "RS/MES",
       value: `${window} x 5m · RVOL ${rvol}x`,
     };
   }
@@ -1170,7 +1175,7 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
 export function BotPage() {
   const [searchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const { accounts } = useOutletContext<AppShellOutletContext>();
   const [configs, setConfigs] = useState<BotConfig[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
@@ -1188,6 +1193,11 @@ export function BotPage() {
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
+  const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
+  const configsRequestSequence = useRef(0);
+  const activityRequestSequence = useRef(0);
+  const activityRequestController = useRef<AbortController | null>(null);
+  const selectedBotIdRef = useRef<number | null>(null);
 
   const selectedBot = useMemo(
     () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
@@ -1204,19 +1214,33 @@ export function BotPage() {
         : null,
     [lastEvaluation, selectedBot],
   );
+  selectedBotIdRef.current = selectedBot?.id ?? null;
+  const selectedBotActivity = useMemo(
+    () =>
+      selectedBot &&
+      activity?.config.id === selectedBot.id &&
+      activity.config.contract_id === selectedBot.contract_id &&
+      activity.config.timeframe_unit === selectedBot.timeframe_unit &&
+      activity.config.timeframe_unit_number === selectedBot.timeframe_unit_number
+        ? activity
+        : null,
+    [activity, selectedBot],
+  );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
+    const sequence = configsRequestSequence.current + 1;
+    configsRequestSequence.current = sequence;
     if (showLoading) {
       setLoading(true);
     }
     setError(null);
     try {
-      const [accountRows, botRows] = await Promise.all([
-        accountsApi.getSelectableAccounts(),
-        botsApi.listConfigs(),
-      ]);
-      setAccounts(accountRows);
+      const { configs: botRows, cacheScope } = await botsApi.listConfigsWithCacheScope();
+      if (configsRequestSequence.current !== sequence) {
+        return;
+      }
+      setAuthenticatedCacheScope(cacheScope);
       setConfigs(botRows.items);
       setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
@@ -1225,34 +1249,53 @@ export function BotPage() {
         }
         return botRows.items[0]?.id ?? null;
       });
-      if (accountRows.length > 0) {
-        setForm((current) =>
-          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
-        );
-      }
     } catch (err) {
-      setConfigWarnings([]);
-      setError(err instanceof Error ? err.message : "Failed to load bot data");
+      if (configsRequestSequence.current === sequence) {
+        setConfigWarnings([]);
+        setError(err instanceof Error ? err.message : "Failed to load bot data");
+      }
     } finally {
-      if (showLoading) {
+      if (showLoading && configsRequestSequence.current === sequence) {
         setLoading(false);
       }
     }
-  }, [accountFromQuery]);
+  }, []);
 
   const loadActivity = useCallback(async (botId: number | null) => {
+    const sequence = activityRequestSequence.current + 1;
+    activityRequestSequence.current = sequence;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
     if (!botId) {
       setActivity(null);
+      setActivityLoading(false);
       return;
     }
+    if (selectedBotIdRef.current !== botId) {
+      return;
+    }
+    const controller = new AbortController();
+    activityRequestController.current = controller;
+    setActivity(null);
     setActivityLoading(true);
     try {
-      const payload = await botsApi.getActivity(botId);
-      setActivity(payload);
+      const payload = await botsApi.getActivity(botId, 50, { signal: controller.signal });
+      if (activityRequestSequence.current === sequence && selectedBotIdRef.current === botId) {
+        setActivity(payload);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load bot activity");
+      if (
+        activityRequestSequence.current === sequence &&
+        selectedBotIdRef.current === botId &&
+        !(err instanceof Error && err.name === "AbortError")
+      ) {
+        setError(err instanceof Error ? err.message : "Failed to load bot activity");
+      }
     } finally {
-      setActivityLoading(false);
+      if (activityRequestSequence.current === sequence) {
+        setActivityLoading(false);
+        activityRequestController.current = null;
+      }
     }
   }, []);
 
@@ -1260,8 +1303,40 @@ export function BotPage() {
     void loadConfigs({ showLoading: true });
   }, [loadConfigs]);
 
+  useEffect(() => () => {
+    configsRequestSequence.current += 1;
+    activityRequestSequence.current += 1;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
+  }, []);
+
   useEffect(() => {
-    void loadActivity(selectedBot?.id ?? null);
+    if (accounts.length === 0) {
+      return;
+    }
+    setForm((current) =>
+      current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accounts[0].id) },
+    );
+  }, [accountFromQuery, accounts]);
+
+  useEffect(() => {
+    activityRequestSequence.current += 1;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
+    setActivity(null);
+    setActivityLoading(false);
+    const botId = selectedBot?.id ?? null;
+    if (!botId) {
+      return undefined;
+    }
+
+    const run = () => void loadActivity(botId);
+    if (typeof window.requestIdleCallback === "function") {
+      const requestId = window.requestIdleCallback(run, { timeout: 1_500 });
+      return () => window.cancelIdleCallback(requestId);
+    }
+    const timeoutId = window.setTimeout(run, 100);
+    return () => window.clearTimeout(timeoutId);
   }, [
     loadActivity,
     selectedBot?.contract_id,
@@ -1881,6 +1956,10 @@ export function BotPage() {
       (form.timeframeUnit !== "minute" || (form.timeframeUnitNumber !== "3" && form.timeframeUnitNumber !== "5"))
     ) {
       setFormError("9/15 EMA scalping requires a 3-minute or 5-minute chart.");
+      return;
+    }
+    if (form.strategyType === "topbot_adaptive" && form.timeframeUnit === "month") {
+      setFormError("TopBot Adaptive does not support monthly candles.");
       return;
     }
     if (form.strategyType === "support_resistance" && levelTolerancePercent === null) {
@@ -2531,7 +2610,7 @@ export function BotPage() {
                         value={form.timeframeUnit}
                         onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
                       >
-                        {timeframeUnits.map((unit) => (
+                        {timeframeUnits.filter((unit) => unit !== "month").map((unit) => (
                           <option key={unit} value={unit}>
                             {unit}
                           </option>
@@ -3949,11 +4028,11 @@ export function BotPage() {
                   </div>
                   {activityLoading ? (
                     <Skeleton className="h-64" />
-                  ) : activity ? (
+                  ) : selectedBotActivity ? (
                     <div className="grid gap-4 xl:grid-cols-2">
                       <ActivityTable
                         title="Decisions"
-                        rows={activity.decisions.slice(0, 8).map((decision) => ({
+                        rows={selectedBotActivity.decisions.slice(0, 8).map((decision) => ({
                           id: decision.id,
                           left: decision.action,
                           middle: decision.reason,
@@ -3963,7 +4042,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Orders"
-                        rows={activity.order_attempts.slice(0, 8).map((attempt) => ({
+                        rows={selectedBotActivity.order_attempts.slice(0, 8).map((attempt) => ({
                           id: attempt.id,
                           left: attempt.status,
                           middle: `${attempt.side} ${attempt.size} ${attempt.contract_id}`,
@@ -3973,7 +4052,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Risk"
-                        rows={activity.risk_events.slice(0, 8).map((risk) => ({
+                        rows={selectedBotActivity.risk_events.slice(0, 8).map((risk) => ({
                           id: risk.id,
                           left: risk.severity,
                           middle: `${risk.code}: ${risk.message}`,
@@ -3983,7 +4062,7 @@ export function BotPage() {
                       />
                       <ActivityTable
                         title="Runs"
-                        rows={activity.runs.slice(0, 8).map((run) => ({
+                        rows={selectedBotActivity.runs.slice(0, 8).map((run) => ({
                           id: run.id,
                           left: run.status,
                           middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
@@ -4003,22 +4082,27 @@ export function BotPage() {
           <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
             <BotSignalChart
               bot={selectedBot}
-              activity={activity}
+              authenticatedCacheScope={authenticatedCacheScope}
+              activity={selectedBotActivity}
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
               onMarketData={setMarketSnapshot}
             />
-            <BotAnalysisPanel
-              bot={selectedBot}
-              evaluation={selectedBotEvaluation}
-              marketSnapshot={marketSnapshot}
-              loading={actionLoading === "start" || actionLoading === "evaluate"}
-              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
-            />
+            <Suspense fallback={<Skeleton className="h-[360px]" />}>
+              <BotAnalysisPanel
+                bot={selectedBot}
+                evaluation={selectedBotEvaluation}
+                marketSnapshot={marketSnapshot}
+                loading={actionLoading === "start" || actionLoading === "evaluate"}
+                onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
+              />
+            </Suspense>
           </div>
         </div>
       </div>
-      <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      <Suspense fallback={<Skeleton className="h-[420px]" />}>
+        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      </Suspense>
     </div>
   );
 }
