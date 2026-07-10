@@ -1025,6 +1025,43 @@ export interface ProjectXMarketPrice {
   timestamp: string;
 }
 
+export interface ProjectXMarketDepthLevel {
+  price: number;
+  /** Aggregate resting size at this price level, not an order or trader count. */
+  size: number;
+}
+
+export interface ProjectXMarketDepthSnapshot {
+  contract_id: string;
+  sequence: number | null;
+  timestamp: string | null;
+  bids: ProjectXMarketDepthLevel[];
+  asks: ProjectXMarketDepthLevel[];
+  reset?: boolean;
+}
+
+export interface ProjectXMarketDepthUpdate {
+  contract_id: string;
+  sequence: number | null;
+  timestamp: string | null;
+  side: "bid" | "ask";
+  price: number;
+  /** Aggregate resting size at this price level, not an order or trader count. */
+  size: number;
+}
+
+export type ProjectXMarketDepthConnectionState =
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "unavailable";
+
+export interface ProjectXMarketDepthState {
+  contract_id: string;
+  state: ProjectXMarketDepthConnectionState;
+  message?: string | null;
+}
+
 export interface BotConfig {
   id: number;
   name: string;

@@ -56,6 +56,9 @@ import type {
   BotTimeframeUnit,
   ProjectXContract,
   ProjectXMarketCandle,
+  ProjectXMarketDepthSnapshot,
+  ProjectXMarketDepthState,
+  ProjectXMarketDepthUpdate,
   ProjectXMarketPrice,
   TradeEvaluationResult,
   TradePlanEvaluationInput,
@@ -1247,6 +1250,405 @@ function isProjectXMarketPrice(value: unknown): value is ProjectXMarketPrice {
     Number.isFinite(candidate.price) &&
     typeof candidate.timestamp === "string"
   );
+}
+
+export interface MarketDepthStreamQuery {
+  contractId: string;
+}
+
+export interface MarketDepthStreamCallbacks {
+  onState: (state: ProjectXMarketDepthState) => void;
+  onSnapshot: (snapshot: ProjectXMarketDepthSnapshot) => void;
+  onUpdate: (update: ProjectXMarketDepthUpdate) => void;
+}
+
+export type ProjectXMarketDepthSseEvent =
+  | { event: "state"; data: ProjectXMarketDepthState }
+  | { event: "snapshot"; data: ProjectXMarketDepthSnapshot }
+  | { event: "update"; data: ProjectXMarketDepthUpdate };
+
+const MARKET_DEPTH_RECONNECT_MIN_MS = 500;
+const MARKET_DEPTH_RECONNECT_MAX_MS = 10_000;
+
+class MarketDepthSequenceGapError extends Error {
+  constructor(previousSequence: number, nextSequence: number) {
+    super(`Market depth sequence gap (${previousSequence} to ${nextSequence}).`);
+    this.name = "MarketDepthSequenceGapError";
+  }
+}
+
+/**
+ * Opens one authenticated stream to TopSignal. Topstep credentials remain on
+ * the server; closing this handle aborts the HTTP request so the backend can
+ * release its reference-counted contract subscription.
+ */
+export function streamProjectXMarketDepth(
+  query: MarketDepthStreamQuery,
+  callbacks: MarketDepthStreamCallbacks,
+): () => void {
+  const controller = new AbortController();
+  const expectedContractId = normalizeContractId(query.contractId);
+  let closed = false;
+
+  const guardedCallbacks: MarketDepthStreamCallbacks = {
+    onState: (state) => {
+      if (!closed && contractIdsMatch(state.contract_id, expectedContractId)) {
+        callbacks.onState(state);
+      }
+    },
+    onSnapshot: (snapshot) => {
+      if (!closed && contractIdsMatch(snapshot.contract_id, expectedContractId)) {
+        callbacks.onSnapshot(snapshot);
+      }
+    },
+    onUpdate: (update) => {
+      if (!closed && contractIdsMatch(update.contract_id, expectedContractId)) {
+        callbacks.onUpdate(update);
+      }
+    },
+  };
+
+  if (!expectedContractId) {
+    queueMicrotask(() => {
+      guardedCallbacks.onState({ contract_id: "", state: "unavailable", message: "No contract selected." });
+    });
+  } else {
+    void runProjectXMarketDepthStream(expectedContractId, guardedCallbacks, controller.signal);
+  }
+
+  return () => {
+    closed = true;
+    controller.abort();
+  };
+}
+
+async function runProjectXMarketDepthStream(
+  contractId: string,
+  callbacks: MarketDepthStreamCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  let reconnectDelayMs = MARKET_DEPTH_RECONNECT_MIN_MS;
+
+  while (!signal.aborted) {
+    try {
+      await readProjectXMarketDepthConnection(contractId, callbacks, signal, () => {
+        reconnectDelayMs = MARKET_DEPTH_RECONNECT_MIN_MS;
+      });
+      if (signal.aborted) {
+        return;
+      }
+      callbacks.onState({
+        contract_id: contractId,
+        state: "disconnected",
+        message: "Market depth stream closed.",
+      });
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) {
+        return;
+      }
+      if (isTerminalMarketDepthStreamError(error)) {
+        callbacks.onState({
+          contract_id: contractId,
+          state: "unavailable",
+          message: marketDepthErrorMessage(error),
+        });
+        return;
+      }
+      callbacks.onState({
+        contract_id: contractId,
+        state: "disconnected",
+        message: marketDepthErrorMessage(error),
+      });
+    }
+
+    if (!(await waitForAbortableDelay(250, signal))) {
+      return;
+    }
+    callbacks.onState({ contract_id: contractId, state: "reconnecting", message: "Reconnecting market depth…" });
+    if (!(await waitForAbortableDelay(reconnectDelayMs, signal))) {
+      return;
+    }
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, MARKET_DEPTH_RECONNECT_MAX_MS);
+  }
+}
+
+async function readProjectXMarketDepthConnection(
+  contractId: string,
+  callbacks: MarketDepthStreamCallbacks,
+  signal: AbortSignal,
+  onHealthy: () => void,
+): Promise<void> {
+  const accessToken = await getAccessToken();
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(buildUrl("/api/projectx/market-depth/stream", { contract_id: contractId }), {
+    headers: Object.keys(headers).length === 0 ? undefined : headers,
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new ApiError(
+      detail || `Market depth stream failed (${response.status} ${response.statusText})`,
+      response.status,
+      detail,
+      detail,
+    );
+  }
+  if (!response.body) {
+    throw new Error("Market depth stream response did not include a body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let receivedEvent = false;
+  let lastSequence: number | null = null;
+
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      // Normalizing after each append also handles CR/LF split across chunks.
+      buffer = buffer.replaceAll("\r\n", "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseProjectXMarketDepthSseFrame(frame);
+        if (parsed && !receivedEvent) {
+          receivedEvent = true;
+          // Reset transport backoff only after the server produced a valid event;
+          // merely opening HTTP does not prove the upstream depth path is healthy.
+          onHealthy();
+        }
+        if (parsed?.event === "state") {
+          callbacks.onState(parsed.data);
+        } else if (parsed?.event === "snapshot") {
+          // Every snapshot is authoritative, including reset/reconnect snapshots
+          // whose server-side sequence epoch may be lower than the prior one.
+          lastSequence = parsed.data.sequence;
+          callbacks.onSnapshot(parsed.data);
+        } else if (parsed?.event === "update") {
+          const nextSequence = parsed.data.sequence;
+          if (nextSequence !== null && lastSequence !== null) {
+            if (nextSequence > lastSequence + 1) {
+              throw new MarketDepthSequenceGapError(lastSequence, nextSequence);
+            }
+            if (nextSequence <= lastSequence) {
+              boundary = buffer.indexOf("\n\n");
+              continue;
+            }
+          }
+          // Once an unsequenced delta appears, continuity cannot be inferred
+          // again until a sequenced update or authoritative snapshot arrives.
+          lastSequence = nextSequence;
+          callbacks.onUpdate(parsed.data);
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } catch (error) {
+    // A gap makes the remaining response unsafe. Canceling releases the old
+    // body immediately before the outer loop establishes a snapshot-first stream.
+    await reader.cancel(error instanceof Error ? error.message : undefined).catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export function parseProjectXMarketDepthSseFrame(frame: string): ProjectXMarketDepthSseEvent | null {
+  let eventType = "message";
+  const dataLines: string[] = [];
+
+  for (const line of frame.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf(":");
+    const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+    let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
+    if (value.startsWith(" ")) {
+      value = value.slice(1);
+    }
+    if (field === "event") {
+      eventType = value;
+    } else if (field === "data") {
+      dataLines.push(value);
+    }
+  }
+
+  if (dataLines.length === 0 || !["state", "snapshot", "update"].includes(eventType)) {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(dataLines.join("\n"));
+    if (eventType === "state") {
+      const state = parseMarketDepthState(value);
+      return state ? { event: "state", data: state } : null;
+    }
+    if (eventType === "snapshot") {
+      const snapshot = parseMarketDepthSnapshot(value);
+      return snapshot ? { event: "snapshot", data: snapshot } : null;
+    }
+    const update = parseMarketDepthUpdate(value);
+    return update ? { event: "update", data: update } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMarketDepthState(value: unknown): ProjectXMarketDepthState | null {
+  const candidate = asUnknownRecord(value);
+  if (!candidate || typeof candidate.contract_id !== "string") {
+    return null;
+  }
+  const state = candidate.state;
+  if (!isMarketDepthConnectionState(state)) {
+    return null;
+  }
+  const message = candidate.message;
+  if (message !== undefined && message !== null && typeof message !== "string") {
+    return null;
+  }
+  return { contract_id: candidate.contract_id, state, message: message ?? null };
+}
+
+function parseMarketDepthSnapshot(value: unknown): ProjectXMarketDepthSnapshot | null {
+  const candidate = asUnknownRecord(value);
+  if (!candidate || typeof candidate.contract_id !== "string" || !Array.isArray(candidate.bids) || !Array.isArray(candidate.asks)) {
+    return null;
+  }
+  const sequence = parseOptionalSequence(candidate.sequence);
+  const timestamp = parseOptionalTimestamp(candidate.timestamp);
+  if (sequence === undefined || timestamp === undefined) {
+    return null;
+  }
+  return {
+    contract_id: candidate.contract_id,
+    sequence,
+    timestamp,
+    bids: candidate.bids.flatMap((level) => {
+      const parsed = parseMarketDepthLevel(level);
+      return parsed ? [parsed] : [];
+    }),
+    asks: candidate.asks.flatMap((level) => {
+      const parsed = parseMarketDepthLevel(level);
+      return parsed ? [parsed] : [];
+    }),
+    reset: candidate.reset === true || undefined,
+  };
+}
+
+function parseMarketDepthUpdate(value: unknown): ProjectXMarketDepthUpdate | null {
+  const candidate = asUnknownRecord(value);
+  if (!candidate || typeof candidate.contract_id !== "string" || (candidate.side !== "bid" && candidate.side !== "ask")) {
+    return null;
+  }
+  const price = finiteNumber(candidate.price);
+  const size = finiteNumber(candidate.size ?? candidate.volume);
+  const sequence = parseOptionalSequence(candidate.sequence);
+  const timestamp = parseOptionalTimestamp(candidate.timestamp);
+  if (price === null || size === null || size < 0 || sequence === undefined || timestamp === undefined) {
+    return null;
+  }
+  return { contract_id: candidate.contract_id, sequence, timestamp, side: candidate.side, price, size };
+}
+
+function parseMarketDepthLevel(value: unknown): ProjectXMarketDepthSnapshot["bids"][number] | null {
+  const candidate = asUnknownRecord(value);
+  if (!candidate) {
+    return null;
+  }
+  const price = finiteNumber(candidate.price);
+  const size = finiteNumber(candidate.size ?? candidate.volume);
+  return price === null || size === null || size < 0 ? null : { price, size };
+}
+
+function parseOptionalSequence(value: unknown): number | null | undefined {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function parseOptionalTimestamp(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function isMarketDepthConnectionState(value: unknown): value is ProjectXMarketDepthState["state"] {
+  return (
+    value === "connected" ||
+    value === "disconnected" ||
+    value === "reconnecting" ||
+    value === "unavailable"
+  );
+}
+
+function contractIdsMatch(candidate: string, expected: string): boolean {
+  return normalizeContractId(candidate) === expected;
+}
+
+function normalizeContractId(contractId: string): string {
+  return contractId.trim().toUpperCase();
+}
+
+function isTerminalMarketDepthStreamError(error: unknown): boolean {
+  return error instanceof ApiError && (
+    (error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) ||
+    error.status === 500 ||
+    error.status === 503
+  );
+}
+
+function marketDepthErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && typeof error.body === "string") {
+    try {
+      const parsed: unknown = JSON.parse(error.body);
+      const record = asUnknownRecord(parsed);
+      if (record && typeof record.detail === "string" && record.detail.trim()) {
+        return record.detail;
+      }
+    } catch {
+      // Plain-text API errors already have a suitable Error.message below.
+    }
+  }
+  return error instanceof Error && error.message.trim() ? error.message : "Market depth connection failed.";
+}
+
+function waitForAbortableDelay(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      signal.removeEventListener("abort", handleAbort);
+      resolve(true);
+    }, delayMs);
+    const handleAbort = () => {
+      globalThis.clearTimeout(timeoutId);
+      resolve(false);
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+  });
 }
 
 function isAbortError(value: unknown): boolean {

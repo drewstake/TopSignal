@@ -26,6 +26,7 @@ import type {
   ProjectXMarketCandle,
 } from "../../lib/types";
 import { BotSignalChart } from "./BotSignalChart";
+import { OrderBookPanel } from "./OrderBookPanel";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
 const BotAnalysisPanel = lazy(() =>
@@ -4087,6 +4088,11 @@ export function BotPage() {
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
               onMarketData={setMarketSnapshot}
+            />
+            <OrderBookPanel
+              key={selectedBot?.contract_id ?? "no-contract"}
+              contractId={selectedBot?.contract_id}
+              symbol={selectedBot?.symbol}
             />
             <Suspense fallback={<Skeleton className="h-[360px]" />}>
               <BotAnalysisPanel

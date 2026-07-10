@@ -30,6 +30,7 @@ from .auth import (
     reset_authenticated_user,
 )
 from .db import (
+    SessionLocal,
     get_db,
     guard_against_local_database_url,
     init_db,
@@ -162,6 +163,7 @@ from .services.projectx_credentials import (
     upsert_projectx_credentials,
 )
 from .services.projectx_client import ProjectXClient, ProjectXClientError
+from .services.projectx_order_book import ProjectXOrderBookRegistry
 from .services.instruments import POINTS_BASIS_SYMBOLS, normalize_points_basis
 from .services.projectx_trades import (
     derive_trade_execution_lifecycles,
@@ -219,6 +221,7 @@ _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
 _streaming_runtime = None
+_order_book_registry = ProjectXOrderBookRegistry()
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -238,6 +241,7 @@ async def app_lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await _order_book_registry.close()
         _stop_streaming_runtime()
 
 
@@ -1531,6 +1535,61 @@ async def stream_projectx_market_price(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/projectx/market-depth/stream")
+async def stream_projectx_market_depth(
+    request: Request,
+    contract_id: str = Query(..., min_length=1, max_length=120),
+):
+    """Proxy one exact contract's ProjectX depth without exposing its JWT."""
+
+    user_id = get_authenticated_user_id()
+    # Resolve and decrypt credentials in a short-lived DB scope. The never-ending
+    # SSE response must not reserve a database connection for its lifetime.
+    with SessionLocal() as db:
+        try:
+            client = _projectx_client_for_user(db, user_id=user_id)
+        except ProjectXClientError as exc:
+            raise _to_http_exception(exc) from exc
+
+    subscription = await _order_book_registry.subscribe(
+        user_id=user_id,
+        client=client,
+        contract_id=contract_id,
+    )
+
+    async def events():
+        try:
+            for initial_event in subscription.initial_events:
+                yield _serialize_sse_event(initial_event)
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(subscription.queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield _serialize_sse_event(event)
+        finally:
+            await subscription.close()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _serialize_sse_event(event: dict) -> str:
+    event_name = str(event.get("event") or "message")
+    payload = json.dumps(event.get("data"), separators=(",", ":"))
+    return f"event: {event_name}\ndata: {payload}\n\n"
 
 
 @app.post("/api/trade-plan/evaluate", response_model=TradeEvaluationResultOut)
