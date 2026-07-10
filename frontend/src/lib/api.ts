@@ -576,7 +576,7 @@ function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | bo
 }
 
 function accountsQueryCacheKey(options: Required<GetAccountsOptions>) {
-  return `${requestCacheScope()}:${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
+  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
 }
 
 function getAccountCacheVersion(accountId: number) {
@@ -1320,53 +1320,30 @@ export const botsApi = {
     requestJson<BotConfig>("/api/bots", {
       method: "POST",
       body: payload,
-    }).then((config) => {
-      invalidateBotConfigCaches();
-      return config;
     }),
   updateConfig: (botConfigId: number, payload: BotConfigUpdateInput) =>
     requestJson<BotConfig>(`/api/bots/${botConfigId}`, {
       method: "PATCH",
       body: payload,
-    }).then((config) => {
-      invalidateBotConfigCaches();
-      invalidateBotActivityCaches(botConfigId);
-      return config;
     }),
   deleteConfig: (botConfigId: number) =>
     requestJson<void>(`/api/bots/${botConfigId}`, {
       method: "DELETE",
-    }).then((result) => {
-      invalidateBotConfigCaches();
-      invalidateBotActivityCaches(botConfigId);
-      if (readSelectedBotConfigId() === botConfigId) {
-        rememberSelectedBotConfigId(null);
-      }
-      return result;
     }),
   start: (botConfigId: number, options: BotStartOptions = {}) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/start`, {
       method: "POST",
       body: botStartPayload(options),
-    }).then((evaluation) => {
-      invalidateBotActivityCaches(botConfigId);
-      return evaluation;
     }),
   evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
-    }).then((evaluation) => {
-      invalidateBotActivityCaches(botConfigId);
-      return evaluation;
     }),
   runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",
-    }).then((run) => {
-      invalidateBotActivityCaches(botConfigId);
-      return run;
     }),
   getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {

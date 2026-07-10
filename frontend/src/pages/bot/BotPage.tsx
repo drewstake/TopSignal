@@ -1177,7 +1177,7 @@ export function BotPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
   const { accounts } = useOutletContext<AppShellOutletContext>();
   const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [selectedBotId, setSelectedBotId] = useState<number | null>(() => readSelectedBotConfigId());
+  const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
   const [lastEvaluation, setLastEvaluation] = useState<BotEvaluation | null>(null);
   const [contracts, setContracts] = useState<ProjectXContract[]>([]);
@@ -1247,8 +1247,7 @@ export function BotPage() {
         if (current && botRows.items.some((item) => item.id === current)) {
           return current;
         }
-        const remembered = readSelectedBotConfigId();
-        return botRows.items.find((item) => item.id === remembered)?.id ?? botRows.items[0]?.id ?? null;
+        return botRows.items[0]?.id ?? null;
       });
     } catch (err) {
       if (configsRequestSequence.current === sequence) {
@@ -1352,21 +1351,11 @@ export function BotPage() {
       return;
     }
 
-    rememberSelectedBotConfigId(selectedBot.id);
     setEditingBotId(selectedBot.id);
     setForm(formFromBot(selectedBot));
     setContracts([]);
     setFormError(null);
   }, [selectedBot]);
-
-  useEffect(() => {
-    if (accounts.length === 0) {
-      return;
-    }
-    setForm((current) =>
-      current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accounts[0].id) },
-    );
-  }, [accountFromQuery, accounts]);
 
   async function handleSearchContracts() {
     if (!form.contractSearch.trim()) {
@@ -2544,24 +2533,6 @@ export function BotPage() {
       ))}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
-        <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
-          <BotSignalChart
-            bot={selectedBot}
-            activity={activity}
-            lastEvaluation={selectedBotEvaluation}
-            refreshToken={chartRefreshToken}
-            onMarketData={setMarketSnapshot}
-          />
-          <Suspense fallback={<Skeleton className="h-[360px]" />}>
-            <BotAnalysisPanel
-              bot={selectedBot}
-              evaluation={selectedBotEvaluation}
-              marketSnapshot={marketSnapshot}
-              loading={actionLoading === "start" || actionLoading === "evaluate"}
-              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
-            />
-          </Suspense>
-        </div>
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
@@ -3939,9 +3910,7 @@ export function BotPage() {
                   value={selectedBot?.id ? String(selectedBot.id) : ""}
                   onChange={(event) => {
                     const nextId = Number.parseInt(event.target.value, 10);
-                    const selectedId = Number.isFinite(nextId) ? nextId : null;
-                    rememberSelectedBotConfigId(selectedId);
-                    setSelectedBotId(selectedId);
+                    setSelectedBotId(Number.isFinite(nextId) ? nextId : null);
                   }}
                 >
                   {configs.length === 0 ? <option value="">No bots</option> : null}

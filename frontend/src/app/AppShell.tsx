@@ -17,7 +17,6 @@ import {
   writeStoredAccountId,
 } from "../lib/accountSelection";
 import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
-import { warmSelectedBot } from "../lib/api";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
@@ -98,31 +97,6 @@ export function AppShell() {
         window.removeEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
         window.removeEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
       }
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const runWarmup = () => {
-      if (!cancelled) {
-        void warmSelectedBot().catch(() => {
-          // Background warming is best-effort and must never affect app startup.
-        });
-      }
-    };
-
-    if (typeof window.requestIdleCallback === "function") {
-      const requestId = window.requestIdleCallback(runWarmup, { timeout: 2_000 });
-      return () => {
-        cancelled = true;
-        window.cancelIdleCallback(requestId);
-      };
-    }
-
-    const timeoutId = window.setTimeout(runWarmup, 250);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
     };
   }, []);
 
