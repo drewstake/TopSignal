@@ -17,11 +17,17 @@ import {
   writeStoredAccountId,
 } from "../lib/accountSelection";
 import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
+import { warmSelectedBot } from "../lib/api";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
 import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
+
+export interface AppShellOutletContext {
+  accounts: AccountInfo[];
+  accountsLoading: boolean;
+}
 
 function AppShellRouteFallback() {
   return (
@@ -95,6 +101,31 @@ export function AppShell() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const runWarmup = () => {
+      if (!cancelled) {
+        void warmSelectedBot().catch(() => {
+          // Background warming is best-effort and must never affect app startup.
+        });
+      }
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      const requestId = window.requestIdleCallback(runWarmup, { timeout: 2_000 });
+      return () => {
+        cancelled = true;
+        window.cancelIdleCallback(requestId);
+      };
+    }
+
+    const timeoutId = window.setTimeout(runWarmup, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
+
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
   const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
@@ -123,6 +154,10 @@ export function AppShell() {
   const currentUserEmail = getCurrentUserEmailSync();
   const currentUserEmailDisplay = getDemoUserEmail(currentUserEmail);
   const isTradesRoute = location.pathname.startsWith("/trades");
+  const outletContext = useMemo<AppShellOutletContext>(
+    () => ({ accounts: orderedAccounts, accountsLoading }),
+    [accountsLoading, orderedAccounts],
+  );
 
   function handleAccountChange(rawValue: string) {
     const nextAccountId = parseAccountId(rawValue);
@@ -275,7 +310,7 @@ export function AppShell() {
         )}
       >
         <Suspense fallback={<AppShellRouteFallback />}>
-          <Outlet />
+          <Outlet context={outletContext} />
         </Suspense>
       </main>
     </div>

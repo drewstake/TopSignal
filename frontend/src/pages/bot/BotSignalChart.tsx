@@ -2234,16 +2234,8 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
   }, [livePrice, livePriceIsStale, livePricePoint?.isPartial]);
 
   useEffect(() => {
-    let active = true;
-    void loadCandles().finally(() => {
-      if (active) {
-        void loadLivePrice({ force: true });
-      }
-    });
-
-    return () => {
-      active = false;
-    };
+    void loadCandles();
+    void loadLivePrice({ force: true });
   }, [loadCandles, loadLivePrice, refreshToken]);
 
   useEffect(() => {
