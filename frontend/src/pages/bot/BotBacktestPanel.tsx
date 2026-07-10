@@ -21,6 +21,7 @@ import {
   BACKTEST_DRAWDOWN_TOP,
   BACKTEST_EQUITY_HEIGHT,
   BACKTEST_EQUITY_TOP,
+  buildBacktestPayload,
   buildBacktestChartPaths,
   validateBacktestForm,
   type BotBacktestFormState,
@@ -43,15 +44,11 @@ const integerFormatter = new Intl.NumberFormat("en-US", {
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
+  year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZoneName: "short",
   timeZone: EASTERN_TIME_ZONE,
-});
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
 });
 
 interface BotBacktestPanelProps {
@@ -87,18 +84,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
     setRunning(true);
     setError(null);
     try {
-      const payload = {
-        start: `${form.startDate}T00:00:00.000Z`,
-        end: `${form.endDate}T23:59:59.999Z`,
-        starting_balance: Number(form.startingBalance),
-        commission_per_contract: Number(form.commissionPerContract),
-        slippage_ticks: Number(form.slippageTicks),
-        force_close_at_end: true,
-      };
-      if (bot.strategy_type === "topbot_adaptive") {
-        await botsApi.prepareBacktest(bot.id, payload);
-      }
-      const nextResult = await botsApi.runBacktest(bot.id, payload);
+      const nextResult = await botsApi.runBacktest(bot.id, buildBacktestPayload(form));
       if (requestSequence.current === sequence) {
         setResult(nextResult);
       }
@@ -119,7 +105,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>Backtest</CardTitle>
-            <CardDescription>Deterministic replay using stored, closed ProjectX candles</CardDescription>
+            <CardDescription>Deterministic replay of the configured contract&apos;s complete closed-candle history</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant="accent">Next-bar fills</Badge>
@@ -128,19 +114,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
-          <BacktestInput
-            label="Start date"
-            type="date"
-            value={form.startDate}
-            onChange={(value) => setForm((current) => ({ ...current, startDate: value }))}
-          />
-          <BacktestInput
-            label="End date"
-            type="date"
-            value={form.endDate}
-            onChange={(value) => setForm((current) => ({ ...current, endDate: value }))}
-          />
+        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
           <BacktestInput
             label="Starting balance"
             type="number"
@@ -166,7 +140,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
             onChange={(value) => setForm((current) => ({ ...current, slippageTicks: value }))}
           />
           <Button type="submit" disabled={!bot || running} className="w-full xl:w-auto">
-            {running ? "Running…" : "Run Backtest"}
+            {running ? "Running Full History…" : "Run Full History Backtest"}
           </Button>
         </form>
 
@@ -183,7 +157,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         ) : result ? (
           <BacktestResults result={result} />
         ) : (
-          <BacktestEmptyState message="Choose a bounded date range and execution costs, then run the replay." />
+          <BacktestEmptyState message="Set the execution costs, then replay every fully closed candle available for this contract." />
         )}
       </CardContent>
     </Card>
@@ -222,7 +196,7 @@ function BacktestRunningState() {
   return (
     <div role="status" className="flex items-center gap-3 rounded-xl border border-app-accent/30 bg-app-accent/10 px-4 py-4 text-sm text-app-text-soft">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-app-accent/25 border-t-app-accent" aria-hidden="true" />
-      Replaying closed candles. No orders can be routed from this run.
+      Preparing and replaying the full closed-candle history. No orders can be routed from this run.
     </div>
   );
 }
@@ -236,7 +210,10 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         <div>
           <h4 className="text-sm font-semibold text-app-text md:text-base">Results</h4>
           <p className="mt-1 text-xs text-app-muted">
-            {formatDate(result.range.start)} – {formatDate(result.range.end)} · {integerFormatter.format(result.range.bar_count)} bars · generated {formatTimestamp(result.created_at)}
+            {formatContract(result.range.symbol, result.range.contract_id)} · {formatTimeframe(result.range.timeframe_unit, result.range.timeframe_unit_number)} · {integerFormatter.format(result.range.bar_count)} closed bars
+          </p>
+          <p className="mt-1 text-xs text-app-muted">
+            {formatTimestamp(result.range.start)} – {formatTimestamp(result.range.end)} · generated {formatTimestamp(result.created_at)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -518,20 +495,11 @@ function TradeLedger({ result }: { result: BotBacktestResult }) {
 }
 
 function buildDefaultForm(): BotBacktestFormState {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 30);
   return {
-    startDate: toDateInput(start),
-    endDate: toDateInput(end),
     startingBalance: "50000",
     commissionPerContract: "1.20",
     slippageTicks: "1",
   };
-}
-
-function toDateInput(value: Date): string {
-  return value.toISOString().slice(0, 10);
 }
 
 function formatCurrency(value: number): string {
@@ -562,9 +530,12 @@ function formatTimestamp(value: string): string {
   return Number.isNaN(date.getTime()) ? value : timestampFormatter.format(date);
 }
 
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : dateFormatter.format(date);
+function formatContract(symbol: string | null, contractId: string): string {
+  return symbol ? `${symbol} (${contractId})` : contractId;
+}
+
+function formatTimeframe(unit: string, unitNumber: number): string {
+  return `${integerFormatter.format(unitNumber)}-${unit}`;
 }
 
 function humanize(value: string): string {

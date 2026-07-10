@@ -1666,8 +1666,21 @@ def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(
             raw_payload={"stop_loss": price - 10, "take_profit": price + 20},
         )
 
-    def unexpected_provider_call(*_args, **_kwargs):
-        raise AssertionError("TopBot backtest invoked a provider path")
+    class StubHistoryClient:
+        def __init__(self):
+            self.calls: list[dict[str, Any]] = []
+
+        def search_contracts(self, **_kwargs):
+            raise AssertionError("configured deliveries must not be re-resolved")
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            return []
+
+    history_client = StubHistoryClient()
+
+    def unexpected_order_call(*_args, **_kwargs):
+        raise AssertionError("TopBot backtest invoked an order path")
 
     monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
     monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
@@ -1678,10 +1691,11 @@ def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(
         lambda **_kwargs: {"total_score": 85},
     )
     monkeypatch.setattr(
-        ProjectXClient,
-        "from_env",
-        classmethod(lambda cls: unexpected_provider_call()),
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: history_client,
     )
+    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
     payload = BotBacktestIn(
         start=BASE_TIME,
         end=BASE_TIME + timedelta(minutes=20),
@@ -1696,9 +1710,11 @@ def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(
     )
     first_validated = BotBacktestOut.model_validate(first)
 
-    assert first_validated.engine_version == "1.2.0"
+    assert first_validated.engine_version == "1.3.0"
     assert first_validated.metrics.trade_count == 1
     assert not any("strategy_not_supported" in warning for warning in first["warnings"])
+    assert history_client.calls
+    assert all(call["contract_id"] == CONTRACT_ID for call in history_client.calls)
 
     one_hour.close_price = 101
     one_hour.high_price = 102
@@ -1753,3 +1769,244 @@ def test_backtest_route_scopes_bots_and_candles_to_authenticated_user(
     assert hidden.value.status_code == 404
     assert hidden.value.detail == "bot_config_not_found"
     assert db_session.query(BotBacktest).count() == 0
+
+
+def test_backtest_input_uses_absent_dates_for_full_history_and_keeps_paired_bounds():
+    full_history = BotBacktestIn()
+    bounded = BotBacktestIn(
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(days=800),
+    )
+
+    assert full_history.start is None
+    assert full_history.end is None
+    assert bounded.end - bounded.start == timedelta(days=800)
+    with pytest.raises(ValueError, match="provided together"):
+        BotBacktestIn(start=BASE_TIME)
+    with pytest.raises(ValueError, match="must be after start"):
+        BotBacktestIn(start=BASE_TIME, end=BASE_TIME)
+
+    mixed_awareness = BotBacktestIn(
+        start="2026-01-01T00:00:00",
+        end="2026-01-02T00:00:00Z",
+    )
+    assert mixed_awareness.start is not None
+    assert mixed_awareness.end is not None
+
+
+def test_full_history_uses_all_fully_closed_exact_contract_bars_without_old_cap(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session, lookback_bars=25)
+    exact_rows = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100 + index)
+        for index in range(6)
+    ]
+    other_delivery = _candle(
+        BASE_TIME - timedelta(minutes=5),
+        contract_id="CON.F.US.MNQ.U26",
+        symbol="MNQ",
+    )
+    inferred_partial = _candle(BASE_TIME + timedelta(minutes=30))
+    inferred_partial.fetched_at = BASE_TIME + timedelta(minutes=32)
+    inferred_partial.raw_payload = {"t": inferred_partial.candle_timestamp.isoformat()}
+    explicit_partial = _candle(
+        BASE_TIME + timedelta(minutes=35),
+        is_partial=True,
+    )
+    not_yet_closed = _candle(
+        BASE_TIME + timedelta(minutes=40),
+    )
+    db_session.add_all(
+        [other_delivery, *exact_rows, inferred_partial, explicit_partial, not_yet_closed]
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(backtesting_module, "MAX_BACKTEST_BARS", 2)
+
+    def unexpected_order_call(*_args, **_kwargs):
+        raise AssertionError("backtest invoked an order path")
+
+    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
+
+    row = backtesting_module.create_bot_backtest(
+        db_session,
+        user_id=OWNER_ID,
+        bot_config_id=config.id,
+        payload=BotBacktestIn(
+            starting_balance=25_000,
+            commission_per_contract=0,
+            slippage_ticks=0,
+        ),
+        now=BASE_TIME + timedelta(minutes=42),
+    )
+    result = backtesting_module.serialize_bot_backtest(row)
+    validated = BotBacktestOut.model_validate(result)
+
+    hard_minimum = backtesting_module._strategy_history_bars(config, hard_minimum=True)
+    first_execution_index = hard_minimum - 1
+    expected_execution = exact_rows[first_execution_index:]
+    assert validated.range.contract_id == CONTRACT_ID
+    assert validated.range.symbol == "MNQ"
+    assert validated.range.timeframe_unit == "minute"
+    assert validated.range.timeframe_unit_number == 5
+    assert validated.range.start == _utc(expected_execution[0].candle_timestamp)
+    assert validated.range.end == backtesting_module._candle_close_time(expected_execution[-1])
+    assert validated.range.bar_count == len(expected_execution)
+    assert validated.range.bar_count > backtesting_module.MAX_BACKTEST_BARS
+    assert _utc(row.requested_start) == BASE_TIME
+    assert _utc(row.requested_end) == BASE_TIME + timedelta(minutes=30)
+    assert result["assumptions"]["live_order_routing"] == "disabled_by_architecture"
+
+
+def test_full_history_route_is_deterministic_and_has_no_public_prepare_step(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session, execution_mode="live", lookback_bars=25)
+    for index in range(6):
+        db_session.add(
+            _candle(
+                BASE_TIME + timedelta(minutes=5 * index),
+                close_price=100 + index,
+            )
+        )
+    db_session.commit()
+
+    def unexpected_order_call(*_args, **_kwargs):
+        raise AssertionError("full-history backtest invoked an order path")
+
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
+    payload = BotBacktestIn(
+        starting_balance=25_000,
+        commission_per_contract=0,
+        slippage_ticks=0,
+    )
+
+    first = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=payload,
+        db=db_session,
+    )
+    second = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=payload,
+        db=db_session,
+    )
+    first_validated = BotBacktestOut.model_validate(first)
+
+    assert first_validated.range.contract_id == CONTRACT_ID
+    assert first_validated.range.bar_count == 4
+    assert first["range"] == second["range"]
+    assert first["metrics"] == second["metrics"]
+    assert first["input_fingerprint"] == second["input_fingerprint"]
+    assert first["assumptions"]["configured_execution_mode_was_ignored"] == "live"
+    assert "/api/bots/{bot_config_id}/backtests/prepare" not in {
+        route.path for route in main_module.app.routes
+    }
+    assert db_session.query(BotBacktest).count() == 2
+
+
+@pytest.mark.parametrize(
+    "cached_count",
+    [0, 25],
+    ids=["empty-primary-cache", "stale-primary-cache"],
+)
+def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history(
+    db_session,
+    monkeypatch,
+    cached_count,
+):
+    config = _persist_config(
+        db_session,
+        strategy_type="topbot_adaptive",
+        strategy_params={"source_strategies": ["sma_cross"]},
+        lookback_bars=25,
+    )
+    provider_bars = [
+        {
+            "timestamp": BASE_TIME + timedelta(minutes=5 * index),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100 + index,
+            "volume": 100,
+            "is_partial": False,
+            "raw_payload": {"isPartial": False},
+        }
+        for index in range(30)
+    ]
+    for bar in provider_bars[:cached_count]:
+        db_session.add(
+            _candle(
+                bar["timestamp"],
+                open_price=bar["open"],
+                high_price=bar["high"],
+                low_price=bar["low"],
+                close_price=bar["close"],
+                volume=bar["volume"],
+            )
+        )
+    db_session.commit()
+
+    class StubFullHistoryClient:
+        def __init__(self):
+            self.calls: list[dict[str, Any]] = []
+
+        def search_contracts(self, **_kwargs):
+            raise AssertionError("full-history discovery must retain the configured delivery")
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            start = _utc(kwargs["start"])
+            end = _utc(kwargs["end"])
+            rows = [
+                bar
+                for bar in provider_bars
+                if start <= _utc(bar["timestamp"]) <= end
+            ]
+            return rows[-int(kwargs["limit"]):]
+
+    client = StubFullHistoryClient()
+
+    def unexpected_order_call(*_args, **_kwargs):
+        raise AssertionError("TopBot full-history replay invoked an order path")
+
+    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 5)
+    monkeypatch.setattr(
+        backtesting_module,
+        "_MAX_PROVIDER_EMPTY_SPAN",
+        timedelta(minutes=20),
+    )
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: client,
+    )
+    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
+
+    response = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=BotBacktestIn(
+            commission_per_contract=0,
+            slippage_ticks=0,
+        ),
+        db=db_session,
+    )
+    validated = BotBacktestOut.model_validate(response)
+
+    assert client.calls
+    assert all(call["contract_id"] == CONTRACT_ID for call in client.calls)
+    assert validated.range.contract_id == CONTRACT_ID
+    assert validated.range.start == BASE_TIME + timedelta(minutes=120)
+    assert validated.range.end == BASE_TIME + timedelta(minutes=150)
+    assert validated.range.bar_count == 6
+    assert (
+        db_session.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
+        .count()
+        == 30
+    )

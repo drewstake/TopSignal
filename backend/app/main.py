@@ -207,7 +207,6 @@ from .services.bot_backtesting import (
     MalformedBacktestDataError,
     UnsupportedBacktestStrategyError,
     create_bot_backtest,
-    prepare_bot_backtest_data,
     serialize_bot_backtest,
 )
 from .services.bot_serialization import serialize_supported_bot_configs
@@ -1623,45 +1622,6 @@ def delete_trading_bot(
 
 
 @app.post(
-    "/api/bots/{bot_config_id}/backtests/prepare",
-    status_code=204,
-)
-def prepare_trading_bot_backtest_data(
-    bot_config_id: int,
-    payload: BotBacktestIn,
-    db: Session = Depends(get_db),
-):
-    """Cache every historical stream required by a deterministic TopBot replay."""
-
-    user_id = get_authenticated_user_id()
-    if bot_config_id <= 0:
-        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
-    try:
-        client = _projectx_client_for_user(db, user_id=user_id)
-        prepare_bot_backtest_data(
-            db,
-            user_id=user_id,
-            bot_config_id=bot_config_id,
-            payload=payload,
-            client=client,
-        )
-        db.commit()
-    except LookupError as exc:
-        db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ProjectXClientError as exc:
-        db.rollback()
-        raise _to_http_exception(exc) from exc
-    except BacktestError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
-        db.rollback()
-        raise
-    return Response(status_code=204)
-
-
-@app.post(
     "/api/bots/{bot_config_id}/backtests",
     response_model=BotBacktestOut,
     status_code=201,
@@ -1671,19 +1631,31 @@ def create_trading_bot_backtest(
     payload: BotBacktestIn,
     db: Session = Depends(get_db),
 ):
-    """Replay stored candles without fetching data or invoking any order path."""
+    """Prepare required TopBot history, then replay closed candles without routing orders."""
 
     user_id = get_authenticated_user_id()
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     try:
+        config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        client = (
+            _projectx_client_for_user(db, user_id=user_id)
+            if str(config.strategy_type) == "topbot_adaptive"
+            else None
+        )
         row = create_bot_backtest(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
             payload=payload,
+            client=client,
         )
         db.commit()
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -1,4 +1,4 @@
-import type { BotBacktestDrawdownPoint, BotBacktestEquityPoint } from "../../lib/types";
+import type { BotBacktestDrawdownPoint, BotBacktestEquityPoint, BotBacktestInput } from "../../lib/types";
 
 export const BACKTEST_CHART_WIDTH = 720;
 export const BACKTEST_EQUITY_TOP = 14;
@@ -7,8 +7,6 @@ export const BACKTEST_DRAWDOWN_TOP = 184;
 export const BACKTEST_DRAWDOWN_HEIGHT = 58;
 
 export interface BotBacktestFormState {
-  startDate: string;
-  endDate: string;
   startingBalance: string;
   commissionPerContract: string;
   slippageTicks: string;
@@ -24,18 +22,6 @@ export interface BotBacktestChartPaths {
 }
 
 export function validateBacktestForm(form: BotBacktestFormState): string | null {
-  if (!form.startDate || !form.endDate) {
-    return "Start and end dates are required.";
-  }
-  const start = Date.parse(`${form.startDate}T00:00:00.000Z`);
-  const end = Date.parse(`${form.endDate}T23:59:59.999Z`);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    return "Enter a valid date range.";
-  }
-  if (start > end) {
-    return "Start date must be on or before the end date.";
-  }
-
   const startingBalance = Number(form.startingBalance);
   if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
     return "Starting balance must be greater than zero.";
@@ -49,6 +35,15 @@ export function validateBacktestForm(form: BotBacktestFormState): string | null 
     return "Slippage must be a whole number of ticks, zero or greater.";
   }
   return null;
+}
+
+export function buildBacktestPayload(form: BotBacktestFormState): BotBacktestInput {
+  return {
+    starting_balance: Number(form.startingBalance),
+    commission_per_contract: Number(form.commissionPerContract),
+    slippage_ticks: Number(form.slippageTicks),
+    force_close_at_end: true,
+  };
 }
 
 export function buildBacktestChartPaths(
