@@ -97,7 +97,7 @@ def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
     )
     monkeypatch.setattr(
         main_module,
-        "prepare_bot_backtest_data",
+        "create_bot_backtest",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("backtest warming must remain request-scoped")
         ),
