@@ -4,6 +4,7 @@ import {
   BOT_CHART_INITIAL_BARS,
   BOT_CHART_MAX_BARS,
   BOT_CHART_MIN_BARS,
+  BOT_CHART_TIMEFRAMES,
   buildBotChartQuery,
   buildInitialBotChartQuery,
   buildBotLivePriceQuery,
@@ -318,6 +319,17 @@ describe("buildLiquidityLevels", () => {
 });
 
 describe("buildBotChartQuery", () => {
+  it("defines the six contract timeframes warmed by the signal chart", () => {
+    expect(BOT_CHART_TIMEFRAMES.map((timeframe) => timeframe.id)).toEqual([
+      "1m",
+      "5m",
+      "15m",
+      "1h",
+      "4h",
+      "1d",
+    ]);
+  });
+
   it("uses a practical capped history window based on the bot timeframe", () => {
     const window = buildBotChartQuery(
       botConfig({
