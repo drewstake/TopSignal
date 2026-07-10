@@ -6,16 +6,10 @@ import type { BotTimeframeUnit, ProjectXMarketCandle } from "../../lib/types";
  * A "gap" is a run of expected candle buckets with no data between two loaded
  * candles. Gaps are classified as:
  * - "session": every missing bucket falls inside a scheduled market closure
- *   (CME Globex futures hours: nightly 5-6pm ET maintenance break and the
- *   Fri 5pm -> Sun 6pm ET weekend closure). These are normal and not a data
- *   quality problem.
+ *   (CME Globex maintenance/weekend hours plus known equity-index halts and
+ *   recurring holidays). These are normal and not a data quality problem.
  * - "data": at least one missing bucket falls inside regular trading hours.
- *   These are either provider holes (repairable by refetching) or genuine
- *   no-trade/holiday periods the session model does not know about.
- *
- * Exchange holidays are intentionally not modeled; a holiday shows up as a
- * "data" gap that a repair fetch cannot fill. Callers should treat a gap that
- * survives a repair attempt as "confirmed empty" rather than retrying forever.
+ *   These are provider holes that can be repaired by a bounded refetch.
  */
 
 export type CandleGapKind = "session" | "data";
@@ -122,6 +116,12 @@ const EASTERN_TIME_ZONE = "America/New_York";
 /** Globex maintenance break: 17:00-17:59 ET Monday-Thursday (and Friday close). */
 const SESSION_BREAK_START_MINUTES = 17 * 60;
 const SESSION_BREAK_END_MINUTES = 18 * 60;
+const EQUITY_HALT_START_MINUTES = 16 * 60 + 15;
+const EQUITY_HALT_END_MINUTES = 16 * 60 + 30;
+const EARLY_CLOSE_MINUTES = 13 * 60;
+const LATE_EARLY_CLOSE_MINUTES = 13 * 60 + 15;
+const GOOD_FRIDAY_CLOSE_MINUTES = 9 * 60 + 15;
+const CME_EQUITY_ROOTS = new Set(["ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K", "EMD", "MME", "NKD", "NIY"]);
 /** Cap per-gap bucket scans; beyond this a gap is sampled instead of walked. */
 const MAX_GAP_BUCKET_SCAN = 5_000;
 const DEFAULT_TAIL_REVALIDATION_BARS = 8;
@@ -131,6 +131,9 @@ const DEFAULT_MAX_REPAIR_BARS = 500;
 const easternHourFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: EASTERN_TIME_ZONE,
   weekday: "short",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
   hour: "2-digit",
   hourCycle: "h23",
 });
@@ -138,6 +141,9 @@ const easternHourFormatter = new Intl.DateTimeFormat("en-US", {
 interface EasternHourInfo {
   /** 0 = Sunday ... 6 = Saturday */
   weekday: number;
+  year: number;
+  month: number;
+  day: number;
   hour: number;
 }
 
@@ -161,16 +167,25 @@ function easternHourInfo(timestampMs: number): EasternHourInfo {
   }
 
   let weekday = 1;
+  let year = 1970;
+  let month = 1;
+  let day = 1;
   let hour = 0;
   for (const part of easternHourFormatter.formatToParts(new Date(hourKey * 3_600_000))) {
     if (part.type === "weekday") {
       weekday = WEEKDAY_INDEX[part.value] ?? 1;
+    } else if (part.type === "year") {
+      year = Number(part.value);
+    } else if (part.type === "month") {
+      month = Number(part.value);
+    } else if (part.type === "day") {
+      day = Number(part.value);
     } else if (part.type === "hour") {
       hour = Number(part.value);
     }
   }
 
-  const info = { weekday, hour };
+  const info = { weekday, year, month, day, hour };
   if (easternHourInfoCache.size > 20_000) {
     easternHourInfoCache.clear();
   }
@@ -178,29 +193,171 @@ function easternHourInfo(timestampMs: number): EasternHourInfo {
   return info;
 }
 
+interface CalendarDate {
+  year: number;
+  month: number;
+  day: number;
+}
+
+interface EquityHolidaySchedule {
+  fullClose: boolean;
+  earlyCloseMinutes?: number;
+}
+
+function calendarDateValue(value: CalendarDate): number {
+  return Date.UTC(value.year, value.month - 1, value.day);
+}
+
+function calendarDateFromValue(value: number): CalendarDate {
+  const parsed = new Date(value);
+  return { year: parsed.getUTCFullYear(), month: parsed.getUTCMonth() + 1, day: parsed.getUTCDate() };
+}
+
+function addCalendarDays(value: CalendarDate, days: number): CalendarDate {
+  return calendarDateFromValue(calendarDateValue(value) + days * 86_400_000);
+}
+
+function sameCalendarDate(left: CalendarDate, right: CalendarDate): boolean {
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
+function calendarWeekday(value: CalendarDate): number {
+  return new Date(calendarDateValue(value)).getUTCDay();
+}
+
+function nthWeekday(year: number, month: number, weekday: number, occurrence: number): CalendarDate {
+  const first = { year, month, day: 1 };
+  const offset = (weekday - calendarWeekday(first) + 7) % 7;
+  return addCalendarDays(first, offset + 7 * (occurrence - 1));
+}
+
+function lastWeekday(year: number, month: number, weekday: number): CalendarDate {
+  const nextMonth = month === 12 ? { year: year + 1, month: 1, day: 1 } : { year, month: month + 1, day: 1 };
+  const last = addCalendarDays(nextMonth, -1);
+  return addCalendarDays(last, -((calendarWeekday(last) - weekday + 7) % 7));
+}
+
+function nearestWeekday(value: CalendarDate): CalendarDate {
+  const weekday = calendarWeekday(value);
+  if (weekday === 6) {
+    return addCalendarDays(value, -1);
+  }
+  if (weekday === 0) {
+    return addCalendarDays(value, 1);
+  }
+  return value;
+}
+
+function easterSunday(year: number): CalendarDate {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return { year, month, day };
+}
+
+function usesCmeEquitySchedule(symbol: string | null | undefined): boolean {
+  if (!symbol?.trim()) {
+    return false;
+  }
+  return symbol
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .some((token) => CME_EQUITY_ROOTS.has(token));
+}
+
+function equityHolidaySchedule(value: CalendarDate): EquityHolidaySchedule | null {
+  const year = value.year;
+  const newYear = { year, month: 1, day: 1 };
+  const observedNewYear = calendarWeekday(newYear) === 0 ? addCalendarDays(newYear, 1) : newYear;
+  if (sameCalendarDate(value, observedNewYear)) {
+    return { fullClose: true };
+  }
+  if (sameCalendarDate(value, nearestWeekday({ year, month: 12, day: 25 }))) {
+    return { fullClose: true };
+  }
+  if (sameCalendarDate(value, addCalendarDays(easterSunday(year), -2))) {
+    return { fullClose: false, earlyCloseMinutes: GOOD_FRIDAY_CLOSE_MINUTES };
+  }
+
+  const thanksgiving = nthWeekday(year, 11, 4, 4);
+  if (
+    sameCalendarDate(value, nthWeekday(year, 1, 1, 3)) ||
+    sameCalendarDate(value, nthWeekday(year, 2, 1, 3)) ||
+    sameCalendarDate(value, lastWeekday(year, 5, 1)) ||
+    (year >= 2022 && sameCalendarDate(value, nearestWeekday({ year, month: 6, day: 19 }))) ||
+    sameCalendarDate(value, nearestWeekday({ year, month: 7, day: 4 })) ||
+    sameCalendarDate(value, nthWeekday(year, 9, 1, 1)) ||
+    sameCalendarDate(value, thanksgiving)
+  ) {
+    return { fullClose: false, earlyCloseMinutes: EARLY_CLOSE_MINUTES };
+  }
+  if (sameCalendarDate(value, addCalendarDays(thanksgiving, 1))) {
+    return { fullClose: false, earlyCloseMinutes: LATE_EARLY_CLOSE_MINUTES };
+  }
+  if (value.month === 12 && value.day === 24 && calendarWeekday(value) >= 1 && calendarWeekday(value) <= 5) {
+    return { fullClose: false, earlyCloseMinutes: LATE_EARLY_CLOSE_MINUTES };
+  }
+  return null;
+}
+
 /**
  * Whether a candle bucket starting at `timestampMs` falls inside CME Globex
  * futures trading hours (Sun 18:00 ET through Fri 17:00 ET, with a daily
- * 17:00-18:00 ET maintenance break).
+ * 17:00-18:00 ET maintenance break). Known equity-index symbols additionally
+ * honor the 16:15-16:30 halt and recurring holiday schedules.
  *
  * The ET offset is always a whole number of hours, so the UTC minute is the
  * ET minute; only weekday+hour need the timezone conversion (memoized per hour).
  */
-export function isFuturesSessionOpen(timestampMs: number): boolean {
-  const { weekday, hour } = easternHourInfo(timestampMs);
+export function isFuturesSessionOpen(timestampMs: number, symbol?: string | null): boolean {
+  const local = easternHourInfo(timestampMs);
+  const { weekday, hour } = local;
   const minute = new Date(timestampMs).getUTCMinutes();
   const minutesOfDay = hour * 60 + minute;
 
   if (weekday === 6) {
     return false; // Saturday
   }
-  if (weekday === 0) {
-    return minutesOfDay >= SESSION_BREAK_END_MINUTES; // Sunday opens 18:00 ET
+  if (weekday === 0 && minutesOfDay < SESSION_BREAK_END_MINUTES) {
+    return false; // Sunday opens 18:00 ET
   }
-  if (weekday === 5) {
-    return minutesOfDay < SESSION_BREAK_START_MINUTES; // Friday closes 17:00 ET
+  if (weekday === 5 && minutesOfDay >= SESSION_BREAK_START_MINUTES) {
+    return false; // Friday closes 17:00 ET
   }
-  return minutesOfDay < SESSION_BREAK_START_MINUTES || minutesOfDay >= SESSION_BREAK_END_MINUTES;
+  if (minutesOfDay >= SESSION_BREAK_START_MINUTES && minutesOfDay < SESSION_BREAK_END_MINUTES) {
+    return false;
+  }
+  if (!usesCmeEquitySchedule(symbol)) {
+    return true;
+  }
+
+  const localDate = { year: local.year, month: local.month, day: local.day };
+  const tradingDate = minutesOfDay >= SESSION_BREAK_END_MINUTES ? addCalendarDays(localDate, 1) : localDate;
+  const holiday = equityHolidaySchedule(tradingDate);
+  if (holiday?.fullClose) {
+    return false;
+  }
+  if (sameCalendarDate(localDate, tradingDate)) {
+    const closeMinutes = holiday?.earlyCloseMinutes ?? SESSION_BREAK_START_MINUTES;
+    if (minutesOfDay >= closeMinutes) {
+      return false;
+    }
+    if (minutesOfDay >= EQUITY_HALT_START_MINUTES && minutesOfDay < EQUITY_HALT_END_MINUTES) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -208,9 +365,32 @@ export function isFuturesSessionOpen(timestampMs: number): boolean {
  * the UTC weekday is used; converting to ET would shift a midnight-stamped bar
  * into the previous evening and misclassify weekends.
  */
-function isUtcWeekday(timestampMs: number): boolean {
-  const weekday = new Date(timestampMs).getUTCDay();
-  return weekday >= 1 && weekday <= 5;
+function isUtcTradingDay(timestampMs: number, symbol?: string | null): boolean {
+  const timestamp = new Date(timestampMs);
+  const weekday = timestamp.getUTCDay();
+  if (weekday < 1 || weekday > 5) {
+    return false;
+  }
+  if (!usesCmeEquitySchedule(symbol)) {
+    return true;
+  }
+  return !equityHolidaySchedule({
+    year: timestamp.getUTCFullYear(),
+    month: timestamp.getUTCMonth() + 1,
+    day: timestamp.getUTCDate(),
+  })?.fullClose;
+}
+
+function inferCandleSessionSymbol(candles: readonly ProjectXMarketCandle[]): string | null {
+  for (const candle of candles) {
+    if (candle.symbol?.trim()) {
+      return candle.symbol;
+    }
+    if (candle.contract_id?.trim()) {
+      return candle.contract_id;
+    }
+  }
+  return null;
 }
 
 export function intervalSecondsFor(unit: BotTimeframeUnit, unitNumber: number): number {
@@ -258,7 +438,8 @@ export function planBotCandleFetches(input: PlanBotCandleFetchesInput): BotCandl
 
   const foreground: BotCandleFetchRequest[] = [];
   const background = buildMissingHistoryRequests(target, coverage.startMs, target.limit);
-  const sessionOpen = Number.isFinite(nowMs) && isFuturesSessionOpen(nowMs);
+  const sessionOpen =
+    Number.isFinite(nowMs) && isFuturesSessionOpen(nowMs, inferCandleSessionSymbol(input.cache.candles));
   const uncoveredTailMs = target.endMs - coverage.endMs;
   const normalizedTailBars = Math.max(2, Math.trunc(input.tailBars ?? DEFAULT_TAIL_REVALIDATION_BARS));
 
@@ -348,6 +529,7 @@ export function findCandleGaps(
   }
 
   const gaps: CandleGap[] = [];
+  const sessionSymbol = inferCandleSessionSymbol(candles);
   for (let index = 1; index < sortedTimestamps.length; index += 1) {
     const previous = sortedTimestamps[index - 1];
     const current = sortedTimestamps[index];
@@ -358,7 +540,7 @@ export function findCandleGaps(
 
     const fromMs = previous.ms + intervalMs;
     const toMs = current.ms;
-    const { missingBars, missingSessionBars } = countMissingBuckets(fromMs, toMs, intervalMs, unit);
+    const { missingBars, missingSessionBars } = countMissingBuckets(fromMs, toMs, intervalMs, unit, sessionSymbol);
     if (missingBars <= 0) {
       continue;
     }
@@ -382,13 +564,17 @@ function countMissingBuckets(
   toMs: number,
   intervalMs: number,
   unit: BotTimeframeUnit,
+  symbol: string | null,
 ): { missingBars: number; missingSessionBars: number } {
   const missingBars = Math.max(0, Math.round((toMs - fromMs) / intervalMs));
   if (missingBars === 0) {
     return { missingBars: 0, missingSessionBars: 0 };
   }
 
-  const isInSession = unit === "day" ? isUtcWeekday : isFuturesSessionOpen;
+  const isInSession =
+    unit === "day"
+      ? (timestampMs: number) => isUtcTradingDay(timestampMs, symbol)
+      : (timestampMs: number) => isFuturesSessionOpen(timestampMs, symbol);
   const step = missingBars > MAX_GAP_BUCKET_SCAN ? Math.ceil(missingBars / MAX_GAP_BUCKET_SCAN) : 1;
   let missingSessionBars = 0;
   for (let bucket = 0; bucket < missingBars; bucket += step) {

@@ -51,6 +51,21 @@ describe("isFuturesSessionOpen", () => {
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T21:55:00Z"))).toBe(false); // Sun 17:55 ET
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T22:00:00Z"))).toBe(true); // Sun 18:00 ET
   });
+
+  it("applies the equity-index daily halt only to recognized equity products", () => {
+    const halt = Date.parse("2026-07-06T20:15:00Z"); // Mon 16:15 ET
+    expect(isFuturesSessionOpen(halt, "CON.F.US.MNQ.U26")).toBe(false);
+    expect(isFuturesSessionOpen(halt, "UNKNOWN")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-06T20:30:00Z"), "MNQ")).toBe(true);
+  });
+
+  it("applies recurring equity-index holiday closes", () => {
+    expect(isFuturesSessionOpen(Date.parse("2026-04-03T13:14:00Z"), "MNQ")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-04-03T13:15:00Z"), "MNQ")).toBe(false);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T16:55:00Z"), "MNQ")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T17:00:00Z"), "MNQ")).toBe(false);
+    expect(isFuturesSessionOpen(Date.parse("2026-07-03T17:00:00Z"), "UNKNOWN")).toBe(true);
+  });
 });
 
 describe("planBotCandleFetches", () => {
@@ -278,6 +293,18 @@ describe("findCandleGaps", () => {
     expect(gaps[0].missingSessionBars).toBe(0);
   });
 
+  it("classifies an equity holiday early close through the weekend as a session gap", () => {
+    const gaps = findCandleGaps(
+      [candle("2026-07-03T16:55:00Z"), candle("2026-07-05T22:00:00Z")],
+      "minute",
+      5,
+    );
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].kind).toBe("session");
+    expect(gaps[0].missingSessionBars).toBe(0);
+  });
+
   it("classifies a gap spanning closure plus trading hours as a data gap", () => {
     // Fri 16:50 ET -> Mon 10:00 ET: the Sunday evening + Monday morning buckets are in session.
     const gaps = findCandleGaps(
@@ -314,6 +341,21 @@ describe("findCandleGaps", () => {
     );
     expect(midweek).toHaveLength(1);
     expect(midweek[0].kind).toBe("data");
+  });
+
+  it("treats a full equity holiday plus its weekend as a daily session gap", () => {
+    const gaps = findCandleGaps(
+      [
+        candle("2026-12-24T00:00:00Z", { unit: "day", unit_number: 1 }),
+        candle("2026-12-28T00:00:00Z", { unit: "day", unit_number: 1 }),
+      ],
+      "day",
+      1,
+    );
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].kind).toBe("session");
+    expect(gaps[0].missingSessionBars).toBe(0);
   });
 
   it("skips week and month units", () => {
