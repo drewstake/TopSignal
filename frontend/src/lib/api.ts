@@ -69,6 +69,10 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
+const BOT_CONFIG_CACHE_TTL_MS = 60_000;
+const BOT_ACTIVITY_CACHE_TTL_MS = 5_000;
+const BOT_CANDLE_CACHE_TTL_MS = 30_000;
+const SELECTED_BOT_STORAGE_KEY = "topsignal.bot.selected-config-id";
 const BACKTEST_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
@@ -148,13 +152,68 @@ function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promis
   });
 
   inFlight.set(cacheKey, request);
-  void request.finally(() => {
+  const clearInFlight = () => {
     if (inFlight.get(cacheKey) === request) {
       inFlight.delete(cacheKey);
     }
-  });
+  };
+  void request.then(clearInFlight, clearInFlight);
 
   return request;
+}
+
+function getSharedInFlightRequest<T>(
+  inFlight: Map<string, Promise<T>>,
+  cacheKey: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const pendingRequest = inFlight.get(cacheKey);
+  if (pendingRequest) {
+    return pendingRequest;
+  }
+  const request = load();
+  inFlight.set(cacheKey, request);
+  const clearInFlight = () => {
+    if (inFlight.get(cacheKey) === request) {
+      inFlight.delete(cacheKey);
+    }
+  };
+  void request.then(clearInFlight, clearInFlight);
+  return request;
+}
+
+function abortError(): Error {
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function withConsumerAbort<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return request;
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError());
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const handleAbort = () => reject(abortError());
+    signal.addEventListener("abort", handleAbort, { once: true });
+    void request.then(
+      (value) => {
+        signal.removeEventListener("abort", handleAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", handleAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function requestCacheScope(): "demo" | "live" {
+  return isDemoModeEnabled() ? "demo" : "live";
 }
 
 function buildUrl(path: string, query?: Record<string, QueryValue>) {
@@ -484,7 +543,7 @@ function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | bo
 }
 
 function accountsQueryCacheKey(options: Required<GetAccountsOptions>) {
-  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
+  return `${requestCacheScope()}:${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
 }
 
 function getAccountCacheVersion(accountId: number) {
@@ -574,36 +633,20 @@ function invalidateAccountsListCaches() {
 
 function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
   const cacheKey = accountsQueryCacheKey(options);
-  const now = Date.now();
-  const cached = accountsCacheByQuery.get(cacheKey);
-  if (!options.bypassCache && cached && cached.expiresAtMs > now) {
-    return Promise.resolve(cached.value);
-  }
-
-  const inFlight = inFlightAccountsByQuery.get(cacheKey);
-  if (!options.bypassCache && inFlight) {
-    return inFlight;
-  }
-
-  const request = requestJson<AccountInfo[]>("/api/accounts", {
-    query: {
-      show_inactive: options.showInactive,
-      show_missing: options.showMissing,
-    },
-  })
-    .then((accounts) => {
-      accountsCacheByQuery.set(cacheKey, {
-        value: accounts,
-        expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
-      });
-      return accounts;
-    })
-    .finally(() => {
-      inFlightAccountsByQuery.delete(cacheKey);
-    });
-
-  inFlightAccountsByQuery.set(cacheKey, request);
-  return request;
+  return getTimedCachedRequest({
+    cache: accountsCacheByQuery,
+    inFlight: inFlightAccountsByQuery,
+    cacheKey,
+    ttlMs: ACCOUNTS_CACHE_TTL_MS,
+    bypassCache: options.bypassCache,
+    load: () =>
+      requestJson<AccountInfo[]>("/api/accounts", {
+        query: {
+          show_inactive: options.showInactive,
+          show_missing: options.showMissing,
+        },
+      }),
+  });
 }
 
 function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
@@ -943,6 +986,319 @@ interface CandleQuery {
   repair?: boolean;
 }
 
+interface BotConfigListOptions {
+  bypassCache?: boolean;
+}
+
+export interface BotWarmupTimeframe {
+  unit: BotTimeframeUnit;
+  unitNumber: number;
+}
+
+const BOT_WARMUP_MAX_TIMEFRAMES = 4;
+const BOT_CHART_MIN_BARS = 300;
+const BOT_CHART_MAX_BARS = 2_000;
+const BOT_CHART_LOOKBACK_MULTIPLIER = 3;
+const BOT_TIMEFRAME_SECONDS: Record<BotTimeframeUnit, number> = {
+  second: 1,
+  minute: 60,
+  hour: 60 * 60,
+  day: 24 * 60 * 60,
+  week: 7 * 24 * 60 * 60,
+  month: 31 * 24 * 60 * 60,
+};
+
+const botConfigsCacheByQuery = new Map<string, TimedCache<BotConfigListResponse>>();
+const inFlightBotConfigsByQuery = new Map<string, Promise<BotConfigListResponse>>();
+const botActivityCacheByQuery = new Map<string, TimedCache<BotActivity>>();
+const inFlightBotActivityByQuery = new Map<string, Promise<BotActivity>>();
+const botCandlesCacheByQuery = new Map<string, TimedCache<ProjectXMarketCandle[]>>();
+const inFlightBotCandlesByQuery = new Map<string, Promise<ProjectXMarketCandle[]>>();
+let selectedBotWarmupRequest: Promise<void> | null = null;
+
+function normalizeTimeframe(unit: BotTimeframeUnit, unitNumber: number): BotWarmupTimeframe {
+  return {
+    unit,
+    unitNumber: Math.max(1, Math.trunc(unitNumber)),
+  };
+}
+
+function deriveLowerTimeframe(unit: BotTimeframeUnit, unitNumber: number): BotWarmupTimeframe {
+  const totalSeconds = BOT_TIMEFRAME_SECONDS[unit] * Math.max(1, Math.trunc(unitNumber));
+  const units: BotTimeframeUnit[] = ["month", "week", "day", "hour", "minute"];
+  for (const divisor of [4, 3, 5, 2]) {
+    if (totalSeconds % divisor !== 0) {
+      continue;
+    }
+    const candidateSeconds = totalSeconds / divisor;
+    for (const candidateUnit of units) {
+      const seconds = BOT_TIMEFRAME_SECONDS[candidateUnit];
+      if (candidateSeconds % seconds === 0) {
+        return normalizeTimeframe(candidateUnit, candidateSeconds / seconds);
+      }
+    }
+    if (unit === "second") {
+      return normalizeTimeframe("second", candidateSeconds);
+    }
+  }
+  return normalizeTimeframe(unit, unitNumber);
+}
+
+function addWarmupTimeframe(target: BotWarmupTimeframe[], timeframe: BotWarmupTimeframe) {
+  const normalized = normalizeTimeframe(timeframe.unit, timeframe.unitNumber);
+  if (target.some((item) => item.unit === normalized.unit && item.unitNumber === normalized.unitNumber)) {
+    return;
+  }
+  if (target.length < BOT_WARMUP_MAX_TIMEFRAMES) {
+    target.push(normalized);
+  }
+}
+
+function addStrategyWarmupTimeframes(
+  target: BotWarmupTimeframe[],
+  bot: BotConfig,
+  strategyType: BotConfig["strategy_type"],
+) {
+  if (strategyType === "topbot_adaptive") {
+    for (const sourceStrategy of bot.strategy_params?.source_strategies ?? []) {
+      if (sourceStrategy !== "topbot_adaptive") {
+        addStrategyWarmupTimeframes(target, bot, sourceStrategy);
+      }
+      if (target.length >= BOT_WARMUP_MAX_TIMEFRAMES) {
+        break;
+      }
+    }
+    return;
+  }
+  if (strategyType === "delayed_orb_confirmation") {
+    addWarmupTimeframe(target, { unit: "minute", unitNumber: 1 });
+    return;
+  }
+  if (strategyType === "support_resistance" || strategyType === "liquidity_sweep_retest" || strategyType === "macd_support_resistance") {
+    addWarmupTimeframe(target, { unit: "hour", unitNumber: 1 });
+    addWarmupTimeframe(target, { unit: "hour", unitNumber: 4 });
+    return;
+  }
+  if (strategyType === "supertrend_pivot") {
+    addWarmupTimeframe(target, { unit: "day", unitNumber: 1 });
+    return;
+  }
+  if (strategyType === "fvg_sweep_mss") {
+    addWarmupTimeframe(target, deriveLowerTimeframe(bot.timeframe_unit, bot.timeframe_unit_number));
+    return;
+  }
+  if (strategyType === "relative_strength_spy" || strategyType === "opening_rvol_breakout" || strategyType === "vwap_gap_retrace") {
+    addWarmupTimeframe(target, { unit: "minute", unitNumber: 5 });
+  }
+}
+
+export function getBotWarmupTimeframes(bot: BotConfig): BotWarmupTimeframe[] {
+  const timeframes: BotWarmupTimeframe[] = [];
+  addWarmupTimeframe(timeframes, { unit: bot.timeframe_unit, unitNumber: bot.timeframe_unit_number });
+  addStrategyWarmupTimeframes(timeframes, bot, bot.strategy_type);
+  return timeframes;
+}
+
+export function readSelectedBotConfigId(): number | null {
+  try {
+    if (typeof localStorage === "undefined") {
+      return null;
+    }
+    const value = Number.parseInt(localStorage.getItem(SELECTED_BOT_STORAGE_KEY) ?? "", 10);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberSelectedBotConfigId(botConfigId: number | null): void {
+  try {
+    if (typeof localStorage === "undefined") {
+      return;
+    }
+    if (botConfigId && Number.isFinite(botConfigId) && botConfigId > 0) {
+      localStorage.setItem(SELECTED_BOT_STORAGE_KEY, String(Math.trunc(botConfigId)));
+    } else {
+      localStorage.removeItem(SELECTED_BOT_STORAGE_KEY);
+    }
+  } catch {
+    // Selection persistence is only an optimization hint.
+  }
+}
+
+function botConfigCacheKey(accountId?: number): string {
+  return `${requestCacheScope()}:${accountId ?? "all"}`;
+}
+
+function invalidateBotConfigCaches() {
+  botConfigsCacheByQuery.clear();
+  inFlightBotConfigsByQuery.clear();
+}
+
+function botActivityCacheKey(botConfigId: number, limit: number): string {
+  return `${requestCacheScope()}:${botConfigId}:${limit}`;
+}
+
+function invalidateBotActivityCaches(botConfigId?: number) {
+  if (typeof botConfigId !== "number") {
+    botActivityCacheByQuery.clear();
+    inFlightBotActivityByQuery.clear();
+    return;
+  }
+  const prefix = `${requestCacheScope()}:${botConfigId}:`;
+  clearMapByPrefix(botActivityCacheByQuery, prefix);
+  clearMapByPrefix(inFlightBotActivityByQuery, prefix);
+}
+
+function listBotConfigs(accountId?: number, options: BotConfigListOptions = {}): Promise<BotConfigListResponse> {
+  const cacheKey = botConfigCacheKey(accountId);
+  return getTimedCachedRequest({
+    cache: botConfigsCacheByQuery,
+    inFlight: inFlightBotConfigsByQuery,
+    cacheKey,
+    ttlMs: BOT_CONFIG_CACHE_TTL_MS,
+    bypassCache: options.bypassCache,
+    load: () =>
+      requestJson<BotConfigListResponse>("/api/bots", {
+        query: {
+          account_id: accountId,
+        },
+      }),
+  });
+}
+
+function getBotActivity(botConfigId: number, limit = 50): Promise<BotActivity> {
+  const normalizedLimit = Math.max(1, Math.trunc(limit));
+  const cacheKey = botActivityCacheKey(botConfigId, normalizedLimit);
+  return getTimedCachedRequest({
+    cache: botActivityCacheByQuery,
+    inFlight: inFlightBotActivityByQuery,
+    cacheKey,
+    ttlMs: BOT_ACTIVITY_CACHE_TTL_MS,
+    load: () =>
+      requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
+        query: {
+          limit: normalizedLimit,
+        },
+      }),
+  });
+}
+
+function normalizedCandleBoundary(value: string | undefined, bucketMs: number): string {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? String(Math.floor(parsed / bucketMs)) : value ?? "";
+}
+
+function botCandleCacheKey(query: CandleQuery): string {
+  const unit = query.unit ?? "minute";
+  const unitNumber = Math.max(1, Math.trunc(query.unitNumber ?? 5));
+  const bucketMs = BOT_TIMEFRAME_SECONDS[unit] * unitNumber * 1_000;
+  return [
+    requestCacheScope(),
+    query.contractId.trim(),
+    query.symbol?.trim().toUpperCase() ?? "",
+    query.live ?? false,
+    unit,
+    unitNumber,
+    Math.max(1, Math.trunc(query.limit ?? 500)),
+    query.includePartialBar ?? false,
+    query.refresh ?? false,
+    query.repair ?? false,
+    normalizedCandleBoundary(query.start, bucketMs),
+    normalizedCandleBoundary(query.end, bucketMs),
+  ].join("|");
+}
+
+function requestBotCandles(query: CandleQuery, options: RequestSignalOptions = {}): Promise<ProjectXMarketCandle[]> {
+  if (options.signal?.aborted) {
+    return Promise.reject(abortError());
+  }
+  const request = (signal?: AbortSignal) =>
+    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
+      query: {
+        contract_id: query.contractId,
+        symbol: query.symbol,
+        start: query.start,
+        end: query.end,
+        live: query.live ?? false,
+        unit: query.unit ?? "minute",
+        unit_number: query.unitNumber ?? 5,
+        limit: query.limit ?? 500,
+        include_partial_bar: query.includePartialBar ?? false,
+        refresh: query.refresh ?? false,
+        repair: query.repair ?? false,
+      },
+      signal,
+    });
+
+  const cacheKey = botCandleCacheKey(query);
+  const canCache = !query.live && !query.includePartialBar && !query.refresh && !query.repair;
+  const sharedRequest = canCache
+    ? getTimedCachedRequest({
+        cache: botCandlesCacheByQuery,
+        inFlight: inFlightBotCandlesByQuery,
+        cacheKey,
+        ttlMs: BOT_CANDLE_CACHE_TTL_MS,
+        load: () => request(),
+      })
+    : getSharedInFlightRequest(inFlightBotCandlesByQuery, cacheKey, () => request());
+  return withConsumerAbort(sharedRequest, options.signal);
+}
+
+function buildBotWarmupCandleQuery(bot: BotConfig, timeframe: BotWarmupTimeframe, now = new Date()): CandleQuery {
+  const unitNumber = Math.max(1, Math.trunc(timeframe.unitNumber));
+  const timeframeSeconds = BOT_TIMEFRAME_SECONDS[timeframe.unit] * unitNumber;
+  const lookbackBars = Math.max(1, Math.trunc(bot.lookback_bars));
+  const limit = Math.min(BOT_CHART_MAX_BARS, Math.max(BOT_CHART_MIN_BARS, lookbackBars * 4));
+  const end = Number.isFinite(now.getTime()) ? now : new Date();
+  const start = new Date(end.getTime() - timeframeSeconds * limit * BOT_CHART_LOOKBACK_MULTIPLIER * 1_000);
+  return {
+    contractId: bot.contract_id,
+    symbol: bot.symbol ?? undefined,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    live: false,
+    unit: timeframe.unit,
+    unitNumber,
+    limit,
+    includePartialBar: false,
+    refresh: false,
+  };
+}
+
+async function runSelectedBotWarmup(): Promise<void> {
+  const configs = await listBotConfigs();
+  if (configs.items.length === 0) {
+    return;
+  }
+  const selectedId = readSelectedBotConfigId();
+  const selectedBot = configs.items.find((config) => config.id === selectedId) ?? configs.items[0];
+  const [configuredTimeframe, ...requiredTimeframes] = getBotWarmupTimeframes(selectedBot);
+  if (!configuredTimeframe) {
+    return;
+  }
+
+  await requestBotCandles(buildBotWarmupCandleQuery(selectedBot, configuredTimeframe)).catch(() => undefined);
+  await Promise.allSettled(
+    requiredTimeframes.map((timeframe) => requestBotCandles(buildBotWarmupCandleQuery(selectedBot, timeframe))),
+  );
+}
+
+export function warmSelectedBot(): Promise<void> {
+  if (selectedBotWarmupRequest) {
+    return selectedBotWarmupRequest;
+  }
+  const request = runSelectedBotWarmup();
+  selectedBotWarmupRequest = request;
+  const clearWarmup = () => {
+    if (selectedBotWarmupRequest === request) {
+      selectedBotWarmupRequest = null;
+    }
+  };
+  void request.then(clearWarmup, clearWarmup);
+  return request;
+}
+
 interface MarketPriceStreamQuery {
   contractId: string;
   symbol?: string;
@@ -1124,64 +1480,62 @@ export const botsApi = {
         live: query.live ?? false,
       },
     }),
-  getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
-    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
-      query: {
-        contract_id: query.contractId,
-        symbol: query.symbol,
-        start: query.start,
-        end: query.end,
-        live: query.live ?? false,
-        unit: query.unit ?? "minute",
-        unit_number: query.unitNumber ?? 5,
-        limit: query.limit ?? 500,
-        include_partial_bar: query.includePartialBar ?? false,
-        refresh: query.refresh ?? false,
-        repair: query.repair ?? false,
-      },
-      signal: options.signal,
-    }),
-  listConfigs: (accountId?: number) =>
-    requestJson<BotConfigListResponse>("/api/bots", {
-      query: {
-        account_id: accountId,
-      },
-    }),
+  getCandles: requestBotCandles,
+  listConfigs: listBotConfigs,
   createConfig: (payload: BotConfigInput) =>
     requestJson<BotConfig>("/api/bots", {
       method: "POST",
       body: payload,
+    }).then((config) => {
+      invalidateBotConfigCaches();
+      return config;
     }),
   updateConfig: (botConfigId: number, payload: BotConfigUpdateInput) =>
     requestJson<BotConfig>(`/api/bots/${botConfigId}`, {
       method: "PATCH",
       body: payload,
+    }).then((config) => {
+      invalidateBotConfigCaches();
+      invalidateBotActivityCaches(botConfigId);
+      return config;
     }),
   deleteConfig: (botConfigId: number) =>
     requestJson<void>(`/api/bots/${botConfigId}`, {
       method: "DELETE",
+    }).then((result) => {
+      invalidateBotConfigCaches();
+      invalidateBotActivityCaches(botConfigId);
+      if (readSelectedBotConfigId() === botConfigId) {
+        rememberSelectedBotConfigId(null);
+      }
+      return result;
     }),
   start: (botConfigId: number, options: BotStartOptions = {}) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/start`, {
       method: "POST",
       body: botStartPayload(options),
+    }).then((evaluation) => {
+      invalidateBotActivityCaches(botConfigId);
+      return evaluation;
     }),
   evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
+    }).then((evaluation) => {
+      invalidateBotActivityCaches(botConfigId);
+      return evaluation;
     }),
   runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",
+    }).then((run) => {
+      invalidateBotActivityCaches(botConfigId);
+      return run;
     }),
-  getActivity: (botConfigId: number, limit = 50) =>
-    requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
-      query: {
-        limit,
-      },
-    }),
+  getActivity: getBotActivity,
+  warmSelected: warmSelectedBot,
   evaluateTradePlan: (payload: TradePlanEvaluationInput) =>
     requestJson<TradeEvaluationResult>("/api/trade-plan/evaluate", {
       method: "POST",

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 
+import type { AppShellOutletContext } from "../../app/AppShell";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -9,9 +10,8 @@ import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
-import { accountsApi, botsApi } from "../../lib/api";
+import { botsApi, readSelectedBotConfigId, rememberSelectedBotConfigId } from "../../lib/api";
 import type {
-  AccountInfo,
   BotActivity,
   BotConfig,
   BotEvaluation,
@@ -25,10 +25,15 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { BotAnalysisPanel } from "./BotAnalysisPanel";
-import { BotBacktestPanel } from "./BotBacktestPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
+
+const BotAnalysisPanel = lazy(() =>
+  import("./BotAnalysisPanel").then((module) => ({ default: module.BotAnalysisPanel })),
+);
+const BotBacktestPanel = lazy(() =>
+  import("./BotBacktestPanel").then((module) => ({ default: module.BotBacktestPanel })),
+);
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
@@ -1170,9 +1175,9 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
 export function BotPage() {
   const [searchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const { accounts } = useOutletContext<AppShellOutletContext>();
   const [configs, setConfigs] = useState<BotConfig[]>([]);
-  const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
+  const [selectedBotId, setSelectedBotId] = useState<number | null>(() => readSelectedBotConfigId());
   const [activity, setActivity] = useState<BotActivity | null>(null);
   const [lastEvaluation, setLastEvaluation] = useState<BotEvaluation | null>(null);
   const [contracts, setContracts] = useState<ProjectXContract[]>([]);
@@ -1212,24 +1217,16 @@ export function BotPage() {
     }
     setError(null);
     try {
-      const [accountRows, botRows] = await Promise.all([
-        accountsApi.getSelectableAccounts(),
-        botsApi.listConfigs(),
-      ]);
-      setAccounts(accountRows);
+      const botRows = await botsApi.listConfigs();
       setConfigs(botRows.items);
       setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
         if (current && botRows.items.some((item) => item.id === current)) {
           return current;
         }
-        return botRows.items[0]?.id ?? null;
+        const remembered = readSelectedBotConfigId();
+        return botRows.items.find((item) => item.id === remembered)?.id ?? botRows.items[0]?.id ?? null;
       });
-      if (accountRows.length > 0) {
-        setForm((current) =>
-          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
-        );
-      }
     } catch (err) {
       setConfigWarnings([]);
       setError(err instanceof Error ? err.message : "Failed to load bot data");
@@ -1238,7 +1235,7 @@ export function BotPage() {
         setLoading(false);
       }
     }
-  }, [accountFromQuery]);
+  }, []);
 
   const loadActivity = useCallback(async (botId: number | null) => {
     if (!botId) {
@@ -1261,7 +1258,20 @@ export function BotPage() {
   }, [loadConfigs]);
 
   useEffect(() => {
-    void loadActivity(selectedBot?.id ?? null);
+    const botId = selectedBot?.id ?? null;
+    if (!botId) {
+      setActivity(null);
+      return undefined;
+    }
+
+    setActivity(null);
+    const run = () => void loadActivity(botId);
+    if (typeof window.requestIdleCallback === "function") {
+      const requestId = window.requestIdleCallback(run, { timeout: 1_500 });
+      return () => window.cancelIdleCallback(requestId);
+    }
+    const timeoutId = window.setTimeout(run, 100);
+    return () => window.clearTimeout(timeoutId);
   }, [
     loadActivity,
     selectedBot?.contract_id,
@@ -1276,11 +1286,21 @@ export function BotPage() {
       return;
     }
 
+    rememberSelectedBotConfigId(selectedBot.id);
     setEditingBotId(selectedBot.id);
     setForm(formFromBot(selectedBot));
     setContracts([]);
     setFormError(null);
   }, [selectedBot]);
+
+  useEffect(() => {
+    if (accounts.length === 0) {
+      return;
+    }
+    setForm((current) =>
+      current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accounts[0].id) },
+    );
+  }, [accountFromQuery, accounts]);
 
   async function handleSearchContracts() {
     if (!form.contractSearch.trim()) {
@@ -2454,6 +2474,24 @@ export function BotPage() {
       ))}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
+        <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
+          <BotSignalChart
+            bot={selectedBot}
+            activity={activity}
+            lastEvaluation={selectedBotEvaluation}
+            refreshToken={chartRefreshToken}
+            onMarketData={setMarketSnapshot}
+          />
+          <Suspense fallback={<Skeleton className="h-[360px]" />}>
+            <BotAnalysisPanel
+              bot={selectedBot}
+              evaluation={selectedBotEvaluation}
+              marketSnapshot={marketSnapshot}
+              loading={actionLoading === "start" || actionLoading === "evaluate"}
+              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
+            />
+          </Suspense>
+        </div>
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
@@ -3831,7 +3869,9 @@ export function BotPage() {
                   value={selectedBot?.id ? String(selectedBot.id) : ""}
                   onChange={(event) => {
                     const nextId = Number.parseInt(event.target.value, 10);
-                    setSelectedBotId(Number.isFinite(nextId) ? nextId : null);
+                    const selectedId = Number.isFinite(nextId) ? nextId : null;
+                    rememberSelectedBotConfigId(selectedId);
+                    setSelectedBotId(selectedId);
                   }}
                 >
                   {configs.length === 0 ? <option value="">No bots</option> : null}
@@ -4000,25 +4040,11 @@ export function BotPage() {
             </CardContent>
           </Card>
 
-          <div className="order-1 min-w-0 space-y-5 xl:col-start-1 xl:row-start-1">
-            <BotSignalChart
-              bot={selectedBot}
-              activity={activity}
-              lastEvaluation={selectedBotEvaluation}
-              refreshToken={chartRefreshToken}
-              onMarketData={setMarketSnapshot}
-            />
-            <BotAnalysisPanel
-              bot={selectedBot}
-              evaluation={selectedBotEvaluation}
-              marketSnapshot={marketSnapshot}
-              loading={actionLoading === "start" || actionLoading === "evaluate"}
-              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
-            />
-          </div>
         </div>
       </div>
-      <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      <Suspense fallback={<Skeleton className="h-[420px]" />}>
+        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      </Suspense>
     </div>
   );
 }
