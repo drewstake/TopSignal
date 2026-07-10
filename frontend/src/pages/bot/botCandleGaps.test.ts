@@ -6,6 +6,7 @@ import {
   findCandleGaps,
   isGapCoveredByRepairWindows,
   isFuturesSessionOpen,
+  planBotCandleFetches,
   type CandleGap,
 } from "./botCandleGaps";
 import type { ProjectXMarketCandle } from "../../lib/types";
@@ -49,6 +50,179 @@ describe("isFuturesSessionOpen", () => {
     expect(isFuturesSessionOpen(Date.parse("2026-06-06T15:00:00Z"))).toBe(false); // Saturday
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T21:55:00Z"))).toBe(false); // Sun 17:55 ET
     expect(isFuturesSessionOpen(Date.parse("2026-06-07T22:00:00Z"))).toBe(true); // Sun 18:00 ET
+  });
+});
+
+describe("planBotCandleFetches", () => {
+  const targetWindow = {
+    start: "2026-06-09T11:00:00Z",
+    end: "2026-06-09T14:30:00Z",
+    limit: 600,
+  };
+  const initialWindow = {
+    start: "2026-06-09T13:00:00Z",
+    end: "2026-06-09T14:30:00Z",
+    limit: 300,
+  };
+
+  it("plans a cold load as a 300-bar foreground fetch before older history", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: null,
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("cold");
+    expect(plan.cacheUsable).toBe(false);
+    expect(plan.foreground).toEqual([
+      {
+        reason: "cold",
+        priority: "foreground",
+        window: {
+          start: "2026-06-09T13:00:00.000Z",
+          end: "2026-06-09T14:30:00.000Z",
+        },
+        limit: 300,
+        repair: false,
+      },
+    ]);
+    expect(plan.background[0]).toMatchObject({
+      reason: "missing-history",
+      priority: "background",
+      repair: false,
+    });
+    expect(plan.requests.map((request) => request.priority)).toEqual(["foreground", "background"]);
+  });
+
+  it("plans a warm load with fresh covered cache without a full foreground fetch", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        // Fewer than 25 rows is still a valid immediate SWR hydration.
+        candles: [candle("2026-06-09T14:25:00Z")],
+        savedAt: new Date("2026-06-09T14:29:55Z"),
+        coverage: targetWindow,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("warm-fresh");
+    expect(plan.cacheUsable).toBe(true);
+    expect(plan.requests).toEqual([]);
+  });
+
+  it("plans missing-history work in the background without repair mode", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        candles: [candle("2026-06-09T13:00:00Z"), candle("2026-06-09T13:05:00Z")],
+        savedAt: "2026-06-09T14:29:55Z",
+        coverage: {
+          start: "2026-06-09T13:00:00Z",
+          end: "2026-06-09T14:30:00Z",
+        },
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.foreground).toEqual([]);
+    expect(plan.background).toHaveLength(1);
+    expect(plan.background[0]).toMatchObject({
+      reason: "missing-history",
+      priority: "background",
+      repair: false,
+      window: {
+        start: "2026-06-09T11:00:00.000Z",
+        end: "2026-06-09T13:00:00.000Z",
+      },
+    });
+  });
+
+  it("plans stale tail revalidation as a small overlapping foreground fetch", () => {
+    const plan = planBotCandleFetches({
+      targetWindow,
+      initialWindow,
+      cache: {
+        candles: [candle("2026-06-09T14:20:00Z"), candle("2026-06-09T14:25:00Z")],
+        savedAt: "2026-06-09T14:20:00Z",
+        coverage: targetWindow,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:30:00Z"),
+    });
+
+    expect(plan.cacheState).toBe("warm-stale");
+    expect(plan.foreground).toHaveLength(1);
+    expect(plan.foreground[0]).toMatchObject({
+      reason: "stale-tail",
+      priority: "foreground",
+      limit: 8,
+      repair: false,
+    });
+    expect(Date.parse(plan.foreground[0].window.start)).toBeGreaterThan(Date.parse(targetWindow.start));
+  });
+
+  it("suppresses stale tail revalidation during a known closed futures session", () => {
+    const weekendTarget = {
+      start: "2026-06-05T14:00:00Z",
+      end: "2026-06-06T15:00:00Z",
+      limit: 300,
+    };
+    const plan = planBotCandleFetches({
+      targetWindow: weekendTarget,
+      initialWindow: weekendTarget,
+      cache: {
+        candles: [candle("2026-06-05T20:55:00Z")],
+        savedAt: "2026-06-05T21:00:00Z",
+        coverage: weekendTarget,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-06T15:00:00Z"),
+    });
+
+    expect(plan.isStale).toBe(true);
+    expect(plan.foreground).toEqual([]);
+  });
+
+  it("plans bounded interior data-gap repair in the background with repair mode", () => {
+    const gapTarget = {
+      start: "2026-06-09T13:55:00Z",
+      end: "2026-06-09T14:25:00Z",
+      limit: 300,
+    };
+    const plan = planBotCandleFetches({
+      targetWindow: gapTarget,
+      initialWindow: gapTarget,
+      cache: {
+        candles: [candle("2026-06-09T14:00:00Z"), candle("2026-06-09T14:20:00Z")],
+        savedAt: "2026-06-09T14:24:55Z",
+        coverage: gapTarget,
+      },
+      unit: "minute",
+      unitNumber: 5,
+      now: new Date("2026-06-09T14:25:00Z"),
+      maxRepairBars: 10,
+    });
+
+    expect(plan.foreground).toEqual([]);
+    expect(plan.background).toHaveLength(1);
+    expect(plan.background[0]).toMatchObject({
+      reason: "interior-gap",
+      priority: "background",
+      repair: true,
+    });
+    expect(plan.background[0].limit).toBeLessThanOrEqual(10);
   });
 });
 

@@ -4,7 +4,7 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi, botsApi } from "./api";
+import { accountsApi, botsApi, buildProjectXCandleRequestKey } from "./api";
 import { getAccessToken } from "./supabase";
 
 function installDemoModeStorage(enabled: boolean) {
@@ -192,6 +192,49 @@ describe("botsApi", () => {
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("confirm_live_order_routing");
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("start");
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("end");
+  });
+
+  it("deduplicates closed-history identities within the same candle bucket", () => {
+    const base = {
+      contractId: " con.f.us.mnq.m26 ",
+      symbol: " mnq ",
+      unit: "minute" as const,
+      unitNumber: 5,
+      limit: 300,
+      includePartialBar: false,
+    };
+
+    expect(
+      buildProjectXCandleRequestKey({
+        ...base,
+        start: "2026-07-10T13:00:01.000Z",
+        end: "2026-07-10T14:04:01.000Z",
+      }),
+    ).toBe(
+      buildProjectXCandleRequestKey({
+        ...base,
+        contractId: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        start: "2026-07-10T13:00:59.000Z",
+        end: "2026-07-10T14:04:59.000Z",
+      }),
+    );
+  });
+
+  it("keeps partial, repair, and authoritative refresh requests distinct", () => {
+    const query = {
+      contractId: "CON.F.US.MNQ.M26",
+      unit: "minute" as const,
+      unitNumber: 1,
+      start: "2026-07-10T14:00:00.000Z",
+      end: "2026-07-10T14:05:00.000Z",
+      limit: 5,
+    };
+    const normal = buildProjectXCandleRequestKey(query);
+
+    expect(buildProjectXCandleRequestKey({ ...query, includePartialBar: true })).not.toBe(normal);
+    expect(buildProjectXCandleRequestKey({ ...query, repair: true })).not.toBe(normal);
+    expect(buildProjectXCandleRequestKey({ ...query, refresh: true })).not.toBe(normal);
   });
 });
 

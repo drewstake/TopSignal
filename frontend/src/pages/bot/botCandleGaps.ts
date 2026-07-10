@@ -41,6 +41,65 @@ export interface GapRepairWindow {
   end: string;
 }
 
+export interface BotCandleFetchQueryWindow extends GapRepairWindow {
+  limit: number;
+}
+
+export type BotCandleFetchPriority = "foreground" | "background";
+export type BotCandleFetchReason =
+  | "cold"
+  | "missing-tail"
+  | "stale-tail"
+  | "missing-history"
+  | "interior-gap";
+
+export interface BotCandleFetchRequest {
+  reason: BotCandleFetchReason;
+  priority: BotCandleFetchPriority;
+  window: GapRepairWindow;
+  limit: number;
+  /** Only interior-hole requests trigger the backend automatic-repair path. */
+  repair: boolean;
+}
+
+export interface BotCandleFetchCacheSnapshot {
+  candles: ProjectXMarketCandle[];
+  savedAt: Date | string | null;
+  /** Query coverage can extend beyond the first/last returned trading bar. */
+  coverage?: GapRepairWindow | null;
+}
+
+export interface PlanBotCandleFetchesInput {
+  /** Full chart range ultimately desired (for example the bot lookback). */
+  targetWindow: BotCandleFetchQueryWindow;
+  /** Fast first-paint range, normally the 300-bar initial query. */
+  initialWindow: BotCandleFetchQueryWindow;
+  cache: BotCandleFetchCacheSnapshot | null;
+  unit: BotTimeframeUnit;
+  unitNumber: number;
+  now: Date;
+  /** Optional deterministic override; the default scales with the timeframe. */
+  staleAfterMs?: number;
+  /** Number of bars in a small overlapping tail revalidation. Defaults to 8. */
+  tailBars?: number;
+  /** Maximum independently repaired interior gaps. Defaults to 3. */
+  maxRepairWindows?: number;
+  /** Provider-result cap for any one interior repair. Defaults to 500. */
+  maxRepairBars?: number;
+}
+
+export type BotCandleFetchCacheState = "cold" | "warm-fresh" | "warm-stale";
+
+export interface BotCandleFetchPlan {
+  cacheState: BotCandleFetchCacheState;
+  cacheUsable: boolean;
+  isStale: boolean;
+  /** Ordered with every foreground request before all background work. */
+  requests: BotCandleFetchRequest[];
+  foreground: BotCandleFetchRequest[];
+  background: BotCandleFetchRequest[];
+}
+
 /** Whether a gap was actually included in one of the bounded repair requests. */
 export function isGapCoveredByRepairWindows(gap: CandleGap, windows: readonly GapRepairWindow[]): boolean {
   return windows.some((window_) => {
@@ -65,6 +124,9 @@ const SESSION_BREAK_START_MINUTES = 17 * 60;
 const SESSION_BREAK_END_MINUTES = 18 * 60;
 /** Cap per-gap bucket scans; beyond this a gap is sampled instead of walked. */
 const MAX_GAP_BUCKET_SCAN = 5_000;
+const DEFAULT_TAIL_REVALIDATION_BARS = 8;
+const DEFAULT_MAX_REPAIR_WINDOWS = 3;
+const DEFAULT_MAX_REPAIR_BARS = 500;
 
 const easternHourFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: EASTERN_TIME_ZONE,
@@ -153,6 +215,112 @@ function isUtcWeekday(timestampMs: number): boolean {
 
 export function intervalSecondsFor(unit: BotTimeframeUnit, unitNumber: number): number {
   return UNIT_SECONDS_BY_NAME[unit] * Math.max(1, Math.trunc(unitNumber));
+}
+
+/**
+ * Build a stale-while-revalidate request plan without reading clocks, storage,
+ * or network state. Any valid cached row is immediately usable; request
+ * priority determines scheduling, not whether cache hydration is allowed.
+ *
+ * Cold loads fetch only the small initial window in the foreground. Warm loads
+ * fetch a missing/stale overlapping tail only when the futures session is open.
+ * Older target coverage and bounded interior-hole repairs are background work.
+ */
+export function planBotCandleFetches(input: PlanBotCandleFetchesInput): BotCandleFetchPlan {
+  const target = parseQueryWindow(input.targetWindow);
+  const initial = parseQueryWindow(input.initialWindow);
+  const intervalMs = intervalSecondsFor(input.unit, input.unitNumber) * 1000;
+  if (!target || !initial || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return finishFetchPlan("cold", false, true, [], []);
+  }
+
+  const cacheBounds = findCandleBounds(input.cache?.candles ?? []);
+  const cacheUsable = cacheBounds !== null;
+  if (!input.cache || !cacheUsable) {
+    const foreground: BotCandleFetchRequest[] = [
+      fetchRequest("cold", "foreground", initial, initial.limit, false),
+    ];
+    const background = buildMissingHistoryRequests(target, initial.startMs, Math.max(1, target.limit - initial.limit));
+    return finishFetchPlan("cold", false, true, foreground, background);
+  }
+
+  const nowMs = input.now.getTime();
+  const savedAtMs = parseTimestamp(input.cache.savedAt);
+  const staleAfterMs = Number.isFinite(input.staleAfterMs)
+    ? Math.max(0, Number(input.staleAfterMs))
+    : defaultStaleAfterMs(intervalMs);
+  const ageMs = Number.isFinite(nowMs) && savedAtMs !== null ? Math.max(0, nowMs - savedAtMs) : Number.POSITIVE_INFINITY;
+  const isStale = ageMs > staleAfterMs;
+  const coverage = parseCoverageWindow(input.cache.coverage) ?? {
+    startMs: cacheBounds.firstMs,
+    endMs: cacheBounds.lastMs,
+  };
+
+  const foreground: BotCandleFetchRequest[] = [];
+  const background = buildMissingHistoryRequests(target, coverage.startMs, target.limit);
+  const sessionOpen = Number.isFinite(nowMs) && isFuturesSessionOpen(nowMs);
+  const uncoveredTailMs = target.endMs - coverage.endMs;
+  const normalizedTailBars = Math.max(2, Math.trunc(input.tailBars ?? DEFAULT_TAIL_REVALIDATION_BARS));
+
+  if (sessionOpen && uncoveredTailMs > intervalMs) {
+    const startMs = Math.max(target.startMs, coverage.endMs - intervalMs);
+    foreground.push(
+      fetchRequest(
+        "missing-tail",
+        "foreground",
+        { startMs, endMs: target.endMs },
+        estimateWindowLimit(startMs, target.endMs, intervalMs, target.limit),
+        false,
+      ),
+    );
+  } else if (sessionOpen && isStale) {
+    const startMs = Math.max(target.startMs, target.endMs - intervalMs * (normalizedTailBars - 1));
+    foreground.push(
+      fetchRequest(
+        "stale-tail",
+        "foreground",
+        { startMs, endMs: target.endMs },
+        Math.min(target.limit, normalizedTailBars),
+        false,
+      ),
+    );
+  }
+
+  const maxRepairWindows = Math.max(0, Math.trunc(input.maxRepairWindows ?? DEFAULT_MAX_REPAIR_WINDOWS));
+  if (maxRepairWindows > 0) {
+    const interiorGaps = findCandleGaps(input.cache.candles, input.unit, input.unitNumber).filter(
+      (gap) => gap.kind === "data" && gap.fromMs >= target.startMs && gap.toMs <= target.endMs,
+    );
+    const repairWindows = buildGapRepairWindows(
+      interiorGaps,
+      input.unit,
+      input.unitNumber,
+      maxRepairWindows,
+    );
+    const maxRepairBars = Math.max(1, Math.trunc(input.maxRepairBars ?? DEFAULT_MAX_REPAIR_BARS));
+    for (const repairWindow of repairWindows) {
+      const parsedRepair = parseCoverageWindow(repairWindow);
+      if (!parsedRepair) {
+        continue;
+      }
+      const startMs = Math.max(target.startMs, parsedRepair.startMs);
+      const endMs = Math.min(target.endMs, parsedRepair.endMs);
+      if (startMs >= endMs) {
+        continue;
+      }
+      background.push(
+        fetchRequest(
+          "interior-gap",
+          "background",
+          { startMs, endMs },
+          estimateWindowLimit(startMs, endMs, intervalMs, maxRepairBars),
+          true,
+        ),
+      );
+    }
+  }
+
+  return finishFetchPlan(isStale ? "warm-stale" : "warm-fresh", true, isStale, foreground, background);
 }
 
 /**
@@ -278,6 +446,133 @@ export function buildGapRepairWindows(
 
 export function buildGapRangeKey(gap: CandleGap): string {
   return `${gap.fromMs}:${gap.toMs}`;
+}
+
+interface ParsedQueryWindow {
+  startMs: number;
+  endMs: number;
+  limit: number;
+}
+
+interface ParsedWindow {
+  startMs: number;
+  endMs: number;
+}
+
+function parseQueryWindow(window_: BotCandleFetchQueryWindow): ParsedQueryWindow | null {
+  const parsed = parseCoverageWindow(window_);
+  if (!parsed || !Number.isFinite(window_.limit) || window_.limit <= 0) {
+    return null;
+  }
+  return {
+    ...parsed,
+    limit: Math.max(1, Math.trunc(window_.limit)),
+  };
+}
+
+function parseCoverageWindow(window_: GapRepairWindow | null | undefined): ParsedWindow | null {
+  if (!window_) {
+    return null;
+  }
+  const startMs = Date.parse(window_.start);
+  const endMs = Date.parse(window_.end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+    return null;
+  }
+  return { startMs, endMs };
+}
+
+function findCandleBounds(candles: readonly ProjectXMarketCandle[]): { firstMs: number; lastMs: number } | null {
+  let firstMs = Number.POSITIVE_INFINITY;
+  let lastMs = Number.NEGATIVE_INFINITY;
+  for (const candle of candles) {
+    const timestampMs = Date.parse(candle.timestamp);
+    if (!Number.isFinite(timestampMs)) {
+      continue;
+    }
+    firstMs = Math.min(firstMs, timestampMs);
+    lastMs = Math.max(lastMs, timestampMs);
+  }
+  return Number.isFinite(firstMs) && Number.isFinite(lastMs) ? { firstMs, lastMs } : null;
+}
+
+function parseTimestamp(value: Date | string | null): number | null {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const timestampMs = Date.parse(value);
+  return Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+function defaultStaleAfterMs(intervalMs: number): number {
+  return Math.max(15_000, Math.min(60_000, Math.trunc(intervalMs / 2)));
+}
+
+function buildMissingHistoryRequests(
+  target: ParsedQueryWindow,
+  coveredFromMs: number,
+  requestedLimit: number,
+): BotCandleFetchRequest[] {
+  if (!Number.isFinite(coveredFromMs) || target.startMs >= coveredFromMs) {
+    return [];
+  }
+  const endMs = Math.min(target.endMs, coveredFromMs);
+  if (target.startMs >= endMs) {
+    return [];
+  }
+  return [
+    fetchRequest(
+      "missing-history",
+      "background",
+      { startMs: target.startMs, endMs },
+      Math.min(target.limit, Math.max(1, Math.trunc(requestedLimit))),
+      false,
+    ),
+  ];
+}
+
+function estimateWindowLimit(startMs: number, endMs: number, intervalMs: number, cap: number): number {
+  const estimatedBars = Math.ceil(Math.max(0, endMs - startMs) / intervalMs) + 1;
+  return Math.min(Math.max(1, Math.trunc(cap)), Math.max(1, estimatedBars));
+}
+
+function fetchRequest(
+  reason: BotCandleFetchReason,
+  priority: BotCandleFetchPriority,
+  window_: ParsedWindow,
+  limit: number,
+  repair: boolean,
+): BotCandleFetchRequest {
+  return {
+    reason,
+    priority,
+    window: {
+      start: new Date(window_.startMs).toISOString(),
+      end: new Date(window_.endMs).toISOString(),
+    },
+    limit: Math.max(1, Math.trunc(limit)),
+    repair,
+  };
+}
+
+function finishFetchPlan(
+  cacheState: BotCandleFetchCacheState,
+  cacheUsable: boolean,
+  isStale: boolean,
+  foreground: BotCandleFetchRequest[],
+  background: BotCandleFetchRequest[],
+): BotCandleFetchPlan {
+  return {
+    cacheState,
+    cacheUsable,
+    isStale,
+    requests: [...foreground, ...background],
+    foreground,
+    background,
+  };
 }
 
 function dedupeSortedTimestamps(candles: ProjectXMarketCandle[]): { ms: number; iso: string }[] {

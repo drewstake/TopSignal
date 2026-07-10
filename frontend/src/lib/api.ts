@@ -1010,7 +1010,7 @@ interface ContractSearchQuery {
   live?: boolean;
 }
 
-interface CandleQuery {
+export interface CandleQuery {
   contractId: string;
   symbol?: string;
   start?: string;
@@ -1023,6 +1023,61 @@ interface CandleQuery {
   refresh?: boolean;
   /** Force a full-window upstream fetch to backfill missing bars without pruning cache. */
   repair?: boolean;
+}
+
+const CANDLE_UNIT_MS: Record<BotTimeframeUnit, number> = {
+  second: 1_000,
+  minute: 60_000,
+  hour: 60 * 60_000,
+  day: 24 * 60 * 60_000,
+  week: 7 * 24 * 60 * 60_000,
+  month: 31 * 24 * 60 * 60_000,
+};
+
+function projectXCandleQueryParams(query: CandleQuery): Record<string, QueryValue> {
+  return {
+    contract_id: query.contractId,
+    symbol: query.symbol,
+    start: query.start,
+    end: query.end,
+    live: query.live ?? false,
+    unit: query.unit ?? "minute",
+    unit_number: query.unitNumber ?? 5,
+    limit: query.limit ?? 500,
+    include_partial_bar: query.includePartialBar ?? false,
+    refresh: query.refresh ?? false,
+    repair: query.repair ?? false,
+  };
+}
+
+/**
+ * Stable identity for deduplicating equivalent candle reads. Closed-candle
+ * ranges are bucketed to their chart interval: two callers within the same
+ * active bar need the same closed history even if their `Date` values differ by
+ * a few milliseconds. Partial/live reads retain exact timestamps.
+ */
+export function buildProjectXCandleRequestKey(query: CandleQuery): string {
+  const params = projectXCandleQueryParams(query);
+  if (!(query.includePartialBar ?? false)) {
+    const unit = query.unit ?? "minute";
+    const intervalMs = CANDLE_UNIT_MS[unit] * Math.max(1, Math.trunc(query.unitNumber ?? 5));
+    params.start = normalizeCandleRequestTimestamp(query.start, intervalMs);
+    params.end = normalizeCandleRequestTimestamp(query.end, intervalMs);
+  }
+  params.contract_id = query.contractId.trim().toUpperCase();
+  params.symbol = query.symbol?.trim().toUpperCase();
+  return `projectx-candles:${toSortedQueryCacheKey(params)}`;
+}
+
+function normalizeCandleRequestTimestamp(value: string | undefined, intervalMs: number): string | undefined {
+  if (!value) {
+    return value;
+  }
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return value;
+  }
+  return new Date(Math.floor(timestampMs / intervalMs) * intervalMs).toISOString();
 }
 
 interface MarketPriceStreamQuery {
@@ -1238,19 +1293,7 @@ export const botsApi = {
     }),
   getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
     requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
-      query: {
-        contract_id: query.contractId,
-        symbol: query.symbol,
-        start: query.start,
-        end: query.end,
-        live: query.live ?? false,
-        unit: query.unit ?? "minute",
-        unit_number: query.unitNumber ?? 5,
-        limit: query.limit ?? 500,
-        include_partial_bar: query.includePartialBar ?? false,
-        refresh: query.refresh ?? false,
-        repair: query.repair ?? false,
-      },
+      query: projectXCandleQueryParams(query),
       signal: options.signal,
     }),
   listConfigs: (accountId?: number) =>
