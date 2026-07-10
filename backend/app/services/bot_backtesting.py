@@ -54,6 +54,10 @@ MAX_PROVIDER_FETCH_BARS = 20_000
 MAX_BACKTEST_PROVIDER_REQUESTS = 40
 CANDLE_QUERY_CHUNK_SIZE = 8_192
 _DEFAULT_BACKTEST_MEMORY_BUDGET_BYTES = 1_536 * 1024 * 1024
+# cProfile showed CPU time scaling with evaluator-visible candle visits.  This
+# configurable ceiling replaces date/bar caps while rejecting pathological
+# repeated-indicator workloads before replay or persistence.
+_DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET = 500_000_000
 try:
     BACKTEST_MEMORY_BUDGET_BYTES = int(
         os.getenv(
@@ -63,6 +67,15 @@ try:
     )
 except ValueError:
     BACKTEST_MEMORY_BUDGET_BYTES = _DEFAULT_BACKTEST_MEMORY_BUDGET_BYTES
+try:
+    BACKTEST_EVALUATOR_WORK_BUDGET = int(
+        os.getenv(
+            "TOPSIGNAL_BACKTEST_EVALUATOR_WORK_BUDGET",
+            str(_DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET),
+        )
+    )
+except ValueError:
+    BACKTEST_EVALUATOR_WORK_BUDGET = _DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET
 
 # Calibrated with tracemalloc and the projected-row benchmark. These estimates
 # intentionally include Python container overhead and the two per-bar result
@@ -205,6 +218,15 @@ class _ClosedCandleList(list[ProjectXMarketCandle]):
     """Internal proof that a replay window is already closed and ordered."""
 
     _topsignal_sorted_closed = True
+    _topsignal_physical_stream: tuple[str, str, str, int] | None = None
+    _topsignal_physical_row_count: int | None = None
+
+
+class _PhysicalReplayList(list[ProjectXMarketCandle]):
+    """Projected rows that share one physical query but still need validation."""
+
+    _topsignal_physical_stream: tuple[str, str, str, int] | None = None
+    _topsignal_physical_row_count: int | None = None
 
 
 @dataclass(slots=True)
@@ -385,16 +407,68 @@ class BacktestEngine:
             config,
             rolling_limit=self.evaluator_history_limit,
         )
+        if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY:
+            in_session_event_times = [
+                event_time
+                for event_time, inside_session in zip(
+                    self.execution_close_times,
+                    self.execution_in_session,
+                )
+                if inside_session
+            ]
+            source_evaluations = _topbot_cached_source_evaluation_counts(
+                config,
+                streams=self.topbot_streams,
+                event_times=in_session_event_times,
+                unavailable_sources=self.topbot_unavailable_sources,
+            )
+            estimated_evaluator_work = _estimate_topbot_evaluator_operations(
+                config,
+                execution_bars=len(in_session_event_times),
+                source_evaluations=source_evaluations,
+                unavailable_sources=self.topbot_unavailable_sources,
+            )
+        elif self._sma_close_values is not None:
+            estimated_evaluator_work = len(self.execution_candles) * (
+                2 * int(config.fast_period) + 2 * int(config.slow_period)
+            )
+        else:
+            estimated_evaluator_work = len(self.execution_candles) * min(
+                len(self.all_candles),
+                self.max_evaluator_input_bars,
+            )
+        _enforce_backtest_work_budget(estimated_evaluator_work)
+
         replay_row_count = len(self.all_candles)
         if self.topbot_streams:
             primary_stream_key = _topbot_asset_stream_key(
                 str(config.timeframe_unit),
                 int(config.timeframe_unit_number),
             )
-            replay_row_count += sum(
-                len(stream.candles)
-                for key, stream in self.topbot_streams.items()
-                if key != primary_stream_key
+            physical_stream_rows: dict[tuple[str, str, str, int], int] = {}
+            logical_stream_rows = 0
+            for key, stream in self.topbot_streams.items():
+                if key == primary_stream_key:
+                    continue
+                physical_stream = getattr(
+                    stream.candles,
+                    "_topsignal_physical_stream",
+                    None,
+                )
+                physical_row_count = getattr(
+                    stream.candles,
+                    "_topsignal_physical_row_count",
+                    None,
+                )
+                if physical_stream is None or physical_row_count is None:
+                    logical_stream_rows += len(stream.candles)
+                    continue
+                physical_stream_rows[physical_stream] = max(
+                    physical_stream_rows.get(physical_stream, 0),
+                    int(physical_row_count),
+                )
+            replay_row_count += logical_stream_rows + sum(
+                physical_stream_rows.values()
             )
         _enforce_backtest_resource_budget(
             replay_rows=replay_row_count,
@@ -2016,6 +2090,7 @@ def _validate_topbot_replay_stream(
         )
         excluded_partial = len(candles) - len(closed)
         closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    _copy_closed_candle_metadata(candles, closed)
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     contract_ids: set[str] = set()
@@ -2152,43 +2227,112 @@ def _prepared_stream_covers_replay_window(
     return True
 
 
-def _estimate_topbot_evaluator_operations(config: BotConfig, *, execution_bars: int) -> int:
+def _topbot_cached_source_evaluation_counts(
+    config: BotConfig,
+    *,
+    streams: Mapping[str, _PreparedReplayStream],
+    event_times: list[datetime],
+    unavailable_sources: Mapping[str, tuple[str, ...]],
+) -> dict[str, int]:
+    """Count source evaluations after unchanged synchronized states are cached."""
+
+    if not event_times:
+        return {}
     params = bot_service_module._normalize_strategy_params(
         _TOPBOT_STRATEGY,
         config.strategy_params,
     )
     overrides = params.get("source_strategy_params") or {}
-    per_event = 0
+    counts_by_keys: dict[tuple[str, ...], int] = {}
+    source_counts: dict[str, int] = {}
     for source in params["source_strategies"]:
+        if source in unavailable_sources:
+            continue
         source_params = bot_service_module._normalize_strategy_params(
             source,
             overrides.get(source, {}),
         )
+        if source in {"delayed_orb_confirmation", "donchian_breakout"}:
+            # These signatures include the primary event or mutable position.
+            source_counts[source] = len(event_times)
+            continue
+        keys = _topbot_source_stream_keys(
+            config,
+            source,
+            source_params=source_params,
+        )
+        cached_count = counts_by_keys.get(keys)
+        if cached_count is None:
+            cursors = [0] * len(keys)
+            previous_signature: tuple[int, ...] | None = None
+            cached_count = 0
+            for event_time in event_times:
+                signature: list[int] = []
+                for index, key in enumerate(keys):
+                    stream = streams.get(key)
+                    close_times = stream.close_times if stream is not None else []
+                    cursor = cursors[index]
+                    while cursor < len(close_times) and close_times[cursor] <= event_time:
+                        cursor += 1
+                    cursors[index] = cursor
+                    signature.append(cursor)
+                current_signature = tuple(signature)
+                if current_signature != previous_signature:
+                    cached_count += 1
+                    previous_signature = current_signature
+            counts_by_keys[keys] = cached_count
+        source_counts[source] = cached_count
+    return source_counts
+
+
+def _estimate_topbot_evaluator_operations(
+    config: BotConfig,
+    *,
+    execution_bars: int,
+    source_evaluations: Mapping[str, int] | None = None,
+    unavailable_sources: Mapping[str, tuple[str, ...]] | None = None,
+) -> int:
+    params = bot_service_module._normalize_strategy_params(
+        _TOPBOT_STRATEGY,
+        config.strategy_params,
+    )
+    overrides = params.get("source_strategy_params") or {}
+    # The ensemble vote still runs on every in-session primary event, even
+    # when every source result is cached or unavailable.
+    estimated = max(0, execution_bars) * max(1, len(params["source_strategies"]))
+    for source in params["source_strategies"]:
+        if unavailable_sources is not None and source in unavailable_sources:
+            continue
+        source_params = bot_service_module._normalize_strategy_params(
+            source,
+            overrides.get(source, {}),
+        )
+        source_cost = 0
         if source in _TOPBOT_SHARED_CONFIGURED_STRATEGIES or source == "donchian_breakout":
-            per_event += _topbot_primary_source_history_limit(config, source)
+            source_cost += _topbot_primary_source_history_limit(config, source)
         elif source in _TOPBOT_LEVEL_STRATEGIES:
-            per_event += int(source_params["bars_per_timeframe"]) * 2
+            source_cost += int(source_params["bars_per_timeframe"]) * 2
         elif source == "opening_rvol_breakout":
             lookback_days = int(source_params["relative_volume_lookback_days"])
             calendar_days = max(lookback_days + 14, 21)
-            per_event += max(
+            source_cost += max(
                 int(config.lookback_bars),
                 (calendar_days + 1) * ((24 * 60) // 5),
                 int(source_params["atr_period"]) * 20,
                 500,
             )
         elif source == "delayed_orb_confirmation":
-            per_event += 1500
+            source_cost += 1500
         elif source == "orb_fibonacci_pullback":
             timeframe_seconds = _timeframe_seconds(
                 str(config.timeframe_unit),
                 int(config.timeframe_unit_number),
             ) or 60
-            per_event += max(1, math.ceil((25 * 60 * 60) / timeframe_seconds))
+            source_cost += max(1, math.ceil((25 * 60 * 60) / timeframe_seconds))
         elif source == "vwap_gap_retrace":
-            per_event += int(source_params["bars_to_fetch"])
+            source_cost += int(source_params["bars_to_fetch"])
         elif source == "supertrend_pivot":
-            per_event += max(
+            source_cost += max(
                 int(config.lookback_bars),
                 int(source_params["supertrend_period"])
                 + int(source_params["chop_lookback_bars"])
@@ -2206,17 +2350,29 @@ def _estimate_topbot_evaluator_operations(config: BotConfig, *, execution_bars: 
             ) or 1
             structure_seconds = _timeframe_seconds(unit, unit_number) or 1
             ratio = max(1, int(round(base_seconds / structure_seconds)))
-            per_event += fvg_limit + min(5000, max(fvg_limit * ratio, fvg_limit + 25))
+            source_cost += fvg_limit + min(
+                5000,
+                max(fvg_limit * ratio, fvg_limit + 25),
+            )
         elif source == "atr_adjusted_relative_strength":
-            per_event += _topbot_primary_source_history_limit(
+            source_cost += _topbot_primary_source_history_limit(
                 config,
                 source,
             ) + max(25, int(config.lookback_bars))
         elif source == "relative_strength_spy":
-            per_event += _relative_strength_spy_history_limit(config, source_params) * 2
+            source_cost += _relative_strength_spy_history_limit(
+                config,
+                source_params,
+            ) * 2
         else:
-            per_event += _topbot_primary_source_history_limit(config, source)
-    return execution_bars * max(1, per_event)
+            source_cost += _topbot_primary_source_history_limit(config, source)
+        evaluation_count = (
+            int(source_evaluations.get(source, execution_bars))
+            if source_evaluations is not None
+            else execution_bars
+        )
+        estimated += max(0, evaluation_count) * max(1, source_cost)
+    return estimated
 
 
 def _load_topbot_replay_streams(
@@ -2235,34 +2391,38 @@ def _load_topbot_replay_streams(
     streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
     specs = _topbot_stream_specs(config)
     total_rows = len(primary_rows)
+    replay_start = _as_utc(start)
+    replay_end = _as_utc(end)
+    primary_execution_count = 0
+    primary_index = _first_index_at_or_after(primary_rows, replay_start)
+    while (
+        primary_index < len(primary_rows)
+        and _candle_close_time(primary_rows[primary_index]) <= replay_end
+    ):
+        primary_execution_count += 1
+        primary_index += 1
 
     def stream_identity(spec: _TopBotReplayStreamSpec) -> tuple[str, str, str, int]:
         if spec.contract_id is not None:
             return ("contract", spec.contract_id, spec.unit, spec.unit_number)
         return ("symbol", str(spec.symbol or ""), spec.unit, spec.unit_number)
 
-    max_warmup_by_identity: dict[tuple[str, str, str, int], int] = {}
+    specs_by_identity: dict[
+        tuple[str, str, str, int],
+        list[tuple[str, _TopBotReplayStreamSpec]],
+    ] = {}
     for key, spec in specs.items():
         if key == primary_key:
             continue
         identity = stream_identity(spec)
-        max_warmup_by_identity[identity] = max(
-            max_warmup_by_identity.get(identity, 0),
-            int(spec.warmup_bars),
+        specs_by_identity.setdefault(identity, []).append((key, spec))
+
+    for identity, grouped_specs in specs_by_identity.items():
+        spec = grouped_specs[0][1]
+        max_warmup_bars = max(
+            int(grouped_spec.warmup_bars)
+            for _grouped_key, grouped_spec in grouped_specs
         )
-
-    rows_by_identity: dict[
-        tuple[str, str, str, int], list[ProjectXMarketCandle]
-    ] = {stream_identity(specs[primary_key]): primary_rows}
-
-    for key, spec in specs.items():
-        if key == primary_key:
-            continue
-        identity = stream_identity(spec)
-        cached_rows = rows_by_identity.get(identity)
-        if cached_rows is not None:
-            streams[key] = cached_rows
-            continue
         query = (
             _projected_candle_query(db)
             .filter(ProjectXMarketCandle.user_id == user_id)
@@ -2286,7 +2446,11 @@ def _load_topbot_replay_streams(
             .filter(ProjectXMarketCandle.candle_timestamp <= end)
             .order_by(ProjectXMarketCandle.candle_timestamp.asc())
         )
-        execution_rows = _collect_projected_candles(execution_query)
+        execution_rows = _collect_projected_candles(
+            execution_query,
+            reserved_replay_rows=total_rows,
+            reserved_execution_rows=primary_execution_count,
+        )
         execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
         warmup_query = (
             query.filter(ProjectXMarketCandle.candle_timestamp < start)
@@ -2294,18 +2458,32 @@ def _load_topbot_replay_streams(
             # One candle can start before the requested range while closing
             # after the first replay event. Overfetch it so the requested
             # number of genuinely closed warmup bars remains available.
-            .limit(max(1, max_warmup_by_identity[identity] + 1))
+            .limit(max(1, max_warmup_bars + 1))
         )
-        warmup_rows = _collect_projected_candles(warmup_query)
+        warmup_rows = _collect_projected_candles(
+            warmup_query,
+            reserved_replay_rows=total_rows + len(execution_rows),
+            reserved_execution_rows=primary_execution_count,
+        )
         warmup_rows.reverse()
-        rows = [*warmup_rows, *execution_rows]
-        rows_by_identity[identity] = rows
-        streams[key] = rows
-        total_rows += len(rows)
+        physical_row_count = len(warmup_rows) + len(execution_rows)
+        total_rows += physical_row_count
         _enforce_backtest_resource_budget(
             replay_rows=total_rows,
-            execution_rows=len(primary_rows),
+            execution_rows=primary_execution_count,
         )
+
+        # Query one physical stream once, but preserve the historical per-key
+        # warmup window.  That keeps persisted fingerprints byte-for-byte
+        # compatible while sharing the projected candle objects in memory.
+        for key, grouped_spec in grouped_specs:
+            requested_warmup = max(1, int(grouped_spec.warmup_bars) + 1)
+            rows = _PhysicalReplayList(
+                [*warmup_rows[-requested_warmup:], *execution_rows]
+            )
+            rows._topsignal_physical_stream = identity
+            rows._topsignal_physical_row_count = physical_row_count
+            streams[key] = rows
 
     return streams
 
@@ -2370,22 +2548,13 @@ def prepare_bot_backtest_data(
         elif int(spec.warmup_bars) > existing[2]:
             requests[identity] = (existing[0], existing[1], int(spec.warmup_bars))
 
-    primary_execution_rows = (
-        db.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.user_id == user_id)
-        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-        .filter(ProjectXMarketCandle.live.is_(False))
-        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-        .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp >= start)
-        .filter(ProjectXMarketCandle.candle_timestamp <= fetch_end)
-        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .all()
+    primary_execution_rows = _load_primary_candle_range(
+        db,
+        user_id=user_id,
+        config=config,
+        start_at=start,
+        closed_by=fetch_end,
     )
-    primary_execution_rows = [
-        row for row in primary_execution_rows if _candle_close_time(row) <= fetch_end
-    ]
     first_event = (
         _candle_close_time(primary_execution_rows[0])
         if primary_execution_rows
@@ -2429,6 +2598,7 @@ def prepare_bot_backtest_data(
             first_event=first_event,
             last_event=last_event,
             warmup_bars=warmup_bars,
+            reserved_replay_rows=len(primary_execution_rows),
         ):
             continue
         cursor = fetch_start
@@ -2459,22 +2629,13 @@ def prepare_bot_backtest_data(
         prepared_count += 1
 
         if identity == primary_identity:
-            primary_execution_rows = (
-                db.query(ProjectXMarketCandle)
-                .filter(ProjectXMarketCandle.user_id == user_id)
-                .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-                .filter(ProjectXMarketCandle.live.is_(False))
-                .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-                .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-                .filter(ProjectXMarketCandle.is_partial.is_(False))
-                .filter(ProjectXMarketCandle.candle_timestamp >= start)
-                .filter(ProjectXMarketCandle.candle_timestamp <= fetch_end)
-                .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-                .all()
+            primary_execution_rows = _load_primary_candle_range(
+                db,
+                user_id=user_id,
+                config=config,
+                start_at=start,
+                closed_by=fetch_end,
             )
-            primary_execution_rows = [
-                row for row in primary_execution_rows if _candle_close_time(row) <= fetch_end
-            ]
             if primary_execution_rows:
                 first_event = _candle_close_time(primary_execution_rows[0])
                 last_event = _candle_close_time(primary_execution_rows[-1])
@@ -2534,6 +2695,7 @@ def _cached_primary_stream_covers(
         first_event=_candle_close_time(execution_rows[0]),
         last_event=last_close,
         warmup_bars=warmup_bars,
+        reserved_replay_rows=len(execution_rows),
     )
 
 
@@ -2549,6 +2711,7 @@ def _cached_replay_stream_covers(
     first_event: datetime,
     last_event: datetime,
     warmup_bars: int,
+    reserved_replay_rows: int = 0,
 ) -> bool:
     interval_seconds = _timeframe_seconds(unit, unit_number)
     if interval_seconds is None:
@@ -2569,7 +2732,10 @@ def _cached_replay_stream_covers(
         .filter(ProjectXMarketCandle.candle_timestamp <= last_event_utc)
         .order_by(ProjectXMarketCandle.candle_timestamp.asc())
     )
-    rows = _collect_projected_candles(query)
+    rows = _collect_projected_candles(
+        query,
+        reserved_replay_rows=reserved_replay_rows,
+    )
     if any(_cached_candle_was_fetched_before_nominal_close(row) for row in rows):
         return False
     if _candle_stream_has_overlaps(rows):
@@ -2658,16 +2824,61 @@ def _projected_candle_query(db: Session):
     )
 
 
-def _collect_projected_candles(query: Any) -> list[ProjectXMarketCandle]:
+def _collect_projected_candles(
+    query: Any,
+    *,
+    reserved_replay_rows: int = 0,
+    reserved_execution_rows: int = 0,
+) -> list[ProjectXMarketCandle]:
     rows: list[ProjectXMarketCandle] = []
     for values in query.yield_per(CANDLE_QUERY_CHUNK_SIZE):
         rows.append(_ProjectedCandle(*values))
         if len(rows) % CANDLE_QUERY_CHUNK_SIZE == 0:
             _enforce_backtest_resource_budget(
-                replay_rows=len(rows),
-                execution_rows=0,
+                replay_rows=reserved_replay_rows + len(rows),
+                execution_rows=reserved_execution_rows,
             )
+    # Enforce the final partial chunk too.  This is also the only check for
+    # small queries, which must not allocate on top of an exhausted budget.
+    _enforce_backtest_resource_budget(
+        replay_rows=reserved_replay_rows + len(rows),
+        execution_rows=reserved_execution_rows,
+    )
     return rows
+
+
+def _load_primary_candle_range(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    closed_by: datetime,
+    start_at: datetime | None = None,
+) -> _ClosedCandleList:
+    cutoff = _as_utc(closed_by)
+    query = (
+        _projected_candle_query(db)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
+        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+        .filter(ProjectXMarketCandle.candle_timestamp <= cutoff)
+    )
+    if start_at is not None:
+        query = query.filter(
+            ProjectXMarketCandle.candle_timestamp >= _as_utc(start_at)
+        )
+    rows = _collect_projected_candles(
+        query.order_by(ProjectXMarketCandle.candle_timestamp.asc())
+    )
+    return _ClosedCandleList(
+        row
+        for row in rows
+        if not _cached_candle_is_effectively_partial(row)
+        and _candle_close_time(row) <= cutoff
+    )
 
 
 def _load_primary_closed_candles(
@@ -2679,24 +2890,11 @@ def _load_primary_closed_candles(
 ) -> list[ProjectXMarketCandle]:
     """Load every eligible primary bar without rolling across futures deliveries."""
 
-    cutoff = _as_utc(closed_by)
-    query = (
-        _projected_candle_query(db)
-        .filter(ProjectXMarketCandle.user_id == user_id)
-        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-        .filter(ProjectXMarketCandle.live.is_(False))
-        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-        .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp <= cutoff)
-        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-    )
-    rows = _collect_projected_candles(query)
-    return _ClosedCandleList(
-        row
-        for row in rows
-        if not _cached_candle_is_effectively_partial(row)
-        and _candle_close_time(row) <= cutoff
+    return _load_primary_candle_range(
+        db,
+        user_id=user_id,
+        config=config,
+        closed_by=closed_by,
     )
 
 
@@ -3264,6 +3462,17 @@ def _closed_candle_slice(
     return sliced
 
 
+def _copy_closed_candle_metadata(
+    source: list[ProjectXMarketCandle],
+    target: _ClosedCandleList,
+) -> None:
+    physical_stream = getattr(source, "_topsignal_physical_stream", None)
+    physical_row_count = getattr(source, "_topsignal_physical_row_count", None)
+    if physical_stream is not None and physical_row_count is not None:
+        target._topsignal_physical_stream = physical_stream
+        target._topsignal_physical_row_count = int(physical_row_count)
+
+
 def _enforce_backtest_resource_budget(
     *,
     replay_rows: int,
@@ -3282,6 +3491,19 @@ def _enforce_backtest_resource_budget(
         "backtest_resource_budget_exceeded: the complete resolved history requires "
         f"an estimated {estimated_mib:,} MiB, above the configured {budget_mib:,} MiB "
         "working-set budget; no partial result was saved"
+    )
+
+
+def _enforce_backtest_work_budget(estimated_evaluator_bar_visits: int) -> None:
+    budget = max(1, int(BACKTEST_EVALUATOR_WORK_BUDGET))
+    estimated = max(0, int(estimated_evaluator_bar_visits))
+    if estimated <= budget:
+        return
+    raise BacktestConfigurationError(
+        "backtest_computation_limit_exceeded: the complete resolved history and "
+        "strategy lookback require an estimated "
+        f"{estimated:,} evaluator bar-visits, above the configured {budget:,} "
+        "work budget; no partial result was saved"
     )
 
 
@@ -3323,6 +3545,7 @@ def _validate_and_sort_candles(
         )
         excluded_partial = len(candles) - len(closed)
         closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    _copy_closed_candle_metadata(candles, closed)
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     for row in closed:

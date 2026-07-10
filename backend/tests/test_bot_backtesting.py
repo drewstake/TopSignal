@@ -1366,7 +1366,9 @@ def test_topbot_replay_loader_queries_a_shared_benchmark_identity_once(db_sessio
     right = streams[
         backtesting_module._topbot_benchmark_stream_key("relative_strength_spy")
     ]
-    assert left is right
+    assert left is not right
+    assert left[-1] is right[-1]
+    assert left._topsignal_physical_stream == right._topsignal_physical_stream
     assert select_count == 2
 
 
@@ -2664,3 +2666,468 @@ def test_projected_loader_avoids_candle_identities_and_matches_orm_replay(
         start=start,
         end=end,
     )
+def test_topbot_cached_replay_exactly_matches_legacy_bisect_reference(
+    monkeypatch,
+):
+    session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": [
+                "support_resistance",
+                "liquidity_sweep_retest",
+            ],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+            "minimum_reward_risk": 1.5,
+        },
+        lookback_bars=25,
+        trading_start_time="09:30",
+        trading_end_time="11:30",
+    )
+    primary = backtesting_module._ClosedCandleList(
+        _candle(
+            session_open + timedelta(minutes=5 * index),
+            open_price=100,
+            high_price=101,
+            low_price=99,
+            close_price=100,
+        )
+        for index in range(-30, 27)
+    )
+    one_hour = backtesting_module._ClosedCandleList(
+        _candle(
+            datetime(2026, 7, 6, hour, tzinfo=timezone.utc),
+            unit="hour",
+            unit_number=1,
+            close_price=100 + hour / 100,
+        )
+        for hour in range(10, 15)
+    )
+    four_hour = backtesting_module._ClosedCandleList(
+        _candle(
+            datetime(2026, 7, 6, hour, tzinfo=timezone.utc),
+            unit="hour",
+            unit_number=4,
+            close_price=100 + hour / 100,
+        )
+        for hour in (6, 10)
+    )
+    active_run = {"name": "optimized"}
+    dispatch_counts = {"optimized": 0, "reference": 0}
+    observed_slow_states: dict[str, set[tuple[datetime, datetime]]] = {
+        "optimized": set(),
+        "reference": set(),
+    }
+
+    def fake_dispatch(identifier, *args, **kwargs):
+        assert identifier in {"support_resistance", "liquidity_sweep_retest"}
+        higher = kwargs["higher_timeframe_candles"]
+        lower = kwargs["lower_timeframe_candles"]
+        latest_higher = _utc(higher[-1].candle_timestamp)
+        latest_lower = _utc(lower[-1].candle_timestamp)
+        run_name = active_run["name"]
+        dispatch_counts[run_name] += 1
+        observed_slow_states[run_name].add((latest_higher, latest_lower))
+        action = "BUY" if latest_lower.hour % 2 == 0 else "SELL"
+        payload = (
+            {"stop_loss": 90.0, "take_profit": 120.0}
+            if action == "BUY"
+            else {"stop_loss": 110.0, "take_profit": 80.0}
+        )
+        return SignalResult(
+            action=action,
+            reason=f"{identifier} synchronized {action.lower()}",
+            candle_timestamp=latest_lower,
+            price=100.0,
+            raw_payload=payload,
+        )
+
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "dispatch_strategy_evaluator",
+        fake_dispatch,
+    )
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "build_bot_market_analysis",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "build_signal_trade_evaluation",
+        lambda **_kwargs: {"total_score": 85},
+    )
+    run_options = {
+        "config": config,
+        "start": session_open - timedelta(minutes=10),
+        "end": session_open + timedelta(minutes=130),
+        "commission_per_contract": 1.25,
+        "slippage_ticks": 1,
+        "tick_size": 0.25,
+        "tick_value": 0.50,
+        "replay_streams": {
+            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
+            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
+        },
+    }
+
+    optimized = _run(primary, **run_options)
+    prepared_streams, _excluded = backtesting_module._prepare_topbot_replay_streams(
+        config,
+        primary_candles=primary,
+        replay_streams=run_options["replay_streams"],
+    )
+    in_session_events = [
+        backtesting_module._candle_close_time(row)
+        for row in primary
+        if run_options["start"] <= _utc(row.candle_timestamp)
+        and backtesting_module._candle_close_time(row) <= run_options["end"]
+        and backtesting_module._event_timestamp_is_in_configured_session(
+            config,
+            row.candle_timestamp,
+        )
+    ]
+    cached_evaluations = (
+        backtesting_module._topbot_cached_source_evaluation_counts(
+            config,
+            streams=prepared_streams,
+            event_times=in_session_events,
+            unavailable_sources={},
+        )
+    )
+    assert cached_evaluations == {
+        "support_resistance": 3,
+        "liquidity_sweep_retest": 3,
+    }
+    assert backtesting_module._estimate_topbot_evaluator_operations(
+        config,
+        execution_bars=len(in_session_events),
+        source_evaluations=cached_evaluations,
+        unavailable_sources={},
+    ) < backtesting_module._estimate_topbot_evaluator_operations(
+        config,
+        execution_bars=len(in_session_events),
+    )
+    optimized_signature = (
+        backtesting_module.BacktestEngine._topbot_source_cache_signature
+    )
+
+    def legacy_closed_count(self, key: str, event_time: datetime) -> int:
+        stream = self.topbot_streams.get(key)
+        if stream is None:
+            return 0
+        return backtesting_module.bisect_right(
+            stream.close_times,
+            _utc(event_time),
+        )
+
+    def legacy_stream_history(
+        self,
+        key: str,
+        *,
+        event_time: datetime,
+        limit: int,
+        not_before: datetime | None = None,
+    ) -> list[ProjectXMarketCandle]:
+        stream = self.topbot_streams.get(key)
+        if stream is None or not stream.candles:
+            raise ValueError(f"missing_stored_replay_stream:{key}")
+        end_index = backtesting_module.bisect_right(
+            stream.close_times,
+            _utc(event_time),
+        )
+        start_index = max(0, end_index - max(1, int(limit)))
+        if not_before is not None:
+            start_index = max(
+                start_index,
+                backtesting_module.bisect_left(
+                    stream.start_times,
+                    _utc(not_before),
+                ),
+            )
+        return backtesting_module._ClosedCandleList(
+            stream.candles[start_index:end_index]
+        )
+
+    def legacy_source_signature(
+        self,
+        source_strategy: str,
+        *,
+        source_params: dict[str, Any],
+        event_time: datetime,
+        event_timestamp: datetime,
+    ) -> tuple[Any, ...]:
+        signature = optimized_signature(
+            self,
+            source_strategy,
+            source_params=source_params,
+            event_time=event_time,
+            event_timestamp=event_timestamp,
+        )
+        return (*signature, ("uncached_primary_event", _utc(event_timestamp)))
+
+    def legacy_session_check(self, event_timestamp: datetime) -> bool:
+        return backtesting_module._event_timestamp_is_in_configured_session(
+            self.config,
+            event_timestamp,
+        )
+
+    monkeypatch.setattr(
+        backtesting_module.BacktestEngine,
+        "_topbot_closed_count",
+        legacy_closed_count,
+    )
+    monkeypatch.setattr(
+        backtesting_module.BacktestEngine,
+        "_topbot_stream_history",
+        legacy_stream_history,
+    )
+    monkeypatch.setattr(
+        backtesting_module.BacktestEngine,
+        "_topbot_source_cache_signature",
+        legacy_source_signature,
+    )
+    monkeypatch.setattr(
+        backtesting_module.BacktestEngine,
+        "_event_in_configured_session",
+        legacy_session_check,
+    )
+    active_run["name"] = "reference"
+
+    reference = _run(primary, **run_options)
+
+    assert dispatch_counts == {"optimized": 6, "reference": 50}
+    assert len(observed_slow_states["optimized"]) == 3
+    assert observed_slow_states["optimized"] == observed_slow_states["reference"]
+    assert optimized["trades"]
+    assert optimized["metrics"]["total_commission"] > 0
+    assert optimized == reference
+
+
+def test_donchian_topbot_cache_signature_tracks_position_state():
+    engine = object.__new__(backtesting_module.BacktestEngine)
+    engine._topbot_source_keys = {"donchian_breakout": ()}
+    engine.position = None
+    signature_options = {
+        "source_strategy": "donchian_breakout",
+        "source_params": {},
+        "event_time": BASE_TIME,
+        "event_timestamp": BASE_TIME,
+    }
+
+    flat_signature = engine._topbot_source_cache_signature(**signature_options)
+    engine.position = backtesting_module._OpenTrade(
+        side="long",
+        quantity=2,
+        signal_timestamp=BASE_TIME - timedelta(minutes=5),
+        entry_timestamp=BASE_TIME,
+        entry_price=100,
+        entry_commission=2.50,
+        stop_loss=90,
+        take_profit=120,
+    )
+    long_signature = engine._topbot_source_cache_signature(**signature_options)
+    engine.position.stop_loss = 95
+    adjusted_signature = engine._topbot_source_cache_signature(**signature_options)
+
+    assert flat_signature[-1] == ("position", "flat")
+    assert long_signature[-1][:3] == ("position", "long", 2)
+    assert flat_signature != long_signature
+    assert long_signature != adjusted_signature
+
+
+def test_topbot_loader_shares_one_physical_benchmark_query_group(
+    db_session,
+    monkeypatch,
+):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": [
+                "atr_adjusted_relative_strength",
+                "relative_strength_spy",
+            ],
+        },
+        lookback_bars=25,
+    )
+    benchmark_contract = "CON.F.US.MES.M26"
+    benchmark_rows = [
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            contract_id=benchmark_contract,
+            symbol="F.US.MES",
+            close_price=5000 + index,
+        )
+        for index in range(-80, 5)
+    ]
+    db_session.add_all(benchmark_rows)
+    db_session.commit()
+    db_session.expunge_all()
+    primary_rows = backtesting_module._ClosedCandleList(
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            close_price=20_000 + index,
+        )
+        for index in range(-25, 4)
+    )
+    projected_query_calls = 0
+    real_projected_query = backtesting_module._projected_candle_query
+
+    def projected_query_spy(db):
+        nonlocal projected_query_calls
+        projected_query_calls += 1
+        return real_projected_query(db)
+
+    monkeypatch.setattr(
+        backtesting_module,
+        "_projected_candle_query",
+        projected_query_spy,
+    )
+    start = BASE_TIME
+    end = BASE_TIME + timedelta(minutes=20)
+
+    streams = backtesting_module._load_topbot_replay_streams(
+        db_session,
+        user_id=OWNER_ID,
+        config=config,
+        start=start,
+        end=end,
+        primary_rows=primary_rows,
+    )
+
+    atr_key = backtesting_module._topbot_benchmark_stream_key(
+        "atr_adjusted_relative_strength"
+    )
+    relative_key = backtesting_module._topbot_benchmark_stream_key(
+        "relative_strength_spy"
+    )
+    specs = backtesting_module._topbot_stream_specs(config)
+    assert specs[atr_key].warmup_bars < specs[relative_key].warmup_bars
+    assert projected_query_calls == 1
+    assert streams[atr_key]._topsignal_physical_stream == (
+        "contract",
+        benchmark_contract,
+        "minute",
+        5,
+    )
+    assert (
+        streams[atr_key]._topsignal_physical_stream
+        == streams[relative_key]._topsignal_physical_stream
+    )
+    assert (
+        streams[atr_key]._topsignal_physical_row_count
+        == streams[relative_key]._topsignal_physical_row_count
+    )
+    assert streams[atr_key][-1] is streams[relative_key][-1]
+
+    stored_rows = (
+        db_session.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.contract_id == benchmark_contract)
+        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+        .all()
+    )
+    execution_rows = [
+        row
+        for row in stored_rows
+        if _utc(row.candle_timestamp) >= start
+        and _utc(row.candle_timestamp) <= end
+        and backtesting_module._candle_close_time(row) <= end
+    ]
+    max_warmup = max(specs[atr_key].warmup_bars, specs[relative_key].warmup_bars)
+    physical_warmup = [
+        row for row in stored_rows if _utc(row.candle_timestamp) < start
+    ][-(max_warmup + 1) :]
+
+    for key in (atr_key, relative_key):
+        expected = [
+            *physical_warmup[-(specs[key].warmup_bars + 1) :],
+            *execution_rows,
+        ]
+        assert [_utc(row.candle_timestamp) for row in streams[key]] == [
+            _utc(row.candle_timestamp) for row in expected
+        ]
+        assert backtesting_module.candle_input_fingerprint(
+            streams[key]
+        ) == backtesting_module.candle_input_fingerprint(expected)
+
+    assert len(streams[atr_key]) < len(streams[relative_key])
+    assert backtesting_module.candle_input_fingerprint(
+        streams[atr_key]
+    ) != backtesting_module.candle_input_fingerprint(streams[relative_key])
+
+
+def test_evaluator_work_budget_failure_occurs_before_backtest_persistence(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session)
+    db_session.add_all(
+        [
+            _candle(
+                BASE_TIME + timedelta(minutes=5 * index),
+                close_price=100 + index,
+            )
+            for index in range(6)
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        backtesting_module,
+        "BACKTEST_EVALUATOR_WORK_BUDGET",
+        1,
+    )
+
+    with pytest.raises(
+        backtesting_module.BacktestConfigurationError,
+        match="backtest_computation_limit_exceeded.*no partial result was saved",
+    ):
+        backtesting_module.create_bot_backtest(
+            db_session,
+            user_id=OWNER_ID,
+            bot_config_id=int(config.id),
+            payload=BotBacktestIn(
+                start=BASE_TIME,
+                end=BASE_TIME + timedelta(minutes=30),
+            ),
+            now=BASE_TIME + timedelta(minutes=35),
+        )
+
+    assert db_session.query(BotBacktest).count() == 0
+
+
+def test_cache_coverage_budget_includes_retained_primary_rows(
+    db_session,
+    monkeypatch,
+):
+    db_session.add(
+        _candle(
+            BASE_TIME - timedelta(hours=1),
+            unit="hour",
+            unit_number=1,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        backtesting_module,
+        "BACKTEST_MEMORY_BUDGET_BYTES",
+        backtesting_module.ESTIMATED_REPLAY_CANDLE_BYTES,
+    )
+
+    with pytest.raises(
+        backtesting_module.BacktestConfigurationError,
+        match="backtest_resource_budget_exceeded",
+    ):
+        backtesting_module._cached_replay_stream_covers(
+            db_session,
+            user_id=OWNER_ID,
+            contract_id=CONTRACT_ID,
+            unit="hour",
+            unit_number=1,
+            fetch_start=BASE_TIME - timedelta(hours=2),
+            requested_start=BASE_TIME,
+            first_event=BASE_TIME,
+            last_event=BASE_TIME,
+            warmup_bars=1,
+            reserved_replay_rows=1,
+        )
