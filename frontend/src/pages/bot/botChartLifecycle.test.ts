@@ -1,13 +1,35 @@
 import type { Logical, LogicalRange, UTCTimestamp } from "lightweight-charts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   LatestRequestCoordinator,
+  LogicalViewportMemory,
+  PrioritizedRequestScheduler,
   getViewportRestoreRange,
   invalidateChartRequestLanes,
   isViewportAtLiveEdge,
   preserveLogicalViewport,
 } from "./botChartLifecycle";
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function logicalRange(from: number, to: number): LogicalRange {
   return { from: from as Logical, to: to as Logical };
@@ -113,6 +135,279 @@ describe("LatestRequestCoordinator", () => {
     expect(live.accepts(liveRequest, "bot-a:MNQ:5m")).toBe(false);
     expect(history.accepts(historyRequest, "bot-a:MNQ:5m")).toBe(false);
     expect(repair.accepts(repairRequest, "bot-a:MNQ:5m")).toBe(false);
+  });
+});
+
+describe("PrioritizedRequestScheduler", () => {
+  it("deduplicates exact keys across queued and active subscribers", async () => {
+    const scheduler = new PrioritizedRequestScheduler({ maxConcurrency: 1 });
+    const blocker = deferred<string>();
+    const sharedWork = deferred<string>();
+    const sharedTask = vi.fn(() => sharedWork.promise);
+
+    const blockingRequest = scheduler.schedule("blocker", () => blocker.promise);
+    const first = scheduler.schedule("shared", sharedTask);
+    const secondTask = vi.fn(() => Promise.resolve("wrong task"));
+    const second = scheduler.schedule("shared", secondTask);
+
+    expect(scheduler.activeCount).toBe(1);
+    expect(scheduler.queuedCount).toBe(1);
+    expect(sharedTask).not.toHaveBeenCalled();
+    expect(secondTask).not.toHaveBeenCalled();
+
+    blocker.resolve("unblocked");
+    await expect(blockingRequest).resolves.toBe("unblocked");
+    expect(sharedTask).toHaveBeenCalledOnce();
+    expect(scheduler.activeCount).toBe(1);
+    expect(scheduler.queuedCount).toBe(0);
+    const activeDuplicateTask = vi.fn(() => Promise.resolve("wrong active task"));
+    const third = scheduler.schedule("shared", activeDuplicateTask);
+
+    sharedWork.resolve("shared result");
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      "shared result",
+      "shared result",
+      "shared result",
+    ]);
+    expect(sharedTask).toHaveBeenCalledOnce();
+    expect(secondTask).not.toHaveBeenCalled();
+    expect(activeDuplicateTask).not.toHaveBeenCalled();
+  });
+
+  it("always selects queued foreground work before background work", async () => {
+    const scheduler = new PrioritizedRequestScheduler({
+      maxConcurrency: 1,
+      maxBackgroundConcurrency: 1,
+    });
+    const blocker = deferred<void>();
+    const foreground = deferred<string>();
+    const background = deferred<string>();
+    const starts: string[] = [];
+
+    const blockingRequest = scheduler.schedule("active", () => blocker.promise);
+    const backgroundRequest = scheduler.schedule(
+      "background",
+      () => {
+        starts.push("background");
+        return background.promise;
+      },
+      { priority: "background" },
+    );
+    const foregroundRequest = scheduler.schedule("foreground", () => {
+      starts.push("foreground");
+      return foreground.promise;
+    });
+
+    blocker.resolve();
+    await blockingRequest;
+    expect(starts).toEqual(["foreground"]);
+    expect(scheduler.queuedBackgroundCount).toBe(1);
+
+    foreground.resolve("visible");
+    await expect(foregroundRequest).resolves.toBe("visible");
+    expect(starts).toEqual(["foreground", "background"]);
+    background.resolve("warm");
+    await expect(backgroundRequest).resolves.toBe("warm");
+  });
+
+  it("upgrades a queued background task when a foreground subscriber joins", async () => {
+    const scheduler = new PrioritizedRequestScheduler({ maxConcurrency: 1 });
+    const blocker = deferred<void>();
+    const starts: string[] = [];
+
+    const blockingRequest = scheduler.schedule("active", () => blocker.promise);
+    const olderBackground = scheduler.schedule(
+      "older-background",
+      () => {
+        starts.push("older-background");
+        return "older";
+      },
+      { priority: "background" },
+    );
+    const upgradedTask = vi.fn(() => {
+      starts.push("upgraded");
+      return "upgraded";
+    });
+    const backgroundSubscriber = scheduler.schedule("upgrade-me", upgradedTask, {
+      priority: "background",
+    });
+    const ignoredDuplicateTask = vi.fn(() => "duplicate");
+    const foregroundSubscriber = scheduler.schedule(
+      "upgrade-me",
+      ignoredDuplicateTask,
+      { priority: "foreground" },
+    );
+
+    expect(scheduler.queuedForegroundCount).toBe(1);
+    expect(scheduler.queuedBackgroundCount).toBe(1);
+    blocker.resolve();
+    await blockingRequest;
+    await expect(Promise.all([backgroundSubscriber, foregroundSubscriber])).resolves.toEqual([
+      "upgraded",
+      "upgraded",
+    ]);
+    await expect(olderBackground).resolves.toBe("older");
+
+    expect(starts).toEqual(["upgraded", "older-background"]);
+    expect(upgradedTask).toHaveBeenCalledOnce();
+    expect(ignoredDuplicateTask).not.toHaveBeenCalled();
+  });
+
+  it("limits background concurrency while leaving capacity for foreground work", async () => {
+    const scheduler = new PrioritizedRequestScheduler({
+      maxConcurrency: 2,
+      maxBackgroundConcurrency: 1,
+    });
+    const firstBackground = deferred<void>();
+    const secondBackground = deferred<void>();
+    const foreground = deferred<void>();
+    const starts: string[] = [];
+
+    const first = scheduler.schedule(
+      "background-1",
+      () => {
+        starts.push("background-1");
+        return firstBackground.promise;
+      },
+      { priority: "background" },
+    );
+    const second = scheduler.schedule(
+      "background-2",
+      () => {
+        starts.push("background-2");
+        return secondBackground.promise;
+      },
+      { priority: "background" },
+    );
+    const visible = scheduler.schedule("foreground", () => {
+      starts.push("foreground");
+      return foreground.promise;
+    });
+
+    expect(starts).toEqual(["background-1", "foreground"]);
+    expect(scheduler.activeCount).toBe(2);
+    expect(scheduler.activeBackgroundCount).toBe(1);
+    expect(scheduler.queuedCount).toBe(1);
+
+    foreground.resolve();
+    await visible;
+    expect(starts).toEqual(["background-1", "foreground"]);
+    firstBackground.resolve();
+    await first;
+    expect(starts).toEqual(["background-1", "foreground", "background-2"]);
+    secondBackground.resolve();
+    await second;
+  });
+
+  it("rate-limits background starts even when another background slot is free", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const scheduler = new PrioritizedRequestScheduler({
+      maxConcurrency: 2,
+      maxBackgroundConcurrency: 2,
+      minBackgroundStartIntervalMs: 100,
+    });
+    const firstWork = deferred<void>();
+    const secondWork = deferred<void>();
+    const starts: number[] = [];
+
+    const first = scheduler.schedule(
+      "background-1",
+      () => {
+        starts.push(Date.now());
+        return firstWork.promise;
+      },
+      { priority: "background" },
+    );
+    const second = scheduler.schedule(
+      "background-2",
+      () => {
+        starts.push(Date.now());
+        return secondWork.promise;
+      },
+      { priority: "background" },
+    );
+
+    expect(starts).toEqual([1_000]);
+    expect(scheduler.activeCount).toBe(1);
+    expect(scheduler.queuedCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(starts).toEqual([1_000]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(starts).toEqual([1_000, 1_100]);
+
+    firstWork.resolve();
+    secondWork.resolve();
+    await Promise.all([first, second]);
+  });
+
+  it("cancels subscribers independently and aborts shared work only after the last leaves", async () => {
+    const scheduler = new PrioritizedRequestScheduler();
+    const transport = deferred<string>();
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const sharedTransport: { signal?: AbortSignal } = {};
+    const task = (signal: AbortSignal) => {
+      sharedTransport.signal = signal;
+      return transport.promise;
+    };
+
+    const first = scheduler.schedule("candles", task, { signal: firstController.signal });
+    const second = scheduler.schedule("candles", task, { signal: secondController.signal });
+    const firstOutcome = first.then(
+      () => "resolved",
+      (error: unknown) => (error as Error).name,
+    );
+    const secondOutcome = second.then(
+      () => "resolved",
+      (error: unknown) => (error as Error).name,
+    );
+
+    firstController.abort();
+    expect(await firstOutcome).toBe("AbortError");
+    expect(sharedTransport.signal?.aborted).toBe(false);
+    expect(scheduler.activeCount).toBe(1);
+
+    secondController.abort();
+    expect(await secondOutcome).toBe("AbortError");
+    expect(sharedTransport.signal?.aborted).toBe(true);
+    // An abort-unaware transport still occupies its slot, but cannot resolve
+    // either cancelled subscriber when it eventually returns.
+    expect(scheduler.activeCount).toBe(1);
+    transport.resolve("late candles");
+    await Promise.resolve();
+    expect(scheduler.activeCount).toBe(0);
+  });
+});
+
+describe("LogicalViewportMemory", () => {
+  it("saves and restores independent ranges across timeframe keys", () => {
+    const memory = new LogicalViewportMemory<string>();
+
+    expect(memory.save("MNQ:1m", logicalRange(10.25, 40.75))).toBe(true);
+    expect(memory.save("MNQ:1H", logicalRange(100.5, 130.5))).toBe(true);
+    expect(memory.restore("MNQ:1m")).toEqual(logicalRange(10.25, 40.75));
+    expect(memory.restore("MNQ:1H")).toEqual(logicalRange(100.5, 130.5));
+    expect(memory.restore("MNQ:5m")).toBeNull();
+  });
+
+  it("ignores invalid ranges and protects saved ranges from caller mutation", () => {
+    const memory = new LogicalViewportMemory<string>();
+    const range = logicalRange(1, 3);
+    memory.save("5m", range);
+
+    range.from = 99 as Logical;
+    const restored = memory.restore("5m");
+    expect(restored).toEqual(logicalRange(1, 3));
+    if (restored) {
+      restored.to = 100 as Logical;
+    }
+    expect(memory.restore("5m")).toEqual(logicalRange(1, 3));
+    expect(memory.save("5m", logicalRange(4, 2))).toBe(false);
+    expect(memory.restore("5m")).toEqual(logicalRange(1, 3));
+
+    expect(memory.delete("5m")).toBe(true);
+    expect(memory.restore("5m")).toBeNull();
   });
 });
 
