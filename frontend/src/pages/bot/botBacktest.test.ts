@@ -4,27 +4,23 @@ import type { BotBacktestDrawdownPoint, BotBacktestEquityPoint } from "../../lib
 import {
   BACKTEST_MAX_RENDERED_CHART_POINTS,
   buildBacktestChartPaths,
+  buildBacktestPayload,
   validateBacktestForm,
   type BotBacktestFormState,
 } from "./botBacktest";
 
 const validForm: BotBacktestFormState = {
-  startDate: "2026-01-01",
-  endDate: "2026-01-31",
   startingBalance: "50000",
   commissionPerContract: "1.20",
   slippageTicks: "1",
 };
 
 describe("validateBacktestForm", () => {
-  it("accepts a bounded range and non-negative execution costs", () => {
+  it("accepts full-history execution settings", () => {
     expect(validateBacktestForm(validForm)).toBeNull();
   });
 
-  it("rejects reversed ranges and malformed numeric settings", () => {
-    expect(validateBacktestForm({ ...validForm, startDate: "2026-02-01" })).toBe(
-      "Start date must be on or before the end date.",
-    );
+  it("rejects malformed numeric settings", () => {
     expect(validateBacktestForm({ ...validForm, startingBalance: "0" })).toBe(
       "Starting balance must be greater than zero.",
     );
@@ -34,6 +30,21 @@ describe("validateBacktestForm", () => {
     expect(validateBacktestForm({ ...validForm, slippageTicks: "0.5" })).toBe(
       "Slippage must be a whole number of ticks, zero or greater.",
     );
+  });
+});
+
+describe("buildBacktestPayload", () => {
+  it("omits date bounds from the normal full-history request", () => {
+    const payload = buildBacktestPayload(validForm);
+
+    expect(payload).toEqual({
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
+    });
+    expect(payload).not.toHaveProperty("start");
+    expect(payload).not.toHaveProperty("end");
   });
 });
 

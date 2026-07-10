@@ -1219,7 +1219,7 @@ async function runBacktestRequest(
     });
   } catch (error) {
     if (isAbortError(error) && timedOut) {
-      throw new Error("Backtest timed out after 15 minutes. Try again after the server finishes caching candles, or narrow the date range.");
+      throw new Error("Full-history backtest timed out after 15 minutes. Try again after the server finishes preparing candles.");
     }
     throw error;
   } finally {
@@ -1282,12 +1282,6 @@ export const botsApi = {
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
-    }),
-  prepareBacktest: (botConfigId: number, payload: BotBacktestInput, options: RequestSignalOptions = {}) =>
-    requestJson<void>(`/api/bots/${botConfigId}/backtests/prepare`, {
-      method: "POST",
-      body: payload,
-      signal: options.signal,
     }),
   runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>

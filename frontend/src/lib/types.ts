@@ -1190,8 +1190,8 @@ export interface BotEvaluation {
 }
 
 export interface BotBacktestInput {
-  start: string;
-  end: string;
+  start?: string;
+  end?: string;
   starting_balance: number;
   commission_per_contract: number;
   slippage_ticks: number;
@@ -1202,6 +1202,10 @@ export interface BotBacktestRange {
   start: string;
   end: string;
   bar_count: number;
+  contract_id: string;
+  symbol: string | null;
+  timeframe_unit: BotTimeframeUnit;
+  timeframe_unit_number: number;
 }
 
 export interface BotBacktestAssumptions {

@@ -45,9 +45,8 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "1.2.0"
+BACKTEST_ENGINE_VERSION = "1.3.0"
 MAX_BACKTEST_BARS = 20_000
-MAX_BACKTEST_RANGE_DAYS = 366
 MAX_EVALUATOR_BAR_OPERATIONS = 10_000_000
 MAX_TOPBOT_EVALUATOR_BAR_OPERATIONS = 200_000_000
 MAX_TOPBOT_REPLAY_STREAM_BARS = 100_000
@@ -140,6 +139,17 @@ class BacktestSettings:
     tick_size: float
     tick_value: float
     force_close_at_end: bool = True
+
+
+@dataclass(frozen=True)
+class _ResolvedBacktestWindow:
+    """One captured request window used by preparation, replay, and persistence."""
+
+    requested_start: datetime
+    requested_end: datetime
+    start: datetime
+    end: datetime
+    full_history: bool
 
 
 @dataclass(frozen=True)
@@ -268,11 +278,6 @@ class BacktestEngine:
                 first_event=_candle_close_time(coverage_candles[0]),
                 last_event=_candle_close_time(coverage_candles[-1]),
             )
-        if len(self.execution_candles) > MAX_BACKTEST_BARS:
-            raise BacktestConfigurationError(
-                f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}; "
-                f"found {len(self.execution_candles)}"
-            )
         self.evaluator_history_limit = min(
             MAX_BACKTEST_BARS,
             max(
@@ -304,7 +309,8 @@ class BacktestEngine:
             operation_limit = MAX_EVALUATOR_BAR_OPERATIONS
         if estimated_operations > operation_limit:
             raise BacktestConfigurationError(
-                "backtest_computation_limit_exceeded: reduce the date range or bot lookback; "
+                "backtest_computation_limit_exceeded: the complete resolved history and bot "
+                "lookback exceed the current replay resource budget; no partial result was saved; "
                 f"estimated evaluator bar-visits {estimated_operations:,} exceed "
                 f"{operation_limit:,}"
             )
@@ -451,6 +457,10 @@ class BacktestEngine:
                 "start": _as_utc(self.execution_candles[0].candle_timestamp).isoformat(),
                 "end": _candle_close_time(self.execution_candles[-1]).isoformat(),
                 "bar_count": len(self.execution_candles),
+                "contract_id": str(self.execution_candles[0].contract_id),
+                "symbol": self.execution_candles[0].symbol or self.config.symbol,
+                "timeframe_unit": str(self.execution_candles[0].unit),
+                "timeframe_unit_number": int(self.execution_candles[0].unit_number),
             },
             "config_snapshot": _config_snapshot(self.config),
             "assumptions": _assumptions_snapshot(self.config, self.settings),
@@ -2097,6 +2107,8 @@ def prepare_bot_backtest_data(
     bot_config_id: int,
     payload: Any,
     client: ProjectXClient,
+    now: datetime | None = None,
+    include_primary: bool = True,
 ) -> int:
     """Populate TopBot's deterministic replay cache without running a replay."""
 
@@ -2116,12 +2128,14 @@ def prepare_bot_backtest_data(
     end = _as_utc(payload.end)
     if end <= start:
         raise BacktestConfigurationError("backtest end must be after start")
-    if end - start > timedelta(days=MAX_BACKTEST_RANGE_DAYS):
-        raise BacktestConfigurationError(
-            f"backtest range cannot exceed {MAX_BACKTEST_RANGE_DAYS} days"
-        )
 
-    fetch_end = min(end, datetime.now(timezone.utc))
+    captured_now = _as_utc(now or datetime.now(timezone.utc))
+    fetch_end = min(end, captured_now)
+    primary_identity = (
+        str(config.contract_id),
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
     requests: dict[tuple[str, str, int], tuple[str | None, datetime, int]] = {}
     for spec in _topbot_stream_specs(config).values():
         interval_seconds = _timeframe_seconds(spec.unit, spec.unit_number)
@@ -2132,21 +2146,18 @@ def prepare_bot_backtest_data(
         contract_id = spec.contract_id or spec.symbol
         if not contract_id:
             raise BacktestConfigurationError(f"topbot_replay_contract_missing:{spec.key}")
+        identity = (str(contract_id), str(spec.unit), int(spec.unit_number))
+        if identity == primary_identity and not include_primary:
+            continue
         fetch_start = start - timedelta(
             seconds=interval_seconds * max(25, int(spec.warmup_bars)) * 3
         )
-        identity = (str(contract_id), str(spec.unit), int(spec.unit_number))
         existing = requests.get(identity)
         if existing is None or fetch_start < existing[1]:
             requests[identity] = (spec.symbol, fetch_start, int(spec.warmup_bars))
         elif int(spec.warmup_bars) > existing[2]:
             requests[identity] = (existing[0], existing[1], int(spec.warmup_bars))
 
-    primary_identity = (
-        str(config.contract_id),
-        str(config.timeframe_unit),
-        int(config.timeframe_unit_number),
-    )
     primary_execution_rows = (
         db.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.user_id == user_id)
@@ -2416,12 +2427,261 @@ def run_backtest(
     ).run()
 
 
+def _load_primary_closed_candles(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    closed_by: datetime,
+) -> list[ProjectXMarketCandle]:
+    """Load every eligible primary bar without rolling across futures deliveries."""
+
+    cutoff = _as_utc(closed_by)
+    rows = (
+        db.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == user_id)
+        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
+        .filter(ProjectXMarketCandle.live.is_(False))
+        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
+        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
+        .filter(ProjectXMarketCandle.is_partial.is_(False))
+        .filter(ProjectXMarketCandle.candle_timestamp <= cutoff)
+        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+        .all()
+    )
+    return [
+        row
+        for row in rows
+        if not _cached_candle_is_effectively_partial(row)
+        and _candle_close_time(row) <= cutoff
+    ]
+
+
+def _requested_backtest_bounds(payload: Any) -> tuple[datetime, datetime] | None:
+    raw_start = getattr(payload, "start", None)
+    raw_end = getattr(payload, "end", None)
+    if (raw_start is None) != (raw_end is None):
+        raise BacktestConfigurationError(
+            "backtest start and end must be provided together"
+        )
+    if raw_start is None:
+        return None
+    start = _as_utc(raw_start)
+    end = _as_utc(raw_end)
+    if end <= start:
+        raise BacktestConfigurationError("backtest end must be after start")
+    return start, end
+
+
+def _resolve_backtest_window(
+    rows: list[ProjectXMarketCandle],
+    *,
+    payload: Any,
+    now: datetime,
+) -> _ResolvedBacktestWindow:
+    """Resolve absent dates to complete exact-contract coverage at one instant."""
+
+    captured_now = _as_utc(now)
+    requested = _requested_backtest_bounds(payload)
+    if requested is None:
+        eligible = rows
+        full_history = True
+    else:
+        requested_start, requested_end = requested
+        effective_end = min(requested_end, captured_now)
+        eligible = [
+            row
+            for row in rows
+            if _as_utc(row.candle_timestamp) >= requested_start
+            and _candle_close_time(row) <= effective_end
+        ]
+        full_history = False
+
+    if len(eligible) < MIN_EXECUTION_BARS:
+        mode = "full configured-contract history" if requested is None else "requested range"
+        raise InsufficientBacktestDataError(
+            "insufficient_backtest_data: at least 2 fully closed execution bars are required "
+            f"for the {mode}; found {len(eligible)}"
+        )
+
+    if requested is None:
+        start = _as_utc(eligible[0].candle_timestamp)
+        end = _candle_close_time(eligible[-1])
+        requested_start = start
+        requested_end = end
+    else:
+        requested_start, requested_end = requested
+        start = requested_start
+        end = min(requested_end, captured_now)
+
+    return _ResolvedBacktestWindow(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        start=start,
+        end=end,
+        full_history=full_history,
+    )
+
+
+_FULL_HISTORY_DISCOVERY_START = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_MAX_PROVIDER_EMPTY_SPAN = timedelta(days=14)
+
+
+def _fetch_exact_primary_chunk(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+    start: datetime,
+    end: datetime,
+) -> list[ProjectXMarketCandle]:
+    """Fetch one exact-delivery chunk and propagate provider failures."""
+
+    if end <= start:
+        return []
+    unit = str(config.timeframe_unit)
+    provider_unit = bot_service_module._PROJECTX_UNIT_BY_NAME.get(unit)
+    if provider_unit is None:
+        raise BacktestConfigurationError(f"unsupported_candle_unit:{unit}")
+    bars = client.retrieve_bars(
+        contract_id=str(config.contract_id),
+        live=False,
+        start=_as_utc(start),
+        end=_as_utc(end),
+        unit=provider_unit,
+        unit_number=int(config.timeframe_unit_number),
+        limit=MAX_PROVIDER_FETCH_BARS,
+        include_partial_bar=False,
+    )
+    return bot_service_module.store_market_candles(
+        db,
+        user_id=user_id,
+        contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        live=False,
+        unit=unit,
+        unit_number=int(config.timeframe_unit_number),
+        bars=bars,
+    )
+
+
+def _prepare_topbot_primary_full_history(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    client: ProjectXClient,
+    now: datetime,
+) -> None:
+    """Discover and persist the provider's complete configured-delivery history."""
+
+    captured_now = _as_utc(now)
+    interval_seconds = _timeframe_seconds(
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
+    if interval_seconds is None or interval_seconds <= 0:
+        raise BacktestConfigurationError(
+            "unsupported_topbot_replay_timeframe:"
+            f"{config.timeframe_unit}:{config.timeframe_unit_number}"
+        )
+    chunk_span = timedelta(seconds=interval_seconds * (MAX_PROVIDER_FETCH_BARS - 1))
+
+    seed = _fetch_exact_primary_chunk(
+        db,
+        user_id=user_id,
+        config=config,
+        client=client,
+        start=_FULL_HISTORY_DISCOVERY_START,
+        end=captured_now,
+    )
+    if not seed:
+        raise InsufficientBacktestDataError(
+            "insufficient_backtest_data: provider returned no closed history for configured "
+            f"contract {config.contract_id}"
+        )
+
+    rows = _load_primary_closed_candles(
+        db,
+        user_id=user_id,
+        config=config,
+        closed_by=captured_now,
+    )
+    if not rows:
+        raise InsufficientBacktestDataError(
+            "insufficient_backtest_data: provider returned no valid closed history for "
+            f"configured contract {config.contract_id}"
+        )
+
+    earliest = _as_utc(rows[0].candle_timestamp)
+    backward_cursor = earliest
+    empty_span = timedelta(0)
+    while backward_cursor > _FULL_HISTORY_DISCOVERY_START:
+        chunk_start = max(_FULL_HISTORY_DISCOVERY_START, backward_cursor - chunk_span)
+        fetched = _fetch_exact_primary_chunk(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            start=chunk_start,
+            end=backward_cursor,
+        )
+        older = [
+            row for row in fetched if _as_utc(row.candle_timestamp) < earliest
+        ]
+        if older:
+            earliest = min(_as_utc(row.candle_timestamp) for row in older)
+            backward_cursor = earliest
+            empty_span = timedelta(0)
+            continue
+        empty_span += backward_cursor - chunk_start
+        backward_cursor = chunk_start
+        if empty_span >= _MAX_PROVIDER_EMPTY_SPAN:
+            break
+
+    rows = _load_primary_closed_candles(
+        db,
+        user_id=user_id,
+        config=config,
+        closed_by=captured_now,
+    )
+    latest_timestamp = _as_utc(rows[-1].candle_timestamp)
+    forward_cursor = _candle_close_time(rows[-1])
+    empty_span = timedelta(0)
+    while forward_cursor < captured_now:
+        chunk_end = min(captured_now, forward_cursor + chunk_span)
+        fetched = _fetch_exact_primary_chunk(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            start=forward_cursor,
+            end=chunk_end,
+        )
+        newer = [
+            row for row in fetched if _as_utc(row.candle_timestamp) > latest_timestamp
+        ]
+        if newer:
+            latest_row = max(newer, key=lambda row: _as_utc(row.candle_timestamp))
+            latest_timestamp = _as_utc(latest_row.candle_timestamp)
+            forward_cursor = _candle_close_time(latest_row)
+            empty_span = timedelta(0)
+            continue
+        empty_span += chunk_end - forward_cursor
+        forward_cursor = chunk_end
+        if empty_span >= _MAX_PROVIDER_EMPTY_SPAN:
+            break
+
+
 def create_bot_backtest(
     db: Session,
     *,
     user_id: str,
     bot_config_id: int,
     payload: Any,
+    client: ProjectXClient | None = None,
+    now: datetime | None = None,
 ) -> BotBacktest:
     config = (
         db.query(BotConfig)
@@ -2432,15 +2692,7 @@ def create_bot_backtest(
     if config is None:
         raise LookupError("bot_config_not_found")
     _require_supported_strategy(str(config.strategy_type))
-
-    start = _as_utc(payload.start)
-    end = _as_utc(payload.end)
-    if end <= start:
-        raise BacktestConfigurationError("backtest end must be after start")
-    if end - start > timedelta(days=MAX_BACKTEST_RANGE_DAYS):
-        raise BacktestConfigurationError(
-            f"backtest range cannot exceed {MAX_BACKTEST_RANGE_DAYS} days"
-        )
+    _validate_replay_configuration(config)
 
     specs = load_instrument_specs(db)
     symbol_key = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
@@ -2450,25 +2702,62 @@ def create_bot_backtest(
             f"instrument_metadata_missing:{symbol_key or config.contract_id}"
         )
 
-    execution_query = (
-        db.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.user_id == user_id)
-        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-        .filter(ProjectXMarketCandle.live.is_(False))
-        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-        .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp >= start)
-        .filter(ProjectXMarketCandle.candle_timestamp <= end)
-        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .limit(MAX_BACKTEST_BARS + 1)
+    captured_now = _as_utc(now or datetime.now(timezone.utc))
+    requested_bounds = _requested_backtest_bounds(payload)
+    is_topbot = str(config.strategy_type) == _TOPBOT_STRATEGY
+    if is_topbot:
+        if client is None:
+            raise BacktestConfigurationError("topbot_backtest_market_data_client_required")
+        if requested_bounds is None:
+            _prepare_topbot_primary_full_history(
+                db,
+                user_id=user_id,
+                config=config,
+                client=client,
+                now=captured_now,
+            )
+        else:
+            prepare_bot_backtest_data(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                payload=payload,
+                client=client,
+                now=captured_now,
+            )
+
+    primary_rows = _load_primary_closed_candles(
+        db,
+        user_id=user_id,
+        config=config,
+        closed_by=captured_now,
     )
-    execution_rows = execution_query.all()
-    execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
-    if len(execution_rows) > MAX_BACKTEST_BARS:
-        raise BacktestConfigurationError(
-            f"backtest_bar_limit_exceeded: maximum is {MAX_BACKTEST_BARS}"
+    window = _resolve_backtest_window(primary_rows, payload=payload, now=captured_now)
+
+    if is_topbot and requested_bounds is None:
+        prepare_bot_backtest_data(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            payload=window,
+            client=client,
+            now=captured_now,
+            include_primary=False,
         )
+        primary_rows = _load_primary_closed_candles(
+            db,
+            user_id=user_id,
+            config=config,
+            closed_by=captured_now,
+        )
+        window = _resolve_backtest_window(primary_rows, payload=payload, now=captured_now)
+
+    execution_rows = [
+        row
+        for row in primary_rows
+        if _as_utc(row.candle_timestamp) >= window.start
+        and _candle_close_time(row) <= window.end
+    ]
 
     rolling_warmup_limit = min(
         MAX_BACKTEST_BARS,
@@ -2477,7 +2766,7 @@ def create_bot_backtest(
             _strategy_history_bars(config, hard_minimum=False),
         ),
     )
-    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+    if is_topbot:
         primary_key = _topbot_asset_stream_key(
             str(config.timeframe_unit),
             int(config.timeframe_unit_number),
@@ -2491,37 +2780,29 @@ def create_bot_backtest(
         config,
         rolling_limit=rolling_warmup_limit,
     )
-    warmup_rows = (
-        db.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.user_id == user_id)
-        .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
-        .filter(ProjectXMarketCandle.live.is_(False))
-        .filter(ProjectXMarketCandle.unit == str(config.timeframe_unit))
-        .filter(ProjectXMarketCandle.unit_number == int(config.timeframe_unit_number))
-        .filter(ProjectXMarketCandle.is_partial.is_(False))
-        .filter(ProjectXMarketCandle.candle_timestamp < start)
-        .order_by(ProjectXMarketCandle.candle_timestamp.desc())
-        .limit(warmup_limit)
-        .all()
-    )
-    warmup_rows.reverse()
+    warmup_candidates = [
+        row
+        for row in primary_rows
+        if _as_utc(row.candle_timestamp) < window.start
+    ]
+    warmup_rows = warmup_candidates[-warmup_limit:]
     replay_rows = [*warmup_rows, *execution_rows]
     replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None
-    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+    if is_topbot:
         replay_streams = _load_topbot_replay_streams(
             db,
             user_id=user_id,
             config=config,
-            start=start,
-            end=end,
+            start=window.start,
+            end=window.end,
             primary_rows=replay_rows,
         )
 
     result = run_backtest(
         config=config,
         candles=replay_rows,
-        start=start,
-        end=end,
+        start=window.start,
+        end=window.end,
         starting_balance=float(payload.starting_balance),
         commission_per_contract=float(payload.commission_per_contract),
         slippage_ticks=float(payload.slippage_ticks),
@@ -2547,8 +2828,8 @@ def create_bot_backtest(
         symbol=config.symbol,
         timeframe_unit=str(config.timeframe_unit),
         timeframe_unit_number=int(config.timeframe_unit_number),
-        requested_start=start,
-        requested_end=end,
+        requested_start=window.requested_start,
+        requested_end=window.requested_end,
         actual_start=_as_utc(datetime.fromisoformat(str(result["range"]["start"]))),
         actual_end=_as_utc(datetime.fromisoformat(str(result["range"]["end"]))),
         starting_balance=float(payload.starting_balance),
@@ -2694,10 +2975,6 @@ def _validate_settings(settings: BacktestSettings) -> BacktestSettings:
     )
     if normalized.end <= normalized.start:
         raise BacktestConfigurationError("backtest end must be after start")
-    if normalized.end - normalized.start > timedelta(days=MAX_BACKTEST_RANGE_DAYS):
-        raise BacktestConfigurationError(
-            f"backtest range cannot exceed {MAX_BACKTEST_RANGE_DAYS} days"
-        )
     for name in ["starting_balance", "tick_size", "tick_value"]:
         value = getattr(normalized, name)
         if not math.isfinite(value) or value <= 0:
@@ -3181,7 +3458,10 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
         "slippage_rule": "configured_ticks_are_applied_adversely_to_every_entry_and_exit_fill",
         "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
         "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
-        "market_data": "stored_user_scoped_non_live_closed_candles_only; no_provider_fetch",
+        "market_data": (
+            "preparation_may_fetch_exact_configured_contract; replay_uses_persisted_"
+            "user_scoped_non_live_closed_candles_only"
+        ),
         "live_order_routing": "disabled_by_architecture",
         "timezone": str(getattr(TRADING_TZ, "key", "America/New_York")),
         "commission_per_contract": _clean(settings.commission_per_contract),

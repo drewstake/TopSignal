@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { BotBacktestBreakdown, BotBacktestResult } from "../../lib/types";
-import { BacktestResults } from "./BotBacktestPanel";
+import { BacktestResults, BotBacktestPanel } from "./BotBacktestPanel";
 
 const breakdown: BotBacktestBreakdown = {
   trade_count: 1,
@@ -24,7 +24,15 @@ const result: BotBacktestResult = {
   engine_version: "1.0.0",
   input_fingerprint: "test-fingerprint",
   created_at: "2026-02-02T18:00:00Z",
-  range: { start: "2026-01-01T00:00:00Z", end: "2026-01-31T23:59:59Z", bar_count: 500 },
+  range: {
+    start: "2026-01-02T14:30:00Z",
+    end: "2026-01-30T21:00:00Z",
+    bar_count: 500,
+    contract_id: "CON.F.US.MNQ.H26",
+    symbol: "MNQ",
+    timeframe_unit: "minute",
+    timeframe_unit_number: 5,
+  },
   config_snapshot: { strategy_type: "sma_cross", fast_period: 9, slow_period: 21 },
   assumptions: {
     fill_model: "next_bar_open",
@@ -121,9 +129,26 @@ describe("BacktestResults", () => {
     expect(markup).toContain("Sample-quality warnings");
     expect(markup).toContain("Only one trade occurred");
     expect(markup).toContain("Backtest equity and drawdown chart");
+    expect(markup).toContain("MNQ (CON.F.US.MNQ.H26)");
+    expect(markup).toContain("5-minute");
+    expect(markup).toContain("500 closed bars");
+    expect(markup).toContain("Jan 2, 2026");
+    expect(markup).toContain("Jan 30, 2026");
     expect(markup).toContain("next bar open");
     expect(markup).toContain("External routing disabled");
     expect(markup).toContain("Trade ledger");
     expect(markup).toContain("take profit");
+  });
+});
+
+describe("BotBacktestPanel", () => {
+  it("offers one full-history action without date inputs", () => {
+    const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} />);
+
+    expect(markup).toContain("Run Full History Backtest");
+    expect(markup).toContain("No order routing");
+    expect(markup).not.toContain("Start date");
+    expect(markup).not.toContain("End date");
+    expect(markup).not.toContain('type="date"');
   });
 });
