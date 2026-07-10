@@ -568,6 +568,12 @@ export interface BotAnalysisProvenance {
   timeframe: BotAnalysisTimeframe;
   detected_gaps: BotAnalysisGap[];
   gap_count: number;
+  configured_contract_id?: string | null;
+  resolved_contract_id?: string | null;
+  resolved_symbol?: string | null;
+  contract_rollover?: boolean;
+  minimum_feature_bars?: number;
+  minimum_sufficient_bars?: number;
 }
 
 export interface BotAnalysisDataQuality {

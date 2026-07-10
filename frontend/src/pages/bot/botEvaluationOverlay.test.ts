@@ -40,6 +40,24 @@ describe("selectLatestActionableEvaluation", () => {
     ).toBeNull();
   });
 
+  it("keeps an evaluation that resolved the saved futures contract to the active delivery", () => {
+    const rolled = marketEvaluation({ contractId: "CON.F.US.MNQ.M26" });
+    rolled.config = { ...rolled.config, symbol: "F.US.MNQ" };
+    rolled.decision = {
+      ...rolled.decision,
+      contract_id: "CON.F.US.MNQ.U26",
+      symbol: "F.US.MNQ",
+    };
+
+    expect(
+      selectLatestActionableEvaluation({
+        bot: rolled.config,
+        activity: null,
+        lastEvaluation: rolled,
+      }),
+    ).toBe(rolled);
+  });
+
   it("reconstructs only API-supported decision entry data from newer activity", () => {
     const cached = marketEvaluation({ action: "BUY", createdAt: "2026-07-09T14:00:00.000Z" });
     const newer = marketEvaluation({ action: "SELL", createdAt: "2026-07-09T14:10:00.000Z", decisionPrice: 99 });

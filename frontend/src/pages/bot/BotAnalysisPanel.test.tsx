@@ -96,6 +96,77 @@ const evaluation = {
   order_attempt: null,
 } as unknown as BotEvaluation;
 
+function evaluationWithAnalysis(nextAnalysis: BotAnalysis, decisionPrice = 105): BotEvaluation {
+  return {
+    ...evaluation,
+    decision: { ...evaluation.decision, price: decisionPrice },
+    analysis: nextAnalysis,
+  };
+}
+
+function insufficientAnalysis(
+  closedCandleCount = 0,
+  latestCandleTimestamp: string | null = null,
+): BotAnalysis {
+  const confidence = Math.min(35, closedCandleCount * 3);
+  return {
+    ...analysis,
+    scenario_weights: { bullish: 33, bearish: 33, sideways: 34 },
+    provenance: {
+      ...analysis.provenance,
+      closed_candle_count: closedCandleCount,
+      partial_candle_count: 0,
+      latest_candle_timestamp: latestCandleTimestamp,
+      data_age_seconds: latestCandleTimestamp ? 20 : null,
+    },
+    data_quality: {
+      status: "insufficient",
+      confidence,
+      missing_inputs: ["at_least_25_closed_candles", "trend_history", "atr_history"],
+      warnings: [
+        `Only ${closedCandleCount} closed candle(s) were available; at least 10 are needed for a reliable heuristic read.`,
+      ],
+    },
+    market_regime: "unknown",
+    features: {
+      ...analysis.features,
+      trend: { direction: "neutral", strength: 0, fast_ema: null, slow_ema: null, slow_ema_slope: null },
+      volatility: { atr: null, atr_percent: null, percentile: null, state: "normal" },
+      volume: { relative_volume: null, state: "normal" },
+      vwap: { value: null, location: "unavailable" },
+      multi_timeframe_alignment: {
+        status: "unavailable",
+        aligned_timeframes: 0,
+        conflicting_timeframes: 0,
+        timeframes: [],
+      },
+      nearby_levels: { support: null, resistance: null },
+    },
+    score_drivers: {
+      bullish: [],
+      bearish: [],
+      neutral: ["Insufficient closed-candle history for a directional feature set."],
+    },
+    setup_quality: { score: confidence, label: "weak", drivers: [] },
+    market_bias: { direction: "neutral", strength: 0, drivers: [] },
+    execution_risk: { risk_score: 100 - confidence, label: "high", drivers: [] },
+    data_confidence: { score: confidence, label: "insufficient", drivers: [] },
+    current_price: null,
+    previous_close: null,
+    price_change: null,
+    price_change_percent: null,
+    trend: "neutral",
+    trend_strength: 0,
+    nearest_support: null,
+    nearest_resistance: null,
+    expected_move: null,
+    invalidation_level: null,
+    summary: "Insufficient closed-candle history for a directional read.",
+    reasoning: ["Insufficient closed-candle history for a directional feature set."],
+    candle_timestamp: latestCandleTimestamp,
+  };
+}
+
 function chartCandle(timestamp: string): ProjectXMarketCandle {
   return {
     id: null,
@@ -145,5 +216,108 @@ describe("BotAnalysisPanel canonical labels", () => {
 
     expect(html).toContain("Stale");
     expect(html).toContain("the chart has 1 newer closed bar");
+  });
+
+  it("renders a compact threshold state for a canonical zero-bar analysis", () => {
+    const html = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis(insufficientAnalysis(), 30_275)}
+        onEvaluate={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("Freshness unknown");
+    expect(html).not.toContain(">Fresh<");
+    expect(html).toContain("No directional read yet");
+    expect(html).toContain("received no closed 5m candles");
+    expect(html).toContain("0 / 10 closed bars");
+    expect(html).toContain("10 closed bars unlock");
+    expect(html).toContain("25 are needed for normal confidence");
+    expect(html).toContain("Retry evaluation");
+    expect(html).not.toContain("Bullish scenario weight");
+    expect(html).not.toContain("Setup quality");
+    expect(html).not.toContain("Execution risk");
+    expect(html).not.toContain("What invalidates the setup?");
+    expect(html).not.toContain("Missing · normal");
+    expect(html).not.toContain("Decision/reference price");
+  });
+
+  it("switches from the compact state to the full layout at the 9-to-10-bar boundary", () => {
+    const nineBarHtml = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis(insufficientAnalysis(9, "2026-07-09T14:55:00Z"))}
+      />,
+    );
+    const tenBarHtml = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis(insufficientAnalysis(10, "2026-07-09T15:00:00Z"))}
+      />,
+    );
+
+    expect(nineBarHtml).toContain("No directional read yet");
+    expect(nineBarHtml).toContain("9 / 10 closed bars");
+    expect(nineBarHtml).not.toContain("Bullish scenario weight");
+    expect(tenBarHtml).toContain("Bullish scenario weight");
+    expect(tenBarHtml).toContain("Setup quality");
+    expect(tenBarHtml).not.toContain("No directional read yet");
+  });
+
+  it("does not call a timestamp-less otherwise healthy analysis fresh", () => {
+    const html = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis({
+          ...analysis,
+          provenance: { ...analysis.provenance, latest_candle_timestamp: null, data_age_seconds: null },
+        })}
+      />,
+    );
+
+    expect(html).toContain("Freshness unknown");
+    expect(html).not.toContain(">Fresh<");
+    expect(html).toContain("Bullish scenario weight");
+  });
+
+  it("shows sufficiently populated chart bars only as separate local context", () => {
+    const candles = Array.from({ length: 10 }, (_, index) =>
+      chartCandle(new Date(Date.parse("2026-07-09T14:15:00Z") + index * 5 * 60_000).toISOString()),
+    );
+    const snapshot: BotMarketSnapshot = {
+      contractKey: `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}`,
+      unit: bot.timeframe_unit,
+      unitNumber: bot.timeframe_unit_number,
+      candles,
+      lastPrice: candles[candles.length - 1].close,
+      updatedAt: "2026-07-09T15:05:00Z",
+    };
+    const html = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis(insufficientAnalysis())}
+        marketSnapshot={snapshot}
+      />,
+    );
+
+    expect(html).toContain("Local chart context");
+    expect(html).toContain("Separate from evaluation");
+    expect(html).toContain("The chart has 10 closed bars");
+    expect(html).toContain("Latest chart close");
+    expect(html).toContain("were not included in the canonical evaluation");
+    expect(html).not.toContain("Bullish scenario weight");
+  });
+
+  it("labels a decision-price fallback instead of calling it the current price", () => {
+    const html = renderToStaticMarkup(
+      <BotAnalysisPanel
+        bot={bot}
+        evaluation={evaluationWithAnalysis({ ...analysis, current_price: null }, 30_275)}
+      />,
+    );
+
+    expect(html).toContain("Decision/reference price");
+    expect(html).toContain("30,275.00");
   });
 });

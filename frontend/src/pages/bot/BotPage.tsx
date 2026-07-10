@@ -1198,7 +1198,6 @@ export function BotPage() {
       selectedBot &&
       lastEvaluation?.config.id === selectedBot.id &&
       lastEvaluation.config.contract_id === selectedBot.contract_id &&
-      lastEvaluation.decision.contract_id === selectedBot.contract_id &&
       lastEvaluation.config.timeframe_unit === selectedBot.timeframe_unit &&
       lastEvaluation.config.timeframe_unit_number === selectedBot.timeframe_unit_number
         ? lastEvaluation

@@ -126,6 +126,7 @@ import {
 } from "./botDrawingStorage";
 import {
   buildEvaluationOverlayModel,
+  decisionMatchesBotMarket,
   isActionableEvaluation,
   selectLatestActionableEvaluation,
   type EvaluationFreshnessStatus,
@@ -433,14 +434,14 @@ export function BotSignalChart({ bot, activity, lastEvaluation, refreshToken, on
           activity.config.contract_id === bot.contract_id &&
           activity.config.timeframe_unit === bot.timeframe_unit &&
           activity.config.timeframe_unit_number === bot.timeframe_unit_number
-            ? activity.decisions.filter((decision) => decision.contract_id === bot.contract_id)
+            ? activity.decisions.filter((decision) => decisionMatchesBotMarket(decision, bot))
             : [],
         lastEvaluation:
           lastEvaluation &&
           bot &&
           lastEvaluation.config.id === bot.id &&
           lastEvaluation.config.contract_id === bot.contract_id &&
-          lastEvaluation.decision.contract_id === bot.contract_id &&
+          decisionMatchesBotMarket(lastEvaluation.decision, bot) &&
           lastEvaluation.config.timeframe_unit === bot.timeframe_unit &&
           lastEvaluation.config.timeframe_unit_number === bot.timeframe_unit_number
             ? lastEvaluation

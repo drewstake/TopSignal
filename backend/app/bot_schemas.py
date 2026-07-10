@@ -259,6 +259,12 @@ class BotAnalysisProvenanceOut(BaseModel):
     timeframe: BotAnalysisTimeframeOut
     detected_gaps: list[BotAnalysisGapOut]
     gap_count: int = Field(ge=0)
+    configured_contract_id: str | None = None
+    resolved_contract_id: str | None = None
+    resolved_symbol: str | None = None
+    contract_rollover: bool = False
+    minimum_feature_bars: int = Field(default=10, gt=0)
+    minimum_sufficient_bars: int = Field(default=25, gt=0)
 
     @model_validator(mode="after")
     def validate_gap_count(self):

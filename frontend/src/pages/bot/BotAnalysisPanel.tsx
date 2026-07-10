@@ -21,7 +21,7 @@ import {
   type DisplayAnalysis,
 } from "./botAnalysisContract";
 import { intervalSecondsFor } from "./botCandleGaps";
-import type { BotMarketSnapshot } from "./botMarketContext";
+import { buildMarketContext, type BotMarketSnapshot, type MarketContext } from "./botMarketContext";
 
 interface BotAnalysisPanelProps {
   bot: BotConfig | null;
@@ -33,6 +33,10 @@ interface BotAnalysisPanelProps {
 
 type BadgeVariant = "positive" | "negative" | "neutral" | "accent" | "warning";
 type Tone = "positive" | "negative" | "neutral" | "warning";
+type FreshnessState = "fresh" | "stale" | "unknown";
+
+const MIN_DIRECTIONAL_BARS = 10;
+const MIN_CONFIDENT_BARS = 25;
 
 const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 const percentFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 1 });
@@ -59,6 +63,18 @@ export function BotAnalysisPanel({
   const isStale = Boolean(
     analysis?.provenance.is_stale || analysis?.dataQuality.status === "stale" || (liveBarsBehind ?? 0) > 0,
   );
+  const freshnessState = analysis ? analysisFreshness(analysis, isStale) : null;
+  const minimumDirectionalBars = analysis?.provenance.minimum_feature_bars ?? MIN_DIRECTIONAL_BARS;
+  const hasDirectionalRead = Boolean(
+    analysis && analysis.provenance.closed_candle_count >= minimumDirectionalBars,
+  );
+  const localChartContext = useMemo(
+    () =>
+      analysis?.source === "backend" && !hasDirectionalRead
+        ? buildSeparateChartContext(marketSnapshot, bot, minimumDirectionalBars)
+        : null,
+    [analysis, bot, hasDirectionalRead, marketSnapshot, minimumDirectionalBars],
+  );
   const botLabel = bot?.symbol ?? bot?.contract_id ?? "Bot";
 
   return (
@@ -71,11 +87,13 @@ export function BotAnalysisPanel({
           </div>
           {analysis ? (
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={isStale ? "warning" : "positive"}>{isStale ? "Stale" : "Fresh"}</Badge>
+              <Badge variant={freshnessBadgeVariant(freshnessState!)}>{freshnessLabel(freshnessState!)}</Badge>
               <Badge variant={qualityBadgeVariant(analysis.dataQuality.status)}>
                 {labelize(analysis.dataQuality.status)} data · {Math.round(analysis.dataQuality.confidence)}/100
               </Badge>
-              <Badge variant="neutral">{labelize(analysis.marketRegime)} regime</Badge>
+              {hasDirectionalRead || analysis.marketRegime !== "unknown" ? (
+                <Badge variant="neutral">{labelize(analysis.marketRegime)} regime</Badge>
+              ) : null}
               <Badge variant={analysis.source === "backend" ? "accent" : "warning"}>
                 {analysis.source === "backend" ? "Canonical backend" : "Local fallback analysis"}
               </Badge>
@@ -101,11 +119,120 @@ export function BotAnalysisPanel({
             description="Neither canonical backend analysis nor enough closed bars for a local fallback were available. Partial candles are never used."
             action={onEvaluate ? <Button onClick={onEvaluate}>Evaluate again</Button> : null}
           />
+        ) : !hasDirectionalRead ? (
+          <InsufficientAnalysisState
+            analysis={analysis}
+            localChartContext={localChartContext}
+            onEvaluate={onEvaluate}
+          />
         ) : (
           <AnalysisContent analysis={analysis} isStale={isStale} liveBarsBehind={liveBarsBehind} />
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function InsufficientAnalysisState({
+  analysis,
+  localChartContext,
+  onEvaluate,
+}: {
+  analysis: DisplayAnalysis;
+  localChartContext: MarketContext | null;
+  onEvaluate?: () => void;
+}) {
+  const provenance = analysis.provenance;
+  const closedCount = Math.max(0, provenance.closed_candle_count);
+  const minimumDirectionalBars = provenance.minimum_feature_bars ?? MIN_DIRECTIONAL_BARS;
+  const minimumConfidentBars = provenance.minimum_sufficient_bars ?? MIN_CONFIDENT_BARS;
+  const firstReadProgress = clamp((closedCount / minimumDirectionalBars) * 100, 0, 100);
+  const barLabel = `${closedCount} closed ${provenance.timeframe.label} candle${closedCount === 1 ? "" : "s"}`;
+
+  return (
+    <div className="space-y-3">
+      <section className="rounded-xl border border-amber-400/25 bg-amber-950/10 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="max-w-2xl">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-amber-200/80">Data prerequisite</p>
+            <h3 className="mt-1 text-lg font-semibold text-amber-100">No directional read yet</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-300">
+              {closedCount === 0
+                ? `This evaluation received no closed ${provenance.timeframe.label} candles.`
+                : `This evaluation received only ${barLabel}.`}{" "}
+              Partial candles are excluded from analysis.
+            </p>
+          </div>
+          {onEvaluate ? <Button onClick={onEvaluate}>Retry evaluation</Button> : null}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-slate-800/80 bg-slate-950/45 p-3">
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="font-medium text-slate-300">Closed-bar history</span>
+            <span className="font-mono text-amber-100">{closedCount} / {minimumDirectionalBars} closed bars</span>
+          </div>
+          <Progress
+            value={firstReadProgress}
+            className="mt-2 h-2 bg-slate-900"
+            indicatorClassName="bg-amber-300"
+            role="progressbar"
+            aria-label="Closed bars available for a directional read"
+            aria-valuemin={0}
+            aria-valuemax={minimumDirectionalBars}
+            aria-valuenow={Math.min(closedCount, minimumDirectionalBars)}
+          />
+          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+            {minimumDirectionalBars} closed bars unlock the first directional feature set; {minimumConfidentBars} are needed for normal confidence.
+          </p>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
+          <Metric label="Latest closed bar" value={formatTimestamp(provenance.latest_candle_timestamp)} />
+          <Metric label="Timeframe" value={provenance.timeframe.label} />
+          <Metric label="Partial excluded" value={String(provenance.partial_candle_count)} />
+          <Metric label="Detected gaps" value={String(provenance.gap_count)} />
+          <Metric label="Data age" value={formatDuration(provenance.data_age_seconds)} />
+        </div>
+      </section>
+
+      {localChartContext ? <LocalChartContextSummary context={localChartContext} /> : null}
+    </div>
+  );
+}
+
+function LocalChartContextSummary({ context }: { context: MarketContext }) {
+  const trend = context.trend;
+  return (
+    <section className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-cyan-200/80">Local chart context</p>
+          <Badge variant="neutral">Separate from evaluation</Badge>
+        </div>
+        <span className="text-xs text-slate-500">As of {formatTimestamp(context.asOfTimestamp)}</span>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-slate-300">
+        The chart has {context.provenance.closedCandleCount} closed bars, but they were not included in the canonical evaluation above. This local summary does not replace that evaluation.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+        <Metric label="Latest chart close" value={formatPrice(context.lastPrice)} />
+        <Metric label="Chart closed bars" value={String(context.provenance.closedCandleCount)} />
+        <Metric
+          label="Chart trend"
+          value={trend ? `${labelize(trend.direction)} · ${Math.round(trend.strength * 100)}/100` : "Needs more history"}
+        />
+        <Metric label="Chart ATR" value={formatPrice(context.atr)} />
+        <Metric label="Chart VWAP" value={context.vwap === null ? "Unavailable" : `${labelize(context.vwapLocation)} · ${formatPrice(context.vwap)}`} />
+        <Metric
+          label="Chart levels"
+          value={
+            context.nearestSupport === null && context.nearestResistance === null
+              ? "Unavailable"
+              : `${formatPrice(context.nearestSupport)} / ${formatPrice(context.nearestResistance)}`
+          }
+        />
+      </div>
+    </section>
   );
 }
 
@@ -183,15 +310,20 @@ function ProvenanceSection({ analysis }: { analysis: DisplayAnalysis }) {
     <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Freshness &amp; provenance</p>
-        <span className="font-mono text-[10px] text-slate-500">{analysis.analysisVersion}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          {provenance.contract_rollover ? <Badge variant="warning">Active contract rollover</Badge> : null}
+          <span className="font-mono text-[10px] text-slate-500">{analysis.analysisVersion}</span>
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
         <Metric label="Latest closed bar" value={formatTimestamp(provenance.latest_candle_timestamp)} />
         <Metric label="Data age" value={formatDuration(provenance.data_age_seconds)} />
         <Metric label="Closed candles" value={String(provenance.closed_candle_count)} />
         <Metric label="Partial excluded" value={String(provenance.partial_candle_count)} />
         <Metric label="Detected gaps" value={String(provenance.gap_count)} />
         <Metric label="Timeframe" value={provenance.timeframe.label} />
+        <Metric label="Analyzed contract" value={provenance.resolved_contract_id ?? "Unavailable"} />
+        <Metric label="Configured contract" value={provenance.configured_contract_id ?? "Unavailable"} />
       </div>
     </section>
   );
@@ -202,7 +334,10 @@ function FeatureSection({ analysis }: { analysis: DisplayAnalysis }) {
     <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
       <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Deterministic market features</p>
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-        <Metric label="Current price" value={formatPrice(analysis.currentPrice)} />
+        <Metric
+          label={analysis.priceSource === "decision" ? "Decision/reference price" : "Current price"}
+          value={formatPrice(analysis.currentPrice)}
+        />
         <Metric label="Trend" value={`${labelize(analysis.marketBias)} · ${Math.round(analysis.trendStrength)}/100`} />
         <Metric label="Regime" value={labelize(analysis.marketRegime)} />
         <Metric
@@ -512,6 +647,45 @@ function barsBehindLiveChart(
   if (!Number.isFinite(analyzedMs) || latestClosedMs === null) return null;
   const intervalMs = intervalSecondsFor(bot.timeframe_unit, bot.timeframe_unit_number) * 1000;
   return intervalMs > 0 ? Math.max(0, Math.floor((latestClosedMs - analyzedMs) / intervalMs)) : null;
+}
+
+function buildSeparateChartContext(
+  snapshot: BotMarketSnapshot | null,
+  bot: BotConfig | null,
+  minimumDirectionalBars = MIN_DIRECTIONAL_BARS,
+): MarketContext | null {
+  if (!snapshot || !bot) return null;
+  const expectedKey = `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}`;
+  if (
+    snapshot.contractKey !== expectedKey ||
+    snapshot.unit !== bot.timeframe_unit ||
+    snapshot.unitNumber !== bot.timeframe_unit_number
+  ) {
+    return null;
+  }
+  const closedCount = snapshot.candles.filter((candle) => !candle.is_partial).length;
+  if (closedCount < minimumDirectionalBars) return null;
+  const updatedAtMs = Date.parse(snapshot.updatedAt);
+  const context = buildMarketContext(
+    snapshot,
+    Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
+    bot.max_data_staleness_seconds,
+  );
+  return context && context.provenance.closedCandleCount >= minimumDirectionalBars ? context : null;
+}
+
+function analysisFreshness(analysis: DisplayAnalysis, isStale: boolean): FreshnessState {
+  const latestTimestamp = analysis.provenance.latest_candle_timestamp;
+  if (!latestTimestamp || !Number.isFinite(Date.parse(latestTimestamp))) return "unknown";
+  return isStale ? "stale" : "fresh";
+}
+
+function freshnessLabel(state: FreshnessState): string {
+  return state === "unknown" ? "Freshness unknown" : state === "stale" ? "Stale" : "Fresh";
+}
+
+function freshnessBadgeVariant(state: FreshnessState): BadgeVariant {
+  return state === "fresh" ? "positive" : state === "stale" ? "warning" : "neutral";
 }
 
 function formatPrice(value: number | null): string {

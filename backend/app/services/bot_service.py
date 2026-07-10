@@ -40,7 +40,7 @@ from .bot_execution_safety import (
     transition_bot_run,
 )
 from .projectx_accounts import get_projectx_account_row
-from .projectx_client import ProjectXClient
+from .projectx_client import ProjectXClient, ProjectXClientError
 from .bot_strategy_registry import (
     SUPPORTED_STRATEGY_IDENTIFIERS,
     dispatch_strategy_evaluator,
@@ -72,6 +72,7 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_EVALUATION_INTRADAY_LOOKBACK_FLOOR = timedelta(days=7)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
@@ -1235,34 +1236,31 @@ def fetch_and_store_candles(
 ) -> list[ProjectXMarketCandle]:
     now = datetime.now(timezone.utc)
     target_bars = max(25, int(config.lookback_bars), int(minimum_lookback_bars or 0))
-    unit_seconds = _UNIT_SECONDS_BY_NAME[str(config.timeframe_unit)]
-    lookback_seconds = unit_seconds * int(config.timeframe_unit_number) * target_bars * 3
-    start = now - timedelta(seconds=max(lookback_seconds, unit_seconds * int(config.timeframe_unit_number) * 25))
-    contract_id, symbol = resolve_market_contract(
-        client,
+    timeframe_unit = str(config.timeframe_unit)
+    timeframe_unit_number = int(config.timeframe_unit_number)
+    unit_seconds = _UNIT_SECONDS_BY_NAME[timeframe_unit]
+    lookback = timedelta(seconds=unit_seconds * timeframe_unit_number * target_bars * 3)
+    if timeframe_unit in {"second", "minute", "hour"}:
+        # Wall-clock multiples alone can produce zero bars over weekends and
+        # exchange closures. A seven-day floor comfortably covers the latest
+        # session while the provider limit still bounds the response size.
+        lookback = max(lookback, _EVALUATION_INTRADAY_LOOKBACK_FLOOR)
+    start = now - lookback
+    return fetch_and_store_market_candles(
+        db,
+        user_id=user_id,
+        client=client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
         live=False,
-    )
-    bars = client.retrieve_bars(
-        contract_id=contract_id,
-        live=False,
         start=start,
         end=now,
-        unit=_PROJECTX_UNIT_BY_NAME[str(config.timeframe_unit)],
-        unit_number=int(config.timeframe_unit_number),
+        unit=timeframe_unit,
+        unit_number=timeframe_unit_number,
         limit=target_bars,
         include_partial_bar=False,
-    )
-    return store_market_candles(
-        db,
-        user_id=user_id,
-        contract_id=contract_id,
-        symbol=symbol,
-        live=False,
-        unit=str(config.timeframe_unit),
-        unit_number=int(config.timeframe_unit_number),
-        bars=bars,
+        prefer_current_contract=True,
+        preserve_cached_history=True,
     )
 
 
@@ -1290,6 +1288,8 @@ def fetch_and_store_vwap_gap_retrace_candles(
         unit_number=1,
         limit=int(params["bars_to_fetch"]),
         include_partial_bar=False,
+        prefer_current_contract=True,
+        preserve_cached_history=True,
     )
 
 
@@ -1311,7 +1311,7 @@ def fetch_and_store_fvg_sweep_mss_candles(
     structure_ratio = max(1, int(round(base_seconds / structure_seconds)))
     fvg_limit = max(25, int(config.lookback_bars))
     structure_limit = min(5000, max(fvg_limit * structure_ratio, fvg_limit + 25))
-    contract_id, symbol = resolve_market_contract(
+    contract_id, symbol = resolve_current_market_contract(
         client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -1387,6 +1387,8 @@ def fetch_and_store_opening_rvol_breakout_candles(
         unit_number=5,
         limit=limit,
         include_partial_bar=False,
+        prefer_current_contract=True,
+        preserve_cached_history=True,
     )
 
 
@@ -1421,6 +1423,8 @@ def fetch_and_store_relative_strength_benchmark_candles(
         unit_number=int(config.timeframe_unit_number),
         limit=int(config.lookback_bars),
         include_partial_bar=False,
+        prefer_current_contract=True,
+        preserve_cached_history=True,
     )
 
 
@@ -1469,6 +1473,8 @@ def fetch_and_store_relative_strength_spy_candles(
             unit_number=5,
             limit=limit,
             include_partial_bar=False,
+            prefer_current_contract=True,
+            preserve_cached_history=True,
         ),
         "SPY": fetch_and_store_market_candles(
             db,
@@ -1483,6 +1489,8 @@ def fetch_and_store_relative_strength_spy_candles(
             unit_number=5,
             limit=limit,
             include_partial_bar=False,
+            prefer_current_contract=True,
+            preserve_cached_history=True,
         ),
     }
 
@@ -1499,7 +1507,7 @@ def fetch_and_store_support_resistance_candles(
     params = _normalize_strategy_params(strategy_type, strategy_params)
     bars_per_timeframe = int(params["bars_per_timeframe"])
     now = datetime.now(timezone.utc)
-    contract_id, symbol = resolve_market_contract(
+    contract_id, symbol = resolve_current_market_contract(
         client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -1547,7 +1555,7 @@ def fetch_and_store_supertrend_pivot_candles(
     lookback_bars = max(int(config.lookback_bars), int(params["supertrend_period"]) + int(params["chop_lookback_bars"]) + 10)
     daily_bars = int(params["daily_bars"])
     now = datetime.now(timezone.utc)
-    contract_id, symbol = resolve_market_contract(
+    contract_id, symbol = resolve_current_market_contract(
         client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -1620,7 +1628,7 @@ def fetch_and_store_delayed_orb_candles(
     session_start = _session_start_utc_for_reference(now, str(config.trading_start_time))
     opening_range_minutes = int(params["opening_range_minutes"])
     confirmation_minutes = int(params["confirmation_minutes"])
-    contract_id, symbol = resolve_market_contract(
+    contract_id, symbol = resolve_current_market_contract(
         client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -1679,7 +1687,7 @@ def fetch_and_store_orb_fibonacci_candles(
     minutes_since_session_start = max(0, int((now - session_start).total_seconds() // 60) + 1)
     bars_since_session_start = math.ceil(minutes_since_session_start / unit_number)
     limit = max(int(config.lookback_bars), minimum_required_bars, bars_since_session_start + 5)
-    contract_id, symbol = resolve_market_contract(
+    contract_id, symbol = resolve_current_market_contract(
         client,
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -1721,29 +1729,53 @@ def fetch_and_store_market_candles(
     unit_number: int,
     limit: int,
     include_partial_bar: bool = False,
+    prefer_current_contract: bool = False,
+    preserve_cached_history: bool = False,
 ) -> list[ProjectXMarketCandle]:
     normalized_unit = str(unit).strip().lower()
     if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
         raise ValueError("unsupported candle unit")
     if start > end:
         raise ValueError("start must be before end")
-    resolved_contract_id, resolved_symbol = resolve_market_contract(
+    resolver = resolve_current_market_contract if prefer_current_contract else resolve_market_contract
+    resolved_contract_id, resolved_symbol = resolver(
         client,
         contract_id=contract_id,
         symbol=symbol,
         live=live,
     )
-    bars = client.retrieve_bars(
-        contract_id=resolved_contract_id,
-        live=live,
-        start=start,
-        end=end,
-        unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
-        unit_number=unit_number,
-        limit=limit,
-        include_partial_bar=include_partial_bar,
+    cached = (
+        list_market_candles(
+            db,
+            user_id=user_id,
+            contract_id=resolved_contract_id,
+            live=live,
+            start=start,
+            end=end,
+            unit=normalized_unit,
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+        )
+        if preserve_cached_history
+        else []
     )
-    return store_market_candles(
+    try:
+        bars = client.retrieve_bars(
+            contract_id=resolved_contract_id,
+            live=live,
+            start=start,
+            end=end,
+            unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
+            unit_number=unit_number,
+            limit=limit,
+            include_partial_bar=include_partial_bar,
+        )
+    except ProjectXClientError:
+        if cached:
+            return cached
+        raise
+    stored = store_market_candles(
         db,
         user_id=user_id,
         contract_id=resolved_contract_id,
@@ -1753,6 +1785,28 @@ def fetch_and_store_market_candles(
         unit_number=unit_number,
         bars=bars,
     )
+    if not preserve_cached_history:
+        return stored
+
+    combined = list_market_candles(
+        db,
+        user_id=user_id,
+        contract_id=resolved_contract_id,
+        live=live,
+        start=start,
+        end=end,
+        unit=normalized_unit,
+        unit_number=unit_number,
+        limit=limit,
+        include_partial_bar=include_partial_bar,
+    )
+    by_timestamp = {
+        _as_utc(row.candle_timestamp): row
+        for row in [*cached, *combined, *stored]
+        if include_partial_bar or not bool(row.is_partial)
+    }
+    ordered = [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+    return ordered[-max(1, int(limit)):]
 
 
 def list_market_candles(
@@ -1957,6 +2011,63 @@ def resolve_market_contract(
         return resolved_id, resolved_symbol
 
     return normalized_contract_id, normalized_symbol
+
+
+def resolve_current_market_contract(
+    client: ProjectXClient,
+    *,
+    contract_id: str,
+    symbol: str | None,
+    live: bool,
+) -> tuple[str, str | None]:
+    """Resolve a saved futures contract to the symbol's active contract.
+
+    Bot configurations intentionally retain the contract that the user saved,
+    but evaluations are about the current market. When that saved `CON.*`
+    delivery expires, look up both the provider symbol (for example
+    ``F.US.MNQ``) and its short root (``MNQ``) before requesting history.
+    Historical/chart requests continue to use :func:`resolve_market_contract`
+    and therefore keep their explicit-contract semantics.
+    """
+
+    normalized_contract_id = str(contract_id).strip()
+    normalized_symbol = _normalized_optional_text(symbol)
+    search_contracts = getattr(client, "search_contracts", None)
+    if (
+        _looks_like_projectx_contract_id(normalized_contract_id)
+        and normalized_symbol is not None
+        and callable(search_contracts)
+    ):
+        try:
+            for candidate in _market_symbol_lookup_candidates(normalized_symbol):
+                resolved = _pick_market_contract(search_contracts(search_text=candidate, live=live))
+                if resolved is None:
+                    continue
+                resolved_id = _normalized_optional_text(resolved.get("id"))
+                if resolved_id is None or not _looks_like_projectx_contract_id(resolved_id):
+                    continue
+                resolved_symbol = _normalized_optional_text(resolved.get("symbol_id")) or normalized_symbol
+                return resolved_id, resolved_symbol
+        except ProjectXClientError:
+            # Contract search is an optimization. The configured contract may
+            # still have valid history, so allow the normal resolver/fetch path
+            # to proceed and surface an error only if history retrieval fails.
+            pass
+
+    return resolve_market_contract(
+        client,
+        contract_id=normalized_contract_id,
+        symbol=normalized_symbol,
+        live=live,
+    )
+
+
+def _market_symbol_lookup_candidates(symbol: str) -> list[str]:
+    normalized = symbol.strip()
+    candidates = [normalized]
+    if "." in normalized:
+        candidates.append(normalized.rsplit(".", 1)[-1])
+    return _unique_text_values(candidates)
 
 
 def store_market_candles(
@@ -8758,6 +8869,8 @@ def build_bot_market_analysis(
         slow_period=int(config.slow_period),
         signal_action=str(signal.action),
         stale_after_seconds=int(config.max_data_staleness_seconds),
+        configured_contract_id=str(config.contract_id),
+        configured_symbol=config.symbol,
     )
 
 
@@ -9312,7 +9425,10 @@ def _is_contract_allowed(config: BotConfig, *, contract_id: str, symbol: str | N
         return True
 
     allowed = set(values)
-    candidates = _unique_text_values([contract_id, symbol, config.contract_id, config.symbol])
+    # Compare the allowlist only with the instrument that would actually be
+    # routed. Including the saved/configured delivery here could let an expired
+    # M26 allowlist entry authorize a newly resolved U26 order.
+    candidates = _unique_text_values([contract_id, symbol])
     return any(candidate in allowed for candidate in candidates)
 
 

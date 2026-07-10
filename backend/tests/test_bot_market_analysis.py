@@ -7,6 +7,8 @@ from app.bot_schemas import BotMarketAnalysisOut
 from app.services.bot_market_analysis import (
     ANALYSIS_VERSION,
     PROBABILITY_METHOD,
+    _execution_risk_score,
+    _setup_quality_score,
     build_market_analysis,
 )
 from app.services.bot_service import build_signal_trade_evaluation
@@ -148,6 +150,42 @@ def test_trend_and_range_regime_boundaries_are_deterministic():
     assert ranging["trend"] == "neutral"
     assert ranging["market_regime"] == "range"
     assert 40 <= ranging["features"]["volatility"]["percentile"] <= 60
+
+
+def test_setup_quality_and_execution_risk_measure_confluence_not_only_data_completeness():
+    weak_choppy_setup = _setup_quality_score(
+        data_confidence=100,
+        trend_direction="bullish",
+        trend_strength=15,
+        regime="chop",
+        mtf_status="bullish",
+        volume_state="low",
+        vwap_location="below",
+        has_levels=True,
+    )
+    strong_aligned_setup = _setup_quality_score(
+        data_confidence=100,
+        trend_direction="bullish",
+        trend_strength=80,
+        regime="trend",
+        mtf_status="bullish",
+        volume_state="normal",
+        vwap_location="above",
+        has_levels=True,
+    )
+    weak_choppy_risk = _execution_risk_score(
+        volatility_state="normal",
+        volume_state="low",
+        regime="chop",
+        trend_strength=15,
+        mtf_status="bullish",
+        is_stale=False,
+        gap_count=0,
+    )
+
+    assert weak_choppy_setup < 60
+    assert strong_aligned_setup >= 80
+    assert weak_choppy_risk >= 60
 
 
 def test_multi_timeframe_alignment_uses_only_complete_closed_aggregates():

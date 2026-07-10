@@ -40,6 +40,8 @@ def build_market_analysis(
     signal_action: str,
     stale_after_seconds: int,
     now: datetime | None = None,
+    configured_contract_id: str | None = None,
+    configured_symbol: str | None = None,
 ) -> dict[str, Any]:
     """Build the canonical, deterministic closed-bar market-analysis payload."""
 
@@ -55,6 +57,12 @@ def build_market_analysis(
     }
     gaps = _detect_gaps(closed, interval_seconds)
     latest_timestamp = closed[-1]["timestamp"] if closed else None
+    resolved_contract_id = closed[-1].get("contract_id") if closed else None
+    resolved_symbol = closed[-1].get("symbol") if closed else None
+    normalized_configured_contract_id = _optional_text(configured_contract_id)
+    normalized_configured_symbol = _optional_text(configured_symbol)
+    resolved_contract_id = _optional_text(resolved_contract_id) or normalized_configured_contract_id
+    resolved_symbol = _optional_text(resolved_symbol) or normalized_configured_symbol
     data_age_seconds = (
         max(0, int((generated_at - (latest_timestamp + timedelta(seconds=interval_seconds))).total_seconds()))
         if latest_timestamp is not None
@@ -72,6 +80,16 @@ def build_market_analysis(
         "timeframe": timeframe,
         "detected_gaps": gaps,
         "gap_count": len(gaps),
+        "configured_contract_id": normalized_configured_contract_id,
+        "resolved_contract_id": resolved_contract_id,
+        "resolved_symbol": resolved_symbol,
+        "contract_rollover": bool(
+            normalized_configured_contract_id
+            and resolved_contract_id
+            and normalized_configured_contract_id != resolved_contract_id
+        ),
+        "minimum_feature_bars": MIN_FEATURE_BARS,
+        "minimum_sufficient_bars": MIN_SUFFICIENT_BARS,
     }
 
     missing_inputs = _base_missing_inputs(closed)
@@ -86,6 +104,10 @@ def build_market_analysis(
         warnings.append(f"Latest closed candle is {data_age_seconds} seconds old and exceeds the staleness limit.")
     if gaps:
         warnings.append(f"Detected {len(gaps)} candle gap{'s' if len(gaps) != 1 else ''} in the supplied history.")
+    if provenance["contract_rollover"]:
+        warnings.append(
+            f"Evaluation resolved configured contract {normalized_configured_contract_id} to active contract {resolved_contract_id}."
+        )
 
     if len(closed) < MIN_FEATURE_BARS:
         return _insufficient_payload(
@@ -193,13 +215,20 @@ def build_market_analysis(
     )
     setup_score = _setup_quality_score(
         data_confidence=data_quality["confidence"],
+        trend_direction=trend["direction"],
+        trend_strength=trend["strength"],
+        regime=regime,
         mtf_status=mtf["status"],
-        relative_volume=relative_volume,
+        volume_state=volume_state,
+        vwap_location=vwap_location,
         has_levels=nearest_support is not None and nearest_resistance is not None,
     )
     execution_risk_score = _execution_risk_score(
         volatility_state=volatility_state,
         volume_state=volume_state,
+        regime=regime,
+        trend_strength=trend["strength"],
+        mtf_status=mtf["status"],
         is_stale=is_stale,
         gap_count=len(gaps),
     )
@@ -234,10 +263,21 @@ def build_market_analysis(
         risk_notes.append(f"Volatility is {volatility_state}; execution slippage and level failure risk can be higher.")
     if volume_state == "low":
         risk_notes.append("Low relative volume reduces confidence in directional follow-through.")
-    summary = (
-        f"Closed-bar heuristic read is {bias_direction} with {trend['strength']}/100 trend strength; "
-        f"the largest scenario weight is {max(weights, key=weights.get)} at {max(weights.values())}%. "
-        "This is not financial advice."
+    if regime == "chop":
+        risk_notes.append("Choppy price action increases false-break and whipsaw risk.")
+    if trend["strength"] < 25:
+        risk_notes.append("Directional trend strength is weak, so follow-through conviction is limited.")
+    if mtf["status"] == "mixed":
+        risk_notes.append("Timeframe trends conflict, increasing directional execution risk.")
+    summary = _analysis_summary(
+        bias_direction=bias_direction,
+        trend_strength=trend["strength"],
+        regime=regime,
+        weights=weights,
+        volume_state=volume_state,
+        vwap_location=vwap_location,
+        nearest_support=nearest_support,
+        nearest_resistance=nearest_resistance,
     )
 
     return {
@@ -420,6 +460,8 @@ def _normalize_rows(candles: Sequence[Any]) -> list[dict[str, Any]]:
                 "close": close_price,
                 "volume": max(0.0, volume),
                 "is_partial": is_partial,
+                "contract_id": _optional_text(_value(candle, "contract_id", default=None)),
+                "symbol": _optional_text(_value(candle, "symbol", default=None)),
             }
         )
     by_timestamp: dict[datetime, dict[str, Any]] = {}
@@ -438,6 +480,13 @@ def _value(candle: Any, *names: str, default: Any = None) -> Any:
         if hasattr(candle, name):
             return getattr(candle, name)
     return default
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _as_utc(value: Any) -> datetime:
@@ -910,22 +959,129 @@ def _data_quality(*, closed_count: int, partial_count: int, is_stale: bool, gap_
     return {"status": status, "confidence": confidence, "missing_inputs": missing_inputs, "warnings": _dedupe(warnings)}
 
 
-def _setup_quality_score(*, data_confidence: int, mtf_status: str, relative_volume: float | None, has_levels: bool) -> int:
-    score = data_confidence * 0.55
-    score += 20 if mtf_status in {"bullish", "bearish"} else 8 if mtf_status in {"neutral", "mixed"} else 0
-    score += 10 if relative_volume is not None else 0
-    score += 15 if has_levels else 0
+def _setup_quality_score(
+    *,
+    data_confidence: int,
+    trend_direction: str,
+    trend_strength: int,
+    regime: str,
+    mtf_status: str,
+    volume_state: str,
+    vwap_location: str,
+    has_levels: bool,
+) -> int:
+    # Setup quality is confluence, not merely data completeness. A complete
+    # dataset with weak trend, chop, low volume, and VWAP conflict must not
+    # receive a near-perfect setup score.
+    score = data_confidence * 0.30 + trend_strength * 0.30
+    if trend_direction in {"bullish", "bearish"} and mtf_status == trend_direction:
+        score += 15
+    elif mtf_status == "neutral":
+        score += 7
+    elif mtf_status == "mixed":
+        score += 2
+
+    if regime == "trend" and trend_direction in {"bullish", "bearish"}:
+        score += 15
+    elif regime in {"range", "quiet"} and trend_direction == "neutral":
+        score += 12
+    elif regime in {"range", "quiet"}:
+        score += 4
+    elif regime == "chop":
+        score += 2
+    elif regime == "volatile":
+        score += 3
+
+    score += {"elevated": 10, "normal": 7, "low": 1}.get(volume_state, 0)
+    if (trend_direction == "bullish" and vwap_location == "above") or (
+        trend_direction == "bearish" and vwap_location == "below"
+    ):
+        score += 8
+    elif (trend_direction == "bullish" and vwap_location == "below") or (
+        trend_direction == "bearish" and vwap_location == "above"
+    ):
+        score -= 4
+    elif trend_direction == "neutral" and vwap_location == "at":
+        score += 5
+
+    score += 7 if has_levels else 0
     return max(0, min(100, int(round(score))))
 
 
-def _execution_risk_score(*, volatility_state: str, volume_state: str, is_stale: bool, gap_count: int) -> int:
+def _execution_risk_score(
+    *,
+    volatility_state: str,
+    volume_state: str,
+    regime: str,
+    trend_strength: int,
+    mtf_status: str,
+    is_stale: bool,
+    gap_count: int,
+) -> int:
     score = {"low": 10, "normal": 20, "elevated": 45, "extreme": 70}.get(volatility_state, 30)
     if volume_state == "low":
         score += 15
+    if regime in {"chop", "volatile"}:
+        score += 15
+    if trend_strength < 25:
+        score += 10
+    elif trend_strength < 45:
+        score += 5
+    if mtf_status == "mixed":
+        score += 15
+    elif mtf_status == "unavailable":
+        score += 10
     if is_stale:
         score += 35
     score += min(30, gap_count * 10)
     return max(0, min(100, score))
+
+
+def _analysis_summary(
+    *,
+    bias_direction: str,
+    trend_strength: int,
+    regime: str,
+    weights: dict[str, int],
+    volume_state: str,
+    vwap_location: str,
+    nearest_support: float | None,
+    nearest_resistance: float | None,
+) -> str:
+    ranked = sorted(weights.items(), key=lambda item: (item[1], item[0]), reverse=True)
+    leading_scenario, leading_weight = ranked[0]
+    next_scenario, next_weight = ranked[1]
+    scenario_edge = leading_weight - next_weight
+    conviction = (
+        "Low-conviction"
+        if trend_strength < 30 or scenario_edge < 8
+        else "Moderate-conviction"
+        if trend_strength < 65 or scenario_edge < 18
+        else "High-conviction"
+    )
+    qualifiers: list[str] = []
+    if regime == "chop":
+        qualifiers.append("price action is choppy")
+    if volume_state == "low":
+        qualifiers.append("relative volume is low")
+    if bias_direction == "bullish" and vwap_location == "below":
+        qualifiers.append("price is below VWAP")
+    elif bias_direction == "bearish" and vwap_location == "above":
+        qualifiers.append("price is above VWAP")
+
+    summary = (
+        f"{conviction} {bias_direction} closed-bar read: trend strength is {trend_strength}/100 in a {regime} regime; "
+        f"{leading_scenario} leads the heuristic scenarios at {leading_weight}% "
+        f"({next_scenario} is next at {next_weight}%)."
+    )
+    if qualifiers:
+        qualifier_text = ", ".join(qualifiers)
+        summary += f" {qualifier_text[0].upper() + qualifier_text[1:]}, which limits directional follow-through."
+    if nearest_support is not None or nearest_resistance is not None:
+        summary += (
+            f" Nearest support is {_fmt(nearest_support)}; nearest resistance is {_fmt(nearest_resistance)}."
+        )
+    return f"{summary} This is not financial advice."
 
 
 def _volatility_state(true_ranges: list[float]) -> str:

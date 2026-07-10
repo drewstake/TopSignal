@@ -33,6 +33,7 @@ export const SCENARIO_WEIGHT_DISCLAIMER =
   "Scenario weights are deterministic heuristic allocations, not calibrated probabilities or guaranteed outcomes.";
 
 export type AnalysisSource = "backend" | "local_fallback";
+export type AnalysisPriceSource = "closed_bar" | "decision" | "none";
 
 export interface DisplayAnalysis {
   source: AnalysisSource;
@@ -43,6 +44,7 @@ export interface DisplayAnalysis {
   trendStrength: number;
   marketRegime: BotMarketRegime;
   currentPrice: number | null;
+  priceSource: AnalysisPriceSource;
   priceChange: number | null;
   priceChangePercent: number | null;
   expectedMove: number | null;
@@ -176,6 +178,8 @@ function normalizeBackendAnalysis(
   const nearestResistance =
     finiteNumber(analysis.features?.nearby_levels.resistance) ?? finiteNumber(analysis.nearest_resistance);
   const scoreDrivers = analysis.score_drivers ?? legacyScoreDrivers(marketBias, analysis.reasoning);
+  const analyzedPrice = finiteNumber(analysis.current_price);
+  const decisionPrice = finiteNumber(evaluation.decision.price);
 
   return {
     source: "backend",
@@ -185,7 +189,8 @@ function normalizeBackendAnalysis(
     marketBias,
     trendStrength,
     marketRegime: analysis.market_regime ?? localContext?.marketRegime ?? "unknown",
-    currentPrice: finiteNumber(analysis.current_price) ?? finiteNumber(evaluation.decision.price),
+    currentPrice: analyzedPrice ?? decisionPrice,
+    priceSource: analyzedPrice !== null ? "closed_bar" : decisionPrice !== null ? "decision" : "none",
     priceChange: finiteNumber(analysis.price_change),
     priceChangePercent: finiteNumber(analysis.price_change_percent),
     expectedMove: finiteNumber(analysis.expected_move),
@@ -237,25 +242,27 @@ function buildLocalFallback(evaluation: BotEvaluation, context: MarketContext): 
     priceChange !== null && previousClose !== null && previousClose !== 0
       ? (priceChange / Math.abs(previousClose)) * 100
       : null;
-  const setupScore = Math.round(
-    clamp(
-      context.dataQuality.confidence * 0.55 +
-        (context.multiTimeframeAlignment.status === marketBias ? 20 : 8) +
-        (context.relativeVolume !== null ? 10 : 0) +
-        (context.nearestSupport !== null && context.nearestResistance !== null ? 15 : 0),
-      0,
-      100,
-    ),
-  );
+  const setupScore = localSetupQualityScore(context, marketBias);
   const executionRiskScore = Math.round(
     clamp(
-      (context.volatilityState === "extreme" ? 45 : context.volatilityState === "elevated" ? 35 : 15) +
+      (context.volatilityState === "extreme" ? 70 : context.volatilityState === "elevated" ? 45 : context.volatilityState === "low" ? 10 : 20) +
+        (context.volumeState === "low" ? 15 : 0) +
+        (context.marketRegime === "chop" || context.marketRegime === "volatile" ? 15 : 0) +
+        ((context.trend?.strength ?? 0) * 100 < 25 ? 10 : (context.trend?.strength ?? 0) * 100 < 45 ? 5 : 0) +
+        (context.multiTimeframeAlignment.status === "mixed" ? 15 : context.multiTimeframeAlignment.status === "unavailable" ? 10 : 0) +
         (context.provenance.isStale ? 35 : 0) +
         Math.min(30, context.provenance.detectedGapCount * 10),
       0,
       100,
     ),
   );
+  const executionRiskDrivers = Array.from(new Set([
+    ...context.dataQuality.warnings,
+    ...(context.volumeState === "low" ? ["Low relative volume reduces directional follow-through confidence."] : []),
+    ...(context.marketRegime === "chop" ? ["Choppy price action increases false-break and whipsaw risk."] : []),
+    ...((context.trend?.strength ?? 0) * 100 < 25 ? ["Directional trend strength is weak."] : []),
+    ...(context.multiTimeframeAlignment.status === "mixed" ? ["Timeframe trends conflict."] : []),
+  ]));
   const invalidationLevel = marketBias === "bullish" ? context.nearestSupport : marketBias === "bearish" ? context.nearestResistance : null;
 
   return {
@@ -267,6 +274,7 @@ function buildLocalFallback(evaluation: BotEvaluation, context: MarketContext): 
     trendStrength: Math.round((context.trend?.strength ?? 0) * 100),
     marketRegime: context.marketRegime,
     currentPrice,
+    priceSource: currentPrice !== null ? "closed_bar" : "none",
     priceChange,
     priceChangePercent,
     expectedMove: context.atr,
@@ -307,7 +315,7 @@ function buildLocalFallback(evaluation: BotEvaluation, context: MarketContext): 
     executionRisk: {
       risk_score: executionRiskScore,
       label: executionRiskScore >= 60 ? "high" : executionRiskScore >= 30 ? "moderate" : "low",
-      drivers: context.dataQuality.warnings,
+      drivers: executionRiskDrivers,
     },
     dataConfidence: {
       score: context.dataQuality.confidence,
@@ -348,6 +356,27 @@ function buildLocalScenarioWeights(context: MarketContext): BotDirectionalProbab
     bullish -= 3;
   }
   return normalizeScenarioWeights({ bullish, bearish, sideways });
+}
+
+function localSetupQualityScore(context: MarketContext, marketBias: BotMarketBias): number {
+  const trendStrength = (context.trend?.strength ?? 0) * 100;
+  let score = context.dataQuality.confidence * 0.3 + trendStrength * 0.3;
+  if (marketBias !== "neutral" && context.multiTimeframeAlignment.status === marketBias) score += 15;
+  else if (context.multiTimeframeAlignment.status === "neutral") score += 7;
+  else if (context.multiTimeframeAlignment.status === "mixed") score += 2;
+
+  if (context.marketRegime === "trend" && marketBias !== "neutral") score += 15;
+  else if ((context.marketRegime === "range" || context.marketRegime === "quiet") && marketBias === "neutral") score += 12;
+  else if (context.marketRegime === "range" || context.marketRegime === "quiet") score += 4;
+  else if (context.marketRegime === "chop") score += 2;
+  else if (context.marketRegime === "volatile") score += 3;
+
+  score += context.volumeState === "elevated" ? 10 : context.volumeState === "normal" ? 7 : context.volumeState === "low" ? 1 : 0;
+  if ((marketBias === "bullish" && context.vwapLocation === "above") || (marketBias === "bearish" && context.vwapLocation === "below")) score += 8;
+  else if ((marketBias === "bullish" && context.vwapLocation === "below") || (marketBias === "bearish" && context.vwapLocation === "above")) score -= 4;
+  else if (marketBias === "neutral" && context.vwapLocation === "at") score += 5;
+  if (context.nearestSupport !== null && context.nearestResistance !== null) score += 7;
+  return Math.round(clamp(score, 0, 100));
 }
 
 function localScoreDrivers(context: MarketContext): BotAnalysisScoreDrivers {

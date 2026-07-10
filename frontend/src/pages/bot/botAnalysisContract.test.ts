@@ -164,6 +164,7 @@ describe("buildDisplayAnalysis", () => {
 
     expect(result?.source).toBe("backend");
     expect(result?.analysisVersion).toBe(CANONICAL_ANALYSIS_VERSION);
+    expect(result?.priceSource).toBe("closed_bar");
     expect(result?.scenarioWeights).toEqual({ bullish: 51, bearish: 18, sideways: 31 });
     expect(result?.provenance.closed_candle_count).toBe(80);
     expect(result?.dataQuality.status).toBe("good");
@@ -178,6 +179,7 @@ describe("buildDisplayAnalysis", () => {
 
     expect(result?.source).toBe("local_fallback");
     expect(result?.currentPrice).toBe(closed[closed.length - 1].close);
+    expect(result?.priceSource).toBe("closed_bar");
     expect(result?.provenance.closed_candle_count).toBe(40);
     expect(result?.provenance.partial_candle_count).toBe(1);
     expect(result?.provenance.stale_after_seconds).toBe(600);
@@ -200,5 +202,12 @@ describe("buildDisplayAnalysis", () => {
     expect(result?.scenarioWeights).toEqual({ bullish: 40, bearish: 35, sideways: 25 });
     expect(result?.analysisVersion).toBe("legacy_unversioned");
     expect(result?.dataQuality.warnings).toContain("Backend returned an unversioned legacy analysis contract.");
+  });
+
+  it("identifies a decision price used when the closed-bar analysis has no price", () => {
+    const result = buildDisplayAnalysis(evaluation(legacyAnalysis({ current_price: null })));
+
+    expect(result?.currentPrice).toBe(105);
+    expect(result?.priceSource).toBe("decision");
   });
 });

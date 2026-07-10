@@ -101,7 +101,7 @@ export function selectLatestActionableEvaluation({
   const activityDecision =
     activityConfigMatchesBotMarket(activity, bot)
       ? [...activity.decisions]
-          .filter((decision) => decision.contract_id === bot.contract_id && isActionableDecision(decision))
+          .filter((decision) => decisionMatchesBotMarket(decision, bot) && isActionableDecision(decision))
           .sort((left, right) => sortableTimestamp(right.created_at) - sortableTimestamp(left.created_at))[0] ?? null
       : null;
 
@@ -276,10 +276,33 @@ function evaluationMatchesBotMarket(evaluation: BotEvaluation | null | undefined
   return (
     evaluation?.config.id === bot.id &&
     evaluation.config.contract_id === bot.contract_id &&
-    evaluation.decision.contract_id === bot.contract_id &&
+    decisionMatchesBotMarket(evaluation.decision, bot) &&
     evaluation.config.timeframe_unit === bot.timeframe_unit &&
     evaluation.config.timeframe_unit_number === bot.timeframe_unit_number
   );
+}
+
+export function decisionMatchesBotMarket(decision: BotDecision, bot: BotConfig): boolean {
+  const decisionContract = normalizedMarketIdentifier(decision.contract_id);
+  const botContract = normalizedMarketIdentifier(bot.contract_id);
+  if (decisionContract !== null && botContract !== null && decisionContract === botContract) {
+    return true;
+  }
+  const decisionSymbol = marketSymbolRoot(decision.symbol);
+  const botSymbol = marketSymbolRoot(bot.symbol);
+  return decisionSymbol !== null && botSymbol !== null && decisionSymbol === botSymbol;
+}
+
+function marketSymbolRoot(value: string | null | undefined): string | null {
+  const normalized = normalizedMarketIdentifier(value);
+  if (!normalized) return null;
+  const parts = normalized.split(".");
+  return parts[parts.length - 1] || null;
+}
+
+function normalizedMarketIdentifier(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toUpperCase();
+  return normalized || null;
 }
 
 function activityConfigMatchesBotMarket(activity: BotActivity | null, bot: BotConfig): activity is BotActivity {
