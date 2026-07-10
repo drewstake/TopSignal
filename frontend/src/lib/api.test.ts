@@ -211,6 +211,42 @@ describe("botsApi", () => {
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("end");
   });
 
+  it("streams exact server replay progress before returning the result", async () => {
+    const onProgress = vi.fn();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(
+      [
+        ": connected",
+        "",
+        "event: progress",
+        'data: {"phase":"replaying","completed":610,"total":1000,"percent":61,"remaining_percent":39}',
+        "",
+        "event: result",
+        'data: {"id":18}',
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ));
+
+    const response = await botsApi.runBacktest(42, {
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+    }, { onProgress });
+
+    expect(response.id).toBe(18);
+    expect(onProgress).toHaveBeenCalledWith({
+      phase: "replaying",
+      completed: 610,
+      total: 1_000,
+      percent: 61,
+      remaining_percent: 39,
+    });
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    });
+  });
+
   it("deduplicates closed-history identities within the same candle bucket", () => {
     const base = {
       contractId: " con.f.us.mnq.m26 ",

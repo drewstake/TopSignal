@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import import_module
 from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping
@@ -47,6 +48,7 @@ class HistoryRequirement:
     notes: str | None = None
 
 
+@lru_cache(maxsize=1)
 def _bot_service_module() -> Any:
     # Deliberately lazy: bot_service can import this registry without creating a
     # cycle, and evaluators continue to use bot_service's runtime-final helpers.

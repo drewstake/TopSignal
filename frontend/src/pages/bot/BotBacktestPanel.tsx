@@ -4,6 +4,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
+import { Progress } from "../../components/ui/Progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { botsApi } from "../../lib/api";
 import type {
@@ -11,6 +12,7 @@ import type {
   BotBacktestDrawdownPoint,
   BotBacktestEquityPoint,
   BotBacktestPeriodResult,
+  BotBacktestProgress,
   BotBacktestResult,
   BotConfig,
 } from "../../lib/types";
@@ -23,6 +25,7 @@ import {
   BACKTEST_EQUITY_TOP,
   buildBacktestPayload,
   buildBacktestChartPaths,
+  describeBacktestProgress,
   validateBacktestForm,
   type BotBacktestFormState,
 } from "./botBacktest";
@@ -58,6 +61,7 @@ interface BotBacktestPanelProps {
 export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
   const [form, setForm] = useState<BotBacktestFormState>(buildDefaultForm);
   const [result, setResult] = useState<BotBacktestResult | null>(null);
+  const [progress, setProgress] = useState<BotBacktestProgress | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
@@ -88,10 +92,16 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
     const controller = new AbortController();
     requestController.current = controller;
     setRunning(true);
+    setProgress(null);
     setError(null);
     try {
       const nextResult = await botsApi.runBacktest(bot.id, buildBacktestPayload(form), {
         signal: controller.signal,
+        onProgress: (nextProgress) => {
+          if (requestSequence.current === sequence) {
+            setProgress(nextProgress);
+          }
+        },
       });
       if (requestSequence.current === sequence) {
         setResult(nextResult);
@@ -161,8 +171,8 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
 
         {!bot ? (
           <BacktestEmptyState message="Save or select a bot to configure a historical replay." />
-        ) : running && !result ? (
-          <BacktestRunningState />
+        ) : running ? (
+          <BacktestRunningState progress={progress} />
         ) : result ? (
           <BacktestResults result={result} />
         ) : (
@@ -201,11 +211,31 @@ function BacktestEmptyState({ message }: { message: string }) {
   );
 }
 
-function BacktestRunningState() {
+export function BacktestRunningState({ progress }: { progress: BotBacktestProgress | null }) {
+  const copy = describeBacktestProgress(progress);
   return (
-    <div role="status" className="flex items-center gap-3 rounded-xl border border-app-accent/30 bg-app-accent/10 px-4 py-4 text-sm text-app-text-soft">
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-app-accent/25 border-t-app-accent" aria-hidden="true" />
-      Preparing and replaying the full closed-candle history. No orders can be routed from this run.
+    <div role="status" aria-live="polite" className="space-y-3 rounded-xl border border-app-accent/30 bg-app-accent/10 px-4 py-4 text-app-text-soft">
+      <div className="flex items-center gap-3">
+        <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-app-accent/25 border-t-app-accent" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-app-text">{copy.title}</p>
+          <p className="mt-0.5 text-xs text-app-muted">{copy.detail}</p>
+        </div>
+      </div>
+      {copy.percent === null ? (
+        <div className="h-2 overflow-hidden rounded-full bg-app-raised" aria-label="Preparing backtest history">
+          <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-app-accent to-app-secondary" />
+        </div>
+      ) : (
+        <Progress
+          value={copy.percent}
+          role="progressbar"
+          aria-label="Backtest replay progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={copy.percent}
+        />
+      )}
     </div>
   );
 }

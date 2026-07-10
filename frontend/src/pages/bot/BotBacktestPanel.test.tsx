@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { BotBacktestBreakdown, BotBacktestResult } from "../../lib/types";
-import { BacktestResults, BotBacktestPanel } from "./BotBacktestPanel";
+import { BacktestResults, BacktestRunningState, BotBacktestPanel } from "./BotBacktestPanel";
 
 const breakdown: BotBacktestBreakdown = {
   trade_count: 1,
@@ -150,5 +150,25 @@ describe("BotBacktestPanel", () => {
     expect(markup).not.toContain("Start date");
     expect(markup).not.toContain("End date");
     expect(markup).not.toContain('type="date"');
+  });
+
+  it("shows the replay percent and amount remaining", () => {
+    const markup = renderToStaticMarkup(
+      <BacktestRunningState
+        progress={{
+          phase: "replaying",
+          completed: 610,
+          total: 1_000,
+          percent: 61,
+          remaining_percent: 39,
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Replaying closed candles — 61%");
+    expect(markup).toContain("39% remaining");
+    expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('aria-valuenow="61"');
+    expect(markup).not.toContain("Preparing and replaying the full closed-candle history");
   });
 });

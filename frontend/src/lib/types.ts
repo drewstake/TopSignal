@@ -1235,6 +1235,21 @@ export interface BotBacktestInput {
   force_close_at_end?: boolean;
 }
 
+export type BotBacktestProgressPhase =
+  | "preparing"
+  | "loading"
+  | "replaying"
+  | "finalizing"
+  | "complete";
+
+export interface BotBacktestProgress {
+  phase: BotBacktestProgressPhase;
+  completed: number | null;
+  total: number | null;
+  percent: number | null;
+  remaining_percent: number | null;
+}
+
 export interface BotBacktestRange {
   start: string;
   end: string;

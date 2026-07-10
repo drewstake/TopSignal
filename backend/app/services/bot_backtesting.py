@@ -275,6 +275,20 @@ class _OpenTrade:
 
 
 SignalEvaluator = Callable[[list[ProjectXMarketCandle]], SignalResult]
+BacktestProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _notify_backtest_progress(
+    callback: BacktestProgressCallback | None,
+    **progress: Any,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(progress)
+    except Exception:
+        # Progress reporting is advisory and must never alter replay results.
+        return
 
 
 class BacktestEngine:
@@ -288,8 +302,11 @@ class BacktestEngine:
         settings: BacktestSettings,
         signal_evaluator: SignalEvaluator | None = None,
         replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
+        progress_callback: BacktestProgressCallback | None = None,
     ) -> None:
         self.config = config
+        self.progress_callback = progress_callback
+        self._last_replay_progress_percent = -1
         self.settings = _validate_settings(settings)
         self.strategy_type = str(config.strategy_type)
         _require_supported_strategy(self.strategy_type)
@@ -533,6 +550,8 @@ class BacktestEngine:
             self.execution_close_times,
             self.execution_in_session,
         )
+        total_bars = len(self.execution_candles)
+        self._report_replay_progress(completed=0, total=total_bars)
         for index, (candle, candle_start, event_time, inside_session) in enumerate(
             timeline
         ):
@@ -565,6 +584,7 @@ class BacktestEngine:
                 history_cursor += 1
             if self.strategy_type == _TOPBOT_STRATEGY and not inside_session:
                 self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+                self._report_replay_progress(completed=index + 1, total=total_bars)
                 continue
             if self._sma_close_values is not None:
                 signal = self._evaluate_prepared_sma(history_cursor)
@@ -582,6 +602,7 @@ class BacktestEngine:
                     signal_identity = (str(signal.action), source_signal_timestamp)
                     if signal_identity in self._emitted_topbot_signal_identities:
                         self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+                        self._report_replay_progress(completed=index + 1, total=total_bars)
                         continue
                     self._emitted_topbot_signal_identities.add(signal_identity)
                 self.pending = _PendingSignal(
@@ -593,6 +614,7 @@ class BacktestEngine:
                 )
 
             self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+            self._report_replay_progress(completed=index + 1, total=total_bars)
 
         if self.pending is not None:
             self.unfilled_final_signals += 1
@@ -643,6 +665,20 @@ class BacktestEngine:
             "trades": self.trades,
             "warnings": self.warnings,
         }
+
+    def _report_replay_progress(self, *, completed: int, total: int) -> None:
+        percent = min(100, max(0, int(completed * 100 / max(1, total))))
+        if percent == self._last_replay_progress_percent:
+            return
+        self._last_replay_progress_percent = percent
+        _notify_backtest_progress(
+            self.progress_callback,
+            phase="replaying",
+            completed=int(completed),
+            total=int(total),
+            percent=percent,
+            remaining_percent=100 - percent,
+        )
 
     def _prepare_topbot_runtime(self) -> None:
         self._topbot_params = bot_service_module._normalize_strategy_params(
@@ -2498,6 +2534,7 @@ def prepare_bot_backtest_data(
     now: datetime | None = None,
     include_primary: bool = True,
     request_budget: _ProviderRequestBudget | None = None,
+    primary_execution_rows: list[ProjectXMarketCandle] | None = None,
 ) -> int:
     """Populate TopBot's deterministic replay cache without running a replay."""
 
@@ -2548,13 +2585,14 @@ def prepare_bot_backtest_data(
         elif int(spec.warmup_bars) > existing[2]:
             requests[identity] = (existing[0], existing[1], int(spec.warmup_bars))
 
-    primary_execution_rows = _load_primary_candle_range(
-        db,
-        user_id=user_id,
-        config=config,
-        start_at=start,
-        closed_by=fetch_end,
-    )
+    if primary_execution_rows is None:
+        primary_execution_rows = _load_primary_candle_range(
+            db,
+            user_id=user_id,
+            config=config,
+            start_at=start,
+            closed_by=fetch_end,
+        )
     first_event = (
         _candle_close_time(primary_execution_rows[0])
         if primary_execution_rows
@@ -2781,6 +2819,7 @@ def run_backtest(
     force_close_at_end: bool = True,
     signal_evaluator: SignalEvaluator | None = None,
     replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
+    progress_callback: BacktestProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run a pure replay. This function cannot create or route an order."""
 
@@ -2799,6 +2838,7 @@ def run_backtest(
         ),
         signal_evaluator=signal_evaluator,
         replay_streams=replay_streams,
+        progress_callback=progress_callback,
     ).run()
 
 
@@ -3017,7 +3057,7 @@ def _prepare_topbot_primary_full_history(
     client: ProjectXClient,
     request_budget: _ProviderRequestBudget,
     now: datetime,
-) -> None:
+) -> _ClosedCandleList:
     """Discover and persist the provider's complete configured-delivery history."""
 
     captured_now = _as_utc(now)
@@ -3086,12 +3126,6 @@ def _prepare_topbot_primary_full_history(
         if empty_span >= _MAX_PROVIDER_EMPTY_SPAN:
             break
 
-    rows = _load_primary_closed_candles(
-        db,
-        user_id=user_id,
-        config=config,
-        closed_by=captured_now,
-    )
     latest_timestamp = _as_utc(rows[-1].candle_timestamp)
     forward_cursor = _candle_close_time(rows[-1])
     empty_span = timedelta(0)
@@ -3120,6 +3154,13 @@ def _prepare_topbot_primary_full_history(
         if empty_span >= _MAX_PROVIDER_EMPTY_SPAN:
             break
 
+    return _load_primary_closed_candles(
+        db,
+        user_id=user_id,
+        config=config,
+        closed_by=captured_now,
+    )
+
 
 def create_bot_backtest(
     db: Session,
@@ -3129,7 +3170,16 @@ def create_bot_backtest(
     payload: Any,
     client: ProjectXClient | None = None,
     now: datetime | None = None,
+    progress_callback: BacktestProgressCallback | None = None,
 ) -> BotBacktest:
+    _notify_backtest_progress(
+        progress_callback,
+        phase="preparing",
+        completed=None,
+        total=None,
+        percent=None,
+        remaining_percent=None,
+    )
     config = (
         db.query(BotConfig)
         .filter(BotConfig.user_id == user_id)
@@ -3153,11 +3203,12 @@ def create_bot_backtest(
     requested_bounds = _requested_backtest_bounds(payload)
     is_topbot = str(config.strategy_type) == _TOPBOT_STRATEGY
     request_budget = _ProviderRequestBudget(MAX_BACKTEST_PROVIDER_REQUESTS) if is_topbot else None
+    primary_rows: list[ProjectXMarketCandle] | None = None
     if is_topbot:
         if client is None:
             raise BacktestConfigurationError("topbot_backtest_market_data_client_required")
         if requested_bounds is None:
-            _prepare_topbot_primary_full_history(
+            primary_rows = _prepare_topbot_primary_full_history(
                 db,
                 user_id=user_id,
                 config=config,
@@ -3176,12 +3227,13 @@ def create_bot_backtest(
                 request_budget=request_budget,
             )
 
-    primary_rows = _load_primary_closed_candles(
-        db,
-        user_id=user_id,
-        config=config,
-        closed_by=captured_now,
-    )
+    if primary_rows is None:
+        primary_rows = _load_primary_closed_candles(
+            db,
+            user_id=user_id,
+            config=config,
+            closed_by=captured_now,
+        )
     window = _resolve_backtest_window(primary_rows, payload=payload, now=captured_now)
 
     if is_topbot and requested_bounds is None:
@@ -3194,14 +3246,17 @@ def create_bot_backtest(
             now=captured_now,
             include_primary=False,
             request_budget=request_budget,
+            primary_execution_rows=primary_rows,
         )
-        primary_rows = _load_primary_closed_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            closed_by=captured_now,
-        )
-        window = _resolve_backtest_window(primary_rows, payload=payload, now=captured_now)
+
+    _notify_backtest_progress(
+        progress_callback,
+        phase="loading",
+        completed=None,
+        total=None,
+        percent=None,
+        remaining_percent=None,
+    )
 
     primary_start_times = [
         _as_utc(row.candle_timestamp) for row in primary_rows
@@ -3264,6 +3319,15 @@ def create_bot_backtest(
         tick_value=spec.tick_value,
         force_close_at_end=bool(payload.force_close_at_end),
         replay_streams=replay_streams,
+        progress_callback=progress_callback,
+    )
+    _notify_backtest_progress(
+        progress_callback,
+        phase="finalizing",
+        completed=int(result["range"]["bar_count"]),
+        total=int(result["range"]["bar_count"]),
+        percent=100,
+        remaining_percent=0,
     )
     if is_topbot and requested_bounds is None:
         result["warnings"].append(

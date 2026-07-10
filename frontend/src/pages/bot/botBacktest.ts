@@ -1,4 +1,9 @@
-import type { BotBacktestDrawdownPoint, BotBacktestEquityPoint, BotBacktestInput } from "../../lib/types";
+import type {
+  BotBacktestDrawdownPoint,
+  BotBacktestEquityPoint,
+  BotBacktestInput,
+  BotBacktestProgress,
+} from "../../lib/types";
 
 export const BACKTEST_CHART_WIDTH = 720;
 export const BACKTEST_EQUITY_TOP = 14;
@@ -24,6 +29,54 @@ export interface BotBacktestChartPaths {
   equityRenderedPointCount: number;
   drawdownSourcePointCount: number;
   drawdownRenderedPointCount: number;
+}
+
+export interface BotBacktestProgressCopy {
+  title: string;
+  detail: string;
+  percent: number | null;
+}
+
+export function describeBacktestProgress(
+  progress: BotBacktestProgress | null,
+): BotBacktestProgressCopy {
+  if (!progress || progress.phase === "preparing") {
+    return {
+      title: "Preparing candle history",
+      detail: "Finding and caching the complete closed-candle range.",
+      percent: null,
+    };
+  }
+  if (progress.phase === "loading") {
+    return {
+      title: "Loading replay streams",
+      detail: "Synchronizing the stored candle inputs required by this strategy.",
+      percent: null,
+    };
+  }
+  if (progress.phase === "replaying") {
+    const percent = Math.max(0, Math.min(100, Math.round(progress.percent ?? 0)));
+    const remaining = Math.max(0, Math.min(100, Math.round(progress.remaining_percent ?? (100 - percent))));
+    const completed = Math.max(0, Math.round(progress.completed ?? 0));
+    const total = Math.max(completed, Math.round(progress.total ?? completed));
+    return {
+      title: `Replaying closed candles — ${percent}%`,
+      detail: `${remaining}% remaining · ${completed.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} candles`,
+      percent,
+    };
+  }
+  if (progress.phase === "finalizing") {
+    return {
+      title: "Replay 100% complete",
+      detail: "Building metrics, fingerprinting inputs, and saving the result.",
+      percent: 100,
+    };
+  }
+  return {
+    title: "Backtest complete — 100%",
+    detail: "0% remaining · opening the saved result.",
+    percent: 100,
+  };
 }
 
 export function validateBacktestForm(form: BotBacktestFormState): string | null {

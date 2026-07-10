@@ -98,6 +98,13 @@ _STRATEGY_ORB_FIBONACCI_PULLBACK = "orb_fibonacci_pullback"
 _STRATEGY_SUPERTREND_PIVOT = "supertrend_pivot"
 _STRATEGY_EMA_TREND_PULLBACK = "ema_trend_pullback"
 _STRATEGY_EMA_SCALPING = "ema_scalping"
+
+
+class _IndicatorValues(list[float]):
+    """Numeric candle values that can carry a short-lived replay cache."""
+
+
+_INDICATOR_CACHE_MISS = object()
 _STRATEGY_VWAP_ATR_MEAN_REVERSION = "vwap_atr_mean_reversion"
 _STRATEGY_VWAP_GAP_RETRACE = "vwap_gap_retrace"
 _STRATEGY_FISHER_MEAN_REVERSION = "fisher_transform_mean_reversion"
@@ -2521,7 +2528,7 @@ def evaluate_sma_cross(
             raw_payload={"fast_period": fast_period, "slow_period": slow_period, "closed_count": len(closed)},
         )
 
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     previous_fast = _average(closes[-fast_period - 1 : -1])
     previous_slow = _average(closes[-slow_period - 1 : -1])
     current_fast = _average(closes[-fast_period:])
@@ -2744,7 +2751,7 @@ def evaluate_ema_scalping(
         )
 
     assert latest is not None
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     fast_ema = _ema_series(closes, period=fast_period)
     slow_ema = _ema_series(closes, period=slow_period)
     previous_fast = fast_ema[-2]
@@ -3201,7 +3208,7 @@ def evaluate_ema_trend_pullback(
         )
 
     assert latest is not None
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     fast_ema = _ema_series(closes, effective_fast_period)
     slow_ema = _ema_series(closes, effective_slow_period)
     latest_fast_ema = fast_ema[-1]
@@ -3993,7 +4000,7 @@ def evaluate_pullback_trap_reversal(
             },
         )
 
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     fast_ema = _ema_series(closes, fast_period)
     slow_ema = _ema_series(closes, slow_period)
     trend_direction = _determine_pullback_trap_trend_direction(
@@ -5204,7 +5211,7 @@ def evaluate_vwap_atr_mean_reversion(
         )
 
     assert latest is not None
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     session_keys, session_vwaps = _session_vwap_values(closed)
     latest_vwap = session_vwaps[-1]
     session_key = session_keys[-1]
@@ -5439,7 +5446,7 @@ def evaluate_fisher_transform_mean_reversion(
         )
 
     assert latest is not None
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     session_keys, session_vwaps = _session_vwap_values(closed)
     current_vwap = session_vwaps[-1]
     current_session_key = session_keys[-1]
@@ -5616,9 +5623,16 @@ def evaluate_bollinger_mean_reversion(
         )
 
     assert latest is not None
-    closes = [float(candle.close_price) for candle in closed]
-    middle_bands, upper_bands, lower_bands = _bollinger_band_values(
+    closes = _candle_close_values(closed)
+    _previous_middle_band, previous_upper_band, previous_lower_band = _bollinger_band_at(
         closes,
+        index=len(closed) - 2,
+        period=bollinger_period,
+        stddev_multiplier=bollinger_stddev,
+    )
+    current_middle_band, current_upper_band, current_lower_band = _bollinger_band_at(
+        closes,
+        index=len(closed) - 1,
         period=bollinger_period,
         stddev_multiplier=bollinger_stddev,
     )
@@ -5629,11 +5643,6 @@ def evaluate_bollinger_mean_reversion(
     current_index = len(closed) - 1
     previous_close = closes[previous_index]
     current_close = closes[current_index]
-    previous_upper_band = upper_bands[previous_index]
-    previous_lower_band = lower_bands[previous_index]
-    current_middle_band = middle_bands[current_index]
-    current_upper_band = upper_bands[current_index]
-    current_lower_band = lower_bands[current_index]
     current_atr = atr_values[current_index]
     current_vwap = session_vwaps[current_index]
 
@@ -6051,18 +6060,26 @@ def evaluate_bollinger_rsi_reversal(
     assert latest is not None
     setup = closed[-2]
     confirmation = closed[-1]
-    closes = [float(candle.close_price) for candle in closed]
+    closes = _candle_close_values(closed)
     rsi_values = _rsi_series(closes, period=rsi_period)
     adx_values = _adx_series(closed, period=adx_period)
-    middle_bands, upper_bands, lower_bands = _bollinger_band_values(closes, period=bollinger_period, stddev_multiplier=bollinger_stddev)
+    _setup_middle_band, setup_upper_band, setup_lower_band = _bollinger_band_at(
+        closes,
+        index=len(closed) - 2,
+        period=bollinger_period,
+        stddev_multiplier=bollinger_stddev,
+    )
+    confirmation_middle_band, _confirmation_upper_band, _confirmation_lower_band = _bollinger_band_at(
+        closes,
+        index=len(closed) - 1,
+        period=bollinger_period,
+        stddev_multiplier=bollinger_stddev,
+    )
     _session_keys, session_vwaps = _session_vwap_values(closed)
 
     setup_index = len(closed) - 2
     confirmation_index = len(closed) - 1
     setup_rsi = rsi_values[setup_index]
-    setup_upper_band = upper_bands[setup_index]
-    setup_lower_band = lower_bands[setup_index]
-    confirmation_middle_band = middle_bands[confirmation_index]
     confirmation_adx = adx_values[confirmation_index]
     confirmation_vwap = session_vwaps[confirmation_index]
     confirmation_open = float(confirmation.open_price)
@@ -7173,6 +7190,13 @@ def _session_vwap_values(
     *,
     session_start_time: str | None = None,
 ) -> tuple[list[str], list[float | None]]:
+    cache = _sequence_indicator_cache(candles)
+    cache_key = ("session_vwap", session_start_time)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
+
     session_keys: list[str] = []
     values: list[float | None] = []
     current_session_key: str | None = None
@@ -7198,7 +7222,10 @@ def _session_vwap_values(
         session_keys.append(session_key)
         values.append(current_vwap)
 
-    return session_keys, values
+    result = (session_keys, values)
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _regular_session_date(candle: ProjectXMarketCandle) -> Any:
@@ -7256,11 +7283,21 @@ def _bollinger_band_values(
     stddev_multiplier: float,
 ) -> tuple[list[float | None], list[float | None], list[float | None]]:
     normalized_period = max(1, int(period))
+    cache = _sequence_indicator_cache(closes)
+    cache_key = ("bollinger", normalized_period, float(stddev_multiplier))
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
+
     middle: list[float | None] = [None] * len(closes)
     upper: list[float | None] = [None] * len(closes)
     lower: list[float | None] = [None] * len(closes)
     if len(closes) < normalized_period:
-        return middle, upper, lower
+        result = (middle, upper, lower)
+        if cache is not None:
+            cache[cache_key] = result
+        return result
 
     for index in range(normalized_period - 1, len(closes)):
         window = closes[index - normalized_period + 1 : index + 1]
@@ -7271,7 +7308,52 @@ def _bollinger_band_values(
         upper[index] = average + deviation * stddev_multiplier
         lower[index] = average - deviation * stddev_multiplier
 
-    return middle, upper, lower
+    result = (middle, upper, lower)
+    if cache is not None:
+        cache[cache_key] = result
+    return result
+
+
+def _bollinger_band_at(
+    closes: list[float],
+    *,
+    index: int,
+    period: int,
+    stddev_multiplier: float,
+) -> tuple[float | None, float | None, float | None]:
+    """Calculate one band point without rebuilding the unused historical series."""
+
+    normalized_period = max(1, int(period))
+    normalized_index = index if index >= 0 else len(closes) + index
+    if normalized_index < normalized_period - 1 or normalized_index >= len(closes):
+        return None, None, None
+
+    cache = _sequence_indicator_cache(closes)
+    cache_key = (
+        "bollinger_at",
+        normalized_index,
+        normalized_period,
+        float(stddev_multiplier),
+    )
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
+
+    window = closes[
+        normalized_index - normalized_period + 1 : normalized_index + 1
+    ]
+    average = _average(window)
+    variance = sum((value - average) ** 2 for value in window) / normalized_period
+    deviation = variance ** 0.5
+    result = (
+        average,
+        average + deviation * stddev_multiplier,
+        average - deviation * stddev_multiplier,
+    )
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
 def _ema_series(values: list[float], *, period: int) -> list[float]:
@@ -8340,6 +8422,38 @@ def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketC
     return closed
 
 
+def _sequence_indicator_cache(sequence: Any) -> dict[tuple[Any, ...], Any] | None:
+    """Return a cache only for immutable, engine-owned replay sequences."""
+
+    cache = getattr(sequence, "_topsignal_indicator_cache", None)
+    if isinstance(cache, dict):
+        return cache
+    if not (
+        getattr(sequence, "_topsignal_sorted_closed", False)
+        or isinstance(sequence, _IndicatorValues)
+    ):
+        return None
+    cache = {}
+    try:
+        setattr(sequence, "_topsignal_indicator_cache", cache)
+    except (AttributeError, TypeError):
+        return None
+    return cache
+
+
+def _candle_close_values(candles: list[ProjectXMarketCandle]) -> list[float]:
+    cache = _sequence_indicator_cache(candles)
+    cache_key = ("close_values",)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
+    values = _IndicatorValues(float(candle.close_price) for candle in candles)
+    if cache is not None:
+        cache[cache_key] = values
+    return values
+
+
 def _aligned_candle_pairs_by_timestamp(
     left: list[ProjectXMarketCandle],
     right: list[ProjectXMarketCandle],
@@ -8423,8 +8537,16 @@ def _macd_state(
 
 def _atr_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
     normalized_period = max(1, int(period))
+    cache = _sequence_indicator_cache(candles)
+    cache_key = ("atr", normalized_period)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
     output: list[float | None] = [None] * len(candles)
     if len(candles) < normalized_period:
+        if cache is not None:
+            cache[cache_key] = output
         return output
 
     true_ranges: list[float] = []
@@ -8444,6 +8566,8 @@ def _atr_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[flo
     for index in range(normalized_period, len(candles)):
         atr = ((atr * (normalized_period - 1)) + true_ranges[index]) / normalized_period
         output[index] = atr
+    if cache is not None:
+        cache[cache_key] = output
     return output
 
 
@@ -8468,8 +8592,16 @@ def _relative_volume_ratio(
 
 def _rsi_series(closes: list[float], *, period: int) -> list[float | None]:
     normalized_period = max(1, int(period))
+    cache = _sequence_indicator_cache(closes)
+    cache_key = ("rsi", normalized_period)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
     output: list[float | None] = [None] * len(closes)
     if len(closes) < normalized_period + 1:
+        if cache is not None:
+            cache[cache_key] = output
         return output
 
     gains: list[float] = []
@@ -8487,13 +8619,23 @@ def _rsi_series(closes: list[float], *, period: int) -> list[float | None]:
         average_loss = ((average_loss * (normalized_period - 1)) + losses[index]) / normalized_period
         output[index + 1] = _wilder_rsi(average_gain, average_loss)
 
+    if cache is not None:
+        cache[cache_key] = output
     return output
 
 
 def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
     normalized_period = max(1, int(period))
+    cache = _sequence_indicator_cache(candles)
+    cache_key = ("adx", normalized_period)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
     output: list[float | None] = [None] * len(candles)
     if len(candles) < normalized_period * 2:
+        if cache is not None:
+            cache[cache_key] = output
         return output
 
     true_ranges = [0.0] * len(candles)
@@ -8539,6 +8681,8 @@ def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[flo
     first_adx_index = normalized_period * 2 - 1
     first_window = [value for value in dx_values[normalized_period : first_adx_index + 1] if value is not None]
     if len(first_window) < normalized_period:
+        if cache is not None:
+            cache[cache_key] = output
         return output
 
     adx = _average(first_window)
@@ -8550,6 +8694,8 @@ def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[flo
         adx = ((adx * (normalized_period - 1)) + dx) / normalized_period
         output[index] = adx
 
+    if cache is not None:
+        cache[cache_key] = output
     return output
 
 
@@ -8747,8 +8893,17 @@ def _timeframe_from_seconds(seconds: int, *, allow_seconds: bool) -> tuple[str, 
 
 def _ema_series(values: list[float], period: int) -> list[float | None]:
     normalized_period = max(1, int(period))
+    cache = _sequence_indicator_cache(values)
+    cache_key = ("ema", normalized_period)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
     if len(values) < normalized_period:
-        return [None] * len(values)
+        output: list[float | None] = [None] * len(values)
+        if cache is not None:
+            cache[cache_key] = output
+        return output
 
     seed = _average(values[:normalized_period])
     multiplier = 2 / (normalized_period + 1)
@@ -8758,6 +8913,8 @@ def _ema_series(values: list[float], period: int) -> list[float | None]:
     for value in values[normalized_period:]:
         current = ((value - current) * multiplier) + current
         output.append(current)
+    if cache is not None:
+        cache[cache_key] = output
     return output
 
 

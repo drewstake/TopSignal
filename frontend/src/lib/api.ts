@@ -47,6 +47,7 @@ import type {
   ProjectXCredentialsStatus,
   BotActivity,
   BotBacktestInput,
+  BotBacktestProgress,
   BotBacktestResult,
   BotConfig,
   BotConfigInput,
@@ -557,6 +558,10 @@ const accountJournalCacheVersionById = new Map<number, number>();
 
 interface RequestSignalOptions {
   signal?: AbortSignal;
+}
+
+interface BacktestRequestOptions extends RequestSignalOptions {
+  onProgress?: (progress: BotBacktestProgress) => void;
 }
 
 interface GetAccountsOptions {
@@ -1655,10 +1660,170 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
+interface ParsedBacktestStreamEvent {
+  event: string;
+  data: unknown;
+}
+
+export function parseBacktestSseFrame(frame: string): ParsedBacktestStreamEvent | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    if (line === "" || line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (dataLines.length === 0) {
+    return null;
+  }
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) as unknown };
+  } catch {
+    return null;
+  }
+}
+
+function parseBacktestProgress(value: unknown): BotBacktestProgress | null {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return null;
+  }
+  const phase = record.phase;
+  if (
+    phase !== "preparing"
+    && phase !== "loading"
+    && phase !== "replaying"
+    && phase !== "finalizing"
+    && phase !== "complete"
+  ) {
+    return null;
+  }
+  const optionalNumber = (candidate: unknown): number | null => (
+    typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null
+  );
+  const percent = optionalNumber(record.percent);
+  const remainingPercent = optionalNumber(record.remaining_percent);
+  return {
+    phase,
+    completed: optionalNumber(record.completed),
+    total: optionalNumber(record.total),
+    percent: percent === null ? null : Math.max(0, Math.min(100, Math.round(percent))),
+    remaining_percent: remainingPercent === null
+      ? null
+      : Math.max(0, Math.min(100, Math.round(remainingPercent))),
+  };
+}
+
+async function runBacktestStream(
+  botConfigId: number,
+  payload: BotBacktestInput,
+  signal: AbortSignal,
+  onProgress: (progress: BotBacktestProgress) => void,
+): Promise<BotBacktestResult> {
+  if (isDemoModeEnabled()) {
+    throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
+  }
+  const path = `/api/bots/${botConfigId}/backtests`;
+  const url = buildUrl(path);
+  const accessToken = await getAccessToken();
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    let detail = body || `Backtest request failed (${response.status} ${response.statusText})`;
+    try {
+      const parsed = asUnknownRecord(JSON.parse(body) as unknown);
+      if (typeof parsed?.detail === "string") {
+        detail = parsed.detail;
+      }
+    } catch {
+      // Keep the response text fallback.
+    }
+    throw new ApiError(detail, response.status, body, detail);
+  }
+  if (!response.body) {
+    throw new Error("Backtest progress response did not include a body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: BotBacktestResult | null = null;
+
+  const handleFrame = (frame: string) => {
+    const parsed = parseBacktestSseFrame(frame);
+    if (!parsed) {
+      return;
+    }
+    if (parsed.event === "progress") {
+      const progress = parseBacktestProgress(parsed.data);
+      if (progress) {
+        onProgress(progress);
+      }
+      return;
+    }
+    if (parsed.event === "result") {
+      result = parsed.data as BotBacktestResult;
+      return;
+    }
+    if (parsed.event === "error") {
+      const error = asUnknownRecord(parsed.data);
+      const status = typeof error?.status === "number" ? error.status : 500;
+      const detail = typeof error?.detail === "string"
+        ? error.detail
+        : "Backtest failed.";
+      throw new ApiError(detail, status, parsed.data, error?.detail ?? null);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      buffer += decoder.decode();
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.search(/\r?\n\r?\n/);
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      const separator = /^\r\n\r\n/.test(buffer.slice(boundary)) ? 4 : 2;
+      buffer = buffer.slice(boundary + separator);
+      handleFrame(frame);
+      boundary = buffer.search(/\r?\n\r?\n/);
+    }
+  }
+  if (buffer.trim()) {
+    handleFrame(buffer);
+  }
+  if (!result) {
+    throw new Error("Backtest progress stream ended before returning a result.");
+  }
+  return result;
+}
+
 async function runBacktestRequest(
   botConfigId: number,
   payload: BotBacktestInput,
-  options: RequestSignalOptions = {},
+  options: BacktestRequestOptions = {},
 ): Promise<BotBacktestResult> {
   const controller = new AbortController();
   let timedOut = false;
@@ -1673,6 +1838,14 @@ async function runBacktestRequest(
     controller.abort();
   }, BACKTEST_REQUEST_TIMEOUT_MS);
   try {
+    if (options.onProgress) {
+      return await runBacktestStream(
+        botConfigId,
+        payload,
+        controller.signal,
+        options.onProgress,
+      );
+    }
     return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
       method: "POST",
       body: payload,

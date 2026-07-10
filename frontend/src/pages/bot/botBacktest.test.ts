@@ -5,6 +5,7 @@ import {
   BACKTEST_MAX_RENDERED_CHART_POINTS,
   buildBacktestChartPaths,
   buildBacktestPayload,
+  describeBacktestProgress,
   validateBacktestForm,
   type BotBacktestFormState,
 } from "./botBacktest";
@@ -45,6 +46,33 @@ describe("buildBacktestPayload", () => {
     });
     expect(payload).not.toHaveProperty("start");
     expect(payload).not.toHaveProperty("end");
+  });
+});
+
+describe("describeBacktestProgress", () => {
+  it("reports exact replay completion and remaining percentages", () => {
+    expect(describeBacktestProgress({
+      phase: "replaying",
+      completed: 610,
+      total: 1_000,
+      percent: 61,
+      remaining_percent: 39,
+    })).toEqual({
+      title: "Replaying closed candles — 61%",
+      detail: "39% remaining · 610 of 1,000 candles",
+      percent: 61,
+    });
+  });
+
+  it("keeps provider history discovery indeterminate instead of inventing a percent", () => {
+    expect(describeBacktestProgress(null).percent).toBeNull();
+    expect(describeBacktestProgress({
+      phase: "preparing",
+      completed: null,
+      total: null,
+      percent: null,
+      remaining_percent: null,
+    }).title).toBe("Preparing candle history");
   });
 });
 

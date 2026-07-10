@@ -1588,7 +1588,7 @@ async def stream_projectx_market_depth(
 
 def _serialize_sse_event(event: dict) -> str:
     event_name = str(event.get("event") or "message")
-    payload = json.dumps(event.get("data"), separators=(",", ":"))
+    payload = json.dumps(jsonable_encoder(event.get("data")), separators=(",", ":"))
     return f"event: {event_name}\ndata: {payload}\n\n"
 
 
@@ -1696,6 +1696,7 @@ def delete_trading_bot(
 def create_trading_bot_backtest(
     bot_config_id: int,
     payload: BotBacktestIn,
+    request: Request = None,  # type: ignore[assignment]
     db: Session = Depends(get_db),
 ):
     """Prepare required TopBot history, then replay closed candles without routing orders."""
@@ -1703,6 +1704,13 @@ def create_trading_bot_backtest(
     user_id = get_authenticated_user_id()
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    if request is not None and "text/event-stream" in request.headers.get("accept", "").lower():
+        return _stream_trading_bot_backtest(
+            request,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            payload=payload,
+        )
     try:
         config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
         if config is None:
@@ -1739,6 +1747,125 @@ def create_trading_bot_backtest(
         db.rollback()
         raise
     return serialize_bot_backtest(row)
+
+
+def _stream_trading_bot_backtest(
+    request: Request,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    payload: BotBacktestIn,
+) -> StreamingResponse:
+    """Run a backtest off the event loop and stream replay progress to the caller."""
+
+    async def events():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+        def enqueue(event: dict[str, object] | None) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                # The browser disconnected and the response event loop is gone.
+                return
+
+        def report_progress(progress: dict[str, object]) -> None:
+            enqueue({"event": "progress", "data": progress})
+
+        def run() -> None:
+            with SessionLocal() as worker_db:
+                try:
+                    config = get_bot_config(
+                        worker_db,
+                        user_id=user_id,
+                        bot_config_id=bot_config_id,
+                    )
+                    if config is None:
+                        raise LookupError("bot_config_not_found")
+                    client = (
+                        _projectx_client_for_user(worker_db, user_id=user_id)
+                        if str(config.strategy_type) == "topbot_adaptive"
+                        else None
+                    )
+                    row = create_bot_backtest(
+                        worker_db,
+                        user_id=user_id,
+                        bot_config_id=bot_config_id,
+                        payload=payload,
+                        client=client,
+                        progress_callback=report_progress,
+                    )
+                    worker_db.commit()
+                    report_progress(
+                        {
+                            "phase": "complete",
+                            "completed": int(row.bar_count),
+                            "total": int(row.bar_count),
+                            "percent": 100,
+                            "remaining_percent": 0,
+                        }
+                    )
+                    enqueue(
+                        {
+                            "event": "result",
+                            "data": serialize_bot_backtest(row),
+                        }
+                    )
+                except Exception as exc:
+                    worker_db.rollback()
+                    enqueue({"event": "error", "data": _backtest_stream_error(exc)})
+                finally:
+                    enqueue(None)
+
+        worker = asyncio.create_task(asyncio.to_thread(run))
+        yield ": connected\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if event is None:
+                    break
+                yield _serialize_sse_event(event)
+        finally:
+            if worker.done():
+                await worker
+            else:
+                # Cancelling the await does not terminate the worker thread; it
+                # may safely finish its transaction after a browser disconnect.
+                worker.cancel()
+
+    return StreamingResponse(
+        events(),
+        status_code=200,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _backtest_stream_error(exc: Exception) -> dict[str, object]:
+    if isinstance(exc, HTTPException):
+        return {"status": int(exc.status_code), "detail": exc.detail}
+    if isinstance(exc, ProjectXClientError):
+        http_error = _to_http_exception(exc)
+        return {"status": int(http_error.status_code), "detail": http_error.detail}
+    if isinstance(exc, LookupError):
+        return {"status": 404, "detail": str(exc)}
+    if isinstance(exc, UnsupportedBacktestStrategyError):
+        return {"status": 400, "detail": str(exc)}
+    if isinstance(exc, (InsufficientBacktestDataError, MalformedBacktestDataError)):
+        return {"status": 422, "detail": str(exc)}
+    if isinstance(exc, BacktestError):
+        return {"status": 400, "detail": str(exc)}
+    logger.exception("Streamed backtest failed: %s", exc)
+    return {"status": 500, "detail": "Backtest failed."}
 
 
 @app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)

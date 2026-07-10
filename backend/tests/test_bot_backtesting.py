@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -238,6 +240,106 @@ def test_signal_evaluation_receives_only_bars_closed_as_of_each_event():
         ],
     ]
     assert all(BASE_TIME + timedelta(minutes=15) not in call for call in observed)
+
+
+def test_replay_progress_is_exact_monotonic_and_throttled_to_percent_changes():
+    bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100 + index)
+        for index in range(250)
+    ]
+    progress: list[dict[str, Any]] = []
+
+    result = run_backtest(
+        config=_config(),
+        candles=bars,
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=5 * len(bars)),
+        starting_balance=50_000,
+        commission_per_contract=0,
+        slippage_ticks=0,
+        tick_size=1,
+        tick_value=1,
+        signal_evaluator=_hold,
+        progress_callback=progress.append,
+    )
+
+    replay = [event for event in progress if event["phase"] == "replaying"]
+    percents = [event["percent"] for event in replay]
+    assert percents[0] == 0
+    assert percents[-1] == 100
+    assert percents == sorted(set(percents))
+    assert len(replay) <= 101
+    assert replay[-1]["completed"] == result["range"]["bar_count"]
+    assert replay[-1]["total"] == result["range"]["bar_count"]
+    assert replay[-1]["remaining_percent"] == 0
+
+
+def test_streamed_backtest_emits_progress_then_result_after_commit(monkeypatch):
+    class FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    class FakeSession:
+        committed = False
+        rolled_back = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    session = FakeSession()
+    monkeypatch.setattr(main_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        main_module,
+        "get_bot_config",
+        lambda *_args, **_kwargs: SimpleNamespace(strategy_type="sma_cross"),
+    )
+
+    def fake_create(*_args, progress_callback, **_kwargs):
+        progress_callback(
+            {
+                "phase": "replaying",
+                "completed": 2,
+                "total": 4,
+                "percent": 50,
+                "remaining_percent": 50,
+            }
+        )
+        return SimpleNamespace(bar_count=4)
+
+    monkeypatch.setattr(main_module, "create_bot_backtest", fake_create)
+    monkeypatch.setattr(
+        main_module,
+        "serialize_bot_backtest",
+        lambda _row: {"id": 99},
+    )
+    response = main_module._stream_trading_bot_backtest(
+        FakeRequest(),
+        user_id=OWNER_ID,
+        bot_config_id=101,
+        payload=BotBacktestIn(),
+    )
+
+    async def collect() -> str:
+        chunks: list[str] = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    body = asyncio.run(collect())
+
+    assert session.committed is True
+    assert session.rolled_back is False
+    assert body.index('"phase":"replaying"') < body.index('"phase":"complete"')
+    assert body.index('"phase":"complete"') < body.index('"id":99')
 
 
 def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
@@ -2257,6 +2359,13 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
             return rows[-int(kwargs["limit"]):]
 
     client = StubFullHistoryClient()
+    primary_history_loads = 0
+    real_primary_history_loader = backtesting_module._load_primary_closed_candles
+
+    def primary_history_loader_spy(*args, **kwargs):
+        nonlocal primary_history_loads
+        primary_history_loads += 1
+        return real_primary_history_loader(*args, **kwargs)
 
     def unexpected_order_call(*_args, **_kwargs):
         raise AssertionError("TopBot full-history replay invoked an order path")
@@ -2274,6 +2383,11 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
         lambda *_args, **_kwargs: client,
     )
     monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
+    monkeypatch.setattr(
+        backtesting_module,
+        "_load_primary_closed_candles",
+        primary_history_loader_spy,
+    )
 
     response = main_module.create_trading_bot_backtest(
         bot_config_id=config.id,
@@ -2291,6 +2405,7 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
     assert validated.range.start == BASE_TIME + timedelta(minutes=120)
     assert validated.range.end == BASE_TIME + timedelta(minutes=150)
     assert validated.range.bar_count == 6
+    assert primary_history_loads == 2
     assert (
         db_session.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
