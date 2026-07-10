@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -2009,4 +2011,308 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
         .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
         .count()
         == 30
+    )
+
+
+def test_prepared_sma_replay_exactly_matches_legacy_evaluator_path():
+    prices = [
+        100,
+        99,
+        98,
+        97,
+        98,
+        99,
+        100,
+        99,
+        98,
+        97,
+        98,
+        99,
+        100,
+        99,
+        98,
+        97,
+        98,
+        99,
+        100,
+        99,
+        98,
+        97,
+        98,
+        99,
+        100,
+        99,
+        98,
+        97,
+        98,
+        99,
+        100,
+        99,
+    ]
+    candles = backtesting_module._ClosedCandleList(
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            open_price=price - 0.25,
+            high_price=price + 0.75,
+            low_price=price - 0.75,
+            close_price=price,
+        )
+        for index, price in enumerate(prices)
+    )
+    config = _config(
+        fast_period=2,
+        slow_period=4,
+        lookback_bars=8,
+        max_trades_per_day=2,
+    )
+    start = BASE_TIME + timedelta(minutes=40)
+    end = BASE_TIME + timedelta(minutes=5 * len(candles))
+    run_options = {
+        "config": config,
+        "start": start,
+        "end": end,
+        "starting_balance": 25_000,
+        "commission_per_contract": 1.25,
+        "slippage_ticks": 1.5,
+        "tick_size": 0.25,
+        "tick_value": 0.50,
+    }
+
+    optimized = _run(candles, **run_options)
+    legacy_calls = 0
+
+    def legacy_evaluator(rows: list[ProjectXMarketCandle]) -> SignalResult:
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return bot_service_module.evaluate_sma_cross(
+            rows,
+            fast_period=int(config.fast_period),
+            slow_period=int(config.slow_period),
+        )
+
+    legacy = _run(candles, evaluator=legacy_evaluator, **run_options)
+
+    assert legacy_calls == optimized["range"]["bar_count"]
+    assert optimized["trades"]
+    assert any(float(trade["commission"]) > 0 for trade in optimized["trades"])
+    assert any("max trades per day" in warning for warning in optimized["warnings"])
+    for key in (
+        "range",
+        "metrics",
+        "equity_curve",
+        "drawdown_series",
+        "daily_results",
+        "monthly_results",
+        "trades",
+        "warnings",
+    ):
+        assert optimized[key] == legacy[key]
+    assert optimized == legacy
+
+
+def test_incremental_fingerprints_match_legacy_canonical_json_for_unsorted_streams():
+    primary = [
+        _candle(BASE_TIME + timedelta(minutes=10), close_price=103.25),
+        _candle(BASE_TIME, close_price=101.25),
+        _candle(
+            BASE_TIME + timedelta(minutes=5),
+            close_price=102.25,
+            is_partial=True,
+        ),
+    ]
+    hourly = [
+        _candle(
+            BASE_TIME - timedelta(hours=1),
+            unit="hour",
+            unit_number=1,
+            close_price=99.5,
+        ),
+        _candle(
+            BASE_TIME - timedelta(hours=2),
+            unit="hour",
+            unit_number=1,
+            close_price=98.5,
+        ),
+    ]
+    streams = {"z-primary": primary, "a-hourly": hourly}
+
+    def canonical_row(
+        row: ProjectXMarketCandle,
+        *,
+        stream: str | None = None,
+    ) -> dict[str, Any]:
+        canonical = {
+            "contract_id": str(row.contract_id),
+            "live": bool(row.live),
+            "unit": str(row.unit),
+            "unit_number": int(row.unit_number),
+            "timestamp": _utc(row.candle_timestamp).isoformat(),
+            "open": str(row.open_price),
+            "high": str(row.high_price),
+            "low": str(row.low_price),
+            "close": str(row.close_price),
+            "volume": str(row.volume),
+            "is_partial": bool(row.is_partial),
+        }
+        if stream is not None:
+            canonical = {"stream": stream, **canonical}
+        return canonical
+
+    def legacy_digest(rows: list[dict[str, Any]]) -> str:
+        encoded = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        return hashlib.sha256(encoded).hexdigest()
+
+    expected_primary = legacy_digest(
+        [
+            canonical_row(row)
+            for row in sorted(primary, key=lambda value: _utc(value.candle_timestamp))
+            if not bool(row.is_partial)
+        ]
+    )
+    expected_streams = legacy_digest(
+        [
+            canonical_row(row, stream=key)
+            for key in sorted(streams)
+            for row in sorted(
+                streams[key],
+                key=lambda value: _utc(value.candle_timestamp),
+            )
+            if not bool(row.is_partial)
+        ]
+    )
+
+    assert backtesting_module.candle_input_fingerprint(primary) == expected_primary
+    assert (
+        backtesting_module.candle_stream_input_fingerprint(streams)
+        == expected_streams
+    )
+
+
+def test_replay_processes_more_than_twenty_thousand_bars_across_over_a_year():
+    bar_count = backtesting_module.MAX_BACKTEST_BARS + 1
+    oldest = BASE_TIME - timedelta(days=400)
+    candles = backtesting_module._ClosedCandleList(
+        [
+            _candle(oldest, close_price=100),
+            *[
+                _candle(
+                    BASE_TIME + timedelta(minutes=5 * index),
+                    close_price=100 + (index % 3),
+                )
+                for index in range(bar_count - 1)
+            ],
+        ]
+    )
+
+    result = _run(candles, evaluator=_hold)
+
+    assert candles[-1].candle_timestamp - candles[0].candle_timestamp > timedelta(
+        days=366
+    )
+    assert result["range"]["bar_count"] == bar_count
+    assert result["range"]["start"] == oldest.isoformat()
+    assert len(result["equity_curve"]) == bar_count + 1
+    assert len(result["drawdown_series"]) == bar_count + 1
+    assert result["metrics"]["trade_count"] == 0
+
+
+def test_resource_budget_failure_occurs_before_backtest_persistence(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(db_session)
+    db_session.add_all(
+        [
+            _candle(
+                BASE_TIME + timedelta(minutes=5 * index),
+                close_price=100 + index,
+            )
+            for index in range(6)
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(backtesting_module, "BACKTEST_MEMORY_BUDGET_BYTES", 1)
+
+    with pytest.raises(
+        backtesting_module.BacktestConfigurationError,
+        match="backtest_resource_budget_exceeded.*no partial result was saved",
+    ):
+        backtesting_module.create_bot_backtest(
+            db_session,
+            user_id=OWNER_ID,
+            bot_config_id=int(config.id),
+            payload=BotBacktestIn(
+                start=BASE_TIME,
+                end=BASE_TIME + timedelta(minutes=30),
+            ),
+            now=BASE_TIME + timedelta(minutes=35),
+        )
+
+    assert db_session.query(BotBacktest).count() == 0
+
+
+def test_projected_loader_avoids_candle_identities_and_matches_orm_replay(
+    db_session,
+):
+    config = _persist_config(
+        db_session,
+        fast_period=2,
+        slow_period=4,
+        lookback_bars=25,
+    )
+    prices = [100, 99, 98, 97, 98, 99, 100, 99, 98, 97, 98, 99]
+    db_session.add_all(
+        [
+            _candle(
+                BASE_TIME + timedelta(minutes=5 * index),
+                open_price=price - 0.25,
+                close_price=price,
+            )
+            for index, price in enumerate(prices)
+        ]
+    )
+    db_session.commit()
+    config_id = int(config.id)
+    db_session.expunge_all()
+    loaded_config = db_session.query(BotConfig).filter(BotConfig.id == config_id).one()
+
+    projected = backtesting_module._load_primary_closed_candles(
+        db_session,
+        user_id=OWNER_ID,
+        config=loaded_config,
+        closed_by=BASE_TIME + timedelta(minutes=5 * len(prices)),
+    )
+
+    assert projected
+    assert all(type(row) is backtesting_module._ProjectedCandle for row in projected)
+    assert not any(
+        isinstance(value, ProjectXMarketCandle)
+        for value in db_session.identity_map.values()
+    )
+
+    orm_rows = (
+        db_session.query(ProjectXMarketCandle)
+        .filter(ProjectXMarketCandle.user_id == OWNER_ID)
+        .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
+        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+        .all()
+    )
+    start = BASE_TIME + timedelta(minutes=40)
+    end = BASE_TIME + timedelta(minutes=5 * len(prices))
+
+    assert backtesting_module.candle_input_fingerprint(
+        projected
+    ) == backtesting_module.candle_input_fingerprint(orm_rows)
+    assert _run(
+        projected,
+        config=loaded_config,
+        start=start,
+        end=end,
+    ) == _run(
+        orm_rows,
+        config=loaded_config,
+        start=start,
+        end=end,
     )

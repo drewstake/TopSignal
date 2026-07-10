@@ -9,7 +9,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
-from itertools import islice
 from typing import Any, Callable, Iterable, Mapping
 
 from sqlalchemy import or_
@@ -342,7 +341,7 @@ class BacktestEngine:
                 self._event_in_configured_session(timestamp)
                 for timestamp in self.execution_start_times
             ]
-            if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY
+            if self.strategy_type == _TOPBOT_STRATEGY
             else [True] * len(self.execution_candles)
         )
         if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY:
@@ -373,10 +372,14 @@ class BacktestEngine:
         )
         replay_row_count = len(self.all_candles)
         if self.topbot_streams:
+            primary_stream_key = _topbot_asset_stream_key(
+                str(config.timeframe_unit),
+                int(config.timeframe_unit_number),
+            )
             replay_row_count += sum(
                 len(stream.candles)
-                for stream in self.topbot_streams.values()
-                if stream.candles is not self.all_candles
+                for key, stream in self.topbot_streams.items()
+                if key != primary_stream_key
             )
         _enforce_backtest_resource_budget(
             replay_rows=replay_row_count,
@@ -431,7 +434,9 @@ class BacktestEngine:
         self.topbot_source_failure_counts: dict[tuple[str, str], int] = defaultdict(int)
 
     def run(self) -> dict[str, Any]:
-        closed_history: list[ProjectXMarketCandle] = _ClosedCandleList()
+        closed_history: list[ProjectXMarketCandle] = (
+            _ClosedCandleList() if self._uses_real_evaluator else []
+        )
         history_cursor = 0
         timeline = zip(
             self.execution_candles,
@@ -455,7 +460,7 @@ class BacktestEngine:
             if self.pending is not None:
                 pending = self.pending
                 self.pending = None
-                self._fill_pending_signal(pending, candle=candle, bar_index=index)
+                self._fill_pending_signal(pending, candle=candle)
 
             if self.position is not None:
                 self._current_bar_exposed = True
@@ -809,21 +814,14 @@ class BacktestEngine:
                 strategy_params=self.config.strategy_params,
             )
         event_time = _candle_close_time(primary_candles[-1])
-        topbot_params = bot_service_module._normalize_strategy_params(
-            _TOPBOT_STRATEGY,
-            self.config.strategy_params,
-        )
-        source_overrides = topbot_params.get("source_strategy_params") or {}
+        topbot_params = self._topbot_params
         source_results: list[dict[str, Any]] = []
         event_timestamp = _as_utc(primary_candles[-1].candle_timestamp)
 
         for source_strategy in topbot_params["source_strategies"]:
             if source_strategy in self.topbot_unavailable_sources:
                 continue
-            source_params = bot_service_module._normalize_strategy_params(
-                source_strategy,
-                source_overrides.get(source_strategy, {}),
-            )
+            source_params = self._topbot_source_params[source_strategy]
             signature = self._topbot_source_cache_signature(
                 source_strategy,
                 source_params=source_params,
@@ -868,13 +866,8 @@ class BacktestEngine:
         event_timestamp: datetime,
     ) -> tuple[Any, ...]:
         signature: list[Any] = []
-        for key in _topbot_source_stream_keys(
-            self.config,
-            source_strategy,
-            source_params=source_params,
-        ):
-            stream = self.topbot_streams.get(key)
-            closed_count = bisect_right(stream.close_times, event_time) if stream is not None else 0
+        for key in self._topbot_source_keys[source_strategy]:
+            closed_count = self._topbot_closed_count(key, event_time)
             signature.append((key, closed_count))
         if source_strategy == "donchian_breakout":
             if self.position is None:
@@ -906,34 +899,18 @@ class BacktestEngine:
         event_time: datetime,
         event_timestamp: datetime,
     ) -> dict[str, Any]:
-        fast_period, slow_period = bot_service_module._normalized_strategy_period_values(
-            source_strategy,
-            fast_period=int(self.config.fast_period),
-            slow_period=int(self.config.slow_period),
-        )
-        source_config = _SourceConfigView(
-            self.config,
-            strategy_type=source_strategy,
-            strategy_params=source_params,
-            fast_period=fast_period,
-            slow_period=slow_period,
-        )
-        bot_service_module._validate_strategy_configuration(
-            strategy_type=source_strategy,
-            timeframe_unit=str(source_config.timeframe_unit),
-            timeframe_unit_number=int(source_config.timeframe_unit_number),
-            fast_period=fast_period,
-            slow_period=slow_period,
-        )
+        static_error = self._topbot_source_static_errors.get(source_strategy)
+        if static_error is not None:
+            raise ValueError(static_error)
+        source_config = self._topbot_source_configs[source_strategy]
+        fast_period = int(source_config.fast_period)
+        slow_period = int(source_config.slow_period)
 
         primary_key = _topbot_asset_stream_key(
             str(self.config.timeframe_unit),
             int(self.config.timeframe_unit_number),
         )
-        primary_limit = _topbot_primary_source_history_limit(
-            self.config,
-            source_strategy,
-        )
+        primary_limit = self._topbot_primary_limits[source_strategy]
 
         if source_strategy in _TOPBOT_SHARED_CONFIGURED_STRATEGIES:
             source_candles = self._topbot_stream_history(
@@ -959,11 +936,7 @@ class BacktestEngine:
             signal = bot_service_module.dispatch_strategy_evaluator(
                 source_strategy,
                 source_candles,
-                **_generic_evaluator_arguments(
-                    source_strategy,
-                    config=source_config,
-                    strategy_params=source_params,
-                ),
+                **self._topbot_generic_args[source_strategy],
             )
         elif source_strategy == "donchian_breakout":
             source_candles = self._topbot_stream_history(
@@ -1006,10 +979,7 @@ class BacktestEngine:
                 start_text=str(self.config.trading_start_time),
                 end_text=str(self.config.trading_end_time),
             )
-            if not _event_timestamp_is_in_configured_session(
-                self.config,
-                event_timestamp,
-            ):
+            if not self._event_in_configured_session(event_timestamp):
                 source_candles = []
                 signal = _topbot_outside_session_signal(
                     source_strategy,
@@ -1019,7 +989,11 @@ class BacktestEngine:
                 source_candles = self._topbot_stream_history(
                     _topbot_asset_stream_key("minute", 1),
                     event_time=event_time,
-                    limit=MAX_TOPBOT_REPLAY_STREAM_BARS,
+                    limit=_topbot_configured_session_capacity(
+                        self.config,
+                        unit="minute",
+                        unit_number=1,
+                    ),
                     not_before=session_start,
                 )
                 _require_complete_session_prefix(
@@ -1047,10 +1021,7 @@ class BacktestEngine:
                 start_text=str(self.config.trading_start_time),
                 end_text=str(self.config.trading_end_time),
             )
-            if not _event_timestamp_is_in_configured_session(
-                self.config,
-                event_timestamp,
-            ):
+            if not self._event_in_configured_session(event_timestamp):
                 source_candles = []
                 signal = _topbot_outside_session_signal(
                     source_strategy,
@@ -1060,7 +1031,11 @@ class BacktestEngine:
                 source_candles = self._topbot_stream_history(
                     primary_key,
                     event_time=event_time,
-                    limit=MAX_TOPBOT_REPLAY_STREAM_BARS,
+                    limit=_topbot_configured_session_capacity(
+                        self.config,
+                        unit=str(self.config.timeframe_unit),
+                        unit_number=int(self.config.timeframe_unit_number),
+                    ),
                     not_before=session_start,
                 )
                 _require_complete_session_prefix(
@@ -1091,14 +1066,11 @@ class BacktestEngine:
         elif source_strategy == "opening_rvol_breakout":
             lookback_days = int(source_params["relative_volume_lookback_days"])
             calendar_lookback_days = max(lookback_days + 14, 21)
-            limit = min(
-                MAX_BACKTEST_BARS,
-                max(
-                    int(self.config.lookback_bars),
-                    (calendar_lookback_days + 1) * ((24 * 60) // 5),
-                    int(source_params["atr_period"]) * 20,
-                    500,
-                ),
+            limit = max(
+                int(self.config.lookback_bars),
+                (calendar_lookback_days + 1) * ((24 * 60) // 5),
+                int(source_params["atr_period"]) * 20,
+                500,
             )
             source_candles = self._topbot_stream_history(
                 _topbot_asset_stream_key("minute", 5),
@@ -1258,21 +1230,49 @@ class BacktestEngine:
         stream = self.topbot_streams.get(key)
         if stream is None or not stream.candles:
             raise ValueError(f"missing_stored_replay_stream:{key}")
-        end_index = bisect_right(stream.close_times, _as_utc(event_time))
+        event_utc = _as_utc(event_time)
+        if self._topbot_history_event != event_utc:
+            self._topbot_history_event = event_utc
+            self._topbot_history_cache.clear()
+        normalized_not_before = _as_utc(not_before) if not_before is not None else None
+        cache_key = (key, max(1, int(limit)), normalized_not_before)
+        cached = self._topbot_history_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        end_index = self._topbot_closed_count(key, event_utc)
         start_index = max(0, end_index - max(1, int(limit)))
-        if not_before is not None:
+        if normalized_not_before is not None:
             start_index = max(
                 start_index,
-                bisect_left(stream.start_times, _as_utc(not_before)),
+                bisect_left(stream.start_times, normalized_not_before),
             )
-        return stream.candles[start_index:end_index]
+        history = _closed_candle_slice(stream.candles, start_index, end_index)
+        self._topbot_history_cache[cache_key] = history
+        return history
+
+    def _topbot_closed_count(self, key: str, event_time: datetime) -> int:
+        stream = self.topbot_streams.get(key)
+        if stream is None:
+            return 0
+        event_utc = _as_utc(event_time)
+        previous_event, count = self._topbot_cursor_state.get(
+            key,
+            (datetime.min.replace(tzinfo=timezone.utc), 0),
+        )
+        if event_utc < previous_event:
+            count = bisect_right(stream.close_times, event_utc)
+        elif event_utc > previous_event:
+            while count < len(stream.close_times) and stream.close_times[count] <= event_utc:
+                count += 1
+        self._topbot_cursor_state[key] = (event_utc, count)
+        return count
 
     def _fill_pending_signal(
         self,
         pending: _PendingSignal,
         *,
         candle: ProjectXMarketCandle,
-        bar_index: int,
     ) -> None:
         fill_time = _as_utc(candle.candle_timestamp)
         if not _signal_fill_is_in_same_session(
@@ -1288,7 +1288,7 @@ class BacktestEngine:
         is_exit_only = signal_category == "exit"
 
         if self.position is not None and self.position.side != desired_side:
-            self.exposed_bar_indexes.add(bar_index)
+            self._current_bar_exposed = True
             self._update_excursion(float(candle.open_price), float(candle.open_price))
             exit_reason = str(pending.payload.get("exit_reason") or "position_reversal")
             self._close_position(
@@ -1353,7 +1353,7 @@ class BacktestEngine:
             stop_loss=stop_loss,
             take_profit=take_profit,
         )
-        self.exposed_bar_indexes.add(bar_index)
+        self._current_bar_exposed = True
 
     def _can_enter(self, timestamp: datetime) -> bool:
         if not _contract_is_allowed(self.config):
@@ -1547,6 +1547,8 @@ class BacktestEngine:
         return float(raw + slip if action == "BUY" else raw - slip)
 
     def _record_equity(self, *, event_time: datetime, mark_price: float) -> None:
+        if self._current_bar_exposed:
+            self.exposed_bar_count += 1
         unrealized = 0.0
         if self.position is not None:
             unrealized = _price_pnl(
@@ -1580,18 +1582,13 @@ class BacktestEngine:
             self.equity_curve.append(point)
 
     def _add_data_quality_warnings(self) -> None:
-        warmup_count = sum(
-            1
-            for row in self.all_candles
-            if _as_utc(row.candle_timestamp) < self.settings.start
-            and _candle_close_time(row) <= _candle_close_time(self.execution_candles[0])
+        warmup_count = min(
+            bisect_left(self.all_start_times, self.settings.start),
+            bisect_right(self.all_close_times, self.execution_close_times[0]),
         )
-        requested_warmup = min(
-            MAX_BACKTEST_BARS,
-            max(
-                int(self.config.lookback_bars),
-                _strategy_history_bars(self.config, hard_minimum=False),
-            ),
+        requested_warmup = max(
+            int(self.config.lookback_bars),
+            _strategy_history_bars(self.config, hard_minimum=False),
         )
         if self.strategy_type == _TOPBOT_STRATEGY:
             primary_key = _topbot_asset_stream_key(
@@ -1614,8 +1611,8 @@ class BacktestEngine:
             str(self.config.timeframe_unit), int(self.config.timeframe_unit_number)
         )
         if expected_seconds is not None:
-            actual_start = _as_utc(self.execution_candles[0].candle_timestamp)
-            actual_end = _candle_close_time(self.execution_candles[-1])
+            actual_start = self.execution_start_times[0]
+            actual_end = self.execution_close_times[-1]
             if _has_open_futures_interval(
                 self.settings.start,
                 actual_start,
@@ -1647,7 +1644,7 @@ class BacktestEngine:
                 str(self.config.timeframe_unit),
                 int(self.config.timeframe_unit_number),
             )
-            first_event = _candle_close_time(self.execution_candles[0])
+            first_event = self.execution_close_times[0]
             for key, spec in sorted(_topbot_stream_specs(self.config).items()):
                 if key == primary_key:
                     continue
@@ -1729,9 +1726,9 @@ def _topbot_primary_source_history_limit(config: BotConfig, source_strategy: str
         int(config.timeframe_unit_number),
     )
     if timeframe_seconds is None or timeframe_seconds <= 0:
-        return MAX_BACKTEST_BARS
+        return limit
     session_capacity = math.ceil((25 * 60 * 60) / timeframe_seconds) + 2
-    return min(MAX_BACKTEST_BARS, max(limit, session_capacity))
+    return max(limit, session_capacity)
 
 
 def _topbot_configured_session_capacity(
@@ -1742,7 +1739,7 @@ def _topbot_configured_session_capacity(
 ) -> int:
     timeframe_seconds = _timeframe_seconds(unit, unit_number)
     if timeframe_seconds is None or timeframe_seconds <= 0:
-        return MAX_BACKTEST_BARS
+        return max(1, int(config.lookback_bars))
     start = _parse_time(str(config.trading_start_time))
     end = _parse_time(str(config.trading_end_time))
     start_seconds = start.hour * 3600 + start.minute * 60 + start.second
@@ -1750,26 +1747,20 @@ def _topbot_configured_session_capacity(
     duration = end_seconds - start_seconds
     if duration < 0:
         duration += 24 * 60 * 60
-    return min(
-        MAX_BACKTEST_BARS,
-        max(1, math.ceil((duration + 60 * 60) / timeframe_seconds) + 2),
-    )
+    return max(1, math.ceil((duration + 60 * 60) / timeframe_seconds) + 2)
 
 
 def _relative_strength_spy_history_limit(
     config: BotConfig,
     source_params: Mapping[str, Any],
 ) -> int:
-    return min(
-        MAX_BACKTEST_BARS,
-        max(
-            int(config.lookback_bars),
-            int(source_params["comparison_bars"]) + 1,
-            int(source_params["pullback_lookback_bars"]) + 1,
-            int(source_params["relative_volume_period"]) + 1,
-            int(source_params["major_level_lookback_bars"]),
-            50,
-        ),
+    return max(
+        int(config.lookback_bars),
+        int(source_params["comparison_bars"]) + 1,
+        int(source_params["pullback_lookback_bars"]) + 1,
+        int(source_params["relative_volume_period"]) + 1,
+        int(source_params["major_level_lookback_bars"]),
+        50,
     )
 
 
@@ -1851,14 +1842,11 @@ def _topbot_stream_specs(config: BotConfig) -> dict[str, _TopBotReplayStreamSpec
         elif source_strategy == "opening_rvol_breakout":
             lookback_days = int(source_params["relative_volume_lookback_days"])
             calendar_lookback_days = max(lookback_days + 14, 21)
-            opening_limit = min(
-                MAX_BACKTEST_BARS,
-                max(
-                    int(config.lookback_bars),
-                    (calendar_lookback_days + 1) * ((24 * 60) // 5),
-                    int(source_params["atr_period"]) * 20,
-                    500,
-                ),
+            opening_limit = max(
+                int(config.lookback_bars),
+                (calendar_lookback_days + 1) * ((24 * 60) // 5),
+                int(source_params["atr_period"]) * 20,
+                500,
             )
             add_asset("minute", 5, opening_limit)
         elif source_strategy == "delayed_orb_confirmation":
@@ -2004,9 +1992,15 @@ def _validate_topbot_replay_stream(
     spec: _TopBotReplayStreamSpec,
     config: BotConfig,
 ) -> tuple[list[ProjectXMarketCandle], int]:
-    closed = [row for row in candles if not _cached_candle_is_effectively_partial(row)]
-    excluded_partial = len(candles) - len(closed)
-    closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        closed = _ClosedCandleList(candles)
+        excluded_partial = 0
+    else:
+        closed = _ClosedCandleList(
+            row for row in candles if not _cached_candle_is_effectively_partial(row)
+        )
+        excluded_partial = len(candles) - len(closed)
+        closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     contract_ids: set[str] = set()
@@ -2162,14 +2156,11 @@ def _estimate_topbot_evaluator_operations(config: BotConfig, *, execution_bars: 
         elif source == "opening_rvol_breakout":
             lookback_days = int(source_params["relative_volume_lookback_days"])
             calendar_days = max(lookback_days + 14, 21)
-            per_event += min(
-                MAX_BACKTEST_BARS,
-                max(
-                    int(config.lookback_bars),
-                    (calendar_days + 1) * ((24 * 60) // 5),
-                    int(source_params["atr_period"]) * 20,
-                    500,
-                ),
+            per_event += max(
+                int(config.lookback_bars),
+                (calendar_days + 1) * ((24 * 60) // 5),
+                int(source_params["atr_period"]) * 20,
+                500,
             )
         elif source == "delayed_orb_confirmation":
             per_event += 1500
@@ -2227,13 +2218,38 @@ def _load_topbot_replay_streams(
         int(config.timeframe_unit_number),
     )
     streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
+    specs = _topbot_stream_specs(config)
     total_rows = len(primary_rows)
 
-    for key, spec in _topbot_stream_specs(config).items():
+    def stream_identity(spec: _TopBotReplayStreamSpec) -> tuple[str, str, str, int]:
+        if spec.contract_id is not None:
+            return ("contract", spec.contract_id, spec.unit, spec.unit_number)
+        return ("symbol", str(spec.symbol or ""), spec.unit, spec.unit_number)
+
+    max_warmup_by_identity: dict[tuple[str, str, str, int], int] = {}
+    for key, spec in specs.items():
         if key == primary_key:
             continue
+        identity = stream_identity(spec)
+        max_warmup_by_identity[identity] = max(
+            max_warmup_by_identity.get(identity, 0),
+            int(spec.warmup_bars),
+        )
+
+    rows_by_identity: dict[
+        tuple[str, str, str, int], list[ProjectXMarketCandle]
+    ] = {stream_identity(specs[primary_key]): primary_rows}
+
+    for key, spec in specs.items():
+        if key == primary_key:
+            continue
+        identity = stream_identity(spec)
+        cached_rows = rows_by_identity.get(identity)
+        if cached_rows is not None:
+            streams[key] = cached_rows
+            continue
         query = (
-            db.query(ProjectXMarketCandle)
+            _projected_candle_query(db)
             .filter(ProjectXMarketCandle.user_id == user_id)
             .filter(ProjectXMarketCandle.live.is_(False))
             .filter(ProjectXMarketCandle.unit == spec.unit)
@@ -2250,37 +2266,31 @@ def _load_topbot_replay_streams(
                 )
             )
 
-        execution_rows = (
+        execution_query = (
             query.filter(ProjectXMarketCandle.candle_timestamp >= start)
             .filter(ProjectXMarketCandle.candle_timestamp <= end)
             .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-            .limit(MAX_TOPBOT_REPLAY_STREAM_BARS + 1)
-            .all()
         )
+        execution_rows = _collect_projected_candles(execution_query)
         execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
-        if len(execution_rows) > MAX_TOPBOT_REPLAY_STREAM_BARS:
-            raise BacktestConfigurationError(
-                "topbot_replay_stream_bar_limit_exceeded: "
-                f"{key} exceeds {MAX_TOPBOT_REPLAY_STREAM_BARS:,} bars; reduce the date range"
-            )
-        warmup_rows = (
+        warmup_query = (
             query.filter(ProjectXMarketCandle.candle_timestamp < start)
             .order_by(ProjectXMarketCandle.candle_timestamp.desc())
             # One candle can start before the requested range while closing
             # after the first replay event. Overfetch it so the requested
             # number of genuinely closed warmup bars remains available.
-            .limit(min(MAX_TOPBOT_REPLAY_STREAM_BARS, max(1, spec.warmup_bars + 1)))
-            .all()
+            .limit(max(1, max_warmup_by_identity[identity] + 1))
         )
+        warmup_rows = _collect_projected_candles(warmup_query)
         warmup_rows.reverse()
         rows = [*warmup_rows, *execution_rows]
+        rows_by_identity[identity] = rows
         streams[key] = rows
         total_rows += len(rows)
-        if total_rows > MAX_TOPBOT_REPLAY_TOTAL_BARS:
-            raise BacktestConfigurationError(
-                "topbot_replay_total_bar_limit_exceeded: synchronized streams contain "
-                f"more than {MAX_TOPBOT_REPLAY_TOTAL_BARS:,} bars; reduce the date range"
-            )
+        _enforce_backtest_resource_budget(
+            replay_rows=total_rows,
+            execution_rows=len(primary_rows),
+        )
 
     return streams
 
@@ -2477,8 +2487,8 @@ def _cached_replay_stream_covers(
     interval_seconds = _timeframe_seconds(unit, unit_number)
     if interval_seconds is None:
         return False
-    rows = (
-        db.query(ProjectXMarketCandle)
+    query = (
+        _projected_candle_query(db)
         .filter(ProjectXMarketCandle.user_id == user_id)
         .filter(ProjectXMarketCandle.contract_id == contract_id)
         .filter(ProjectXMarketCandle.live.is_(False))
@@ -2488,23 +2498,24 @@ def _cached_replay_stream_covers(
         .filter(ProjectXMarketCandle.candle_timestamp >= fetch_start)
         .filter(ProjectXMarketCandle.candle_timestamp <= last_event)
         .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .all()
     )
+    rows = _collect_projected_candles(query)
     if any(_cached_candle_was_fetched_before_nominal_close(row) for row in rows):
         return False
     if _candle_stream_has_overlaps(rows):
         return False
-    closed_by_first = [row for row in rows if _candle_close_time(row) <= first_event]
-    warmup_count = sum(
-        _as_utc(row.candle_timestamp) < requested_start
-        for row in closed_by_first
-    )
+    close_times = [_candle_close_time(row) for row in rows]
+    start_times = [_as_utc(row.candle_timestamp) for row in rows]
+    first_end = bisect_right(close_times, first_event)
+    last_end = bisect_right(close_times, last_event)
+    closed_by_first = rows[:first_end]
+    warmup_count = min(first_end, bisect_left(start_times, requested_start))
     if warmup_count < max(1, int(warmup_bars)):
         return False
 
     for event, candidates in (
         (first_event, closed_by_first),
-        (last_event, [row for row in rows if _candle_close_time(row) <= last_event]),
+        (last_event, rows[:last_end]),
     ):
         if not candidates:
             return False
@@ -2553,6 +2564,40 @@ def run_backtest(
     ).run()
 
 
+def _projected_candle_query(db: Session):
+    """Select only replay fields, avoiding ORM identity-map materialization."""
+
+    return db.query(
+        ProjectXMarketCandle.user_id,
+        ProjectXMarketCandle.contract_id,
+        ProjectXMarketCandle.symbol,
+        ProjectXMarketCandle.live,
+        ProjectXMarketCandle.unit,
+        ProjectXMarketCandle.unit_number,
+        ProjectXMarketCandle.candle_timestamp,
+        ProjectXMarketCandle.open_price,
+        ProjectXMarketCandle.high_price,
+        ProjectXMarketCandle.low_price,
+        ProjectXMarketCandle.close_price,
+        ProjectXMarketCandle.volume,
+        ProjectXMarketCandle.is_partial,
+        ProjectXMarketCandle.raw_payload,
+        ProjectXMarketCandle.fetched_at,
+    )
+
+
+def _collect_projected_candles(query: Any) -> list[ProjectXMarketCandle]:
+    rows: list[ProjectXMarketCandle] = []
+    for values in query.yield_per(CANDLE_QUERY_CHUNK_SIZE):
+        rows.append(_ProjectedCandle(*values))
+        if len(rows) % CANDLE_QUERY_CHUNK_SIZE == 0:
+            _enforce_backtest_resource_budget(
+                replay_rows=len(rows),
+                execution_rows=0,
+            )
+    return rows
+
+
 def _load_primary_closed_candles(
     db: Session,
     *,
@@ -2563,8 +2608,8 @@ def _load_primary_closed_candles(
     """Load every eligible primary bar without rolling across futures deliveries."""
 
     cutoff = _as_utc(closed_by)
-    rows = (
-        db.query(ProjectXMarketCandle)
+    query = (
+        _projected_candle_query(db)
         .filter(ProjectXMarketCandle.user_id == user_id)
         .filter(ProjectXMarketCandle.contract_id == str(config.contract_id))
         .filter(ProjectXMarketCandle.live.is_(False))
@@ -2573,14 +2618,14 @@ def _load_primary_closed_candles(
         .filter(ProjectXMarketCandle.is_partial.is_(False))
         .filter(ProjectXMarketCandle.candle_timestamp <= cutoff)
         .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .all()
     )
-    return [
+    rows = _collect_projected_candles(query)
+    return _ClosedCandleList(
         row
         for row in rows
         if not _cached_candle_is_effectively_partial(row)
         and _candle_close_time(row) <= cutoff
-    ]
+    )
 
 
 def _requested_backtest_bounds(payload: Any) -> tuple[datetime, datetime] | None:
@@ -2878,19 +2923,21 @@ def create_bot_backtest(
         )
         window = _resolve_backtest_window(primary_rows, payload=payload, now=captured_now)
 
-    execution_rows = [
-        row
-        for row in primary_rows
-        if _as_utc(row.candle_timestamp) >= window.start
-        and _candle_close_time(row) <= window.end
+    primary_start_times = [
+        _as_utc(row.candle_timestamp) for row in primary_rows
     ]
+    primary_close_times = [_candle_close_time(row) for row in primary_rows]
+    execution_start_index = bisect_left(primary_start_times, window.start)
+    execution_end_index = bisect_right(primary_close_times, window.end)
+    execution_rows = _closed_candle_slice(
+        primary_rows,
+        execution_start_index,
+        execution_end_index,
+    )
 
-    rolling_warmup_limit = min(
-        MAX_BACKTEST_BARS,
-        max(
-            int(config.lookback_bars),
-            _strategy_history_bars(config, hard_minimum=False),
-        ),
+    rolling_warmup_limit = max(
+        int(config.lookback_bars),
+        _strategy_history_bars(config, hard_minimum=False),
     )
     if is_topbot:
         primary_key = _topbot_asset_stream_key(
@@ -2898,21 +2945,22 @@ def create_bot_backtest(
             int(config.timeframe_unit_number),
         )
         primary_spec = _topbot_stream_specs(config)[primary_key]
-        rolling_warmup_limit = min(
-            MAX_BACKTEST_BARS,
-            max(rolling_warmup_limit, primary_spec.warmup_bars),
+        rolling_warmup_limit = max(
+            rolling_warmup_limit,
+            primary_spec.warmup_bars,
         )
     warmup_limit = _max_evaluator_input_bars(
         config,
         rolling_limit=rolling_warmup_limit,
     )
-    warmup_candidates = [
-        row
-        for row in primary_rows
-        if _as_utc(row.candle_timestamp) < window.start
-    ]
-    warmup_rows = warmup_candidates[-warmup_limit:]
-    replay_rows = [*warmup_rows, *execution_rows]
+    warmup_start_index = max(0, execution_start_index - warmup_limit)
+    warmup_rows = _closed_candle_slice(
+        primary_rows,
+        warmup_start_index,
+        execution_start_index,
+    )
+    replay_rows = _ClosedCandleList(warmup_rows)
+    replay_rows.extend(execution_rows)
     replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None
     if is_topbot:
         replay_streams = _load_topbot_replay_streams(
@@ -2989,7 +3037,12 @@ def serialize_bot_backtest(row: BotBacktest) -> dict[str, Any]:
 
 
 def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
-    canonical = [
+    ordered = (
+        candles
+        if getattr(candles, "_topsignal_sorted_closed", False)
+        else sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+    )
+    return _incremental_candle_fingerprint(
         {
             "contract_id": str(row.contract_id),
             "live": bool(row.live),
@@ -3003,37 +3056,60 @@ def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
             "volume": str(row.volume),
             "is_partial": bool(row.is_partial),
         }
-        for row in sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+        for row in ordered
         if not bool(row.is_partial)
-    ]
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    )
 
 
 def candle_stream_input_fingerprint(
     streams: Mapping[str, list[ProjectXMarketCandle]],
 ) -> str:
-    canonical = [
-        {
-            "stream": key,
-            "contract_id": str(row.contract_id),
-            "live": bool(row.live),
-            "unit": str(row.unit),
-            "unit_number": int(row.unit_number),
-            "timestamp": _as_utc(row.candle_timestamp).isoformat(),
-            "open": str(row.open_price),
-            "high": str(row.high_price),
-            "low": str(row.low_price),
-            "close": str(row.close_price),
-            "volume": str(row.volume),
-            "is_partial": bool(row.is_partial),
-        }
-        for key in sorted(streams)
-        for row in sorted(streams[key], key=lambda candle: _as_utc(candle.candle_timestamp))
-        if not bool(row.is_partial)
-    ]
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    def canonical_rows() -> Iterable[dict[str, Any]]:
+        for key in sorted(streams):
+            candles = streams[key]
+            ordered = (
+                candles
+                if getattr(candles, "_topsignal_sorted_closed", False)
+                else sorted(
+                    candles,
+                    key=lambda candle: _as_utc(candle.candle_timestamp),
+                )
+            )
+            for row in ordered:
+                if bool(row.is_partial):
+                    continue
+                yield {
+                    "stream": key,
+                    "contract_id": str(row.contract_id),
+                    "live": bool(row.live),
+                    "unit": str(row.unit),
+                    "unit_number": int(row.unit_number),
+                    "timestamp": _as_utc(row.candle_timestamp).isoformat(),
+                    "open": str(row.open_price),
+                    "high": str(row.high_price),
+                    "low": str(row.low_price),
+                    "close": str(row.close_price),
+                    "volume": str(row.volume),
+                    "is_partial": bool(row.is_partial),
+                }
+
+    return _incremental_candle_fingerprint(canonical_rows())
+
+
+def _incremental_candle_fingerprint(rows: Iterable[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    first = True
+    for row in rows:
+        if first:
+            first = False
+        else:
+            digest.update(b",")
+        digest.update(
+            json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 def _require_supported_strategy(strategy_type: str) -> None:
@@ -3088,6 +3164,38 @@ def _contract_is_allowed(config: BotConfig) -> bool:
     return bool(allowed.intersection(candidates))
 
 
+def _closed_candle_slice(
+    candles: list[ProjectXMarketCandle],
+    start: int,
+    end: int | None = None,
+) -> list[ProjectXMarketCandle]:
+    sliced = candles[start:end]
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        return _ClosedCandleList(sliced)
+    return sliced
+
+
+def _enforce_backtest_resource_budget(
+    *,
+    replay_rows: int,
+    execution_rows: int,
+) -> None:
+    budget = max(1, int(BACKTEST_MEMORY_BUDGET_BYTES))
+    estimated = (
+        max(0, int(replay_rows)) * ESTIMATED_REPLAY_CANDLE_BYTES
+        + max(0, int(execution_rows)) * ESTIMATED_EXECUTION_RESULT_BYTES
+    )
+    if estimated <= budget:
+        return
+    estimated_mib = math.ceil(estimated / (1024 * 1024))
+    budget_mib = max(1, budget // (1024 * 1024))
+    raise BacktestConfigurationError(
+        "backtest_resource_budget_exceeded: the complete resolved history requires "
+        f"an estimated {estimated_mib:,} MiB, above the configured {budget_mib:,} MiB "
+        "working-set budget; no partial result was saved"
+    )
+
+
 def _validate_settings(settings: BacktestSettings) -> BacktestSettings:
     normalized = BacktestSettings(
         start=_as_utc(settings.start),
@@ -3117,9 +3225,15 @@ def _validate_and_sort_candles(
     *,
     config: BotConfig,
 ) -> tuple[list[ProjectXMarketCandle], int]:
-    closed = [row for row in candles if not _cached_candle_is_effectively_partial(row)]
-    excluded_partial = len(candles) - len(closed)
-    closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        closed = _ClosedCandleList(candles)
+        excluded_partial = 0
+    else:
+        closed = _ClosedCandleList(
+            row for row in candles if not _cached_candle_is_effectively_partial(row)
+        )
+        excluded_partial = len(candles) - len(closed)
+        closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     for row in closed:
@@ -3664,11 +3778,11 @@ def _max_evaluator_input_bars(config: BotConfig, *, rolling_limit: int) -> int:
         str(config.timeframe_unit), int(config.timeframe_unit_number)
     )
     if timeframe_seconds is None or timeframe_seconds <= 0:
-        return MAX_BACKTEST_BARS
+        return rolling_limit
     if str(config.strategy_type) in _TRADING_DAY_VWAP_STRATEGIES:
         # A New York trading day spans 25 real hours across the fall DST change.
         session_capacity = math.ceil((25 * 60 * 60) / timeframe_seconds) + 2
-        return min(MAX_BACKTEST_BARS, max(rolling_limit, session_capacity))
+        return max(rolling_limit, session_capacity)
     if str(config.strategy_type) == "orb_fibonacci_pullback":
         start = _parse_time(str(config.trading_start_time))
         end = _parse_time(str(config.trading_end_time))
@@ -3679,7 +3793,7 @@ def _max_evaluator_input_bars(config: BotConfig, *, rolling_limit: int) -> int:
             duration += 24 * 60 * 60
         # Overnight configured windows can also cross a fall DST transition.
         session_capacity = math.ceil((duration + 60 * 60) / timeframe_seconds) + 2
-        return min(MAX_BACKTEST_BARS, max(1, session_capacity))
+        return max(1, session_capacity)
     return rolling_limit
 
 
