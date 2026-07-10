@@ -1,7 +1,8 @@
 import type { Logical, UTCTimestamp } from "lightweight-charts";
 
-export const BOT_DRAWING_STORAGE_VERSION = 1;
+export const BOT_DRAWING_STORAGE_VERSION = 2;
 export const BOT_DRAWING_STORAGE_KEY_PREFIX = `topsignal:bot-chart-drawings:v${BOT_DRAWING_STORAGE_VERSION}:`;
+const LEGACY_BOT_DRAWING_STORAGE_KEY_PREFIX = "topsignal:bot-chart-drawings:v1:";
 export const MAX_PERSISTED_BOT_DRAWINGS = 250;
 
 export type BotDrawingKind = "line" | "rectangle";
@@ -20,6 +21,8 @@ export interface BotDrawingShape {
 }
 
 export interface BotDrawingStorageScope {
+  /** Stable non-secret authenticated-user namespace. */
+  userScope: string;
   botId: number;
   contractId: string;
   /** Stable chart timeframe identifier, for example "5m" or "1h". */
@@ -38,10 +41,11 @@ interface BotDrawingStoragePayload {
 }
 
 export function buildBotDrawingStorageKey(scope: BotDrawingStorageScope): string {
+  const userScope = scope.userScope.trim();
   const botId = Number.isFinite(scope.botId) ? String(Math.trunc(scope.botId)) : "invalid";
   const contractId = scope.contractId.trim().toUpperCase();
   const timeframe = scope.timeframe.trim().toLowerCase();
-  return `${BOT_DRAWING_STORAGE_KEY_PREFIX}${encodeURIComponent(`${botId}|${contractId}|${timeframe}`)}`;
+  return `${BOT_DRAWING_STORAGE_KEY_PREFIX}${encodeURIComponent(`${userScope}|${botId}|${contractId}|${timeframe}`)}`;
 }
 
 export function readBotDrawings(
@@ -52,6 +56,7 @@ export function readBotDrawings(
     return [];
   }
   try {
+    removeLegacyBotDrawings(scope, storage);
     return parseBotDrawings(storage.getItem(buildBotDrawingStorageKey(scope)));
   } catch {
     return [];
@@ -66,6 +71,8 @@ export function writeBotDrawings(
   if (!storage) {
     return false;
   }
+
+  removeLegacyBotDrawings(scope, storage);
 
   const sanitizedDrawings = sanitizeDrawings(drawings);
   if (sanitizedDrawings.length === 0) {
@@ -92,6 +99,7 @@ export function clearBotDrawings(
     return false;
   }
   try {
+    removeLegacyBotDrawings(scope, storage);
     storage.removeItem(buildBotDrawingStorageKey(scope));
     return true;
   } catch {
@@ -169,4 +177,19 @@ function getBrowserStorage(): BotDrawingStorageAdapter | null {
   } catch {
     return null;
   }
+}
+
+function removeLegacyBotDrawings(scope: BotDrawingStorageScope, storage: BotDrawingStorageAdapter): void {
+  try {
+    storage.removeItem(buildLegacyBotDrawingStorageKey(scope));
+  } catch {
+    // Access failures are intentionally contained by the public operations.
+  }
+}
+
+function buildLegacyBotDrawingStorageKey(scope: BotDrawingStorageScope): string {
+  const botId = Number.isFinite(scope.botId) ? String(Math.trunc(scope.botId)) : "invalid";
+  const contractId = scope.contractId.trim().toUpperCase();
+  const timeframe = scope.timeframe.trim().toLowerCase();
+  return `${LEGACY_BOT_DRAWING_STORAGE_KEY_PREFIX}${encodeURIComponent(`${botId}|${contractId}|${timeframe}`)}`;
 }

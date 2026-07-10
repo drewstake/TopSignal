@@ -5,6 +5,21 @@ import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXM
 export const BOT_CHART_MAX_BARS = 2_000;
 export const BOT_CHART_MIN_BARS = 300;
 export const BOT_CHART_INITIAL_BARS = BOT_CHART_MIN_BARS;
+export const BOT_CHART_TIMEFRAMES = [
+  { id: "1m", label: "1m", unit: "minute", unitNumber: 1 },
+  { id: "5m", label: "5m", unit: "minute", unitNumber: 5 },
+  { id: "15m", label: "15m", unit: "minute", unitNumber: 15 },
+  { id: "1h", label: "1H", unit: "hour", unitNumber: 1 },
+  { id: "4h", label: "4H", unit: "hour", unitNumber: 4 },
+  { id: "1d", label: "1D", unit: "day", unitNumber: 1 },
+] as const satisfies readonly {
+  id: string;
+  label: string;
+  unit: BotTimeframeUnit;
+  unitNumber: number;
+}[];
+export type BotChartTimeframe = (typeof BOT_CHART_TIMEFRAMES)[number];
+export type BotChartTimeframeId = BotChartTimeframe["id"];
 const CHART_LOOKBACK_MULTIPLIER = 3;
 
 const UNIT_SECONDS_BY_NAME: Record<BotTimeframeUnit, number> = {

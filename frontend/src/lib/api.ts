@@ -69,11 +69,7 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
-const BOT_CONFIG_CACHE_TTL_MS = 60_000;
-const BOT_ACTIVITY_CACHE_TTL_MS = 5_000;
-const BOT_CANDLE_CACHE_TTL_MS = 30_000;
-const SELECTED_BOT_STORAGE_KEY = "topsignal.bot.selected-config-id";
-const BACKTEST_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const BACKTEST_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -82,6 +78,8 @@ interface RequestJsonOptions {
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
+  /** Reuse the token captured while selecting a user-scoped cache lane. */
+  accessTokenOverride?: string | null;
 }
 
 interface RequestMultipartOptions {
@@ -127,6 +125,16 @@ interface TimedCachedRequestOptions<T> {
   bypassCache?: boolean;
 }
 
+interface UserScopedTimedCachedRequestOptions<T> extends Omit<TimedCachedRequestOptions<T>, "cacheKey" | "load"> {
+  cacheKey: string;
+  load: (accessToken: string | null) => Promise<T>;
+}
+
+interface RequestAuthContext {
+  accessToken: string | null;
+  cacheScope: string;
+}
+
 function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promise<T> {
   const { cache, inFlight, cacheKey, ttlMs, load, bypassCache = false } = options;
   if (!bypassCache) {
@@ -152,68 +160,93 @@ function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promis
   });
 
   inFlight.set(cacheKey, request);
-  const clearInFlight = () => {
+  const clearIfCurrent = () => {
     if (inFlight.get(cacheKey) === request) {
       inFlight.delete(cacheKey);
     }
   };
-  void request.then(clearInFlight, clearInFlight);
+  // Avoid a detached `finally()` promise: if `request` rejects, that child
+  // promise would otherwise surface an unhandled rejection even when the
+  // caller handles the original request.
+  void request.then(clearIfCurrent, clearIfCurrent);
 
   return request;
 }
 
-function getSharedInFlightRequest<T>(
-  inFlight: Map<string, Promise<T>>,
-  cacheKey: string,
-  load: () => Promise<T>,
-): Promise<T> {
-  const pendingRequest = inFlight.get(cacheKey);
-  if (pendingRequest) {
-    return pendingRequest;
-  }
-  const request = load();
-  inFlight.set(cacheKey, request);
-  const clearInFlight = () => {
-    if (inFlight.get(cacheKey) === request) {
-      inFlight.delete(cacheKey);
-    }
-  };
-  void request.then(clearInFlight, clearInFlight);
-  return request;
-}
-
-function abortError(): Error {
-  const error = new Error("The operation was aborted");
-  error.name = "AbortError";
-  return error;
-}
-
-function withConsumerAbort<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) {
-    return request;
-  }
-  if (signal.aborted) {
-    return Promise.reject(abortError());
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    const handleAbort = () => reject(abortError());
-    signal.addEventListener("abort", handleAbort, { once: true });
-    void request.then(
-      (value) => {
-        signal.removeEventListener("abort", handleAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", handleAbort);
-        reject(error);
-      },
-    );
+async function getUserScopedTimedCachedRequest<T>(options: UserScopedTimedCachedRequestOptions<T>): Promise<T> {
+  const auth = await getRequestAuthContext();
+  return getTimedCachedRequest({
+    ...options,
+    cacheKey: `${options.cacheKey}|scope:${auth.cacheScope}`,
+    load: () => options.load(auth.accessToken),
   });
 }
 
-function requestCacheScope(): "demo" | "live" {
-  return isDemoModeEnabled() ? "demo" : "live";
+/**
+ * Stable, non-secret namespace for browser caches. Supabase access tokens are
+ * JWTs, so issuer + subject remain stable across token refreshes without ever
+ * storing the credential itself. Opaque-token fallback is intentionally
+ * session-scoped rather than exposing or persisting the token.
+ */
+export async function getAuthenticatedCacheScope(): Promise<string> {
+  return (await getRequestAuthContext()).cacheScope;
+}
+
+async function getRequestAuthContext(): Promise<RequestAuthContext> {
+  if (isDemoModeEnabled()) {
+    return { accessToken: null, cacheScope: "demo" };
+  }
+
+  const accessToken = await getAccessToken();
+  if (!accessToken) {
+    return { accessToken: null, cacheScope: "anonymous" };
+  }
+
+  return {
+    accessToken,
+    cacheScope: getJwtUserScope(accessToken) ?? await getOpaqueTokenScope(accessToken),
+  };
+}
+
+function getJwtUserScope(accessToken: string): string | null {
+  const payload = accessToken.split(".")[1];
+  if (!payload) {
+    return null;
+  }
+
+  try {
+    const normalized = payload.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = JSON.parse(globalThis.atob(padded)) as { iss?: unknown; sub?: unknown };
+    if (typeof decoded.sub !== "string" || decoded.sub.trim() === "") {
+      return null;
+    }
+    const issuer = typeof decoded.iss === "string" ? decoded.iss : "supabase";
+    return `user:${encodeURIComponent(issuer)}:${encodeURIComponent(decoded.sub)}`;
+  } catch {
+    return null;
+  }
+}
+
+async function getOpaqueTokenScope(accessToken: string): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const bytes = new TextEncoder().encode(accessToken);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    const fingerprint = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+    return `opaque:${fingerprint}`;
+  }
+
+  // Legacy-browser fallback. This never persists the credential itself; two
+  // independent 32-bit accumulators make accidental cross-user collisions
+  // vanishingly unlikely until Web Crypto is available.
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < accessToken.length; index += 1) {
+    const value = accessToken.charCodeAt(index);
+    left = Math.imul(left ^ value, 0x01000193) >>> 0;
+    right = Math.imul(right ^ value, 0x85ebca6b) >>> 0;
+  }
+  return `opaque:${left.toString(16).padStart(8, "0")}${right.toString(16).padStart(8, "0")}`;
 }
 
 function buildUrl(path: string, query?: Record<string, QueryValue>) {
@@ -341,7 +374,7 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 }
 
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
-  const { method = "GET", query, body, signal } = options;
+  const { method = "GET", query, body, signal, accessTokenOverride } = options;
   if (method !== "GET" && isDemoModeEnabled()) {
     throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
   }
@@ -351,7 +384,7 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
       return demoResponse.data;
     }
   }
-  const accessToken = await getAccessToken();
+  const accessToken = accessTokenOverride === undefined ? await getAccessToken() : accessTokenOverride;
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
     method,
@@ -633,18 +666,19 @@ function invalidateAccountsListCaches() {
 
 function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
   const cacheKey = accountsQueryCacheKey(options);
-  return getTimedCachedRequest({
+  return getUserScopedTimedCachedRequest({
     cache: accountsCacheByQuery,
     inFlight: inFlightAccountsByQuery,
     cacheKey,
     ttlMs: ACCOUNTS_CACHE_TTL_MS,
     bypassCache: options.bypassCache,
-    load: () =>
+    load: (accessToken) =>
       requestJson<AccountInfo[]>("/api/accounts", {
         query: {
           show_inactive: options.showInactive,
           show_missing: options.showMissing,
         },
+        accessTokenOverride: accessToken,
       }),
   });
 }
@@ -778,15 +812,16 @@ export const accountsApi = {
       symbol: requestQuery.symbol,
       include_lifecycle: requestQuery.include_lifecycle,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountTradesCacheByQuery,
       inFlight: inFlightAccountTradesByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -802,15 +837,16 @@ export const accountsApi = {
       end: requestQuery.end,
       pointsBasis: requestQuery.pointsBasis,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountSummaryCacheByQuery,
       inFlight: inFlightAccountSummaryByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -824,15 +860,16 @@ export const accountsApi = {
       start: requestQuery.start,
       end: requestQuery.end,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountSummaryWithPointBasesCacheByQuery,
       inFlight: inFlightAccountSummaryWithPointBasesByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountSummaryWithPointBases>(`/api/accounts/${accountId}/summary-with-point-bases`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -848,15 +885,16 @@ export const accountsApi = {
       end: requestQuery.end,
       all_time: requestQuery.all_time,
     });
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountPnlCalendarCacheByQuery,
       inFlight: inFlightAccountPnlCalendarByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
       bypassCache: Boolean(query.refresh),
-      load: () =>
+      load: (accessToken) =>
         requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -904,14 +942,15 @@ export const accountsApi = {
       include_archived: query.include_archived,
     };
     const cacheKey = accountJournalReadQueryCacheKey(accountId, requestQuery);
-    return getTimedCachedRequest({
+    return getUserScopedTimedCachedRequest({
       cache: accountJournalDaysCacheByQuery,
       inFlight: inFlightAccountJournalDaysByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
-      load: () =>
+      load: (accessToken) =>
         requestJson<JournalDaysResponse>(`/api/accounts/${accountId}/journal/days`, {
           query: requestQuery,
+          accessTokenOverride: accessToken,
         }),
     });
   },
@@ -971,7 +1010,7 @@ interface ContractSearchQuery {
   live?: boolean;
 }
 
-interface CandleQuery {
+export interface CandleQuery {
   contractId: string;
   symbol?: string;
   start?: string;
@@ -986,317 +1025,63 @@ interface CandleQuery {
   repair?: boolean;
 }
 
-interface BotConfigListOptions {
-  bypassCache?: boolean;
-}
-
-export interface BotWarmupTimeframe {
-  unit: BotTimeframeUnit;
-  unitNumber: number;
-}
-
-const BOT_WARMUP_MAX_TIMEFRAMES = 4;
-const BOT_CHART_MIN_BARS = 300;
-const BOT_CHART_MAX_BARS = 2_000;
-const BOT_CHART_LOOKBACK_MULTIPLIER = 3;
-const BOT_TIMEFRAME_SECONDS: Record<BotTimeframeUnit, number> = {
-  second: 1,
-  minute: 60,
-  hour: 60 * 60,
-  day: 24 * 60 * 60,
-  week: 7 * 24 * 60 * 60,
-  month: 31 * 24 * 60 * 60,
+const CANDLE_UNIT_MS: Record<BotTimeframeUnit, number> = {
+  second: 1_000,
+  minute: 60_000,
+  hour: 60 * 60_000,
+  day: 24 * 60 * 60_000,
+  week: 7 * 24 * 60 * 60_000,
+  month: 31 * 24 * 60 * 60_000,
 };
 
-const botConfigsCacheByQuery = new Map<string, TimedCache<BotConfigListResponse>>();
-const inFlightBotConfigsByQuery = new Map<string, Promise<BotConfigListResponse>>();
-const botActivityCacheByQuery = new Map<string, TimedCache<BotActivity>>();
-const inFlightBotActivityByQuery = new Map<string, Promise<BotActivity>>();
-const botCandlesCacheByQuery = new Map<string, TimedCache<ProjectXMarketCandle[]>>();
-const inFlightBotCandlesByQuery = new Map<string, Promise<ProjectXMarketCandle[]>>();
-let selectedBotWarmupRequest: Promise<void> | null = null;
-
-function normalizeTimeframe(unit: BotTimeframeUnit, unitNumber: number): BotWarmupTimeframe {
+function projectXCandleQueryParams(query: CandleQuery): Record<string, QueryValue> {
   return {
-    unit,
-    unitNumber: Math.max(1, Math.trunc(unitNumber)),
+    contract_id: query.contractId,
+    symbol: query.symbol,
+    start: query.start,
+    end: query.end,
+    live: query.live ?? false,
+    unit: query.unit ?? "minute",
+    unit_number: query.unitNumber ?? 5,
+    limit: query.limit ?? 500,
+    include_partial_bar: query.includePartialBar ?? false,
+    refresh: query.refresh ?? false,
+    repair: query.repair ?? false,
   };
 }
 
-function deriveLowerTimeframe(unit: BotTimeframeUnit, unitNumber: number): BotWarmupTimeframe {
-  const totalSeconds = BOT_TIMEFRAME_SECONDS[unit] * Math.max(1, Math.trunc(unitNumber));
-  const units: BotTimeframeUnit[] = ["month", "week", "day", "hour", "minute"];
-  for (const divisor of [4, 3, 5, 2]) {
-    if (totalSeconds % divisor !== 0) {
-      continue;
-    }
-    const candidateSeconds = totalSeconds / divisor;
-    for (const candidateUnit of units) {
-      const seconds = BOT_TIMEFRAME_SECONDS[candidateUnit];
-      if (candidateSeconds % seconds === 0) {
-        return normalizeTimeframe(candidateUnit, candidateSeconds / seconds);
-      }
-    }
-    if (unit === "second") {
-      return normalizeTimeframe("second", candidateSeconds);
-    }
+/**
+ * Stable identity for deduplicating equivalent candle reads. Closed-candle
+ * ranges are bucketed to their chart interval: two callers within the same
+ * active bar need the same closed history even if their `Date` values differ by
+ * a few milliseconds. Partial/live reads retain exact timestamps.
+ */
+export function buildProjectXCandleRequestKey(query: CandleQuery): string {
+  const params = projectXCandleQueryParams(query);
+  if (!(query.includePartialBar ?? false)) {
+    const unit = query.unit ?? "minute";
+    const intervalMs = CANDLE_UNIT_MS[unit] * Math.max(1, Math.trunc(query.unitNumber ?? 5));
+    params.start = normalizeCandleRequestTimestamp(query.start, intervalMs);
+    params.end = normalizeCandleRequestTimestamp(query.end, intervalMs);
   }
-  return normalizeTimeframe(unit, unitNumber);
+  params.contract_id = query.contractId.trim().toUpperCase();
+  params.symbol = query.symbol?.trim().toUpperCase();
+  return `projectx-candles:${toSortedQueryCacheKey(params)}`;
 }
 
-function addWarmupTimeframe(target: BotWarmupTimeframe[], timeframe: BotWarmupTimeframe) {
-  const normalized = normalizeTimeframe(timeframe.unit, timeframe.unitNumber);
-  if (target.some((item) => item.unit === normalized.unit && item.unitNumber === normalized.unitNumber)) {
-    return;
+export function buildUserScopedProjectXCandleRequestKey(cacheScope: string, query: CandleQuery): string {
+  return `scope:${encodeURIComponent(cacheScope)}|${buildProjectXCandleRequestKey(query)}`;
+}
+
+function normalizeCandleRequestTimestamp(value: string | undefined, intervalMs: number): string | undefined {
+  if (!value) {
+    return value;
   }
-  if (target.length < BOT_WARMUP_MAX_TIMEFRAMES) {
-    target.push(normalized);
+  const timestampMs = Date.parse(value);
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return value;
   }
-}
-
-function addStrategyWarmupTimeframes(
-  target: BotWarmupTimeframe[],
-  bot: BotConfig,
-  strategyType: BotConfig["strategy_type"],
-) {
-  if (strategyType === "topbot_adaptive") {
-    for (const sourceStrategy of bot.strategy_params?.source_strategies ?? []) {
-      if (sourceStrategy !== "topbot_adaptive") {
-        addStrategyWarmupTimeframes(target, bot, sourceStrategy);
-      }
-      if (target.length >= BOT_WARMUP_MAX_TIMEFRAMES) {
-        break;
-      }
-    }
-    return;
-  }
-  if (strategyType === "delayed_orb_confirmation") {
-    addWarmupTimeframe(target, { unit: "minute", unitNumber: 1 });
-    return;
-  }
-  if (strategyType === "support_resistance" || strategyType === "liquidity_sweep_retest" || strategyType === "macd_support_resistance") {
-    addWarmupTimeframe(target, { unit: "hour", unitNumber: 1 });
-    addWarmupTimeframe(target, { unit: "hour", unitNumber: 4 });
-    return;
-  }
-  if (strategyType === "supertrend_pivot") {
-    addWarmupTimeframe(target, { unit: "day", unitNumber: 1 });
-    return;
-  }
-  if (strategyType === "fvg_sweep_mss") {
-    addWarmupTimeframe(target, deriveLowerTimeframe(bot.timeframe_unit, bot.timeframe_unit_number));
-    return;
-  }
-  if (strategyType === "relative_strength_spy" || strategyType === "opening_rvol_breakout" || strategyType === "vwap_gap_retrace") {
-    addWarmupTimeframe(target, { unit: "minute", unitNumber: 5 });
-  }
-}
-
-export function getBotWarmupTimeframes(bot: BotConfig): BotWarmupTimeframe[] {
-  const timeframes: BotWarmupTimeframe[] = [];
-  addWarmupTimeframe(timeframes, { unit: bot.timeframe_unit, unitNumber: bot.timeframe_unit_number });
-  addStrategyWarmupTimeframes(timeframes, bot, bot.strategy_type);
-  return timeframes;
-}
-
-export function readSelectedBotConfigId(): number | null {
-  try {
-    if (typeof localStorage === "undefined") {
-      return null;
-    }
-    const value = Number.parseInt(localStorage.getItem(SELECTED_BOT_STORAGE_KEY) ?? "", 10);
-    return Number.isFinite(value) && value > 0 ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-export function rememberSelectedBotConfigId(botConfigId: number | null): void {
-  try {
-    if (typeof localStorage === "undefined") {
-      return;
-    }
-    if (botConfigId && Number.isFinite(botConfigId) && botConfigId > 0) {
-      localStorage.setItem(SELECTED_BOT_STORAGE_KEY, String(Math.trunc(botConfigId)));
-    } else {
-      localStorage.removeItem(SELECTED_BOT_STORAGE_KEY);
-    }
-  } catch {
-    // Selection persistence is only an optimization hint.
-  }
-}
-
-function botConfigCacheKey(accountId?: number): string {
-  return `${requestCacheScope()}:${accountId ?? "all"}`;
-}
-
-function invalidateBotConfigCaches() {
-  botConfigsCacheByQuery.clear();
-  inFlightBotConfigsByQuery.clear();
-}
-
-function botActivityCacheKey(botConfigId: number, limit: number): string {
-  return `${requestCacheScope()}:${botConfigId}:${limit}`;
-}
-
-function invalidateBotActivityCaches(botConfigId?: number) {
-  if (typeof botConfigId !== "number") {
-    botActivityCacheByQuery.clear();
-    inFlightBotActivityByQuery.clear();
-    return;
-  }
-  const prefix = `${requestCacheScope()}:${botConfigId}:`;
-  clearMapByPrefix(botActivityCacheByQuery, prefix);
-  clearMapByPrefix(inFlightBotActivityByQuery, prefix);
-}
-
-function listBotConfigs(accountId?: number, options: BotConfigListOptions = {}): Promise<BotConfigListResponse> {
-  const cacheKey = botConfigCacheKey(accountId);
-  return getTimedCachedRequest({
-    cache: botConfigsCacheByQuery,
-    inFlight: inFlightBotConfigsByQuery,
-    cacheKey,
-    ttlMs: BOT_CONFIG_CACHE_TTL_MS,
-    bypassCache: options.bypassCache,
-    load: () =>
-      requestJson<BotConfigListResponse>("/api/bots", {
-        query: {
-          account_id: accountId,
-        },
-      }),
-  });
-}
-
-function getBotActivity(botConfigId: number, limit = 50): Promise<BotActivity> {
-  const normalizedLimit = Math.max(1, Math.trunc(limit));
-  const cacheKey = botActivityCacheKey(botConfigId, normalizedLimit);
-  return getTimedCachedRequest({
-    cache: botActivityCacheByQuery,
-    inFlight: inFlightBotActivityByQuery,
-    cacheKey,
-    ttlMs: BOT_ACTIVITY_CACHE_TTL_MS,
-    load: () =>
-      requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
-        query: {
-          limit: normalizedLimit,
-        },
-      }),
-  });
-}
-
-function normalizedCandleBoundary(value: string | undefined, bucketMs: number): string {
-  const parsed = value ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(parsed) ? String(Math.floor(parsed / bucketMs)) : value ?? "";
-}
-
-function botCandleCacheKey(query: CandleQuery): string {
-  const unit = query.unit ?? "minute";
-  const unitNumber = Math.max(1, Math.trunc(query.unitNumber ?? 5));
-  const bucketMs = BOT_TIMEFRAME_SECONDS[unit] * unitNumber * 1_000;
-  return [
-    requestCacheScope(),
-    query.contractId.trim(),
-    query.symbol?.trim().toUpperCase() ?? "",
-    query.live ?? false,
-    unit,
-    unitNumber,
-    Math.max(1, Math.trunc(query.limit ?? 500)),
-    query.includePartialBar ?? false,
-    query.refresh ?? false,
-    query.repair ?? false,
-    normalizedCandleBoundary(query.start, bucketMs),
-    normalizedCandleBoundary(query.end, bucketMs),
-  ].join("|");
-}
-
-function requestBotCandles(query: CandleQuery, options: RequestSignalOptions = {}): Promise<ProjectXMarketCandle[]> {
-  if (options.signal?.aborted) {
-    return Promise.reject(abortError());
-  }
-  const request = (signal?: AbortSignal) =>
-    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
-      query: {
-        contract_id: query.contractId,
-        symbol: query.symbol,
-        start: query.start,
-        end: query.end,
-        live: query.live ?? false,
-        unit: query.unit ?? "minute",
-        unit_number: query.unitNumber ?? 5,
-        limit: query.limit ?? 500,
-        include_partial_bar: query.includePartialBar ?? false,
-        refresh: query.refresh ?? false,
-        repair: query.repair ?? false,
-      },
-      signal,
-    });
-
-  const cacheKey = botCandleCacheKey(query);
-  const canCache = !query.live && !query.includePartialBar && !query.refresh && !query.repair;
-  const sharedRequest = canCache
-    ? getTimedCachedRequest({
-        cache: botCandlesCacheByQuery,
-        inFlight: inFlightBotCandlesByQuery,
-        cacheKey,
-        ttlMs: BOT_CANDLE_CACHE_TTL_MS,
-        load: () => request(),
-      })
-    : getSharedInFlightRequest(inFlightBotCandlesByQuery, cacheKey, () => request());
-  return withConsumerAbort(sharedRequest, options.signal);
-}
-
-function buildBotWarmupCandleQuery(bot: BotConfig, timeframe: BotWarmupTimeframe, now = new Date()): CandleQuery {
-  const unitNumber = Math.max(1, Math.trunc(timeframe.unitNumber));
-  const timeframeSeconds = BOT_TIMEFRAME_SECONDS[timeframe.unit] * unitNumber;
-  const lookbackBars = Math.max(1, Math.trunc(bot.lookback_bars));
-  const limit = Math.min(BOT_CHART_MAX_BARS, Math.max(BOT_CHART_MIN_BARS, lookbackBars * 4));
-  const end = Number.isFinite(now.getTime()) ? now : new Date();
-  const start = new Date(end.getTime() - timeframeSeconds * limit * BOT_CHART_LOOKBACK_MULTIPLIER * 1_000);
-  return {
-    contractId: bot.contract_id,
-    symbol: bot.symbol ?? undefined,
-    start: start.toISOString(),
-    end: end.toISOString(),
-    live: false,
-    unit: timeframe.unit,
-    unitNumber,
-    limit,
-    includePartialBar: false,
-    refresh: false,
-  };
-}
-
-async function runSelectedBotWarmup(): Promise<void> {
-  const configs = await listBotConfigs();
-  if (configs.items.length === 0) {
-    return;
-  }
-  const selectedId = readSelectedBotConfigId();
-  const selectedBot = configs.items.find((config) => config.id === selectedId) ?? configs.items[0];
-  const [configuredTimeframe, ...requiredTimeframes] = getBotWarmupTimeframes(selectedBot);
-  if (!configuredTimeframe) {
-    return;
-  }
-
-  await requestBotCandles(buildBotWarmupCandleQuery(selectedBot, configuredTimeframe)).catch(() => undefined);
-  await Promise.allSettled(
-    requiredTimeframes.map((timeframe) => requestBotCandles(buildBotWarmupCandleQuery(selectedBot, timeframe))),
-  );
-}
-
-export function warmSelectedBot(): Promise<void> {
-  if (selectedBotWarmupRequest) {
-    return selectedBotWarmupRequest;
-  }
-  const request = runSelectedBotWarmup();
-  selectedBotWarmupRequest = request;
-  const clearWarmup = () => {
-    if (selectedBotWarmupRequest === request) {
-      selectedBotWarmupRequest = null;
-    }
-  };
-  void request.then(clearWarmup, clearWarmup);
-  return request;
+  return new Date(Math.floor(timestampMs / intervalMs) * intervalMs).toISOString();
 }
 
 interface MarketPriceStreamQuery {
@@ -1331,8 +1116,16 @@ function botStartPayload(options: BotStartOptions = {}) {
 export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
   const controller = new AbortController();
   let closed = false;
+  const guardedCallbacks: MarketPriceStreamCallbacks = {
+    ...callbacks,
+    onPrice: (price) => {
+      if (!closed) {
+        callbacks.onPrice(price);
+      }
+    },
+  };
 
-  void runProjectXMarketPriceStream(query, callbacks, controller.signal).catch((error) => {
+  void runProjectXMarketPriceStream(query, guardedCallbacks, controller.signal).catch((error) => {
     if (!closed && !isAbortError(error)) {
       callbacks.onError?.(error);
     }
@@ -1392,12 +1185,19 @@ async function runProjectXMarketPriceStream(
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       const price = parseMarketPriceSseFrame(frame);
-      if (price) {
+      if (price && marketPriceMatchesStreamQuery(price, query)) {
         callbacks.onPrice(price);
       }
       boundary = buffer.indexOf("\n\n");
     }
   }
+}
+
+function marketPriceMatchesStreamQuery(price: ProjectXMarketPrice, query: MarketPriceStreamQuery): boolean {
+  if (query.symbol && price.symbol) {
+    return price.symbol.trim().toUpperCase() === query.symbol.trim().toUpperCase();
+  }
+  return price.contract_id.trim().toUpperCase() === query.contractId.trim().toUpperCase();
 }
 
 function parseMarketPriceSseFrame(frame: string): ProjectXMarketPrice | null {
@@ -1453,22 +1253,37 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-async function runBacktestRequest(botConfigId: number, payload: BotBacktestInput): Promise<BotBacktestResult> {
+async function runBacktestRequest(
+  botConfigId: number,
+  payload: BotBacktestInput,
+  options: RequestSignalOptions = {},
+): Promise<BotBacktestResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), BACKTEST_REQUEST_TIMEOUT_MS);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (options.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, BACKTEST_REQUEST_TIMEOUT_MS);
   try {
-    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
       method: "POST",
       body: payload,
       signal: controller.signal,
     });
   } catch (error) {
-    if (isAbortError(error)) {
-      throw new Error("Backtest timed out after 5 minutes. Try again after the server finishes caching candles, or narrow the date range.");
+    if (isAbortError(error) && timedOut) {
+      throw new Error("Full-history backtest timed out after 15 minutes. Try again after the server finishes preparing candles.");
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -1480,8 +1295,27 @@ export const botsApi = {
         live: query.live ?? false,
       },
     }),
-  getCandles: requestBotCandles,
-  listConfigs: listBotConfigs,
+  getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
+    requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
+      query: projectXCandleQueryParams(query),
+      signal: options.signal,
+    }),
+  listConfigs: (accountId?: number) =>
+    requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+    }),
+  listConfigsWithCacheScope: async (accountId?: number) => {
+    const auth = await getRequestAuthContext();
+    const configs = await requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+      accessTokenOverride: auth.accessToken,
+    });
+    return { configs, cacheScope: auth.cacheScope };
+  },
   createConfig: (payload: BotConfigInput) =>
     requestJson<BotConfig>("/api/bots", {
       method: "POST",
@@ -1534,8 +1368,13 @@ export const botsApi = {
       invalidateBotActivityCaches(botConfigId);
       return run;
     }),
-  getActivity: getBotActivity,
-  warmSelected: warmSelectedBot,
+  getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {}) =>
+    requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
+      query: {
+        limit,
+      },
+      signal: options.signal,
+    }),
   evaluateTradePlan: (payload: TradePlanEvaluationInput) =>
     requestJson<TradeEvaluationResult>("/api/trade-plan/evaluate", {
       method: "POST",

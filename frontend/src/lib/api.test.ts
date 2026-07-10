@@ -4,7 +4,8 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi } from "./api";
+import { accountsApi, botsApi, buildProjectXCandleRequestKey, buildUserScopedProjectXCandleRequestKey } from "./api";
+import { getAccessToken } from "./supabase";
 
 function installDemoModeStorage(enabled: boolean) {
   vi.stubGlobal("localStorage", {
@@ -17,6 +18,7 @@ function installDemoModeStorage(enabled: boolean) {
 
 describe("accountsApi", () => {
   beforeEach(() => {
+    vi.mocked(getAccessToken).mockResolvedValue(null);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -110,4 +112,173 @@ describe("accountsApi", () => {
     expect(calendar.length).toBeGreaterThan(10);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("deduplicates within one user while isolating cache and in-flight work across auth switches", async () => {
+    installDemoModeStorage(false);
+    const tokenOne = jwt("user-one");
+    const tokenTwo = jwt("user-two");
+    const pending = new Map<string, (response: Response) => void>();
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      const authorization = (init?.headers as Record<string, string> | undefined)?.Authorization ?? "";
+      return new Promise<Response>((resolve) => pending.set(authorization, resolve));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    vi.mocked(getAccessToken).mockResolvedValue(tokenOne);
+    const userOneFirst = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    const userOneDeduped = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    vi.mocked(getAccessToken).mockResolvedValue(tokenTwo);
+    const userTwoFirst = accountsApi.getAccounts({ showInactive: true, showMissing: true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    pending.get(`Bearer ${tokenTwo}`)?.(jsonResponse([{ id: 2, account_state: "ACTIVE" }]));
+    await expect(userTwoFirst).resolves.toEqual([{ id: 2, account_state: "ACTIVE" }]);
+    pending.get(`Bearer ${tokenOne}`)?.(jsonResponse([{ id: 1, account_state: "ACTIVE" }]));
+    await expect(Promise.all([userOneFirst, userOneDeduped])).resolves.toEqual([
+      [{ id: 1, account_state: "ACTIVE" }],
+      [{ id: 1, account_state: "ACTIVE" }],
+    ]);
+
+    await expect(accountsApi.getAccounts({ showInactive: true, showMissing: true })).resolves.toEqual([
+      { id: 2, account_state: "ACTIVE" },
+    ]);
+    vi.mocked(getAccessToken).mockResolvedValue(tokenOne);
+    await expect(accountsApi.getAccounts({ showInactive: true, showMissing: true })).resolves.toEqual([
+      { id: 1, account_state: "ACTIVE" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
+
+describe("botsApi", () => {
+  beforeEach(() => {
+    vi.mocked(getAccessToken).mockResolvedValue(null);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: 17 }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("binds the bot list and cache scope to one captured authentication token", async () => {
+    const token = jwt("user-one");
+    vi.mocked(getAccessToken).mockResolvedValue(token);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ items: [], total: 0 }));
+
+    const result = await botsApi.listConfigsWithCacheScope();
+
+    expect(result).toEqual({
+      configs: { items: [], total: 0 },
+      cacheScope: "user:https%3A%2F%2Fauth.example.test:user-one",
+    });
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: `Bearer ${token}`,
+    });
+  });
+
+  it("posts one date-free full-history request to the plural backend route", async () => {
+    const payload = {
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
+    };
+
+    await botsApi.runBacktest(42, payload);
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/bots/42/backtests");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(payload);
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("limit");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("max_bars");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("confirm_live_order_routing");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("start");
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("end");
+  });
+
+  it("deduplicates closed-history identities within the same candle bucket", () => {
+    const base = {
+      contractId: " con.f.us.mnq.m26 ",
+      symbol: " mnq ",
+      unit: "minute" as const,
+      unitNumber: 5,
+      limit: 300,
+      includePartialBar: false,
+    };
+
+    expect(
+      buildProjectXCandleRequestKey({
+        ...base,
+        start: "2026-07-10T13:00:01.000Z",
+        end: "2026-07-10T14:04:01.000Z",
+      }),
+    ).toBe(
+      buildProjectXCandleRequestKey({
+        ...base,
+        contractId: "CON.F.US.MNQ.M26",
+        symbol: "MNQ",
+        start: "2026-07-10T13:00:59.000Z",
+        end: "2026-07-10T14:04:59.000Z",
+      }),
+    );
+  });
+
+  it("keeps partial, repair, and authoritative refresh requests distinct", () => {
+    const query = {
+      contractId: "CON.F.US.MNQ.M26",
+      unit: "minute" as const,
+      unitNumber: 1,
+      start: "2026-07-10T14:00:00.000Z",
+      end: "2026-07-10T14:05:00.000Z",
+      limit: 5,
+    };
+    const normal = buildProjectXCandleRequestKey(query);
+
+    expect(buildProjectXCandleRequestKey({ ...query, includePartialBar: true })).not.toBe(normal);
+    expect(buildProjectXCandleRequestKey({ ...query, repair: true })).not.toBe(normal);
+    expect(buildProjectXCandleRequestKey({ ...query, refresh: true })).not.toBe(normal);
+  });
+
+  it("never shares an identical candle request across authenticated cache scopes", () => {
+    const query = {
+      contractId: "CON.F.US.MNQ.M26",
+      unit: "minute" as const,
+      unitNumber: 5,
+      start: "2026-07-10T14:00:00.000Z",
+      end: "2026-07-10T15:00:00.000Z",
+      limit: 300,
+    };
+
+    expect(buildUserScopedProjectXCandleRequestKey("user:one", query)).not.toBe(
+      buildUserScopedProjectXCandleRequestKey("user:two", query),
+    );
+  });
+});
+
+function jwt(subject: string): string {
+  const header = globalThis.btoa(JSON.stringify({ alg: "none", typ: "JWT" }));
+  const payload = globalThis.btoa(JSON.stringify({ iss: "https://auth.example.test", sub: subject }));
+  return `${header}.${payload}.signature`;
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}

@@ -276,6 +276,47 @@ def test_retrieve_bars_normalizes_and_sorts_ohlcv_rows():
     assert rows[1]["close"] == 104.0
 
 
+def test_retrieve_bars_infers_an_unmarked_intraday_tail_is_partial():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            return {
+                "bars": [
+                    {
+                        "t": "2026-04-27T00:00:00Z",
+                        "o": 100,
+                        "h": 102,
+                        "l": 99,
+                        "c": 101,
+                        "v": 10,
+                    }
+                ]
+            }
+
+    client = StubClient()
+    request = {
+        "contract_id": "CON.F.US.MNQ.M26",
+        "live": False,
+        "start": datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc),
+        "end": datetime(2026, 4, 27, 3, 39, tzinfo=timezone.utc),
+        "unit": 3,
+        "unit_number": 4,
+        "limit": 500,
+    }
+
+    assert client.retrieve_bars(**request, include_partial_bar=False) == []
+    included = client.retrieve_bars(**request, include_partial_bar=True)
+    assert len(included) == 1
+    assert included[0]["is_partial"] is True
+
+    closed_request = {**request, "end": datetime(2026, 4, 27, 4, 0, tzinfo=timezone.utc)}
+    closed = client.retrieve_bars(**closed_request, include_partial_bar=False)
+    assert len(closed) == 1
+    assert closed[0]["is_partial"] is False
+
+
 def test_place_order_uses_projectx_order_place_payload():
     class StubClient(ProjectXClient):
         def __init__(self):

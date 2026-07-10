@@ -21,6 +21,7 @@ import {
   BACKTEST_DRAWDOWN_TOP,
   BACKTEST_EQUITY_HEIGHT,
   BACKTEST_EQUITY_TOP,
+  buildBacktestPayload,
   buildBacktestChartPaths,
   validateBacktestForm,
   type BotBacktestFormState,
@@ -43,15 +44,11 @@ const integerFormatter = new Intl.NumberFormat("en-US", {
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
+  year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZoneName: "short",
   timeZone: EASTERN_TIME_ZONE,
-});
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
 });
 
 interface BotBacktestPanelProps {
@@ -64,9 +61,12 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
 
   useEffect(() => () => {
     requestSequence.current += 1;
+    requestController.current?.abort();
+    requestController.current = null;
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -84,16 +84,14 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
 
     const sequence = requestSequence.current + 1;
     requestSequence.current = sequence;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
     setRunning(true);
     setError(null);
     try {
-      const nextResult = await botsApi.runBacktest(bot.id, {
-        start: `${form.startDate}T00:00:00.000Z`,
-        end: `${form.endDate}T23:59:59.999Z`,
-        starting_balance: Number(form.startingBalance),
-        commission_per_contract: Number(form.commissionPerContract),
-        slippage_ticks: Number(form.slippageTicks),
-        force_close_at_end: true,
+      const nextResult = await botsApi.runBacktest(bot.id, buildBacktestPayload(form), {
+        signal: controller.signal,
       });
       if (requestSequence.current === sequence) {
         setResult(nextResult);
@@ -105,6 +103,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
     } finally {
       if (requestSequence.current === sequence) {
         setRunning(false);
+        requestController.current = null;
       }
     }
   }
@@ -115,7 +114,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>Backtest</CardTitle>
-            <CardDescription>Deterministic replay using stored, closed ProjectX candles</CardDescription>
+            <CardDescription>Deterministic replay of the configured contract&apos;s complete closed-candle history</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant="accent">Next-bar fills</Badge>
@@ -124,19 +123,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
-          <BacktestInput
-            label="Start date"
-            type="date"
-            value={form.startDate}
-            onChange={(value) => setForm((current) => ({ ...current, startDate: value }))}
-          />
-          <BacktestInput
-            label="End date"
-            type="date"
-            value={form.endDate}
-            onChange={(value) => setForm((current) => ({ ...current, endDate: value }))}
-          />
+        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
           <BacktestInput
             label="Starting balance"
             type="number"
@@ -162,7 +149,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
             onChange={(value) => setForm((current) => ({ ...current, slippageTicks: value }))}
           />
           <Button type="submit" disabled={!bot || running} className="w-full xl:w-auto">
-            {running ? "Running…" : "Run Backtest"}
+            {running ? "Running Full History…" : "Run Full History Backtest"}
           </Button>
         </form>
 
@@ -179,7 +166,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         ) : result ? (
           <BacktestResults result={result} />
         ) : (
-          <BacktestEmptyState message="Choose a bounded date range and execution costs, then run the replay." />
+          <BacktestEmptyState message="Set the execution costs, then replay every fully closed candle available for this contract." />
         )}
       </CardContent>
     </Card>
@@ -218,7 +205,7 @@ function BacktestRunningState() {
   return (
     <div role="status" className="flex items-center gap-3 rounded-xl border border-app-accent/30 bg-app-accent/10 px-4 py-4 text-sm text-app-text-soft">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-app-accent/25 border-t-app-accent" aria-hidden="true" />
-      Replaying closed candles. No orders can be routed from this run.
+      Preparing and replaying the full closed-candle history. No orders can be routed from this run.
     </div>
   );
 }
@@ -232,7 +219,10 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         <div>
           <h4 className="text-sm font-semibold text-app-text md:text-base">Results</h4>
           <p className="mt-1 text-xs text-app-muted">
-            {formatDate(result.range.start)} – {formatDate(result.range.end)} · {integerFormatter.format(result.range.bar_count)} bars · generated {formatTimestamp(result.created_at)}
+            {formatContract(result.range.symbol, result.range.contract_id)} · {formatTimeframe(result.range.timeframe_unit, result.range.timeframe_unit_number)} · {integerFormatter.format(result.range.bar_count)} closed bars
+          </p>
+          <p className="mt-1 text-xs text-app-muted">
+            {formatTimestamp(result.range.start)} – {formatTimestamp(result.range.end)} · generated {formatTimestamp(result.created_at)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -320,6 +310,9 @@ function EquityDrawdownChart({ equity, drawdown }: { equity: BotBacktestEquityPo
   const paths = useMemo(() => buildBacktestChartPaths(equity, drawdown), [drawdown, equity]);
   const firstTimestamp = equity[0]?.timestamp ?? drawdown[0]?.timestamp ?? null;
   const lastTimestamp = equity[equity.length - 1]?.timestamp ?? drawdown[drawdown.length - 1]?.timestamp ?? null;
+  const chartWasSampled =
+    paths.equityRenderedPointCount < paths.equitySourcePointCount ||
+    paths.drawdownRenderedPointCount < paths.drawdownSourcePointCount;
 
   return (
     <div className="min-w-0 rounded-xl border border-app-border bg-app-bg/30 p-4">
@@ -334,22 +327,29 @@ function EquityDrawdownChart({ equity, drawdown }: { equity: BotBacktestEquityPo
         </div>
       </div>
       {paths.equity || paths.drawdown ? (
-        <svg viewBox={`0 0 ${BACKTEST_CHART_WIDTH} 270`} className="h-auto w-full" role="img" aria-labelledby="backtest-chart-title backtest-chart-description">
-          <title id="backtest-chart-title">Backtest equity and drawdown chart</title>
-          <desc id="backtest-chart-description">Equity ranges from {formatCurrency(paths.equityMin)} to {formatCurrency(paths.equityMax)}. Maximum drawdown is {formatPercent(paths.drawdownMax)}.</desc>
-          {[BACKTEST_EQUITY_TOP, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT / 2, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT, BACKTEST_DRAWDOWN_TOP, BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT].map((y) => (
-            <line key={y} x1="0" x2={BACKTEST_CHART_WIDTH} y1={y} y2={y} stroke="rgb(var(--theme-chart-grid) / 0.5)" strokeWidth="1" />
-          ))}
-          {paths.equityFill ? <path d={paths.equityFill} fill="rgb(var(--theme-accent) / 0.09)" /> : null}
-          {paths.equity ? <path d={paths.equity} fill="none" stroke="rgb(var(--theme-accent))" strokeWidth="2.25" vectorEffect="non-scaling-stroke" /> : null}
-          {paths.drawdown ? <path d={paths.drawdown} fill="none" stroke="rgb(var(--theme-negative))" strokeWidth="1.75" vectorEffect="non-scaling-stroke" /> : null}
-          <text x="4" y="10" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMax)}</text>
-          <text x="4" y={BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMin)}</text>
-          <text x="4" y={BACKTEST_DRAWDOWN_TOP - 7} fill="rgb(var(--theme-chart-label))" fontSize="11">Drawdown</text>
-          <text x="4" y={BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatPercent(paths.drawdownMax)}</text>
-          {firstTimestamp ? <text x="0" y="266" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(firstTimestamp)}</text> : null}
-          {lastTimestamp ? <text x={BACKTEST_CHART_WIDTH} y="266" textAnchor="end" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(lastTimestamp)}</text> : null}
-        </svg>
+        <>
+          <svg viewBox={`0 0 ${BACKTEST_CHART_WIDTH} 270`} className="h-auto w-full" role="img" aria-labelledby="backtest-chart-title backtest-chart-description">
+            <title id="backtest-chart-title">Backtest equity and drawdown chart</title>
+            <desc id="backtest-chart-description">Equity ranges from {formatCurrency(paths.equityMin)} to {formatCurrency(paths.equityMax)}. Maximum drawdown is {formatPercent(paths.drawdownMax)}.</desc>
+            {[BACKTEST_EQUITY_TOP, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT / 2, BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT, BACKTEST_DRAWDOWN_TOP, BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT].map((y) => (
+              <line key={y} x1="0" x2={BACKTEST_CHART_WIDTH} y1={y} y2={y} stroke="rgb(var(--theme-chart-grid) / 0.5)" strokeWidth="1" />
+            ))}
+            {paths.equityFill ? <path d={paths.equityFill} fill="rgb(var(--theme-accent) / 0.09)" /> : null}
+            {paths.equity ? <path d={paths.equity} fill="none" stroke="rgb(var(--theme-accent))" strokeWidth="2.25" vectorEffect="non-scaling-stroke" /> : null}
+            {paths.drawdown ? <path d={paths.drawdown} fill="none" stroke="rgb(var(--theme-negative))" strokeWidth="1.75" vectorEffect="non-scaling-stroke" /> : null}
+            <text x="4" y="10" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMax)}</text>
+            <text x="4" y={BACKTEST_EQUITY_TOP + BACKTEST_EQUITY_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatCompactCurrency(paths.equityMin)}</text>
+            <text x="4" y={BACKTEST_DRAWDOWN_TOP - 7} fill="rgb(var(--theme-chart-label))" fontSize="11">Drawdown</text>
+            <text x="4" y={BACKTEST_DRAWDOWN_TOP + BACKTEST_DRAWDOWN_HEIGHT - 4} fill="rgb(var(--theme-chart-label))" fontSize="11">{formatPercent(paths.drawdownMax)}</text>
+            {firstTimestamp ? <text x="0" y="266" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(firstTimestamp)}</text> : null}
+            {lastTimestamp ? <text x={BACKTEST_CHART_WIDTH} y="266" textAnchor="end" fill="rgb(var(--theme-chart-label))" fontSize="11">{formatTimestamp(lastTimestamp)}</text> : null}
+          </svg>
+          {chartWasSampled ? (
+            <p className="mt-2 text-[11px] text-app-muted">
+              Chart rendering is deterministically sampled to {integerFormatter.format(paths.equityRenderedPointCount)} of {integerFormatter.format(paths.equitySourcePointCount)} equity points for display; all returned points remain included in backtest results and metrics.
+            </p>
+          ) : null}
+        </>
       ) : (
         <div className="grid h-56 place-items-center text-sm text-app-muted">No equity points returned.</div>
       )}
@@ -514,20 +514,11 @@ function TradeLedger({ result }: { result: BotBacktestResult }) {
 }
 
 function buildDefaultForm(): BotBacktestFormState {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 30);
   return {
-    startDate: toDateInput(start),
-    endDate: toDateInput(end),
     startingBalance: "50000",
     commissionPerContract: "1.20",
     slippageTicks: "1",
   };
-}
-
-function toDateInput(value: Date): string {
-  return value.toISOString().slice(0, 10);
 }
 
 function formatCurrency(value: number): string {
@@ -558,9 +549,12 @@ function formatTimestamp(value: string): string {
   return Number.isNaN(date.getTime()) ? value : timestampFormatter.format(date);
 }
 
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : dateFormatter.format(date);
+function formatContract(symbol: string | null, contractId: string): string {
+  return symbol ? `${symbol} (${contractId})` : contractId;
+}
+
+function formatTimeframe(unit: string, unitNumber: number): string {
+  return `${integerFormatter.format(unitNumber)}-${unit}`;
 }
 
 function humanize(value: string): string {
