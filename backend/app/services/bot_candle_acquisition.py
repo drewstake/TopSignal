@@ -219,7 +219,7 @@ def acquire_and_evaluate_strategy(
         signal = service.dispatch_strategy_evaluator(
             strategy_type,
             asset_candles=asset_candles,
-            benchmark_candles=candle_sets.get("SPY", []),
+            benchmark_candles=candle_sets.get("benchmark", []),
             strategy_params=strategy_params,
         )
         return asset_candles, signal

@@ -42,7 +42,7 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
   { value: "supertrend_pivot", label: "Supertrend + Pivot Points" },
   { value: "opening_rvol_breakout", label: "Opening 5m RVOL Breakout" },
   { value: "atr_adjusted_relative_strength", label: "ATR-Adjusted Relative Strength" },
-  { value: "relative_strength_spy", label: "Relative Strength vs SPY" },
+  { value: "relative_strength_spy", label: "Relative Strength vs MES" },
   { value: "pullback_trap_reversal", label: "Pullback Trap Reversal" },
   { value: "bollinger_mean_reversion", label: "Bollinger Band Mean Reversion" },
   { value: "bollinger_rsi_reversal", label: "Bollinger RSI Reversal" },
@@ -203,7 +203,7 @@ const VWAP_GAP_RETRACE_DEFAULTS = {
   maxDataStalenessSeconds: "180",
 };
 const ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
-  benchmarkSymbol: "SPY",
+  benchmarkSymbol: "MES",
   moveLookbackBars: "3",
   atrPeriod: "14",
   relativeVolumePeriod: "20",
@@ -218,7 +218,7 @@ const ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
   maxDataStalenessSeconds: "600",
 };
 const RELATIVE_STRENGTH_SPY_DEFAULTS = {
-  benchmarkSymbol: "SPY",
+  benchmarkSymbol: "MES",
   comparisonBars: "12",
   pullbackLookbackBars: "3",
   relativeVolumePeriod: "20",
@@ -278,8 +278,8 @@ const STRATEGY_DEFAULT_NAMES: Partial<Record<BotStrategyType, string>> = {
   liquidity_sweep_retest: "MNQ Liquidity Sweep + Zone Retest",
   supertrend_pivot: "MNQ Supertrend + Pivot Points",
   opening_rvol_breakout: "MNQ Opening 5m RVOL Breakout",
-  atr_adjusted_relative_strength: "AAPL ATR-Adjusted Relative Strength",
-  relative_strength_spy: "AAPL Relative Strength vs SPY",
+  atr_adjusted_relative_strength: "MNQ ATR-Adjusted Relative Strength",
+  relative_strength_spy: "MNQ Relative Strength vs MES",
   pullback_trap_reversal: "MNQ Pullback Trap Reversal",
   bollinger_mean_reversion: "MNQ Bollinger Band Mean Reversion",
   bollinger_rsi_reversal: "MNQ Bollinger RSI Reversal",
@@ -935,7 +935,7 @@ function strategyLabel(strategyType: BotStrategyType) {
     return "ATR-Adjusted Relative Strength";
   }
   if (strategyType === "relative_strength_spy") {
-    return "Relative Strength vs SPY";
+    return "Relative Strength vs MES";
   }
   if (strategyType === "pullback_trap_reversal") {
     return "Pullback Trap Reversal";
@@ -1047,7 +1047,7 @@ function strategySummary(bot: BotConfig) {
     const window = bot.strategy_params?.comparison_bars ?? RELATIVE_STRENGTH_SPY_DEFAULTS.comparisonBars;
     const rvol = bot.strategy_params?.minimum_relative_volume ?? RELATIVE_STRENGTH_SPY_DEFAULTS.minimumRelativeVolume;
     return {
-      label: "RS/SPY",
+      label: "RS/MES",
       value: `${window} x 5m · RVOL ${rvol}x`,
     };
   }
@@ -1883,6 +1883,10 @@ export function BotPage() {
       setFormError("9/15 EMA scalping requires a 3-minute or 5-minute chart.");
       return;
     }
+    if (form.strategyType === "topbot_adaptive" && form.timeframeUnit === "month") {
+      setFormError("TopBot Adaptive does not support monthly candles.");
+      return;
+    }
     if (form.strategyType === "support_resistance" && levelTolerancePercent === null) {
       setFormError("Level tolerance must be a valid positive percent.");
       return;
@@ -2531,7 +2535,7 @@ export function BotPage() {
                         value={form.timeframeUnit}
                         onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
                       >
-                        {timeframeUnits.map((unit) => (
+                        {timeframeUnits.filter((unit) => unit !== "month").map((unit) => (
                           <option key={unit} value={unit}>
                             {unit}
                           </option>

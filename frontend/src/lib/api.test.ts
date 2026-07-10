@@ -4,7 +4,7 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi } from "./api";
+import { accountsApi, botsApi } from "./api";
 
 function installDemoModeStorage(enabled: boolean) {
   vi.stubGlobal("localStorage", {
@@ -109,5 +109,64 @@ describe("accountsApi", () => {
     expect(trades.length).toBe(summary.trade_count);
     expect(calendar.length).toBeGreaterThan(10);
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("botsApi", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ id: 17 }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("posts backtests to the plural backend route", async () => {
+    const payload = {
+      start: "2026-07-01T00:00:00.000Z",
+      end: "2026-07-08T23:59:59.999Z",
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
+    };
+
+    await botsApi.runBacktest(42, payload);
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/bots/42/backtests");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(payload);
+  });
+
+  it("prepares TopBot replay data through the dedicated cache route", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const payload = {
+      start: "2026-07-01T00:00:00.000Z",
+      end: "2026-07-08T23:59:59.999Z",
+      starting_balance: 50_000,
+      commission_per_contract: 1.2,
+      slippage_ticks: 1,
+      force_close_at_end: true,
+    };
+
+    await botsApi.prepareBacktest(42, payload);
+
+    const fetchMock = vi.mocked(fetch);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/bots/42/backtests/prepare");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(payload);
   });
 });

@@ -87,14 +87,18 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
     setRunning(true);
     setError(null);
     try {
-      const nextResult = await botsApi.runBacktest(bot.id, {
+      const payload = {
         start: `${form.startDate}T00:00:00.000Z`,
         end: `${form.endDate}T23:59:59.999Z`,
         starting_balance: Number(form.startingBalance),
         commission_per_contract: Number(form.commissionPerContract),
         slippage_ticks: Number(form.slippageTicks),
         force_close_at_end: true,
-      });
+      };
+      if (bot.strategy_type === "topbot_adaptive") {
+        await botsApi.prepareBacktest(bot.id, payload);
+      }
+      const nextResult = await botsApi.runBacktest(bot.id, payload);
       if (requestSequence.current === sequence) {
         setResult(nextResult);
       }

@@ -34,3 +34,20 @@ def trading_day_bounds_utc(value: date) -> tuple[datetime, datetime]:
     )
     end_local = start_local + timedelta(days=1) - timedelta(microseconds=1)
     return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def futures_session_is_open(value: datetime) -> bool:
+    """Return whether a timestamp falls inside the regular CME Globex week."""
+
+    local = as_utc(value).astimezone(TRADING_TZ)
+    weekday = local.weekday()
+    local_time = local.time()
+    if weekday == 5:
+        return False
+    if weekday == 6 and local_time < time(hour=18):
+        return False
+    if weekday == 4 and local_time >= time(hour=17):
+        return False
+    if time(hour=17) <= local_time < time(hour=18):
+        return False
+    return True

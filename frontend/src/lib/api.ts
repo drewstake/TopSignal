@@ -69,7 +69,7 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
-const BACKTEST_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const BACKTEST_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -1101,14 +1101,14 @@ async function runBacktestRequest(botConfigId: number, payload: BotBacktestInput
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), BACKTEST_REQUEST_TIMEOUT_MS);
   try {
-    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtest`, {
+    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
       method: "POST",
       body: payload,
       signal: controller.signal,
     });
   } catch (error) {
     if (isAbortError(error)) {
-      throw new Error("Backtest timed out after 5 minutes. Try again after the server finishes caching candles, or narrow the date range.");
+      throw new Error("Backtest timed out after 15 minutes. Try again after the server finishes caching candles, or narrow the date range.");
     }
     throw error;
   } finally {
@@ -1170,6 +1170,11 @@ export const botsApi = {
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
+    }),
+  prepareBacktest: (botConfigId: number, payload: BotBacktestInput) =>
+    requestJson<void>(`/api/bots/${botConfigId}/backtests/prepare`, {
+      method: "POST",
+      body: payload,
     }),
   runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>

@@ -2704,8 +2704,8 @@ def test_relative_strength_vs_spy_generates_buy_signal_on_pullback():
             _make_candle(
                 timestamp,
                 benchmark_closes[index],
-                contract_id="CON.F.US.SPY.M26",
-                symbol="SPY",
+                contract_id="CON.F.US.MES.M26",
+                symbol="F.US.MES",
                 open_price=benchmark_previous_close,
                 low_price=min(benchmark_previous_close, benchmark_closes[index]) - 0.1,
                 high_price=max(benchmark_previous_close, benchmark_closes[index]) + 0.1,
@@ -2724,7 +2724,7 @@ def test_relative_strength_vs_spy_generates_buy_signal_on_pullback():
     )
 
     assert signal.action == "BUY"
-    assert "BUY on relative strength vs SPY" in signal.reason
+    assert "BUY on relative strength vs MES" in signal.reason
     assert signal.raw_payload["relative_volume"] > 2
     assert signal.raw_payload["take_profit"] > signal.price
     assert signal.raw_payload["stop_loss"] < signal.price
@@ -2763,8 +2763,8 @@ def test_relative_strength_vs_spy_generates_sell_signal_on_failed_bounce():
             _make_candle(
                 timestamp,
                 benchmark_closes[index],
-                contract_id="CON.F.US.SPY.M26",
-                symbol="SPY",
+                contract_id="CON.F.US.MES.M26",
+                symbol="F.US.MES",
                 open_price=benchmark_previous_close,
                 low_price=min(benchmark_previous_close, benchmark_closes[index]) - 0.1,
                 high_price=max(benchmark_previous_close, benchmark_closes[index]) + 0.1,
@@ -2783,13 +2783,13 @@ def test_relative_strength_vs_spy_generates_sell_signal_on_failed_bounce():
     )
 
     assert signal.action == "SELL"
-    assert "SELL on relative weakness vs SPY" in signal.reason
+    assert "SELL on relative weakness vs MES" in signal.reason
     assert signal.raw_payload["relative_volume"] > 2
     assert signal.raw_payload["take_profit"] < signal.price
     assert signal.raw_payload["stop_loss"] > signal.price
 
 
-def test_relative_strength_vs_spy_fetches_symbol_and_spy_five_minute_candles():
+def test_relative_strength_vs_spy_fetches_symbol_and_mes_five_minute_candles():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -2804,8 +2804,8 @@ def test_relative_strength_vs_spy_fetches_symbol_and_spy_five_minute_candles():
             self.calls = []
 
         def search_contracts(self, *, search_text: str, live: bool = False):
-            if search_text == "SPY":
-                return [{"id": "CON.F.US.SPY.M26", "symbol_id": "SPY", "active_contract": True}]
+            if search_text == "MES":
+                return [{"id": "CON.F.US.MES.M26", "symbol_id": "F.US.MES", "active_contract": True}]
             return []
 
         def retrieve_bars(self, **kwargs):
@@ -2849,15 +2849,48 @@ def test_relative_strength_vs_spy_fetches_symbol_and_spy_five_minute_candles():
             strategy_params={"benchmark_symbol": "SPY"},
         )
 
-        assert rows == {"5m": [], "SPY": []}
+        assert rows == {"5m": [], "benchmark": []}
         assert [(call["contract_id"], call["unit"], call["unit_number"], call["limit"]) for call in client.calls] == [
             ("CON.F.US.MNQ.M26", 2, 5, 50),
-            ("CON.F.US.SPY.M26", 2, 5, 50),
+            ("CON.F.US.MES.M26", 2, 5, 50),
         ]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
         engine.dispose()
+
+
+def test_postgres_market_candle_upserts_are_batched(monkeypatch):
+    batch_sizes: list[int] = []
+
+    class Excluded:
+        def __getattr__(self, name):
+            return name
+
+    class Insert:
+        excluded = Excluded()
+
+        def values(self, batch):
+            batch_sizes.append(len(batch))
+            return self
+
+        def on_conflict_do_update(self, **_kwargs):
+            return self
+
+    class StubDb:
+        def __init__(self):
+            self.execute_count = 0
+
+        def execute(self, _statement):
+            self.execute_count += 1
+
+    monkeypatch.setattr(bot_service_module, "postgresql_insert", lambda _table: Insert())
+    db = StubDb()
+
+    bot_service_module._upsert_market_candle_rows(db, values=[{} for _ in range(2_501)])
+
+    assert batch_sizes == [1_000, 1_000, 501]
+    assert db.execute_count == 3
 
 
 def test_fetch_market_candles_deduplicates_provider_timestamps():
@@ -2912,6 +2945,89 @@ def test_fetch_market_candles_deduplicates_provider_timestamps():
         assert rows[0].close_price == 13.0
         assert rows[0].volume == 2.0
         assert db.query(ProjectXMarketCandle).count() == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_authoritative_market_candle_refresh_prunes_displaced_cached_bars():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+    user_id = "00000000-0000-0000-0000-000000000000"
+    outside = datetime(2026, 4, 26, 18, 0, tzinfo=timezone.utc)
+    stale = [
+        datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 27, 12, 0, tzinfo=timezone.utc),
+    ]
+    authoritative = [
+        datetime(2026, 4, 26, 22, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 27, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 27, 6, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 27, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 27, 14, 0, tzinfo=timezone.utc),
+    ]
+
+    class StubClient:
+        def retrieve_bars(self, **_kwargs):
+            return [
+                {
+                    "timestamp": timestamp,
+                    "open": 100,
+                    "high": 102,
+                    "low": 99,
+                    "close": 101,
+                    "volume": 10,
+                    "is_partial": False,
+                }
+                for timestamp in authoritative
+            ]
+
+    try:
+        db.add_all(
+            [
+                _make_candle(
+                    timestamp,
+                    100,
+                    user_id=user_id,
+                    unit="hour",
+                    unit_number=4,
+                )
+                for timestamp in [outside, *stale]
+            ]
+        )
+        db.commit()
+
+        rows = fetch_and_store_market_candles(
+            db,
+            user_id=user_id,
+            client=StubClient(),
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            live=False,
+            start=authoritative[0],
+            end=authoritative[-1] + timedelta(hours=4),
+            unit="hour",
+            unit_number=4,
+            limit=500,
+            preserve_cached_history=True,
+            authoritative_refresh=True,
+        )
+
+        assert [_as_test_utc(row.candle_timestamp) for row in rows] == authoritative
+        cached_timestamps = [
+            _as_test_utc(row.candle_timestamp)
+            for row in db.query(ProjectXMarketCandle)
+            .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+            .all()
+        ]
+        assert cached_timestamps == [outside, *authoritative]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
@@ -3037,6 +3153,47 @@ def test_create_bot_config_rejects_invalid_ema_scalping_timeframe():
         )
 
         with pytest.raises(ValueError, match="3-minute or 5-minute timeframe"):
+            create_bot_config(db, user_id=user_id, payload=payload)
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=tables)
+        engine.dispose()
+
+
+def test_create_bot_config_rejects_monthly_topbot_timeframe():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [Account.__table__, BotConfig.__table__]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        db.add(
+            Account(
+                user_id=user_id,
+                provider="projectx",
+                external_id="9001",
+                name="Practice 9001",
+                account_state="ACTIVE",
+                can_trade=True,
+                is_visible=True,
+            )
+        )
+        db.flush()
+        payload = _make_bot_create_payload(name="Monthly TopBot").model_copy(
+            update={
+                "strategy_type": "topbot_adaptive",
+                "timeframe_unit": "month",
+                "timeframe_unit_number": 1,
+            }
+        )
+
+        with pytest.raises(ValueError, match="does not support month candles"):
             create_bot_config(db, user_id=user_id, payload=payload)
     finally:
         db.close()

@@ -72,6 +72,7 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
+_MARKET_CANDLE_UPSERT_BATCH_SIZE = 1_000
 _EVALUATION_INTRADAY_LOOKBACK_FLOOR = timedelta(days=7)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
@@ -301,7 +302,7 @@ _FVG_SWEEP_MSS_DEFAULTS = {
     "target_mode": _FVG_TARGET_MODE_NEXT_LIQUIDITY,
 }
 _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
-    "benchmark_symbol": "SPY",
+    "benchmark_symbol": "MES",
     "move_lookback_bars": 3,
     "atr_period": 14,
     "relative_volume_period": 20,
@@ -314,7 +315,7 @@ _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS = {
     "take_profit_r_multiple": 2.0,
 }
 _RELATIVE_STRENGTH_SPY_DEFAULTS = {
-    "benchmark_symbol": "SPY",
+    "benchmark_symbol": "MES",
     "comparison_bars": 12,
     "pullback_lookback_bars": 3,
     "relative_volume_period": 20,
@@ -1476,7 +1477,7 @@ def fetch_and_store_relative_strength_spy_candles(
             prefer_current_contract=True,
             preserve_cached_history=True,
         ),
-        "SPY": fetch_and_store_market_candles(
+        "benchmark": fetch_and_store_market_candles(
             db,
             user_id=user_id,
             client=client,
@@ -1731,6 +1732,7 @@ def fetch_and_store_market_candles(
     include_partial_bar: bool = False,
     prefer_current_contract: bool = False,
     preserve_cached_history: bool = False,
+    authoritative_refresh: bool = False,
 ) -> list[ProjectXMarketCandle]:
     normalized_unit = str(unit).strip().lower()
     if normalized_unit not in _PROJECTX_UNIT_BY_NAME:
@@ -1785,6 +1787,31 @@ def fetch_and_store_market_candles(
         unit_number=unit_number,
         bars=bars,
     )
+    if authoritative_refresh and stored:
+        provider_timestamps = [_as_utc(row.candle_timestamp) for row in stored]
+        provider_timestamp_set = set(provider_timestamps)
+        provider_start = min(provider_timestamps)
+        provider_end = max(provider_timestamps)
+        prune_market_candle_cache_range(
+            db,
+            user_id=user_id,
+            contract_id=resolved_contract_id,
+            live=live,
+            start=provider_start,
+            end=provider_end,
+            unit=normalized_unit,
+            unit_number=unit_number,
+            keep_timestamps=provider_timestamps,
+        )
+        cached = [
+            row
+            for row in cached
+            if (
+                _as_utc(row.candle_timestamp) < provider_start
+                or _as_utc(row.candle_timestamp) > provider_end
+                or _as_utc(row.candle_timestamp) in provider_timestamp_set
+            )
+        ]
     if not preserve_cached_history:
         return stored
 
@@ -2210,31 +2237,33 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
         return
 
     table = ProjectXMarketCandle.__table__
-    insert_stmt = postgresql_insert(table).values(values)
-    excluded = insert_stmt.excluded
-    db.execute(
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                table.c.user_id,
-                table.c.contract_id,
-                table.c.live,
-                table.c.unit,
-                table.c.unit_number,
-                table.c.candle_timestamp,
-            ],
-            set_={
-                "symbol": excluded.symbol,
-                "open_price": excluded.open_price,
-                "high_price": excluded.high_price,
-                "low_price": excluded.low_price,
-                "close_price": excluded.close_price,
-                "volume": excluded.volume,
-                "is_partial": excluded.is_partial,
-                "raw_payload": excluded.raw_payload,
-                "fetched_at": excluded.fetched_at,
-            },
+    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
+        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
+        insert_stmt = postgresql_insert(table).values(batch)
+        excluded = insert_stmt.excluded
+        db.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    table.c.user_id,
+                    table.c.contract_id,
+                    table.c.live,
+                    table.c.unit,
+                    table.c.unit_number,
+                    table.c.candle_timestamp,
+                ],
+                set_={
+                    "symbol": excluded.symbol,
+                    "open_price": excluded.open_price,
+                    "high_price": excluded.high_price,
+                    "low_price": excluded.low_price,
+                    "close_price": excluded.close_price,
+                    "volume": excluded.volume,
+                    "is_partial": excluded.is_partial,
+                    "raw_payload": excluded.raw_payload,
+                    "fetched_at": excluded.fetched_at,
+                },
+            )
         )
-    )
 
 
 def _query_market_candles_by_timestamps(
@@ -2628,6 +2657,7 @@ def evaluate_relative_strength_vs_spy(
     strategy_params: dict[str, Any] | None = None,
 ) -> SignalResult:
     params = _normalize_strategy_params(_STRATEGY_RELATIVE_STRENGTH_SPY, strategy_params)
+    benchmark_name = str(params["benchmark_symbol"])
     comparison_bars = int(params["comparison_bars"])
     pullback_lookback_bars = int(params["pullback_lookback_bars"])
     relative_volume_period = int(params["relative_volume_period"])
@@ -2661,7 +2691,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="HOLD",
             reason=(
-                f"Need at least {minimum_required} aligned closed 5-minute candles for the symbol and SPY; "
+                f"Need at least {minimum_required} aligned closed 5-minute candles for the symbol and {benchmark_name}; "
                 f"found {len(aligned_asset)}."
             ),
             candle_timestamp=latest_timestamp,
@@ -2750,7 +2780,8 @@ def evaluate_relative_strength_vs_spy(
             return SignalResult(
                 action="HOLD",
                 reason=(
-                    f"Symbol outperformed SPY over {comparison_bars} candles, but SPY is not in a meaningful pullback "
+                    f"Symbol outperformed {benchmark_name} over {comparison_bars} candles, but "
+                    f"{benchmark_name} is not in a meaningful pullback "
                     f"({_format_percent(benchmark_recent_move_percent)}% over the last {pullback_lookback_bars} candles)."
                 ),
                 candle_timestamp=latest_timestamp,
@@ -2760,7 +2791,10 @@ def evaluate_relative_strength_vs_spy(
         if asset_recent_move_percent <= benchmark_recent_move_percent:
             return SignalResult(
                 action="HOLD",
-                reason="Symbol outperformed SPY overall, but it did not hold up better during the latest SPY pullback.",
+                reason=(
+                    f"Symbol outperformed {benchmark_name} overall, but it did not hold up better "
+                    f"during the latest {benchmark_name} pullback."
+                ),
                 candle_timestamp=latest_timestamp,
                 price=price,
                 raw_payload=raw_payload,
@@ -2807,7 +2841,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="BUY",
             reason=(
-                f"BUY on relative strength vs SPY: {_format_percent(asset_move_percent)}% vs "
+                f"BUY on relative strength vs {benchmark_name}: {_format_percent(asset_move_percent)}% vs "
                 f"{_format_percent(benchmark_move_percent)}% over {comparison_bars} candles, "
                 f"RVOL {_format_percent(relative_volume)}x, entry at {long_entry[0]} "
                 f"{_format_strategy_price(long_entry[1])}. SL {_format_strategy_price(stop_loss)}, "
@@ -2823,7 +2857,8 @@ def evaluate_relative_strength_vs_spy(
             return SignalResult(
                 action="HOLD",
                 reason=(
-                    f"Symbol lagged SPY over {comparison_bars} candles, but SPY is not in a meaningful bounce "
+                    f"Symbol lagged {benchmark_name} over {comparison_bars} candles, but "
+                    f"{benchmark_name} is not in a meaningful bounce "
                     f"({_format_percent(benchmark_recent_move_percent)}% over the last {pullback_lookback_bars} candles)."
                 ),
                 candle_timestamp=latest_timestamp,
@@ -2833,7 +2868,10 @@ def evaluate_relative_strength_vs_spy(
         if asset_recent_move_percent >= benchmark_recent_move_percent:
             return SignalResult(
                 action="HOLD",
-                reason="Symbol lagged SPY overall, but it bounced too much during the latest SPY rebound.",
+                reason=(
+                    f"Symbol lagged {benchmark_name} overall, but it bounced too much during the "
+                    f"latest {benchmark_name} rebound."
+                ),
                 candle_timestamp=latest_timestamp,
                 price=price,
                 raw_payload=raw_payload,
@@ -2880,7 +2918,7 @@ def evaluate_relative_strength_vs_spy(
         return SignalResult(
             action="SELL",
             reason=(
-                f"SELL on relative weakness vs SPY: {_format_percent(asset_move_percent)}% vs "
+                f"SELL on relative weakness vs {benchmark_name}: {_format_percent(asset_move_percent)}% vs "
                 f"{_format_percent(benchmark_move_percent)}% over {comparison_bars} candles, "
                 f"RVOL {_format_percent(relative_volume)}x, entry at {short_entry[0]} "
                 f"{_format_strategy_price(short_entry[1])}. SL {_format_strategy_price(stop_loss)}, "
@@ -9633,6 +9671,8 @@ def _validate_strategy_configuration(
     slow_period: int,
 ) -> None:
     _validate_strategy_periods(fast_period, slow_period)
+    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE and str(timeframe_unit) == "month":
+        raise ValueError("TopBot Adaptive does not support month candles.")
     if strategy_type != _STRATEGY_EMA_SCALPING:
         return
     if str(timeframe_unit) != "minute" or int(timeframe_unit_number) not in _EMA_SCALPING_ALLOWED_MINUTE_BUCKETS:
@@ -9852,8 +9892,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         }
 
     if normalized_strategy_type == _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH:
-        benchmark_symbol = _normalized_optional_text(raw_params.get("benchmark_symbol")) or str(
-            _ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS["benchmark_symbol"]
+        benchmark_symbol = _normalize_projectx_benchmark_symbol(
+            raw_params.get("benchmark_symbol"),
+            default=str(_ATR_ADJUSTED_RELATIVE_STRENGTH_DEFAULTS["benchmark_symbol"]),
         )
         benchmark_contract_id = _normalized_optional_text(raw_params.get("benchmark_contract_id"))
         return {
@@ -9932,8 +9973,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         }
 
     if normalized_strategy_type == _STRATEGY_RELATIVE_STRENGTH_SPY:
-        benchmark_symbol = _normalized_optional_text(raw_params.get("benchmark_symbol")) or str(
-            _RELATIVE_STRENGTH_SPY_DEFAULTS["benchmark_symbol"]
+        benchmark_symbol = _normalize_projectx_benchmark_symbol(
+            raw_params.get("benchmark_symbol"),
+            default=str(_RELATIVE_STRENGTH_SPY_DEFAULTS["benchmark_symbol"]),
         )
         benchmark_contract_id = _normalized_optional_text(raw_params.get("benchmark_contract_id"))
         swing_window = _bounded_int_param(
@@ -10902,6 +10944,15 @@ def _validate_unique_bot_name(
 
 def _looks_like_projectx_contract_id(value: str) -> bool:
     return value.upper().startswith("CON.")
+
+
+def _normalize_projectx_benchmark_symbol(value: Any, *, default: str) -> str:
+    """Map the legacy SPY benchmark to the MES futures feed ProjectX supports."""
+
+    normalized = _normalized_optional_text(value) or str(default)
+    if normalized.strip().upper() in {"SPY", "F.US.SPY"}:
+        return "MES"
+    return normalized.strip().upper()
 
 
 def _pick_market_contract(rows: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
