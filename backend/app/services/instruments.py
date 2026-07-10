@@ -81,7 +81,10 @@ def load_instrument_specs(db: Session) -> dict[str, InstrumentSpec]:
         return specs
 
     try:
-        inspector = inspect(bind)
+        # Inspect through the session's transaction-bound connection. Opening a
+        # second Engine connection can alias the same SQLite StaticPool handle
+        # and roll back the caller's pending bot audit rows when it closes.
+        inspector = inspect(db.connection())
         if "instrument_metadata" not in set(inspector.get_table_names()):
             return specs
         rows = db.query(InstrumentMetadata).all()

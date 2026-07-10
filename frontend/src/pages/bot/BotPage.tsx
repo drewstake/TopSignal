@@ -5,28 +5,19 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
-import { Progress } from "../../components/ui/Progress";
 import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
-import { Toggle } from "../../components/ui/Toggle";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
 import { accountsApi, botsApi } from "../../lib/api";
-import { getDemoAccountId, getDemoAccountLabel } from "../../lib/demoMode";
 import type {
   AccountInfo,
   BotActivity,
-  BotBacktestBreakdownStats,
-  BotBacktestDailyPnl,
-  BotBacktestJob,
-  BotBacktestResult,
-  BotBacktestTrade,
   BotConfig,
   BotEvaluation,
   BotLiquiditySweepTargetMode,
   BotOrbStopMode,
   BotOrbTargetMode,
-  BotRun,
   BotTakeProfitMode,
   BotTrailingStopMode,
   BotStrategyType,
@@ -34,14 +25,14 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { formatCurrency } from "../../utils/formatters";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
+import { BotBacktestPanel } from "./BotBacktestPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
-  { value: "topbot_adaptive", label: "TopBot Adaptive Multi-Factor" },
+  { value: "topbot_adaptive", label: "TopBot Adaptive" },
   { value: "sma_cross", label: "SMA Cross" },
   { value: "ema_scalping", label: "9/15 EMA Scalping" },
   { value: "support_resistance", label: "Support/Resistance" },
@@ -63,9 +54,20 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
   { value: "vwap_atr_mean_reversion", label: "VWAP ATR Mean Reversion" },
   { value: "vwap_gap_retrace", label: "VWAP Gap Retrace" },
 ];
+const TOPBOT_DEFAULTS = {
+  sourceStrategies: strategyOptions.map((option) => option.value).filter((value) => value !== "topbot_adaptive"),
+  minimumScore: "70",
+  minimumConfidence: "55",
+  minimumDirectionalVotes: "2",
+  maxOpposingVotes: "1",
+  minimumRewardRisk: "1.5",
+  timeStopBars: "6",
+  enableTrailingStop: true,
+  trailingStopMode: "atr" as BotTrailingStopMode,
+  trailingAtrMultiplier: "2",
+  moveToBreakevenAtR: "1",
+};
 const EASTERN_TIME_ZONE = "America/New_York";
-const BACKTEST_POLL_INTERVAL_MS = 1000;
-const DEFAULT_BACKTEST_BAR_LIMIT = 100_000;
 const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 const DONCHIAN_DEFAULTS = {
   entryPeriod: "20",
@@ -267,22 +269,8 @@ const SUPERTREND_PIVOT_DEFAULTS = {
   lookbackBars: "250",
   maxDataStalenessSeconds: "1800",
 };
-const TOPBOT_ADAPTIVE_DEFAULTS = {
-  minimumScore: "70",
-  minimumConfidence: "55",
-  minimumRewardRisk: "1.5",
-  minimumDirectionalVotes: "2",
-  maxOpposingVotes: "1",
-  allowShortEntries: false,
-  trailingStopMode: "atr" as BotTrailingStopMode,
-  trailingAtrMultiplier: "2",
-  moveToBreakevenAtR: "0.75",
-  timeStopBars: "6",
-  lookbackBars: "300",
-  maxDataStalenessSeconds: "600",
-};
 const STRATEGY_DEFAULT_NAMES: Partial<Record<BotStrategyType, string>> = {
-  topbot_adaptive: "MNQ TopBot Adaptive",
+  topbot_adaptive: "TopBot",
   sma_cross: "MNQ SMA Cross",
   support_resistance: "MNQ Support/Resistance",
   donchian_breakout: "MNQ Donchian Breakout",
@@ -348,16 +336,18 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   hour12: true,
   timeZone: EASTERN_TIME_ZONE,
 });
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: EASTERN_TIME_ZONE,
-});
 
 interface BotFormState {
   name: string;
   strategyType: BotStrategyType;
+  topbotMinimumScore: string;
+  topbotMinimumConfidence: string;
+  topbotMinimumDirectionalVotes: string;
+  topbotMaxOpposingVotes: string;
+  topbotMinimumRewardRisk: string;
+  topbotTimeStopBars: string;
+  topbotEnableTrailingStop: boolean;
+  topbotMoveToBreakevenAtR: string;
   accountId: string;
   contractSearch: string;
   contractId: string;
@@ -445,20 +435,20 @@ interface BotFormState {
   tradingEndTime: string;
   cooldownSeconds: string;
   maxDataStalenessSeconds: string;
-  adaptiveMinimumScore: string;
-  adaptiveMinimumConfidence: string;
-  adaptiveMinimumRewardRisk: string;
-  adaptiveMinimumDirectionalVotes: string;
-  adaptiveMaxOpposingVotes: string;
-  adaptiveAllowShortEntries: boolean;
-  adaptiveMoveToBreakevenAtR: string;
-  adaptiveTimeStopBars: string;
 }
 
 function buildInitialForm(accountId: number | null): BotFormState {
   return {
     name: strategyDefaultName("sma_cross"),
     strategyType: "sma_cross",
+    topbotMinimumScore: TOPBOT_DEFAULTS.minimumScore,
+    topbotMinimumConfidence: TOPBOT_DEFAULTS.minimumConfidence,
+    topbotMinimumDirectionalVotes: TOPBOT_DEFAULTS.minimumDirectionalVotes,
+    topbotMaxOpposingVotes: TOPBOT_DEFAULTS.maxOpposingVotes,
+    topbotMinimumRewardRisk: TOPBOT_DEFAULTS.minimumRewardRisk,
+    topbotTimeStopBars: TOPBOT_DEFAULTS.timeStopBars,
+    topbotEnableTrailingStop: TOPBOT_DEFAULTS.enableTrailingStop,
+    topbotMoveToBreakevenAtR: TOPBOT_DEFAULTS.moveToBreakevenAtR,
     accountId: accountId ? String(accountId) : "",
     contractSearch: "MNQ",
     contractId: "",
@@ -546,14 +536,6 @@ function buildInitialForm(accountId: number | null): BotFormState {
     tradingEndTime: "15:45",
     cooldownSeconds: "300",
     maxDataStalenessSeconds: "600",
-    adaptiveMinimumScore: TOPBOT_ADAPTIVE_DEFAULTS.minimumScore,
-    adaptiveMinimumConfidence: TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence,
-    adaptiveMinimumRewardRisk: TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
-    adaptiveMinimumDirectionalVotes: TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
-    adaptiveMaxOpposingVotes: TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
-    adaptiveAllowShortEntries: TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries,
-    adaptiveMoveToBreakevenAtR: TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
-    adaptiveTimeStopBars: TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars,
   };
 }
 
@@ -561,6 +543,18 @@ function formFromBot(bot: BotConfig): BotFormState {
   return {
     name: bot.name,
     strategyType: bot.strategy_type,
+    topbotMinimumScore: String(bot.strategy_params?.minimum_score ?? TOPBOT_DEFAULTS.minimumScore),
+    topbotMinimumConfidence: String(bot.strategy_params?.minimum_confidence ?? TOPBOT_DEFAULTS.minimumConfidence),
+    topbotMinimumDirectionalVotes: String(
+      bot.strategy_params?.minimum_directional_votes ?? TOPBOT_DEFAULTS.minimumDirectionalVotes,
+    ),
+    topbotMaxOpposingVotes: String(bot.strategy_params?.max_opposing_votes ?? TOPBOT_DEFAULTS.maxOpposingVotes),
+    topbotMinimumRewardRisk: String(bot.strategy_params?.minimum_reward_risk ?? TOPBOT_DEFAULTS.minimumRewardRisk),
+    topbotTimeStopBars: String(bot.strategy_params?.time_stop_bars ?? TOPBOT_DEFAULTS.timeStopBars),
+    topbotEnableTrailingStop: bot.strategy_params?.enable_trailing_stop ?? TOPBOT_DEFAULTS.enableTrailingStop,
+    topbotMoveToBreakevenAtR: String(
+      bot.strategy_params?.move_to_breakeven_at_r ?? TOPBOT_DEFAULTS.moveToBreakevenAtR,
+    ),
     accountId: String(bot.account_id),
     contractSearch: bot.symbol ?? bot.contract_id,
     contractId: bot.contract_id,
@@ -791,21 +785,9 @@ function formFromBot(bot: BotConfig): BotFormState {
           ? SUPERTREND_PIVOT_DEFAULTS.maxDataStalenessSeconds
         : bot.strategy_type === "vwap_atr_mean_reversion" && bot.max_data_staleness_seconds < 600
           ? "600"
-        : bot.strategy_type === "ema_trend_pullback" && bot.max_data_staleness_seconds < Number(EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds)
+          : bot.strategy_type === "ema_trend_pullback" && bot.max_data_staleness_seconds < Number(EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds)
             ? EMA_TREND_PULLBACK_DEFAULTS.maxDataStalenessSeconds
           : String(bot.max_data_staleness_seconds),
-    adaptiveMinimumScore: String(bot.strategy_params?.minimum_score ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumScore),
-    adaptiveMinimumConfidence: String(bot.strategy_params?.minimum_confidence ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence),
-    adaptiveMinimumRewardRisk: String(bot.strategy_params?.minimum_reward_risk ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk),
-    adaptiveMinimumDirectionalVotes: String(
-      bot.strategy_params?.minimum_directional_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
-    ),
-    adaptiveMaxOpposingVotes: String(bot.strategy_params?.max_opposing_votes ?? TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
-    adaptiveAllowShortEntries: Boolean(bot.strategy_params?.allow_short_entries ?? TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries),
-    adaptiveMoveToBreakevenAtR: String(
-      bot.strategy_params?.move_to_breakeven_at_r ?? TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
-    ),
-    adaptiveTimeStopBars: String(bot.strategy_params?.time_stop_bars ?? TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars),
   };
 }
 
@@ -845,146 +827,12 @@ function formatDateTime(value: string | null) {
   return `${dateTimeFormatter.format(date)} ET`;
 }
 
-function formatDateOnly(value: string | null) {
-  if (!value) {
-    return "None";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown";
-  }
-  return dateFormatter.format(date);
-}
-
-function formatDateInputValue(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function defaultBacktestStartDate() {
-  return "";
-}
-
-function defaultBacktestEndDate() {
-  return formatDateInputValue(new Date());
-}
-
-function dateInputToIso(value: string, boundary: "start" | "end") {
-  if (!value) {
-    return undefined;
-  }
-  const suffix = boundary === "start" ? "T00:00:00.000" : "T23:59:59.999";
-  const date = new Date(`${value}${suffix}`);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-}
-
-function formatPercent(value: number | null | undefined) {
-  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  return `${numeric.toFixed(2)}%`;
-}
-
-function formatPlainNumber(value: number | null | undefined, digits = 2) {
-  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  return numeric.toLocaleString(undefined, {
-    maximumFractionDigits: digits,
-    minimumFractionDigits: digits,
-  });
-}
-
-function formatDurationMinutes(value: number | null | undefined) {
-  const numeric = typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
-  if (numeric < 60) {
-    return `${Math.round(numeric)}m`;
-  }
-  const hours = Math.floor(numeric / 60);
-  const minutes = Math.round(numeric % 60);
-  if (hours < 24) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  const remainingHours = hours % 24;
-  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
-}
-
-function formatExitReason(value: string) {
-  return value
-    .replaceAll("_", " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
-    .join(" ");
-}
-
-function formatPoints(value: number | null | undefined) {
-  const numeric = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  return numeric > 0 ? `+${formatPlainNumber(numeric, 2)}` : formatPlainNumber(numeric, 2);
-}
-
-async function fallbackCopyText(text: string) {
-  if (typeof document === "undefined") {
-    return false;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  textarea.style.pointerEvents = "none";
-  textarea.style.top = "0";
-  textarea.style.left = "-9999px";
-
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-
-  const copied = typeof document.execCommand === "function" ? document.execCommand("copy") : false;
-  document.body.removeChild(textarea);
-  return copied;
-}
-
-async function copyTextToClipboard(text: string) {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      return fallbackCopyText(text);
-    }
-  }
-
-  return fallbackCopyText(text);
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function botRunDetail(run: BotRun) {
-  if (run.stop_reason) {
-    return run.stop_reason;
-  }
-  const runtimeState = run.raw_state;
-  const runtimeMode = runtimeState && typeof runtimeState.runtime_mode === "string" ? runtimeState.runtime_mode : null;
-  if (runtimeMode === "supervised_dry_run") {
-    const nextEvaluation =
-      runtimeState && typeof runtimeState.next_evaluation_at === "string" ? formatDateTime(runtimeState.next_evaluation_at) : null;
-    return nextEvaluation ? `supervised dry_run · next ${nextEvaluation}` : "supervised dry_run";
-  }
-  return run.dry_run ? "dry_run" : "live";
-}
-
 function actionBadgeVariant(action: string) {
   if (action === "BUY") {
     return "positive" as const;
   }
   if (action === "SELL" || action === "STOP") {
     return "negative" as const;
-  }
-  if (action === "RISK_REJECT") {
-    return "warning" as const;
   }
   return "neutral" as const;
 }
@@ -993,10 +841,17 @@ function statusBadgeVariant(status: string) {
   if (status === "running" || status === "dry_run" || status === "submitted") {
     return "positive" as const;
   }
-  if (status === "blocked" || status === "error" || status === "rejected") {
+  if (status === "blocked" || status === "risk_blocked" || status === "error" || status === "rejected") {
     return "negative" as const;
   }
+  if (status === "duplicate_skipped") {
+    return "warning" as const;
+  }
   return "neutral" as const;
+}
+
+function evaluationStatusLabel(status: string) {
+  return status.replaceAll("_", " ");
 }
 
 function isLevelStrategy(strategyType: BotStrategyType) {
@@ -1121,11 +976,12 @@ function strategyDefaultName(strategyType: BotStrategyType) {
 
 function strategySummary(bot: BotConfig) {
   if (bot.strategy_type === "topbot_adaptive") {
-    const minimumScore = bot.strategy_params?.minimum_score ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumScore;
-    const minimumRewardRisk = bot.strategy_params?.minimum_reward_risk ?? TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk;
+    const votes = bot.strategy_params?.minimum_directional_votes ?? TOPBOT_DEFAULTS.minimumDirectionalVotes;
+    const score = bot.strategy_params?.minimum_score ?? TOPBOT_DEFAULTS.minimumScore;
+    const sources = bot.strategy_params?.source_strategies?.length ?? TOPBOT_DEFAULTS.sourceStrategies.length;
     return {
-      label: "Adaptive",
-      value: `Min ${minimumScore}/100 · ${minimumRewardRisk}R`,
+      label: "Ensemble",
+      value: `${sources} sources · ${votes} votes · score ${score}+`,
     };
   }
   if (bot.strategy_type === "support_resistance") {
@@ -1319,11 +1175,6 @@ export function BotPage() {
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
   const [lastEvaluation, setLastEvaluation] = useState<BotEvaluation | null>(null);
-  const [lastBacktest, setLastBacktest] = useState<BotBacktestResult | null>(null);
-  const [backtestStartDate, setBacktestStartDate] = useState(defaultBacktestStartDate);
-  const [backtestEndDate, setBacktestEndDate] = useState(defaultBacktestEndDate);
-  const [backtestProgress, setBacktestProgress] = useState(0);
-  const [backtestStage, setBacktestStage] = useState("Queued");
   const [contracts, setContracts] = useState<ProjectXContract[]>([]);
   const [form, setForm] = useState<BotFormState>(() => buildInitialForm(accountFromQuery));
   const [loading, setLoading] = useState(true);
@@ -1332,6 +1183,7 @@ export function BotPage() {
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [configWarnings, setConfigWarnings] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
@@ -1342,12 +1194,16 @@ export function BotPage() {
     [configs, selectedBotId],
   );
   const selectedBotEvaluation = useMemo(
-    () => (selectedBot && lastEvaluation?.config.id === selectedBot.id ? lastEvaluation : null),
+    () =>
+      selectedBot &&
+      lastEvaluation?.config.id === selectedBot.id &&
+      lastEvaluation.config.contract_id === selectedBot.contract_id &&
+      lastEvaluation.decision.contract_id === selectedBot.contract_id &&
+      lastEvaluation.config.timeframe_unit === selectedBot.timeframe_unit &&
+      lastEvaluation.config.timeframe_unit_number === selectedBot.timeframe_unit_number
+        ? lastEvaluation
+        : null,
     [lastEvaluation, selectedBot],
-  );
-  const selectedBotBacktest = useMemo(
-    () => (selectedBot && lastBacktest?.bot_config_id === selectedBot.id ? lastBacktest : null),
-    [lastBacktest, selectedBot],
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
@@ -1363,6 +1219,7 @@ export function BotPage() {
       ]);
       setAccounts(accountRows);
       setConfigs(botRows.items);
+      setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
         if (current && botRows.items.some((item) => item.id === current)) {
           return current;
@@ -1375,6 +1232,7 @@ export function BotPage() {
         );
       }
     } catch (err) {
+      setConfigWarnings([]);
       setError(err instanceof Error ? err.message : "Failed to load bot data");
     } finally {
       if (showLoading) {
@@ -1405,7 +1263,14 @@ export function BotPage() {
 
   useEffect(() => {
     void loadActivity(selectedBot?.id ?? null);
-  }, [loadActivity, selectedBot?.id]);
+  }, [
+    loadActivity,
+    selectedBot?.contract_id,
+    selectedBot?.id,
+    selectedBot?.timeframe_unit,
+    selectedBot?.timeframe_unit_number,
+    selectedBot?.updated_at,
+  ]);
 
   useEffect(() => {
     if (!selectedBot) {
@@ -1416,16 +1281,7 @@ export function BotPage() {
     setForm(formFromBot(selectedBot));
     setContracts([]);
     setFormError(null);
-    setLastBacktest((current) => (current?.bot_config_id === selectedBot.id ? current : null));
   }, [selectedBot]);
-
-  useEffect(() => {
-    if (actionLoading !== "backtest") {
-      setBacktestProgress(0);
-      setBacktestStage("Queued");
-      return;
-    }
-  }, [actionLoading]);
 
   async function handleSearchContracts() {
     if (!form.contractSearch.trim()) {
@@ -1467,24 +1323,21 @@ export function BotPage() {
           name: nextName,
           timeframeUnit: "minute",
           timeframeUnitNumber: "5",
-          lookbackBars:
-            current.lookbackBars === "100" ? TOPBOT_ADAPTIVE_DEFAULTS.lookbackBars : current.lookbackBars || TOPBOT_ADAPTIVE_DEFAULTS.lookbackBars,
-          fastPeriod: "9",
-          slowPeriod: "21",
-          adaptiveMinimumScore: current.adaptiveMinimumScore || TOPBOT_ADAPTIVE_DEFAULTS.minimumScore,
-          adaptiveMinimumConfidence: current.adaptiveMinimumConfidence || TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence,
-          adaptiveMinimumRewardRisk: current.adaptiveMinimumRewardRisk || TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk,
-          adaptiveMinimumDirectionalVotes: current.adaptiveMinimumDirectionalVotes || TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes,
-          adaptiveMaxOpposingVotes: current.adaptiveMaxOpposingVotes || TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes,
-          adaptiveAllowShortEntries: current.adaptiveAllowShortEntries ?? TOPBOT_ADAPTIVE_DEFAULTS.allowShortEntries,
-          trailingStopMode: TOPBOT_ADAPTIVE_DEFAULTS.trailingStopMode,
-          trailingAtrMultiplier: current.trailingAtrMultiplier || TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier,
-          adaptiveMoveToBreakevenAtR: current.adaptiveMoveToBreakevenAtR || TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR,
-          adaptiveTimeStopBars: current.adaptiveTimeStopBars || TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars,
-          maxDataStalenessSeconds: TOPBOT_ADAPTIVE_DEFAULTS.maxDataStalenessSeconds,
+          lookbackBars: "300",
+          topbotMinimumScore: current.topbotMinimumScore || TOPBOT_DEFAULTS.minimumScore,
+          topbotMinimumConfidence: current.topbotMinimumConfidence || TOPBOT_DEFAULTS.minimumConfidence,
+          topbotMinimumDirectionalVotes:
+            current.topbotMinimumDirectionalVotes || TOPBOT_DEFAULTS.minimumDirectionalVotes,
+          topbotMaxOpposingVotes: current.topbotMaxOpposingVotes || TOPBOT_DEFAULTS.maxOpposingVotes,
+          topbotMinimumRewardRisk: current.topbotMinimumRewardRisk || TOPBOT_DEFAULTS.minimumRewardRisk,
+          topbotTimeStopBars: current.topbotTimeStopBars || TOPBOT_DEFAULTS.timeStopBars,
+          topbotEnableTrailingStop: current.topbotEnableTrailingStop,
+          topbotMoveToBreakevenAtR: current.topbotMoveToBreakevenAtR || TOPBOT_DEFAULTS.moveToBreakevenAtR,
+          trailingStopMode: current.trailingStopMode || TOPBOT_DEFAULTS.trailingStopMode,
+          trailingAtrMultiplier: current.trailingAtrMultiplier || TOPBOT_DEFAULTS.trailingAtrMultiplier,
+          maxDataStalenessSeconds: "600",
         };
       }
-
       if (strategyType === "support_resistance") {
         return {
           ...current,
@@ -1898,6 +1751,13 @@ export function BotPage() {
     const lookbackBars = parsePositiveInt(form.lookbackBars);
     const fastPeriod = parsePositiveInt(form.fastPeriod);
     const slowPeriod = parsePositiveInt(form.slowPeriod);
+    const topbotMinimumScore = parseNonNegativeNumber(form.topbotMinimumScore);
+    const topbotMinimumConfidence = parseNonNegativeNumber(form.topbotMinimumConfidence);
+    const topbotMinimumDirectionalVotes = parsePositiveInt(form.topbotMinimumDirectionalVotes);
+    const topbotMaxOpposingVotes = parseNonNegativeInt(form.topbotMaxOpposingVotes);
+    const topbotMinimumRewardRisk = parsePositiveNumber(form.topbotMinimumRewardRisk);
+    const topbotTimeStopBars = parsePositiveInt(form.topbotTimeStopBars);
+    const topbotMoveToBreakevenAtR = parsePositiveNumber(form.topbotMoveToBreakevenAtR);
     const effectiveFastPeriod =
       form.strategyType === "ema_trend_pullback"
         ? Number(EMA_TREND_PULLBACK_DEFAULTS.fastPeriod)
@@ -1979,13 +1839,6 @@ export function BotPage() {
     const maxOpenPosition = parsePositiveNumber(form.maxOpenPosition);
     const cooldownSeconds = parseNonNegativeInt(form.cooldownSeconds);
     const maxDataStalenessSeconds = parsePositiveInt(form.maxDataStalenessSeconds);
-    const adaptiveMinimumScore = parsePositiveNumber(form.adaptiveMinimumScore);
-    const adaptiveMinimumConfidence = parsePositiveNumber(form.adaptiveMinimumConfidence);
-    const adaptiveMinimumRewardRisk = parsePositiveNumber(form.adaptiveMinimumRewardRisk);
-    const adaptiveMinimumDirectionalVotes = parsePositiveInt(form.adaptiveMinimumDirectionalVotes);
-    const adaptiveMaxOpposingVotes = parseNonNegativeInt(form.adaptiveMaxOpposingVotes);
-    const adaptiveMoveToBreakevenAtR = parseNonNegativeNumber(form.adaptiveMoveToBreakevenAtR);
-    const adaptiveTimeStopBars = parseNonNegativeInt(form.adaptiveTimeStopBars);
     const normalizedName = form.name.trim().toLowerCase();
     const duplicateName = configs.some(
       (config) => config.id !== editingBotId && config.name.trim().toLowerCase() === normalizedName,
@@ -2029,31 +1882,6 @@ export function BotPage() {
       (form.timeframeUnit !== "minute" || (form.timeframeUnitNumber !== "3" && form.timeframeUnitNumber !== "5"))
     ) {
       setFormError("9/15 EMA scalping requires a 3-minute or 5-minute chart.");
-      return;
-    }
-    if (
-      form.strategyType === "topbot_adaptive" &&
-      (
-        adaptiveMinimumScore === null ||
-        adaptiveMinimumConfidence === null ||
-        adaptiveMinimumRewardRisk === null ||
-        adaptiveMinimumDirectionalVotes === null ||
-        adaptiveMaxOpposingVotes === null ||
-        trailingAtrMultiplier === null ||
-        adaptiveMoveToBreakevenAtR === null ||
-        adaptiveTimeStopBars === null
-      )
-    ) {
-      setFormError("TopBot adaptive thresholds must be valid numeric values.");
-      return;
-    }
-    if (
-      form.strategyType === "topbot_adaptive" &&
-      adaptiveMinimumScore !== null &&
-      adaptiveMinimumConfidence !== null &&
-      (adaptiveMinimumScore > 100 || adaptiveMinimumConfidence > 100)
-    ) {
-      setFormError("TopBot score and confidence thresholds must be 100 or lower.");
       return;
     }
     if (form.strategyType === "support_resistance" && levelTolerancePercent === null) {
@@ -2301,6 +2129,24 @@ export function BotPage() {
       setFormError("RSI oversold must be lower than RSI overbought.");
       return;
     }
+    if (
+      form.strategyType === "topbot_adaptive" &&
+      (
+        topbotMinimumScore === null ||
+        topbotMinimumScore > 100 ||
+        topbotMinimumConfidence === null ||
+        topbotMinimumConfidence > 100 ||
+        topbotMinimumDirectionalVotes === null ||
+        topbotMaxOpposingVotes === null ||
+        topbotMinimumRewardRisk === null ||
+        topbotTimeStopBars === null ||
+        topbotMoveToBreakevenAtR === null ||
+        (form.topbotEnableTrailingStop && trailingAtrMultiplier === null)
+      )
+    ) {
+      setFormError("TopBot thresholds must be valid; score and confidence must be between 0 and 100.");
+      return;
+    }
 
     setSaving(true);
     setFormError(null);
@@ -2308,42 +2154,25 @@ export function BotPage() {
       const strategyParams: BotConfig["strategy_params"] =
         form.strategyType === "topbot_adaptive"
           ? {
-              minimum_score: adaptiveMinimumScore ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumScore),
-              minimum_confidence: adaptiveMinimumConfidence ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumConfidence),
-              minimum_reward_risk: adaptiveMinimumRewardRisk ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumRewardRisk),
+              source_strategies:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.source_strategies ??
+                TOPBOT_DEFAULTS.sourceStrategies,
+              source_strategy_params:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.source_strategy_params ?? {},
+              minimum_score: topbotMinimumScore ?? Number(TOPBOT_DEFAULTS.minimumScore),
+              minimum_confidence: topbotMinimumConfidence ?? Number(TOPBOT_DEFAULTS.minimumConfidence),
               minimum_directional_votes:
-                adaptiveMinimumDirectionalVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.minimumDirectionalVotes),
-              max_opposing_votes: adaptiveMaxOpposingVotes ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.maxOpposingVotes),
-              allow_short_entries: form.adaptiveAllowShortEntries,
-              enable_trailing_stop: false,
+                topbotMinimumDirectionalVotes ?? Number(TOPBOT_DEFAULTS.minimumDirectionalVotes),
+              max_opposing_votes: topbotMaxOpposingVotes ?? Number(TOPBOT_DEFAULTS.maxOpposingVotes),
+              minimum_reward_risk: topbotMinimumRewardRisk ?? Number(TOPBOT_DEFAULTS.minimumRewardRisk),
+              time_stop_bars: topbotTimeStopBars ?? Number(TOPBOT_DEFAULTS.timeStopBars),
+              enable_trailing_stop: form.topbotEnableTrailingStop,
               trailing_stop_mode: form.trailingStopMode,
-              trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.trailingAtrMultiplier),
+              trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_DEFAULTS.trailingAtrMultiplier),
               move_to_breakeven_at_r:
-                adaptiveMoveToBreakevenAtR ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.moveToBreakevenAtR),
-              time_stop_bars: adaptiveTimeStopBars ?? Number(TOPBOT_ADAPTIVE_DEFAULTS.timeStopBars),
-              block_expired_contracts: false,
-              source_strategies: [
-                "sma_cross",
-                "ema_scalping",
-                "ema_trend_pullback",
-                "support_resistance",
-                "liquidity_sweep_retest",
-                "fvg_sweep_mss",
-                "donchian_breakout",
-                "opening_rvol_breakout",
-                "supertrend_pivot",
-                "vwap_atr_mean_reversion",
-                "bollinger_rsi_reversal",
-                "bollinger_mean_reversion",
-                "macd_support_resistance",
-                "orb_fibonacci_pullback",
-                "delayed_orb_confirmation",
-                "atr_adjusted_relative_strength",
-                "relative_strength_spy",
-                "vwap_gap_retrace",
-                "pullback_trap_reversal",
-                "fisher_transform_mean_reversion",
-              ],
+                topbotMoveToBreakevenAtR ?? Number(TOPBOT_DEFAULTS.moveToBreakevenAtR),
+              block_expired_contracts:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.block_expired_contracts ?? false,
             }
         : form.strategyType === "support_resistance"
           ? {
@@ -2582,60 +2411,24 @@ export function BotPage() {
     }
   }
 
-  async function waitForBacktestJob(initialJob: BotBacktestJob) {
-    let job = initialJob;
-    while (true) {
-      setBacktestProgress(job.progress);
-      setBacktestStage(job.stage);
-
-      if (job.status === "completed") {
-        if (!job.result) {
-          throw new Error("Backtest completed without a result.");
-        }
-        return job.result;
-      }
-      if (job.status === "failed") {
-        throw new Error(job.error || "Backtest failed.");
-      }
-
-      await delay(BACKTEST_POLL_INTERVAL_MS);
-      job = await botsApi.getBacktestJob(job.job_id);
-    }
-  }
-
-  async function runBotAction(kind: "start" | "evaluate" | "stop" | "backtest") {
+  async function runBotAction(kind: "start" | "evaluate" | "stop") {
     if (!selectedBot) {
       return;
     }
     setActionLoading(kind);
     setError(null);
-    if (kind === "backtest") {
-      setLastBacktest((current) => (current?.bot_config_id === selectedBot.id ? null : current));
-    }
     try {
       if (kind === "start") {
-        const result = await botsApi.start(selectedBot.id, { dryRun: true, continuous: true, stopAtSessionEnd: true });
+        const result = await botsApi.start(selectedBot.id, { dryRun: true });
         setLastEvaluation(result);
       } else if (kind === "evaluate") {
-        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true, continuous: false });
+        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true });
         setLastEvaluation(result);
-      } else if (kind === "backtest") {
-        const job = await botsApi.startBacktest(selectedBot.id, {
-          start: dateInputToIso(backtestStartDate, "start"),
-          end: dateInputToIso(backtestEndDate, "end"),
-          limit: DEFAULT_BACKTEST_BAR_LIMIT,
-        });
-        const result = await waitForBacktestJob(job);
-        setLastBacktest(result);
       } else {
         await botsApi.stop(selectedBot.id);
       }
-      if (kind === "backtest") {
-        await loadConfigs();
-      } else {
-        await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
-        setChartRefreshToken((current) => current + 1);
-      }
+      await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
+      setChartRefreshToken((current) => current + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Bot action failed");
     } finally {
@@ -2655,6 +2448,11 @@ export function BotPage() {
   return (
     <div className="space-y-5 pb-8">
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+      {configWarnings.map((warning) => (
+        <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          {warning}
+        </div>
+      ))}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-stretch">
         <Card className="order-3 min-w-0 xl:col-start-2 xl:row-start-1">
@@ -2684,7 +2482,7 @@ export function BotPage() {
                   <option value="">Select account</option>
                   {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
-                      {getDemoAccountLabel(account)}
+                      {account.name} ({account.id})
                     </option>
                   ))}
                 </Select>
@@ -2722,95 +2520,121 @@ export function BotPage() {
               </div>
 
               {form.strategyType === "topbot_adaptive" ? (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2.5">
+                <>
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-xs text-slate-300">
+                    TopBot evaluates {TOPBOT_DEFAULTS.sourceStrategies.length} registered strategies, requires directional
+                    agreement, then routes only the highest-scoring valid bracket. Existing per-source overrides are preserved.
+                  </div>
+                  <div className="grid grid-cols-3 gap-2.5">
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Signal TF</span>
-                      <Input value="5m" readOnly disabled />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Lookback</span>
-                      <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Min Score</span>
-                      <Input
-                        value={form.adaptiveMinimumScore}
-                        onChange={(event) => setForm({ ...form, adaptiveMinimumScore: event.target.value })}
-                      />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Min Confidence</span>
-                      <Input
-                        value={form.adaptiveMinimumConfidence}
-                        onChange={(event) => setForm({ ...form, adaptiveMinimumConfidence: event.target.value })}
-                      />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Min R:R</span>
-                      <Input
-                        value={form.adaptiveMinimumRewardRisk}
-                        onChange={(event) => setForm({ ...form, adaptiveMinimumRewardRisk: event.target.value })}
-                      />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Aligned Votes</span>
-                      <Input
-                        value={form.adaptiveMinimumDirectionalVotes}
-                        onChange={(event) => setForm({ ...form, adaptiveMinimumDirectionalVotes: event.target.value })}
-                      />
-                    </label>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Max Opposing</span>
-                      <Input
-                        value={form.adaptiveMaxOpposingVotes}
-                        onChange={(event) => setForm({ ...form, adaptiveMaxOpposingVotes: event.target.value })}
-                      />
-                    </label>
-                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2">
-                      <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Short Entries</span>
-                      <Toggle
-                        checked={form.adaptiveAllowShortEntries}
-                        onChange={(checked) => setForm({ ...form, adaptiveAllowShortEntries: checked })}
-                        label={form.adaptiveAllowShortEntries ? "Enabled" : "Blocked"}
-                      />
-                    </div>
-                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Trail Mode</span>
+                      <span>Unit</span>
                       <Select
-                        value={form.trailingStopMode}
-                        onChange={(event) => setForm({ ...form, trailingStopMode: event.target.value as BotTrailingStopMode })}
+                        value={form.timeframeUnit}
+                        onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
                       >
-                        {trailingStopOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
+                        {timeframeUnits.map((unit) => (
+                          <option key={unit} value={unit}>
+                            {unit}
                           </option>
                         ))}
                       </Select>
                     </label>
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Trail ATR</span>
+                      <span>Size</span>
                       <Input
-                        value={form.trailingAtrMultiplier}
-                        onChange={(event) => setForm({ ...form, trailingAtrMultiplier: event.target.value })}
+                        value={form.timeframeUnitNumber}
+                        onChange={(event) => setForm({ ...form, timeframeUnitNumber: event.target.value })}
                       />
                     </label>
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                      <span>Breakeven R</span>
+                      <span>Bars</span>
+                      <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Score</span>
                       <Input
-                        value={form.adaptiveMoveToBreakevenAtR}
-                        onChange={(event) => setForm({ ...form, adaptiveMoveToBreakevenAtR: event.target.value })}
+                        value={form.topbotMinimumScore}
+                        onChange={(event) => setForm({ ...form, topbotMinimumScore: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Confidence %</span>
+                      <Input
+                        value={form.topbotMinimumConfidence}
+                        onChange={(event) => setForm({ ...form, topbotMinimumConfidence: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Votes</span>
+                      <Input
+                        value={form.topbotMinimumDirectionalVotes}
+                        onChange={(event) => setForm({ ...form, topbotMinimumDirectionalVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Max Opposition</span>
+                      <Input
+                        value={form.topbotMaxOpposingVotes}
+                        onChange={(event) => setForm({ ...form, topbotMaxOpposingVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Reward / Risk</span>
+                      <Input
+                        value={form.topbotMinimumRewardRisk}
+                        onChange={(event) => setForm({ ...form, topbotMinimumRewardRisk: event.target.value })}
                       />
                     </label>
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                       <span>Time Stop Bars</span>
                       <Input
-                        value={form.adaptiveTimeStopBars}
-                        onChange={(event) => setForm({ ...form, adaptiveTimeStopBars: event.target.value })}
+                        value={form.topbotTimeStopBars}
+                        onChange={(event) => setForm({ ...form, topbotTimeStopBars: event.target.value })}
                       />
                     </label>
                   </div>
-                </div>
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <input
+                      type="checkbox"
+                      checked={form.topbotEnableTrailingStop}
+                      onChange={(event) => setForm({ ...form, topbotEnableTrailingStop: event.target.checked })}
+                    />
+                    Enable advisory trailing-stop plan
+                  </label>
+                  {form.topbotEnableTrailingStop ? (
+                    <div className="grid grid-cols-3 gap-2.5">
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Trail Mode</span>
+                        <Select
+                          value={form.trailingStopMode}
+                          onChange={(event) => setForm({ ...form, trailingStopMode: event.target.value as BotTrailingStopMode })}
+                        >
+                          {trailingStopOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Trail ATR</span>
+                        <Input
+                          value={form.trailingAtrMultiplier}
+                          onChange={(event) => setForm({ ...form, trailingAtrMultiplier: event.target.value })}
+                        />
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Breakeven R</span>
+                        <Input
+                          value={form.topbotMoveToBreakevenAtR}
+                          onChange={(event) => setForm({ ...form, topbotMoveToBreakevenAtR: event.target.value })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </>
               ) : isLevelStrategy(form.strategyType) ? (
                 <>
                   <div className="grid grid-cols-2 gap-2.5">
@@ -4049,13 +3873,13 @@ export function BotPage() {
                 {selectedBot ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3">
-                      <Metric label="Account" value={getDemoAccountId(selectedBot.account_id)} />
+                      <Metric label="Account" value={String(selectedBot.account_id)} />
                       <Metric label="Contract" value={selectedBot.symbol ?? selectedBot.contract_id} />
                       <Metric
                         label={selectedBotStrategySummary?.label ?? "Strategy"}
                         value={selectedBotStrategySummary?.value ?? "-"}
                       />
-                      <Metric label="Risk" value={formatCurrency(selectedBot.max_daily_loss)} />
+                      <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
@@ -4068,50 +3892,32 @@ export function BotPage() {
                         {actionLoading === "stop" ? "Stopping" : "Stop"}
                       </Button>
                     </div>
-                    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-                      <div className="grid gap-2.5 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-                        <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                          <span>Backtest Start</span>
-                          <Input
-                            type="date"
-                            value={backtestStartDate}
-                            onChange={(event) => setBacktestStartDate(event.target.value)}
-                          />
-                          <span className="block text-[11px] normal-case tracking-normal text-slate-500">Blank uses the earliest available window.</span>
-                        </label>
-                        <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                          <span>Backtest End</span>
-                          <Input
-                            type="date"
-                            value={backtestEndDate}
-                            onChange={(event) => setBacktestEndDate(event.target.value)}
-                          />
-                        </label>
-                        <Button
-                          className="w-full sm:w-auto"
-                          variant="secondary"
-                          onClick={() => void runBotAction("backtest")}
-                          disabled={actionLoading !== null}
-                        >
-                          {actionLoading === "backtest" ? "Running" : "Run Backtest"}
-                        </Button>
-                      </div>
-                    </div>
-                    {actionLoading === "backtest" ? (
-                      <BacktestProgressPanel value={backtestProgress} stage={backtestStage} />
-                    ) : selectedBotBacktest ? (
-                      <BacktestResultsPanel result={selectedBotBacktest} />
-                    ) : null}
                     {selectedBotEvaluation ? (
                       <div className="grid gap-3">
                         <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
                           <div className="mb-2 flex items-center justify-between gap-2">
-                            <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
-                              {selectedBotEvaluation.decision.action}
-                            </Badge>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={actionBadgeVariant(selectedBotEvaluation.decision.action)}>
+                                {selectedBotEvaluation.decision.action}
+                              </Badge>
+                              <Badge variant={statusBadgeVariant(selectedBotEvaluation.status)}>
+                                {evaluationStatusLabel(selectedBotEvaluation.status)}
+                              </Badge>
+                            </div>
                             <span className="text-xs text-slate-500">{formatDateTime(selectedBotEvaluation.decision.candle_timestamp)}</span>
                           </div>
                           <p className="text-sm text-slate-200">{selectedBotEvaluation.decision.reason}</p>
+                          {selectedBotEvaluation.correlation_id ? (
+                            <p className="mt-2 text-xs text-slate-500" title={selectedBotEvaluation.correlation_id}>
+                              Correlation: {selectedBotEvaluation.correlation_id.slice(0, 16)}
+                              {selectedBotEvaluation.correlation_id.length > 16 ? "…" : ""}
+                            </p>
+                          ) : null}
+                          {selectedBotEvaluation.status === "duplicate_skipped" && selectedBotEvaluation.duplicate_of_order_attempt_id ? (
+                            <p className="mt-2 text-xs text-amber-200">
+                              Duplicate skipped; original order attempt #{selectedBotEvaluation.duplicate_of_order_attempt_id}.
+                            </p>
+                          ) : null}
                           {selectedBotEvaluation.order_attempt ? (
                             <p className="mt-2 text-xs text-slate-400">
                               Order attempt #{selectedBotEvaluation.order_attempt.id}: {selectedBotEvaluation.order_attempt.status}
@@ -4181,7 +3987,7 @@ export function BotPage() {
                         rows={activity.runs.slice(0, 8).map((run) => ({
                           id: run.id,
                           left: run.status,
-                          middle: botRunDetail(run),
+                          middle: run.stop_reason ?? (run.dry_run ? "dry_run" : "live"),
                           right: formatDateTime(run.started_at),
                           badgeVariant: statusBadgeVariant(run.status),
                         }))}
@@ -4213,470 +4019,8 @@ export function BotPage() {
           </div>
         </div>
       </div>
+      <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
     </div>
-  );
-}
-
-function BacktestProgressPanel({ value, stage }: { value: number; stage: string }) {
-  const roundedValue = Math.round(value);
-  const waitingForCompletion = value >= 99 && roundedValue < 100;
-
-  return (
-    <div className="space-y-2 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3" role="status" aria-live="polite">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h4 className="text-sm font-semibold text-slate-100 md:text-base">Running Backtest</h4>
-          <p className="text-xs text-slate-400">{stage}</p>
-        </div>
-        <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 font-mono text-xs text-cyan-100">
-          {roundedValue}%
-        </span>
-      </div>
-      <Progress
-        value={value}
-        className="h-2.5 bg-slate-950"
-        indicatorClassName={`bg-gradient-to-r from-cyan-300 to-emerald-300 ${waitingForCompletion ? "animate-pulse" : ""}`}
-        role="progressbar"
-        aria-label="Backtest progress"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={roundedValue}
-        aria-valuetext={`${roundedValue}% ${stage}`}
-      />
-      {waitingForCompletion ? (
-        <p className="text-[11px] text-slate-500">
-          Finalizing the saved result. The next poll should return the completed stats.
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function buildBacktestCopyText(result: BotBacktestResult) {
-  const summary = result.summary;
-  const analysis = result.analysis;
-  const reviewItems = buildBacktestReviewItems(result);
-  const sideRows: Array<{ label: string; stats: BotBacktestBreakdownStats }> = (["BUY", "SELL"] as const).flatMap((side) => {
-    const stats = analysis?.by_side?.[side];
-    return stats && stats.trade_count > 0 ? [{ label: side, stats }] : [];
-  });
-  const exitRows = Object.entries(analysis?.by_exit_reason ?? {})
-    .filter(([, stats]) => stats.trade_count > 0)
-    .sort(([, left], [, right]) => Math.abs(right.net_pnl) - Math.abs(left.net_pnl))
-    .map(([reason, stats]) => ({ label: formatExitReason(reason), stats }));
-  const allTrades = [...result.trades].reverse();
-  const allDays = [...result.daily_pnl].reverse();
-  const assumptions = Object.entries(result.assumptions ?? {});
-
-  const lines: string[] = [
-    `${result.bot_name} Backtest Results`,
-    `Symbol: ${result.symbol ?? result.contract_id}`,
-    `Strategy: ${strategyLabel(result.strategy_type)}`,
-    `Window: ${formatDateOnly(result.start)} to ${formatDateOnly(result.end)}`,
-    `Generated: ${formatDateTime(result.generated_at)}`,
-    `Candles: ${result.candles_processed.toLocaleString()}`,
-    `Signals: ${result.signals_evaluated.toLocaleString()}`,
-    `Trades: ${summary.trade_count.toLocaleString()}`,
-    `Point Value: ${formatCurrency(result.point_value)} / point`,
-    "",
-    "Summary",
-    `Net PnL: ${formatCurrency(summary.net_pnl)}`,
-    `Win Rate: ${formatPercent(summary.win_rate)}`,
-    `Gross Profit: ${formatCurrency(summary.gross_profit)}`,
-    `Gross Loss: ${formatCurrency(summary.gross_loss)}`,
-    `Profit Factor: ${formatPlainNumber(summary.profit_factor, 2)}`,
-    `Avg Win: ${formatCurrency(summary.avg_win)}`,
-    `Avg Loss: ${formatCurrency(summary.avg_loss)}`,
-    `Expectancy: ${formatCurrency(summary.expectancy_per_trade)}`,
-    `Max Drawdown: ${formatCurrency(summary.max_drawdown)}`,
-    `Profit / Day: ${formatCurrency(summary.profit_per_day)}`,
-    `Fees: ${formatCurrency(summary.fees)}`,
-    "",
-    "Execution Quality",
-    `Signals / Trade: ${formatPlainNumber(analysis?.signals_per_trade, 2)}`,
-    `Avg Hold: ${formatDurationMinutes(analysis?.avg_duration_minutes)}`,
-    `Avg Bars Held: ${formatPlainNumber(analysis?.avg_bars_held, 1)}`,
-    `Avg MFE: ${formatPoints(analysis?.avg_mfe_points)} points`,
-    `Avg MAE: ${formatPoints(analysis?.avg_mae_points)} points`,
-  ];
-
-  if (reviewItems.length > 0) {
-    lines.push("", "Review Focus", ...reviewItems.map((item) => `- ${item}`));
-  }
-
-  lines.push("", "Long / Short");
-  if (sideRows.length > 0) {
-    lines.push(...sideRows.map(({ label, stats }) => formatBacktestBreakdownLine(label, stats)));
-  } else {
-    lines.push("No side breakdown available.");
-  }
-
-  lines.push("", "Exit Reasons");
-  if (exitRows.length > 0) {
-    lines.push(...exitRows.map(({ label, stats }) => formatBacktestBreakdownLine(label, stats)));
-  } else {
-    lines.push("No exit reason breakdown available.");
-  }
-
-  lines.push("", "Daily PnL");
-  lines.push(`Best Day: ${analysis?.best_day ? `${analysis.best_day.date} ${formatCurrency(analysis.best_day.net_pnl)}` : "None"}`);
-  lines.push(`Worst Day: ${analysis?.worst_day ? `${analysis.worst_day.date} ${formatCurrency(analysis.worst_day.net_pnl)}` : "None"}`);
-  if (allDays.length > 0) {
-    lines.push("All Days:");
-    lines.push("Date | Trades | Net PnL");
-    lines.push(...allDays.map((day) => `${day.date} | ${day.trade_count} | ${formatCurrency(day.net_pnl)}`));
-  }
-
-  lines.push("", "Trade Extremes");
-  lines.push(`Best Trade: ${analysis?.best_trade ? formatBacktestTradeLine(analysis.best_trade) : "None"}`);
-  lines.push(`Worst Trade: ${analysis?.worst_trade ? formatBacktestTradeLine(analysis.worst_trade) : "None"}`);
-
-  if (assumptions.length > 0) {
-    lines.push("", "Assumptions", ...assumptions.map(([key, value]) => `${formatExitReason(key)}: ${value}`));
-  }
-
-  lines.push("", `All Simulated Trades (${allTrades.length}, newest first)`);
-  if (allTrades.length > 0) {
-    lines.push("Side | Entry | Exit | Exit Reason | Hold | MFE | MAE | Points | Net PnL | Signal");
-    lines.push(...allTrades.map((trade) => formatBacktestTradeLine(trade)));
-  } else {
-    lines.push("No simulated trades were triggered.");
-  }
-
-  return lines.join("\n");
-}
-
-function formatBacktestBreakdownLine(label: string, stats: BotBacktestBreakdownStats) {
-  return [
-    `${label}:`,
-    `Trades ${stats.trade_count}`,
-    `WR ${formatPercent(stats.win_rate)}`,
-    `PF ${formatPlainNumber(stats.profit_factor, 2)}`,
-    `Net ${formatCurrency(stats.net_pnl)}`,
-    `Avg ${formatCurrency(stats.avg_pnl)}`,
-    `Avg Hold ${formatDurationMinutes(stats.avg_duration_minutes)}`,
-    `MFE ${formatPoints(stats.avg_mfe_points)}`,
-    `MAE ${formatPoints(stats.avg_mae_points)}`,
-  ].join(" ");
-}
-
-function formatBacktestTradeLine(trade: BotBacktestTrade) {
-  return [
-    trade.side,
-    formatDateTime(trade.entry_time),
-    formatDateTime(trade.exit_time),
-    formatExitReason(trade.exit_reason),
-    formatDurationMinutes(trade.duration_minutes),
-    formatPoints(trade.max_favorable_points),
-    formatPoints(trade.max_adverse_points),
-    formatPoints(trade.points),
-    formatCurrency(trade.net_pnl),
-    trade.signal_reason || "-",
-  ].join(" | ");
-}
-
-function BacktestResultsPanel({ result }: { result: BotBacktestResult }) {
-  const summary = result.summary;
-  const analysis = result.analysis;
-  const trades = result.trades.slice(-25).reverse();
-  const sideRows: Array<{ label: string; stats: BotBacktestBreakdownStats }> = (["BUY", "SELL"] as const).flatMap((side) => {
-    const stats = analysis?.by_side?.[side];
-    return stats && stats.trade_count > 0 ? [{ label: side, stats }] : [];
-  });
-  const exitRows = Object.entries(analysis?.by_exit_reason ?? {})
-    .filter(([, stats]) => stats.trade_count > 0)
-    .sort(([, left], [, right]) => Math.abs(right.net_pnl) - Math.abs(left.net_pnl))
-    .map(([reason, stats]) => ({ label: formatExitReason(reason), stats }));
-  const allDays = [...result.daily_pnl].reverse();
-  const reviewItems = buildBacktestReviewItems(result);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-
-  useEffect(() => {
-    if (copyState === "idle") {
-      return undefined;
-    }
-
-    const timeoutId = window.setTimeout(() => setCopyState("idle"), 2200);
-    return () => window.clearTimeout(timeoutId);
-  }, [copyState]);
-
-  const handleCopyBacktest = async () => {
-    const copied = await copyTextToClipboard(buildBacktestCopyText(result));
-    setCopyState(copied ? "copied" : "failed");
-  };
-
-  return (
-    <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-cyan-400/5 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h4 className="text-sm font-semibold text-slate-100 md:text-base">Backtest Results</h4>
-          <p className="text-xs text-slate-400">
-            {formatDateOnly(result.start)} to {formatDateOnly(result.end)} - {result.candles_processed.toLocaleString()} candles -{" "}
-            {result.signals_evaluated.toLocaleString()} signals
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 border-cyan-400/25 bg-slate-950/45 px-2.5 text-slate-200 hover:border-cyan-300/60 hover:bg-cyan-300/10 hover:text-cyan-100"
-            onClick={() => void handleCopyBacktest()}
-            aria-label="Copy backtest results"
-            title="Copy backtest results"
-          >
-            <CopyIcon />
-            <span>{copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}</span>
-          </Button>
-          <Badge variant={summary.net_pnl >= 0 ? "positive" : "negative"}>{formatCurrency(summary.net_pnl)}</Badge>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Win Rate" value={formatPercent(summary.win_rate)} />
-        <Metric label="Net PnL" value={formatCurrency(summary.net_pnl)} />
-        <Metric label="Gross Profit" value={formatCurrency(summary.gross_profit)} />
-        <Metric label="Profit Factor" value={formatPlainNumber(summary.profit_factor, 2)} />
-        <Metric label="Trades" value={String(summary.trade_count)} />
-        <Metric label="Avg Win" value={formatCurrency(summary.avg_win)} />
-        <Metric label="Avg Loss" value={formatCurrency(summary.avg_loss)} />
-        <Metric label="Max DD" value={formatCurrency(summary.max_drawdown)} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Metric label="Expectancy" value={formatCurrency(summary.expectancy_per_trade)} />
-        <Metric label="Gross Loss" value={formatCurrency(summary.gross_loss)} />
-        <Metric label="Profit / Day" value={formatCurrency(summary.profit_per_day)} />
-        <Metric label="Signals / Trade" value={formatPlainNumber(analysis?.signals_per_trade, 2)} />
-        <Metric label="Avg Hold" value={formatDurationMinutes(analysis?.avg_duration_minutes)} />
-        <Metric label="Avg MFE" value={formatPoints(analysis?.avg_mfe_points)} />
-        <Metric label="Avg MAE" value={formatPoints(analysis?.avg_mae_points)} />
-        <Metric label="Fees" value={formatCurrency(summary.fees)} />
-      </div>
-
-      {reviewItems.length > 0 ? (
-        <div className="rounded-xl border border-amber-300/20 bg-amber-300/5 p-3">
-          <h5 className="text-sm font-semibold text-amber-100">Review Focus</h5>
-          <div className="mt-2 grid gap-2 md:grid-cols-3">
-            {reviewItems.map((item) => (
-              <p key={item} className="rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-300">
-                {item}
-              </p>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="grid gap-3 xl:grid-cols-2">
-        <BacktestBreakdownTable title="Long / Short" rows={sideRows} />
-        <BacktestBreakdownTable title="Exit Reasons" rows={exitRows} />
-      </div>
-
-      <div className="grid gap-3 xl:grid-cols-[1fr_1.2fr]">
-        <BacktestDayPanel analysis={analysis} days={allDays} />
-        <BacktestTradeExtremes bestTrade={analysis?.best_trade ?? null} worstTrade={analysis?.worst_trade ?? null} />
-      </div>
-
-      {trades.length > 0 ? (
-        <div className="overflow-hidden rounded-xl border border-slate-800">
-          <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">
-            Simulated Trades
-          </div>
-          <div className="max-h-96 overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-20">Side</TableHead>
-                  <TableHead>Entry</TableHead>
-                  <TableHead>Exit</TableHead>
-                  <TableHead className="text-right">Hold</TableHead>
-                  <TableHead className="text-right">MFE / MAE</TableHead>
-                  <TableHead className="text-right">Points</TableHead>
-                  <TableHead className="text-right">Net PnL</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {trades.map((trade) => (
-                  <TableRow key={trade.id}>
-                    <TableCell>
-                      <Badge variant={trade.side === "BUY" ? "positive" : "negative"}>{trade.side}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <p className="text-xs text-slate-300">{formatDateTime(trade.entry_time)}</p>
-                      <p className="text-[11px] text-slate-500">@ {formatPlainNumber(trade.entry_price, 2)}</p>
-                    </TableCell>
-                    <TableCell className="max-w-[360px]">
-                      <p className="text-xs text-slate-300">{formatExitReason(trade.exit_reason)}</p>
-                      <p className="text-[11px] text-slate-500">{formatDateTime(trade.exit_time)}</p>
-                      <p className="truncate text-[11px] text-slate-500">{trade.signal_reason}</p>
-                    </TableCell>
-                    <TableCell className="text-right text-xs text-slate-300">{formatDurationMinutes(trade.duration_minutes)}</TableCell>
-                    <TableCell className="text-right text-xs text-slate-300">
-                      {formatPoints(trade.max_favorable_points)} / {formatPoints(trade.max_adverse_points)}
-                    </TableCell>
-                    <TableCell className="text-right text-xs text-slate-300">{formatPoints(trade.points)}</TableCell>
-                    <TableCell className={`text-right text-xs font-semibold ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                      {formatCurrency(trade.net_pnl)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      ) : (
-        <p className="rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-4 text-sm text-slate-400">
-          No simulated trades were triggered in this backtest window.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function BacktestBreakdownTable({ title, rows }: { title: string; rows: Array<{ label: string; stats: BotBacktestBreakdownStats }> }) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-800">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}</div>
-      {rows.length === 0 ? (
-        <p className="px-3 py-4 text-sm text-slate-500">No rows</p>
-      ) : (
-        <div className="overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Group</TableHead>
-                <TableHead className="text-right">Trades</TableHead>
-                <TableHead className="text-right">WR</TableHead>
-                <TableHead className="text-right">PF</TableHead>
-                <TableHead className="text-right">Avg</TableHead>
-                <TableHead className="text-right">Net</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map(({ label, stats }) => (
-                <TableRow key={label}>
-                  <TableCell className="text-xs font-medium text-slate-200">{label}</TableCell>
-                  <TableCell className="text-right text-xs text-slate-300">{stats.trade_count}</TableCell>
-                  <TableCell className="text-right text-xs text-slate-300">{formatPercent(stats.win_rate)}</TableCell>
-                  <TableCell className="text-right text-xs text-slate-300">{formatPlainNumber(stats.profit_factor, 2)}</TableCell>
-                  <TableCell className="text-right text-xs text-slate-300">{formatCurrency(stats.avg_pnl)}</TableCell>
-                  <TableCell className={`text-right text-xs font-semibold ${stats.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                    {formatCurrency(stats.net_pnl)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BacktestDayPanel({ analysis, days }: { analysis: BotBacktestResult["analysis"]; days: BotBacktestDailyPnl[] }) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-800">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">Daily PnL</div>
-      <div className="grid grid-cols-2 gap-3 border-b border-slate-800 p-3">
-        <Metric label="Best Day" value={analysis?.best_day ? formatCurrency(analysis.best_day.net_pnl) : "$0.00"} />
-        <Metric label="Worst Day" value={analysis?.worst_day ? formatCurrency(analysis.worst_day.net_pnl) : "$0.00"} />
-      </div>
-      <div className="max-h-64 overflow-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead className="text-right">Trades</TableHead>
-              <TableHead className="text-right">Net</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {days.map((day) => (
-              <TableRow key={day.date}>
-                <TableCell className="text-xs text-slate-300">{day.date}</TableCell>
-                <TableCell className="text-right text-xs text-slate-300">{day.trade_count}</TableCell>
-                <TableCell className={`text-right text-xs font-semibold ${day.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                  {formatCurrency(day.net_pnl)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
-  );
-}
-
-function BacktestTradeExtremes({ bestTrade, worstTrade }: { bestTrade: BotBacktestTrade | null; worstTrade: BotBacktestTrade | null }) {
-  const rows = [
-    { label: "Best Trade", trade: bestTrade },
-    { label: "Worst Trade", trade: worstTrade },
-  ];
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-800">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">Trade Extremes</div>
-      <div className="grid gap-3 p-3 md:grid-cols-2">
-        {rows.map(({ label, trade }) => (
-          <div key={label} className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-            <p className="text-[11px] uppercase tracking-wide text-slate-500">{label}</p>
-            {trade ? (
-              <>
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <Badge variant={trade.side === "BUY" ? "positive" : "negative"}>{trade.side}</Badge>
-                  <span className={`text-sm font-semibold ${trade.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
-                    {formatCurrency(trade.net_pnl)}
-                  </span>
-                </div>
-                <p className="mt-2 text-xs text-slate-300">
-                  {formatExitReason(trade.exit_reason)} - {formatDurationMinutes(trade.duration_minutes)}
-                </p>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  MFE {formatPoints(trade.max_favorable_points)} / MAE {formatPoints(trade.max_adverse_points)}
-                </p>
-              </>
-            ) : (
-              <p className="mt-2 text-sm text-slate-500">No trade</p>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function buildBacktestReviewItems(result: BotBacktestResult) {
-  const summary = result.summary;
-  const analysis = result.analysis;
-  const items: string[] = [];
-  if (summary.profit_factor < 1) {
-    items.push(`Profit factor is ${formatPlainNumber(summary.profit_factor, 2)}; reduce losers or filter weak entries before increasing size.`);
-  }
-  if (summary.win_rate < 40) {
-    items.push(`Win rate is ${formatPercent(summary.win_rate)}; compare losing exit reasons against entry setup quality.`);
-  }
-  const weakestExit = Object.entries(analysis?.by_exit_reason ?? {})
-    .filter(([, stats]) => stats.trade_count > 0)
-    .sort(([, left], [, right]) => left.net_pnl - right.net_pnl)[0];
-  if (weakestExit) {
-    items.push(`${formatExitReason(weakestExit[0])} exits contributed ${formatCurrency(weakestExit[1].net_pnl)}.`);
-  }
-  const weakerSide = Object.entries(analysis?.by_side ?? {})
-    .filter(([, stats]) => stats.trade_count > 0)
-    .sort(([, left], [, right]) => left.net_pnl - right.net_pnl)[0];
-  if (weakerSide && weakerSide[1].net_pnl < 0) {
-    items.push(`${weakerSide[0]} trades lost ${formatCurrency(weakerSide[1].net_pnl)} with ${formatPercent(weakerSide[1].win_rate)} WR.`);
-  }
-  if (items.length === 0 && summary.trade_count > 0) {
-    items.push("Review trade extremes and daily PnL clusters before changing risk or filters.");
-  }
-  return items.slice(0, 3);
-}
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <rect x="8" y="8" width="11" height="11" rx="2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }
 

@@ -652,6 +652,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
 | `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
+| `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |

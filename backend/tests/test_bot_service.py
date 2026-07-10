@@ -1,5 +1,4 @@
 import os
-from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -34,7 +33,6 @@ from app.services.bot_service import (
     evaluate_ema_scalping,
     evaluate_ema_trend_pullback,
     evaluate_bot_config,
-    evaluate_risk_gates,
     evaluate_opening_rvol_breakout,
     evaluate_relative_strength_vs_spy,
     evaluate_pullback_trap_reversal,
@@ -453,77 +451,6 @@ def test_bot_market_analysis_handles_insufficient_candles_with_neutral_probabili
     assert analysis["sideways_probability"] == 34
     assert analysis["expected_move"] is None
     assert any("at least 10" in note for note in analysis["risk_notes"])
-
-
-def test_evaluation_backfills_market_analysis_when_strategy_history_is_short(monkeypatch):
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    tables = [
-        Account.__table__,
-        ProjectXMarketCandle.__table__,
-        BotConfig.__table__,
-        BotDecision.__table__,
-    ]
-    Base.metadata.create_all(bind=engine, tables=tables)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    db = SessionLocal()
-
-    base = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
-    strategy_candles = [_make_candle(base + timedelta(minutes=index * 5), 100 + index) for index in range(4)]
-    context_candles = [_make_candle(base + timedelta(minutes=index * 5), 100 + index * 0.25) for index in range(100)]
-    signal = _make_analysis_signal("HOLD", price=float(strategy_candles[-1].close_price))
-
-    monkeypatch.setattr(
-        bot_service_module,
-        "fetch_candles_and_evaluate_strategy",
-        lambda db, user_id, config, client: (strategy_candles, signal),
-    )
-
-    class StubClient:
-        def __init__(self):
-            self.calls = []
-
-        def retrieve_bars(self, **kwargs):
-            self.calls.append(kwargs)
-            return _bars_from_candles(context_candles)
-
-    client = StubClient()
-    user_id = "00000000-0000-0000-0000-000000000000"
-    try:
-        account = Account(
-            user_id=user_id,
-            provider="projectx",
-            external_id="9001",
-            name="Practice 9001",
-            account_state="ACTIVE",
-            can_trade=True,
-            is_visible=True,
-        )
-        config = _make_analysis_config()
-        config.lookback_bars = 25
-        db.add_all([account, config])
-        db.flush()
-
-        result = evaluate_bot_config(
-            db,
-            user_id=user_id,
-            config=config,
-            account=account,
-            client=client,
-            dry_run=True,
-        )
-
-        assert len(client.calls) == 1
-        assert client.calls[0]["limit"] == 100
-        assert result.analysis["summary"] != "Insufficient candle history for a directional read; heuristic probabilities are held neutral."
-        assert result.analysis["expected_move"] is not None
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
-        engine.dispose()
 
 
 def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
@@ -2991,46 +2918,6 @@ def test_fetch_market_candles_deduplicates_provider_timestamps():
         engine.dispose()
 
 
-def test_market_candle_postgres_upsert_batches_large_value_lists(monkeypatch):
-    batch_size = bot_service_module._MARKET_CANDLE_UPSERT_BATCH_SIZE
-    batch_lengths: list[int] = []
-    executed_statements: list[object] = []
-
-    class FakeInsert:
-        excluded = SimpleNamespace(
-            symbol="excluded.symbol",
-            open_price="excluded.open_price",
-            high_price="excluded.high_price",
-            low_price="excluded.low_price",
-            close_price="excluded.close_price",
-            volume="excluded.volume",
-            is_partial="excluded.is_partial",
-            raw_payload="excluded.raw_payload",
-            fetched_at="excluded.fetched_at",
-        )
-
-        def values(self, values):
-            batch_lengths.append(len(values))
-            return self
-
-        def on_conflict_do_update(self, **_kwargs):
-            return object()
-
-    class FakeDb:
-        def execute(self, statement):
-            executed_statements.append(statement)
-
-    monkeypatch.setattr(bot_service_module, "postgresql_insert", lambda _table: FakeInsert())
-
-    bot_service_module._upsert_market_candle_rows(
-        FakeDb(),
-        values=[{} for _ in range(batch_size * 2 + 17)],
-    )
-
-    assert batch_lengths == [batch_size, batch_size, 17]
-    assert len(executed_statements) == 3
-
-
 def test_list_market_candles_returns_cached_rows_sorted_with_limit():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -4556,172 +4443,8 @@ def test_live_evaluation_is_blocked_without_explicit_confirmation():
         db.commit()
 
         assert result.order_attempt is None
-        assert {event.code for event in result.risk_events} == {
-            "live_order_confirmation_missing",
-            "missing_protective_stop",
-        }
-        assert db.query(BotRiskEvent).count() == 2
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
-        engine.dispose()
-
-
-def test_live_risk_gate_requires_protective_stop_before_order_routing():
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    tables = [
-        BotConfig.__table__,
-        BotOrderAttempt.__table__,
-        ProjectXTradeEvent.__table__,
-    ]
-    Base.metadata.create_all(bind=engine, tables=tables)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    db = SessionLocal()
-
-    user_id = "00000000-0000-0000-0000-000000000000"
-    try:
-        config = BotConfig(
-            user_id=user_id,
-            account_id=9001,
-            name="Live Stop Required",
-            enabled=True,
-            execution_mode="live",
-            contract_id="CON.F.US.MNQ.M26",
-            symbol="MNQ",
-            timeframe_unit="minute",
-            timeframe_unit_number=5,
-            lookback_bars=25,
-            fast_period=2,
-            slow_period=3,
-            order_size=1,
-            max_contracts=1,
-            max_daily_loss=250,
-            max_trades_per_day=3,
-            max_open_position=1,
-            allowed_contracts=["CON.F.US.MNQ.M26"],
-            trading_start_time="00:00",
-            trading_end_time="23:59",
-            cooldown_seconds=0,
-            max_data_staleness_seconds=3600,
-        )
-        db.add(config)
-        db.flush()
-        account = Account(
-            user_id=user_id,
-            provider="projectx",
-            external_id="9001",
-            name="Practice 9001",
-            account_state="ACTIVE",
-            can_trade=True,
-            is_visible=True,
-        )
-
-        blocks = evaluate_risk_gates(
-            db,
-            user_id=user_id,
-            config=config,
-            account=account,
-            latest_candle=_make_candle(_dt(0), 100),
-            contract_id="CON.F.US.MNQ.M26",
-            symbol="MNQ",
-            action="BUY",
-            requested_order_size=1,
-            current_position_qty=0,
-            target_position_qty=1,
-            signal_price=100,
-            signal_payload={"strategy_type": "sma_cross"},
-            dry_run=False,
-            confirm_live_order_routing=True,
-        )
-
-        assert {block.code for block in blocks} == {"missing_protective_stop"}
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
-        engine.dispose()
-
-
-def test_risk_gate_blocks_projected_stop_loss_over_daily_budget():
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    tables = [
-        BotConfig.__table__,
-        BotOrderAttempt.__table__,
-        ProjectXTradeEvent.__table__,
-    ]
-    Base.metadata.create_all(bind=engine, tables=tables)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    db = SessionLocal()
-
-    user_id = "00000000-0000-0000-0000-000000000000"
-    try:
-        config = BotConfig(
-            user_id=user_id,
-            account_id=9001,
-            name="Stop Budget",
-            enabled=True,
-            execution_mode="dry_run",
-            contract_id="CON.F.US.MNQ.M26",
-            symbol="MNQ",
-            timeframe_unit="minute",
-            timeframe_unit_number=5,
-            lookback_bars=25,
-            fast_period=2,
-            slow_period=3,
-            order_size=1,
-            max_contracts=1,
-            max_daily_loss=25,
-            max_trades_per_day=3,
-            max_open_position=1,
-            allowed_contracts=["CON.F.US.MNQ.M26"],
-            trading_start_time="00:00",
-            trading_end_time="23:59",
-            cooldown_seconds=0,
-            max_data_staleness_seconds=3600,
-        )
-        db.add(config)
-        db.flush()
-        account = Account(
-            user_id=user_id,
-            provider="projectx",
-            external_id="9001",
-            name="Practice 9001",
-            account_state="ACTIVE",
-            can_trade=True,
-            is_visible=True,
-        )
-
-        blocks = evaluate_risk_gates(
-            db,
-            user_id=user_id,
-            config=config,
-            account=account,
-            latest_candle=_make_candle(_dt(0), 100),
-            contract_id="CON.F.US.MNQ.M26",
-            symbol="MNQ",
-            action="BUY",
-            requested_order_size=1,
-            current_position_qty=0,
-            target_position_qty=1,
-            signal_price=100,
-            signal_payload={
-                "signal_category": "entry",
-                "entry_price": 100,
-                "stop_loss": 80,
-                "take_profit": 130,
-            },
-            dry_run=True,
-            confirm_live_order_routing=False,
-        )
-
-        assert {block.code for block in blocks} == {"stop_risk_exceeds_daily_budget"}
+        assert {event.code for event in result.risk_events} == {"live_order_confirmation_missing"}
+        assert db.query(BotRiskEvent).count() == 1
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=list(reversed(tables)))
@@ -4882,10 +4605,6 @@ def test_start_bot_run_supersedes_existing_running_run():
         assert len(runs) == 2
         assert [run.status for run in runs] == ["stopped", "running"]
         assert runs[0].stop_reason == "superseded_by_manual_start"
-        assert runs[1].raw_state["runtime_mode"] == "supervised_dry_run"
-        assert runs[1].raw_state["poll_interval_seconds"] == 300
-        assert runs[1].raw_state["stop_at_session_end"] is True
-        assert runs[1].raw_state["next_evaluation_at"] is not None
         assert db.query(BotRun).filter(BotRun.status == "running").count() == 1
     finally:
         db.close()
@@ -5102,9 +4821,6 @@ def test_bot_market_analysis_includes_freshness_metadata():
         analysis["expected_move"] / float(candles[-1].close_price) * 100,
         rel=0.01,
     )
-    assert analysis["indicators"]["atr"] is not None
-    assert analysis["indicators"]["fair_value_gaps"]["active_count"] >= 0
-    assert "waddah_attar" in analysis["indicators"]
 
 
 def test_bot_market_analysis_neutral_payload_includes_freshness_metadata():

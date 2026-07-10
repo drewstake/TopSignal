@@ -4,6 +4,7 @@ import {
   buildGapRangeKey,
   buildGapRepairWindows,
   findCandleGaps,
+  isGapCoveredByRepairWindows,
   isFuturesSessionOpen,
 } from "./botCandleGaps";
 import type { ProjectXMarketCandle } from "../../lib/types";
@@ -165,6 +166,34 @@ describe("findCandleGaps", () => {
     );
     expect(gaps).toEqual([]);
   });
+
+  it("uses the closed duplicate as gap metadata without modifying provider candles", () => {
+    const closed = candle("2026-06-09T14:00:00Z", {
+      open: 98,
+      high: 103,
+      low: 97,
+      close: 102,
+      volume: 456,
+    });
+    const source = [
+      closed,
+      candle("2026-06-09T14:00:00.000Z", {
+        open: 998,
+        high: 1_003,
+        low: 997,
+        close: 1_002,
+        is_partial: true,
+      }),
+      candle("2026-06-09T14:10:00Z"),
+    ];
+    const before = structuredClone(source);
+
+    const gaps = findCandleGaps(source, "minute", 5);
+
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].beforeTimestamp).toBe(closed.timestamp);
+    expect(source).toEqual(before);
+  });
 });
 
 describe("buildGapRepairWindows", () => {
@@ -206,6 +235,23 @@ describe("buildGapRepairWindows", () => {
     const gaps = findCandleGaps(candles, "minute", 5);
     const windows = buildGapRepairWindows(gaps, "minute", 5, 2);
     expect(windows.length).toBeLessThanOrEqual(2);
+  });
+
+  it("distinguishes attempted gaps from gaps excluded by the repair cap", () => {
+    const gaps = findCandleGaps(
+      [
+        candle("2026-06-09T13:00:00Z"),
+        candle("2026-06-09T13:20:00Z"),
+        candle("2026-06-09T14:00:00Z"),
+        candle("2026-06-09T14:40:00Z"),
+      ],
+      "minute",
+      5,
+    ).filter((gap) => gap.kind === "data");
+    const windows = buildGapRepairWindows(gaps, "minute", 5, 1);
+
+    expect(gaps.filter((gap) => isGapCoveredByRepairWindows(gap, windows))).toHaveLength(1);
+    expect(gaps.filter((gap) => !isGapCoveredByRepairWindows(gap, windows)).length).toBeGreaterThan(0);
   });
 });
 

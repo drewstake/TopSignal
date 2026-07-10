@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Iterable, Mapping
+from numbers import Number
+from typing import Any, Iterable
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -21,19 +24,35 @@ from ..models import (
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
-from .instruments import DEFAULT_INSTRUMENT_SPECS, build_point_value_lookup, load_instrument_specs, normalize_symbol_key, resolve_point_value
-from .projectx_accounts import ACCOUNT_STATE_ACTIVE, get_projectx_account_row
-from .projectx_client import ProjectXClient, ProjectXClientError
-from .technical_indicators import (
-    atr_series as indicator_atr_series,
-    bollinger_bands as indicator_bollinger_bands,
-    build_projectx_style_indicator_snapshot,
-    detect_fair_value_gaps as detect_projectx_style_fair_value_gaps,
-    ema_series as indicator_ema_series,
-    rsi_series as indicator_rsi_series,
+from .instruments import load_instrument_specs, normalize_symbol_key
+from .bot_market_analysis import build_market_analysis as build_canonical_market_analysis
+from .bot_execution_safety import (
+    EvaluationStatus,
+    build_action_idempotency_key,
+    effective_dry_run,
+    live_execution_environment_enabled,
+    log_bot_event,
+    new_correlation_id,
+    provider_custom_tag,
+    running_under_tests,
+    sanitize_error,
+    touch_bot_run,
+    transition_bot_run,
 )
+from .projectx_accounts import get_projectx_account_row
+from .projectx_client import ProjectXClient
+from .bot_strategy_registry import (
+    SUPPORTED_STRATEGY_IDENTIFIERS,
+    dispatch_strategy_evaluator,
+    get_strategy_definition,
+)
+from .bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
+from . import bot_serialization as _bot_serialization
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
 from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
+
+
+logger = logging.getLogger(__name__)
 
 _PROJECTX_UNIT_BY_NAME = {
     "second": 1,
@@ -53,15 +72,7 @@ _UNIT_SECONDS_BY_NAME = {
 }
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
-_MARKET_CANDLE_UPSERT_BATCH_SIZE = 3000
-_MARKET_ANALYSIS_MIN_CANDLES = 10
-_MARKET_ANALYSIS_CONTEXT_BARS = 100
-_BOT_RUNTIME_MIN_POLL_SECONDS = 15
-_BOT_RUNTIME_MAX_POLL_SECONDS = 60 * 60
-_BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS = 5
-_ORDER_TYPE_LIMIT = 1
 _ORDER_TYPE_MARKET = 2
-_ORDER_TYPE_STOP = 4
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
 _STRATEGY_SMA_CROSS = "sma_cross"
@@ -85,109 +96,7 @@ _STRATEGY_RELATIVE_STRENGTH_SPY = "relative_strength_spy"
 _STRATEGY_PULLBACK_TRAP_REVERSAL = "pullback_trap_reversal"
 _STRATEGY_FVG_SWEEP_MSS = "fvg_sweep_mss"
 _STRATEGY_TOPBOT_ADAPTIVE = "topbot_adaptive"
-_SUPPORTED_STRATEGY_TYPES = {
-    _STRATEGY_TOPBOT_ADAPTIVE,
-    _STRATEGY_SMA_CROSS,
-    _STRATEGY_SUPPORT_RESISTANCE,
-    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
-    _STRATEGY_DONCHIAN_BREAKOUT,
-    _STRATEGY_OPENING_RVOL_BREAKOUT,
-    _STRATEGY_BOLLINGER_RSI_REVERSAL,
-    _STRATEGY_BOLLINGER_MEAN_REVERSION,
-    _STRATEGY_MACD_SUPPORT_RESISTANCE,
-    _STRATEGY_DELAYED_ORB_CONFIRMATION,
-    _STRATEGY_ORB_FIBONACCI_PULLBACK,
-    _STRATEGY_SUPERTREND_PIVOT,
-    _STRATEGY_EMA_TREND_PULLBACK,
-    _STRATEGY_EMA_SCALPING,
-    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
-    _STRATEGY_VWAP_GAP_RETRACE,
-    _STRATEGY_FISHER_MEAN_REVERSION,
-    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
-    _STRATEGY_RELATIVE_STRENGTH_SPY,
-    _STRATEGY_PULLBACK_TRAP_REVERSAL,
-    _STRATEGY_FVG_SWEEP_MSS,
-}
-_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES = [
-    _STRATEGY_SMA_CROSS,
-    _STRATEGY_EMA_SCALPING,
-    _STRATEGY_EMA_TREND_PULLBACK,
-    _STRATEGY_SUPPORT_RESISTANCE,
-    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
-    _STRATEGY_FVG_SWEEP_MSS,
-    _STRATEGY_DONCHIAN_BREAKOUT,
-    _STRATEGY_OPENING_RVOL_BREAKOUT,
-    _STRATEGY_SUPERTREND_PIVOT,
-    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
-    _STRATEGY_BOLLINGER_RSI_REVERSAL,
-    _STRATEGY_BOLLINGER_MEAN_REVERSION,
-    _STRATEGY_MACD_SUPPORT_RESISTANCE,
-    _STRATEGY_ORB_FIBONACCI_PULLBACK,
-    _STRATEGY_DELAYED_ORB_CONFIRMATION,
-    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
-    _STRATEGY_RELATIVE_STRENGTH_SPY,
-    _STRATEGY_VWAP_GAP_RETRACE,
-    _STRATEGY_PULLBACK_TRAP_REVERSAL,
-    _STRATEGY_FISHER_MEAN_REVERSION,
-]
-_TOPBOT_TREND_STRATEGIES = {
-    _STRATEGY_SMA_CROSS,
-    _STRATEGY_EMA_SCALPING,
-    _STRATEGY_EMA_TREND_PULLBACK,
-    _STRATEGY_SUPERTREND_PIVOT,
-    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
-    _STRATEGY_RELATIVE_STRENGTH_SPY,
-    _STRATEGY_PULLBACK_TRAP_REVERSAL,
-}
-_TOPBOT_BREAKOUT_STRATEGIES = {
-    _STRATEGY_DONCHIAN_BREAKOUT,
-    _STRATEGY_OPENING_RVOL_BREAKOUT,
-    _STRATEGY_DELAYED_ORB_CONFIRMATION,
-    _STRATEGY_ORB_FIBONACCI_PULLBACK,
-    _STRATEGY_VWAP_GAP_RETRACE,
-}
-_TOPBOT_MEAN_REVERSION_STRATEGIES = {
-    _STRATEGY_BOLLINGER_MEAN_REVERSION,
-    _STRATEGY_BOLLINGER_RSI_REVERSAL,
-    _STRATEGY_FISHER_MEAN_REVERSION,
-    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
-}
-_TOPBOT_LIQUIDITY_STRATEGIES = {
-    _STRATEGY_SUPPORT_RESISTANCE,
-    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
-    _STRATEGY_FVG_SWEEP_MSS,
-    _STRATEGY_MACD_SUPPORT_RESISTANCE,
-}
-_TOPBOT_ADAPTIVE_DEFAULTS = {
-    "minimum_score": 70.0,
-    "minimum_confidence": 55.0,
-    "minimum_reward_risk": 1.5,
-    "minimum_directional_votes": 2,
-    "max_opposing_votes": 1,
-    "enable_trailing_stop": False,
-    "trailing_stop_mode": "atr",
-    "trailing_atr_multiplier": 2.0,
-    "move_to_breakeven_at_r": 0.75,
-    "profit_lock_at_r": 1.25,
-    "profit_lock_r": 0.25,
-    "time_stop_bars": 6,
-    "block_expired_contracts": False,
-    "enable_empirical_filters": True,
-    "block_outside_preferred_session": True,
-    "preferred_session_start_minutes": 65,
-    "preferred_session_end_minutes": 100,
-    "allow_short_entries": False,
-    "block_short_unknown_regime": True,
-    "early_session_minutes": 60,
-    "early_session_min_score": 82.0,
-    "early_session_min_confidence": 72.0,
-    "early_session_min_votes": 3,
-    "long_continuation_min_score": 82.0,
-    "long_continuation_min_confidence": 72.0,
-    "long_continuation_min_votes": 3,
-    "long_continuation_min_reward_risk": 2.0,
-    "source_strategies": list(_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES),
-}
+_SUPPORTED_STRATEGY_TYPES = set(SUPPORTED_STRATEGY_IDENTIFIERS)
 _LEVEL_STRATEGY_TYPES = {
     _STRATEGY_SUPPORT_RESISTANCE,
     _STRATEGY_LIQUIDITY_SWEEP_RETEST,
@@ -431,6 +340,43 @@ _PULLBACK_TRAP_REVERSAL_DEFAULTS = {
     "pullback_range_multiplier": 1.25,
     "prior_swing_window": 10,
 }
+_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES = (
+    _STRATEGY_SMA_CROSS,
+    _STRATEGY_EMA_SCALPING,
+    _STRATEGY_EMA_TREND_PULLBACK,
+    _STRATEGY_SUPPORT_RESISTANCE,
+    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
+    _STRATEGY_FVG_SWEEP_MSS,
+    _STRATEGY_DONCHIAN_BREAKOUT,
+    _STRATEGY_OPENING_RVOL_BREAKOUT,
+    _STRATEGY_SUPERTREND_PIVOT,
+    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
+    _STRATEGY_BOLLINGER_RSI_REVERSAL,
+    _STRATEGY_BOLLINGER_MEAN_REVERSION,
+    _STRATEGY_MACD_SUPPORT_RESISTANCE,
+    _STRATEGY_ORB_FIBONACCI_PULLBACK,
+    _STRATEGY_DELAYED_ORB_CONFIRMATION,
+    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
+    _STRATEGY_RELATIVE_STRENGTH_SPY,
+    _STRATEGY_VWAP_GAP_RETRACE,
+    _STRATEGY_PULLBACK_TRAP_REVERSAL,
+    _STRATEGY_FISHER_MEAN_REVERSION,
+)
+_TOPBOT_ADAPTIVE_DEFAULTS = {
+    "source_strategies": list(_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES),
+    "source_strategy_params": {},
+    "minimum_score": 70.0,
+    "minimum_confidence": 55.0,
+    "minimum_directional_votes": 2,
+    "max_opposing_votes": 1,
+    "minimum_reward_risk": 1.5,
+    "time_stop_bars": 6,
+    "enable_trailing_stop": True,
+    "trailing_stop_mode": _TRAILING_STOP_MODE_ATR,
+    "trailing_atr_multiplier": 2.0,
+    "move_to_breakeven_at_r": 1.0,
+    "block_expired_contracts": False,
+}
 
 
 @dataclass(frozen=True)
@@ -440,62 +386,6 @@ class SignalResult:
     candle_timestamp: datetime | None
     price: float | None
     raw_payload: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class TopBotStrategyVote:
-    strategy_type: str
-    action: str
-    family: str
-    weight: float
-    score: float
-    reason: str
-    risk_plan: dict[str, Any] | None
-    key_levels: dict[str, Any]
-    raw_payload: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class TopBotMarketContext:
-    latest_price: float | None
-    candle_timestamp: datetime | None
-    trend: str
-    trend_strength: int
-    volatility_state: str
-    volume_state: str
-    market_regime: str
-    atr: float | None
-    vwap: float | None
-    nearest_support: float | None
-    nearest_resistance: float | None
-    active_fvg_count: int
-    session_timing: str
-    warnings: list[str]
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "latest_price": _round_analysis_float(self.latest_price),
-            "candle_timestamp": _as_utc(self.candle_timestamp).isoformat() if self.candle_timestamp is not None else None,
-            "trend": self.trend,
-            "trend_strength": self.trend_strength,
-            "volatility_state": self.volatility_state,
-            "volume_state": self.volume_state,
-            "market_regime": self.market_regime,
-            "atr": _round_analysis_float(self.atr),
-            "vwap": _round_analysis_float(self.vwap),
-            "nearest_support": _round_analysis_float(self.nearest_support),
-            "nearest_resistance": _round_analysis_float(self.nearest_resistance),
-            "active_fvg_count": self.active_fvg_count,
-            "session_timing": self.session_timing,
-            "warnings": self.warnings,
-        }
-
-
-@dataclass(frozen=True)
-class RiskBlock:
-    code: str
-    message: str
-    severity: str = "warning"
 
 
 @dataclass(frozen=True)
@@ -531,12 +421,6 @@ class FairValueGapZone:
     upper_price: float
     timestamp: datetime
     source_index: int
-    gap_size: float | None = None
-    gap_percent: float | None = None
-    mitigated: bool = False
-    mitigation_index: int | None = None
-    mitigation_timestamp: datetime | None = None
-    mitigation_level: float | None = None
 
 
 @dataclass(frozen=True)
@@ -599,6 +483,10 @@ class OpenPositionState:
 
 @dataclass(frozen=True)
 class EvaluationResult:
+    status: EvaluationStatus
+    correlation_id: str
+    idempotency_key: str | None
+    duplicate_of_order_attempt_id: int | None
     config: BotConfig
     run: BotRun | None
     decision: BotDecision
@@ -608,1115 +496,14 @@ class EvaluationResult:
     candles: list[ProjectXMarketCandle]
 
 
-class TopBotDecisionEngine:
-    """Aggregates strategy votes into one conservative, reviewable TopBot decision."""
-
-    def __init__(self, strategy_params: Mapping[str, Any] | None = None):
-        self.params = _normalize_topbot_adaptive_params(strategy_params)
-
-    def evaluate(
-        self,
-        *,
-        candles: list[ProjectXMarketCandle],
-        strategy_signals: Iterable[tuple[str, SignalResult]],
-        config: BotConfig | None = None,
-        risk_state: Mapping[str, Any] | None = None,
-        now: datetime | None = None,
-    ) -> SignalResult:
-        evaluation_now = now or datetime.now(timezone.utc)
-        context = _build_topbot_market_context(
-            candles,
-            config=config,
-            strategy_params=self.params,
-            now=evaluation_now,
-        )
-        votes = [self._build_vote(strategy_type, signal, context) for strategy_type, signal in strategy_signals]
-        if context.latest_price is None or context.candle_timestamp is None:
-            return self._final_signal(
-                action="HOLD",
-                reason="TopBot held because no candle data was available for adaptive evaluation.",
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=["No candles were available."],
-                selected=None,
-                long_score=0,
-                short_score=0,
-                confidence=0,
-                trade_decision="AVOID",
-            )
-
-        staleness_seconds = (evaluation_now - _as_utc(context.candle_timestamp)).total_seconds()
-        max_staleness = _topbot_max_staleness_seconds(config=config, strategy_params=self.params)
-        if staleness_seconds > max_staleness:
-            return self._final_signal(
-                action="HOLD",
-                reason=(
-                    "TopBot held because the latest candle is stale "
-                    f"({int(staleness_seconds)}s old vs {int(max_staleness)}s limit)."
-                ),
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=["Latest candle data is stale."],
-                selected=None,
-                long_score=0,
-                short_score=0,
-                confidence=0,
-                trade_decision="AVOID",
-            )
-
-        expired_warning = _topbot_contract_expiration_warning(config=config, now=evaluation_now)
-        if expired_warning is not None:
-            context = TopBotMarketContext(
-                latest_price=context.latest_price,
-                candle_timestamp=context.candle_timestamp,
-                trend=context.trend,
-                trend_strength=context.trend_strength,
-                volatility_state=context.volatility_state,
-                volume_state=context.volume_state,
-                market_regime=context.market_regime,
-                atr=context.atr,
-                vwap=context.vwap,
-                nearest_support=context.nearest_support,
-                nearest_resistance=context.nearest_resistance,
-                active_fvg_count=context.active_fvg_count,
-                session_timing=context.session_timing,
-                warnings=[*context.warnings, expired_warning],
-            )
-            if bool(self.params["block_expired_contracts"]):
-                return self._final_signal(
-                    action="RISK_REJECT",
-                    reason=f"TopBot blocked evaluation because {expired_warning}",
-                    context=context,
-                    votes=votes,
-                    risk_state=risk_state,
-                    rejection_reasons=[expired_warning],
-                    selected=None,
-                    long_score=0,
-                    short_score=0,
-                    confidence=0,
-                    trade_decision="AVOID",
-                )
-
-        if not votes:
-            return self._final_signal(
-                action="HOLD",
-                reason="TopBot held because no strategy votes were available.",
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=["No strategy evaluators returned a vote."],
-                selected=None,
-                long_score=0,
-                short_score=0,
-                confidence=0,
-                trade_decision="AVOID",
-            )
-
-        long_data = self._score_direction("BUY", votes, context)
-        short_data = self._score_direction("SELL", votes, context)
-        long_score = int(long_data["score"])
-        short_score = int(short_data["score"])
-        best_data = long_data if long_score >= short_score else short_data
-        best_action = str(best_data["action"])
-        best_score = int(best_data["score"])
-        opposing_score = short_score if best_action == "BUY" else long_score
-        confidence = _topbot_confidence(
-            score=best_score,
-            opposing_score=opposing_score,
-            aligned_votes=int(best_data["aligned_votes"]),
-            opposing_votes=int(best_data["opposing_votes"]),
-            required_votes=int(self.params["minimum_directional_votes"]),
-            action=best_action,
-            context=context,
-        )
-        selected_vote = best_data["selected_vote"] if isinstance(best_data["selected_vote"], TopBotStrategyVote) else None
-        rejection_reasons: list[str] = []
-        hard_risk_rejections = _topbot_runtime_risk_rejections(risk_state)
-        if hard_risk_rejections:
-            rejection_reasons.extend(hard_risk_rejections)
-
-        if int(best_data["opposing_votes"]) > int(self.params["max_opposing_votes"]):
-            rejection_reasons.append("Opposing strategy votes exceeded the configured conflict limit.")
-        if abs(long_score - short_score) < 12 and long_score >= 45 and short_score >= 45:
-            rejection_reasons.append("Directional scores are too close; confluence is conflicted.")
-        if best_score < float(self.params["minimum_score"]):
-            rejection_reasons.append(
-                f"Best directional score {best_score}/100 is below the {int(self.params['minimum_score'])}/100 threshold."
-            )
-        if confidence < float(self.params["minimum_confidence"]):
-            rejection_reasons.append(
-                f"Confidence {confidence}/100 is below the {int(self.params['minimum_confidence'])}/100 threshold."
-            )
-        rejection_reasons.extend(
-            self._adaptive_filter_rejections(
-                action=best_action,
-                best_data=best_data,
-                selected_vote=selected_vote,
-                context=context,
-                score=best_score,
-                confidence=confidence,
-            )
-        )
-
-        plan_rejection = None
-        if (
-            selected_vote is not None
-            and best_score >= float(self.params["minimum_score"])
-            and confidence >= float(self.params["minimum_confidence"])
-        ):
-            plan_rejection = self._risk_plan_rejection(best_action, selected_vote)
-        if plan_rejection is not None:
-            return self._final_signal(
-                action="RISK_REJECT",
-                reason=f"TopBot risk-rejected: {plan_rejection}",
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=[plan_rejection],
-                selected=selected_vote,
-                long_score=long_score,
-                short_score=short_score,
-                confidence=confidence,
-                trade_decision="AVOID",
-            )
-
-        trade_decision = _topbot_trade_decision(score=best_score, confidence=confidence, rejection_reasons=rejection_reasons)
-        if rejection_reasons:
-            hold_reason = f"TopBot held: {rejection_reasons[0]}"
-            if hard_risk_rejections:
-                return self._final_signal(
-                    action="RISK_REJECT",
-                    reason=f"TopBot risk-rejected: {hard_risk_rejections[0]}",
-                    context=context,
-                    votes=votes,
-                    risk_state=risk_state,
-                    rejection_reasons=rejection_reasons,
-                    selected=selected_vote,
-                    long_score=long_score,
-                    short_score=short_score,
-                    confidence=confidence,
-                    trade_decision="AVOID",
-                )
-            return self._final_signal(
-                action="HOLD",
-                reason=hold_reason,
-                context=context,
-                votes=votes,
-                risk_state=risk_state,
-                rejection_reasons=rejection_reasons,
-                selected=selected_vote,
-                long_score=long_score,
-                short_score=short_score,
-                confidence=confidence,
-                trade_decision=trade_decision,
-            )
-
-        return self._final_signal(
-            action=best_action,
-            reason=(
-                f"TopBot {best_action}: {best_score}/100 score, {confidence}/100 confidence, "
-                f"{int(best_data['aligned_votes'])} aligned strategy vote(s), regime {context.market_regime}."
-            ),
-            context=context,
-            votes=votes,
-            risk_state=risk_state,
-            rejection_reasons=[],
-            selected=selected_vote,
-            long_score=long_score,
-            short_score=short_score,
-            confidence=confidence,
-            trade_decision="TAKE",
-        )
-
-    def _build_vote(self, strategy_type: str, signal: SignalResult, context: TopBotMarketContext) -> TopBotStrategyVote:
-        family = _topbot_strategy_family(strategy_type)
-        weight = _topbot_strategy_weight(strategy_type=strategy_type, family=family, context=context)
-        risk_plan = _topbot_extract_risk_plan(signal)
-        action = str(signal.action or "HOLD").upper()
-        score = 0.0
-        if action in {"BUY", "SELL"}:
-            score = 45.0
-            if risk_plan is not None:
-                score += 18.0
-                reward_r = _optional_float(risk_plan.get("reward_r_multiple"))
-                if reward_r is not None:
-                    score += min(17.0, max(0.0, (reward_r - 1.0) * 12.0))
-            if _topbot_action_aligns_with_trend(action, context):
-                score += 8.0
-            if context.volume_state == "elevated":
-                score += 5.0
-            elif context.volume_state == "low":
-                score -= 8.0
-            if context.volatility_state == "extreme":
-                score -= 10.0
-            elif context.volatility_state == "low":
-                score -= 4.0
-        elif action == "RISK_REJECT":
-            score = 20.0
-
-        return TopBotStrategyVote(
-            strategy_type=strategy_type,
-            action=action,
-            family=family,
-            weight=weight,
-            score=max(0.0, min(100.0, score)),
-            reason=signal.reason,
-            risk_plan=risk_plan,
-            key_levels=_topbot_key_levels(signal.raw_payload if isinstance(signal.raw_payload, dict) else {}),
-            raw_payload=signal.raw_payload if isinstance(signal.raw_payload, dict) else {},
-        )
-
-    def _score_direction(
-        self,
-        action: str,
-        votes: list[TopBotStrategyVote],
-        context: TopBotMarketContext,
-    ) -> dict[str, Any]:
-        opposing_action = "SELL" if action == "BUY" else "BUY"
-        aligned = [vote for vote in votes if vote.action == action]
-        opposing = [vote for vote in votes if vote.action == opposing_action]
-        required_votes = max(1, int(self.params["minimum_directional_votes"]))
-        selected_vote = max(
-            aligned,
-            key=lambda vote: (
-                1 if vote.risk_plan is not None else 0,
-                vote.score * vote.weight,
-                vote.score,
-            ),
-            default=None,
-        )
-        if not aligned:
-            return {
-                "action": action,
-                "score": max(0, _topbot_context_score(action, context) // 3),
-                "selected_vote": selected_vote,
-                "aligned_votes": 0,
-                "opposing_votes": len(opposing),
-                "reasons": [f"No {action} strategy votes were present."],
-            }
-
-        weighted_quality = sum(vote.score * vote.weight for vote in aligned)
-        total_weight = sum(vote.weight for vote in aligned) or 1.0
-        average_quality = weighted_quality / total_weight
-        participation = min(1.0, len(aligned) / required_votes)
-        vote_score = average_quality * 0.72 * participation
-        context_score = _topbot_context_score(action, context)
-        conflict_penalty = min(32.0, sum(vote.weight for vote in opposing) * 7.0 + len(opposing) * 4.0)
-        score = max(0.0, min(100.0, vote_score + context_score - conflict_penalty))
-        reasons = [
-            f"{len(aligned)} {action} vote(s) with average quality {average_quality:.0f}/100.",
-            f"Context contributed {context_score:.0f} points in {context.market_regime} regime.",
-        ]
-        if opposing:
-            reasons.append(f"{len(opposing)} opposing vote(s) subtracted {conflict_penalty:.0f} points.")
-        return {
-            "action": action,
-            "score": int(round(score)),
-            "selected_vote": selected_vote,
-            "aligned_votes": len(aligned),
-            "opposing_votes": len(opposing),
-            "reasons": reasons,
-        }
-
-    def _risk_plan_rejection(self, action: str, selected_vote: TopBotStrategyVote | None) -> str | None:
-        if selected_vote is None or selected_vote.risk_plan is None:
-            return "Selected trade direction did not include a complete entry, stop, and target."
-        plan = selected_vote.risk_plan
-        entry_price = _optional_float(plan.get("entry_price"))
-        stop_loss = _optional_float(plan.get("stop_loss"))
-        take_profit = _optional_float(plan.get("take_profit"))
-        reward_r = _optional_float(plan.get("reward_r_multiple"))
-        if entry_price is None or stop_loss is None or take_profit is None:
-            return "Selected trade plan is missing entry, stop, or target."
-        if action == "BUY" and stop_loss >= entry_price:
-            return "BUY trade plan stop must be below entry."
-        if action == "SELL" and stop_loss <= entry_price:
-            return "SELL trade plan stop must be above entry."
-        if action == "BUY" and take_profit <= entry_price:
-            return "BUY trade plan target must be above entry."
-        if action == "SELL" and take_profit >= entry_price:
-            return "SELL trade plan target must be below entry."
-        if reward_r is None or reward_r < float(self.params["minimum_reward_risk"]):
-            return (
-                f"Reward/risk {reward_r or 0:.2f}R is below the "
-                f"{float(self.params['minimum_reward_risk']):.2f}R minimum."
-            )
-        return None
-
-    def _adaptive_filter_rejections(
-        self,
-        *,
-        action: str,
-        best_data: Mapping[str, Any],
-        selected_vote: TopBotStrategyVote | None,
-        context: TopBotMarketContext,
-        score: int,
-        confidence: int,
-    ) -> list[str]:
-        if not bool(self.params.get("enable_empirical_filters")):
-            return []
-
-        rejections: list[str] = []
-        aligned_votes = int(best_data.get("aligned_votes") or 0)
-        reward_r = (
-            _optional_float(selected_vote.risk_plan.get("reward_r_multiple"))
-            if selected_vote is not None and selected_vote.risk_plan is not None
-            else None
-        )
-
-        minutes_after_open = _topbot_minutes_after_regular_open(context)
-        if bool(self.params.get("block_outside_preferred_session")):
-            start_minute = int(self.params["preferred_session_start_minutes"])
-            end_minute = int(self.params["preferred_session_end_minutes"])
-            if minutes_after_open is None or minutes_after_open < start_minute or minutes_after_open > end_minute:
-                rejections.append(
-                    "TopBot empirical session filter only allows entries from "
-                    f"{_topbot_session_minute_label(start_minute)} to {_topbot_session_minute_label(end_minute)} ET."
-                )
-        if action == "SELL" and not bool(self.params.get("allow_short_entries")):
-            rejections.append("TopBot empirical short-side filter blocks SELL entries after recent backtest underperformance.")
-        if action == "SELL" and context.market_regime == "unknown" and bool(self.params.get("block_short_unknown_regime")):
-            rejections.append("TopBot empirical side filter blocks SELL entries while regime is unknown.")
-        early_minutes = int(self.params["early_session_minutes"])
-        if minutes_after_open is not None and 0 <= minutes_after_open < early_minutes:
-            min_votes = int(self.params["early_session_min_votes"])
-            min_score = float(self.params["early_session_min_score"])
-            min_confidence = float(self.params["early_session_min_confidence"])
-            if aligned_votes < min_votes:
-                rejections.append(
-                    f"Early-session trades require at least {min_votes} aligned votes after recent backtest underperformance."
-                )
-            if score < min_score:
-                rejections.append(
-                    f"Early-session score {score}/100 is below the stricter {int(min_score)}/100 threshold."
-                )
-            if confidence < min_confidence:
-                rejections.append(
-                    f"Early-session confidence {confidence}/100 is below the stricter {int(min_confidence)}/100 threshold."
-                )
-
-        if action == "BUY" and context.market_regime in {"breakout", "trend"}:
-            min_votes = int(self.params["long_continuation_min_votes"])
-            min_score = float(self.params["long_continuation_min_score"])
-            min_confidence = float(self.params["long_continuation_min_confidence"])
-            min_reward_r = float(self.params["long_continuation_min_reward_risk"])
-            if aligned_votes < min_votes:
-                rejections.append(
-                    f"Long {context.market_regime} trades require at least {min_votes} aligned votes after recent underperformance."
-                )
-            if score < min_score:
-                rejections.append(
-                    f"Long {context.market_regime} score {score}/100 is below the stricter {int(min_score)}/100 threshold."
-                )
-            if confidence < min_confidence:
-                rejections.append(
-                    f"Long {context.market_regime} confidence {confidence}/100 is below the stricter {int(min_confidence)}/100 threshold."
-                )
-            if reward_r is not None and reward_r >= float(self.params["minimum_reward_risk"]) and reward_r < min_reward_r:
-                rejections.append(
-                    f"Long {context.market_regime} reward/risk {reward_r or 0:.2f}R is below the stricter {min_reward_r:.2f}R minimum."
-                )
-        return rejections
-
-    def _final_signal(
-        self,
-        *,
-        action: str,
-        reason: str,
-        context: TopBotMarketContext,
-        votes: list[TopBotStrategyVote],
-        risk_state: Mapping[str, Any] | None,
-        rejection_reasons: list[str],
-        selected: TopBotStrategyVote | None,
-        long_score: int,
-        short_score: int,
-        confidence: int,
-        trade_decision: str,
-    ) -> SignalResult:
-        selected_plan = selected.risk_plan if selected is not None else None
-        grade = _topbot_grade(max(long_score, short_score))
-        raw_payload: dict[str, Any] = {
-            "strategy_type": _STRATEGY_TOPBOT_ADAPTIVE,
-            "signal_category": "entry" if action in {"BUY", "SELL"} else "decision",
-            "topbot_adaptive": {
-                "long_score": long_score,
-                "short_score": short_score,
-                "confidence": confidence,
-                "grade": grade,
-                "trade_decision": trade_decision,
-                "decision": "TAKE" if action in {"BUY", "SELL"} else trade_decision,
-                "final_action": action,
-                "direction_bias": _topbot_direction_bias(long_score, short_score),
-                "minimum_score": self.params["minimum_score"],
-                "minimum_confidence": self.params["minimum_confidence"],
-                "minimum_reward_risk": self.params["minimum_reward_risk"],
-                "allow_short_entries": self.params["allow_short_entries"],
-                "market_context": context.to_payload(),
-                "risk_state": dict(risk_state or {}),
-                "selected_strategy": selected.strategy_type if selected is not None else None,
-                "selected_strategy_family": selected.family if selected is not None else None,
-                "rejection_reasons": rejection_reasons,
-                "votes": [_topbot_vote_payload(vote) for vote in votes],
-                "risk_plan": selected_plan,
-            },
-        }
-        if selected_plan is not None:
-            raw_payload.update(
-                {
-                    "entry_price": selected_plan.get("entry_price"),
-                    "stop_loss": selected_plan.get("stop_loss"),
-                    "take_profit": selected_plan.get("take_profit"),
-                    "risk": selected_plan.get("risk"),
-                    "reward_r_multiple": selected_plan.get("reward_r_multiple"),
-                    "invalidation_level": selected_plan.get("stop_loss"),
-                    "trailing_stop": _topbot_trailing_stop_payload(self.params, selected_plan),
-                    "break_even": _topbot_break_even_payload(self.params),
-                    "profit_lock": _topbot_profit_lock_payload(self.params),
-                    "time_stop": _topbot_time_stop_payload(self.params),
-                }
-            )
-        return SignalResult(
-            action=action,
-            reason=reason,
-            candle_timestamp=context.candle_timestamp,
-            price=context.latest_price,
-            raw_payload=raw_payload,
-        )
-
-
-def evaluate_topbot_adaptive_strategy(
-    candles: list[ProjectXMarketCandle],
-    *,
-    strategy_signals: Iterable[tuple[str, SignalResult]],
-    strategy_params: Mapping[str, Any] | None = None,
-    config: BotConfig | None = None,
-    risk_state: Mapping[str, Any] | None = None,
-    now: datetime | None = None,
-) -> SignalResult:
-    return TopBotDecisionEngine(strategy_params).evaluate(
-        candles=candles,
-        strategy_signals=strategy_signals,
-        config=config,
-        risk_state=risk_state,
-        now=now,
-    )
-
-
-def _build_topbot_market_context(
-    candles: list[ProjectXMarketCandle],
-    *,
-    config: BotConfig | None,
-    strategy_params: Mapping[str, Any],
-    now: datetime,
-) -> TopBotMarketContext:
-    warnings: list[str] = []
-    closed_candles = _closed_candles(candles)
-    analysis_candles = closed_candles or sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
-    if not analysis_candles:
-        return TopBotMarketContext(
-            latest_price=None,
-            candle_timestamp=None,
-            trend="neutral",
-            trend_strength=0,
-            volatility_state="normal",
-            volume_state="normal",
-            market_regime="unknown",
-            atr=None,
-            vwap=None,
-            nearest_support=None,
-            nearest_resistance=None,
-            active_fvg_count=0,
-            session_timing="unknown",
-            warnings=["No candles were available."],
-        )
-    if len(analysis_candles) < _MARKET_ANALYSIS_MIN_CANDLES:
-        warnings.append(
-            f"Only {len(analysis_candles)} candle(s) were available; TopBot requires more history for high-confidence reads."
-        )
-
-    latest = analysis_candles[-1]
-    current_price = float(latest.close_price)
-    closes = [float(candle.close_price) for candle in analysis_candles]
-    true_ranges = _analysis_true_ranges(analysis_candles)
-    atr_period = min(14, len(analysis_candles))
-    atr_values = _atr_series(analysis_candles, period=atr_period)
-    latest_atr = _last_defined_float(atr_values)
-    if latest_atr is None:
-        latest_atr = _average(true_ranges[-min(len(true_ranges), atr_period) :])
-    atr_reference = max(latest_atr, _average(true_ranges), abs(current_price) * 0.001, 1e-9)
-    fast_period = min(max(2, int(getattr(config, "fast_period", 9) or 9)), max(2, len(closes) - 1))
-    slow_period = min(max(fast_period + 1, int(getattr(config, "slow_period", 21) or 21)), len(closes))
-    fast_ema = _ema_series(closes, fast_period)
-    slow_ema = _ema_series(closes, slow_period)
-    latest_fast = _last_defined_float(fast_ema) or current_price
-    latest_slow = _last_defined_float(slow_ema) or current_price
-    slow_prior = _prior_defined_float(slow_ema, lookback=5) or latest_slow
-    recent_lookback = min(5, len(closes) - 1)
-    recent_delta = current_price - closes[-(recent_lookback + 1)] if recent_lookback > 0 else 0.0
-    trend, trend_strength = _classify_analysis_trend(
-        ema_gap=latest_fast - latest_slow,
-        ema_slope=latest_slow - slow_prior,
-        recent_delta=recent_delta,
-        atr_reference=atr_reference,
-        recent_lookback=max(1, recent_lookback),
-    )
-    volatility_ratio = _analysis_volatility_ratio(true_ranges, latest_atr)
-    volatility_state = _classify_analysis_volatility(volatility_ratio)
-    volume_ratio = _analysis_volume_ratio(analysis_candles)
-    volume_state = _classify_analysis_volume(volume_ratio)
-    support_levels, resistance_levels = _analysis_support_resistance_levels(analysis_candles, current_price=current_price)
-    indicator_snapshot = build_projectx_style_indicator_snapshot(analysis_candles)
-    vwap = None
-    if isinstance(indicator_snapshot, dict):
-        vwap = _optional_float(indicator_snapshot.get("vwap"))
-    fvg_state = indicator_snapshot.get("fair_value_gaps") if isinstance(indicator_snapshot, dict) else {}
-    active_fvg_count = int(fvg_state.get("active_count") or 0) if isinstance(fvg_state, dict) else 0
-    market_regime = _topbot_market_regime(
-        trend=trend,
-        trend_strength=trend_strength,
-        volatility_state=volatility_state,
-        volume_state=volume_state,
-        active_fvg_count=active_fvg_count,
-    )
-    return TopBotMarketContext(
-        latest_price=current_price,
-        candle_timestamp=_as_utc(latest.candle_timestamp),
-        trend=trend,
-        trend_strength=trend_strength,
-        volatility_state=volatility_state,
-        volume_state=volume_state,
-        market_regime=market_regime,
-        atr=latest_atr,
-        vwap=vwap,
-        nearest_support=support_levels[0] if support_levels else None,
-        nearest_resistance=resistance_levels[0] if resistance_levels else None,
-        active_fvg_count=active_fvg_count,
-        session_timing=_topbot_session_timing(_as_utc(latest.candle_timestamp) or now),
-        warnings=warnings,
-    )
-
-
-def _normalize_topbot_adaptive_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
-    raw_params = params if isinstance(params, Mapping) else {}
-    source_values = raw_params.get("source_strategies")
-    source_strategies: list[str] = []
-    if isinstance(source_values, list):
-        for value in source_values:
-            try:
-                strategy_type = _validate_strategy_type(value)
-            except ValueError:
-                continue
-            if strategy_type != _STRATEGY_TOPBOT_ADAPTIVE and strategy_type not in source_strategies:
-                source_strategies.append(strategy_type)
-    if not source_strategies:
-        source_strategies = list(_TOPBOT_ADAPTIVE_SOURCE_STRATEGIES)
-    trailing_stop_mode = str(raw_params.get("trailing_stop_mode", _TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])).strip()
-    if trailing_stop_mode not in _MACD_SUPPORT_RESISTANCE_TRAILING_STOP_MODES:
-        trailing_stop_mode = str(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
-    return {
-        "minimum_score": _bounded_float_param(
-            raw_params,
-            "minimum_score",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_score"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "minimum_confidence": _bounded_float_param(
-            raw_params,
-            "minimum_confidence",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_confidence"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "minimum_reward_risk": _bounded_float_param(
-            raw_params,
-            "minimum_reward_risk",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_reward_risk"]),
-            minimum=0.1,
-            maximum=20,
-        ),
-        "minimum_directional_votes": _bounded_int_param(
-            raw_params,
-            "minimum_directional_votes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["minimum_directional_votes"]),
-            minimum=1,
-            maximum=20,
-        ),
-        "max_opposing_votes": _bounded_int_param(
-            raw_params,
-            "max_opposing_votes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["max_opposing_votes"]),
-            minimum=0,
-            maximum=20,
-        ),
-        "enable_trailing_stop": bool(raw_params.get("enable_trailing_stop", _TOPBOT_ADAPTIVE_DEFAULTS["enable_trailing_stop"])),
-        "trailing_stop_mode": trailing_stop_mode,
-        "trailing_atr_multiplier": _bounded_float_param(
-            raw_params,
-            "trailing_atr_multiplier",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_atr_multiplier"]),
-            minimum=0.1,
-            maximum=20,
-        ),
-        "move_to_breakeven_at_r": _bounded_float_param(
-            raw_params,
-            "move_to_breakeven_at_r",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["move_to_breakeven_at_r"]),
-            minimum=0,
-            maximum=10,
-        ),
-        "profit_lock_at_r": _bounded_float_param(
-            raw_params,
-            "profit_lock_at_r",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["profit_lock_at_r"]),
-            minimum=0,
-            maximum=20,
-        ),
-        "profit_lock_r": _bounded_float_param(
-            raw_params,
-            "profit_lock_r",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["profit_lock_r"]),
-            minimum=0,
-            maximum=10,
-        ),
-        "time_stop_bars": _bounded_int_param(
-            raw_params,
-            "time_stop_bars",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["time_stop_bars"]),
-            minimum=0,
-            maximum=200,
-        ),
-        "block_expired_contracts": bool(raw_params.get("block_expired_contracts", _TOPBOT_ADAPTIVE_DEFAULTS["block_expired_contracts"])),
-        "enable_empirical_filters": bool(raw_params.get("enable_empirical_filters", _TOPBOT_ADAPTIVE_DEFAULTS["enable_empirical_filters"])),
-        "block_outside_preferred_session": bool(
-            raw_params.get("block_outside_preferred_session", _TOPBOT_ADAPTIVE_DEFAULTS["block_outside_preferred_session"])
-        ),
-        "preferred_session_start_minutes": _bounded_int_param(
-            raw_params,
-            "preferred_session_start_minutes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["preferred_session_start_minutes"]),
-            minimum=0,
-            maximum=390,
-        ),
-        "preferred_session_end_minutes": _bounded_int_param(
-            raw_params,
-            "preferred_session_end_minutes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["preferred_session_end_minutes"]),
-            minimum=0,
-            maximum=390,
-        ),
-        "allow_short_entries": bool(raw_params.get("allow_short_entries", _TOPBOT_ADAPTIVE_DEFAULTS["allow_short_entries"])),
-        "block_short_unknown_regime": bool(
-            raw_params.get("block_short_unknown_regime", _TOPBOT_ADAPTIVE_DEFAULTS["block_short_unknown_regime"])
-        ),
-        "early_session_minutes": _bounded_int_param(
-            raw_params,
-            "early_session_minutes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_minutes"]),
-            minimum=0,
-            maximum=180,
-        ),
-        "early_session_min_score": _bounded_float_param(
-            raw_params,
-            "early_session_min_score",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_score"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "early_session_min_confidence": _bounded_float_param(
-            raw_params,
-            "early_session_min_confidence",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_confidence"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "early_session_min_votes": _bounded_int_param(
-            raw_params,
-            "early_session_min_votes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["early_session_min_votes"]),
-            minimum=1,
-            maximum=20,
-        ),
-        "long_continuation_min_score": _bounded_float_param(
-            raw_params,
-            "long_continuation_min_score",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_score"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "long_continuation_min_confidence": _bounded_float_param(
-            raw_params,
-            "long_continuation_min_confidence",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_confidence"]),
-            minimum=1,
-            maximum=100,
-        ),
-        "long_continuation_min_votes": _bounded_int_param(
-            raw_params,
-            "long_continuation_min_votes",
-            int(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_votes"]),
-            minimum=1,
-            maximum=20,
-        ),
-        "long_continuation_min_reward_risk": _bounded_float_param(
-            raw_params,
-            "long_continuation_min_reward_risk",
-            float(_TOPBOT_ADAPTIVE_DEFAULTS["long_continuation_min_reward_risk"]),
-            minimum=0.1,
-            maximum=20,
-        ),
-        "source_strategies": source_strategies,
-        "source_strategy_params": raw_params.get("source_strategy_params") if isinstance(raw_params.get("source_strategy_params"), dict) else {},
-    }
-
-
-def _topbot_extract_risk_plan(signal: SignalResult) -> dict[str, Any] | None:
-    if signal.action not in {"BUY", "SELL"} or not isinstance(signal.raw_payload, dict):
-        return None
-    payload = signal.raw_payload
-    entry_price = _optional_float(payload.get("entry_price")) or _optional_float(signal.price)
-    stop_loss = _optional_float(payload.get("stop_loss"))
-    take_profit = (
-        _optional_float(payload.get("take_profit"))
-        or _optional_float(payload.get("final_take_profit"))
-        or _optional_float(payload.get("partial_take_profit"))
-    )
-    if entry_price is None or stop_loss is None or take_profit is None:
-        return None
-    risk = abs(float(entry_price) - float(stop_loss))
-    reward = abs(float(take_profit) - float(entry_price))
-    reward_r = reward / risk if risk > 1e-9 else None
-    return {
-        "action": signal.action,
-        "entry_price": _round_analysis_float(entry_price),
-        "stop_loss": _round_analysis_float(stop_loss),
-        "take_profit": _round_analysis_float(take_profit),
-        "risk": _round_analysis_float(risk),
-        "reward": _round_analysis_float(reward),
-        "reward_r_multiple": _round_analysis_float(reward_r),
-        "source_reason": signal.reason,
-    }
-
-
-def _topbot_key_levels(payload: Mapping[str, Any]) -> dict[str, Any]:
-    keys = [
-        "trigger_level",
-        "target_level",
-        "nearest_support",
-        "nearest_resistance",
-        "session_vwap",
-        "middle_band",
-        "upper_band",
-        "lower_band",
-        "opening_range",
-        "sweep_level",
-        "fair_value_gap",
-    ]
-    return {key: payload[key] for key in keys if key in payload}
-
-
-def _topbot_vote_payload(vote: TopBotStrategyVote) -> dict[str, Any]:
-    return {
-        "strategy_type": vote.strategy_type,
-        "action": vote.action,
-        "family": vote.family,
-        "weight": round(vote.weight, 3),
-        "score": round(vote.score, 2),
-        "reason": vote.reason,
-        "risk_plan": vote.risk_plan,
-        "key_levels": vote.key_levels,
-    }
-
-
-def _topbot_strategy_family(strategy_type: str) -> str:
-    if strategy_type in _TOPBOT_TREND_STRATEGIES:
-        return "trend"
-    if strategy_type in _TOPBOT_BREAKOUT_STRATEGIES:
-        return "breakout"
-    if strategy_type in _TOPBOT_MEAN_REVERSION_STRATEGIES:
-        return "mean_reversion"
-    if strategy_type in _TOPBOT_LIQUIDITY_STRATEGIES:
-        return "liquidity"
-    return "other"
-
-
-def _topbot_strategy_weight(*, strategy_type: str, family: str, context: TopBotMarketContext) -> float:
-    weight = 1.0
-    if context.market_regime == "trend":
-        if family == "trend":
-            weight += 0.25
-        elif family == "mean_reversion":
-            weight -= 0.25
-    elif context.market_regime in {"range", "chop"}:
-        if family == "mean_reversion":
-            weight += 0.2
-        elif family in {"breakout", "trend"}:
-            weight -= 0.2
-    elif context.market_regime == "breakout":
-        if family in {"breakout", "liquidity"}:
-            weight += 0.2
-        elif family == "mean_reversion":
-            weight -= 0.15
-    if context.volume_state == "low" and family in {"breakout", "trend"}:
-        weight -= 0.1
-    if strategy_type in {_STRATEGY_FVG_SWEEP_MSS, _STRATEGY_LIQUIDITY_SWEEP_RETEST} and context.active_fvg_count > 0:
-        weight += 0.1
-    return max(0.35, min(1.5, weight))
-
-
-def _topbot_context_score(action: str, context: TopBotMarketContext) -> float:
-    score = 8.0
-    if _topbot_action_aligns_with_trend(action, context):
-        score += 12.0 + min(8.0, context.trend_strength / 12.5)
-    elif context.trend in {"bullish", "bearish"}:
-        score -= 8.0
-    if context.volume_state == "elevated":
-        score += 6.0
-    elif context.volume_state == "low":
-        score -= 8.0
-    if context.volatility_state == "normal":
-        score += 4.0
-    elif context.volatility_state == "elevated":
-        score += 1.0
-    elif context.volatility_state == "low":
-        score -= 4.0
-    elif context.volatility_state == "extreme":
-        score -= 12.0
-    if context.vwap is not None and context.latest_price is not None:
-        if action == "BUY":
-            score += 5.0 if context.latest_price >= context.vwap else -4.0
-        else:
-            score += 5.0 if context.latest_price <= context.vwap else -4.0
-    if context.atr is not None and context.atr > 0 and context.latest_price is not None:
-        if action == "BUY" and context.nearest_resistance is not None:
-            resistance_distance = context.nearest_resistance - context.latest_price
-            if 0 <= resistance_distance <= context.atr:
-                score -= 7.0
-        if action == "BUY" and context.nearest_support is not None:
-            support_distance = context.latest_price - context.nearest_support
-            if 0 <= support_distance <= context.atr * 1.5:
-                score += 4.0
-        if action == "SELL" and context.nearest_support is not None:
-            support_distance = context.latest_price - context.nearest_support
-            if 0 <= support_distance <= context.atr:
-                score -= 7.0
-        if action == "SELL" and context.nearest_resistance is not None:
-            resistance_distance = context.nearest_resistance - context.latest_price
-            if 0 <= resistance_distance <= context.atr * 1.5:
-                score += 4.0
-    if action == "BUY" and context.market_regime in {"breakout", "trend"}:
-        score -= 6.0
-    elif action == "SELL" and context.market_regime == "trend":
-        score += 5.0
-    minutes_after_open = _topbot_minutes_after_regular_open(context)
-    if minutes_after_open is not None and 0 <= minutes_after_open < 60:
-        score -= 7.0
-    elif context.session_timing in {"ny_am", "power_hour"}:
-        score += 3.0
-    elif context.session_timing in {"lunch", "overnight"}:
-        score -= 4.0
-    return max(-20.0, min(40.0, score))
-
-
-def _topbot_action_aligns_with_trend(action: str, context: TopBotMarketContext) -> bool:
-    return (action == "BUY" and context.trend == "bullish") or (action == "SELL" and context.trend == "bearish")
-
-
-def _topbot_market_regime(
-    *,
-    trend: str,
-    trend_strength: int,
-    volatility_state: str,
-    volume_state: str,
-    active_fvg_count: int,
-) -> str:
-    if volatility_state == "extreme":
-        return "breakout" if volume_state == "elevated" else "chop"
-    if trend in {"bullish", "bearish"} and trend_strength >= 60:
-        return "trend"
-    if volume_state == "elevated" and active_fvg_count > 0:
-        return "breakout"
-    if trend == "neutral" and volatility_state in {"low", "normal"}:
-        return "range"
-    return "unknown"
-
-
-def _topbot_session_timing(timestamp: datetime) -> str:
-    local_time = _as_utc(timestamp).astimezone(TRADING_TZ).time()
-    if local_time < time(hour=9, minute=30) or local_time >= time(hour=16):
-        return "overnight"
-    if local_time < time(hour=10, minute=0):
-        return "open"
-    if local_time < time(hour=11, minute=30):
-        return "ny_am"
-    if local_time < time(hour=13, minute=30):
-        return "lunch"
-    if local_time >= time(hour=15, minute=0):
-        return "power_hour"
-    return "ny_pm"
-
-
-def _topbot_minutes_after_regular_open(context: TopBotMarketContext) -> int | None:
-    if context.candle_timestamp is None:
-        return None
-    local_timestamp = _as_utc(context.candle_timestamp).astimezone(TRADING_TZ)
-    session_open = local_timestamp.replace(hour=9, minute=30, second=0, microsecond=0)
-    return int((local_timestamp - session_open).total_seconds() // 60)
-
-
-def _topbot_session_minute_label(minutes_after_open: int) -> str:
-    total_minutes = 9 * 60 + 30 + int(minutes_after_open)
-    hour = (total_minutes // 60) % 24
-    minute = total_minutes % 60
-    suffix = "AM" if hour < 12 else "PM"
-    display_hour = hour % 12 or 12
-    return f"{display_hour}:{minute:02d} {suffix}"
-
-
-def _topbot_confidence(
-    *,
-    score: int,
-    opposing_score: int,
-    aligned_votes: int,
-    opposing_votes: int,
-    required_votes: int,
-    action: str,
-    context: TopBotMarketContext,
-) -> int:
-    margin = max(0, int(score) - int(opposing_score))
-    vote_component = min(28.0, max(0, aligned_votes) / max(1, required_votes) * 22.0)
-    conflict_penalty = min(20.0, opposing_votes * 7.0)
-    reliability_penalty = 0.0
-    minutes_after_open = _topbot_minutes_after_regular_open(context)
-    if minutes_after_open is not None and 0 <= minutes_after_open < 60:
-        reliability_penalty += 10.0
-    if action == "BUY" and context.market_regime in {"breakout", "trend"}:
-        reliability_penalty += 10.0
-    if aligned_votes <= required_votes:
-        reliability_penalty += 4.0
-    confidence = min(100.0, score * 0.55 + margin * 0.45 + vote_component - conflict_penalty - reliability_penalty)
-    return int(round(max(0.0, confidence)))
-
-
-def _topbot_grade(score: int) -> str:
-    if score >= 85:
-        return "A"
-    if score >= 75:
-        return "B"
-    if score >= 65:
-        return "C"
-    if score >= 50:
-        return "D"
-    return "F"
-
-
-def _topbot_trade_decision(*, score: int, confidence: int, rejection_reasons: list[str]) -> str:
-    if rejection_reasons:
-        return "AVOID" if score < 50 else "WAIT"
-    if score >= 70 and confidence >= 55:
-        return "TAKE"
-    if score >= 50:
-        return "WAIT"
-    return "AVOID"
-
-
-def _topbot_direction_bias(long_score: int, short_score: int) -> str:
-    if abs(long_score - short_score) < 8:
-        return "neutral"
-    return "long" if long_score > short_score else "short"
-
-
-def _topbot_runtime_risk_rejections(risk_state: Mapping[str, Any] | None) -> list[str]:
-    state = dict(risk_state or {})
-    rejections: list[str] = []
-    if bool(state.get("daily_loss_reached")):
-        rejections.append("Daily loss cap is reached.")
-    if bool(state.get("max_trades_reached")):
-        rejections.append("Maximum trades per day is reached.")
-    if bool(state.get("cooldown_active")):
-        rejections.append("Bot cooldown is active after a recent trade.")
-    return rejections
-
-
-def _topbot_trailing_stop_payload(params: Mapping[str, Any], risk_plan: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "enabled": bool(params.get("enable_trailing_stop")),
-        "mode": params.get("trailing_stop_mode"),
-        "atr_multiplier": params.get("trailing_atr_multiplier"),
-        "initial_stop": risk_plan.get("stop_loss"),
-    }
-
-
-def _topbot_break_even_payload(params: Mapping[str, Any]) -> dict[str, Any]:
-    trigger = _optional_float(params.get("move_to_breakeven_at_r"))
-    return {
-        "enabled": trigger is not None and trigger > 0,
-        "trigger_r": trigger,
-    }
-
-
-def _topbot_profit_lock_payload(params: Mapping[str, Any]) -> dict[str, Any]:
-    trigger = _optional_float(params.get("profit_lock_at_r"))
-    lock_r = _optional_float(params.get("profit_lock_r"))
-    return {
-        "enabled": trigger is not None and trigger > 0 and lock_r is not None and lock_r > 0,
-        "trigger_r": trigger,
-        "lock_r": lock_r,
-    }
-
-
-def _topbot_time_stop_payload(params: Mapping[str, Any]) -> dict[str, Any]:
-    bars = int(params.get("time_stop_bars") or 0)
-    return {
-        "enabled": bars > 0,
-        "bars": bars,
-        "action": "flag_or_exit_stale_trade",
-    }
-
-
-def _topbot_max_staleness_seconds(*, config: BotConfig | None, strategy_params: Mapping[str, Any]) -> float:
-    param_value = _optional_float(strategy_params.get("max_data_staleness_seconds"))
-    if param_value is not None and param_value > 0:
-        return param_value
-    if config is not None:
-        return float(config.max_data_staleness_seconds)
-    return 600.0
-
-
-def _topbot_contract_expiration_warning(*, config: BotConfig | None, now: datetime) -> str | None:
-    if config is None:
-        return None
-    contract_text = str(config.contract_id or config.symbol or "")
-    match = re.search(r"\.([FGHJKMNQUVXZ])(\d{2})(?:\b|$)", contract_text.upper())
-    if not match:
-        return None
-    month_code, year_suffix = match.groups()
-    month_by_code = {
-        "F": 1,
-        "G": 2,
-        "H": 3,
-        "J": 4,
-        "K": 5,
-        "M": 6,
-        "N": 7,
-        "Q": 8,
-        "U": 9,
-        "V": 10,
-        "X": 11,
-        "Z": 12,
-    }
-    contract_month = month_by_code.get(month_code)
-    if contract_month is None:
-        return None
-    contract_year = 2000 + int(year_suffix)
-    next_month_year = contract_year + (1 if contract_month == 12 else 0)
-    next_month = 1 if contract_month == 12 else contract_month + 1
-    expiry_guard = datetime(next_month_year, next_month, 1, tzinfo=timezone.utc)
-    if _as_utc(now) >= expiry_guard:
-        return f"contract {contract_text} appears expired after {contract_year:04d}-{contract_month:02d}."
-    return None
+class BotRunEvaluationError(RuntimeError):
+    """Carries a durable failed-run audit that the API layer must commit."""
+
+    def __init__(self, *, cause: BaseException, run: BotRun, correlation_id: str):
+        super().__init__(sanitize_error(cause))
+        self.cause = cause
+        self.run = run
+        self.correlation_id = correlation_id
 
 
 def list_bot_configs(
@@ -1856,139 +643,6 @@ def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
     db.flush()
 
 
-def default_bot_runtime_poll_interval_seconds(config: BotConfig) -> int:
-    try:
-        interval_seconds = int(
-            _market_candle_interval(
-                unit=str(config.timeframe_unit),
-                unit_number=int(config.timeframe_unit_number),
-            ).total_seconds()
-        )
-    except (TypeError, ValueError):
-        interval_seconds = 5 * 60
-    return max(_BOT_RUNTIME_MIN_POLL_SECONDS, min(_BOT_RUNTIME_MAX_POLL_SECONDS, interval_seconds))
-
-
-def bot_run_runtime_state(run: BotRun) -> dict[str, Any]:
-    return dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
-
-
-def bot_run_is_supervised_dry_run(run: BotRun) -> bool:
-    state = bot_run_runtime_state(run)
-    return bool(run.dry_run) and state.get("runtime_mode") == "supervised_dry_run"
-
-
-def mark_bot_run_runtime_evaluated(run: BotRun, *, evaluated_at: datetime | None = None) -> None:
-    state = bot_run_runtime_state(run)
-    interval_seconds = _runtime_poll_interval_seconds_from_state(state)
-    now = evaluated_at or datetime.now(timezone.utc)
-    state["last_evaluation_at"] = _as_utc(now).isoformat()
-    state["next_evaluation_at"] = (_as_utc(now) + timedelta(seconds=interval_seconds)).isoformat()
-    state["consecutive_errors"] = 0
-    state.pop("last_error", None)
-    state.pop("last_error_at", None)
-    state.pop("runtime_status", None)
-    run.raw_state = state
-
-
-def mark_bot_run_runtime_waiting(run: BotRun, *, next_evaluation_at: datetime, reason: str) -> None:
-    state = bot_run_runtime_state(run)
-    state["next_evaluation_at"] = _as_utc(next_evaluation_at).isoformat()
-    state["runtime_status"] = reason
-    run.raw_state = state
-
-
-def mark_bot_run_runtime_error(
-    run: BotRun,
-    *,
-    error: str,
-    failed_at: datetime | None = None,
-) -> None:
-    state = bot_run_runtime_state(run)
-    now = _as_utc(failed_at or datetime.now(timezone.utc))
-    interval_seconds = _runtime_poll_interval_seconds_from_state(state)
-    previous_errors = _runtime_int_state_value(state, "consecutive_errors", default=0)
-    max_errors = _runtime_int_state_value(
-        state,
-        "max_consecutive_errors",
-        default=_BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS,
-    )
-    consecutive_errors = previous_errors + 1
-    state["consecutive_errors"] = consecutive_errors
-    state["last_error"] = str(error)[:500]
-    state["last_error_at"] = now.isoformat()
-
-    if consecutive_errors >= max(1, max_errors):
-        run.status = "error"
-        run.stopped_at = now
-        run.stop_reason = "supervised_runtime_errors"
-        state["runtime_status"] = "error"
-    else:
-        backoff_seconds = min(interval_seconds, max(30, consecutive_errors * 60))
-        state["next_evaluation_at"] = (now + timedelta(seconds=backoff_seconds)).isoformat()
-        state["runtime_status"] = "retry_scheduled"
-
-    run.raw_state = state
-
-
-def _bot_run_start_raw_state(
-    *,
-    config: BotConfig,
-    now: datetime,
-    effective_dry_run: bool,
-    continuous: bool,
-    poll_interval_seconds: int | None,
-    stop_at_session_end: bool,
-) -> dict[str, Any]:
-    if not effective_dry_run or not continuous:
-        return {"source": "manual_start", "runtime_mode": "one_shot"}
-
-    default_interval = default_bot_runtime_poll_interval_seconds(config)
-    interval_seconds = _bounded_runtime_poll_interval_seconds(
-        poll_interval_seconds,
-        default=default_interval,
-    )
-    next_evaluation_at = _as_utc(now) + timedelta(seconds=interval_seconds)
-    return {
-        "source": "manual_start",
-        "runtime_mode": "supervised_dry_run",
-        "poll_interval_seconds": interval_seconds,
-        "stop_at_session_end": bool(stop_at_session_end),
-        "max_consecutive_errors": _BOT_RUNTIME_MAX_CONSECUTIVE_ERRORS,
-        "consecutive_errors": 0,
-        "last_evaluation_at": None,
-        "next_evaluation_at": next_evaluation_at.isoformat(),
-    }
-
-
-def _runtime_poll_interval_seconds_from_state(state: Mapping[str, Any]) -> int:
-    try:
-        return _bounded_runtime_poll_interval_seconds(
-            state.get("poll_interval_seconds"),
-            default=5 * 60,
-        )
-    except ValueError:
-        return 5 * 60
-
-
-def _bounded_runtime_poll_interval_seconds(value: Any, *, default: int) -> int:
-    if value is None:
-        interval_seconds = int(default)
-    else:
-        try:
-            interval_seconds = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("poll_interval_seconds must be an integer") from exc
-    return max(_BOT_RUNTIME_MIN_POLL_SECONDS, min(_BOT_RUNTIME_MAX_POLL_SECONDS, interval_seconds))
-
-
-def _runtime_int_state_value(state: Mapping[str, Any], key: str, *, default: int) -> int:
-    try:
-        return int(state.get(key, default))
-    except (TypeError, ValueError):
-        return default
-
-
 def start_bot_run(
     db: Session,
     *,
@@ -1997,16 +651,14 @@ def start_bot_run(
     client: ProjectXClient,
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
-    continuous: bool = True,
-    poll_interval_seconds: int | None = None,
-    stop_at_session_end: bool = True,
 ) -> EvaluationResult:
+    correlation_id = new_correlation_id()
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
     now = datetime.now(timezone.utc)
     config.enabled = True
     config.updated_at = now
-    effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     _stop_running_bot_runs(
         db,
         user_id=user_id,
@@ -2014,39 +666,93 @@ def start_bot_run(
         reason="superseded_by_manual_start",
         now=now,
     )
+    # Release the partial active-run uniqueness slot before inserting the replacement.
+    db.flush()
     run = BotRun(
         user_id=user_id,
         bot_config_id=int(config.id),
         account_id=int(config.account_id),
         status="running",
-        dry_run=effective_dry_run,
+        dry_run=resolved_dry_run,
         started_at=now,
         last_heartbeat_at=now,
-        raw_state=_bot_run_start_raw_state(
-            config=config,
-            now=now,
-            effective_dry_run=effective_dry_run,
-            continuous=continuous,
-            poll_interval_seconds=poll_interval_seconds,
-            stop_at_session_end=stop_at_session_end,
-        ),
+        raw_state={
+            "source": "manual_start",
+            "phase": "evaluating",
+            "correlation_id": correlation_id,
+            "execution_mode": "dry_run" if resolved_dry_run else "live",
+        },
     )
-    db.add(run)
-    db.flush()
-    result = evaluate_bot_config(
-        db,
-        user_id=user_id,
-        config=config,
-        account=account,
-        client=client,
-        run=run,
-        dry_run=effective_dry_run,
-        confirm_live_order_routing=confirm_live_order_routing,
-    )
-    if run.status == "running" and bot_run_is_supervised_dry_run(run):
-        mark_bot_run_runtime_evaluated(run, evaluated_at=datetime.now(timezone.utc))
+    try:
+        with db.begin_nested():
+            db.add(run)
+            db.flush()
+    except IntegrityError as exc:
+        active_run = (
+            db.query(BotRun.id)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.bot_config_id == int(config.id))
+            .filter(BotRun.status == "running")
+            .first()
+        )
+        if active_run is None:
+            raise
+        raise ValueError("bot_run_start_conflict: another request already started this bot") from exc
+    try:
+        if resolved_dry_run:
+            # Provider/data failures roll back evaluation writes while preserving the
+            # outer run row so it can be transitioned to a durable error audit.
+            with db.begin_nested():
+                result = evaluate_bot_config(
+                    db,
+                    user_id=user_id,
+                    config=config,
+                    account=account,
+                    client=client,
+                    run=run,
+                    dry_run=True,
+                    confirm_live_order_routing=confirm_live_order_routing,
+                    correlation_id=correlation_id,
+                )
+        else:
+            result = evaluate_bot_config(
+                db,
+                user_id=user_id,
+                config=config,
+                account=account,
+                client=client,
+                run=run,
+                dry_run=False,
+                confirm_live_order_routing=confirm_live_order_routing,
+                correlation_id=correlation_id,
+            )
+        return result
+    except Exception as exc:
+        if str(run.status) == "running":
+            transition_bot_run(
+                run,
+                "error",
+                reason="evaluation_failed",
+                error=exc,
+            )
+        config.enabled = False
+        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+        state["phase"] = "error"
+        run.raw_state = state
         db.flush()
-    return result
+        log_bot_event(
+            logger,
+            "bot_evaluation_failed",
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id),
+            account_id=int(config.account_id),
+            correlation_id=correlation_id,
+            execution_mode="dry_run" if resolved_dry_run else "live",
+            evaluation_status="error",
+            error_type=type(exc).__name__,
+        )
+        raise BotRunEvaluationError(cause=exc, run=run, correlation_id=correlation_id) from exc
 
 
 def evaluate_bot_config(
@@ -2059,19 +765,88 @@ def evaluate_bot_config(
     run: BotRun | None = None,
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
+    correlation_id: str | None = None,
 ) -> EvaluationResult:
-    resolved_account = account or _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
-    effective_dry_run = bool(dry_run) if dry_run is not None else config.execution_mode != "live"
-    candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
-    analysis_candles = _market_analysis_candles_for_evaluation(
+    try:
+        return _evaluate_bot_config_impl(
+            db,
+            user_id=user_id,
+            config=config,
+            account=account,
+            client=client,
+            run=run,
+            dry_run=dry_run,
+            confirm_live_order_routing=confirm_live_order_routing,
+            correlation_id=correlation_id,
+        )
+    except Exception as exc:
+        if run is not None and db.is_active and str(run.status) == "running":
+            transition_bot_run(run, "error", reason="evaluation_failed", error=exc)
+            config.enabled = False
+            db.flush()
+        raise
+
+
+def _evaluate_bot_config_impl(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    account: Account | None,
+    client: ProjectXClient,
+    run: BotRun | None = None,
+    dry_run: bool | None = None,
+    confirm_live_order_routing: bool = False,
+    correlation_id: str | None = None,
+) -> EvaluationResult:
+    del account  # Ownership is always re-read under the caller's user scope.
+    correlation_id = correlation_id or new_correlation_id()
+    config = _require_bot_config(
         db,
         user_id=user_id,
-        config=config,
-        client=client,
-        strategy_candles=candles,
+        bot_config_id=int(config.id),
+        lock_for_update=True,
     )
-    analysis = build_bot_market_analysis(candles=analysis_candles, config=config, signal=signal)
-    trade_evaluation = build_signal_trade_evaluation(candles=candles, config=config, signal=signal, analysis=analysis)
+    resolved_account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
+    execution_mode = "dry_run" if resolved_dry_run else "live"
+    if run is not None:
+        run = _require_running_bot_run(
+            db,
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id),
+            lock_for_update=True,
+        )
+
+    candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
+    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    instrument_spec = None
+    if signal.action in {"BUY", "SELL"}:
+        instrument_specs = load_instrument_specs(db)
+        instrument_spec = next(
+            (
+                instrument_specs[key]
+                for key in [normalize_symbol_key(config.symbol), normalize_symbol_key(config.contract_id)]
+                if key is not None and key in instrument_specs
+            ),
+            None,
+        )
+    evaluation_day_pnl = (
+        _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+        if signal.action in {"BUY", "SELL"}
+        else None
+    )
+    trade_evaluation = build_signal_trade_evaluation(
+        candles=candles,
+        config=config,
+        signal=signal,
+        analysis=analysis,
+        current_day_pnl=evaluation_day_pnl,
+        tick_size=float(instrument_spec.tick_size) if instrument_spec is not None else None,
+        tick_value=float(instrument_spec.tick_value) if instrument_spec is not None else None,
+        point_value=instrument_spec.point_value if instrument_spec is not None else None,
+    )
     if trade_evaluation is not None:
         analysis["trade_evaluation"] = trade_evaluation
     signal_order_size = _signal_order_size(config=config, signal=signal)
@@ -2080,6 +855,22 @@ def evaluate_bot_config(
     latest_candle = candles[-1] if candles else None
     execution_contract_id = _execution_contract_id(config, latest_candle)
     execution_symbol = _execution_symbol(config, latest_candle)
+    actionable_candle_timestamp = _actionable_candle_timestamp(
+        signal=signal,
+        candles=candles,
+        latest_candle=latest_candle,
+    )
+    idempotency_key = (
+        build_action_idempotency_key(
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            candle_timestamp=actionable_candle_timestamp,
+            action=signal.action,
+            execution_mode=execution_mode,
+        )
+        if signal.action in {"BUY", "SELL"} and actionable_candle_timestamp is not None
+        else None
+    )
     decision = BotDecision(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -2087,40 +878,73 @@ def evaluate_bot_config(
         account_id=int(config.account_id),
         contract_id=execution_contract_id,
         symbol=execution_symbol,
-        decision_type="risk_reject" if signal.action == "RISK_REJECT" else "signal",
+        decision_type="signal",
         action=signal.action,
         reason=signal.reason,
-        candle_timestamp=signal.candle_timestamp,
+        candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
         price=signal.price,
         quantity=signal_order_size if signal.action in {"BUY", "SELL"} else None,
-        raw_payload=signal.raw_payload,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        raw_payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else signal.raw_payload,
     )
     db.add(decision)
     db.flush()
 
     risk_events: list[BotRiskEvent] = []
     order_attempt: BotOrderAttempt | None = None
+    duplicate_of_order_attempt_id: int | None = None
+    evaluation_status: EvaluationStatus = "held" if signal.action == "HOLD" else "evaluated"
     if signal.action in {"BUY", "SELL"}:
-        blocks = evaluate_risk_gates(
+        existing_attempt = _find_order_attempt_by_idempotency_key(
             db,
             user_id=user_id,
-            config=config,
-            account=resolved_account,
-            latest_candle=latest_candle,
-            contract_id=execution_contract_id,
-            symbol=execution_symbol,
-            action=signal.action,
-            requested_order_size=signal_order_size,
-            current_position_qty=current_position_qty,
-            target_position_qty=target_position_qty,
-            signal_price=signal.price,
-            signal_payload=signal.raw_payload if isinstance(signal.raw_payload, Mapping) else None,
-            dry_run=effective_dry_run,
-            confirm_live_order_routing=confirm_live_order_routing,
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
         )
-        if blocks:
+        if existing_attempt is not None:
+            duplicate_of_order_attempt_id = int(existing_attempt.id)
+            _mark_duplicate_decision(
+                decision,
+                existing_attempt=existing_attempt,
+                idempotency_key=idempotency_key,
+            )
+            evaluation_status = "duplicate_skipped"
+        else:
+            blocks = evaluate_risk_gates(
+                db,
+                user_id=user_id,
+                config=config,
+                account=resolved_account,
+                latest_candle=latest_candle,
+                contract_id=execution_contract_id,
+                symbol=execution_symbol,
+                action=signal.action,
+                requested_order_size=signal_order_size,
+                current_position_qty=current_position_qty,
+                target_position_qty=target_position_qty,
+                dry_run=resolved_dry_run,
+                confirm_live_order_routing=confirm_live_order_routing,
+            )
+            if idempotency_key is None:
+                blocks.append(
+                    RiskBlock(
+                        code="missing_actionable_candle_timestamp",
+                        message="Actionable signals require a closed candle timestamp.",
+                        severity="critical",
+                    )
+                )
+
+        if existing_attempt is None and blocks:
             risk_events = [
-                _create_risk_event(db, user_id=user_id, config=config, run=run, block=block)
+                _create_risk_event(
+                    db,
+                    user_id=user_id,
+                    config=config,
+                    run=run,
+                    block=block,
+                    correlation_id=correlation_id,
+                )
                 for block in blocks
             ]
             db.add(
@@ -2134,18 +958,20 @@ def evaluate_bot_config(
                     decision_type="risk_reject",
                     action=signal.action,
                     reason="; ".join(block.message for block in blocks),
-                    candle_timestamp=signal.candle_timestamp,
+                    candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
                     price=signal.price,
                     quantity=signal_order_size,
+                    correlation_id=correlation_id,
+                    idempotency_key=idempotency_key,
                     raw_payload={"risk_blocks": [block.__dict__ for block in blocks]},
                 )
             )
-            if run is not None and not (effective_dry_run and bot_run_is_supervised_dry_run(run)):
-                run.status = "blocked"
-                run.stopped_at = datetime.now(timezone.utc)
-                run.stop_reason = "risk_gate_blocked_order"
-        else:
-            order_attempt = _create_order_attempt(
+            evaluation_status = "risk_blocked"
+            if run is not None:
+                transition_bot_run(run, "blocked", reason="risk_gate_blocked_order")
+                config.enabled = False
+        elif existing_attempt is None:
+            order_attempt, raced_attempt = _claim_order_attempt(
                 db,
                 user_id=user_id,
                 config=config,
@@ -2154,21 +980,114 @@ def evaluate_bot_config(
                 contract_id=execution_contract_id,
                 action=signal.action,
                 order_size=signal_order_size,
+                execution_mode=execution_mode,
+                correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
             )
-            db.flush()
-            if effective_dry_run:
+            if raced_attempt is not None:
+                duplicate_of_order_attempt_id = int(raced_attempt.id)
+                _mark_duplicate_decision(
+                    decision,
+                    existing_attempt=raced_attempt,
+                    idempotency_key=idempotency_key,
+                )
+                evaluation_status = "duplicate_skipped"
+            elif order_attempt is not None and resolved_dry_run:
                 order_attempt.status = "dry_run"
                 order_attempt.raw_response = {"dry_run": True, "message": "Order not sent to ProjectX."}
-            else:
+                evaluation_status = "dry_run_attempt"
+            elif order_attempt is not None:
                 # Persist the audit row before any possible external order submission.
+                order_attempt_id = int(order_attempt.id)
+                run_id = int(run.id) if run is not None else None
                 db.commit()
-                _submit_order_attempt(client=client, order_attempt=order_attempt)
+                config = _require_bot_config(
+                    db,
+                    user_id=user_id,
+                    bot_config_id=int(config.id),
+                    lock_for_update=True,
+                )
+                order_attempt = _require_order_attempt(
+                    db,
+                    user_id=user_id,
+                    bot_config_id=int(config.id),
+                    order_attempt_id=order_attempt_id,
+                )
+                run = (
+                    _find_bot_run(
+                        db,
+                        user_id=user_id,
+                        bot_config_id=int(config.id),
+                        bot_run_id=run_id,
+                        lock_for_update=True,
+                    )
+                    if run_id is not None
+                    else None
+                )
+                if not bool(config.enabled) or (run_id is not None and (run is None or run.status != "running")):
+                    order_attempt.status = "blocked"
+                    order_attempt.rejection_reason = "Bot execution state changed before provider routing."
+                    state_block = RiskBlock(
+                        code="execution_state_changed",
+                        message="Bot was stopped or disabled before provider routing.",
+                        severity="critical",
+                    )
+                    risk_events = [
+                        _create_risk_event(
+                            db,
+                            user_id=user_id,
+                            config=config,
+                            run=run,
+                            block=state_block,
+                            correlation_id=correlation_id,
+                        )
+                    ]
+                    evaluation_status = "risk_blocked"
+                else:
+                    # The config lock is held through the provider call, so stop cannot
+                    # overtake an already claimed submission.
+                    _submit_order_attempt(client=client, order_attempt=order_attempt)
+                    if order_attempt.status == "submitted":
+                        evaluation_status = "submitted"
+                    else:
+                        evaluation_status = "error"
+                        config.enabled = False
+                        if run is not None and run.status == "running":
+                            transition_bot_run(
+                                run,
+                                "error",
+                                reason="provider_order_submission_failed",
+                                error=order_attempt.rejection_reason or "Provider order submission failed.",
+                            )
             db.flush()
 
     if run is not None and run.status == "running":
-        run.last_heartbeat_at = datetime.now(timezone.utc)
+        touch_bot_run(run, candle_timestamp=actionable_candle_timestamp)
+        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+        state["phase"] = "idle"
+        state["last_evaluation_status"] = evaluation_status
+        run.raw_state = state
     db.flush()
+    log_bot_event(
+        logger,
+        "bot_evaluation_completed",
+        user_id=user_id,
+        bot_config_id=int(config.id),
+        bot_run_id=int(run.id) if run is not None else None,
+        account_id=int(config.account_id),
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        execution_mode=execution_mode,
+        action=signal.action,
+        evaluation_status=evaluation_status,
+        order_attempt_id=int(order_attempt.id) if order_attempt is not None else None,
+        duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
+    )
     return EvaluationResult(
+        status=evaluation_status,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
+        duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
         config=config,
         run=run,
         decision=decision,
@@ -2198,22 +1117,29 @@ def stop_latest_bot_run(
         .first()
     )
     if run is None:
-        run = BotRun(
-            user_id=user_id,
-            bot_config_id=bot_config_id,
-            account_id=int(config.account_id),
-            status="stopped",
-            dry_run=True,
-            started_at=datetime.now(timezone.utc),
-            stopped_at=datetime.now(timezone.utc),
-            stop_reason=reason,
+        run = (
+            db.query(BotRun)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.bot_config_id == bot_config_id)
+            .order_by(BotRun.started_at.desc(), BotRun.id.desc())
+            .first()
         )
-        db.add(run)
-        db.flush()
+        if run is None:
+            now = datetime.now(timezone.utc)
+            run = BotRun(
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                account_id=int(config.account_id),
+                status="stopped",
+                dry_run=True,
+                started_at=now,
+                stopped_at=now,
+                stop_reason=reason,
+            )
+            db.add(run)
+            db.flush()
     else:
-        run.status = "stopped"
-        run.stopped_at = datetime.now(timezone.utc)
-        run.stop_reason = reason
+        transition_bot_run(run, "stopped", reason=reason)
 
     db.add(
         BotDecision(
@@ -2289,424 +1215,14 @@ def fetch_candles_and_evaluate_strategy(
     config: BotConfig,
     client: ProjectXClient,
 ) -> tuple[list[ProjectXMarketCandle], SignalResult]:
-    strategy_type = _validate_strategy_type(str(config.strategy_type))
-    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
-        return fetch_candles_and_evaluate_topbot_adaptive(db, user_id=user_id, config=config, client=client)
+    from .bot_candle_acquisition import acquire_and_evaluate_strategy
 
-    if strategy_type == _STRATEGY_DELAYED_ORB_CONFIRMATION:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_delayed_orb_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_delayed_orb_confirmation(
-            candles=candle_sets.get("1m", []),
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candle_sets.get("1m", []), signal
-
-    if strategy_type == _STRATEGY_ORB_FIBONACCI_PULLBACK:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_orb_fibonacci_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_orb_fibonacci_pullback(
-            candles,
-            timeframe_unit=str(config.timeframe_unit),
-            timeframe_unit_number=int(config.timeframe_unit_number),
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-            session_end_time=str(config.trading_end_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_OPENING_RVOL_BREAKOUT:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_opening_rvol_breakout_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_opening_rvol_breakout(
-            candles,
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_VWAP_GAP_RETRACE:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_vwap_gap_retrace_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_vwap_gap_retrace(candles, strategy_params=strategy_params)
-        return candles, signal
-
-    if strategy_type in _LEVEL_STRATEGY_TYPES:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_support_resistance_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_type=strategy_type,
-            strategy_params=strategy_params,
-        )
-        candles_1h = candle_sets.get("1H", [])
-        if strategy_type == _STRATEGY_LIQUIDITY_SWEEP_RETEST:
-            signal = evaluate_liquidity_sweep_retest(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                fast_period=int(config.fast_period),
-                slow_period=int(config.slow_period),
-                strategy_params=strategy_params,
-            )
-        elif strategy_type == _STRATEGY_MACD_SUPPORT_RESISTANCE:
-            signal = evaluate_macd_support_resistance(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                fast_period=int(config.fast_period),
-                slow_period=int(config.slow_period),
-                strategy_params=strategy_params,
-            )
-        else:
-            signal = evaluate_support_resistance_levels(
-                higher_timeframe_candles=candle_sets.get("4H", []),
-                lower_timeframe_candles=candles_1h,
-                strategy_params=strategy_params,
-            )
-        return candles_1h, signal
-
-    if strategy_type == _STRATEGY_SUPERTREND_PIVOT:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_supertrend_pivot_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal_candles = candle_sets.get("signal", [])
-        signal = evaluate_supertrend_pivot_points(
-            signal_timeframe_candles=signal_candles,
-            daily_candles=candle_sets.get("1D", []),
-            strategy_params=strategy_params,
-        )
-        return signal_candles, signal
-
-    if strategy_type == _STRATEGY_FVG_SWEEP_MSS:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_fvg_sweep_mss_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        structure_candles = candle_sets.get("structure", [])
-        signal = evaluate_fvg_sweep_mss(
-            fvg_candles=candle_sets.get("fvg", []),
-            structure_candles=structure_candles,
-            strategy_params=strategy_params,
-        )
-        return structure_candles, signal
-
-    if strategy_type == _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
-        benchmark_candles = fetch_and_store_relative_strength_benchmark_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        signal = evaluate_atr_adjusted_relative_strength(
-            candles,
-            benchmark_candles=benchmark_candles,
-            strategy_params=strategy_params,
-            session_start_time=str(config.trading_start_time),
-        )
-        return candles, signal
-
-    if strategy_type == _STRATEGY_RELATIVE_STRENGTH_SPY:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        candle_sets = fetch_and_store_relative_strength_spy_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            strategy_params=strategy_params,
-        )
-        asset_candles = candle_sets.get("5m", [])
-        signal = evaluate_relative_strength_vs_spy(
-            asset_candles=asset_candles,
-            benchmark_candles=candle_sets.get("SPY", []),
-            strategy_params=strategy_params,
-        )
-        return asset_candles, signal
-
-    minimum_lookback_bars: int | None = None
-    if strategy_type == _STRATEGY_BOLLINGER_MEAN_REVERSION:
-        strategy_params = _normalize_strategy_params(strategy_type, config.strategy_params)
-        minimum_lookback_bars = max(
-            int(strategy_params["bollinger_period"]) + 1,
-            int(strategy_params["atr_period"]),
-            25,
-        )
-
-    candles = fetch_and_store_candles(
+    return acquire_and_evaluate_strategy(
         db,
         user_id=user_id,
         config=config,
         client=client,
-        minimum_lookback_bars=minimum_lookback_bars,
     )
-    if strategy_type == _STRATEGY_DONCHIAN_BREAKOUT:
-        latest_candle = candles[-1] if candles else None
-        contract_id = _execution_contract_id(config, latest_candle)
-        symbol = _execution_symbol(config, latest_candle)
-        position_state = load_open_position_state(
-            db,
-            user_id=user_id,
-            account_id=int(config.account_id),
-            contract_id=contract_id,
-            symbol=symbol,
-        )
-        signal = evaluate_donchian_breakout(
-            candles,
-            strategy_params=config.strategy_params,
-            position_state=position_state,
-            latest_entry_plan=load_latest_bot_entry_plan(
-                db,
-                user_id=user_id,
-                bot_config_id=int(config.id),
-                position_state=position_state,
-            ),
-            base_order_size=float(config.order_size),
-        )
-    elif strategy_type == _STRATEGY_BOLLINGER_MEAN_REVERSION:
-        signal = evaluate_bollinger_mean_reversion(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_BOLLINGER_RSI_REVERSAL:
-        signal = evaluate_bollinger_rsi_reversal(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_EMA_SCALPING:
-        signal = evaluate_ema_scalping(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
-    elif strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
-        signal = evaluate_ema_trend_pullback(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    elif strategy_type == _STRATEGY_VWAP_ATR_MEAN_REVERSION:
-        signal = evaluate_vwap_atr_mean_reversion(candles, strategy_params=config.strategy_params)
-    elif strategy_type == _STRATEGY_FISHER_MEAN_REVERSION:
-        signal = evaluate_fisher_transform_mean_reversion(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    elif strategy_type == _STRATEGY_PULLBACK_TRAP_REVERSAL:
-        signal = evaluate_pullback_trap_reversal(
-            candles,
-            fast_period=int(config.fast_period),
-            slow_period=int(config.slow_period),
-            strategy_params=config.strategy_params,
-        )
-    else:
-        signal = evaluate_sma_cross(candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period))
-    return candles, signal
-
-
-def fetch_candles_and_evaluate_topbot_adaptive(
-    db: Session,
-    *,
-    user_id: str,
-    config: BotConfig,
-    client: ProjectXClient,
-) -> tuple[list[ProjectXMarketCandle], SignalResult]:
-    strategy_params = _normalize_strategy_params(_STRATEGY_TOPBOT_ADAPTIVE, config.strategy_params)
-    source_results: list[tuple[str, SignalResult]] = []
-    primary_candles: list[ProjectXMarketCandle] = []
-    source_params_by_strategy = strategy_params.get("source_strategy_params")
-    if not isinstance(source_params_by_strategy, dict):
-        source_params_by_strategy = {}
-
-    for source_strategy in strategy_params["source_strategies"]:
-        source_params = (
-            source_params_by_strategy.get(source_strategy)
-            if isinstance(source_params_by_strategy.get(source_strategy), dict)
-            else {}
-        )
-        source_config = _strategy_config_view(
-            config,
-            strategy_type=source_strategy,
-            strategy_params=_normalize_strategy_params(source_strategy, source_params),
-        )
-        try:
-            candles, signal = fetch_candles_and_evaluate_strategy(
-                db,
-                user_id=user_id,
-                config=source_config,
-                client=client,
-            )
-        except Exception as exc:
-            candles = []
-            signal = SignalResult(
-                action="HOLD",
-                reason=f"{source_strategy} source unavailable: {exc}",
-                candle_timestamp=None,
-                price=None,
-                raw_payload={
-                    "strategy_type": source_strategy,
-                    "source_error": str(exc),
-                },
-            )
-        source_results.append((source_strategy, signal))
-        if _topbot_prefer_primary_candles(candles, primary_candles):
-            primary_candles = candles
-
-    if not primary_candles:
-        try:
-            primary_candles = fetch_and_store_candles(db, user_id=user_id, config=config, client=client)
-        except Exception:
-            primary_candles = []
-
-    signal = evaluate_topbot_adaptive_strategy(
-        primary_candles,
-        strategy_signals=source_results,
-        strategy_params=strategy_params,
-        config=config,
-        risk_state=_topbot_runtime_risk_state(db, user_id=user_id, config=config),
-    )
-    return primary_candles, signal
-
-
-def _strategy_config_view(config: BotConfig, *, strategy_type: str, strategy_params: dict[str, Any]) -> Any:
-    class StrategyConfigView:
-        pass
-
-    view = StrategyConfigView()
-    for attribute in [
-        "id",
-        "user_id",
-        "account_id",
-        "name",
-        "provider",
-        "enabled",
-        "execution_mode",
-        "contract_id",
-        "symbol",
-        "timeframe_unit",
-        "timeframe_unit_number",
-        "lookback_bars",
-        "fast_period",
-        "slow_period",
-        "order_size",
-        "max_contracts",
-        "max_daily_loss",
-        "max_trades_per_day",
-        "max_open_position",
-        "allowed_contracts",
-        "trading_start_time",
-        "trading_end_time",
-        "cooldown_seconds",
-        "max_data_staleness_seconds",
-        "allow_market_depth",
-        "created_at",
-        "updated_at",
-    ]:
-        setattr(view, attribute, getattr(config, attribute))
-    fast_period, slow_period = _normalized_strategy_period_values(
-        strategy_type,
-        fast_period=int(getattr(config, "fast_period", 9) or 9),
-        slow_period=int(getattr(config, "slow_period", 21) or 21),
-    )
-    view.strategy_type = strategy_type
-    view.strategy_params = strategy_params
-    view.fast_period = fast_period
-    view.slow_period = slow_period
-    return view
-
-
-def _topbot_prefer_primary_candles(
-    candidate: list[ProjectXMarketCandle],
-    current: list[ProjectXMarketCandle],
-) -> bool:
-    if not candidate:
-        return False
-    if not current:
-        return True
-    candidate_unit = str(candidate[-1].unit)
-    candidate_unit_number = int(candidate[-1].unit_number)
-    current_unit = str(current[-1].unit)
-    current_unit_number = int(current[-1].unit_number)
-    if candidate_unit == "minute" and candidate_unit_number == 5:
-        return True
-    if current_unit == "minute" and current_unit_number == 5:
-        return False
-    return len(candidate) > len(current)
-
-
-def _topbot_runtime_risk_state(db: Session, *, user_id: str, config: BotConfig) -> dict[str, Any]:
-    daily_trade_count = _todays_bot_trade_count(db, user_id=user_id, config=config)
-    daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
-    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
-    return {
-        "daily_trade_count": daily_trade_count,
-        "max_trades_per_day": int(config.max_trades_per_day),
-        "max_trades_reached": daily_trade_count >= int(config.max_trades_per_day),
-        "daily_pnl": daily_pnl,
-        "max_daily_loss": float(config.max_daily_loss),
-        "daily_loss_reached": daily_pnl <= -float(config.max_daily_loss),
-        "cooldown_active": cooldown_block is not None,
-        "cooldown_message": cooldown_block.message if cooldown_block is not None else None,
-    }
-
-
-def _market_analysis_candles_for_evaluation(
-    db: Session,
-    *,
-    user_id: str,
-    config: BotConfig,
-    client: ProjectXClient,
-    strategy_candles: list[ProjectXMarketCandle],
-) -> list[ProjectXMarketCandle]:
-    if _usable_market_analysis_candle_count(strategy_candles) >= _MARKET_ANALYSIS_MIN_CANDLES:
-        return strategy_candles
-
-    try:
-        context_candles = fetch_and_store_candles(
-            db,
-            user_id=user_id,
-            config=config,
-            client=client,
-            minimum_lookback_bars=_MARKET_ANALYSIS_CONTEXT_BARS,
-        )
-    except ProjectXClientError:
-        return strategy_candles
-    if _usable_market_analysis_candle_count(context_candles) > _usable_market_analysis_candle_count(strategy_candles):
-        return context_candles
-    return strategy_candles
-
-
-def _usable_market_analysis_candle_count(candles: list[ProjectXMarketCandle]) -> int:
-    return len(_closed_candles(candles) or candles)
 
 
 def fetch_and_store_candles(
@@ -2718,7 +1234,7 @@ def fetch_and_store_candles(
     minimum_lookback_bars: int | None = None,
 ) -> list[ProjectXMarketCandle]:
     now = datetime.now(timezone.utc)
-    target_bars = max(_MARKET_ANALYSIS_CONTEXT_BARS, int(config.lookback_bars), int(minimum_lookback_bars or 0))
+    target_bars = max(25, int(config.lookback_bars), int(minimum_lookback_bars or 0))
     unit_seconds = _UNIT_SECONDS_BY_NAME[str(config.timeframe_unit)]
     lookback_seconds = unit_seconds * int(config.timeframe_unit_number) * target_bars * 3
     start = now - timedelta(seconds=max(lookback_seconds, unit_seconds * int(config.timeframe_unit_number) * 25))
@@ -3583,33 +2099,31 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
         return
 
     table = ProjectXMarketCandle.__table__
-    for offset in range(0, len(values), _MARKET_CANDLE_UPSERT_BATCH_SIZE):
-        batch = values[offset : offset + _MARKET_CANDLE_UPSERT_BATCH_SIZE]
-        insert_stmt = postgresql_insert(table).values(batch)
-        excluded = insert_stmt.excluded
-        db.execute(
-            insert_stmt.on_conflict_do_update(
-                index_elements=[
-                    table.c.user_id,
-                    table.c.contract_id,
-                    table.c.live,
-                    table.c.unit,
-                    table.c.unit_number,
-                    table.c.candle_timestamp,
-                ],
-                set_={
-                    "symbol": excluded.symbol,
-                    "open_price": excluded.open_price,
-                    "high_price": excluded.high_price,
-                    "low_price": excluded.low_price,
-                    "close_price": excluded.close_price,
-                    "volume": excluded.volume,
-                    "is_partial": excluded.is_partial,
-                    "raw_payload": excluded.raw_payload,
-                    "fetched_at": excluded.fetched_at,
-                },
-            )
+    insert_stmt = postgresql_insert(table).values(values)
+    excluded = insert_stmt.excluded
+    db.execute(
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                table.c.user_id,
+                table.c.contract_id,
+                table.c.live,
+                table.c.unit,
+                table.c.unit_number,
+                table.c.candle_timestamp,
+            ],
+            set_={
+                "symbol": excluded.symbol,
+                "open_price": excluded.open_price,
+                "high_price": excluded.high_price,
+                "low_price": excluded.low_price,
+                "close_price": excluded.close_price,
+                "volume": excluded.volume,
+                "is_partial": excluded.is_partial,
+                "raw_payload": excluded.raw_payload,
+                "fetched_at": excluded.fetched_at,
+            },
         )
+    )
 
 
 def _query_market_candles_by_timestamps(
@@ -3686,6 +2200,166 @@ def evaluate_sma_cross(
             "current_fast": current_fast,
             "current_slow": current_slow,
         },
+    )
+
+
+def evaluate_topbot_adaptive(
+    source_results: list[dict[str, Any]],
+    *,
+    strategy_params: dict[str, Any] | None = None,
+) -> SignalResult:
+    """Choose the strongest bracketed plan after source strategies reach consensus."""
+
+    params = _normalize_strategy_params(_STRATEGY_TOPBOT_ADAPTIVE, strategy_params)
+    successful = [result for result in source_results if not result.get("error")]
+    buy_results = [result for result in successful if result.get("action") == "BUY"]
+    sell_results = [result for result in successful if result.get("action") == "SELL"]
+    hold_count = sum(result.get("action") == "HOLD" for result in successful)
+    failures = [
+        {
+            "strategy_type": str(result.get("strategy_type") or "unknown"),
+            "error": str(result.get("error") or "evaluation failed")[:300],
+        }
+        for result in source_results
+        if result.get("error")
+    ]
+
+    if len(buy_results) == len(sell_results):
+        winning_action = None
+        directional_results: list[dict[str, Any]] = []
+        opposing_results: list[dict[str, Any]] = []
+    elif len(buy_results) > len(sell_results):
+        winning_action = "BUY"
+        directional_results = buy_results
+        opposing_results = sell_results
+    else:
+        winning_action = "SELL"
+        directional_results = sell_results
+        opposing_results = buy_results
+
+    directional_vote_count = len(directional_results)
+    opposing_vote_count = len(opposing_results)
+    directional_total = len(buy_results) + len(sell_results)
+    agreement_confidence = (
+        round((directional_vote_count / directional_total) * 100, 2)
+        if winning_action is not None and directional_total
+        else 0.0
+    )
+
+    audit = {
+        "source_count": len(source_results),
+        "successful_source_count": len(successful),
+        "failed_source_count": len(failures),
+        "buy_votes": len(buy_results),
+        "sell_votes": len(sell_results),
+        "hold_votes": hold_count,
+        "winning_action": winning_action,
+        "directional_votes": directional_vote_count,
+        "opposing_votes": opposing_vote_count,
+        "agreement_confidence": agreement_confidence,
+        "minimum_directional_votes": int(params["minimum_directional_votes"]),
+        "max_opposing_votes": int(params["max_opposing_votes"]),
+        "minimum_confidence": float(params["minimum_confidence"]),
+        "minimum_score": float(params["minimum_score"]),
+        "minimum_reward_risk": float(params["minimum_reward_risk"]),
+        "failures": failures,
+        "sources": [
+            {
+                "strategy_type": str(result.get("strategy_type") or "unknown"),
+                "action": str(result.get("action") or "ERROR"),
+                "score": result.get("score"),
+                "reward_risk": result.get("reward_risk"),
+                "eligible": bool(result.get("eligible")),
+            }
+            for result in source_results
+        ],
+    }
+
+    def hold(reason: str) -> SignalResult:
+        timestamps = [
+            result.get("candle_timestamp")
+            for result in successful
+            if isinstance(result.get("candle_timestamp"), datetime)
+        ]
+        prices = [
+            float(result["price"])
+            for result in successful
+            if _finite_optional_float(result.get("price")) is not None
+        ]
+        return SignalResult(
+            action="HOLD",
+            reason=reason,
+            candle_timestamp=max(timestamps) if timestamps else None,
+            price=prices[-1] if prices else None,
+            raw_payload={"strategy_type": _STRATEGY_TOPBOT_ADAPTIVE, "ensemble": audit},
+        )
+
+    if winning_action is None:
+        return hold("TopBot held because BUY and SELL votes were tied or no source was directional.")
+    if directional_vote_count < int(params["minimum_directional_votes"]):
+        return hold(
+            f"TopBot held because {directional_vote_count} {winning_action} vote(s) did not meet the "
+            f"minimum of {int(params['minimum_directional_votes'])}."
+        )
+    if opposing_vote_count > int(params["max_opposing_votes"]):
+        return hold(
+            f"TopBot held because {opposing_vote_count} opposing vote(s) exceeded the maximum of "
+            f"{int(params['max_opposing_votes'])}."
+        )
+    if agreement_confidence < float(params["minimum_confidence"]):
+        return hold(
+            f"TopBot held because {agreement_confidence:.1f}% directional agreement was below the "
+            f"{float(params['minimum_confidence']):.1f}% minimum."
+        )
+
+    eligible = [
+        result
+        for result in directional_results
+        if bool(result.get("eligible"))
+        and _finite_optional_float(result.get("score")) is not None
+        and float(result["score"]) >= float(params["minimum_score"])
+        and _finite_optional_float(result.get("reward_risk")) is not None
+        and float(result["reward_risk"]) >= float(params["minimum_reward_risk"])
+    ]
+    if not eligible:
+        return hold(
+            "TopBot held because no consensus source supplied a valid bracket that passed the score "
+            "and reward/risk gates."
+        )
+
+    selected = max(
+        eligible,
+        key=lambda result: (float(result["score"]), float(result["reward_risk"])),
+    )
+    selected_payload = dict(selected.get("raw_payload") or {})
+    selected_payload.update(
+        {
+            "strategy_type": _STRATEGY_TOPBOT_ADAPTIVE,
+            "source_strategy": str(selected.get("strategy_type") or "unknown"),
+            "source_reason": str(selected.get("reason") or ""),
+            "topbot_score": float(selected["score"]),
+            "topbot_confidence": agreement_confidence,
+            "ensemble": audit,
+            "topbot_management": {
+                "time_stop_bars": int(params["time_stop_bars"]),
+                "enable_trailing_stop": bool(params["enable_trailing_stop"]),
+                "trailing_stop_mode": str(params["trailing_stop_mode"]),
+                "trailing_atr_multiplier": float(params["trailing_atr_multiplier"]),
+                "move_to_breakeven_at_r": float(params["move_to_breakeven_at_r"]),
+                "advisory_only": True,
+            },
+        }
+    )
+    return SignalResult(
+        action=winning_action,
+        reason=(
+            f"TopBot selected {selected_payload['source_strategy']} after {directional_vote_count} "
+            f"{winning_action} vote(s), {agreement_confidence:.1f}% agreement, and a "
+            f"{float(selected['score']):.0f} quality score."
+        ),
+        candle_timestamp=selected.get("candle_timestamp"),
+        price=_finite_optional_float(selected.get("price")),
+        raw_payload=selected_payload,
     )
 
 
@@ -4701,23 +3375,37 @@ def _evaluate_single_fvg_gap(
 
 
 def _detect_fair_value_gaps(candles: list[ProjectXMarketCandle]) -> list[FairValueGapZone]:
-    gaps = detect_projectx_style_fair_value_gaps(candles, check_mitigation=True)
-    return [
-        FairValueGapZone(
-            side=gap.side,
-            lower_price=gap.lower_price,
-            upper_price=gap.upper_price,
-            timestamp=gap.timestamp,
-            source_index=gap.source_index,
-            gap_size=gap.gap_size,
-            gap_percent=gap.gap_percent,
-            mitigated=gap.mitigated,
-            mitigation_index=gap.mitigation_index,
-            mitigation_timestamp=gap.mitigation_timestamp,
-            mitigation_level=gap.mitigation_level,
-        )
-        for gap in gaps
-    ]
+    gaps: list[FairValueGapZone] = []
+    for index in range(2, len(candles)):
+        left = candles[index - 2]
+        right = candles[index]
+        left_high = float(left.high_price)
+        left_low = float(left.low_price)
+        right_high = float(right.high_price)
+        right_low = float(right.low_price)
+        timestamp = _as_utc(right.candle_timestamp)
+
+        if right_low > left_high:
+            gaps.append(
+                FairValueGapZone(
+                    side="bullish",
+                    lower_price=left_high,
+                    upper_price=right_low,
+                    timestamp=timestamp,
+                    source_index=index,
+                )
+            )
+        if right_high < left_low:
+            gaps.append(
+                FairValueGapZone(
+                    side="bearish",
+                    lower_price=right_high,
+                    upper_price=left_low,
+                    timestamp=timestamp,
+                    source_index=index,
+                )
+            )
+    return gaps
 
 
 def _find_fvg_invalidation_candle(
@@ -4884,12 +3572,6 @@ def _serialize_fair_value_gap(gap: FairValueGapZone) -> dict[str, Any]:
         "upper_price": gap.upper_price,
         "timestamp": gap.timestamp.isoformat(),
         "source_index": gap.source_index,
-        "gap_size": gap.gap_size,
-        "gap_percent": gap.gap_percent,
-        "mitigated": gap.mitigated,
-        "mitigation_index": gap.mitigation_index,
-        "mitigation_timestamp": gap.mitigation_timestamp.isoformat() if gap.mitigation_timestamp is not None else None,
-        "mitigation_level": gap.mitigation_level,
     }
 
 
@@ -8212,16 +6894,34 @@ def _bollinger_band_values(
     period: int,
     stddev_multiplier: float,
 ) -> tuple[list[float | None], list[float | None], list[float | None]]:
-    bands = indicator_bollinger_bands(closes, period=period, stddev_multiplier=stddev_multiplier)
-    return (
-        [point.middle for point in bands],
-        [point.upper for point in bands],
-        [point.lower for point in bands],
-    )
+    normalized_period = max(1, int(period))
+    middle: list[float | None] = [None] * len(closes)
+    upper: list[float | None] = [None] * len(closes)
+    lower: list[float | None] = [None] * len(closes)
+    if len(closes) < normalized_period:
+        return middle, upper, lower
+
+    for index in range(normalized_period - 1, len(closes)):
+        window = closes[index - normalized_period + 1 : index + 1]
+        average = _average(window)
+        variance = sum((value - average) ** 2 for value in window) / normalized_period
+        deviation = variance ** 0.5
+        middle[index] = average
+        upper[index] = average + deviation * stddev_multiplier
+        lower[index] = average - deviation * stddev_multiplier
+
+    return middle, upper, lower
 
 
 def _ema_series(values: list[float], *, period: int) -> list[float]:
-    return [value for value in indicator_ema_series(values, period) if value is not None]
+    if not values:
+        return []
+    normalized_period = max(1, int(period))
+    alpha = 2 / (normalized_period + 1)
+    output = [float(values[0])]
+    for value in values[1:]:
+        output.append((float(value) * alpha) + (output[-1] * (1 - alpha)))
+    return output
 
 
 def _normalized_strategy_period_values(strategy_type: str, *, fast_period: int, slow_period: int) -> tuple[int, int]:
@@ -9291,7 +7991,18 @@ def _aligned_candle_pairs_by_timestamp(
 
 
 def _ema_series(values: list[float], *, period: int) -> list[float | None]:
-    return indicator_ema_series(values, period)
+    normalized_period = max(1, int(period))
+    output: list[float | None] = [None] * len(values)
+    if len(values) < normalized_period:
+        return output
+
+    multiplier = 2.0 / (normalized_period + 1)
+    ema = _average(values[:normalized_period])
+    output[normalized_period - 1] = ema
+    for index in range(normalized_period, len(values)):
+        ema = (values[index] - ema) * multiplier + ema
+        output[index] = ema
+    return output
 
 
 def _macd_state(
@@ -9348,7 +8059,29 @@ def _macd_state(
 
 
 def _atr_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
-    return indicator_atr_series(candles, period)
+    normalized_period = max(1, int(period))
+    output: list[float | None] = [None] * len(candles)
+    if len(candles) < normalized_period:
+        return output
+
+    true_ranges: list[float] = []
+    previous_close: float | None = None
+    for candle in candles:
+        high = float(candle.high_price)
+        low = float(candle.low_price)
+        if previous_close is None:
+            true_range = high - low
+        else:
+            true_range = max(high - low, abs(high - previous_close), abs(low - previous_close))
+        true_ranges.append(true_range)
+        previous_close = float(candle.close_price)
+
+    atr = _average(true_ranges[:normalized_period])
+    output[normalized_period - 1] = atr
+    for index in range(normalized_period, len(candles)):
+        atr = ((atr * (normalized_period - 1)) + true_ranges[index]) / normalized_period
+        output[index] = atr
+    return output
 
 
 def _relative_volume_ratio(
@@ -9371,7 +8104,27 @@ def _relative_volume_ratio(
 
 
 def _rsi_series(closes: list[float], *, period: int) -> list[float | None]:
-    return indicator_rsi_series(closes, period)
+    normalized_period = max(1, int(period))
+    output: list[float | None] = [None] * len(closes)
+    if len(closes) < normalized_period + 1:
+        return output
+
+    gains: list[float] = []
+    losses: list[float] = []
+    for index in range(1, len(closes)):
+        change = closes[index] - closes[index - 1]
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    average_gain = _average(gains[:normalized_period])
+    average_loss = _average(losses[:normalized_period])
+    output[normalized_period] = _wilder_rsi(average_gain, average_loss)
+    for index in range(normalized_period, len(gains)):
+        average_gain = ((average_gain * (normalized_period - 1)) + gains[index]) / normalized_period
+        average_loss = ((average_loss * (normalized_period - 1)) + losses[index]) / normalized_period
+        output[index + 1] = _wilder_rsi(average_gain, average_loss)
+
+    return output
 
 
 def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[float | None]:
@@ -9630,7 +8383,19 @@ def _timeframe_from_seconds(seconds: int, *, allow_seconds: bool) -> tuple[str, 
 
 
 def _ema_series(values: list[float], period: int) -> list[float | None]:
-    return indicator_ema_series(values, period)
+    normalized_period = max(1, int(period))
+    if len(values) < normalized_period:
+        return [None] * len(values)
+
+    seed = _average(values[:normalized_period])
+    multiplier = 2 / (normalized_period + 1)
+    output: list[float | None] = [None] * (normalized_period - 1)
+    output.append(seed)
+    current = seed
+    for value in values[normalized_period:]:
+        current = ((value - current) * multiplier) + current
+        output.append(current)
+    return output
 
 
 def _absolute_percent_delta(left: float, right: float, *, reference: float) -> float:
@@ -9748,358 +8513,99 @@ def evaluate_risk_gates(
     requested_order_size: float | None = None,
     current_position_qty: float = 0.0,
     target_position_qty: float | None = None,
-    signal_price: float | None = None,
-    signal_payload: Mapping[str, Any] | None = None,
     dry_run: bool,
     confirm_live_order_routing: bool,
 ) -> list[RiskBlock]:
-    blocks: list[RiskBlock] = []
-    if not bool(config.enabled):
-        blocks.append(RiskBlock(code="bot_disabled", message="Bot is disabled.", severity="critical"))
-    if account.account_state != ACCOUNT_STATE_ACTIVE:
-        blocks.append(
-            RiskBlock(
-                code="account_not_active",
-                message=f"Account state is {account.account_state}; only ACTIVE accounts can execute bot orders.",
-                severity="critical",
-            )
-        )
-    if not dry_run and account.can_trade is False:
-        blocks.append(RiskBlock(code="account_cannot_trade", message="Provider marks this account as not tradable.", severity="critical"))
-    if not dry_run and _looks_like_live_funded_account(account):
-        blocks.append(
-            RiskBlock(
-                code="live_funded_api_blocked",
-                message="Live Funded Account naming detected; ProjectX API automation is blocked for this account type.",
-                severity="critical",
-            )
-        )
-    if not dry_run and not confirm_live_order_routing:
-        blocks.append(
-            RiskBlock(
-                code="live_order_confirmation_missing",
-                message="Live order routing requires explicit confirmation for this request.",
-                severity="critical",
-            )
-        )
-    if not _is_contract_allowed(config, contract_id=contract_id, symbol=symbol):
-        blocks.append(RiskBlock(code="contract_not_allowed", message="Contract is outside this bot's allowed contract list."))
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
     resulting_position_qty = float(target_position_qty) if target_position_qty is not None else float(current_position_qty) + signed_change
-    if order_size <= 0:
-        blocks.append(RiskBlock(code="invalid_order_size", message="Computed order size must be positive."))
-    if abs(order_size - round(order_size)) > 1e-9:
-        blocks.append(RiskBlock(code="fractional_contract_size", message="ProjectX futures order size must be a whole number."))
-    if abs(resulting_position_qty) > float(config.max_contracts):
-        blocks.append(RiskBlock(code="max_contracts", message="Resulting position exceeds max contracts."))
-    if abs(resulting_position_qty) > float(config.max_open_position):
-        blocks.append(RiskBlock(code="max_open_position", message="Resulting position exceeds max open position setting."))
-    if _todays_bot_trade_count(db, user_id=user_id, config=config) >= int(config.max_trades_per_day):
-        blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
     daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
-    if daily_pnl <= -float(config.max_daily_loss):
-        blocks.append(RiskBlock(code="max_daily_loss", message="Account has reached the configured daily loss limit.", severity="critical"))
-    blocks.extend(
-        _protective_order_risk_blocks(
-            db,
-            config=config,
-            action=action,
-            contract_id=contract_id,
-            symbol=symbol,
-            signal_price=signal_price,
-            signal_payload=signal_payload,
-            order_size=order_size,
-            current_position_qty=current_position_qty,
-            target_position_qty=target_position_qty,
-            daily_pnl=daily_pnl,
+    latest_candle_age_seconds = (
+        (datetime.now(timezone.utc) - _as_utc(latest_candle.candle_timestamp)).total_seconds()
+        if latest_candle is not None
+        else None
+    )
+    return evaluate_risk(
+        RiskEvaluationContext(
+            bot_enabled=bool(config.enabled),
+            account_state=str(account.account_state),
+            account_can_trade=account.can_trade,
+            live_funded_account=_looks_like_live_funded_account(account),
+            configured_execution_mode=str(config.execution_mode),
             dry_run=dry_run,
+            confirm_live_order_routing=confirm_live_order_routing,
+            running_under_tests=running_under_tests(),
+            live_environment_enabled=live_execution_environment_enabled(),
+            contract_allowed=_is_contract_allowed(config, contract_id=contract_id, symbol=symbol),
+            action=action,
+            order_size=order_size,
+            resulting_position_qty=resulting_position_qty,
+            max_contracts=float(config.max_contracts),
+            max_open_position=float(config.max_open_position),
+            trades_today=_todays_bot_trade_count(db, user_id=user_id, config=config),
+            max_trades_per_day=int(config.max_trades_per_day),
+            daily_pnl=daily_pnl,
+            max_daily_loss=float(config.max_daily_loss),
+            latest_candle_age_seconds=latest_candle_age_seconds,
+            max_data_staleness_seconds=int(config.max_data_staleness_seconds),
+            inside_trading_session=_is_inside_trading_session(
+                str(config.trading_start_time),
+                str(config.trading_end_time),
+            ),
+            delayed_session_block=_delayed_orb_session_loss_block(db, user_id=user_id, config=config),
+            cooldown_block=_cooldown_block(db, user_id=user_id, config=config),
         )
     )
-    delayed_orb_loss_block = _delayed_orb_session_loss_block(db, user_id=user_id, config=config)
-    if delayed_orb_loss_block is not None:
-        blocks.append(delayed_orb_loss_block)
-    if latest_candle is None:
-        blocks.append(RiskBlock(code="missing_market_data", message="No closed candle data is available.", severity="critical"))
-    else:
-        staleness = (datetime.now(timezone.utc) - _as_utc(latest_candle.candle_timestamp)).total_seconds()
-        if staleness > int(config.max_data_staleness_seconds):
-            blocks.append(RiskBlock(code="stale_market_data", message="Latest candle is stale.", severity="critical"))
-    if not _is_inside_trading_session(str(config.trading_start_time), str(config.trading_end_time)):
-        blocks.append(RiskBlock(code="outside_session", message="Current time is outside the bot trading session."))
-    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
-    if cooldown_block is not None:
-        blocks.append(cooldown_block)
-    if action not in {"BUY", "SELL"}:
-        blocks.append(RiskBlock(code="unsupported_action", message="Only BUY and SELL actions can create order attempts."))
-    return blocks
-
-
-def _protective_order_risk_blocks(
-    db: Session,
-    *,
-    config: BotConfig,
-    action: str,
-    contract_id: str,
-    symbol: str | None,
-    signal_price: float | None,
-    signal_payload: Mapping[str, Any] | None,
-    order_size: float,
-    current_position_qty: float,
-    target_position_qty: float | None,
-    daily_pnl: float,
-    dry_run: bool,
-) -> list[RiskBlock]:
-    if action not in {"BUY", "SELL"}:
-        return []
-
-    payload = dict(signal_payload or {})
-    signal_category = str(payload.get("signal_category") or "").strip().lower()
-    if signal_category == "exit":
-        return []
-
-    signed_change = float(order_size) if action == "BUY" else -float(order_size)
-    resulting_position_qty = (
-        float(target_position_qty)
-        if target_position_qty is not None
-        else float(current_position_qty) + signed_change
-    )
-    risk_qty = abs(resulting_position_qty)
-    if risk_qty <= 1e-9:
-        return []
-
-    blocks: list[RiskBlock] = []
-    entry_price = _optional_float(payload.get("entry_price"))
-    if entry_price is None:
-        entry_price = _optional_float(signal_price)
-    stop_loss = _optional_float(payload.get("stop_loss"))
-
-    if stop_loss is None:
-        if not dry_run:
-            blocks.append(
-                RiskBlock(
-                    code="missing_protective_stop",
-                    message="Live bot orders require a strategy stop_loss before routing.",
-                    severity="critical",
-                )
-            )
-        return blocks
-
-    if entry_price is None:
-        if not dry_run:
-            blocks.append(
-                RiskBlock(
-                    code="missing_entry_price",
-                    message="Live bot orders require an entry price to validate stop risk.",
-                    severity="critical",
-                )
-            )
-        return blocks
-
-    stop_distance = abs(float(entry_price) - float(stop_loss))
-    if action == "BUY" and float(stop_loss) >= float(entry_price):
-        blocks.append(
-            RiskBlock(
-                code="invalid_protective_stop",
-                message="BUY orders require stop_loss below the entry price.",
-                severity="critical",
-            )
-        )
-    if action == "SELL" and float(stop_loss) <= float(entry_price):
-        blocks.append(
-            RiskBlock(
-                code="invalid_protective_stop",
-                message="SELL orders require stop_loss above the entry price.",
-                severity="critical",
-            )
-        )
-
-    take_profit = _optional_float(payload.get("take_profit"))
-    if take_profit is not None:
-        if action == "BUY" and float(take_profit) <= float(entry_price):
-            blocks.append(
-                RiskBlock(
-                    code="invalid_take_profit",
-                    message="BUY orders require take_profit above the entry price.",
-                    severity="critical",
-                )
-            )
-        if action == "SELL" and float(take_profit) >= float(entry_price):
-            blocks.append(
-                RiskBlock(
-                    code="invalid_take_profit",
-                    message="SELL orders require take_profit below the entry price.",
-                    severity="critical",
-                )
-            )
-
-    tick_size = _instrument_tick_size(db, symbol=symbol, contract_id=contract_id)
-    if tick_size is not None and tick_size > 0 and stop_distance + 1e-9 < tick_size:
-        blocks.append(
-            RiskBlock(
-                code="protective_stop_too_close",
-                message="Protective stop is closer than one instrument tick.",
-                severity="critical",
-            )
-        )
-
-    point_value = _instrument_point_value(db, symbol=symbol, contract_id=contract_id)
-    if point_value is None or point_value <= 0:
-        if not dry_run:
-            blocks.append(
-                RiskBlock(
-                    code="unknown_point_value",
-                    message="Live bot orders require instrument point value metadata to validate stop risk.",
-                    severity="critical",
-                )
-            )
-        return blocks
-
-    projected_stop_loss = stop_distance * risk_qty * point_value
-    remaining_daily_loss = max(0.0, float(config.max_daily_loss) + min(float(daily_pnl), 0.0))
-    if projected_stop_loss > remaining_daily_loss + 1e-9:
-        blocks.append(
-            RiskBlock(
-                code="stop_risk_exceeds_daily_budget",
-                message=(
-                    "Projected stop loss exceeds remaining daily loss budget "
-                    f"(${projected_stop_loss:.2f} risk vs ${remaining_daily_loss:.2f} remaining)."
-                ),
-                severity="critical",
-            )
-        )
-
-    return blocks
 
 
 def serialize_bot_config(row: BotConfig) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "name": row.name,
-        "account_id": int(row.account_id),
-        "provider": row.provider,
-        "enabled": bool(row.enabled),
-        "execution_mode": row.execution_mode,
-        "strategy_type": row.strategy_type,
-        "strategy_params": _normalize_strategy_params(row.strategy_type, row.strategy_params),
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "timeframe_unit": row.timeframe_unit,
-        "timeframe_unit_number": int(row.timeframe_unit_number),
-        "lookback_bars": int(row.lookback_bars),
-        "fast_period": int(row.fast_period),
-        "slow_period": int(row.slow_period),
-        "order_size": float(row.order_size),
-        "max_contracts": float(row.max_contracts),
-        "max_daily_loss": float(row.max_daily_loss),
-        "max_trades_per_day": int(row.max_trades_per_day),
-        "max_open_position": float(row.max_open_position),
-        "allowed_contracts": _normalize_allowed_contracts(row.allowed_contracts),
-        "trading_start_time": row.trading_start_time,
-        "trading_end_time": row.trading_end_time,
-        "cooldown_seconds": int(row.cooldown_seconds),
-        "max_data_staleness_seconds": int(row.max_data_staleness_seconds),
-        "allow_market_depth": bool(row.allow_market_depth),
-        "created_at": _as_utc(row.created_at),
-        "updated_at": _as_utc(row.updated_at),
-    }
+    return _bot_serialization.serialize_bot_config(row)
 
 
 def serialize_bot_run(row: BotRun) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "account_id": int(row.account_id),
-        "status": row.status,
-        "dry_run": bool(row.dry_run),
-        "started_at": _as_utc(row.started_at),
-        "stopped_at": _as_utc(row.stopped_at) if row.stopped_at is not None else None,
-        "stop_reason": row.stop_reason,
-        "last_heartbeat_at": _as_utc(row.last_heartbeat_at) if row.last_heartbeat_at is not None else None,
-        "raw_state": row.raw_state if isinstance(row.raw_state, dict) else None,
-    }
+    return _bot_serialization.serialize_bot_run(row)
 
 
 def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "account_id": int(row.account_id),
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "decision_type": row.decision_type,
-        "action": row.action,
-        "reason": row.reason,
-        "candle_timestamp": _as_utc(row.candle_timestamp) if row.candle_timestamp is not None else None,
-        "price": float(row.price) if row.price is not None else None,
-        "quantity": float(row.quantity) if row.quantity is not None else None,
-        "raw_payload": row.raw_payload if isinstance(row.raw_payload, dict) else None,
-        "created_at": _as_utc(row.created_at),
-    }
+    return _bot_serialization.serialize_bot_decision(row)
 
 
 def serialize_bot_order_attempt(row: BotOrderAttempt) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "bot_decision_id": int(row.bot_decision_id) if row.bot_decision_id is not None else None,
-        "account_id": int(row.account_id),
-        "contract_id": row.contract_id,
-        "side": row.side,
-        "order_type": row.order_type,
-        "size": float(row.size),
-        "status": row.status,
-        "provider_order_id": row.provider_order_id,
-        "rejection_reason": row.rejection_reason,
-        "created_at": _as_utc(row.created_at),
-        "updated_at": _as_utc(row.updated_at),
-    }
+    return _bot_serialization.serialize_bot_order_attempt(row)
 
 
 def serialize_bot_risk_event(row: BotRiskEvent) -> dict[str, Any]:
-    return {
-        "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
-        "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
-        "account_id": int(row.account_id),
-        "severity": row.severity,
-        "code": row.code,
-        "message": row.message,
-        "created_at": _as_utc(row.created_at),
-    }
+    return _bot_serialization.serialize_bot_risk_event(row)
 
 
 def serialize_market_candle(row: ProjectXMarketCandle) -> dict[str, Any]:
-    return {
-        "id": int(row.id) if row.id is not None else None,
-        "contract_id": row.contract_id,
-        "symbol": row.symbol,
-        "live": bool(row.live),
-        "unit": row.unit,
-        "unit_number": int(row.unit_number),
-        "timestamp": _as_utc(row.candle_timestamp),
-        "open": float(row.open_price),
-        "high": float(row.high_price),
-        "low": float(row.low_price),
-        "close": float(row.close_price),
-        "volume": float(row.volume),
-        "is_partial": bool(row.is_partial),
-        "fetched_at": _as_utc(row.fetched_at) if row.fetched_at is not None else None,
-    }
+    return _bot_serialization.serialize_market_candle(row)
 
 
 def serialize_evaluation(result: EvaluationResult) -> dict[str, Any]:
-    return {
-        "config": serialize_bot_config(result.config),
-        "run": serialize_bot_run(result.run) if result.run is not None else None,
-        "decision": serialize_bot_decision(result.decision),
-        "order_attempt": serialize_bot_order_attempt(result.order_attempt) if result.order_attempt is not None else None,
-        "risk_events": [serialize_bot_risk_event(row) for row in result.risk_events],
-        "analysis": result.analysis,
-        "candles": [serialize_market_candle(row) for row in result.candles[-50:]],
-    }
+    return _bot_serialization.serialize_evaluation(result)
+
+
+def serialize_bot_trade_levels(row: BotDecision) -> dict[str, float | None] | None:
+    """Expose persisted strategy levels without reconstructing strategy math."""
+
+    if row.action not in {"BUY", "SELL"}:
+        return None
+
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    entry = _finite_optional_float(payload.get("entry_price"))
+    if entry is None:
+        entry = _finite_optional_float(row.price)
+    stop = _finite_optional_float(payload.get("stop_loss"))
+    target = None
+    for key in ("take_profit", "final_take_profit", "partial_take_profit"):
+        target = _finite_optional_float(payload.get(key))
+        if target is not None:
+            break
+
+    if entry is None and stop is None and target is None:
+        return None
+    return {"entry": entry, "stop": stop, "target": target}
 
 
 def build_signal_trade_evaluation(
@@ -10108,6 +8614,10 @@ def build_signal_trade_evaluation(
     config: BotConfig,
     signal: SignalResult,
     analysis: dict[str, Any],
+    current_day_pnl: float | None = None,
+    tick_size: float | None = None,
+    tick_value: float | None = None,
+    point_value: float | None = None,
 ) -> dict[str, Any] | None:
     if signal.action not in {"BUY", "SELL"} or not isinstance(signal.raw_payload, dict):
         return None
@@ -10128,11 +8638,13 @@ def build_signal_trade_evaluation(
         or _optional_float(payload.get("order_size"))
         or float(config.order_size)
     )
+    closed_candles = _closed_candles(candles)
+    if not closed_candles:
+        return None
+
     timestamp = signal.candle_timestamp
-    if timestamp is None and candles:
-        timestamp = candles[-1].candle_timestamp
     if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
+        timestamp = closed_candles[-1].candle_timestamp
 
     market_context = build_market_context_from_ohlcv(
         [
@@ -10144,12 +8656,12 @@ def build_signal_trade_evaluation(
                 "close": float(candle.close_price),
                 "volume": float(candle.volume or 0),
             }
-            for candle in _closed_candles(candles) or candles
+            for candle in closed_candles
         ],
-        current_price=float(signal.price) if signal.price is not None else None,
-        timestamp=timestamp,
+        current_price=float(closed_candles[-1].close_price),
+        timestamp=closed_candles[-1].candle_timestamp,
         market_regime=_infer_trade_plan_market_regime(config=config, signal=signal, analysis=analysis),
-        news_risk="low",
+        news_risk="unknown",
     )
     if market_context is None:
         return None
@@ -10162,9 +8674,22 @@ def build_signal_trade_evaluation(
         take_profit=take_profit,
         quantity=quantity,
         timestamp=timestamp,
+        current_day_pnl=current_day_pnl,
         max_daily_loss=float(config.max_daily_loss),
+        tick_size=tick_size,
+        tick_value=tick_value,
+        point_value=point_value,
     )
-    return TradePlanEvaluator().evaluate(plan, market_context).to_payload()
+    try:
+        return TradePlanEvaluator().evaluate(plan, market_context).to_payload()
+    except ValueError as exc:
+        # Trade-plan scoring is advisory and must never change order-routing
+        # behavior. Surface the invalid plan as missing analysis context while
+        # leaving the existing signal/risk-gate path untouched.
+        risk_notes = analysis.get("risk_notes")
+        if isinstance(risk_notes, list):
+            risk_notes.append(f"Trade-plan evaluation unavailable: {exc}")
+        return None
 
 
 def _infer_trade_plan_market_regime(
@@ -10177,18 +8702,15 @@ def _infer_trade_plan_market_regime(
         raw_regime = str(signal.raw_payload.get("market_regime") or "").strip().lower()
         if raw_regime in {"trend", "range", "chop", "breakout", "reversal", "unknown"}:
             return raw_regime
-        topbot_payload = signal.raw_payload.get("topbot_adaptive")
-        topbot_context = (
-            topbot_payload.get("market_context")
-            if isinstance(topbot_payload, dict) and isinstance(topbot_payload.get("market_context"), dict)
-            else None
-        )
-        nested_regime = str(topbot_context.get("market_regime") if topbot_context else "").strip().lower()
-        if nested_regime in {"trend", "range", "chop", "breakout", "reversal", "unknown"}:
-            return nested_regime
         chop_state = signal.raw_payload.get("chop")
         if isinstance(chop_state, dict) and bool(chop_state.get("is_choppy")):
             return "chop"
+
+    analysis_regime = str(analysis.get("market_regime") or "").strip().lower()
+    if analysis_regime in {"trend", "range", "chop"}:
+        return analysis_regime
+    if analysis_regime == "quiet":
+        return "range"
 
     strategy_type = str(config.strategy_type)
     if strategy_type in {
@@ -10228,613 +8750,15 @@ def build_bot_market_analysis(
     config: BotConfig,
     signal: SignalResult,
 ) -> dict[str, Any]:
-    closed_candles = _closed_candles(candles)
-    analysis_candles = closed_candles or sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
-    risk_notes = [
-        "Heuristic probabilities are not financial advice and are not guaranteed predictions.",
-    ]
-    if any(bool(candle.is_partial) for candle in candles):
-        risk_notes.append("Partial candles are excluded from the indicator read when closed candles are available.")
-    if not closed_candles and candles:
-        risk_notes.append("No closed candles were available, so the analysis used the available candle rows.")
-
-    if len(analysis_candles) < _MARKET_ANALYSIS_MIN_CANDLES:
-        return _neutral_market_analysis_payload(
-            analysis_candles,
-            risk_notes=[
-                *risk_notes,
-                f"Only {len(analysis_candles)} candle(s) were available; at least {_MARKET_ANALYSIS_MIN_CANDLES} are needed for a reliable heuristic read.",
-            ],
-        )
-
-    latest = analysis_candles[-1]
-    previous = analysis_candles[-2]
-    current_price = float(latest.close_price)
-    previous_close = float(previous.close_price)
-    price_change = current_price - previous_close
-    price_change_percent = _analysis_percent_change(current_price, previous_close)
-    closes = [float(candle.close_price) for candle in analysis_candles]
-
-    true_ranges = _analysis_true_ranges(analysis_candles)
-    atr_period = min(14, len(analysis_candles))
-    atr_values = _atr_series(analysis_candles, period=atr_period)
-    latest_atr = _last_defined_float(atr_values)
-    if latest_atr is None:
-        latest_atr = _average(true_ranges[-min(len(true_ranges), atr_period) :])
-    atr_reference = max(latest_atr, _average(true_ranges), abs(current_price) * 0.001, 1e-9)
-    volatility_ratio = _analysis_volatility_ratio(true_ranges, latest_atr)
-    volatility_state = _classify_analysis_volatility(volatility_ratio)
-
-    volume_ratio = _analysis_volume_ratio(analysis_candles)
-    volume_state = _classify_analysis_volume(volume_ratio)
-    indicator_snapshot = build_projectx_style_indicator_snapshot(analysis_candles)
-
-    requested_fast = int(getattr(config, "fast_period", 9) or 9)
-    requested_slow = int(getattr(config, "slow_period", 21) or 21)
-    fast_period = min(max(2, requested_fast), max(2, len(closes) - 1))
-    slow_period = min(max(fast_period + 1, requested_slow), len(closes))
-    fast_ema = _ema_series(closes, fast_period)
-    slow_ema = _ema_series(closes, slow_period)
-    latest_fast = _last_defined_float(fast_ema) or current_price
-    latest_slow = _last_defined_float(slow_ema) or current_price
-    slow_prior = _prior_defined_float(slow_ema, lookback=5) or latest_slow
-    ema_gap = latest_fast - latest_slow
-    ema_slope = latest_slow - slow_prior
-    recent_lookback = min(5, len(closes) - 1)
-    recent_delta = current_price - closes[-(recent_lookback + 1)]
-    trend, trend_strength = _classify_analysis_trend(
-        ema_gap=ema_gap,
-        ema_slope=ema_slope,
-        recent_delta=recent_delta,
-        atr_reference=atr_reference,
-        recent_lookback=recent_lookback,
+    return build_canonical_market_analysis(
+        candles=candles,
+        timeframe_unit=str(config.timeframe_unit),
+        timeframe_unit_number=int(config.timeframe_unit_number),
+        fast_period=int(config.fast_period),
+        slow_period=int(config.slow_period),
+        signal_action=str(signal.action),
+        stale_after_seconds=int(config.max_data_staleness_seconds),
     )
-
-    support_levels, resistance_levels = _analysis_support_resistance_levels(
-        analysis_candles,
-        current_price=current_price,
-    )
-    nearest_support = support_levels[0] if support_levels else None
-    nearest_resistance = resistance_levels[0] if resistance_levels else None
-
-    probabilities = _analysis_probability_scores(
-        trend=trend,
-        trend_strength=trend_strength,
-        volatility_state=volatility_state,
-        volume_state=volume_state,
-        signal_action=signal.action,
-        current_price=current_price,
-        expected_move=latest_atr,
-        nearest_support=nearest_support,
-        nearest_resistance=nearest_resistance,
-    )
-    invalidation_level = _analysis_invalidation_level(
-        trend=trend,
-        signal_action=signal.action,
-        current_price=current_price,
-        expected_move=latest_atr,
-        nearest_support=nearest_support,
-        nearest_resistance=nearest_resistance,
-    )
-
-    reasoning = [
-        (
-            f"Latest close is {_format_strategy_price(current_price)} versus previous close "
-            f"{_format_strategy_price(previous_close)} ({_format_percent(price_change_percent or 0.0)}%)."
-        ),
-        (
-            f"Fast EMA({fast_period}) is {_format_strategy_price(latest_fast)} and slow EMA({slow_period}) "
-            f"is {_format_strategy_price(latest_slow)}, with slow EMA slope {_format_strategy_price(ema_slope)}."
-        ),
-        (
-            f"ATR({atr_period}) is {_format_strategy_price(latest_atr)} and recent range ratio is "
-            f"{_format_analysis_ratio(volatility_ratio)}, classifying volatility as {volatility_state}."
-        ),
-        (
-            f"Latest volume is {float(latest.volume):.0f} versus recent average ratio "
-            f"{_format_analysis_ratio(volume_ratio)}, classifying volume as {volume_state}."
-        ),
-        _analysis_indicator_reasoning(indicator_snapshot),
-        _analysis_level_reasoning(nearest_support=nearest_support, nearest_resistance=nearest_resistance),
-        _analysis_signal_reasoning(signal.action),
-    ]
-
-    if volatility_state in {"elevated", "extreme"}:
-        risk_notes.append(f"Volatility is {volatility_state}; expected move and level invalidation can be less stable.")
-    if volume_state == "low":
-        risk_notes.append("Low relative volume can make candle signals less reliable.")
-    if nearest_support is None or nearest_resistance is None:
-        risk_notes.append("One or more nearby support/resistance levels could not be detected from recent candles.")
-    risk_notes.append("The read uses recent ProjectX candle data only and does not include news, macro, or order-book context.")
-
-    summary = _analysis_summary(
-        trend=trend,
-        trend_strength=trend_strength,
-        probabilities=probabilities,
-    )
-    expected_move_percent = (
-        (latest_atr / abs(current_price)) * 100 if latest_atr is not None and abs(current_price) > 1e-9 else None
-    )
-    return {
-        "current_price": _round_analysis_float(current_price),
-        "previous_close": _round_analysis_float(previous_close),
-        "price_change": _round_analysis_float(price_change),
-        "price_change_percent": _round_analysis_float(price_change_percent),
-        "trend": trend,
-        "trend_strength": trend_strength,
-        "volatility_state": volatility_state,
-        "volume_state": volume_state,
-        "support_levels": support_levels,
-        "resistance_levels": resistance_levels,
-        "nearest_support": nearest_support,
-        "nearest_resistance": nearest_resistance,
-        "bullish_probability": probabilities["bullish"],
-        "bearish_probability": probabilities["bearish"],
-        "sideways_probability": probabilities["sideways"],
-        "expected_move": _round_analysis_float(latest_atr),
-        "expected_move_percent": _round_analysis_float(expected_move_percent),
-        "invalidation_level": invalidation_level,
-        "summary": summary,
-        "reasoning": reasoning,
-        "risk_notes": risk_notes,
-        "indicators": indicator_snapshot,
-        "candle_timestamp": _as_utc(latest.candle_timestamp).isoformat(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _analysis_indicator_reasoning(indicators: dict[str, Any]) -> str:
-    fvg_state = indicators.get("fair_value_gaps") if isinstance(indicators.get("fair_value_gaps"), dict) else {}
-    order_block_state = indicators.get("order_blocks") if isinstance(indicators.get("order_blocks"), dict) else {}
-    patterns = indicators.get("candlestick_patterns") if isinstance(indicators.get("candlestick_patterns"), list) else []
-    waddah = indicators.get("waddah_attar") if isinstance(indicators.get("waddah_attar"), dict) else {}
-    active_fvg = int(fvg_state.get("active_count") or 0)
-    active_order_blocks = int(order_block_state.get("active_count") or 0)
-    pattern_names = ", ".join(str(pattern.get("name")) for pattern in patterns[:3] if isinstance(pattern, dict))
-    wae_direction = "bullish" if waddah.get("bullish") else "bearish" if waddah.get("bearish") else "neutral"
-    if not pattern_names:
-        pattern_names = "none on the latest candle"
-    return (
-        f"ProjectX-style confluence shows {active_fvg} active FVG(s), "
-        f"{active_order_blocks} active order block(s), latest candle pattern(s): {pattern_names}, "
-        f"and WAE momentum is {wae_direction}."
-    )
-
-
-def _neutral_market_analysis_payload(
-    candles: list[ProjectXMarketCandle],
-    *,
-    risk_notes: list[str],
-) -> dict[str, Any]:
-    current_price: float | None = None
-    previous_close: float | None = None
-    price_change: float | None = None
-    price_change_percent: float | None = None
-    if candles:
-        current_price = float(candles[-1].close_price)
-    if len(candles) >= 2:
-        previous_close = float(candles[-2].close_price)
-    if current_price is not None and previous_close is not None:
-        price_change = current_price - previous_close
-        price_change_percent = _analysis_percent_change(current_price, previous_close)
-
-    return {
-        "current_price": _round_analysis_float(current_price),
-        "previous_close": _round_analysis_float(previous_close),
-        "price_change": _round_analysis_float(price_change),
-        "price_change_percent": _round_analysis_float(price_change_percent),
-        "trend": "neutral",
-        "trend_strength": 0,
-        "volatility_state": "normal",
-        "volume_state": "normal",
-        "support_levels": [],
-        "resistance_levels": [],
-        "nearest_support": None,
-        "nearest_resistance": None,
-        "bullish_probability": 33,
-        "bearish_probability": 33,
-        "sideways_probability": 34,
-        "expected_move": None,
-        "expected_move_percent": None,
-        "invalidation_level": None,
-        "summary": "Insufficient candle history for a directional read; heuristic probabilities are held neutral.",
-        "reasoning": [
-            "Not enough candle history is available to calculate trend, volatility, volume, and swing levels together.",
-        ],
-        "risk_notes": risk_notes,
-        "indicators": build_projectx_style_indicator_snapshot(candles),
-        "candle_timestamp": _as_utc(candles[-1].candle_timestamp).isoformat() if candles else None,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _analysis_percent_change(current_price: float, previous_close: float) -> float | None:
-    if abs(previous_close) <= 1e-9:
-        return None
-    return (current_price - previous_close) / previous_close * 100
-
-
-def _analysis_true_ranges(candles: list[ProjectXMarketCandle]) -> list[float]:
-    true_ranges: list[float] = []
-    previous_close: float | None = None
-    for candle in candles:
-        high_price = float(candle.high_price)
-        low_price = float(candle.low_price)
-        if previous_close is None:
-            true_range = high_price - low_price
-        else:
-            true_range = max(high_price - low_price, abs(high_price - previous_close), abs(low_price - previous_close))
-        true_ranges.append(max(0.0, true_range))
-        previous_close = float(candle.close_price)
-    return true_ranges or [0.0]
-
-
-def _analysis_volatility_ratio(true_ranges: list[float], latest_atr: float) -> float | None:
-    if len(true_ranges) < 2:
-        return None
-    baseline = true_ranges[-21:-1] if len(true_ranges) > 20 else true_ranges[:-1]
-    average_baseline = _average(baseline) if baseline else 0.0
-    if average_baseline <= 1e-9:
-        return None
-    return latest_atr / average_baseline
-
-
-def _classify_analysis_volatility(volatility_ratio: float | None) -> str:
-    if volatility_ratio is None:
-        return "normal"
-    if volatility_ratio < 0.7:
-        return "low"
-    if volatility_ratio < 1.35:
-        return "normal"
-    if volatility_ratio < 2.0:
-        return "elevated"
-    return "extreme"
-
-
-def _analysis_volume_ratio(candles: list[ProjectXMarketCandle]) -> float | None:
-    if len(candles) < 2:
-        return None
-    baseline_count = min(20, len(candles) - 1)
-    baseline = [float(candle.volume or 0) for candle in candles[-(baseline_count + 1) : -1]]
-    average_baseline = _average(baseline) if baseline else 0.0
-    if average_baseline <= 1e-9:
-        return None
-    return float(candles[-1].volume or 0) / average_baseline
-
-
-def _classify_analysis_volume(volume_ratio: float | None) -> str:
-    if volume_ratio is None:
-        return "normal"
-    if volume_ratio < 0.7:
-        return "low"
-    if volume_ratio > 1.5:
-        return "elevated"
-    return "normal"
-
-
-def _classify_analysis_trend(
-    *,
-    ema_gap: float,
-    ema_slope: float,
-    recent_delta: float,
-    atr_reference: float,
-    recent_lookback: int,
-) -> tuple[str, int]:
-    gap_units = ema_gap / atr_reference
-    slope_units = ema_slope / atr_reference
-    recent_units = recent_delta / (atr_reference * max(1, recent_lookback))
-    component_signs = [
-        _analysis_component_sign(gap_units, threshold=0.05),
-        _analysis_component_sign(slope_units, threshold=0.03),
-        _analysis_component_sign(recent_units, threshold=0.05),
-    ]
-    direction_score = sum(component_signs)
-    strength = int(
-        round(
-            min(
-                100.0,
-                (abs(gap_units) * 30.0)
-                + (abs(slope_units) * 25.0)
-                + (abs(recent_units) * 35.0),
-            )
-        )
-    )
-    if strength < 15 or abs(direction_score) < 2:
-        return "neutral", strength
-    if direction_score > 0:
-        return "bullish", strength
-    return "bearish", strength
-
-
-def _analysis_component_sign(value: float, *, threshold: float) -> int:
-    if value > threshold:
-        return 1
-    if value < -threshold:
-        return -1
-    return 0
-
-
-def _analysis_support_resistance_levels(
-    candles: list[ProjectXMarketCandle],
-    *,
-    current_price: float,
-) -> tuple[list[float], list[float]]:
-    recent_candles = candles[-min(80, len(candles)) :]
-    window_size = 5 if len(recent_candles) >= 15 else 3
-    timeframe = _candles_timeframe_label(recent_candles) or "analysis"
-    detected_levels = _filter_clustered_levels(
-        _detect_support_resistance_levels(recent_candles, timeframe=timeframe, window_size=window_size),
-        tolerance_percent=0.15,
-    )
-    support_candidates = [
-        level.price for level in detected_levels if level.side == "support" and level.price <= current_price
-    ]
-    resistance_candidates = [
-        level.price for level in detected_levels if level.side == "resistance" and level.price >= current_price
-    ]
-    support_candidates.extend(_analysis_fallback_levels(recent_candles, side="support", current_price=current_price))
-    resistance_candidates.extend(
-        _analysis_fallback_levels(recent_candles, side="resistance", current_price=current_price)
-    )
-    supports = _analysis_unique_level_prices(support_candidates, current_price=current_price, side="support")
-    resistances = _analysis_unique_level_prices(
-        resistance_candidates,
-        current_price=current_price,
-        side="resistance",
-    )
-    return supports, resistances
-
-
-def _analysis_fallback_levels(
-    candles: list[ProjectXMarketCandle],
-    *,
-    side: str,
-    current_price: float,
-) -> list[float]:
-    candidates: list[float] = []
-    for lookback in (5, 10, 20, 50):
-        subset = candles[-min(lookback, len(candles)) :]
-        if not subset:
-            continue
-        if side == "support":
-            price = min(float(candle.low_price) for candle in subset)
-            if price <= current_price:
-                candidates.append(price)
-        else:
-            price = max(float(candle.high_price) for candle in subset)
-            if price >= current_price:
-                candidates.append(price)
-    return candidates
-
-
-def _analysis_unique_level_prices(
-    values: list[float],
-    *,
-    current_price: float,
-    side: str,
-) -> list[float]:
-    ordered_values = sorted(
-        [value for value in values if math.isfinite(value)],
-        reverse=side == "support",
-    )
-    output: list[float] = []
-    for value in ordered_values:
-        if side == "support" and value > current_price:
-            continue
-        if side == "resistance" and value < current_price:
-            continue
-        if any(_level_distance_percent(value, existing) <= 0.1 for existing in output):
-            continue
-        rounded = _round_analysis_float(value)
-        if rounded is not None:
-            output.append(rounded)
-        if len(output) >= 5:
-            break
-    return output
-
-
-def _analysis_probability_scores(
-    *,
-    trend: str,
-    trend_strength: int,
-    volatility_state: str,
-    volume_state: str,
-    signal_action: str,
-    current_price: float,
-    expected_move: float,
-    nearest_support: float | None,
-    nearest_resistance: float | None,
-) -> dict[str, int]:
-    bullish = 33.0
-    bearish = 33.0
-    sideways = 34.0
-    trend_bias = min(32.0, max(0, trend_strength) * 0.4)
-    if trend == "bullish":
-        bullish += trend_bias
-        bearish -= trend_bias * 0.55
-        sideways -= trend_bias * 0.45
-    elif trend == "bearish":
-        bearish += trend_bias
-        bullish -= trend_bias * 0.55
-        sideways -= trend_bias * 0.45
-    else:
-        sideways += 6.0
-        bullish -= 3.0
-        bearish -= 3.0
-
-    if volatility_state == "low":
-        sideways += 4.0
-        bullish -= 2.0
-        bearish -= 2.0
-    elif volatility_state == "elevated":
-        sideways -= 4.0
-        if trend == "bullish":
-            bullish += 3.0
-            bearish += 1.0
-        elif trend == "bearish":
-            bearish += 3.0
-            bullish += 1.0
-        else:
-            bullish += 2.0
-            bearish += 2.0
-    elif volatility_state == "extreme":
-        sideways -= 8.0
-        bullish += 4.0
-        bearish += 4.0
-
-    if volume_state == "elevated" and trend == "bullish":
-        bullish += 5.0
-        bearish -= 2.0
-        sideways -= 3.0
-    elif volume_state == "elevated" and trend == "bearish":
-        bearish += 5.0
-        bullish -= 2.0
-        sideways -= 3.0
-    elif volume_state == "low":
-        sideways += 3.0
-        if trend == "bullish":
-            bullish -= 2.0
-            bearish -= 1.0
-        elif trend == "bearish":
-            bearish -= 2.0
-            bullish -= 1.0
-        else:
-            bullish -= 1.5
-            bearish -= 1.5
-
-    if signal_action == "BUY":
-        bullish += 4.0
-        bearish -= 2.0
-        sideways -= 2.0
-    elif signal_action == "SELL":
-        bearish += 4.0
-        bullish -= 2.0
-        sideways -= 2.0
-    elif signal_action in {"HOLD", "NONE"}:
-        sideways += 2.0
-        bullish -= 1.0
-        bearish -= 1.0
-
-    if expected_move > 0 and nearest_resistance is not None:
-        resistance_distance = nearest_resistance - current_price
-        if 0 <= resistance_distance <= expected_move:
-            bullish -= 4.0
-            bearish += 2.0
-            sideways += 2.0
-    if expected_move > 0 and nearest_support is not None:
-        support_distance = current_price - nearest_support
-        if 0 <= support_distance <= expected_move:
-            bearish -= 4.0
-            bullish += 2.0
-            sideways += 2.0
-
-    normalized = _normalize_analysis_probabilities(
-        {
-            "bullish": bullish,
-            "bearish": bearish,
-            "sideways": sideways,
-        }
-    )
-    return normalized
-
-
-def _normalize_analysis_probabilities(scores: dict[str, float]) -> dict[str, int]:
-    ordered_keys = ["bullish", "bearish", "sideways"]
-    positive_scores = {key: max(0.0, float(scores.get(key, 0.0))) for key in ordered_keys}
-    total = sum(positive_scores.values())
-    if total <= 1e-9:
-        return {"bullish": 33, "bearish": 33, "sideways": 34}
-
-    scaled = {key: positive_scores[key] / total * 100.0 for key in ordered_keys}
-    output = {key: int(math.floor(scaled[key])) for key in ordered_keys}
-    remainder = 100 - sum(output.values())
-    by_fraction = sorted(ordered_keys, key=lambda key: (scaled[key] - output[key], scaled[key]), reverse=True)
-    for index in range(remainder):
-        output[by_fraction[index % len(by_fraction)]] += 1
-    return output
-
-
-def _analysis_invalidation_level(
-    *,
-    trend: str,
-    signal_action: str,
-    current_price: float,
-    expected_move: float,
-    nearest_support: float | None,
-    nearest_resistance: float | None,
-) -> float | None:
-    effective_direction = trend
-    if signal_action == "BUY":
-        effective_direction = "bullish"
-    elif signal_action == "SELL":
-        effective_direction = "bearish"
-
-    if effective_direction == "bullish":
-        level = nearest_support if nearest_support is not None else current_price - expected_move
-        return _round_analysis_float(level)
-    if effective_direction == "bearish":
-        level = nearest_resistance if nearest_resistance is not None else current_price + expected_move
-        return _round_analysis_float(level)
-    return None
-
-
-def _analysis_summary(
-    *,
-    trend: str,
-    trend_strength: int,
-    probabilities: dict[str, int],
-) -> str:
-    if trend == "neutral":
-        return (
-            "Heuristic read is neutral, with sideways probability highest at "
-            f"{probabilities['sideways']}%. This is not financial advice."
-        )
-    return (
-        f"Heuristic read leans {trend} with {trend_strength}/100 trend strength and "
-        f"{probabilities[trend]}% {trend} probability. This is not financial advice."
-    )
-
-
-def _analysis_level_reasoning(*, nearest_support: float | None, nearest_resistance: float | None) -> str:
-    support_text = _format_strategy_price(nearest_support) if nearest_support is not None else "none detected"
-    resistance_text = _format_strategy_price(nearest_resistance) if nearest_resistance is not None else "none detected"
-    return f"Nearest support is {support_text}; nearest resistance is {resistance_text}."
-
-
-def _analysis_signal_reasoning(signal_action: str) -> str:
-    if signal_action in {"BUY", "SELL"}:
-        return f"Bot signal action is {signal_action}; probabilities use it as context, not as a guaranteed prediction."
-    return f"Bot signal action is {signal_action}; probabilities stay conservative without an active directional order signal."
-
-
-def _format_analysis_ratio(value: float | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"{value:.2f}x"
-
-
-def _last_defined_float(values: list[float | None]) -> float | None:
-    for value in reversed(values):
-        if value is not None and math.isfinite(value):
-            return float(value)
-    return None
-
-
-def _prior_defined_float(values: list[float | None], *, lookback: int) -> float | None:
-    defined = [(index, float(value)) for index, value in enumerate(values) if value is not None and math.isfinite(value)]
-    if not defined:
-        return None
-    latest_index = defined[-1][0]
-    target_index = latest_index - max(1, int(lookback))
-    prior_candidates = [value for index, value in defined if index <= target_index]
-    return prior_candidates[-1] if prior_candidates else defined[0][1]
-
-
-def _round_analysis_float(value: float | None, digits: int = 4) -> float | None:
-    if value is None or not math.isfinite(value):
-        return None
-    rounded = round(float(value), digits)
-    return 0.0 if rounded == 0 else rounded
 
 
 def _require_bot_config(
@@ -10857,6 +8781,172 @@ def _require_bot_config(
     return row
 
 
+def _find_bot_run(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    lock_for_update: bool = False,
+) -> BotRun | None:
+    query = (
+        db.query(BotRun)
+        .filter(BotRun.user_id == user_id)
+        .filter(BotRun.bot_config_id == bot_config_id)
+        .filter(BotRun.id == bot_run_id)
+    )
+    if lock_for_update and _session_dialect_name(db) == "postgresql":
+        query = query.with_for_update()
+    return query.one_or_none()
+
+
+def _require_running_bot_run(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    lock_for_update: bool = False,
+) -> BotRun:
+    run = _find_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        bot_run_id=bot_run_id,
+        lock_for_update=lock_for_update,
+    )
+    if run is None:
+        raise LookupError("bot_run_not_found")
+    if str(run.status) != "running":
+        raise ValueError(f"Bot run {run.id} is {run.status} and cannot be evaluated.")
+    return run
+
+
+def _actionable_candle_timestamp(
+    *,
+    signal: SignalResult,
+    candles: list[ProjectXMarketCandle],
+    latest_candle: ProjectXMarketCandle | None,
+) -> datetime | None:
+    if signal.candle_timestamp is not None:
+        signal_timestamp = _as_utc(signal.candle_timestamp)
+        if any(
+            not bool(candle.is_partial) and _as_utc(candle.candle_timestamp) == signal_timestamp
+            for candle in candles
+        ):
+            return signal_timestamp
+        return None
+    if latest_candle is not None and not bool(latest_candle.is_partial):
+        return _as_utc(latest_candle.candle_timestamp)
+    return None
+
+
+def _find_order_attempt_by_idempotency_key(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    idempotency_key: str | None,
+) -> BotOrderAttempt | None:
+    if not idempotency_key:
+        return None
+    return (
+        db.query(BotOrderAttempt)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.bot_config_id == bot_config_id)
+        .filter(BotOrderAttempt.idempotency_key == idempotency_key)
+        .one_or_none()
+    )
+
+
+def _require_order_attempt(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    order_attempt_id: int,
+) -> BotOrderAttempt:
+    row = (
+        db.query(BotOrderAttempt)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.bot_config_id == bot_config_id)
+        .filter(BotOrderAttempt.id == order_attempt_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise LookupError("bot_order_attempt_not_found")
+    return row
+
+
+def _mark_duplicate_decision(
+    decision: BotDecision,
+    *,
+    existing_attempt: BotOrderAttempt,
+    idempotency_key: str | None,
+) -> None:
+    original_reason = str(decision.reason)
+    decision.decision_type = "duplicate_skip"
+    decision.reason = f"Duplicate actionable signal skipped; original attempt #{int(existing_attempt.id)} already claimed."
+    payload = dict(decision.raw_payload) if isinstance(decision.raw_payload, dict) else {}
+    payload.update(
+        {
+            "duplicate_skipped": True,
+            "duplicate_of_order_attempt_id": int(existing_attempt.id),
+            "duplicate_of_order_attempt_status": str(existing_attempt.status),
+            "idempotency_key": idempotency_key,
+            "original_signal_reason": original_reason,
+        }
+    )
+    decision.raw_payload = payload
+
+
+def _claim_order_attempt(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    run: BotRun | None,
+    decision: BotDecision,
+    contract_id: str,
+    action: str,
+    order_size: float,
+    execution_mode: str,
+    correlation_id: str,
+    idempotency_key: str | None,
+) -> tuple[BotOrderAttempt | None, BotOrderAttempt | None]:
+    if not idempotency_key:
+        raise ValueError("An actionable order attempt requires an idempotency key.")
+    try:
+        with db.begin_nested():
+            row = _create_order_attempt(
+                db,
+                user_id=user_id,
+                config=config,
+                run=run,
+                decision=decision,
+                contract_id=contract_id,
+                action=action,
+                order_size=order_size,
+                execution_mode=execution_mode,
+                correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
+            )
+            db.flush()
+        return row, None
+    except IntegrityError:
+        # The SAVEPOINT contains the uniqueness failure, so the request can still
+        # persist its duplicate-skip decision in the surrounding transaction.
+        winner = _find_order_attempt_by_idempotency_key(
+            db,
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
+        )
+        if winner is None:
+            raise
+        return None, winner
+
+
 def _require_owned_account(db: Session, *, user_id: str, account_id: int) -> Account:
     account = get_projectx_account_row(db, account_id, user_id=user_id)
     if account is None:
@@ -10871,6 +8961,7 @@ def _create_risk_event(
     config: BotConfig,
     run: BotRun | None,
     block: RiskBlock,
+    correlation_id: str | None = None,
 ) -> BotRiskEvent:
     row = BotRiskEvent(
         user_id=user_id,
@@ -10880,7 +8971,7 @@ def _create_risk_event(
         severity=block.severity,
         code=block.code,
         message=block.message,
-        raw_payload=block.__dict__,
+        raw_payload={**block.__dict__, "correlation_id": correlation_id},
     )
     db.add(row)
     return row
@@ -10896,6 +8987,9 @@ def _create_order_attempt(
     contract_id: str,
     action: str,
     order_size: float,
+    execution_mode: str,
+    correlation_id: str,
+    idempotency_key: str,
 ) -> BotOrderAttempt:
     request_payload = {
         "accountId": int(config.account_id),
@@ -10903,7 +8997,10 @@ def _create_order_attempt(
         "type": _ORDER_TYPE_MARKET,
         "side": _SIDE_BY_ACTION[action],
         "size": int(round(float(order_size))),
-        "customTag": f"topsignal-bot-{int(config.id)}-{int(decision.id)}",
+        "customTag": provider_custom_tag(
+            bot_config_id=int(config.id),
+            idempotency_key=idempotency_key,
+        ),
     }
     if isinstance(decision.raw_payload, dict):
         strategy_order_plan = {
@@ -10958,6 +9055,9 @@ def _create_order_attempt(
         bot_decision_id=int(decision.id),
         account_id=int(config.account_id),
         contract_id=contract_id,
+        execution_mode=execution_mode,
+        correlation_id=correlation_id,
+        idempotency_key=idempotency_key,
         side=action,
         order_type="market",
         size=float(order_size),
@@ -10985,9 +9085,10 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.provider_order_id = response.get("order_id")
         order_attempt.raw_response = response.get("raw_payload")
     except Exception as exc:
+        safe_error = sanitize_error(exc)
         order_attempt.status = "error"
-        order_attempt.rejection_reason = str(exc)
-        order_attempt.raw_response = {"error": str(exc)}
+        order_attempt.rejection_reason = safe_error
+        order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
 
 
 def _strategy_bracket_payloads(
@@ -11011,10 +9112,10 @@ def _strategy_bracket_payloads(
         return {}
 
     stop_ticks = max(1, int(round(abs(float(entry_price) - float(stop_loss)) / tick_size)))
-    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks, "type": _ORDER_TYPE_STOP}}
+    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks}}
     if isinstance(take_profit, (int, float)):
         take_profit_ticks = max(1, int(round(abs(float(take_profit) - float(entry_price)) / tick_size)))
-        payload["takeProfitBracket"] = {"ticks": take_profit_ticks, "type": _ORDER_TYPE_LIMIT}
+        payload["takeProfitBracket"] = {"ticks": take_profit_ticks}
     return payload
 
 
@@ -11153,6 +9254,7 @@ def load_latest_bot_entry_plan(
 
 
 def _instrument_tick_size(db: Session, *, symbol: str | None, contract_id: str | None) -> float | None:
+    specs = load_instrument_specs(db)
     candidate_keys = _unique_text_values(
         [
             normalize_symbol_key(symbol),
@@ -11162,33 +9264,10 @@ def _instrument_tick_size(db: Session, *, symbol: str | None, contract_id: str |
         ]
     )
     for candidate in candidate_keys:
-        spec = DEFAULT_INSTRUMENT_SPECS.get(candidate)
-        if spec is not None and float(spec.tick_size) > 0:
-            return float(spec.tick_size)
-
-    specs = load_instrument_specs(db)
-    for candidate in candidate_keys:
         spec = specs.get(candidate)
         if spec is not None and float(spec.tick_size) > 0:
             return float(spec.tick_size)
     return None
-
-
-def _instrument_point_value(db: Session, *, symbol: str | None, contract_id: str | None) -> float | None:
-    default_point_value = resolve_point_value(
-        symbol=symbol,
-        contract_id=contract_id,
-        point_value_by_symbol=build_point_value_lookup(DEFAULT_INSTRUMENT_SPECS),
-    )
-    if default_point_value is not None and default_point_value > 0:
-        return default_point_value
-
-    specs = load_instrument_specs(db)
-    return resolve_point_value(
-        symbol=symbol,
-        contract_id=contract_id,
-        point_value_by_symbol=build_point_value_lookup(specs),
-    )
 
 
 def _stop_running_bot_runs(
@@ -11208,9 +9287,7 @@ def _stop_running_bot_runs(
         .all()
     )
     for row in rows:
-        row.status = "stopped"
-        row.stopped_at = now
-        row.stop_reason = reason
+        transition_bot_run(row, "stopped", reason=reason, now=now)
 
 
 def _execution_contract_id(config: BotConfig, latest_candle: ProjectXMarketCandle | None) -> str:
@@ -11447,10 +9524,7 @@ def _validate_strategy_configuration(
 
 
 def _validate_strategy_type(value: Any) -> str:
-    strategy_type = str(value or _STRATEGY_SMA_CROSS).strip()
-    if strategy_type not in _SUPPORTED_STRATEGY_TYPES:
-        raise ValueError("unsupported bot strategy type")
-    return strategy_type
+    return get_strategy_definition(value).identifier
 
 
 def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any]:
@@ -11460,7 +9534,62 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
 
     raw_params = params if isinstance(params, dict) else {}
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
-        return _normalize_topbot_adaptive_params(raw_params)
+        raw_sources = raw_params.get("source_strategies", _TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES)
+        if not isinstance(raw_sources, (list, tuple)):
+            raw_sources = _TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES
+        source_strategies: list[str] = []
+        for source in raw_sources:
+            identifier = str(source or "").strip()
+            if (
+                identifier
+                and identifier != _STRATEGY_TOPBOT_ADAPTIVE
+                and identifier in _SUPPORTED_STRATEGY_TYPES
+                and identifier not in source_strategies
+            ):
+                source_strategies.append(identifier)
+        if not source_strategies:
+            source_strategies = list(_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES)
+
+        raw_source_params = raw_params.get("source_strategy_params")
+        source_strategy_params: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_source_params, dict):
+            for identifier in source_strategies:
+                override = raw_source_params.get(identifier)
+                if isinstance(override, dict):
+                    source_strategy_params[identifier] = dict(override)
+
+        trailing_stop_mode = str(
+            raw_params.get("trailing_stop_mode", _TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
+        ).strip().lower()
+        if trailing_stop_mode not in _MACD_SUPPORT_RESISTANCE_TRAILING_STOP_MODES:
+            trailing_stop_mode = str(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
+        return {
+            "source_strategies": source_strategies,
+            "source_strategy_params": source_strategy_params,
+            "minimum_score": _bounded_float_param(raw_params, "minimum_score", 70.0, minimum=0, maximum=100),
+            "minimum_confidence": _bounded_float_param(
+                raw_params, "minimum_confidence", 55.0, minimum=0, maximum=100
+            ),
+            "minimum_directional_votes": _bounded_int_param(
+                raw_params, "minimum_directional_votes", 2, minimum=1, maximum=20
+            ),
+            "max_opposing_votes": _bounded_int_param(
+                raw_params, "max_opposing_votes", 1, minimum=0, maximum=20
+            ),
+            "minimum_reward_risk": _bounded_float_param(
+                raw_params, "minimum_reward_risk", 1.5, minimum=0.1, maximum=20
+            ),
+            "time_stop_bars": _bounded_int_param(raw_params, "time_stop_bars", 6, minimum=1, maximum=500),
+            "enable_trailing_stop": _boolean_param(raw_params, "enable_trailing_stop", True),
+            "trailing_stop_mode": trailing_stop_mode,
+            "trailing_atr_multiplier": _bounded_float_param(
+                raw_params, "trailing_atr_multiplier", 2.0, minimum=0.1, maximum=20
+            ),
+            "move_to_breakeven_at_r": _bounded_float_param(
+                raw_params, "move_to_breakeven_at_r", 1.0, minimum=0.1, maximum=20
+            ),
+            "block_expired_contracts": _boolean_param(raw_params, "block_expired_contracts", False),
+        }
 
     if normalized_strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
         long_rsi_min = _bounded_float_param(
@@ -12618,6 +10747,20 @@ def _bounded_float_param(
     return max(minimum, min(maximum, value))
 
 
+def _boolean_param(params: dict[str, Any], key: str, default: bool) -> bool:
+    value = params.get(key, default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+        return default
+    if value is None:
+        return default
+    return bool(value)
+
+
 def _validate_unique_bot_name(
     db: Session,
     *,
@@ -12720,6 +10863,19 @@ def _optional_float(value: Any) -> float | None:
     if parsed != parsed:
         return None
     return parsed
+
+
+def _finite_optional_float(value: Any) -> float | None:
+    # JSON booleans are integers in Python (`float(True) == 1.0`), but they are
+    # not valid persisted price levels. Likewise, do not silently coerce
+    # strings or other malformed payload values into authoritative API prices.
+    if isinstance(value, bool) or not isinstance(value, Number):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _trade_side_sign(side: str | None) -> int:

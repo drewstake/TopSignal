@@ -1,0 +1,625 @@
+import os
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+
+from app.db import Base
+from app.models import Account, BotConfig, BotDecision, BotOrderAttempt, BotRun, ProjectXMarketCandle
+from app.services import bot_service
+from app.services.bot_execution_safety import (
+    InvalidBotRunTransition,
+    build_action_idempotency_key,
+    touch_bot_run,
+    transition_bot_run,
+)
+from app.services.bot_service import BotRunEvaluationError, SignalResult, evaluate_bot_config, start_bot_run
+
+
+USER_A = "00000000-0000-0000-0000-000000000001"
+USER_B = "00000000-0000-0000-0000-000000000002"
+CONTRACT_ID = "CON.F.US.MNQ.M26"
+
+
+@pytest.fixture
+def db_session():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.rollback()
+        db.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+class RecordingClient:
+    def __init__(self, *, order_error: Exception | None = None):
+        self.order_error = order_error
+        self.place_order_calls: list[dict] = []
+
+    def place_order(self, **kwargs):
+        self.place_order_calls.append(kwargs)
+        if self.order_error is not None:
+            raise self.order_error
+        return {"order_id": "provider-order-1", "raw_payload": {"accepted": True}}
+
+
+def _add_account_and_config(
+    db: Session,
+    *,
+    user_id: str = USER_A,
+    account_id: int = 9001,
+    enabled: bool = True,
+    execution_mode: str = "dry_run",
+    name: str = "Safety Bot",
+) -> tuple[Account, BotConfig]:
+    account = Account(
+        user_id=user_id,
+        provider="projectx",
+        external_id=str(account_id),
+        name=f"Practice {account_id}",
+        account_state="ACTIVE",
+        can_trade=True,
+        is_visible=True,
+    )
+    config = BotConfig(
+        user_id=user_id,
+        account_id=account_id,
+        name=name,
+        enabled=enabled,
+        execution_mode=execution_mode,
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=2,
+        slow_period=3,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=10,
+        max_open_position=1,
+        allowed_contracts=[CONTRACT_ID],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3600,
+    )
+    db.add_all([account, config])
+    db.flush()
+    return account, config
+
+
+def _patch_actionable_signal(monkeypatch, *, candle_timestamp: datetime | None = None, action: str = "BUY") -> datetime:
+    timestamp = candle_timestamp or (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microsecond=0)
+
+    def fake_fetch(_db, *, user_id, config, client):
+        del client
+        candle = ProjectXMarketCandle(
+            user_id=user_id,
+            contract_id=str(config.contract_id),
+            symbol=config.symbol,
+            live=False,
+            unit=str(config.timeframe_unit),
+            unit_number=int(config.timeframe_unit_number),
+            candle_timestamp=timestamp,
+            open_price=100,
+            high_price=102,
+            low_price=99,
+            close_price=101,
+            volume=100,
+            is_partial=False,
+        )
+        return [candle], SignalResult(
+            action=action,
+            reason="characterized actionable signal",
+            candle_timestamp=timestamp,
+            price=101.0,
+            raw_payload={"strategy_type": str(config.strategy_type)},
+        )
+
+    monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", fake_fetch)
+    monkeypatch.setattr(bot_service, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(bot_service, "build_signal_trade_evaluation", lambda **_kwargs: None)
+    return timestamp
+
+
+def _risk_codes(result) -> set[str]:
+    return {event.code for event in result.risk_events}
+
+
+def test_repeated_actionable_candle_creates_one_attempt_and_duplicate_skip_audit(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    client = RecordingClient()
+
+    first = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=True,
+    )
+    db_session.commit()
+    second = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=True,
+    )
+    db_session.commit()
+
+    assert first.status == "dry_run_attempt"
+    assert first.order_attempt is not None
+    assert second.status == "duplicate_skipped"
+    assert second.order_attempt is None
+    assert second.idempotency_key == first.idempotency_key
+    assert second.duplicate_of_order_attempt_id == first.order_attempt.id
+    assert second.decision.decision_type == "duplicate_skip"
+    serialized = bot_service.serialize_evaluation(second)
+    assert serialized["status"] == "duplicate_skipped"
+    assert serialized["correlation_id"] == second.correlation_id
+    assert serialized["idempotency_key"] == first.idempotency_key
+    assert serialized["duplicate_of_order_attempt_id"] == first.order_attempt.id
+    assert db_session.query(BotOrderAttempt).count() == 1
+    assert [row.decision_type for row in db_session.query(BotDecision).order_by(BotDecision.id).all()] == [
+        "signal",
+        "duplicate_skip",
+    ]
+    assert client.place_order_calls == []
+
+
+def test_uniqueness_toctou_race_uses_savepoint_and_keeps_session_usable(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session)
+    timestamp = _patch_actionable_signal(monkeypatch)
+    idempotency_key = build_action_idempotency_key(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        candle_timestamp=timestamp,
+        action="BUY",
+        execution_mode="dry_run",
+    )
+    winner_decision = BotDecision(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=int(config.account_id),
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        decision_type="signal",
+        action="BUY",
+        reason="winning request",
+        candle_timestamp=timestamp,
+        price=101,
+        quantity=1,
+        correlation_id="winner-correlation",
+        idempotency_key=idempotency_key,
+    )
+    db_session.add(winner_decision)
+    db_session.flush()
+    winner_attempt = BotOrderAttempt(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        bot_decision_id=int(winner_decision.id),
+        account_id=int(config.account_id),
+        contract_id=CONTRACT_ID,
+        execution_mode="dry_run",
+        correlation_id="winner-correlation",
+        idempotency_key=idempotency_key,
+        side="BUY",
+        order_type="market",
+        size=1,
+        status="dry_run",
+    )
+    db_session.add(winner_attempt)
+    db_session.commit()
+
+    original_lookup = bot_service._find_order_attempt_by_idempotency_key
+    lookup_count = 0
+
+    def miss_before_claim_then_find_winner(*args, **kwargs):
+        nonlocal lookup_count
+        lookup_count += 1
+        if lookup_count == 1:
+            return None
+        return original_lookup(*args, **kwargs)
+
+    monkeypatch.setattr(bot_service, "_find_order_attempt_by_idempotency_key", miss_before_claim_then_find_winner)
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=RecordingClient(),
+        dry_run=True,
+    )
+
+    assert result.status == "duplicate_skipped"
+    assert result.duplicate_of_order_attempt_id == winner_attempt.id
+    assert result.decision.decision_type == "duplicate_skip"
+    assert lookup_count == 2
+    assert db_session.execute(text("select 1")).scalar_one() == 1
+    db_session.commit()
+    assert db_session.query(BotOrderAttempt).count() == 1
+    assert db_session.query(BotDecision).filter(BotDecision.decision_type == "duplicate_skip").count() == 1
+
+
+@pytest.mark.parametrize("target_status", ["stopped", "blocked", "error"])
+def test_running_run_allows_only_terminal_transitions(target_status):
+    run = SimpleNamespace(
+        status="running",
+        stopped_at=None,
+        stop_reason=None,
+        last_heartbeat_at=None,
+        last_error=None,
+        last_evaluated_at=None,
+        raw_state=None,
+    )
+
+    transition_bot_run(run, target_status, reason=f"test_{target_status}", error="provider failed")
+
+    assert run.status == target_status
+    assert run.stopped_at is not None
+    assert run.last_heartbeat_at == run.stopped_at
+    assert run.stop_reason == f"test_{target_status}"
+    if target_status == "error":
+        assert run.last_error == "provider failed"
+
+
+@pytest.mark.parametrize(
+    ("current_status", "target_status"),
+    [
+        ("stopped", "running"),
+        ("stopped", "blocked"),
+        ("blocked", "stopped"),
+        ("error", "running"),
+        ("running", "paused"),
+    ],
+)
+def test_invalid_run_transitions_are_rejected(current_status, target_status):
+    run = SimpleNamespace(status=current_status)
+
+    with pytest.raises(InvalidBotRunTransition, match="Invalid bot run transition"):
+        transition_bot_run(run, target_status)
+
+
+def test_running_run_can_heartbeat_but_terminal_run_cannot():
+    candle_timestamp = datetime.now(timezone.utc) - timedelta(minutes=1)
+    run = SimpleNamespace(
+        status="running",
+        last_heartbeat_at=None,
+        last_evaluated_at=None,
+        raw_state=None,
+        stopped_at=None,
+        stop_reason=None,
+        last_error=None,
+    )
+
+    touch_bot_run(run, candle_timestamp=candle_timestamp)
+
+    assert run.last_heartbeat_at == run.last_evaluated_at
+    assert run.raw_state["last_closed_candle_at"] == candle_timestamp.isoformat()
+    transition_bot_run(run, "stopped", reason="done")
+    with pytest.raises(InvalidBotRunTransition, match="terminal state stopped"):
+        touch_bot_run(run)
+
+
+def test_database_uniqueness_allows_only_one_running_run_per_bot(db_session):
+    _, config = _add_account_and_config(db_session)
+    first = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=int(config.account_id),
+        status="running",
+        dry_run=True,
+    )
+    db_session.add(first)
+    db_session.commit()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                BotRun(
+                    user_id=USER_A,
+                    bot_config_id=int(config.id),
+                    account_id=int(config.account_id),
+                    status="running",
+                    dry_run=True,
+                )
+            )
+            db_session.flush()
+
+    assert db_session.execute(text("select 1")).scalar_one() == 1
+    assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 1
+
+
+def test_provider_candle_failure_on_start_persists_error_run_and_no_running_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False)
+    db_session.commit()
+
+    def fail_fetch(*_args, **_kwargs):
+        raise RuntimeError("provider candle timeout")
+
+    monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", fail_fetch)
+
+    with pytest.raises(BotRunEvaluationError, match="provider candle timeout") as exc_info:
+        start_bot_run(
+            db_session,
+            user_id=USER_A,
+            bot_config_id=int(config.id),
+            client=RecordingClient(),
+            dry_run=True,
+        )
+    assert isinstance(exc_info.value.cause, RuntimeError)
+    db_session.commit()
+    db_session.expire_all()
+
+    runs = db_session.query(BotRun).all()
+    assert len(runs) == 1
+    assert runs[0].status == "error"
+    assert runs[0].stop_reason == "evaluation_failed"
+    assert "provider candle timeout" in str(runs[0].last_error)
+    assert runs[0].raw_state["phase"] == "error"
+    assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 0
+    assert db_session.query(BotOrderAttempt).count() == 0
+    assert db_session.get(BotConfig, config.id).enabled is False
+
+
+def test_provider_order_failure_preserves_error_attempt_and_terminal_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(order_error=RuntimeError("provider order unavailable"))
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+    db_session.commit()
+    db_session.expire_all()
+
+    attempt = db_session.query(BotOrderAttempt).one()
+    run = db_session.query(BotRun).one()
+    assert result.status == "error"
+    assert attempt.status == "error"
+    assert attempt.execution_mode == "live"
+    assert attempt.idempotency_key == result.idempotency_key
+    assert "provider order unavailable" in str(attempt.rejection_reason)
+    assert run.status == "error"
+    assert run.stop_reason == "provider_order_submission_failed"
+    assert "provider order unavailable" in str(run.last_error)
+    assert run.stopped_at is not None
+    assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 0
+    assert db_session.get(BotConfig, config.id).enabled is False
+    assert len(client.place_order_calls) == 1
+
+
+def test_risk_blocked_signal_creates_no_order_attempt(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=RecordingClient(),
+        dry_run=True,
+    )
+    db_session.commit()
+
+    assert result.status == "risk_blocked"
+    assert "bot_disabled" in _risk_codes(result)
+    assert result.order_attempt is None
+    assert db_session.query(BotOrderAttempt).count() == 0
+
+
+def test_dry_run_is_default_even_for_live_config_and_never_submits(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=None,
+        confirm_live_order_routing=True,
+    )
+    db_session.commit()
+
+    assert result.status == "dry_run_attempt"
+    assert result.order_attempt is not None
+    assert result.order_attempt.execution_mode == "dry_run"
+    assert result.order_attempt.status == "dry_run"
+    assert client.place_order_calls == []
+
+
+def test_dry_config_cannot_be_overridden_to_live(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="dry_run")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"live_execution_not_configured"}
+    assert db_session.query(BotOrderAttempt).count() == 0
+    assert client.place_order_calls == []
+
+
+def test_live_execution_requires_explicit_confirmation(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=False,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"live_order_confirmation_missing"}
+    assert db_session.query(BotOrderAttempt).count() == 0
+    assert client.place_order_calls == []
+
+
+def test_live_execution_is_blocked_under_test_runtime(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: True)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"live_execution_disabled_in_tests"}
+    assert db_session.query(BotOrderAttempt).count() == 0
+    assert client.place_order_calls == []
+
+
+def test_live_funded_account_restriction_is_preserved(db_session, monkeypatch):
+    account, config = _add_account_and_config(db_session, execution_mode="live")
+    account.name = "Live Funded 9001"
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"live_funded_api_blocked"}
+    assert db_session.query(BotOrderAttempt).count() == 0
+    assert client.place_order_calls == []
+
+
+def test_bot_evaluation_and_idempotency_are_user_scoped(db_session, monkeypatch):
+    _, config_a = _add_account_and_config(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        name="User A Bot",
+    )
+    _, config_b = _add_account_and_config(
+        db_session,
+        user_id=USER_B,
+        account_id=9001,
+        name="User B Bot",
+    )
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+
+    result_a = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config_a,
+        account=None,
+        client=RecordingClient(),
+        dry_run=True,
+    )
+    db_session.commit()
+
+    assert (
+        bot_service._find_order_attempt_by_idempotency_key(
+            db_session,
+            user_id=USER_B,
+            bot_config_id=int(config_a.id),
+            idempotency_key=result_a.idempotency_key,
+        )
+        is None
+    )
+    with pytest.raises(LookupError, match="bot_config_not_found"):
+        evaluate_bot_config(
+            db_session,
+            user_id=USER_B,
+            config=config_a,
+            account=None,
+            client=RecordingClient(),
+            dry_run=True,
+        )
+
+    result_b = evaluate_bot_config(
+        db_session,
+        user_id=USER_B,
+        config=config_b,
+        account=None,
+        client=RecordingClient(),
+        dry_run=True,
+    )
+    db_session.commit()
+
+    assert result_a.status == result_b.status == "dry_run_attempt"
+    assert result_a.idempotency_key != result_b.idempotency_key
+    assert db_session.query(BotOrderAttempt).filter(BotOrderAttempt.user_id == USER_A).count() == 1
+    assert db_session.query(BotOrderAttempt).filter(BotOrderAttempt.user_id == USER_B).count() == 1

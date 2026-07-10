@@ -705,15 +705,12 @@ def _ensure_bot_schema_compatibility() -> None:
             _add_column(conn, "bot_configs", config_columns, "created_at", "timestamptz not null default now()")
             _add_column(conn, "bot_configs", config_columns, "updated_at", "timestamptz not null default now()")
 
+            # Repair missing values, but preserve named legacy strategies so a
+            # compatibility pass never silently changes their trading logic.
             conn.execute(
                 text(
                     "update bot_configs set strategy_type = 'sma_cross' "
-                    "where strategy_type is null or strategy_type not in "
-                    "('topbot_adaptive','sma_cross','support_resistance','donchian_breakout','liquidity_sweep_retest','opening_rvol_breakout','bollinger_rsi_reversal','macd_support_resistance','delayed_orb_confirmation',"
-                    "'ema_trend_pullback','ema_scalping','vwap_atr_mean_reversion','fisher_transform_mean_reversion',"
-                    "'atr_adjusted_relative_strength','relative_strength_spy',"
-                    "'fvg_sweep_mss','orb_fibonacci_pullback','pullback_trap_reversal','supertrend_pivot',"
-                    "'bollinger_mean_reversion','vwap_gap_retrace')"
+                    "where strategy_type is null or btrim(strategy_type) = ''"
                 )
             )
             conn.execute(text("alter table bot_configs alter column strategy_type set default 'sma_cross'"))
@@ -747,7 +744,7 @@ def _ensure_bot_schema_compatibility() -> None:
                         'bollinger_mean_reversion',
                         'vwap_gap_retrace'
                       )
-                    )
+                    ) not valid
                     """
                 )
             )
@@ -831,25 +828,117 @@ def _ensure_bot_schema_compatibility() -> None:
                 run_columns.add("stop_reason")
 
             _add_column(conn, "bot_runs", run_columns, "last_heartbeat_at", "timestamptz")
+            _add_column(conn, "bot_runs", run_columns, "last_evaluated_at", "timestamptz")
+            _add_column(conn, "bot_runs", run_columns, "last_error", "text")
             _add_column(conn, "bot_runs", run_columns, "raw_state", "jsonb")
+            conn.execute(
+                text(
+                    """
+                    with ranked_running as (
+                      select
+                        id,
+                        row_number() over (
+                          partition by user_id, bot_config_id
+                          order by started_at desc, id desc
+                        ) as running_rank
+                      from bot_runs
+                      where status = 'running'
+                    )
+                    update bot_runs as run
+                    set
+                      status = 'stopped',
+                      stopped_at = coalesce(run.stopped_at, now()),
+                      stop_reason = coalesce(
+                        nullif(btrim(run.stop_reason), ''),
+                        'migration_superseded_duplicate_running_run'
+                      )
+                    from ranked_running
+                    where run.id = ranked_running.id
+                      and ranked_running.running_rank > 1
+                    """
+                )
+            )
             conn.execute(text("create index if not exists idx_bot_runs_config_started on bot_runs (user_id, bot_config_id, started_at)"))
             conn.execute(text("create index if not exists idx_bot_runs_account_status on bot_runs (user_id, account_id, status)"))
+            conn.execute(
+                text(
+                    """
+                    create unique index if not exists uq_bot_runs_one_running_per_config
+                    on bot_runs (user_id, bot_config_id)
+                    where status = 'running'
+                    """
+                )
+            )
 
         if "bot_decisions" in table_names:
-            conn.execute(text("alter table bot_decisions drop constraint if exists bot_decisions_action_check"))
+            decision_columns = {column["name"] for column in inspector.get_columns("bot_decisions")}
+            _add_column(conn, "bot_decisions", decision_columns, "correlation_id", "text")
+            _add_column(conn, "bot_decisions", decision_columns, "idempotency_key", "text")
+            conn.execute(text("alter table bot_decisions drop constraint if exists bot_decisions_type_check"))
             conn.execute(
                 text(
                     """
                     alter table bot_decisions
-                    add constraint bot_decisions_action_check
-                    check (action in ('BUY','SELL','HOLD','NONE','STOP','RISK_REJECT'))
+                    add constraint bot_decisions_type_check
+                    check (decision_type in ('signal','risk_reject','order_attempt','lifecycle','duplicate_skip'))
                     """
                 )
             )
             conn.execute(text("create index if not exists idx_bot_decisions_config_created on bot_decisions (user_id, bot_config_id, created_at)"))
         if "bot_order_attempts" in table_names:
+            attempt_columns = {column["name"] for column in inspector.get_columns("bot_order_attempts")}
+            _add_column(conn, "bot_order_attempts", attempt_columns, "execution_mode", "text")
+            _add_column(conn, "bot_order_attempts", attempt_columns, "correlation_id", "text")
+            _add_column(conn, "bot_order_attempts", attempt_columns, "idempotency_key", "text")
+            conn.execute(
+                text(
+                    """
+                    update bot_order_attempts as attempt
+                    set execution_mode = case
+                      when attempt.bot_run_id is not null then coalesce(
+                        (
+                          select case when run.dry_run then 'dry_run' else 'live' end
+                          from bot_runs as run
+                          where run.id = attempt.bot_run_id
+                        ),
+                        'dry_run'
+                      )
+                      when attempt.status = 'dry_run' then 'dry_run'
+                      when attempt.status = 'submitted' then 'live'
+                      else 'dry_run'
+                    end
+                    where attempt.execution_mode is null
+                       or attempt.execution_mode not in ('dry_run', 'live')
+                    """
+                )
+            )
+            conn.execute(text("alter table bot_order_attempts alter column execution_mode set default 'dry_run'"))
+            conn.execute(text("alter table bot_order_attempts alter column execution_mode set not null"))
+            conn.execute(
+                text(
+                    "alter table bot_order_attempts drop constraint if exists bot_order_attempts_execution_mode_check"
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    alter table bot_order_attempts
+                    add constraint bot_order_attempts_execution_mode_check
+                    check (execution_mode in ('dry_run','live'))
+                    """
+                )
+            )
             conn.execute(text("create index if not exists idx_bot_order_attempts_config_created on bot_order_attempts (user_id, bot_config_id, created_at)"))
             conn.execute(text("create index if not exists idx_bot_order_attempts_account_created on bot_order_attempts (user_id, account_id, created_at)"))
+            conn.execute(
+                text(
+                    """
+                    create unique index if not exists uq_bot_order_attempts_idempotency_key
+                    on bot_order_attempts (user_id, bot_config_id, idempotency_key)
+                    where idempotency_key is not null
+                    """
+                )
+            )
         if "bot_risk_events" in table_names:
             conn.execute(text("create index if not exists idx_bot_risk_events_config_created on bot_risk_events (user_id, bot_config_id, created_at)"))
 

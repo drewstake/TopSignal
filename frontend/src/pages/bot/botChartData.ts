@@ -41,7 +41,14 @@ interface BuildLiveCandleFromPriceOptions {
   fetchedAt?: Date;
 }
 
-interface BuildCandlestickDataOptions {
+export interface BuildCandlestickDataOptions {
+  /**
+   * Display-only continuity treatment. When enabled, a consecutive candle's
+   * rendered open is joined to the previous close. Raw ProjectX OHLC remains
+   * untouched and is used by default.
+   */
+  visualContinuity?: boolean;
+  /** @deprecated Use `visualContinuity`; retained for existing callers. */
   bridgeConsecutiveGaps?: boolean;
 }
 
@@ -94,6 +101,10 @@ export function buildCandlestickData(
     }
 
     const timestampSeconds = Number(time);
+    const existing = byTime.get(timestampSeconds);
+    if (existing && !existing.candle.is_partial && candle.is_partial) {
+      continue;
+    }
     byTime.set(timestampSeconds, {
       time,
       timestampSeconds,
@@ -101,16 +112,30 @@ export function buildCandlestickData(
     });
   }
 
-  const bridgeConsecutiveGaps = options.bridgeConsecutiveGaps ?? true;
+  const visualContinuity = options.visualContinuity ?? options.bridgeConsecutiveGaps ?? false;
   const sortedCandles = Array.from(byTime.values()).sort((left, right) => left.timestampSeconds - right.timestampSeconds);
   return sortedCandles.map((row, index) => {
+    if (!visualContinuity) {
+      return buildCanonicalCandlestick(row);
+    }
     const previous = index > 0 ? sortedCandles[index - 1] : null;
     const open =
-      bridgeConsecutiveGaps && previous && areConsecutiveIntradayCandles(previous, row)
+      previous && areConsecutiveIntradayCandles(previous, row)
         ? previous.candle.close
         : row.candle.open;
-    return buildDisplayCandlestick(row, open);
+    return buildVisualContinuityCandlestick(row, open);
   });
+}
+
+/**
+ * Build display-only candles whose consecutive opens visually join the prior
+ * close. Prefer `buildCandlestickData` whenever canonical ProjectX OHLC is
+ * required for charting or calculations.
+ */
+export function buildVisualContinuityCandlestickData(
+  candles: ProjectXMarketCandle[],
+): CandlestickData<UTCTimestamp>[] {
+  return buildCandlestickData(candles, { visualContinuity: true });
 }
 
 export function buildSmaData(candles: CandlestickData<UTCTimestamp>[], period: number): LineData<UTCTimestamp>[] {
@@ -322,9 +347,14 @@ export function buildLiveCandleFromPriceUpdate({
   }
 
   const bucketTimestampMs = Date.parse(bucketTimestamp);
-  const closedBase = closedCandles.find((candle) => Date.parse(candle.timestamp) === bucketTimestampMs) ?? null;
+  const fetchedBase = closedCandles.find((candle) => Date.parse(candle.timestamp) === bucketTimestampMs) ?? null;
   const liveBase = currentLiveCandle && Date.parse(currentLiveCandle.timestamp) === bucketTimestampMs ? currentLiveCandle : null;
-  const base = liveBase ?? closedBase;
+  const closedBase = [fetchedBase, liveBase].find((candle) => candle !== null && !candle.is_partial) ?? null;
+  if (closedBase) {
+    return closedBase;
+  }
+
+  const base = liveBase ?? fetchedBase;
   const previousClose =
     base === null
       ? findPreviousConsecutiveClose({
@@ -338,7 +368,7 @@ export function buildLiveCandleFromPriceUpdate({
   const low = Math.min(base?.low ?? open, open, price.price);
 
   return {
-    id: closedBase?.id ?? null,
+    id: fetchedBase?.id ?? null,
     contract_id: price.contract_id || config.contract_id,
     symbol: price.symbol ?? config.symbol ?? null,
     live: false,
@@ -373,7 +403,18 @@ function buildTimeframeBucketTimestamp(timestamp: string, unit: BotTimeframeUnit
   return new Date(Math.floor(timestampMs / bucketMs) * bucketMs).toISOString();
 }
 
-function buildDisplayCandlestick(row: ValidMarketCandle, open: number): CandlestickData<UTCTimestamp> {
+function buildCanonicalCandlestick(row: ValidMarketCandle): CandlestickData<UTCTimestamp> {
+  const { candle } = row;
+  return {
+    time: row.time,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  };
+}
+
+function buildVisualContinuityCandlestick(row: ValidMarketCandle, open: number): CandlestickData<UTCTimestamp> {
   const { candle } = row;
   const high = Math.max(open, candle.open, candle.high, candle.low, candle.close);
   const low = Math.min(open, candle.open, candle.high, candle.low, candle.close);
@@ -448,6 +489,10 @@ function buildSortedVwapCandles(candles: ProjectXMarketCandle[]): ValidMarketCan
     }
 
     const timestampSeconds = Number(time);
+    const existing = byTime.get(timestampSeconds);
+    if (existing && !existing.candle.is_partial && candle.is_partial) {
+      continue;
+    }
     byTime.set(timestampSeconds, {
       time,
       timestampSeconds,

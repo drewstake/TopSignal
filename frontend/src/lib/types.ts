@@ -501,7 +501,7 @@ export interface ProjectXCredentialsStatus {
 
 export type BotExecutionMode = "dry_run" | "live";
 export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
-export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP" | "RISK_REJECT";
+export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
 export type BotStrategyType =
   | "topbot_adaptive"
   | "sma_cross"
@@ -538,11 +538,111 @@ export interface BotDirectionalProbabilities {
   sideways: number;
 }
 
+export type BotProbabilityMethod = "heuristic_scenario_weight";
+export type BotDataQualityStatus = "good" | "limited" | "insufficient" | "stale";
+export type BotMarketRegime = "trend" | "range" | "chop" | "volatile" | "quiet" | "unknown";
+export type BotVwapLocation = "above" | "below" | "at" | "unavailable";
+export type BotVolatilityState = "low" | "normal" | "elevated" | "extreme";
+export type BotVolumeState = "low" | "normal" | "elevated";
+export type BotMultiTimeframeAlignmentStatus = "bullish" | "bearish" | "mixed" | "neutral" | "unavailable";
+
+export interface BotAnalysisTimeframe {
+  unit: BotTimeframeUnit;
+  unit_number: number;
+  label: string;
+}
+
+export interface BotAnalysisGap {
+  before_timestamp: string;
+  after_timestamp: string;
+  missing_bars: number;
+}
+
+export interface BotAnalysisProvenance {
+  closed_candle_count: number;
+  partial_candle_count: number;
+  latest_candle_timestamp: string | null;
+  data_age_seconds: number | null;
+  is_stale: boolean;
+  stale_after_seconds: number;
+  timeframe: BotAnalysisTimeframe;
+  detected_gaps: BotAnalysisGap[];
+  gap_count: number;
+}
+
+export interface BotAnalysisDataQuality {
+  status: BotDataQualityStatus;
+  confidence: number;
+  missing_inputs: string[];
+  warnings: string[];
+}
+
+export interface BotAnalysisFeatures {
+  trend: {
+    direction: BotMarketBias;
+    strength: number;
+    fast_ema: number | null;
+    slow_ema: number | null;
+    slow_ema_slope: number | null;
+  };
+  volatility: {
+    atr: number | null;
+    atr_percent: number | null;
+    percentile: number | null;
+    state: BotVolatilityState;
+  };
+  volume: {
+    relative_volume: number | null;
+    state: BotVolumeState;
+  };
+  vwap: {
+    value: number | null;
+    location: BotVwapLocation;
+  };
+  multi_timeframe_alignment: {
+    status: BotMultiTimeframeAlignmentStatus;
+    aligned_timeframes: number;
+    conflicting_timeframes: number;
+    timeframes: Array<{
+      timeframe: string;
+      direction: BotMarketBias;
+    }>;
+  };
+  nearby_levels: {
+    support: number | null;
+    resistance: number | null;
+  };
+}
+
+export interface BotAnalysisScoreDrivers {
+  bullish: string[];
+  bearish: string[];
+  neutral: string[];
+}
+
+export interface BotAnalysisDimension {
+  score: number;
+  label: string;
+  drivers: string[];
+}
+
+export interface BotAnalysisMarketBiasDimension {
+  direction: BotMarketBias;
+  strength: number;
+  drivers: string[];
+}
+
+export interface BotAnalysisExecutionRisk {
+  risk_score: number;
+  label: string;
+  drivers: string[];
+}
+
 export type TradePlanDirection = "long" | "short";
 export type TradePlanTrend = "bullish" | "bearish" | "neutral" | "unknown";
 export type TradePlanTimeOfDay = "premarket" | "open" | "ny_am" | "lunch" | "power_hour" | "close" | "overnight";
 export type TradePlanMarketRegime = "trend" | "range" | "chop" | "breakout" | "reversal" | "unknown";
-export type TradePlanNewsRisk = "low" | "medium" | "high";
+export type TradePlanNewsRisk = "low" | "medium" | "high" | "unknown";
 export type TradeEvaluationDecision = "take" | "wait" | "avoid";
 export type TradeEvaluationConfidence = "low" | "medium" | "high";
 export type TradeEvaluationGrade = "A" | "B" | "C" | "D" | "F";
@@ -555,6 +655,9 @@ export interface TradePlanInput {
   take_profit: number;
   quantity: number;
   timestamp: string;
+  tick_size?: number | null;
+  tick_value?: number | null;
+  point_value?: number | null;
   account_balance?: number | null;
   current_day_pnl?: number | null;
   max_daily_loss?: number | null;
@@ -617,6 +720,26 @@ export interface TradePlanFeatures {
   reward_points: number;
   risk_reward_ratio: number | null;
   breakeven_win_rate: number | null;
+  geometry_valid?: boolean;
+  geometry_issues?: string[];
+  tick_size?: number | null;
+  tick_value?: number | null;
+  point_value?: number | null;
+  normalized_entry_price?: number | null;
+  normalized_stop_loss?: number | null;
+  normalized_take_profit?: number | null;
+  prices_normalized_to_tick?: boolean;
+  risk_ticks?: number | null;
+  reward_ticks?: number | null;
+  r_multiple?: number | null;
+  estimated_dollar_risk?: number | null;
+  estimated_dollar_reward?: number | null;
+  account_risk_percent?: number | null;
+  projected_day_pnl?: number | null;
+  daily_loss_remaining_before_trade?: number | null;
+  daily_loss_remaining_after_trade?: number | null;
+  drawdown_risk_percent?: number | null;
+  drawdown_danger?: boolean | null;
   is_long: boolean;
   is_short: boolean;
   price_above_vwap: boolean | null;
@@ -650,7 +773,31 @@ export interface TradePlanFeatures {
   should_reduce_size: boolean | null;
 }
 
+export interface TradeEvaluationPenalty {
+  code: string;
+  category: string | null;
+  points_deducted: number;
+  reason: string;
+}
+
+export interface TradeEvaluationCap {
+  code: string;
+  maximum: number;
+  reason: string;
+  score_before: number;
+  score_after: number;
+  applied: boolean;
+}
+
+export interface TradeEvaluationDimension {
+  awarded_points: number;
+  maximum_points: number;
+  score_percent: number;
+}
+
 export interface TradeEvaluationResult {
+  scoring_model_version?: string;
+  score_before_caps?: number;
   total_score: number;
   score: number;
   grade: TradeEvaluationGrade;
@@ -663,40 +810,44 @@ export interface TradeEvaluationResult {
   suggested_adjustments: string[];
   features: TradePlanFeatures;
   category_scores: Record<string, number>;
-}
-
-export interface ProjectXStyleIndicatorSnapshot {
-  rsi: number | null;
-  atr: number | null;
-  vwap: number | null;
-  bollinger: {
-    middle: number | null;
-    upper: number | null;
-    lower: number | null;
-  } | null;
-  fair_value_gaps: {
-    detected_count?: number;
-    active_count: number;
-    latest: Record<string, unknown> | null;
+  category_maximums?: Record<string, number>;
+  category_awarded_points?: Record<string, number>;
+  penalties?: TradeEvaluationPenalty[];
+  caps?: TradeEvaluationCap[];
+  missing_inputs?: string[];
+  top_positive_drivers?: string[];
+  top_negative_drivers?: string[];
+  evaluation_dimensions?: {
+    setup_quality: TradeEvaluationDimension;
+    market_direction_bias: TradeEvaluationDimension;
+    execution_risk: TradeEvaluationDimension;
   };
-  order_blocks: {
-    detected_count?: number;
-    active_count: number;
-    latest: Record<string, unknown> | null;
-  };
-  candlestick_patterns: Array<Record<string, unknown>>;
-  waddah_attar: Record<string, unknown> | null;
+  data_confidence?: TradeEvaluationConfidence;
+  data_confidence_score?: number;
 }
 
 export interface BotAnalysis {
+  /** Versioned canonical contract. Fields remain optional for older API responses. */
+  analysis_version?: string;
+  probability_method?: BotProbabilityMethod;
+  scenario_weights?: BotDirectionalProbabilities;
+  provenance?: BotAnalysisProvenance;
+  data_quality?: BotAnalysisDataQuality;
+  market_regime?: BotMarketRegime;
+  features?: BotAnalysisFeatures;
+  score_drivers?: BotAnalysisScoreDrivers;
+  setup_quality?: BotAnalysisDimension;
+  market_bias?: BotAnalysisMarketBiasDimension;
+  execution_risk?: BotAnalysisExecutionRisk;
+  data_confidence?: BotAnalysisDimension;
   current_price: number | null;
   previous_close: number | null;
   price_change: number | null;
   price_change_percent: number | null;
   trend: BotMarketBias;
   trend_strength: number;
-  volatility_state: "low" | "normal" | "elevated" | "extreme";
-  volume_state: "low" | "normal" | "elevated";
+  volatility_state: BotVolatilityState;
+  volume_state: BotVolumeState;
   support_levels: number[];
   resistance_levels: number[];
   nearest_support: number | null;
@@ -710,7 +861,6 @@ export interface BotAnalysis {
   summary: string;
   reasoning: string[];
   risk_notes: string[];
-  indicators?: ProjectXStyleIndicatorSnapshot | null;
   /** Timestamp of the latest candle the analysis was computed from. */
   candle_timestamp?: string | null;
   generated_at?: string | null;
@@ -718,33 +868,17 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  source_strategies?: BotStrategyType[];
+  source_strategy_params?: Record<string, Record<string, unknown>>;
   minimum_score?: number;
   minimum_confidence?: number;
-  minimum_reward_risk?: number;
   minimum_directional_votes?: number;
   max_opposing_votes?: number;
+  minimum_reward_risk?: number;
+  time_stop_bars?: number;
   enable_trailing_stop?: boolean;
   move_to_breakeven_at_r?: number;
-  profit_lock_at_r?: number;
-  profit_lock_r?: number;
-  time_stop_bars?: number;
   block_expired_contracts?: boolean;
-  enable_empirical_filters?: boolean;
-  block_outside_preferred_session?: boolean;
-  preferred_session_start_minutes?: number;
-  preferred_session_end_minutes?: number;
-  allow_short_entries?: boolean;
-  block_short_unknown_regime?: boolean;
-  early_session_minutes?: number;
-  early_session_min_score?: number;
-  early_session_min_confidence?: number;
-  early_session_min_votes?: number;
-  long_continuation_min_score?: number;
-  long_continuation_min_confidence?: number;
-  long_continuation_min_votes?: number;
-  long_continuation_min_reward_risk?: number;
-  source_strategies?: BotStrategyType[];
-  source_strategy_params?: Record<string, BotStrategyParams>;
   entry_period?: number;
   exit_period?: number;
   bars_per_timeframe?: number;
@@ -948,128 +1082,17 @@ export type BotConfigUpdateInput = Partial<BotConfigInput>;
 export interface BotConfigListResponse {
   items: BotConfig[];
   total: number;
+  warnings?: string[];
 }
 
-export interface BotBacktestTrade {
-  id: number;
-  side: "BUY" | "SELL";
-  quantity: number;
-  entry_time: string;
-  entry_price: number;
-  exit_time: string;
-  exit_price: number;
-  exit_reason: string;
-  gross_pnl: number;
-  net_pnl: number;
-  fees: number;
-  points: number;
-  signal_reason: string;
-  duration_minutes?: number;
-  bars_held?: number;
-  max_favorable_points?: number;
-  max_adverse_points?: number;
-}
-
-export interface BotBacktestSummary {
-  realized_pnl: number;
-  gross_pnl: number;
-  fees: number;
-  net_pnl: number;
-  total_profit: number;
-  total_pnl: number;
-  gross_profit: number;
-  gross_loss: number;
-  win_rate: number;
-  win_count: number;
-  loss_count: number;
-  breakeven_count: number;
-  profit_factor: number;
-  avg_win: number;
-  avg_loss: number;
-  expectancy_per_trade: number;
-  max_drawdown: number;
-  trade_count: number;
-  active_days: number;
-  profit_per_day: number;
-  [key: string]: number | string | null | Record<string, unknown>;
-}
-
-export interface BotBacktestDailyPnl {
-  date: string;
-  trade_count: number;
-  gross_pnl: number;
-  fees: number;
-  net_pnl: number;
-}
-
-export interface BotBacktestBreakdownStats {
-  trade_count: number;
-  win_count: number;
-  loss_count: number;
-  win_rate: number;
-  net_pnl: number;
-  gross_profit: number;
-  gross_loss: number;
-  profit_factor: number;
-  avg_pnl: number;
-  avg_win: number;
-  avg_loss: number;
-  avg_duration_minutes: number;
-  avg_mfe_points: number;
-  avg_mae_points: number;
-}
-
-export interface BotBacktestAnalysis {
-  signals_per_trade?: number;
-  avg_duration_minutes?: number;
-  avg_bars_held?: number;
-  avg_mfe_points?: number;
-  avg_mae_points?: number;
-  best_trade?: BotBacktestTrade | null;
-  worst_trade?: BotBacktestTrade | null;
-  best_day?: BotBacktestDailyPnl | null;
-  worst_day?: BotBacktestDailyPnl | null;
-  by_side?: Record<"BUY" | "SELL", BotBacktestBreakdownStats>;
-  by_exit_reason?: Record<string, BotBacktestBreakdownStats>;
-}
-
-export interface BotBacktestResult {
-  bot_config_id: number;
-  bot_name: string;
-  strategy_type: BotStrategyType;
-  contract_id: string;
-  symbol: string | null;
-  start: string;
-  end: string;
-  generated_at: string;
-  candles_processed: number;
-  signals_evaluated: number;
-  point_value: number;
-  assumptions: Record<string, string>;
-  summary: BotBacktestSummary;
-  analysis?: BotBacktestAnalysis;
-  daily_pnl: BotBacktestDailyPnl[];
-  trades: BotBacktestTrade[];
-}
-
-export interface BotBacktestInput {
-  start?: string;
-  end?: string;
-  limit?: number;
-}
-
-export interface BotBacktestJob {
-  job_id: string;
-  bot_config_id: number;
-  status: "queued" | "running" | "completed" | "failed";
-  progress: number;
-  stage: string;
-  started_at: string;
-  updated_at: string;
-  completed_at: string | null;
-  error: string | null;
-  result: BotBacktestResult | null;
-}
+export type BotEvaluationStatus =
+  | "evaluated"
+  | "held"
+  | "risk_blocked"
+  | "duplicate_skipped"
+  | "dry_run_attempt"
+  | "submitted"
+  | "error";
 
 export interface BotRun {
   id: number;
@@ -1081,6 +1104,8 @@ export interface BotRun {
   stopped_at: string | null;
   stop_reason: string | null;
   last_heartbeat_at: string | null;
+  last_error?: string | null;
+  last_evaluated_at?: string | null;
   raw_state?: Record<string, unknown> | null;
 }
 
@@ -1097,6 +1122,8 @@ export interface BotDecision {
   candle_timestamp: string | null;
   price: number | null;
   quantity: number | null;
+  correlation_id?: string | null;
+  idempotency_key?: string | null;
   raw_payload?: Record<string, unknown> | null;
   created_at: string;
 }
@@ -1112,6 +1139,9 @@ export interface BotOrderAttempt {
   order_type: string;
   size: number;
   status: "pending" | "dry_run" | "submitted" | "blocked" | "rejected" | "error";
+  execution_mode?: BotExecutionMode;
+  correlation_id?: string | null;
+  idempotency_key?: string | null;
   provider_order_id: string | null;
   rejection_reason: string | null;
   created_at: string;
@@ -1129,14 +1159,169 @@ export interface BotRiskEvent {
   created_at: string;
 }
 
+export interface BotEvaluationTradeLevels {
+  /** Explicit strategy entry price returned by the evaluation API. */
+  entry: number | null;
+  /** Explicit strategy stop price; null when the strategy did not provide one. */
+  stop: number | null;
+  /** Explicit strategy target price; null when the strategy did not provide one. */
+  target: number | null;
+}
+
 export interface BotEvaluation {
+  status: BotEvaluationStatus;
+  correlation_id: string | null;
+  idempotency_key: string | null;
+  duplicate_of_order_attempt_id: number | null;
   config: BotConfig;
   run: BotRun | null;
   decision: BotDecision;
   order_attempt: BotOrderAttempt | null;
   risk_events: BotRiskEvent[];
+  trade_levels?: BotEvaluationTradeLevels | null;
   analysis?: BotAnalysis | null;
   candles: ProjectXMarketCandle[];
+}
+
+export interface BotBacktestInput {
+  start: string;
+  end: string;
+  starting_balance: number;
+  commission_per_contract: number;
+  slippage_ticks: number;
+  force_close_at_end?: boolean;
+}
+
+export interface BotBacktestRange {
+  start: string;
+  end: string;
+  bar_count: number;
+}
+
+export interface BotBacktestAssumptions {
+  fill_model: string;
+  signal_timing: string;
+  strategy_replay: string;
+  source_synchronization: string;
+  synchronized_stream_count: number;
+  event_order: string;
+  same_bar_exit_rule: string;
+  bracket_rule: string;
+  gap_rule: string;
+  final_position_handling: string;
+  position_rule: string;
+  session_rule: string;
+  commission_rule: string;
+  slippage_rule: string;
+  pnl_rule: string;
+  metric_basis: string;
+  market_data: string;
+  live_order_routing: string;
+  timezone: string;
+  commission_per_contract: number;
+  slippage_ticks: number;
+  tick_size: number;
+  tick_value: number;
+  engine_version: string;
+  configured_execution_mode_was_ignored: string;
+}
+
+export interface BotBacktestBreakdown {
+  trade_count: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  gross_pnl: number;
+  net_pnl: number;
+  profit_factor: number | null;
+  expectancy: number;
+  average_win: number;
+  average_loss: number;
+  payoff_ratio: number | null;
+}
+
+export interface BotBacktestMetrics {
+  gross_pnl: number;
+  net_pnl: number;
+  total_commission: number;
+  trade_count: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  profit_factor: number | null;
+  expectancy: number;
+  average_win: number;
+  average_loss: number;
+  payoff_ratio: number | null;
+  max_drawdown_dollars: number;
+  max_drawdown_percent: number;
+  average_mae: number;
+  average_mfe: number;
+  max_consecutive_wins: number;
+  max_consecutive_losses: number;
+  exposure_percent: number;
+  long: BotBacktestBreakdown;
+  short: BotBacktestBreakdown;
+}
+
+export interface BotBacktestEquityPoint {
+  timestamp: string;
+  equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+}
+
+export interface BotBacktestDrawdownPoint {
+  timestamp: string;
+  equity: number;
+  drawdown_dollars: number;
+  drawdown_percent: number;
+}
+
+export interface BotBacktestPeriodResult {
+  period: string;
+  gross_pnl: number;
+  net_pnl: number;
+  commission: number;
+  trade_count: number;
+  wins: number;
+  losses: number;
+}
+
+export interface BotBacktestTrade {
+  id: number;
+  side: "long" | "short";
+  quantity: number;
+  signal_timestamp: string;
+  entry_timestamp: string;
+  entry_price: number;
+  exit_timestamp: string;
+  exit_price: number;
+  exit_reason: string;
+  gross_pnl: number;
+  commission: number;
+  net_pnl: number;
+  mae: number;
+  mfe: number;
+  bars_held: number;
+}
+
+export interface BotBacktestResult {
+  id: number;
+  bot_config_id: number;
+  engine_version: string;
+  input_fingerprint: string;
+  created_at: string;
+  range: BotBacktestRange;
+  config_snapshot: Record<string, unknown>;
+  assumptions: BotBacktestAssumptions;
+  metrics: BotBacktestMetrics;
+  equity_curve: BotBacktestEquityPoint[];
+  drawdown_series: BotBacktestDrawdownPoint[];
+  daily_results: BotBacktestPeriodResult[];
+  monthly_results: BotBacktestPeriodResult[];
+  trades: BotBacktestTrade[];
+  warnings: string[];
 }
 
 export interface BotActivity {
