@@ -171,6 +171,23 @@ describe("botsApi", () => {
     vi.clearAllMocks();
   });
 
+  it("binds the bot list and cache scope to one captured authentication token", async () => {
+    const token = jwt("user-one");
+    vi.mocked(getAccessToken).mockResolvedValue(token);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ items: [], total: 0 }));
+
+    const result = await botsApi.listConfigsWithCacheScope();
+
+    expect(result).toEqual({
+      configs: { items: [], total: 0 },
+      cacheScope: "user:https%3A%2F%2Fauth.example.test:user-one",
+    });
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: `Bearer ${token}`,
+    });
+  });
+
   it("posts one date-free full-history request to the plural backend route", async () => {
     const payload = {
       starting_balance: 50_000,

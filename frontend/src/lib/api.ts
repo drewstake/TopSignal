@@ -1302,6 +1302,16 @@ export const botsApi = {
         account_id: accountId,
       },
     }),
+  listConfigsWithCacheScope: async (accountId?: number) => {
+    const auth = await getRequestAuthContext();
+    const configs = await requestJson<BotConfigListResponse>("/api/bots", {
+      query: {
+        account_id: accountId,
+      },
+      accessTokenOverride: auth.accessToken,
+    });
+    return { configs, cacheScope: auth.cacheScope };
+  },
   createConfig: (payload: BotConfigInput) =>
     requestJson<BotConfig>("/api/bots", {
       method: "POST",

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 
+import type { AppShellOutletContext } from "../../app/AppShell";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -9,9 +10,8 @@ import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
-import { accountsApi, botsApi, getAuthenticatedCacheScope } from "../../lib/api";
+import { botsApi } from "../../lib/api";
 import type {
-  AccountInfo,
   BotActivity,
   BotConfig,
   BotEvaluation,
@@ -25,10 +25,15 @@ import type {
   ProjectXContract,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { BotAnalysisPanel } from "./BotAnalysisPanel";
-import { BotBacktestPanel } from "./BotBacktestPanel";
 import { BotSignalChart } from "./BotSignalChart";
 import type { BotMarketSnapshot } from "./botMarketContext";
+
+const BotAnalysisPanel = lazy(() =>
+  import("./BotAnalysisPanel").then((module) => ({ default: module.BotAnalysisPanel })),
+);
+const BotBacktestPanel = lazy(() =>
+  import("./BotBacktestPanel").then((module) => ({ default: module.BotBacktestPanel })),
+);
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
@@ -1170,7 +1175,7 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
 export function BotPage() {
   const [searchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const { accounts } = useOutletContext<AppShellOutletContext>();
   const [configs, setConfigs] = useState<BotConfig[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
@@ -1189,7 +1194,6 @@ export function BotPage() {
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
   const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
-  const accountsRequestSequence = useRef(0);
   const configsRequestSequence = useRef(0);
   const activityRequestSequence = useRef(0);
   const activityRequestController = useRef<AbortController | null>(null);
@@ -1224,27 +1228,6 @@ export function BotPage() {
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
-  const loadAccounts = useCallback(async () => {
-    const sequence = accountsRequestSequence.current + 1;
-    accountsRequestSequence.current = sequence;
-    try {
-      const accountRows = await accountsApi.getSelectableAccounts();
-      if (accountsRequestSequence.current !== sequence) {
-        return;
-      }
-      setAccounts(accountRows);
-      if (accountRows.length > 0) {
-        setForm((current) =>
-          current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accountRows[0].id) },
-        );
-      }
-    } catch (err) {
-      if (accountsRequestSequence.current === sequence) {
-        setError(err instanceof Error ? err.message : "Failed to load accounts");
-      }
-    }
-  }, [accountFromQuery]);
-
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
     const sequence = configsRequestSequence.current + 1;
     configsRequestSequence.current = sequence;
@@ -1253,10 +1236,7 @@ export function BotPage() {
     }
     setError(null);
     try {
-      const [botRows, cacheScope] = await Promise.all([
-        botsApi.listConfigs(),
-        getAuthenticatedCacheScope(),
-      ]);
+      const { configs: botRows, cacheScope } = await botsApi.listConfigsWithCacheScope();
       if (configsRequestSequence.current !== sequence) {
         return;
       }
@@ -1320,12 +1300,10 @@ export function BotPage() {
   }, []);
 
   useEffect(() => {
-    void loadAccounts();
     void loadConfigs({ showLoading: true });
-  }, [loadAccounts, loadConfigs]);
+  }, [loadConfigs]);
 
   useEffect(() => () => {
-    accountsRequestSequence.current += 1;
     configsRequestSequence.current += 1;
     activityRequestSequence.current += 1;
     activityRequestController.current?.abort();
@@ -1333,7 +1311,32 @@ export function BotPage() {
   }, []);
 
   useEffect(() => {
-    void loadActivity(selectedBot?.id ?? null);
+    if (accounts.length === 0) {
+      return;
+    }
+    setForm((current) =>
+      current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accounts[0].id) },
+    );
+  }, [accountFromQuery, accounts]);
+
+  useEffect(() => {
+    activityRequestSequence.current += 1;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
+    setActivity(null);
+    setActivityLoading(false);
+    const botId = selectedBot?.id ?? null;
+    if (!botId) {
+      return undefined;
+    }
+
+    const run = () => void loadActivity(botId);
+    if (typeof window.requestIdleCallback === "function") {
+      const requestId = window.requestIdleCallback(run, { timeout: 1_500 });
+      return () => window.cancelIdleCallback(requestId);
+    }
+    const timeoutId = window.setTimeout(run, 100);
+    return () => window.clearTimeout(timeoutId);
   }, [
     loadActivity,
     selectedBot?.contract_id,
@@ -4085,17 +4088,21 @@ export function BotPage() {
               refreshToken={chartRefreshToken}
               onMarketData={setMarketSnapshot}
             />
-            <BotAnalysisPanel
-              bot={selectedBot}
-              evaluation={selectedBotEvaluation}
-              marketSnapshot={marketSnapshot}
-              loading={actionLoading === "start" || actionLoading === "evaluate"}
-              onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
-            />
+            <Suspense fallback={<Skeleton className="h-[360px]" />}>
+              <BotAnalysisPanel
+                bot={selectedBot}
+                evaluation={selectedBotEvaluation}
+                marketSnapshot={marketSnapshot}
+                loading={actionLoading === "start" || actionLoading === "evaluate"}
+                onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
+              />
+            </Suspense>
           </div>
         </div>
       </div>
-      <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      <Suspense fallback={<Skeleton className="h-[420px]" />}>
+        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+      </Suspense>
     </div>
   );
 }
