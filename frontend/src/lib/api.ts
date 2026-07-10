@@ -1069,6 +1069,10 @@ export function buildProjectXCandleRequestKey(query: CandleQuery): string {
   return `projectx-candles:${toSortedQueryCacheKey(params)}`;
 }
 
+export function buildUserScopedProjectXCandleRequestKey(cacheScope: string, query: CandleQuery): string {
+  return `scope:${encodeURIComponent(cacheScope)}|${buildProjectXCandleRequestKey(query)}`;
+}
+
 function normalizeCandleRequestTimestamp(value: string | undefined, intervalMs: number): string | undefined {
   if (!value) {
     return value;

@@ -2297,6 +2297,66 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
     )
 
 
+def test_topbot_full_history_fails_explicitly_before_persisting_when_provider_budget_is_exhausted(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(
+        db_session,
+        strategy_type="topbot_adaptive",
+        strategy_params={"source_strategies": ["sma_cross"]},
+        lookback_bars=25,
+    )
+    provider_bars = [
+        {
+            "timestamp": BASE_TIME + timedelta(minutes=5 * index),
+            "open": 100 + index,
+            "high": 101 + index,
+            "low": 99 + index,
+            "close": 100 + index,
+            "volume": 100,
+            "is_partial": False,
+            "raw_payload": {"isPartial": False},
+        }
+        for index in range(30)
+    ]
+
+    class StubClient:
+        def __init__(self):
+            self.calls: list[dict[str, Any]] = []
+
+        def retrieve_bars(self, **kwargs):
+            self.calls.append(kwargs)
+            start = _utc(kwargs["start"])
+            end = _utc(kwargs["end"])
+            rows = [bar for bar in provider_bars if start <= _utc(bar["timestamp"]) <= end]
+            return rows[-int(kwargs["limit"]):]
+
+    client = StubClient()
+    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 2)
+    monkeypatch.setattr(backtesting_module, "MAX_BACKTEST_PROVIDER_REQUESTS", 2)
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: client,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main_module.create_trading_bot_backtest(
+            bot_config_id=config.id,
+            payload=BotBacktestIn(),
+            db=db_session,
+        )
+
+    assert raised.value.status_code == 400
+    assert "backtest_market_data_request_limit_exceeded" in str(raised.value.detail)
+    assert "no partial backtest was saved" in str(raised.value.detail)
+    assert len(client.calls) == 2
+    assert db_session.query(BotBacktest).count() == 0
+    assert db_session.query(ProjectXMarketCandle).count() == 0
+
+
 def test_prepared_sma_replay_exactly_matches_legacy_evaluator_path():
     prices = [
         100,
@@ -2473,7 +2533,7 @@ def test_incremental_fingerprints_match_legacy_canonical_json_for_unsorted_strea
     )
 
 
-def test_replay_processes_more_than_twenty_thousand_bars_across_over_a_year():
+def test_replay_processes_more_than_twenty_thousand_bars_deterministically_across_over_a_year():
     bar_count = backtesting_module.MAX_BACKTEST_BARS + 1
     oldest = BASE_TIME - timedelta(days=400)
     candles = backtesting_module._ClosedCandleList(
@@ -2490,6 +2550,9 @@ def test_replay_processes_more_than_twenty_thousand_bars_across_over_a_year():
     )
 
     result = _run(candles, evaluator=_hold)
+    repeated = _run(candles, evaluator=_hold)
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    repeated_encoded = json.dumps(repeated, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     assert candles[-1].candle_timestamp - candles[0].candle_timestamp > timedelta(
         days=366
@@ -2499,6 +2562,8 @@ def test_replay_processes_more_than_twenty_thousand_bars_across_over_a_year():
     assert len(result["equity_curve"]) == bar_count + 1
     assert len(result["drawdown_series"]) == bar_count + 1
     assert result["metrics"]["trade_count"] == 0
+    assert repeated_encoded == encoded
+    assert hashlib.sha256(repeated_encoded).hexdigest() == hashlib.sha256(encoded).hexdigest()
 
 
 def test_resource_budget_failure_occurs_before_backtest_persistence(

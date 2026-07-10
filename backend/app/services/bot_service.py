@@ -6,7 +6,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
-from typing import Any, Iterable
+from threading import Event, Lock
+from typing import Any, Callable, Iterable
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -79,6 +80,7 @@ _UNIT_SECONDS_BY_NAME = {
 _MARKET_CANDLE_TAIL_REVALIDATION_BARS = 3
 _MARKET_CANDLE_TAIL_REVALIDATION_TTL = timedelta(seconds=15)
 _MARKET_CANDLE_UPSERT_BATCH_SIZE = 1_000
+_MARKET_CANDLE_SINGLEFLIGHT_WAIT_SECONDS = 75
 _EVALUATION_INTRADAY_LOOKBACK_FLOOR = timedelta(days=7)
 _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
@@ -385,6 +387,17 @@ _TOPBOT_ADAPTIVE_DEFAULTS = {
     "move_to_breakeven_at_r": 1.0,
     "block_expired_contracts": False,
 }
+
+
+@dataclass
+class _CandleProviderFlight:
+    event: Event
+    result: list[dict[str, Any]] | None = None
+    error: Exception | None = None
+
+
+_CANDLE_PROVIDER_FLIGHT_LOCK = Lock()
+_CANDLE_PROVIDER_FLIGHTS: dict[tuple[Any, ...], _CandleProviderFlight] = {}
 
 
 @dataclass(frozen=True)
@@ -1722,6 +1735,42 @@ def fetch_and_store_orb_fibonacci_candles(
     )
 
 
+def _retrieve_market_bars_singleflight(
+    key: tuple[Any, ...],
+    retrieve: Callable[[], list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    owner = False
+    with _CANDLE_PROVIDER_FLIGHT_LOCK:
+        flight = _CANDLE_PROVIDER_FLIGHTS.get(key)
+        if flight is None:
+            flight = _CandleProviderFlight(event=Event())
+            _CANDLE_PROVIDER_FLIGHTS[key] = flight
+            owner = True
+
+    if not owner:
+        if not flight.event.wait(timeout=_MARKET_CANDLE_SINGLEFLIGHT_WAIT_SECONDS):
+            raise ProjectXClientError(
+                "Timed out waiting for an identical candle request.",
+                status_code=504,
+            )
+        if flight.error is not None:
+            raise flight.error
+        return [dict(row) for row in (flight.result or [])]
+
+    try:
+        result = retrieve()
+        flight.result = [dict(row) for row in result]
+        return [dict(row) for row in result]
+    except Exception as exc:
+        flight.error = exc
+        raise
+    finally:
+        flight.event.set()
+        with _CANDLE_PROVIDER_FLIGHT_LOCK:
+            if _CANDLE_PROVIDER_FLIGHTS.get(key) is flight:
+                _CANDLE_PROVIDER_FLIGHTS.pop(key, None)
+
+
 def fetch_and_store_market_candles(
     db: Session,
     *,
@@ -1769,15 +1818,29 @@ def fetch_and_store_market_candles(
         else []
     )
     try:
-        bars = client.retrieve_bars(
-            contract_id=resolved_contract_id,
-            live=live,
-            start=start,
-            end=end,
-            unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
-            unit_number=unit_number,
-            limit=limit,
-            include_partial_bar=include_partial_bar,
+        request_key = (
+            str(user_id),
+            resolved_contract_id,
+            bool(live),
+            normalized_unit,
+            int(unit_number),
+            _as_utc(start).isoformat(),
+            _as_utc(end).isoformat(),
+            int(limit),
+            bool(include_partial_bar),
+        )
+        bars = _retrieve_market_bars_singleflight(
+            request_key,
+            lambda: client.retrieve_bars(
+                contract_id=resolved_contract_id,
+                live=live,
+                start=start,
+                end=end,
+                unit=_PROJECTX_UNIT_BY_NAME[normalized_unit],
+                unit_number=unit_number,
+                limit=limit,
+                include_partial_bar=include_partial_bar,
+            ),
         )
     except ProjectXClientError:
         if cached:
@@ -1928,6 +1991,7 @@ def market_candle_cache_needs_refresh(
     unit: str,
     unit_number: int,
     include_partial_bar: bool = False,
+    symbol: str | None = None,
 ) -> bool:
     if not cached_candles:
         return True
@@ -1938,6 +2002,7 @@ def market_candle_cache_needs_refresh(
         unit=unit,
         unit_number=unit_number,
         include_partial_bar=include_partial_bar,
+        symbol=symbol,
     ):
         return True
 
@@ -1950,6 +2015,7 @@ def market_candle_cache_needs_refresh(
         interval=interval,
         include_end=True,
         closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
     ):
         return _market_candle_tail_revalidation_due(cached_candles)
     return False
@@ -1962,6 +2028,7 @@ def market_candle_rows_are_stale(
     unit: str,
     unit_number: int,
     include_partial_bar: bool = False,
+    symbol: str | None = None,
 ) -> bool:
     if not candles:
         return True
@@ -1976,6 +2043,7 @@ def market_candle_rows_are_stale(
         interval=interval,
         include_end=True,
         closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
     )
 
 
@@ -1986,6 +2054,7 @@ def market_candle_cache_covers_request(
     unit: str,
     unit_number: int,
     limit: int,
+    symbol: str | None = None,
 ) -> bool:
     if not cached_candles:
         return False
@@ -1995,6 +2064,7 @@ def market_candle_cache_covers_request(
         cached_candles,
         interval=interval,
         closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
     ):
         return False
 
@@ -2012,6 +2082,7 @@ def market_candle_cache_covers_request(
         interval=interval,
         include_end=False,
         closure_aware=_market_candle_unit_is_closure_aware(unit),
+        symbol=symbol,
     )
 
 
@@ -2020,6 +2091,7 @@ def _market_candle_rows_have_open_session_gap(
     *,
     interval: timedelta,
     closure_aware: bool,
+    symbol: str | None = None,
 ) -> bool:
     timestamps = sorted({_as_utc(row.candle_timestamp) for row in cached_candles})
     for previous, current in zip(timestamps, timestamps[1:]):
@@ -2029,6 +2101,7 @@ def _market_candle_rows_have_open_session_gap(
             interval=interval,
             include_end=False,
             closure_aware=closure_aware,
+            symbol=symbol,
         ):
             return True
     return False
@@ -2041,6 +2114,7 @@ def _market_candle_range_contains_open_slot(
     interval: timedelta,
     include_end: bool,
     closure_aware: bool,
+    symbol: str | None = None,
 ) -> bool:
     cursor = _as_utc(start)
     end_utc = _as_utc(end)
@@ -2054,7 +2128,7 @@ def _market_candle_range_contains_open_slot(
     # any tradable slot exists inside the missing range.
     step = max(interval, timedelta(minutes=1))
     while cursor < end_utc or (include_end and cursor == end_utc):
-        if futures_session_is_open(cursor):
+        if futures_session_is_open(cursor, symbol=symbol):
             return True
         cursor += step
     return False

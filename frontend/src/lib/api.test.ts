@@ -4,7 +4,7 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi, botsApi, buildProjectXCandleRequestKey } from "./api";
+import { accountsApi, botsApi, buildProjectXCandleRequestKey, buildUserScopedProjectXCandleRequestKey } from "./api";
 import { getAccessToken } from "./supabase";
 
 function installDemoModeStorage(enabled: boolean) {
@@ -252,6 +252,21 @@ describe("botsApi", () => {
     expect(buildProjectXCandleRequestKey({ ...query, includePartialBar: true })).not.toBe(normal);
     expect(buildProjectXCandleRequestKey({ ...query, repair: true })).not.toBe(normal);
     expect(buildProjectXCandleRequestKey({ ...query, refresh: true })).not.toBe(normal);
+  });
+
+  it("never shares an identical candle request across authenticated cache scopes", () => {
+    const query = {
+      contractId: "CON.F.US.MNQ.M26",
+      unit: "minute" as const,
+      unitNumber: 5,
+      start: "2026-07-10T14:00:00.000Z",
+      end: "2026-07-10T15:00:00.000Z",
+      limit: 300,
+    };
+
+    expect(buildUserScopedProjectXCandleRequestKey("user:one", query)).not.toBe(
+      buildUserScopedProjectXCandleRequestKey("user:two", query),
+    );
   });
 });
 

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
@@ -3079,6 +3080,32 @@ def test_concurrent_partial_and_closed_candle_upserts_always_leave_closed_row(tm
         engine.dispose()
 
 
+def test_identical_concurrent_candle_requests_share_one_provider_call():
+    worker_count = 8
+    barrier = Barrier(worker_count)
+    calls = 0
+
+    def retrieve():
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return [{"timestamp": datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), "close": 101}]
+
+    def request():
+        barrier.wait(timeout=5)
+        return bot_service_module._retrieve_market_bars_singleflight(
+            ("user", "CON.F.US.MNQ.M26", "minute", 5),
+            retrieve,
+        )
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        results = [future.result(timeout=5) for future in [pool.submit(request) for _ in range(worker_count)]]
+
+    assert calls == 1
+    assert all(result == results[0] for result in results)
+    assert len({id(result) for result in results}) == worker_count
+
+
 def test_fetch_market_candles_deduplicates_provider_timestamps():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -5123,6 +5150,72 @@ def test_candles_endpoint_does_not_repair_a_weekend_market_closure(monkeypatch):
         )
 
         assert [row["timestamp"] for row in payload] == [friday_last_bar, sunday_first_bar]
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("last_before_close", "first_after_close"),
+    [
+        (
+            datetime(2026, 7, 6, 20, 10, tzinfo=timezone.utc),
+            datetime(2026, 7, 6, 20, 30, tzinfo=timezone.utc),
+        ),
+        (
+            datetime(2026, 7, 3, 16, 55, tzinfo=timezone.utc),
+            datetime(2026, 7, 5, 22, 0, tzinfo=timezone.utc),
+        ),
+    ],
+    ids=["daily-equity-halt", "independence-day-early-close"],
+)
+def test_candles_endpoint_does_not_repair_scheduled_equity_closures(
+    monkeypatch,
+    last_before_close,
+    first_after_close,
+):
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+    user_id = "00000000-0000-0000-0000-000000000000"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_id)
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a scheduled equity closure must not trigger repair")
+        ),
+    )
+
+    try:
+        fetched_at = datetime.now(timezone.utc)
+        db.add_all(
+            [
+                _make_candle(last_before_close, 100, fetched_at=fetched_at),
+                _make_candle(first_after_close, 101, fetched_at=fetched_at),
+            ]
+        )
+        db.commit()
+
+        payload = main_module.get_projectx_market_candles(
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            start=last_before_close,
+            end=first_after_close + timedelta(minutes=5),
+            unit="minute",
+            unit_number=5,
+            limit=10,
+            refresh=False,
+            db=db,
+        )
+
+        assert [row["timestamp"] for row in payload] == [last_before_close, first_after_close]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])

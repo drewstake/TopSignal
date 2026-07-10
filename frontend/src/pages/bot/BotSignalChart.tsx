@@ -25,7 +25,7 @@ import {
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { botsApi, buildProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
+import { botsApi, buildUserScopedProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "../../lib/perf";
 import { APP_THEME_CHANGED_EVENT } from "../../lib/theme";
 import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
@@ -178,7 +178,7 @@ function requestProjectXCandles(
   signal?: AbortSignal,
 ): Promise<ProjectXMarketCandle[]> {
   return candleRequestScheduler.schedule(
-    `${authenticatedCacheScope}|${buildProjectXCandleRequestKey(query)}`,
+    buildUserScopedProjectXCandleRequestKey(authenticatedCacheScope, query),
     (sharedSignal) => botsApi.getCandles(query, { signal: sharedSignal }),
     { priority, signal },
   );
@@ -2854,7 +2854,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     }, POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [bot, loadCandles]);
+  }, [authenticatedCacheScope, bot, loadCandles]);
 
   useEffect(() => {
     if (!bot) {

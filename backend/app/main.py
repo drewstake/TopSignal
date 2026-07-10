@@ -1132,6 +1132,7 @@ def get_projectx_market_candles(
     end_utc = _as_utc(end) if end is not None else datetime.now(timezone.utc)
     start_utc = _as_utc(start) if start is not None else end_utc - timedelta(days=5)
     requested_symbol = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
+    session_symbol = requested_symbol or contract_id
     _validate_time_range(start=start_utc, end=end_utc)
 
     fallback_candles = []
@@ -1155,6 +1156,7 @@ def get_projectx_market_candles(
             unit=unit,
             unit_number=unit_number,
             limit=limit,
+            symbol=session_symbol,
         )
         if (
             cached_candles
@@ -1167,6 +1169,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             )
         ):
             return [serialize_market_candle(row) for row in cached_candles]
@@ -1178,6 +1181,7 @@ def get_projectx_market_candles(
             symbol=requested_symbol,
             live=live,
         )
+        session_symbol = resolved_symbol or requested_symbol or resolved_contract_id
         if resolved_contract_id != contract_id:
             cached_candles = list_market_candles(
                 db,
@@ -1199,6 +1203,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 limit=limit,
+                symbol=session_symbol,
             )
             if (
                 cached_candles
@@ -1211,6 +1216,7 @@ def get_projectx_market_candles(
                     unit=unit,
                     unit_number=unit_number,
                     include_partial_bar=include_partial_bar,
+                    symbol=session_symbol,
                 )
             ):
                 return [serialize_market_candle(row) for row in cached_candles]
@@ -1243,6 +1249,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             ),
         ):
             active_contract_lookup_attempted = True
@@ -1310,6 +1317,7 @@ def get_projectx_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 include_partial_bar=include_partial_bar,
+                symbol=session_symbol,
             )
         ):
             active_candles = _fetch_active_symbol_market_candles(

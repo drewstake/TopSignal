@@ -51,6 +51,7 @@ BACKTEST_ENGINE_VERSION = "1.3.0"
 # limit. It is deliberately not used to truncate or reject replay history.
 MAX_BACKTEST_BARS = 20_000
 MAX_PROVIDER_FETCH_BARS = 20_000
+MAX_BACKTEST_PROVIDER_REQUESTS = 40
 CANDLE_QUERY_CHUNK_SIZE = 8_192
 _DEFAULT_BACKTEST_MEMORY_BUDGET_BYTES = 1_536 * 1024 * 1024
 try:
@@ -166,6 +167,20 @@ class _ResolvedBacktestWindow:
     start: datetime
     end: datetime
     full_history: bool
+
+
+@dataclass
+class _ProviderRequestBudget:
+    limit: int
+    used: int = 0
+
+    def claim(self) -> None:
+        if self.used >= max(1, int(self.limit)):
+            raise BacktestConfigurationError(
+                "backtest_market_data_request_limit_exceeded: complete history could not be "
+                f"prepared within {self.limit} provider requests; no partial backtest was saved"
+            )
+        self.used += 1
 
 
 @dataclass(frozen=True)
@@ -2304,6 +2319,7 @@ def prepare_bot_backtest_data(
     client: ProjectXClient,
     now: datetime | None = None,
     include_primary: bool = True,
+    request_budget: _ProviderRequestBudget | None = None,
 ) -> int:
     """Populate TopBot's deterministic replay cache without running a replay."""
 
@@ -2325,6 +2341,7 @@ def prepare_bot_backtest_data(
         raise BacktestConfigurationError("backtest end must be after start")
 
     captured_now = _as_utc(now or datetime.now(timezone.utc))
+    budget = request_budget or _ProviderRequestBudget(MAX_BACKTEST_PROVIDER_REQUESTS)
     fetch_end = min(end, captured_now)
     primary_identity = (
         str(config.contract_id),
@@ -2418,6 +2435,7 @@ def prepare_bot_backtest_data(
         chunk_span = timedelta(seconds=interval_seconds * (MAX_PROVIDER_FETCH_BARS - 1))
         while cursor < fetch_end:
             chunk_end = min(fetch_end, cursor + chunk_span)
+            budget.claim()
             bot_service_module.fetch_and_store_market_candles(
                 db,
                 user_id=user_id,
@@ -2758,6 +2776,7 @@ def _fetch_exact_primary_chunk(
     user_id: str,
     config: BotConfig,
     client: ProjectXClient,
+    request_budget: _ProviderRequestBudget,
     start: datetime,
     end: datetime,
 ) -> list[ProjectXMarketCandle]:
@@ -2769,6 +2788,7 @@ def _fetch_exact_primary_chunk(
     provider_unit = bot_service_module._PROJECTX_UNIT_BY_NAME.get(unit)
     if provider_unit is None:
         raise BacktestConfigurationError(f"unsupported_candle_unit:{unit}")
+    request_budget.claim()
     bars = client.retrieve_bars(
         contract_id=str(config.contract_id),
         live=False,
@@ -2797,6 +2817,7 @@ def _prepare_topbot_primary_full_history(
     user_id: str,
     config: BotConfig,
     client: ProjectXClient,
+    request_budget: _ProviderRequestBudget,
     now: datetime,
 ) -> None:
     """Discover and persist the provider's complete configured-delivery history."""
@@ -2818,6 +2839,7 @@ def _prepare_topbot_primary_full_history(
         user_id=user_id,
         config=config,
         client=client,
+        request_budget=request_budget,
         start=_FULL_HISTORY_DISCOVERY_START,
         end=captured_now,
     )
@@ -2849,6 +2871,7 @@ def _prepare_topbot_primary_full_history(
             user_id=user_id,
             config=config,
             client=client,
+            request_budget=request_budget,
             start=chunk_start,
             end=backward_cursor,
         )
@@ -2881,6 +2904,7 @@ def _prepare_topbot_primary_full_history(
             user_id=user_id,
             config=config,
             client=client,
+            request_budget=request_budget,
             start=forward_cursor,
             end=chunk_end,
         )
@@ -2930,6 +2954,7 @@ def create_bot_backtest(
     captured_now = _as_utc(now or datetime.now(timezone.utc))
     requested_bounds = _requested_backtest_bounds(payload)
     is_topbot = str(config.strategy_type) == _TOPBOT_STRATEGY
+    request_budget = _ProviderRequestBudget(MAX_BACKTEST_PROVIDER_REQUESTS) if is_topbot else None
     if is_topbot:
         if client is None:
             raise BacktestConfigurationError("topbot_backtest_market_data_client_required")
@@ -2939,6 +2964,7 @@ def create_bot_backtest(
                 user_id=user_id,
                 config=config,
                 client=client,
+                request_budget=request_budget,
                 now=captured_now,
             )
         else:
@@ -2949,6 +2975,7 @@ def create_bot_backtest(
                 payload=payload,
                 client=client,
                 now=captured_now,
+                request_budget=request_budget,
             )
 
     primary_rows = _load_primary_closed_candles(
@@ -2968,6 +2995,7 @@ def create_bot_backtest(
             client=client,
             now=captured_now,
             include_primary=False,
+            request_budget=request_budget,
         )
         primary_rows = _load_primary_closed_candles(
             db,
@@ -3039,6 +3067,13 @@ def create_bot_backtest(
         force_close_at_end=bool(payload.force_close_at_end),
         replay_streams=replay_streams,
     )
+    if is_topbot and requested_bounds is None:
+        result["warnings"].append(
+            "Full-history preparation scanned the exact configured delivery backward and forward; "
+            "because ProjectX supplies no end-of-history marker, the older boundary is inferred only "
+            f"after at least {int(_MAX_PROVIDER_EMPTY_SPAN.total_seconds() // 86_400)} consecutive "
+            "empty calendar days. Provider limits fail explicitly instead of saving a partial replay."
+        )
     input_fingerprint = (
         candle_stream_input_fingerprint(replay_streams)
         if replay_streams is not None
@@ -3778,6 +3813,15 @@ def _count_futures_session_gaps(
     interval_seconds: int,
 ) -> int:
     gaps = 0
+    symbol = next(
+        (
+            str(value)
+            for row in candles
+            for value in (getattr(row, "symbol", None), getattr(row, "contract_id", None))
+            if value is not None and str(value).strip()
+        ),
+        None,
+    )
     for previous, current in zip(candles, candles[1:]):
         previous_timestamp = _as_utc(previous.candle_timestamp)
         current_timestamp = _as_utc(current.candle_timestamp)
@@ -3787,6 +3831,7 @@ def _count_futures_session_gaps(
             previous_timestamp + timedelta(seconds=interval_seconds),
             current_timestamp,
             step_seconds=interval_seconds,
+            symbol=symbol,
         ):
             gaps += 1
     return gaps
@@ -3831,6 +3876,7 @@ def _contains_open_futures_timestamp(
     end: datetime,
     *,
     step_seconds: int,
+    symbol: str | None = None,
 ) -> bool:
     cursor = _as_utc(start)
     end_utc = _as_utc(end)
@@ -3838,7 +3884,7 @@ def _contains_open_futures_timestamp(
     # scan every second across a weekend closure.
     step = timedelta(seconds=max(60, int(step_seconds)))
     while cursor < end_utc:
-        if futures_session_is_open(cursor):
+        if futures_session_is_open(cursor, symbol=symbol):
             return True
         cursor += step
     return False
