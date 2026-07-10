@@ -22,6 +22,7 @@ from app.services.bot_strategy_registry import (
 
 
 EXPECTED_EVALUATORS = {
+    "topbot_adaptive": "evaluate_topbot_adaptive",
     "sma_cross": "evaluate_sma_cross",
     "support_resistance": "evaluate_support_resistance_levels",
     "liquidity_sweep_retest": "evaluate_liquidity_sweep_retest",
@@ -88,16 +89,164 @@ def test_registry_lookup_preserves_default_and_invalid_identifier_behavior():
 
 
 def test_bot_config_list_skips_incompatible_legacy_strategy_without_mutating_it():
-    legacy = SimpleNamespace(id=32, name="TopBot", strategy_type="topbot_adaptive")
+    legacy = SimpleNamespace(id=32, name="Retired Bot", strategy_type="retired_strategy")
 
     items, warnings = serialize_supported_bot_configs([legacy])
 
     assert items == []
     assert warnings == [
-        'TopBot was not loaded because strategy "topbot_adaptive" is not supported by this build. '
+        'Retired Bot was not loaded because strategy "retired_strategy" is not supported by this build. '
         "The saved configuration was not modified."
     ]
-    assert legacy.strategy_type == "topbot_adaptive"
+    assert legacy.strategy_type == "retired_strategy"
+
+
+def test_topbot_normalizer_preserves_legacy_gates_and_removes_recursive_sources():
+    params = get_strategy_definition("topbot_adaptive").parameter_normalizer(
+        {
+            "source_strategies": ["sma_cross", "topbot_adaptive", "sma_cross", "retired_strategy"],
+            "source_strategy_params": {"sma_cross": {"ignored": True}},
+            "minimum_score": 70,
+            "minimum_confidence": 55,
+            "minimum_directional_votes": 2,
+            "max_opposing_votes": 1,
+            "minimum_reward_risk": 1.5,
+            "enable_trailing_stop": "true",
+        }
+    )
+
+    assert params["source_strategies"] == ["sma_cross"]
+    assert params["source_strategy_params"] == {"sma_cross": {"ignored": True}}
+    assert params["minimum_score"] == 70
+    assert params["minimum_confidence"] == 55
+    assert params["minimum_directional_votes"] == 2
+    assert params["max_opposing_votes"] == 1
+    assert params["minimum_reward_risk"] == 1.5
+    assert params["enable_trailing_stop"] is True
+
+
+def test_topbot_selects_highest_scoring_consensus_bracket():
+    timestamp = bot_service.datetime(2026, 7, 9, tzinfo=bot_service.timezone.utc)
+    source_results = [
+        {
+            "strategy_type": "ema_trend_pullback",
+            "action": "BUY",
+            "reason": "EMA pullback",
+            "candle_timestamp": timestamp,
+            "price": 100.0,
+            "raw_payload": {"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0},
+            "score": 78.0,
+            "reward_risk": 2.0,
+            "eligible": True,
+            "error": None,
+        },
+        {
+            "strategy_type": "bollinger_rsi_reversal",
+            "action": "BUY",
+            "reason": "RSI reversal",
+            "candle_timestamp": timestamp,
+            "price": 100.0,
+            "raw_payload": {"entry_price": 100.0, "stop_loss": 98.0, "take_profit": 104.0},
+            "score": 86.0,
+            "reward_risk": 2.0,
+            "eligible": True,
+            "error": None,
+        },
+        {
+            "strategy_type": "sma_cross",
+            "action": "HOLD",
+            "reason": "No crossover",
+            "score": None,
+            "reward_risk": None,
+            "eligible": False,
+            "error": None,
+        },
+    ]
+
+    signal = bot_service.evaluate_topbot_adaptive(source_results)
+
+    assert signal.action == "BUY"
+    assert signal.raw_payload["source_strategy"] == "bollinger_rsi_reversal"
+    assert signal.raw_payload["topbot_score"] == 86
+    assert signal.raw_payload["ensemble"]["buy_votes"] == 2
+    assert signal.raw_payload["ensemble"]["agreement_confidence"] == 100
+
+
+def test_topbot_holds_on_tie_or_when_quality_gate_has_no_candidate():
+    tied = bot_service.evaluate_topbot_adaptive(
+        [
+            {"strategy_type": "a", "action": "BUY", "eligible": True, "score": 90, "reward_risk": 2},
+            {"strategy_type": "b", "action": "SELL", "eligible": True, "score": 90, "reward_risk": 2},
+        ],
+        strategy_params={"minimum_directional_votes": 1},
+    )
+    below_score = bot_service.evaluate_topbot_adaptive(
+        [
+            {"strategy_type": "a", "action": "BUY", "eligible": True, "score": 60, "reward_risk": 2},
+            {"strategy_type": "b", "action": "BUY", "eligible": True, "score": 65, "reward_risk": 2},
+        ]
+    )
+
+    assert tied.action == "HOLD"
+    assert "tied" in tied.reason
+    assert below_score.action == "HOLD"
+    assert "score and reward/risk gates" in below_score.reason
+
+
+def test_topbot_acquisition_reuses_primary_candles_and_dispatches_ensemble(monkeypatch):
+    timestamp = bot_service.datetime(2026, 7, 9, tzinfo=bot_service.timezone.utc)
+    candles = [object()]
+    config = SimpleNamespace(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["sma_cross"],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+        },
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=200,
+        fast_period=2,
+        slow_period=3,
+        max_data_staleness_seconds=600,
+        order_size=1,
+        max_daily_loss=250,
+        symbol="MNQ",
+        contract_id="CON.F.US.MNQ.U26",
+    )
+    fetch_calls = []
+
+    def fake_fetch(db, *, user_id, config, client, minimum_lookback_bars=None):
+        fetch_calls.append((db, user_id, config, client, minimum_lookback_bars))
+        return candles
+
+    monkeypatch.setattr(bot_service, "fetch_and_store_candles", fake_fetch)
+    monkeypatch.setattr(
+        bot_service,
+        "evaluate_sma_cross",
+        lambda *_args, **_kwargs: bot_service.SignalResult(
+            action="BUY",
+            reason="SMA source",
+            candle_timestamp=timestamp,
+            price=100.0,
+            raw_payload={"entry_price": 100.0, "stop_loss": 99.0, "take_profit": 102.0},
+        ),
+    )
+    monkeypatch.setattr(bot_service, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(bot_service, "build_signal_trade_evaluation", lambda **_kwargs: {"total_score": 82})
+
+    result_candles, signal = bot_service.fetch_candles_and_evaluate_strategy(
+        "db",
+        user_id="user-1",
+        config=config,
+        client="client",
+    )
+
+    assert result_candles is candles
+    assert signal.action == "BUY"
+    assert signal.raw_payload["source_strategy"] == "sma_cross"
+    assert signal.raw_payload["topbot_score"] == 82
+    assert fetch_calls == [("db", "user-1", config, "client", 300)]
 
 
 def test_registry_preserves_ema_scalping_configuration_validation():

@@ -27,6 +27,7 @@ BotDataQualityStatus = Literal["good", "limited", "insufficient", "stale"]
 BotVwapLocation = Literal["above", "below", "at", "unavailable"]
 BotMtfAlignment = Literal["bullish", "bearish", "mixed", "neutral", "unavailable"]
 BotStrategyType = Literal[
+    "topbot_adaptive",
     "sma_cross",
     "support_resistance",
     "donchian_breakout",
@@ -444,6 +445,9 @@ class BotBacktestRangeOut(BaseModel):
 class BotBacktestAssumptionsOut(BaseModel):
     fill_model: str
     signal_timing: str
+    strategy_replay: str = "single_strategy"
+    source_synchronization: str = "not_recorded"
+    synchronized_stream_count: int = Field(default=1, ge=1)
     event_order: str
     same_bar_exit_rule: str
     bracket_rule: str

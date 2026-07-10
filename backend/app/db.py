@@ -722,6 +722,7 @@ def _ensure_bot_schema_compatibility() -> None:
                     add constraint bot_configs_strategy_type_check
                     check (
                       strategy_type in (
+                        'topbot_adaptive',
                         'sma_cross',
                         'support_resistance',
                         'donchian_breakout',

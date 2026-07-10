@@ -72,6 +72,7 @@ Current migration list:
 20260522_add_expense_source_id.sql
 20260709_add_bot_execution_safety.sql
 20260709_add_bot_backtests.sql
+20260709_add_topbot_adaptive_strategy.sql
 ```
 
 Example PowerShell application loop:
@@ -112,7 +113,8 @@ $migrations = @(
   "20260511_add_opening_rvol_breakout_bot_strategy.sql",
   "20260522_add_expense_source_id.sql",
   "20260709_add_bot_execution_safety.sql",
-  "20260709_add_bot_backtests.sql"
+  "20260709_add_bot_backtests.sql",
+  "20260709_add_topbot_adaptive_strategy.sql"
 )
 
 foreach ($name in $migrations) {

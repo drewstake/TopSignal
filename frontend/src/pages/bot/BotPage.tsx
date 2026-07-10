@@ -32,6 +32,7 @@ import type { BotMarketSnapshot } from "./botMarketContext";
 
 const timeframeUnits: BotTimeframeUnit[] = ["second", "minute", "hour", "day", "week", "month"];
 const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
+  { value: "topbot_adaptive", label: "TopBot Adaptive" },
   { value: "sma_cross", label: "SMA Cross" },
   { value: "ema_scalping", label: "9/15 EMA Scalping" },
   { value: "support_resistance", label: "Support/Resistance" },
@@ -53,6 +54,19 @@ const strategyOptions: Array<{ value: BotStrategyType; label: string }> = [
   { value: "vwap_atr_mean_reversion", label: "VWAP ATR Mean Reversion" },
   { value: "vwap_gap_retrace", label: "VWAP Gap Retrace" },
 ];
+const TOPBOT_DEFAULTS = {
+  sourceStrategies: strategyOptions.map((option) => option.value).filter((value) => value !== "topbot_adaptive"),
+  minimumScore: "70",
+  minimumConfidence: "55",
+  minimumDirectionalVotes: "2",
+  maxOpposingVotes: "1",
+  minimumRewardRisk: "1.5",
+  timeStopBars: "6",
+  enableTrailingStop: true,
+  trailingStopMode: "atr" as BotTrailingStopMode,
+  trailingAtrMultiplier: "2",
+  moveToBreakevenAtR: "1",
+};
 const EASTERN_TIME_ZONE = "America/New_York";
 const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 const DONCHIAN_DEFAULTS = {
@@ -256,6 +270,7 @@ const SUPERTREND_PIVOT_DEFAULTS = {
   maxDataStalenessSeconds: "1800",
 };
 const STRATEGY_DEFAULT_NAMES: Partial<Record<BotStrategyType, string>> = {
+  topbot_adaptive: "TopBot",
   sma_cross: "MNQ SMA Cross",
   support_resistance: "MNQ Support/Resistance",
   donchian_breakout: "MNQ Donchian Breakout",
@@ -325,6 +340,14 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 interface BotFormState {
   name: string;
   strategyType: BotStrategyType;
+  topbotMinimumScore: string;
+  topbotMinimumConfidence: string;
+  topbotMinimumDirectionalVotes: string;
+  topbotMaxOpposingVotes: string;
+  topbotMinimumRewardRisk: string;
+  topbotTimeStopBars: string;
+  topbotEnableTrailingStop: boolean;
+  topbotMoveToBreakevenAtR: string;
   accountId: string;
   contractSearch: string;
   contractId: string;
@@ -418,6 +441,14 @@ function buildInitialForm(accountId: number | null): BotFormState {
   return {
     name: strategyDefaultName("sma_cross"),
     strategyType: "sma_cross",
+    topbotMinimumScore: TOPBOT_DEFAULTS.minimumScore,
+    topbotMinimumConfidence: TOPBOT_DEFAULTS.minimumConfidence,
+    topbotMinimumDirectionalVotes: TOPBOT_DEFAULTS.minimumDirectionalVotes,
+    topbotMaxOpposingVotes: TOPBOT_DEFAULTS.maxOpposingVotes,
+    topbotMinimumRewardRisk: TOPBOT_DEFAULTS.minimumRewardRisk,
+    topbotTimeStopBars: TOPBOT_DEFAULTS.timeStopBars,
+    topbotEnableTrailingStop: TOPBOT_DEFAULTS.enableTrailingStop,
+    topbotMoveToBreakevenAtR: TOPBOT_DEFAULTS.moveToBreakevenAtR,
     accountId: accountId ? String(accountId) : "",
     contractSearch: "MNQ",
     contractId: "",
@@ -512,6 +543,18 @@ function formFromBot(bot: BotConfig): BotFormState {
   return {
     name: bot.name,
     strategyType: bot.strategy_type,
+    topbotMinimumScore: String(bot.strategy_params?.minimum_score ?? TOPBOT_DEFAULTS.minimumScore),
+    topbotMinimumConfidence: String(bot.strategy_params?.minimum_confidence ?? TOPBOT_DEFAULTS.minimumConfidence),
+    topbotMinimumDirectionalVotes: String(
+      bot.strategy_params?.minimum_directional_votes ?? TOPBOT_DEFAULTS.minimumDirectionalVotes,
+    ),
+    topbotMaxOpposingVotes: String(bot.strategy_params?.max_opposing_votes ?? TOPBOT_DEFAULTS.maxOpposingVotes),
+    topbotMinimumRewardRisk: String(bot.strategy_params?.minimum_reward_risk ?? TOPBOT_DEFAULTS.minimumRewardRisk),
+    topbotTimeStopBars: String(bot.strategy_params?.time_stop_bars ?? TOPBOT_DEFAULTS.timeStopBars),
+    topbotEnableTrailingStop: bot.strategy_params?.enable_trailing_stop ?? TOPBOT_DEFAULTS.enableTrailingStop,
+    topbotMoveToBreakevenAtR: String(
+      bot.strategy_params?.move_to_breakeven_at_r ?? TOPBOT_DEFAULTS.moveToBreakevenAtR,
+    ),
     accountId: String(bot.account_id),
     contractSearch: bot.symbol ?? bot.contract_id,
     contractId: bot.contract_id,
@@ -867,6 +910,9 @@ function deriveFvgStructureTimeframe(unit: BotTimeframeUnit, unitNumber: number)
 }
 
 function strategyLabel(strategyType: BotStrategyType) {
+  if (strategyType === "topbot_adaptive") {
+    return "TopBot Adaptive";
+  }
   if (strategyType === "support_resistance") {
     return "Support/Resistance";
   }
@@ -929,6 +975,15 @@ function strategyDefaultName(strategyType: BotStrategyType) {
 }
 
 function strategySummary(bot: BotConfig) {
+  if (bot.strategy_type === "topbot_adaptive") {
+    const votes = bot.strategy_params?.minimum_directional_votes ?? TOPBOT_DEFAULTS.minimumDirectionalVotes;
+    const score = bot.strategy_params?.minimum_score ?? TOPBOT_DEFAULTS.minimumScore;
+    const sources = bot.strategy_params?.source_strategies?.length ?? TOPBOT_DEFAULTS.sourceStrategies.length;
+    return {
+      label: "Ensemble",
+      value: `${sources} sources · ${votes} votes · score ${score}+`,
+    };
+  }
   if (bot.strategy_type === "support_resistance") {
     return {
       label: "Level %",
@@ -1261,6 +1316,28 @@ export function BotPage() {
     setForm((current) => {
       const useDefaultName = Object.values(STRATEGY_DEFAULT_NAMES).includes(current.name);
       const nextName = useDefaultName ? strategyDefaultName(strategyType) : current.name;
+      if (strategyType === "topbot_adaptive") {
+        return {
+          ...current,
+          strategyType,
+          name: nextName,
+          timeframeUnit: "minute",
+          timeframeUnitNumber: "5",
+          lookbackBars: "300",
+          topbotMinimumScore: current.topbotMinimumScore || TOPBOT_DEFAULTS.minimumScore,
+          topbotMinimumConfidence: current.topbotMinimumConfidence || TOPBOT_DEFAULTS.minimumConfidence,
+          topbotMinimumDirectionalVotes:
+            current.topbotMinimumDirectionalVotes || TOPBOT_DEFAULTS.minimumDirectionalVotes,
+          topbotMaxOpposingVotes: current.topbotMaxOpposingVotes || TOPBOT_DEFAULTS.maxOpposingVotes,
+          topbotMinimumRewardRisk: current.topbotMinimumRewardRisk || TOPBOT_DEFAULTS.minimumRewardRisk,
+          topbotTimeStopBars: current.topbotTimeStopBars || TOPBOT_DEFAULTS.timeStopBars,
+          topbotEnableTrailingStop: current.topbotEnableTrailingStop,
+          topbotMoveToBreakevenAtR: current.topbotMoveToBreakevenAtR || TOPBOT_DEFAULTS.moveToBreakevenAtR,
+          trailingStopMode: current.trailingStopMode || TOPBOT_DEFAULTS.trailingStopMode,
+          trailingAtrMultiplier: current.trailingAtrMultiplier || TOPBOT_DEFAULTS.trailingAtrMultiplier,
+          maxDataStalenessSeconds: "600",
+        };
+      }
       if (strategyType === "support_resistance") {
         return {
           ...current,
@@ -1674,6 +1751,13 @@ export function BotPage() {
     const lookbackBars = parsePositiveInt(form.lookbackBars);
     const fastPeriod = parsePositiveInt(form.fastPeriod);
     const slowPeriod = parsePositiveInt(form.slowPeriod);
+    const topbotMinimumScore = parseNonNegativeNumber(form.topbotMinimumScore);
+    const topbotMinimumConfidence = parseNonNegativeNumber(form.topbotMinimumConfidence);
+    const topbotMinimumDirectionalVotes = parsePositiveInt(form.topbotMinimumDirectionalVotes);
+    const topbotMaxOpposingVotes = parseNonNegativeInt(form.topbotMaxOpposingVotes);
+    const topbotMinimumRewardRisk = parsePositiveNumber(form.topbotMinimumRewardRisk);
+    const topbotTimeStopBars = parsePositiveInt(form.topbotTimeStopBars);
+    const topbotMoveToBreakevenAtR = parsePositiveNumber(form.topbotMoveToBreakevenAtR);
     const effectiveFastPeriod =
       form.strategyType === "ema_trend_pullback"
         ? Number(EMA_TREND_PULLBACK_DEFAULTS.fastPeriod)
@@ -2045,12 +2129,52 @@ export function BotPage() {
       setFormError("RSI oversold must be lower than RSI overbought.");
       return;
     }
+    if (
+      form.strategyType === "topbot_adaptive" &&
+      (
+        topbotMinimumScore === null ||
+        topbotMinimumScore > 100 ||
+        topbotMinimumConfidence === null ||
+        topbotMinimumConfidence > 100 ||
+        topbotMinimumDirectionalVotes === null ||
+        topbotMaxOpposingVotes === null ||
+        topbotMinimumRewardRisk === null ||
+        topbotTimeStopBars === null ||
+        topbotMoveToBreakevenAtR === null ||
+        (form.topbotEnableTrailingStop && trailingAtrMultiplier === null)
+      )
+    ) {
+      setFormError("TopBot thresholds must be valid; score and confidence must be between 0 and 100.");
+      return;
+    }
 
     setSaving(true);
     setFormError(null);
     try {
       const strategyParams: BotConfig["strategy_params"] =
-        form.strategyType === "support_resistance"
+        form.strategyType === "topbot_adaptive"
+          ? {
+              source_strategies:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.source_strategies ??
+                TOPBOT_DEFAULTS.sourceStrategies,
+              source_strategy_params:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.source_strategy_params ?? {},
+              minimum_score: topbotMinimumScore ?? Number(TOPBOT_DEFAULTS.minimumScore),
+              minimum_confidence: topbotMinimumConfidence ?? Number(TOPBOT_DEFAULTS.minimumConfidence),
+              minimum_directional_votes:
+                topbotMinimumDirectionalVotes ?? Number(TOPBOT_DEFAULTS.minimumDirectionalVotes),
+              max_opposing_votes: topbotMaxOpposingVotes ?? Number(TOPBOT_DEFAULTS.maxOpposingVotes),
+              minimum_reward_risk: topbotMinimumRewardRisk ?? Number(TOPBOT_DEFAULTS.minimumRewardRisk),
+              time_stop_bars: topbotTimeStopBars ?? Number(TOPBOT_DEFAULTS.timeStopBars),
+              enable_trailing_stop: form.topbotEnableTrailingStop,
+              trailing_stop_mode: form.trailingStopMode,
+              trailing_atr_multiplier: trailingAtrMultiplier ?? Number(TOPBOT_DEFAULTS.trailingAtrMultiplier),
+              move_to_breakeven_at_r:
+                topbotMoveToBreakevenAtR ?? Number(TOPBOT_DEFAULTS.moveToBreakevenAtR),
+              block_expired_contracts:
+                configs.find((config) => config.id === editingBotId)?.strategy_params?.block_expired_contracts ?? false,
+            }
+        : form.strategyType === "support_resistance"
           ? {
               bars_per_timeframe: 100,
               swing_window: 5,
@@ -2395,7 +2519,123 @@ export function BotPage() {
                 {form.contractId ? <p className="text-xs text-slate-500">{form.contractId}</p> : null}
               </div>
 
-              {isLevelStrategy(form.strategyType) ? (
+              {form.strategyType === "topbot_adaptive" ? (
+                <>
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/5 px-3 py-2 text-xs text-slate-300">
+                    TopBot evaluates {TOPBOT_DEFAULTS.sourceStrategies.length} registered strategies, requires directional
+                    agreement, then routes only the highest-scoring valid bracket. Existing per-source overrides are preserved.
+                  </div>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Unit</span>
+                      <Select
+                        value={form.timeframeUnit}
+                        onChange={(event) => setForm({ ...form, timeframeUnit: event.target.value as BotTimeframeUnit })}
+                      >
+                        {timeframeUnits.map((unit) => (
+                          <option key={unit} value={unit}>
+                            {unit}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Size</span>
+                      <Input
+                        value={form.timeframeUnitNumber}
+                        onChange={(event) => setForm({ ...form, timeframeUnitNumber: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Bars</span>
+                      <Input value={form.lookbackBars} onChange={(event) => setForm({ ...form, lookbackBars: event.target.value })} />
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Score</span>
+                      <Input
+                        value={form.topbotMinimumScore}
+                        onChange={(event) => setForm({ ...form, topbotMinimumScore: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Confidence %</span>
+                      <Input
+                        value={form.topbotMinimumConfidence}
+                        onChange={(event) => setForm({ ...form, topbotMinimumConfidence: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Votes</span>
+                      <Input
+                        value={form.topbotMinimumDirectionalVotes}
+                        onChange={(event) => setForm({ ...form, topbotMinimumDirectionalVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Max Opposition</span>
+                      <Input
+                        value={form.topbotMaxOpposingVotes}
+                        onChange={(event) => setForm({ ...form, topbotMaxOpposingVotes: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Min Reward / Risk</span>
+                      <Input
+                        value={form.topbotMinimumRewardRisk}
+                        onChange={(event) => setForm({ ...form, topbotMinimumRewardRisk: event.target.value })}
+                      />
+                    </label>
+                    <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                      <span>Time Stop Bars</span>
+                      <Input
+                        value={form.topbotTimeStopBars}
+                        onChange={(event) => setForm({ ...form, topbotTimeStopBars: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                    <input
+                      type="checkbox"
+                      checked={form.topbotEnableTrailingStop}
+                      onChange={(event) => setForm({ ...form, topbotEnableTrailingStop: event.target.checked })}
+                    />
+                    Enable advisory trailing-stop plan
+                  </label>
+                  {form.topbotEnableTrailingStop ? (
+                    <div className="grid grid-cols-3 gap-2.5">
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Trail Mode</span>
+                        <Select
+                          value={form.trailingStopMode}
+                          onChange={(event) => setForm({ ...form, trailingStopMode: event.target.value as BotTrailingStopMode })}
+                        >
+                          {trailingStopOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Trail ATR</span>
+                        <Input
+                          value={form.trailingAtrMultiplier}
+                          onChange={(event) => setForm({ ...form, trailingAtrMultiplier: event.target.value })}
+                        />
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Breakeven R</span>
+                        <Input
+                          value={form.topbotMoveToBreakevenAtR}
+                          onChange={(event) => setForm({ ...form, topbotMoveToBreakevenAtR: event.target.value })}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </>
+              ) : isLevelStrategy(form.strategyType) ? (
                 <>
                   <div className="grid grid-cols-2 gap-2.5">
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">

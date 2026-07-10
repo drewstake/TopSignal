@@ -251,18 +251,19 @@ Important bot behaviors:
 
 `backend/app/services/bot_strategy_registry.py` is the authoritative strategy catalog. Each immutable registry entry records the strategy identifier, parameter normalizer, configuration validator, required timeframe or timeframes, conservative and hard minimum-history requirements, evaluator, auxiliary-data requirements, and whether registry-level backtesting is supported.
 
-The registry contains all 20 configured strategy identifiers:
+The registry contains all 21 configured strategy identifiers:
 
-`sma_cross`, `support_resistance`, `liquidity_sweep_retest`, `donchian_breakout`, `opening_rvol_breakout`, `bollinger_rsi_reversal`, `bollinger_mean_reversion`, `macd_support_resistance`, `delayed_orb_confirmation`, `orb_fibonacci_pullback`, `supertrend_pivot`, `ema_trend_pullback`, `ema_scalping`, `vwap_atr_mean_reversion`, `vwap_gap_retrace`, `fisher_transform_mean_reversion`, `atr_adjusted_relative_strength`, `relative_strength_spy`, `pullback_trap_reversal`, and `fvg_sweep_mss`.
+`topbot_adaptive`, `sma_cross`, `support_resistance`, `liquidity_sweep_retest`, `donchian_breakout`, `opening_rvol_breakout`, `bollinger_rsi_reversal`, `bollinger_mean_reversion`, `macd_support_resistance`, `delayed_orb_confirmation`, `orb_fibonacci_pullback`, `supertrend_pivot`, `ema_trend_pullback`, `ema_scalping`, `vwap_atr_mean_reversion`, `vwap_gap_retrace`, `fisher_transform_mean_reversion`, `atr_adjusted_relative_strength`, `relative_strength_spy`, `pullback_trap_reversal`, and `fvg_sweep_mss`.
 
 Dispatch is being replaced incrementally to protect characterized strategy behavior. Supported-strategy validation and evaluator selection now come from the registry. Strategy-specific candle acquisition and argument assembly remain explicit where a strategy needs fixed, derived, daily, benchmark, session, position, or other auxiliary data. Existing formula helpers remain in `bot_service.py` and are invoked lazily through the registry rather than being broadly rewritten.
 
 #### Deterministic backtesting
 
-The Bot page and authenticated `POST /api/bots/{id}/backtests` endpoint run the event-driven engine in `backend/app/services/bot_backtesting.py`. The endpoint selects the bot by both ID and authenticated `user_id`, then reads only that user's stored `projectx_market_candles` rows for the configured contract and exact timeframe where `live=false` and `is_partial=false`. It never fetches provider data, creates an order attempt, or calls live/dry-run routing code.
+The Bot page and authenticated `POST /api/bots/{id}/backtests` endpoint run the event-driven engine in `backend/app/services/bot_backtesting.py`. The endpoint selects the bot by both ID and authenticated `user_id`, then reads only that user's stored `projectx_market_candles` rows where `live=false` and `is_partial=false`. Ordinary strategies read the configured contract and exact timeframe. TopBot additionally loads the configured ensemble's stored fixed, derived, daily, and benchmark streams. It never fetches provider data, creates an order attempt, or calls live/dry-run routing code.
 
 The currently replayable strategies are exactly:
 
+- `topbot_adaptive`
 - `sma_cross`
 - `ema_trend_pullback`
 - `pullback_trap_reversal`
@@ -271,9 +272,9 @@ The currently replayable strategies are exactly:
 - `vwap_atr_mean_reversion`
 - `orb_fibonacci_pullback`
 
-These paths call the same evaluator functions used by normal bot evaluation. Every other configured strategy fails explicitly with `strategy_not_supported_for_backtesting`; none is approximated:
+These paths call the same evaluator functions used by normal bot evaluation. TopBot uses its configured timeframe as the event clock, gives each source only candles closed by that event, reuses unchanged slower-source results, and applies the normal consensus, score, and reward/risk gates. A missing stored auxiliary stream is reported as a failed source and excluded from that event's vote, matching TopBot's fault-isolated ensemble behavior. TopBot consumes source entry plans under its selected bracket; this does not make each source's standalone, source-specific exit model replayable. Every other configured strategy fails explicitly with `strategy_not_supported_for_backtesting`; none is approximated:
 
-| Unsupported strategy | Exact replay capability still required |
+| Unsupported standalone strategy | Exact standalone replay capability still required |
 | --- | --- |
 | `support_resistance` | Synchronized closed 4-hour and 1-hour candle streams |
 | `liquidity_sweep_retest` | Synchronized closed 4-hour and 1-hour candle streams |
@@ -292,6 +293,8 @@ These paths call the same evaluator functions used by normal bot evaluation. Eve
 Replay assumptions are deliberately explicit and are returned and persisted with every result:
 
 - A strategy is evaluated only after each bar closes and receives only bars whose close time is at or before that event. Partial bars are excluded. A signal from bar T can fill no earlier than the next available bar's open.
+- TopBot synchronizes its source streams to each configured-timeframe close. Fixed 1-minute/5-minute, derived lower-timeframe, hourly, daily, and benchmark candles cannot enter an evaluation before their own close. Repeated actionable results from an unchanged slower source are deduplicated by action and source-candle timestamp.
+- TopBot trades the bracket from its selected source, matching current live/dry-run routing. Its `topbot_management` time-stop, trailing-stop, and break-even fields remain advisory in both runtime evaluation and replay; the backtest does not invent execution behavior that live routing does not yet perform.
 - Market fills default to next-bar open. Configured slippage ticks move every entry and exit adversely, and commission per contract is charged on both entry and exit.
 - At a new bar, an existing position's resting stop/target gap is resolved before a queued market reversal; the queued fill is then processed, followed by that bar's intrabar stop/target range and finally its close signal. Pending signals expire at the configured session boundary.
 - P&L is `(exit - entry) / tick_size * tick_value * quantity`, with direction inverted for shorts. Tick size and tick value come from required `instrument_metadata`.
@@ -301,9 +304,9 @@ Replay assumptions are deliberately explicit and are returned and persisted with
 - Entries obey the bot's New York session, after-loss cooldown, max-trades-per-day, and realized daily-loss limits. These counters reset at the requested start, and the loss gate uses only this isolated simulation's realized net P&L rather than pre-existing account-wide P&L. Missing bars are not interpolated; the next stored bar is used and a gap warning is returned. Strategies that depend on a session prefix fail explicitly if the required opening candle is absent.
 - Open positions are force-closed at the final bar's close by default. If disabled, the open position remains excluded from closed-trade metrics and the result includes a warning. A final-bar signal is never filled without a following bar.
 
-Requests are limited to 366 days and 20,000 execution bars, require at least two closed execution bars, and are rejected when the range multiplied by the evaluator history window would exceed the 10,000,000 bar-visit computation budget. The strategy's hard minimum history must already be closed at the first replay event (except ORB's intentional in-session opening-range formation); earlier closed bars are loaded only as evaluator warm-up, with a warning when the configured/conservative warm-up is incomplete. Results include gross/net P&L, fees, count, win rate, profit factor, expectancy, average win/loss, payoff ratio, dollar/percent drawdown, MAE/MFE, long/short breakdowns, streaks, exposure, equity/drawdown series, daily/monthly aggregates, a trade ledger, and sample/data-quality warnings. Drawdown uses bar-close mark-to-market equity, exposure is the percentage of replay bars with any position exposure, MAE/MFE are tick-value-aware dollars before commission, and daily/monthly rows group closed trades by their New York trading-day exit.
+Requests are limited to 366 days and 20,000 execution bars and require at least two closed execution bars. Single-strategy runs use a 10,000,000 evaluator bar-visit budget. TopBot uses a 200,000,000 conservative ensemble budget, a 100,000-bar per-stream cap, and a 250,000-bar combined synchronized-input cap. The strategy's hard minimum history must already be closed at the first replay event (except ORB's intentional in-session opening-range formation); earlier closed bars are loaded only as evaluator warm-up, with a warning when the configured/conservative warm-up is incomplete. Results include gross/net P&L, fees, count, win rate, profit factor, expectancy, average win/loss, payoff ratio, dollar/percent drawdown, MAE/MFE, long/short breakdowns, streaks, exposure, equity/drawdown series, daily/monthly aggregates, a trade ledger, and sample/data-quality warnings. Drawdown uses bar-close mark-to-market equity, exposure is the percentage of replay bars with any position exposure, MAE/MFE are tick-value-aware dollars before commission, and daily/monthly rows group closed trades by their New York trading-day exit.
 
-Each `bot_backtests` row records engine version `1.0.0`, the bot configuration at run time, all execution assumptions, requested/actual range, instrument metadata, and a SHA-256 fingerprint of the ordered warm-up and execution candle inputs. Reproducing the same numbers requires the same engine version, configuration and assumptions snapshots, and candle input set. The model intentionally does not simulate order-book liquidity, queue position, latency, partial fills, or intrabar paths beyond the conservative OHLC rules above.
+Each `bot_backtests` row records engine version `1.1.0`, the bot configuration at run time, all execution assumptions, requested/actual range, instrument metadata, and a SHA-256 fingerprint of the ordered warm-up and execution candle inputs. TopBot fingerprints every labeled synchronized stream, including benchmark inputs. Reproducing the same numbers requires the same engine version, configuration and assumptions snapshots, and candle input set. The model intentionally does not simulate order-book liquidity, queue position, latency, partial fills, or intrabar paths beyond the conservative OHLC rules above.
 
 #### Execution safety and idempotency
 

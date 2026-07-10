@@ -503,6 +503,7 @@ export type BotExecutionMode = "dry_run" | "live";
 export type BotTimeframeUnit = "second" | "minute" | "hour" | "day" | "week" | "month";
 export type BotAction = "BUY" | "SELL" | "HOLD" | "NONE" | "STOP";
 export type BotStrategyType =
+  | "topbot_adaptive"
   | "sma_cross"
   | "support_resistance"
   | "donchian_breakout"
@@ -867,6 +868,17 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  source_strategies?: BotStrategyType[];
+  source_strategy_params?: Record<string, Record<string, unknown>>;
+  minimum_score?: number;
+  minimum_confidence?: number;
+  minimum_directional_votes?: number;
+  max_opposing_votes?: number;
+  minimum_reward_risk?: number;
+  time_stop_bars?: number;
+  enable_trailing_stop?: boolean;
+  move_to_breakeven_at_r?: number;
+  block_expired_contracts?: boolean;
   entry_period?: number;
   exit_period?: number;
   bars_per_timeframe?: number;
@@ -1187,6 +1199,9 @@ export interface BotBacktestRange {
 export interface BotBacktestAssumptions {
   fill_model: string;
   signal_timing: string;
+  strategy_replay: string;
+  source_synchronization: string;
+  synchronized_stream_count: number;
   event_order: string;
   same_bar_exit_rule: string;
   bracket_rule: string;

@@ -11,6 +11,7 @@ TimeframeSource = Literal["configured", "fixed", "derived"]
 
 BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS = frozenset(
     {
+        "topbot_adaptive",
         "sma_cross",
         "ema_trend_pullback",
         "pullback_trap_reversal",
@@ -201,6 +202,12 @@ def _definition(
 
 
 _DEFINITIONS = (
+    _definition(
+        "topbot_adaptive",
+        "evaluate_topbot_adaptive",
+        (_configured(notes="Primary chart stream; configured source strategies may acquire auxiliary streams."),),
+        ("dynamic_source_strategies", "source_trade_plan_scores"),
+    ),
     _definition("sma_cross", "evaluate_sma_cross", (_configured(),)),
     _definition(
         "support_resistance",
@@ -407,6 +414,16 @@ def _resolve_minimum_history(
     timeframe_unit: str,
     timeframe_unit_number: int,
 ) -> tuple[HistoryRequirement, ...]:
+    if identifier == "topbot_adaptive":
+        return (
+            _history(
+                "signal",
+                300,
+                hard=25,
+                notes="Source strategies can require additional fixed or benchmark candle streams.",
+            ),
+        )
+
     if identifier == "sma_cross":
         hard = slow_period + 1
         return (_history("signal", max(25, hard), hard=hard),)

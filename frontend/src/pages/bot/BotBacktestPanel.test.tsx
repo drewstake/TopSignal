@@ -29,6 +29,9 @@ const result: BotBacktestResult = {
   assumptions: {
     fill_model: "next_bar_open",
     signal_timing: "closed bars only",
+    strategy_replay: "single_strategy",
+    source_synchronization: "not_applicable",
+    synchronized_stream_count: 1,
     event_order: "resting brackets then fills then intrabar brackets",
     same_bar_exit_rule: "stop_first",
     bracket_rule: "whole-tick distances anchored to fill",

@@ -107,14 +107,16 @@ def _candle(
     is_partial: bool = False,
     unit: str = "minute",
     unit_number: int = 5,
+    contract_id: str = CONTRACT_ID,
+    symbol: str = "MNQ",
 ) -> ProjectXMarketCandle:
     close = open_price if close_price is None else close_price
     high = max(open_price, close) + 1.0 if high_price is None else high_price
     low = min(open_price, close) - 1.0 if low_price is None else low_price
     return ProjectXMarketCandle(
         user_id=user_id,
-        contract_id=CONTRACT_ID,
-        symbol="MNQ",
+        contract_id=contract_id,
+        symbol=symbol,
         live=False,
         unit=unit,
         unit_number=unit_number,
@@ -173,6 +175,7 @@ def _run(
     tick_size: float = 1,
     tick_value: float = 1,
     force_close_at_end: bool = True,
+    replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None,
 ) -> dict[str, Any]:
     first = min(_utc(row.candle_timestamp) for row in candles)
     last = max(_utc(row.candle_timestamp) for row in candles)
@@ -188,6 +191,7 @@ def _run(
         tick_value=tick_value,
         force_close_at_end=force_close_at_end,
         signal_evaluator=evaluator,
+        replay_streams=replay_streams,
     )
 
 
@@ -783,6 +787,235 @@ def test_unsupported_strategy_fails_explicitly_without_approximation():
         )
 
 
+def test_topbot_replay_synchronizes_slower_source_streams_without_lookahead(monkeypatch):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["support_resistance"],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+            "minimum_reward_risk": 1.5,
+        },
+        lookback_bars=25,
+    )
+    main_bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
+        for index in range(-25, 26)
+    ]
+    one_hour = [
+        _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1),
+        _candle(BASE_TIME, unit="hour", unit_number=1),
+    ]
+    four_hour = [
+        _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4),
+        _candle(BASE_TIME, unit="hour", unit_number=4),
+    ]
+    observed: list[tuple[list[datetime], list[datetime]]] = []
+    topbot_actions: list[tuple[str, str, dict[str, Any]]] = []
+
+    def fake_dispatch(identifier, *args, **kwargs):
+        assert identifier == "support_resistance"
+        higher = kwargs["higher_timeframe_candles"]
+        lower = kwargs["lower_timeframe_candles"]
+        observed.append(
+            (
+                [_utc(row.candle_timestamp) for row in higher],
+                [_utc(row.candle_timestamp) for row in lower],
+            )
+        )
+        latest = lower[-1]
+        return SignalResult(
+            action="BUY",
+            reason="synchronized support source",
+            candle_timestamp=_utc(latest.candle_timestamp),
+            price=float(latest.close_price),
+                raw_payload={"stop_loss": 90.0, "take_profit": 120.0},
+        )
+
+    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
+    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "build_signal_trade_evaluation",
+        lambda **_kwargs: {"total_score": 85},
+    )
+    real_topbot_evaluator = backtesting_module.bot_service_module.evaluate_topbot_adaptive
+
+    def topbot_spy(*args, **kwargs):
+        signal = real_topbot_evaluator(*args, **kwargs)
+        topbot_actions.append((signal.action, signal.reason, signal.raw_payload))
+        return signal
+
+    monkeypatch.setattr(backtesting_module.bot_service_module, "evaluate_topbot_adaptive", topbot_spy)
+
+    result = _run(
+        main_bars,
+        config=config,
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=130),
+        replay_streams={
+            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
+            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
+        },
+    )
+
+    assert observed == [
+        ([BASE_TIME - timedelta(hours=4)], [BASE_TIME - timedelta(hours=1)]),
+        ([BASE_TIME - timedelta(hours=4)], [BASE_TIME - timedelta(hours=1), BASE_TIME]),
+    ]
+    assert {row[0] for row in topbot_actions} == {"BUY"}, topbot_actions[:2]
+    assert result["metrics"]["trade_count"] == 1, (result["warnings"], topbot_actions[:2])
+    assert not any("TopBot source support_resistance failed" in warning for warning in result["warnings"])
+
+
+def test_topbot_replay_deduplicates_repeated_signal_from_unchanged_slow_stream(monkeypatch):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["support_resistance"],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+            "minimum_reward_risk": 1.5,
+        },
+        lookback_bars=25,
+    )
+    main_bars = [
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            close_price=100,
+            high_price=121 if index == 3 else 101,
+            low_price=99,
+        )
+        for index in range(-25, 10)
+    ]
+    one_hour = [_candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)]
+    four_hour = [_candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)]
+
+    def fake_dispatch(identifier, *args, **kwargs):
+        assert identifier == "support_resistance"
+        latest = kwargs["lower_timeframe_candles"][-1]
+        return SignalResult(
+            action="BUY",
+            reason="one slow source signal",
+            candle_timestamp=_utc(latest.candle_timestamp),
+            price=100.0,
+            raw_payload={"stop_loss": 90.0, "take_profit": 120.0},
+        )
+
+    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
+    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "build_signal_trade_evaluation",
+        lambda **_kwargs: {"total_score": 85},
+    )
+
+    result = _run(
+        main_bars,
+        config=config,
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=50),
+        replay_streams={
+            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
+            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
+        },
+    )
+
+    assert result["metrics"]["trade_count"] == 1, result["warnings"]
+    assert result["trades"][0]["exit_reason"] == "take_profit"
+
+
+def test_topbot_replay_records_missing_auxiliary_stream_as_source_failure():
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["support_resistance"],
+            "minimum_directional_votes": 1,
+        },
+        lookback_bars=25,
+    )
+    bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
+        for index in range(-25, 4)
+    ]
+
+    result = _run(
+        bars,
+        config=config,
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=20),
+    )
+
+    assert result["metrics"]["trade_count"] == 0
+    assert any("asset:hour:1" in warning for warning in result["warnings"])
+    assert any("TopBot source support_resistance failed" in warning for warning in result["warnings"])
+
+
+def test_topbot_replay_has_an_adapter_for_every_default_source(monkeypatch):
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={},
+        lookback_bars=25,
+        trading_start_time="10:00",
+    )
+    main_bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
+        for index in range(-192, 3)
+    ]
+    expected_sources = set(
+        bot_service_module._normalize_strategy_params("topbot_adaptive", {})["source_strategies"]
+    )
+    observed_sources: set[str] = set()
+
+    def fake_dispatch(identifier, *args, **kwargs):
+        observed_sources.add(str(identifier))
+        return SignalResult(
+            action="HOLD",
+            reason=f"{identifier} held",
+            candle_timestamp=BASE_TIME,
+            price=100.0,
+            raw_payload={},
+        )
+
+    benchmark = _candle(
+        BASE_TIME - timedelta(minutes=5),
+        contract_id="SPY",
+        symbol="SPY",
+    )
+    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
+
+    result = _run(
+        main_bars,
+        config=config,
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=15),
+        replay_streams={
+            backtesting_module._topbot_asset_stream_key("minute", 1): [
+                _candle(BASE_TIME, unit="minute", unit_number=1)
+            ],
+            backtesting_module._topbot_asset_stream_key("hour", 1): [
+                _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)
+            ],
+            backtesting_module._topbot_asset_stream_key("hour", 4): [
+                _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)
+            ],
+            backtesting_module._topbot_asset_stream_key("day", 1): [
+                _candle(BASE_TIME - timedelta(days=1), unit="day", unit_number=1)
+            ],
+            backtesting_module._topbot_benchmark_stream_key(
+                "atr_adjusted_relative_strength"
+            ): [benchmark],
+            backtesting_module._topbot_benchmark_stream_key("relative_strength_spy"): [
+                benchmark
+            ],
+        },
+    )
+
+    assert observed_sources == expected_sources
+    assert result["metrics"]["trade_count"] == 0
+    assert not any("topbot_replay_adapter_missing" in warning for warning in result["warnings"])
+
+
 def test_orb_rejects_an_incompatible_non_minute_timeframe():
     bars = [
         _candle(BASE_TIME, unit="hour", unit_number=1),
@@ -870,6 +1103,92 @@ def test_authenticated_route_reuses_real_strategy_and_never_routes_orders(
     assert response["assumptions"]["live_order_routing"] == "disabled_by_architecture"
     assert evaluator_calls
     assert db_session.query(BotBacktest).count() == 1
+
+
+def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(
+    db_session,
+    monkeypatch,
+):
+    config = _persist_config(
+        db_session,
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategies": ["support_resistance"],
+            "minimum_directional_votes": 1,
+            "minimum_score": 70,
+            "minimum_reward_risk": 1.5,
+        },
+        lookback_bars=25,
+    )
+    for index in range(-25, 4):
+        db_session.add(
+            _candle(
+                BASE_TIME + timedelta(minutes=5 * index),
+                close_price=100,
+            )
+        )
+    one_hour = _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)
+    four_hour = _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)
+    db_session.add_all([one_hour, four_hour])
+    db_session.commit()
+
+    def fake_dispatch(identifier, *args, **kwargs):
+        assert identifier == "support_resistance"
+        latest = kwargs["lower_timeframe_candles"][-1]
+        price = float(latest.close_price)
+        return SignalResult(
+            action="BUY",
+            reason="stored synchronized source",
+            candle_timestamp=_utc(latest.candle_timestamp),
+            price=price,
+            raw_payload={"stop_loss": price - 10, "take_profit": price + 20},
+        )
+
+    def unexpected_provider_call(*_args, **_kwargs):
+        raise AssertionError("TopBot backtest invoked a provider path")
+
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
+    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
+    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "build_signal_trade_evaluation",
+        lambda **_kwargs: {"total_score": 85},
+    )
+    monkeypatch.setattr(
+        ProjectXClient,
+        "from_env",
+        classmethod(lambda cls: unexpected_provider_call()),
+    )
+    payload = BotBacktestIn(
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(minutes=20),
+        commission_per_contract=0,
+        slippage_ticks=0,
+    )
+
+    first = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=payload,
+        db=db_session,
+    )
+    first_validated = BotBacktestOut.model_validate(first)
+
+    assert first_validated.engine_version == "1.1.0"
+    assert first_validated.metrics.trade_count == 1
+    assert not any("strategy_not_supported" in warning for warning in first["warnings"])
+
+    one_hour.close_price = 101
+    one_hour.high_price = 102
+    db_session.commit()
+    second = main_module.create_trading_bot_backtest(
+        bot_config_id=config.id,
+        payload=payload,
+        db=db_session,
+    )
+
+    assert second["input_fingerprint"] != first["input_fingerprint"]
+    assert db_session.query(BotBacktest).count() == 2
 
 
 def test_backtest_route_scopes_bots_and_candles_to_authenticated_user(

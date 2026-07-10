@@ -3,6 +3,42 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
+
+_SHARED_CONFIGURED_CANDLE_STRATEGIES = {
+    "sma_cross",
+    "ema_scalping",
+    "ema_trend_pullback",
+    "bollinger_rsi_reversal",
+    "bollinger_mean_reversion",
+    "vwap_atr_mean_reversion",
+    "fisher_transform_mean_reversion",
+    "pullback_trap_reversal",
+}
+
+
+class _SourceConfigView:
+    """Proxy a TopBot config while overriding one source strategy's settings."""
+
+    def __init__(
+        self,
+        base: Any,
+        *,
+        strategy_type: str,
+        strategy_params: dict[str, Any],
+        fast_period: int,
+        slow_period: int,
+    ) -> None:
+        self._base = base
+        self.strategy_type = strategy_type
+        self.strategy_params = strategy_params
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
 
 def _service() -> Any:
     # Lazy import keeps this focused adapter independent from the legacy
@@ -20,6 +56,15 @@ def acquire_and_evaluate_strategy(
     service = _service()
     strategy_type = service._validate_strategy_type(str(config.strategy_type))
     strategy_params = service._normalize_strategy_params(strategy_type, config.strategy_params)
+
+    if strategy_type == "topbot_adaptive":
+        return _acquire_and_evaluate_topbot(
+            db,
+            user_id=user_id,
+            config=config,
+            client=client,
+            strategy_params=strategy_params,
+        )
 
     if strategy_type == "delayed_orb_confirmation":
         candle_sets = service.fetch_and_store_delayed_orb_candles(
@@ -226,6 +271,163 @@ def acquire_and_evaluate_strategy(
         strategy_params=config.strategy_params,
     )
     return candles, service.dispatch_strategy_evaluator(strategy_type, candles, **evaluator_args)
+
+
+def _acquire_and_evaluate_topbot(
+    db: Any,
+    *,
+    user_id: str,
+    config: Any,
+    client: Any,
+    strategy_params: dict[str, Any],
+) -> tuple[list[Any], Any]:
+    service = _service()
+    main_candles = service.fetch_and_store_candles(
+        db,
+        user_id=user_id,
+        config=config,
+        client=client,
+        minimum_lookback_bars=300,
+    )
+    source_overrides = strategy_params.get("source_strategy_params") or {}
+    source_results: list[dict[str, Any]] = []
+
+    for source_strategy in strategy_params["source_strategies"]:
+        try:
+            source_params = service._normalize_strategy_params(
+                source_strategy,
+                source_overrides.get(source_strategy, {}),
+            )
+            fast_period, slow_period = service._normalized_strategy_period_values(
+                source_strategy,
+                fast_period=int(config.fast_period),
+                slow_period=int(config.slow_period),
+            )
+            source_config = _SourceConfigView(
+                config,
+                strategy_type=source_strategy,
+                strategy_params=source_params,
+                fast_period=fast_period,
+                slow_period=slow_period,
+            )
+            service._validate_strategy_configuration(
+                strategy_type=source_strategy,
+                timeframe_unit=str(source_config.timeframe_unit),
+                timeframe_unit_number=int(source_config.timeframe_unit_number),
+                fast_period=fast_period,
+                slow_period=slow_period,
+            )
+
+            if source_strategy in _SHARED_CONFIGURED_CANDLE_STRATEGIES:
+                source_candles = main_candles
+                signal = service.dispatch_strategy_evaluator(
+                    source_strategy,
+                    source_candles,
+                    **_generic_evaluator_arguments(
+                        source_strategy,
+                        config=source_config,
+                        strategy_params=source_params,
+                    ),
+                )
+            else:
+                source_candles, signal = acquire_and_evaluate_strategy(
+                    db,
+                    user_id=user_id,
+                    config=source_config,
+                    client=client,
+                )
+
+            source_results.append(
+                _build_topbot_source_result(
+                    service,
+                    strategy_type=source_strategy,
+                    config=source_config,
+                    candles=source_candles,
+                    signal=signal,
+                )
+            )
+        except SQLAlchemyError:
+            raise
+        except Exception as exc:  # One optional source must not disable the whole ensemble.
+            source_results.append(
+                {
+                    "strategy_type": source_strategy,
+                    "action": "ERROR",
+                    "reason": "Source evaluation failed.",
+                    "error": service.sanitize_error(exc, max_length=300),
+                    "score": None,
+                    "reward_risk": None,
+                    "eligible": False,
+                }
+            )
+
+    signal = service.dispatch_strategy_evaluator(
+        "topbot_adaptive",
+        source_results,
+        strategy_params=strategy_params,
+    )
+    return main_candles, signal
+
+
+def _build_topbot_source_result(
+    service: Any,
+    *,
+    strategy_type: str,
+    config: Any,
+    candles: list[Any],
+    signal: Any,
+) -> dict[str, Any]:
+    payload = dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else {}
+    entry = service._finite_optional_float(payload.get("entry_price"))
+    if entry is None:
+        entry = service._finite_optional_float(signal.price)
+    stop = service._finite_optional_float(payload.get("stop_loss"))
+    target = None
+    for key in ("take_profit", "final_take_profit", "partial_take_profit"):
+        target = service._finite_optional_float(payload.get(key))
+        if target is not None:
+            break
+
+    reward_risk: float | None = None
+    valid_geometry = False
+    if entry is not None and stop is not None and target is not None:
+        if signal.action == "BUY" and stop < entry < target:
+            valid_geometry = True
+            reward_risk = (target - entry) / (entry - stop)
+        elif signal.action == "SELL" and target < entry < stop:
+            valid_geometry = True
+            reward_risk = (entry - target) / (stop - entry)
+
+    trade_evaluation = None
+    if signal.action in {"BUY", "SELL"} and valid_geometry:
+        try:
+            analysis = service.build_bot_market_analysis(candles=candles, config=config, signal=signal)
+            trade_evaluation = service.build_signal_trade_evaluation(
+                candles=candles,
+                config=config,
+                signal=signal,
+                analysis=analysis,
+            )
+        except (TypeError, ValueError):
+            trade_evaluation = None
+    score = None
+    if isinstance(trade_evaluation, dict):
+        score = service._finite_optional_float(
+            trade_evaluation.get("total_score", trade_evaluation.get("score"))
+        )
+
+    return {
+        "strategy_type": strategy_type,
+        "action": str(signal.action),
+        "reason": str(signal.reason),
+        "candle_timestamp": signal.candle_timestamp,
+        "price": service._finite_optional_float(signal.price),
+        "raw_payload": payload,
+        "score": score,
+        "reward_risk": round(reward_risk, 4) if reward_risk is not None else None,
+        "eligible": bool(valid_geometry and score is not None),
+        "error": None,
+    }
 
 
 def _generic_evaluator_arguments(

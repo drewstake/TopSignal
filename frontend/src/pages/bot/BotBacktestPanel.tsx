@@ -404,6 +404,8 @@ function Assumptions({ result }: { result: BotBacktestResult }) {
       </div>
       <dl className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Assumption label="Fill model" value={humanize(assumptions.fill_model)} />
+        <Assumption label="Strategy replay" value={humanize(assumptions.strategy_replay)} />
+        <Assumption label="Synchronized streams" value={integerFormatter.format(assumptions.synchronized_stream_count)} />
         <Assumption label="Same-bar exit" value={humanize(assumptions.same_bar_exit_rule)} />
         <Assumption label="Bracket placement" value={humanize(assumptions.bracket_rule)} />
         <Assumption label="Final position" value={humanize(assumptions.final_position_handling)} />

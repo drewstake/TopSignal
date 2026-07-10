@@ -3,15 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models import BotBacktest, BotConfig, ProjectXMarketCandle
+from . import bot_service as bot_service_module
+from .bot_candle_acquisition import (
+    _SourceConfigView,
+    _build_topbot_source_result,
+    _generic_evaluator_arguments,
+)
 from .bot_service import (
     SignalResult,
     evaluate_bollinger_mean_reversion,
@@ -31,16 +39,18 @@ from .bot_strategy_registry import (
 from .trading_day import TRADING_TZ, trading_day_bounds_utc, trading_day_date
 
 
-BACKTEST_ENGINE_VERSION = "1.0.0"
+BACKTEST_ENGINE_VERSION = "1.1.0"
 MAX_BACKTEST_BARS = 20_000
 MAX_BACKTEST_RANGE_DAYS = 366
 MAX_EVALUATOR_BAR_OPERATIONS = 10_000_000
+MAX_TOPBOT_EVALUATOR_BAR_OPERATIONS = 200_000_000
+MAX_TOPBOT_REPLAY_STREAM_BARS = 100_000
+MAX_TOPBOT_REPLAY_TOTAL_BARS = 250_000
 MIN_EXECUTION_BARS = 2
 
-# These evaluators can be replayed from one exact candle stream and have exit
-# semantics that match the current live/dry-run bracket payloads. Strategies
-# needing synchronized secondary streams or unimplemented discretionary exits
-# are rejected instead of being approximated.
+# These strategies have exact replay adapters for their required stored streams
+# and exit semantics that match the current live/dry-run bracket payloads.
+# Remaining strategies are rejected instead of being approximated.
 SUPPORTED_BACKTEST_STRATEGIES = BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS
 
 UNSUPPORTED_BACKTEST_STRATEGY_REASONS: dict[str, str] = {
@@ -60,10 +70,29 @@ UNSUPPORTED_BACKTEST_STRATEGY_REASONS: dict[str, str] = {
 }
 
 _BRACKET_REQUIRED_STRATEGIES = SUPPORTED_BACKTEST_STRATEGIES - {"sma_cross"}
+_TOPBOT_STRATEGY = "topbot_adaptive"
+_TOPBOT_SHARED_CONFIGURED_STRATEGIES = {
+    "sma_cross",
+    "ema_scalping",
+    "ema_trend_pullback",
+    "bollinger_rsi_reversal",
+    "bollinger_mean_reversion",
+    "vwap_atr_mean_reversion",
+    "fisher_transform_mean_reversion",
+    "pullback_trap_reversal",
+}
+_TOPBOT_LEVEL_STRATEGIES = {
+    "support_resistance",
+    "liquidity_sweep_retest",
+    "macd_support_resistance",
+}
 _TRADING_DAY_VWAP_STRATEGIES = {
     "vwap_atr_mean_reversion",
     "bollinger_mean_reversion",
     "bollinger_rsi_reversal",
+}
+_TOPBOT_SESSION_VWAP_STRATEGIES = _TRADING_DAY_VWAP_STRATEGIES | {
+    "fisher_transform_mean_reversion"
 }
 _UNIT_SECONDS = {
     "second": 1,
@@ -107,6 +136,24 @@ class BacktestSettings:
 
 
 @dataclass(frozen=True)
+class _TopBotReplayStreamSpec:
+    key: str
+    unit: str
+    unit_number: int
+    warmup_bars: int
+    contract_id: str | None = None
+    symbol: str | None = None
+    source_strategy: str | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedReplayStream:
+    candles: list[ProjectXMarketCandle]
+    start_times: list[datetime]
+    close_times: list[datetime]
+
+
+@dataclass(frozen=True)
 class _PendingSignal:
     action: str
     signal_timestamp: datetime
@@ -143,6 +190,7 @@ class BacktestEngine:
         candles: list[ProjectXMarketCandle],
         settings: BacktestSettings,
         signal_evaluator: SignalEvaluator | None = None,
+        replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
     ) -> None:
         self.config = config
         self.settings = _validate_settings(settings)
@@ -153,6 +201,19 @@ class BacktestEngine:
         self.signal_evaluator = signal_evaluator or self._evaluate_real_strategy
 
         self.all_candles, excluded_partial = _validate_and_sort_candles(candles, config=config)
+        self.topbot_streams: dict[str, _PreparedReplayStream] = {}
+        auxiliary_excluded_partial = 0
+        missing_replay_streams: list[str] = []
+        if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY:
+            (
+                self.topbot_streams,
+                auxiliary_excluded_partial,
+                missing_replay_streams,
+            ) = _prepare_topbot_replay_streams(
+                config,
+                primary_candles=self.all_candles,
+                replay_streams=replay_streams,
+            )
         self.execution_candles = [
             candle
             for candle in self.all_candles
@@ -192,19 +253,37 @@ class BacktestEngine:
             config,
             rolling_limit=self.evaluator_history_limit,
         )
-        estimated_operations = len(self.execution_candles) * min(
-            len(self.all_candles), self.max_evaluator_input_bars
-        )
-        if estimated_operations > MAX_EVALUATOR_BAR_OPERATIONS:
+        if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY:
+            estimated_operations = _estimate_topbot_evaluator_operations(
+                config,
+                execution_bars=len(self.execution_candles),
+            )
+            operation_limit = MAX_TOPBOT_EVALUATOR_BAR_OPERATIONS
+        else:
+            estimated_operations = len(self.execution_candles) * min(
+                len(self.all_candles), self.max_evaluator_input_bars
+            )
+            operation_limit = MAX_EVALUATOR_BAR_OPERATIONS
+        if estimated_operations > operation_limit:
             raise BacktestConfigurationError(
                 "backtest_computation_limit_exceeded: reduce the date range or bot lookback; "
                 f"estimated evaluator bar-visits {estimated_operations:,} exceed "
-                f"{MAX_EVALUATOR_BAR_OPERATIONS:,}"
+                f"{operation_limit:,}"
             )
 
         self.warnings: list[str] = []
         if excluded_partial:
             self.warnings.append(f"Excluded {excluded_partial} partial candle(s); only closed bars were replayed.")
+        if auxiliary_excluded_partial:
+            self.warnings.append(
+                f"Excluded {auxiliary_excluded_partial} partial auxiliary candle(s); only closed bars were replayed."
+            )
+        if missing_replay_streams:
+            self.warnings.append(
+                "TopBot source data was unavailable for stored replay stream(s): "
+                + ", ".join(sorted(missing_replay_streams))
+                + ". Affected sources were recorded as failed for ensemble voting."
+            )
         self._add_data_quality_warnings()
 
         self.cash = float(self.settings.starting_balance)
@@ -225,6 +304,9 @@ class BacktestEngine:
         self.last_loss_at: datetime | None = None
         self.block_counts: dict[str, int] = defaultdict(int)
         self.unfilled_final_signals = 0
+        self._emitted_topbot_signal_identities: set[tuple[str, datetime]] = set()
+        self._topbot_source_cache: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+        self.topbot_source_failure_counts: dict[tuple[str, str], int] = defaultdict(int)
 
     def run(self) -> dict[str, Any]:
         closed_history: list[ProjectXMarketCandle] = []
@@ -257,7 +339,20 @@ class BacktestEngine:
                 closed_history.append(self.all_candles[history_cursor])
                 history_cursor += 1
             signal = self.signal_evaluator(self._evaluator_input(closed_history))
+            if self.strategy_type == _TOPBOT_STRATEGY:
+                self._record_topbot_source_failures(signal)
             if signal.action in {"BUY", "SELL"}:
+                source_signal_timestamp = (
+                    _as_utc(signal.candle_timestamp)
+                    if self.strategy_type == _TOPBOT_STRATEGY and signal.candle_timestamp is not None
+                    else candle_start
+                )
+                if self.strategy_type == _TOPBOT_STRATEGY:
+                    signal_identity = (str(signal.action), source_signal_timestamp)
+                    if signal_identity in self._emitted_topbot_signal_identities:
+                        self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+                        continue
+                    self._emitted_topbot_signal_identities.add(signal_identity)
                 self.pending = _PendingSignal(
                     action=signal.action,
                     signal_timestamp=candle_start,
@@ -311,6 +406,17 @@ class BacktestEngine:
             "trades": self.trades,
             "warnings": self.warnings,
         }
+
+    def _record_topbot_source_failures(self, signal: SignalResult) -> None:
+        payload = signal.raw_payload if isinstance(signal.raw_payload, dict) else {}
+        ensemble = payload.get("ensemble") if isinstance(payload.get("ensemble"), dict) else {}
+        failures = ensemble.get("failures") if isinstance(ensemble.get("failures"), list) else []
+        for failure in failures:
+            if not isinstance(failure, dict):
+                continue
+            source = str(failure.get("strategy_type") or "unknown")
+            error = str(failure.get("error") or "evaluation failed")[:300]
+            self.topbot_source_failure_counts[(source, error)] += 1
 
     def _evaluator_input(
         self,
@@ -369,6 +475,8 @@ class BacktestEngine:
 
     def _evaluate_real_strategy(self, candles: list[ProjectXMarketCandle]) -> SignalResult:
         params = self.config.strategy_params
+        if self.strategy_type == _TOPBOT_STRATEGY:
+            return self._evaluate_topbot_adaptive(candles)
         if self.strategy_type == "sma_cross":
             return evaluate_sma_cross(
                 candles,
@@ -407,6 +515,436 @@ class BacktestEngine:
         raise UnsupportedBacktestStrategyError(
             f"strategy_not_supported_for_backtesting:{self.strategy_type}"
         )
+
+    def _evaluate_topbot_adaptive(
+        self,
+        primary_candles: list[ProjectXMarketCandle],
+    ) -> SignalResult:
+        if not primary_candles:
+            return bot_service_module.evaluate_topbot_adaptive(
+                [],
+                strategy_params=self.config.strategy_params,
+            )
+        event_time = _candle_close_time(primary_candles[-1])
+        topbot_params = bot_service_module._normalize_strategy_params(
+            _TOPBOT_STRATEGY,
+            self.config.strategy_params,
+        )
+        source_overrides = topbot_params.get("source_strategy_params") or {}
+        source_results: list[dict[str, Any]] = []
+
+        for source_strategy in topbot_params["source_strategies"]:
+            source_params = bot_service_module._normalize_strategy_params(
+                source_strategy,
+                source_overrides.get(source_strategy, {}),
+            )
+            signature = self._topbot_source_cache_signature(
+                source_strategy,
+                source_params=source_params,
+                event_time=event_time,
+            )
+            cached = self._topbot_source_cache.get(source_strategy)
+            if cached is not None and cached[0] == signature:
+                source_results.append(cached[1])
+                continue
+            try:
+                result = self._evaluate_topbot_source(
+                    source_strategy,
+                    source_params=source_params,
+                    event_time=event_time,
+                )
+            except Exception as exc:
+                result = {
+                    "strategy_type": source_strategy,
+                    "action": "ERROR",
+                    "reason": "Source evaluation failed during synchronized replay.",
+                    "error": bot_service_module.sanitize_error(exc, max_length=300),
+                    "score": None,
+                    "reward_risk": None,
+                    "eligible": False,
+                }
+            self._topbot_source_cache[source_strategy] = (signature, result)
+            source_results.append(result)
+
+        return bot_service_module.evaluate_topbot_adaptive(
+            source_results,
+            strategy_params=topbot_params,
+        )
+
+    def _topbot_source_cache_signature(
+        self,
+        source_strategy: str,
+        *,
+        source_params: dict[str, Any],
+        event_time: datetime,
+    ) -> tuple[Any, ...]:
+        signature: list[Any] = []
+        for key in _topbot_source_stream_keys(
+            self.config,
+            source_strategy,
+            source_params=source_params,
+        ):
+            stream = self.topbot_streams.get(key)
+            closed_count = bisect_right(stream.close_times, event_time) if stream is not None else 0
+            signature.append((key, closed_count))
+        if source_strategy == "donchian_breakout":
+            if self.position is None:
+                signature.append(("position", "flat"))
+            else:
+                signature.append(
+                    (
+                        "position",
+                        self.position.side,
+                        self.position.quantity,
+                        self.position.entry_timestamp,
+                        self.position.entry_price,
+                        self.position.stop_loss,
+                        self.position.take_profit,
+                    )
+                )
+        return tuple(signature)
+
+    def _evaluate_topbot_source(
+        self,
+        source_strategy: str,
+        *,
+        source_params: dict[str, Any],
+        event_time: datetime,
+    ) -> dict[str, Any]:
+        fast_period, slow_period = bot_service_module._normalized_strategy_period_values(
+            source_strategy,
+            fast_period=int(self.config.fast_period),
+            slow_period=int(self.config.slow_period),
+        )
+        source_config = _SourceConfigView(
+            self.config,
+            strategy_type=source_strategy,
+            strategy_params=source_params,
+            fast_period=fast_period,
+            slow_period=slow_period,
+        )
+        bot_service_module._validate_strategy_configuration(
+            strategy_type=source_strategy,
+            timeframe_unit=str(source_config.timeframe_unit),
+            timeframe_unit_number=int(source_config.timeframe_unit_number),
+            fast_period=fast_period,
+            slow_period=slow_period,
+        )
+
+        primary_key = _topbot_asset_stream_key(
+            str(self.config.timeframe_unit),
+            int(self.config.timeframe_unit_number),
+        )
+        primary_limit = _topbot_primary_source_history_limit(
+            self.config,
+            source_strategy,
+        )
+
+        if source_strategy in _TOPBOT_SHARED_CONFIGURED_STRATEGIES:
+            source_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=primary_limit,
+            )
+            if source_strategy in _TOPBOT_SESSION_VWAP_STRATEGIES and source_candles:
+                trading_day_start, _trading_day_end = trading_day_bounds_utc(
+                    trading_day_date(_as_utc(source_candles[-1].candle_timestamp))
+                )
+                session_index = _first_index_at_or_after(source_candles, trading_day_start)
+                _require_complete_session_prefix(
+                    source_candles[session_index:],
+                    expected_start=trading_day_start,
+                    strategy_type=f"topbot:{source_strategy}",
+                    enforce=_is_intraday_timeframe(self.config),
+                    expected_interval_seconds=_timeframe_seconds(
+                        str(self.config.timeframe_unit),
+                        int(self.config.timeframe_unit_number),
+                    ),
+                )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                **_generic_evaluator_arguments(
+                    source_strategy,
+                    config=source_config,
+                    strategy_params=source_params,
+                ),
+            )
+        elif source_strategy == "donchian_breakout":
+            source_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=primary_limit,
+            )
+            if self.position is None:
+                position_state = bot_service_module.OpenPositionState(
+                    net_qty=0.0,
+                    avg_entry_price=None,
+                    opened_at=None,
+                )
+                latest_entry_plan = None
+            else:
+                position_state = bot_service_module.OpenPositionState(
+                    net_qty=(
+                        self.position.quantity
+                        if self.position.side == "long"
+                        else -self.position.quantity
+                    ),
+                    avg_entry_price=self.position.entry_price,
+                    opened_at=self.position.entry_timestamp,
+                )
+                latest_entry_plan = {
+                    "stop_loss": self.position.stop_loss,
+                    "take_profit": self.position.take_profit,
+                }
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                strategy_params=source_params,
+                position_state=position_state,
+                latest_entry_plan=latest_entry_plan,
+                base_order_size=float(self.config.order_size),
+            )
+        elif source_strategy == "delayed_orb_confirmation":
+            session_start, _session_end = _session_window_utc_for_reference(
+                event_time,
+                start_text=str(self.config.trading_start_time),
+                end_text=str(self.config.trading_end_time),
+            )
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("minute", 1),
+                event_time=event_time,
+                limit=MAX_TOPBOT_REPLAY_STREAM_BARS,
+                not_before=session_start,
+            )
+            _require_complete_session_prefix(
+                source_candles,
+                expected_start=session_start,
+                strategy_type="topbot:delayed_orb_confirmation",
+                enforce=True,
+                expected_interval_seconds=60,
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                candles=source_candles,
+                strategy_params=source_params,
+                session_start_time=str(self.config.trading_start_time),
+            )
+        elif source_strategy == "orb_fibonacci_pullback":
+            session_start, _session_end = _session_window_utc_for_reference(
+                event_time,
+                start_text=str(self.config.trading_start_time),
+                end_text=str(self.config.trading_end_time),
+            )
+            source_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=MAX_TOPBOT_REPLAY_STREAM_BARS,
+                not_before=session_start,
+            )
+            _require_complete_session_prefix(
+                source_candles,
+                expected_start=session_start,
+                strategy_type="topbot:orb_fibonacci_pullback",
+                enforce=True,
+                expected_interval_seconds=_timeframe_seconds(
+                    str(self.config.timeframe_unit),
+                    int(self.config.timeframe_unit_number),
+                ),
+            )
+            _require_complete_orb_opening_range(
+                source_candles,
+                config=source_config,
+                session_start=session_start,
+                latest_timestamp=_as_utc(source_candles[-1].candle_timestamp),
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                timeframe_unit=str(self.config.timeframe_unit),
+                timeframe_unit_number=int(self.config.timeframe_unit_number),
+                strategy_params=source_params,
+                session_start_time=str(self.config.trading_start_time),
+                session_end_time=str(self.config.trading_end_time),
+            )
+        elif source_strategy == "opening_rvol_breakout":
+            lookback_days = int(source_params["relative_volume_lookback_days"])
+            calendar_lookback_days = max(lookback_days + 14, 21)
+            limit = min(
+                MAX_BACKTEST_BARS,
+                max(
+                    int(self.config.lookback_bars),
+                    (calendar_lookback_days + 1) * ((24 * 60) // 5),
+                    int(source_params["atr_period"]) * 20,
+                    500,
+                ),
+            )
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("minute", 5),
+                event_time=event_time,
+                limit=limit,
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                strategy_params=source_params,
+                session_start_time=str(self.config.trading_start_time),
+            )
+        elif source_strategy == "vwap_gap_retrace":
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("minute", 1),
+                event_time=event_time,
+                limit=int(source_params["bars_to_fetch"]),
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                strategy_params=source_params,
+            )
+        elif source_strategy in _TOPBOT_LEVEL_STRATEGIES:
+            bars_per_timeframe = int(source_params["bars_per_timeframe"])
+            higher_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("hour", 4),
+                event_time=event_time,
+                limit=bars_per_timeframe,
+            )
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("hour", 1),
+                event_time=event_time,
+                limit=bars_per_timeframe,
+            )
+            evaluator_args: dict[str, Any] = {
+                "higher_timeframe_candles": higher_candles,
+                "lower_timeframe_candles": source_candles,
+                "strategy_params": source_params,
+            }
+            if source_strategy != "support_resistance":
+                evaluator_args.update(fast_period=fast_period, slow_period=slow_period)
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                **evaluator_args,
+            )
+        elif source_strategy == "supertrend_pivot":
+            signal_limit = max(
+                int(self.config.lookback_bars),
+                int(source_params["supertrend_period"])
+                + int(source_params["chop_lookback_bars"])
+                + 10,
+            )
+            source_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=signal_limit,
+            )
+            daily_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("day", 1),
+                event_time=event_time,
+                limit=int(source_params["daily_bars"]),
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                signal_timeframe_candles=source_candles,
+                daily_candles=daily_candles,
+                strategy_params=source_params,
+            )
+        elif source_strategy == "fvg_sweep_mss":
+            fvg_limit = max(25, int(self.config.lookback_bars))
+            structure_unit, structure_unit_number = bot_service_module._derive_lower_timeframe(
+                base_unit=str(self.config.timeframe_unit),
+                base_unit_number=int(self.config.timeframe_unit_number),
+            )
+            base_seconds = _timeframe_seconds(
+                str(self.config.timeframe_unit),
+                int(self.config.timeframe_unit_number),
+            ) or 1
+            structure_seconds = _timeframe_seconds(
+                structure_unit,
+                structure_unit_number,
+            ) or 1
+            structure_ratio = max(1, int(round(base_seconds / structure_seconds)))
+            structure_limit = min(5000, max(fvg_limit * structure_ratio, fvg_limit + 25))
+            fvg_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=fvg_limit,
+            )
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key(structure_unit, structure_unit_number),
+                event_time=event_time,
+                limit=structure_limit,
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                fvg_candles=fvg_candles,
+                structure_candles=source_candles,
+                strategy_params=source_params,
+            )
+        elif source_strategy == "atr_adjusted_relative_strength":
+            source_candles = self._topbot_stream_history(
+                primary_key,
+                event_time=event_time,
+                limit=primary_limit,
+            )
+            benchmark_candles = self._topbot_stream_history(
+                _topbot_benchmark_stream_key(source_strategy),
+                event_time=event_time,
+                limit=max(25, int(self.config.lookback_bars)),
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                source_candles,
+                benchmark_candles=benchmark_candles,
+                strategy_params=source_params,
+                session_start_time=str(self.config.trading_start_time),
+            )
+        elif source_strategy == "relative_strength_spy":
+            limit = _relative_strength_spy_history_limit(self.config, source_params)
+            source_candles = self._topbot_stream_history(
+                _topbot_asset_stream_key("minute", 5),
+                event_time=event_time,
+                limit=limit,
+            )
+            benchmark_candles = self._topbot_stream_history(
+                _topbot_benchmark_stream_key(source_strategy),
+                event_time=event_time,
+                limit=limit,
+            )
+            signal = bot_service_module.dispatch_strategy_evaluator(
+                source_strategy,
+                asset_candles=source_candles,
+                benchmark_candles=benchmark_candles,
+                strategy_params=source_params,
+            )
+        else:
+            raise ValueError(f"topbot_replay_adapter_missing:{source_strategy}")
+
+        return _build_topbot_source_result(
+            bot_service_module,
+            strategy_type=source_strategy,
+            config=source_config,
+            candles=source_candles,
+            signal=signal,
+        )
+
+    def _topbot_stream_history(
+        self,
+        key: str,
+        *,
+        event_time: datetime,
+        limit: int,
+        not_before: datetime | None = None,
+    ) -> list[ProjectXMarketCandle]:
+        stream = self.topbot_streams.get(key)
+        if stream is None or not stream.candles:
+            raise ValueError(f"missing_stored_replay_stream:{key}")
+        end_index = bisect_right(stream.close_times, _as_utc(event_time))
+        start_index = max(0, end_index - max(1, int(limit)))
+        if not_before is not None:
+            start_index = max(
+                start_index,
+                bisect_left(stream.start_times, _as_utc(not_before)),
+            )
+        return stream.candles[start_index:end_index]
 
     def _fill_pending_signal(
         self,
@@ -734,6 +1272,12 @@ class BacktestEngine:
                 _strategy_history_bars(self.config, hard_minimum=False),
             ),
         )
+        if self.strategy_type == _TOPBOT_STRATEGY:
+            primary_key = _topbot_asset_stream_key(
+                str(self.config.timeframe_unit),
+                int(self.config.timeframe_unit_number),
+            )
+            requested_warmup = _topbot_stream_specs(self.config)[primary_key].warmup_bars
         if warmup_count < requested_warmup:
             self.warnings.append(
                 f"Only {warmup_count} of {requested_warmup} configured warmup bars were available before the test range."
@@ -758,11 +1302,60 @@ class BacktestEngine:
                 self.warnings.append(
                     f"Detected {gaps} candle gap(s); the engine used the next available bar without interpolation."
                 )
+        if self.strategy_type == _TOPBOT_STRATEGY:
+            primary_key = _topbot_asset_stream_key(
+                str(self.config.timeframe_unit),
+                int(self.config.timeframe_unit_number),
+            )
+            first_event = _candle_close_time(self.execution_candles[0])
+            for key, spec in sorted(_topbot_stream_specs(self.config).items()):
+                if key == primary_key:
+                    continue
+                stream = self.topbot_streams.get(key)
+                if stream is None or not stream.candles:
+                    continue
+                auxiliary_warmup = sum(
+                    1
+                    for row in stream.candles
+                    if _as_utc(row.candle_timestamp) < self.settings.start
+                    and _candle_close_time(row) <= first_event
+                )
+                if auxiliary_warmup < spec.warmup_bars:
+                    self.warnings.append(
+                        f"TopBot replay stream {key} has {auxiliary_warmup} of "
+                        f"{spec.warmup_bars} configured warmup bars."
+                    )
+                expected = _timeframe_seconds(spec.unit, spec.unit_number)
+                if expected is None:
+                    continue
+                execution_rows = [
+                    row
+                    for row in stream.candles
+                    if _as_utc(row.candle_timestamp) >= self.settings.start
+                    and _candle_close_time(row) <= self.settings.end
+                ]
+                gaps = sum(
+                    1
+                    for previous, current in zip(execution_rows, execution_rows[1:])
+                    if (
+                        _as_utc(current.candle_timestamp)
+                        - _as_utc(previous.candle_timestamp)
+                    ).total_seconds()
+                    > expected * 1.5
+                )
+                if gaps:
+                    self.warnings.append(
+                        f"TopBot replay stream {key} has {gaps} candle gap(s); no bars were interpolated."
+                    )
 
     def _append_run_warnings(self) -> None:
         if self.unfilled_final_signals:
             self.warnings.append(
                 "The final-bar signal was not filled because no next bar existed in the test range."
+            )
+        for (source, error), count in sorted(self.topbot_source_failure_counts.items()):
+            self.warnings.append(
+                f"TopBot source {source} failed on {count} replay event(s): {error}"
             )
         for code in sorted(self.block_counts):
             count = self.block_counts[code]
@@ -784,6 +1377,493 @@ class BacktestEngine:
             )
 
 
+def _topbot_asset_stream_key(unit: str, unit_number: int) -> str:
+    return f"asset:{str(unit).strip().lower()}:{int(unit_number)}"
+
+
+def _topbot_benchmark_stream_key(source_strategy: str) -> str:
+    return f"benchmark:{source_strategy}"
+
+
+def _topbot_primary_source_history_limit(config: BotConfig, source_strategy: str) -> int:
+    limit = max(300, int(config.lookback_bars), 25)
+    if source_strategy not in _TOPBOT_SESSION_VWAP_STRATEGIES:
+        return limit
+    timeframe_seconds = _timeframe_seconds(
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
+    if timeframe_seconds is None or timeframe_seconds <= 0:
+        return MAX_BACKTEST_BARS
+    session_capacity = math.ceil((25 * 60 * 60) / timeframe_seconds) + 2
+    return min(MAX_BACKTEST_BARS, max(limit, session_capacity))
+
+
+def _topbot_configured_session_capacity(
+    config: BotConfig,
+    *,
+    unit: str,
+    unit_number: int,
+) -> int:
+    timeframe_seconds = _timeframe_seconds(unit, unit_number)
+    if timeframe_seconds is None or timeframe_seconds <= 0:
+        return MAX_BACKTEST_BARS
+    start = _parse_time(str(config.trading_start_time))
+    end = _parse_time(str(config.trading_end_time))
+    start_seconds = start.hour * 3600 + start.minute * 60 + start.second
+    end_seconds = end.hour * 3600 + end.minute * 60 + end.second
+    duration = end_seconds - start_seconds
+    if duration < 0:
+        duration += 24 * 60 * 60
+    return min(
+        MAX_BACKTEST_BARS,
+        max(1, math.ceil((duration + 60 * 60) / timeframe_seconds) + 2),
+    )
+
+
+def _relative_strength_spy_history_limit(
+    config: BotConfig,
+    source_params: Mapping[str, Any],
+) -> int:
+    return min(
+        MAX_BACKTEST_BARS,
+        max(
+            int(config.lookback_bars),
+            int(source_params["comparison_bars"]) + 1,
+            int(source_params["pullback_lookback_bars"]) + 1,
+            int(source_params["relative_volume_period"]) + 1,
+            int(source_params["major_level_lookback_bars"]),
+            50,
+        ),
+    )
+
+
+def _topbot_stream_specs(config: BotConfig) -> dict[str, _TopBotReplayStreamSpec]:
+    topbot_params = bot_service_module._normalize_strategy_params(
+        _TOPBOT_STRATEGY,
+        config.strategy_params,
+    )
+    source_overrides = topbot_params.get("source_strategy_params") or {}
+    specs: dict[str, _TopBotReplayStreamSpec] = {}
+
+    def add_asset(unit: str, unit_number: int, warmup_bars: int) -> None:
+        key = _topbot_asset_stream_key(unit, unit_number)
+        existing = specs.get(key)
+        specs[key] = _TopBotReplayStreamSpec(
+            key=key,
+            unit=str(unit),
+            unit_number=int(unit_number),
+            warmup_bars=max(
+                int(warmup_bars),
+                existing.warmup_bars if existing is not None else 0,
+            ),
+            contract_id=str(config.contract_id),
+            symbol=config.symbol,
+        )
+
+    primary_unit = str(config.timeframe_unit)
+    primary_unit_number = int(config.timeframe_unit_number)
+    add_asset(primary_unit, primary_unit_number, max(300, int(config.lookback_bars), 25))
+
+    for source_strategy in topbot_params["source_strategies"]:
+        source_params = bot_service_module._normalize_strategy_params(
+            source_strategy,
+            source_overrides.get(source_strategy, {}),
+        )
+        if source_strategy in _TOPBOT_SHARED_CONFIGURED_STRATEGIES or source_strategy in {
+            "donchian_breakout",
+            "orb_fibonacci_pullback",
+            "supertrend_pivot",
+            "atr_adjusted_relative_strength",
+        }:
+            add_asset(
+                primary_unit,
+                primary_unit_number,
+                _topbot_primary_source_history_limit(config, source_strategy),
+            )
+
+        if source_strategy in _TOPBOT_LEVEL_STRATEGIES:
+            bars = int(source_params["bars_per_timeframe"])
+            add_asset("hour", 4, bars)
+            add_asset("hour", 1, bars)
+        elif source_strategy == "orb_fibonacci_pullback":
+            add_asset(
+                primary_unit,
+                primary_unit_number,
+                _topbot_configured_session_capacity(
+                    config,
+                    unit=primary_unit,
+                    unit_number=primary_unit_number,
+                ),
+            )
+        elif source_strategy == "opening_rvol_breakout":
+            lookback_days = int(source_params["relative_volume_lookback_days"])
+            calendar_lookback_days = max(lookback_days + 14, 21)
+            opening_limit = min(
+                MAX_BACKTEST_BARS,
+                max(
+                    int(config.lookback_bars),
+                    (calendar_lookback_days + 1) * ((24 * 60) // 5),
+                    int(source_params["atr_period"]) * 20,
+                    500,
+                ),
+            )
+            add_asset("minute", 5, opening_limit)
+        elif source_strategy == "delayed_orb_confirmation":
+            add_asset(
+                "minute",
+                1,
+                _topbot_configured_session_capacity(
+                    config,
+                    unit="minute",
+                    unit_number=1,
+                ),
+            )
+        elif source_strategy == "vwap_gap_retrace":
+            add_asset("minute", 1, int(source_params["bars_to_fetch"]))
+        elif source_strategy == "supertrend_pivot":
+            add_asset("day", 1, int(source_params["daily_bars"]))
+        elif source_strategy == "fvg_sweep_mss":
+            fvg_limit = max(25, int(config.lookback_bars))
+            add_asset(primary_unit, primary_unit_number, fvg_limit)
+            structure_unit, structure_unit_number = bot_service_module._derive_lower_timeframe(
+                base_unit=primary_unit,
+                base_unit_number=primary_unit_number,
+            )
+            base_seconds = _timeframe_seconds(primary_unit, primary_unit_number) or 1
+            structure_seconds = _timeframe_seconds(structure_unit, structure_unit_number) or 1
+            ratio = max(1, int(round(base_seconds / structure_seconds)))
+            add_asset(
+                structure_unit,
+                structure_unit_number,
+                min(5000, max(fvg_limit * ratio, fvg_limit + 25)),
+            )
+        elif source_strategy == "atr_adjusted_relative_strength":
+            benchmark_contract_id = source_params.get("benchmark_contract_id")
+            benchmark_symbol = str(source_params.get("benchmark_symbol") or "SPY")
+            key = _topbot_benchmark_stream_key(source_strategy)
+            specs[key] = _TopBotReplayStreamSpec(
+                key=key,
+                unit=primary_unit,
+                unit_number=primary_unit_number,
+                warmup_bars=max(25, int(config.lookback_bars)),
+                contract_id=str(benchmark_contract_id) if benchmark_contract_id else None,
+                symbol=benchmark_symbol,
+                source_strategy=source_strategy,
+            )
+        elif source_strategy == "relative_strength_spy":
+            limit = _relative_strength_spy_history_limit(config, source_params)
+            add_asset("minute", 5, limit)
+            benchmark_contract_id = source_params.get("benchmark_contract_id")
+            benchmark_symbol = str(source_params.get("benchmark_symbol") or "SPY")
+            key = _topbot_benchmark_stream_key(source_strategy)
+            specs[key] = _TopBotReplayStreamSpec(
+                key=key,
+                unit="minute",
+                unit_number=5,
+                warmup_bars=limit,
+                contract_id=str(benchmark_contract_id) if benchmark_contract_id else None,
+                symbol=benchmark_symbol,
+                source_strategy=source_strategy,
+            )
+
+    return specs
+
+
+def _topbot_source_stream_keys(
+    config: BotConfig,
+    source_strategy: str,
+    *,
+    source_params: Mapping[str, Any],
+) -> tuple[str, ...]:
+    primary = _topbot_asset_stream_key(
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
+    if source_strategy in _TOPBOT_SHARED_CONFIGURED_STRATEGIES or source_strategy in {
+        "donchian_breakout",
+        "orb_fibonacci_pullback",
+    }:
+        return (primary,)
+    if source_strategy in _TOPBOT_LEVEL_STRATEGIES:
+        return (
+            _topbot_asset_stream_key("hour", 4),
+            _topbot_asset_stream_key("hour", 1),
+        )
+    if source_strategy == "opening_rvol_breakout":
+        return (_topbot_asset_stream_key("minute", 5),)
+    if source_strategy in {"delayed_orb_confirmation", "vwap_gap_retrace"}:
+        return (_topbot_asset_stream_key("minute", 1),)
+    if source_strategy == "supertrend_pivot":
+        return (primary, _topbot_asset_stream_key("day", 1))
+    if source_strategy == "fvg_sweep_mss":
+        unit, unit_number = bot_service_module._derive_lower_timeframe(
+            base_unit=str(config.timeframe_unit),
+            base_unit_number=int(config.timeframe_unit_number),
+        )
+        return (primary, _topbot_asset_stream_key(unit, unit_number))
+    if source_strategy == "atr_adjusted_relative_strength":
+        return (primary, _topbot_benchmark_stream_key(source_strategy))
+    if source_strategy == "relative_strength_spy":
+        return (
+            _topbot_asset_stream_key("minute", 5),
+            _topbot_benchmark_stream_key(source_strategy),
+        )
+    return (primary,)
+
+
+def _prepare_topbot_replay_streams(
+    config: BotConfig,
+    *,
+    primary_candles: list[ProjectXMarketCandle],
+    replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None,
+) -> tuple[dict[str, _PreparedReplayStream], int, list[str]]:
+    provided = dict(replay_streams or {})
+    primary_key = _topbot_asset_stream_key(
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
+    provided[primary_key] = primary_candles
+    prepared: dict[str, _PreparedReplayStream] = {}
+    excluded_partial = 0
+    missing: list[str] = []
+
+    for key, spec in _topbot_stream_specs(config).items():
+        rows, excluded = _validate_topbot_replay_stream(
+            provided.get(key, []),
+            spec=spec,
+            config=config,
+        )
+        excluded_partial += excluded
+        if not rows:
+            missing.append(key)
+        prepared[key] = _PreparedReplayStream(
+            candles=rows,
+            start_times=[_as_utc(row.candle_timestamp) for row in rows],
+            close_times=[_candle_close_time(row) for row in rows],
+        )
+    return prepared, excluded_partial, missing
+
+
+def _validate_topbot_replay_stream(
+    candles: list[ProjectXMarketCandle],
+    *,
+    spec: _TopBotReplayStreamSpec,
+    config: BotConfig,
+) -> tuple[list[ProjectXMarketCandle], int]:
+    closed = [row for row in candles if not bool(row.is_partial)]
+    excluded_partial = len(candles) - len(closed)
+    closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
+    seen: set[datetime] = set()
+    previous_close_time: datetime | None = None
+    contract_ids: set[str] = set()
+
+    for row in closed:
+        timestamp = _as_utc(row.candle_timestamp)
+        if timestamp in seen:
+            raise MalformedBacktestDataError(
+                f"duplicate_topbot_candle_timestamp:{spec.key}:{timestamp.isoformat()}"
+            )
+        seen.add(timestamp)
+        if bool(row.live):
+            raise MalformedBacktestDataError(
+                f"live_candle_not_allowed:{spec.key}:{timestamp.isoformat()}"
+            )
+        if config.user_id is not None and str(row.user_id) != str(config.user_id):
+            raise MalformedBacktestDataError(
+                f"mixed_user_candles:{spec.key}:{timestamp.isoformat()}"
+            )
+        if str(row.unit) != spec.unit or int(row.unit_number) != spec.unit_number:
+            raise MalformedBacktestDataError(f"mixed_timeframe_candles:{spec.key}")
+        contract_ids.add(str(row.contract_id))
+        if spec.contract_id is not None and str(row.contract_id) != spec.contract_id:
+            raise MalformedBacktestDataError(
+                f"mixed_contract_candles:{spec.key}:{timestamp.isoformat()}"
+            )
+        if spec.contract_id is None and spec.symbol is not None:
+            if str(row.contract_id) != spec.symbol and str(row.symbol or "") != spec.symbol:
+                raise MalformedBacktestDataError(
+                    f"mixed_benchmark_candles:{spec.key}:{timestamp.isoformat()}"
+                )
+        if previous_close_time is not None and timestamp < previous_close_time:
+            raise MalformedBacktestDataError(
+                f"overlapping_candles:{spec.key}:{timestamp.isoformat()}"
+            )
+        previous_close_time = _candle_close_time(row)
+        values = {
+            "open": float(row.open_price),
+            "high": float(row.high_price),
+            "low": float(row.low_price),
+            "close": float(row.close_price),
+            "volume": float(row.volume or 0),
+        }
+        if not all(math.isfinite(value) for value in values.values()):
+            raise MalformedBacktestDataError(
+                f"non_finite_candle_value:{spec.key}:{timestamp.isoformat()}"
+            )
+        if min(values["open"], values["high"], values["low"], values["close"]) <= 0:
+            raise MalformedBacktestDataError(
+                f"non_positive_candle_price:{spec.key}:{timestamp.isoformat()}"
+            )
+        if values["high"] < max(values["open"], values["close"], values["low"]):
+            raise MalformedBacktestDataError(
+                f"invalid_candle_high:{spec.key}:{timestamp.isoformat()}"
+            )
+        if values["low"] > min(values["open"], values["close"], values["high"]):
+            raise MalformedBacktestDataError(
+                f"invalid_candle_low:{spec.key}:{timestamp.isoformat()}"
+            )
+        if values["volume"] < 0:
+            raise MalformedBacktestDataError(
+                f"negative_candle_volume:{spec.key}:{timestamp.isoformat()}"
+            )
+
+    if spec.contract_id is None and len(contract_ids) > 1:
+        raise BacktestConfigurationError(
+            f"ambiguous_benchmark_replay_stream:{spec.key}: configure benchmark_contract_id"
+        )
+    return closed, excluded_partial
+
+
+def _estimate_topbot_evaluator_operations(config: BotConfig, *, execution_bars: int) -> int:
+    params = bot_service_module._normalize_strategy_params(
+        _TOPBOT_STRATEGY,
+        config.strategy_params,
+    )
+    overrides = params.get("source_strategy_params") or {}
+    per_event = 0
+    for source in params["source_strategies"]:
+        source_params = bot_service_module._normalize_strategy_params(
+            source,
+            overrides.get(source, {}),
+        )
+        if source in _TOPBOT_SHARED_CONFIGURED_STRATEGIES or source == "donchian_breakout":
+            per_event += _topbot_primary_source_history_limit(config, source)
+        elif source in _TOPBOT_LEVEL_STRATEGIES:
+            per_event += int(source_params["bars_per_timeframe"]) * 2
+        elif source == "opening_rvol_breakout":
+            lookback_days = int(source_params["relative_volume_lookback_days"])
+            calendar_days = max(lookback_days + 14, 21)
+            per_event += min(
+                MAX_BACKTEST_BARS,
+                max(
+                    int(config.lookback_bars),
+                    (calendar_days + 1) * ((24 * 60) // 5),
+                    int(source_params["atr_period"]) * 20,
+                    500,
+                ),
+            )
+        elif source == "delayed_orb_confirmation":
+            per_event += 1500
+        elif source == "orb_fibonacci_pullback":
+            timeframe_seconds = _timeframe_seconds(
+                str(config.timeframe_unit),
+                int(config.timeframe_unit_number),
+            ) or 60
+            per_event += max(1, math.ceil((25 * 60 * 60) / timeframe_seconds))
+        elif source == "vwap_gap_retrace":
+            per_event += int(source_params["bars_to_fetch"])
+        elif source == "supertrend_pivot":
+            per_event += max(
+                int(config.lookback_bars),
+                int(source_params["supertrend_period"])
+                + int(source_params["chop_lookback_bars"])
+                + 10,
+            ) + int(source_params["daily_bars"])
+        elif source == "fvg_sweep_mss":
+            fvg_limit = max(25, int(config.lookback_bars))
+            unit, unit_number = bot_service_module._derive_lower_timeframe(
+                base_unit=str(config.timeframe_unit),
+                base_unit_number=int(config.timeframe_unit_number),
+            )
+            base_seconds = _timeframe_seconds(
+                str(config.timeframe_unit),
+                int(config.timeframe_unit_number),
+            ) or 1
+            structure_seconds = _timeframe_seconds(unit, unit_number) or 1
+            ratio = max(1, int(round(base_seconds / structure_seconds)))
+            per_event += fvg_limit + min(5000, max(fvg_limit * ratio, fvg_limit + 25))
+        elif source == "atr_adjusted_relative_strength":
+            per_event += _topbot_primary_source_history_limit(
+                config,
+                source,
+            ) + max(25, int(config.lookback_bars))
+        elif source == "relative_strength_spy":
+            per_event += _relative_strength_spy_history_limit(config, source_params) * 2
+        else:
+            per_event += _topbot_primary_source_history_limit(config, source)
+    return execution_bars * max(1, per_event)
+
+
+def _load_topbot_replay_streams(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    start: datetime,
+    end: datetime,
+    primary_rows: list[ProjectXMarketCandle],
+) -> dict[str, list[ProjectXMarketCandle]]:
+    primary_key = _topbot_asset_stream_key(
+        str(config.timeframe_unit),
+        int(config.timeframe_unit_number),
+    )
+    streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
+    total_rows = len(primary_rows)
+
+    for key, spec in _topbot_stream_specs(config).items():
+        if key == primary_key:
+            continue
+        query = (
+            db.query(ProjectXMarketCandle)
+            .filter(ProjectXMarketCandle.user_id == user_id)
+            .filter(ProjectXMarketCandle.live.is_(False))
+            .filter(ProjectXMarketCandle.unit == spec.unit)
+            .filter(ProjectXMarketCandle.unit_number == spec.unit_number)
+            .filter(ProjectXMarketCandle.is_partial.is_(False))
+        )
+        if spec.contract_id is not None:
+            query = query.filter(ProjectXMarketCandle.contract_id == spec.contract_id)
+        elif spec.symbol is not None:
+            query = query.filter(
+                or_(
+                    ProjectXMarketCandle.contract_id == spec.symbol,
+                    ProjectXMarketCandle.symbol == spec.symbol,
+                )
+            )
+
+        execution_rows = (
+            query.filter(ProjectXMarketCandle.candle_timestamp >= start)
+            .filter(ProjectXMarketCandle.candle_timestamp <= end)
+            .order_by(ProjectXMarketCandle.candle_timestamp.asc())
+            .limit(MAX_TOPBOT_REPLAY_STREAM_BARS + 1)
+            .all()
+        )
+        execution_rows = [row for row in execution_rows if _candle_close_time(row) <= end]
+        if len(execution_rows) > MAX_TOPBOT_REPLAY_STREAM_BARS:
+            raise BacktestConfigurationError(
+                "topbot_replay_stream_bar_limit_exceeded: "
+                f"{key} exceeds {MAX_TOPBOT_REPLAY_STREAM_BARS:,} bars; reduce the date range"
+            )
+        warmup_rows = (
+            query.filter(ProjectXMarketCandle.candle_timestamp < start)
+            .order_by(ProjectXMarketCandle.candle_timestamp.desc())
+            .limit(min(MAX_TOPBOT_REPLAY_STREAM_BARS, max(1, spec.warmup_bars)))
+            .all()
+        )
+        warmup_rows.reverse()
+        rows = [*warmup_rows, *execution_rows]
+        streams[key] = rows
+        total_rows += len(rows)
+        if total_rows > MAX_TOPBOT_REPLAY_TOTAL_BARS:
+            raise BacktestConfigurationError(
+                "topbot_replay_total_bar_limit_exceeded: synchronized streams contain "
+                f"more than {MAX_TOPBOT_REPLAY_TOTAL_BARS:,} bars; reduce the date range"
+            )
+
+    return streams
+
+
 def run_backtest(
     *,
     config: BotConfig,
@@ -797,6 +1877,7 @@ def run_backtest(
     tick_value: float,
     force_close_at_end: bool = True,
     signal_evaluator: SignalEvaluator | None = None,
+    replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
 ) -> dict[str, Any]:
     """Run a pure replay. This function cannot create or route an order."""
 
@@ -814,6 +1895,7 @@ def run_backtest(
             force_close_at_end=force_close_at_end,
         ),
         signal_evaluator=signal_evaluator,
+        replay_streams=replay_streams,
     ).run()
 
 
@@ -878,6 +1960,16 @@ def create_bot_backtest(
             _strategy_history_bars(config, hard_minimum=False),
         ),
     )
+    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+        primary_key = _topbot_asset_stream_key(
+            str(config.timeframe_unit),
+            int(config.timeframe_unit_number),
+        )
+        primary_spec = _topbot_stream_specs(config)[primary_key]
+        rolling_warmup_limit = min(
+            MAX_BACKTEST_BARS,
+            max(rolling_warmup_limit, primary_spec.warmup_bars),
+        )
     warmup_limit = _max_evaluator_input_bars(
         config,
         rolling_limit=rolling_warmup_limit,
@@ -897,6 +1989,16 @@ def create_bot_backtest(
     )
     warmup_rows.reverse()
     replay_rows = [*warmup_rows, *execution_rows]
+    replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None
+    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+        replay_streams = _load_topbot_replay_streams(
+            db,
+            user_id=user_id,
+            config=config,
+            start=start,
+            end=end,
+            primary_rows=replay_rows,
+        )
 
     result = run_backtest(
         config=config,
@@ -909,8 +2011,13 @@ def create_bot_backtest(
         tick_size=spec.tick_size,
         tick_value=spec.tick_value,
         force_close_at_end=bool(payload.force_close_at_end),
+        replay_streams=replay_streams,
     )
-    input_fingerprint = candle_input_fingerprint(replay_rows)
+    input_fingerprint = (
+        candle_stream_input_fingerprint(replay_streams)
+        if replay_streams is not None
+        else candle_input_fingerprint(replay_rows)
+    )
     assumptions = result["assumptions"]
     snapshot = result["config_snapshot"]
     row = BotBacktest(
@@ -973,6 +2080,32 @@ def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
             "is_partial": bool(row.is_partial),
         }
         for row in sorted(candles, key=lambda candle: _as_utc(candle.candle_timestamp))
+        if not bool(row.is_partial)
+    ]
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def candle_stream_input_fingerprint(
+    streams: Mapping[str, list[ProjectXMarketCandle]],
+) -> str:
+    canonical = [
+        {
+            "stream": key,
+            "contract_id": str(row.contract_id),
+            "live": bool(row.live),
+            "unit": str(row.unit),
+            "unit_number": int(row.unit_number),
+            "timestamp": _as_utc(row.candle_timestamp).isoformat(),
+            "open": str(row.open_price),
+            "high": str(row.high_price),
+            "low": str(row.low_price),
+            "close": str(row.close_price),
+            "volume": str(row.volume),
+            "is_partial": bool(row.is_partial),
+        }
+        for key in sorted(streams)
+        for row in sorted(streams[key], key=lambda candle: _as_utc(candle.candle_timestamp))
         if not bool(row.is_partial)
     ]
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1467,9 +2600,19 @@ def _config_snapshot(config: BotConfig) -> dict[str, Any]:
 
 
 def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict[str, Any]:
+    is_topbot = str(config.strategy_type) == _TOPBOT_STRATEGY
     return {
         "fill_model": "next_bar_open_market",
         "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
+        "strategy_replay": (
+            "synchronized_configured_source_ensemble" if is_topbot else "single_strategy"
+        ),
+        "source_synchronization": (
+            "each_source_receives_only_its_bars_closed_by_the_primary_event"
+            if is_topbot
+            else "not_applicable"
+        ),
+        "synchronized_stream_count": len(_topbot_stream_specs(config)) if is_topbot else 1,
         "event_order": "resting_gap_brackets_then_pending_open_fill_then_intrabar_brackets_then_close_signal",
         "same_bar_exit_rule": "stop_first_when_stop_and_target_are_both_touched",
         "bracket_rule": "evaluator_levels_become_whole_tick_distances_anchored_to_actual_entry_fill",
