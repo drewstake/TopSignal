@@ -2433,8 +2433,11 @@ def evaluate_sma_cross(
     slow_period: int,
 ) -> SignalResult:
     _validate_strategy_periods(fast_period, slow_period)
-    closed = [candle for candle in candles if not bool(candle.is_partial)]
-    closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        closed = candles
+    else:
+        closed = [candle for candle in candles if not bool(candle.is_partial)]
+        closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
     if len(closed) < slow_period + 1:
         return SignalResult(
             action="HOLD",
@@ -8256,6 +8259,8 @@ def _serialize_pivot_level(level: PivotLevel) -> dict[str, Any]:
 
 
 def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketCandle]:
+    if getattr(candles, "_topsignal_sorted_closed", False):
+        return candles
     closed = [candle for candle in candles if not bool(candle.is_partial)]
     closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
     return closed
