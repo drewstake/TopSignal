@@ -186,11 +186,11 @@ export interface AccountSummary {
   tradeCountUsedForSizingStats: number;
   avgPointGain: number | null;
   avgPointLoss: number | null;
-  pointsBasisUsed: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
+  pointsBasisUsed: "auto" | "MNQ" | "MES" | "NQ" | "ES" | "MGC" | "SIL";
   sizingBenchmark: AccountSizingBenchmark;
 }
 
-export type PointsBasis = "MNQ" | "MES" | "MGC" | "SIL";
+export type PointsBasis = "MNQ" | "MES" | "NQ" | "ES" | "MGC" | "SIL";
 
 export interface PointPayoffSummary {
   avgPointGain: number | null;
@@ -1231,11 +1231,15 @@ export interface BotEvaluation {
 export interface BotBacktestInput {
   start?: string;
   end?: string;
+  strategy_type?: BotStrategyType;
+  instrument?: BotBacktestInstrument;
   starting_balance: number;
   commission_per_contract: number;
   slippage_ticks: number;
   force_close_at_end?: boolean;
 }
+
+export type BotBacktestInstrument = "MNQ" | "MES" | "NQ" | "ES";
 
 export type BotBacktestProgressPhase =
   | "preparing"

@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Progress } from "../../components/ui/Progress";
+import { Select } from "../../components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { botsApi } from "../../lib/api";
 import type {
@@ -14,7 +15,9 @@ import type {
   BotBacktestPeriodResult,
   BotBacktestProgress,
   BotBacktestResult,
+  BotBacktestInstrument,
   BotConfig,
+  BotStrategyType,
 } from "../../lib/types";
 import { cn } from "../../components/ui/cn";
 import {
@@ -31,6 +34,22 @@ import {
 } from "./botBacktest";
 
 const EASTERN_TIME_ZONE = "America/New_York";
+const BACKTEST_STRATEGY_OPTIONS: Array<{ value: BotStrategyType; label: string }> = [
+  { value: "topbot_adaptive", label: "TopBot Adaptive (all configured sources)" },
+  { value: "sma_cross", label: "SMA Cross" },
+  { value: "ema_trend_pullback", label: "EMA Trend Pullback" },
+  { value: "pullback_trap_reversal", label: "Pullback Trap Reversal" },
+  { value: "bollinger_mean_reversion", label: "Bollinger Mean Reversion" },
+  { value: "bollinger_rsi_reversal", label: "Bollinger RSI Reversal" },
+  { value: "vwap_atr_mean_reversion", label: "VWAP ATR Mean Reversion" },
+  { value: "orb_fibonacci_pullback", label: "ORB Fibonacci Pullback" },
+];
+const BACKTEST_INSTRUMENT_OPTIONS: Array<{ value: BotBacktestInstrument; label: string }> = [
+  { value: "MNQ", label: "MNQ — Micro Nasdaq-100" },
+  { value: "MES", label: "MES — Micro S&P 500" },
+  { value: "NQ", label: "NQ — E-mini Nasdaq-100" },
+  { value: "ES", label: "ES — E-mini S&P 500" },
+];
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -59,7 +78,12 @@ interface BotBacktestPanelProps {
 }
 
 export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
-  const [form, setForm] = useState<BotBacktestFormState>(buildDefaultForm);
+  const [form, setForm] = useState<BotBacktestFormState>(() =>
+    buildDefaultForm(
+      bot?.strategy_type ?? "sma_cross",
+      backtestInstrumentForBot(bot),
+    ),
+  );
   const [result, setResult] = useState<BotBacktestResult | null>(null);
   const [progress, setProgress] = useState<BotBacktestProgress | null>(null);
   const [running, setRunning] = useState(false);
@@ -133,7 +157,35 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
+        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.4fr_1.4fr_1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
+          <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
+            <span>Instrument</span>
+            <Select
+              value={form.instrument}
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                instrument: event.target.value as BotBacktestInstrument,
+              }))}
+            >
+              {BACKTEST_INSTRUMENT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+          </label>
+          <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
+            <span>Backtest strategy</span>
+            <Select
+              value={form.strategyType}
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                strategyType: event.target.value as BotStrategyType,
+              }))}
+            >
+              {BACKTEST_STRATEGY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+          </label>
           <BacktestInput
             label="Starting balance"
             type="number"
@@ -158,8 +210,8 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
             value={form.slippageTicks}
             onChange={(value) => setForm((current) => ({ ...current, slippageTicks: value }))}
           />
-          <Button type="submit" disabled={!bot || running} className="w-full xl:w-auto">
-            {running ? "Running Full History…" : "Run Full History Backtest"}
+          <Button type="submit" disabled={!bot} className="w-full xl:w-auto">
+            {running ? "Stop & Run New Backtest" : "Run Full History Backtest"}
           </Button>
         </form>
 
@@ -543,12 +595,31 @@ function TradeLedger({ result }: { result: BotBacktestResult }) {
   );
 }
 
-function buildDefaultForm(): BotBacktestFormState {
+function buildDefaultForm(
+  strategyType: BotStrategyType,
+  instrument: BotBacktestInstrument,
+): BotBacktestFormState {
   return {
+    strategyType,
+    instrument,
     startingBalance: "50000",
     commissionPerContract: "1.20",
     slippageTicks: "1",
   };
+}
+
+function backtestInstrumentForBot(bot: BotConfig | null): BotBacktestInstrument {
+  const candidates = [bot?.symbol, bot?.contract_id];
+  for (const candidate of candidates) {
+    const tokens = String(candidate ?? "").toUpperCase().split(/[^A-Z0-9]+/);
+    const match = tokens.find((token) =>
+      BACKTEST_INSTRUMENT_OPTIONS.some((option) => option.value === token),
+    );
+    if (match) {
+      return match as BotBacktestInstrument;
+    }
+  }
+  return "MNQ";
 }
 
 function formatCurrency(value: number): string {

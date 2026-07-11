@@ -49,7 +49,7 @@ const moneyFormatter = new Intl.NumberFormat("en-US", {
 
 const decimalFormatterByDigits = new Map<number, Intl.NumberFormat>();
 
-const POINT_BASES = ["MNQ", "MES", "MGC", "SIL"] as const;
+const POINT_BASES = ["MNQ", "MES", "NQ", "ES", "MGC", "SIL"] as const;
 const DISPLAY_POINT_BASES = ["MNQ", "MES"] as const;
 
 type PointBasis = (typeof POINT_BASES)[number];

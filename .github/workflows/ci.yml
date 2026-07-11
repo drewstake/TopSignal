@@ -55,6 +55,18 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d topsignal -v ON_ERROR_STOP=1 -f db/schema.sql
           python backend/tools/migrate_db.py --baseline
           python backend/tools/migrate_db.py --check
+          psql -h 127.0.0.1 -U postgres -d topsignal -v ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if exists (
+              select 1 from pg_tables
+              where schemaname = 'public' and tablename like 'databento_%'
+            ) then
+              raise exception 'fresh schema unexpectedly created legacy Databento tables';
+            end if;
+          end
+          $$;
+          SQL
 
       - name: Validate latest incremental upgrade path
         env:
@@ -73,16 +85,44 @@ jobs:
           alter table bot_order_attempts add constraint bot_order_attempts_bot_config_id_fkey
             foreign key (bot_config_id) references bot_configs(id) on delete cascade;
           alter table accounts drop column if exists balance;
+          update instrument_metadata set tick_value = 9.99 where symbol = 'NQ';
+          delete from instrument_metadata where symbol = 'ES';
           delete from topsignal_schema_migrations
           where version in (
             '20260710_add_bot_submission_unknown_status.sql',
             '20260710_add_cached_account_balance.sql',
             '20260710_enforce_bot_quantity_safety.sql',
-            '20260710_preserve_bot_order_attempt_audit.sql'
+            '20260710_preserve_bot_order_attempt_audit.sql',
+            '20260711_add_databento_historical_market_data.sql',
+            '20260711_seed_nq_es_instrument_metadata.sql'
           );
           SQL
           DATABASE_URL="$UPGRADE_DATABASE_URL" python backend/tools/migrate_db.py
           DATABASE_URL="$UPGRADE_DATABASE_URL" python backend/tools/migrate_db.py --check
+          psql -h 127.0.0.1 -U postgres -d topsignal_upgrade -v ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if not exists (
+              select 1 from instrument_metadata
+              where symbol = 'ES' and tick_size = 0.25 and tick_value = 12.50
+            ) then
+              raise exception 'latest migration did not seed ES defaults';
+            end if;
+            if not exists (
+              select 1 from instrument_metadata
+              where symbol = 'NQ' and tick_size = 0.25 and tick_value = 9.99
+            ) then
+              raise exception 'latest migration overwrote the existing NQ override';
+            end if;
+            if exists (
+              select 1 from pg_tables
+              where schemaname = 'public' and tablename like 'databento_%'
+            ) then
+              raise exception 'retired Databento migration recreated market tables';
+            end if;
+          end
+          $$;
+          SQL
 
       - name: Validate populated pre-runner adoption
         env:

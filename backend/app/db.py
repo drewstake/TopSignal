@@ -23,6 +23,15 @@ _LOCAL_SUPABASE_URLS = {
 }
 _SUPABASE_POOLER_SUFFIX = ".pooler.supabase.com"
 _SCHEMA_INIT_ENV = "TOPSIGNAL_DB_SCHEMA_INIT"
+LEGACY_DATABENTO_TABLE_NAMES = frozenset(
+    {
+        "databento_import_batches",
+        "databento_import_files",
+        "databento_instruments",
+        "databento_ohlcv_1m",
+        "databento_roll_schedule",
+    }
+)
 
 
 def _uses_supabase_pooler(database_url: str) -> bool:
@@ -128,7 +137,12 @@ def init_db(*, force: bool = False):
     # Import models so SQLAlchemy can register all mapped tables before create_all.
     from . import models  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
+    application_tables = [
+        table
+        for table in Base.metadata.sorted_tables
+        if table.name not in LEGACY_DATABENTO_TABLE_NAMES
+    ]
+    Base.metadata.create_all(bind=engine, tables=application_tables)
     _ensure_accounts_schema_compatibility()
     _ensure_journal_schema_compatibility()
     _ensure_multi_tenant_schema_compatibility()

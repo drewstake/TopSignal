@@ -290,7 +290,14 @@ def test_summary_with_point_bases_returns_all_point_basis_payloads(db_session):
 
     assert payload["summary"]["trade_count"] == 1
     assert payload["summary"]["net_pnl"] == 121.0
-    assert set(payload["point_payoff_by_basis"].keys()) == {"MNQ", "MES", "MGC", "SIL"}
+    assert set(payload["point_payoff_by_basis"].keys()) == {
+        "MNQ",
+        "MES",
+        "NQ",
+        "ES",
+        "MGC",
+        "SIL",
+    }
 
 
 def test_summary_fallback_adds_topstep_micro_commission_after_april_12_2026(db_session):

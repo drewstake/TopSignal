@@ -83,9 +83,9 @@ const TRADE_LIMIT = 200;
 const DAY_FILTER_TRADE_LIMIT = 1000;
 const METRIC_TRADE_LIMIT = 1000;
 type MetricsRangePreset = "1D" | "1W" | "1M" | "6M" | "ALL" | "CUSTOM";
-type PointsBasis = "auto" | "MNQ" | "MES" | "MGC" | "SIL";
+type PointsBasis = "auto" | "MNQ" | "MES" | "NQ" | "ES" | "MGC" | "SIL";
 type ConcretePointsBasis = Exclude<PointsBasis, "auto">;
-const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "MGC", "SIL"];
+const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "NQ", "ES", "MGC", "SIL"];
 const DISPLAY_PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES"];
 const RISK_PRESSURE_FULL_SCALE_PERCENT = 25;
 
@@ -187,6 +187,8 @@ function createEmptyPointPayoffByBasis(): PointPayoffByBasis {
   return {
     MNQ: { avgPointGain: null, avgPointLoss: null },
     MES: { avgPointGain: null, avgPointLoss: null },
+    NQ: { avgPointGain: null, avgPointLoss: null },
+    ES: { avgPointGain: null, avgPointLoss: null },
     MGC: { avgPointGain: null, avgPointLoss: null },
     SIL: { avgPointGain: null, avgPointLoss: null },
   };

@@ -69,18 +69,15 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "is_archived boolean not null default false",
         "balance numeric(18,6)",
         "'submission_unknown'",
-        "schema-20260711-v1",
+        "schema-20260711-v2",
         "order_size <= 10000 and order_size = trunc(order_size)",
         "bot_config_id bigint references bot_configs(id) on delete set null",
-        "create table if not exists databento_import_batches",
-        "create table if not exists databento_instruments",
-        "create table if not exists databento_ohlcv_1m",
-        "create table if not exists databento_roll_schedule",
-        "primary key (dataset, instrument_id, ts_event)",
-        "decision_session_date is null or decision_session_date < trading_date",
+        "('NQ', 0.25, 5.00)",
+        "('ES', 0.25, 12.50)",
     ]
     for fragment in required_fragments:
         assert fragment in schema
+    assert "create table if not exists databento_" not in schema.lower()
 
 
 def test_migration_checksums_are_sha256_hex():
@@ -92,11 +89,25 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_is_databento_historical_store():
+def test_latest_migration_seeds_emini_instrument_metadata():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260711_add_databento_historical_market_data.sql"
+        == "20260711_seed_nq_es_instrument_metadata.sql"
     )
+
+
+def test_emini_seed_migration_preserves_existing_instrument_overrides():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260711_seed_nq_es_instrument_metadata.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "('NQ', 0.25, 5.00)" in migration
+    assert "('ES', 0.25, 12.50)" in migration
+    assert "on conflict (symbol) do nothing" in migration.lower()
+    assert "do update" not in migration.lower()
 
 
 def test_databento_migration_preserves_natural_keys_and_roll_provenance():
@@ -113,6 +124,10 @@ def test_databento_migration_preserves_natural_keys_and_roll_provenance():
     assert "primary key (root_symbol, trading_date)" in migration
     assert "decision_session_date < trading_date" in migration
     assert "source_file_sha256 text not null" in migration
+    assert (
+        "20260711_add_databento_historical_market_data.sql"
+        in migrate_db.RETIRED_NOOP_MIGRATIONS
+    )
 
 
 def test_quantity_safety_migration_rejects_unsafe_legacy_rows_and_validates_constraints():
@@ -135,15 +150,10 @@ def test_adoption_manifest_covers_current_orm_safety_objects():
 
     assert {"balance", "last_seen_at"} <= columns["accounts"]
     assert {"execution_mode", "idempotency_key", "bot_config_id"} <= columns["bot_order_attempts"]
-    assert {"dataset", "instrument_id", "ts_event", "trading_date"} <= columns[
-        "databento_ohlcv_1m"
-    ]
-    assert {"decision_session_date", "policy_version"} <= columns[
-        "databento_roll_schedule"
-    ]
+    assert set(columns).isdisjoint(migrate_db.LEGACY_DATABENTO_TABLE_NAMES)
     assert "uq_bot_order_attempts_idempotency_key" in indexes
     assert "uq_bot_runs_one_running_per_config" in indexes
-    assert "idx_databento_ohlcv_1m_trading_date" in indexes
+    assert not any("databento" in name for name in indexes)
 
 
 def test_adoption_requires_explicit_backup_acknowledgement():

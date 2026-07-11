@@ -4,13 +4,17 @@ import hashlib
 import json
 import math
 import os
+import threading
 from bisect import bisect_left, bisect_right
+from collections.abc import Sequence
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any, Callable, Iterable, Mapping
 
+import numpy as np
 from sqlalchemy import inspect, or_
 from sqlalchemy.orm import Session
 
@@ -40,6 +44,13 @@ from .databento_market_data import (
     databento_history_bounds,
     load_databento_replay_candles,
 )
+from .databento_cache import (
+    DatabentoCacheError,
+    DatabentoCacheMissingError,
+    DatabentoCacheStaleError,
+    DatabentoReplayStore,
+    get_default_databento_cache,
+)
 from .bot_strategy_registry import (
     BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
     get_strategy_definition,
@@ -52,12 +63,17 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "2.0.0-databento"
+BACKTEST_ENGINE_VERSION = "3.1.0-databento-lazy-mmap"
 LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
 # Unit tests for the pre-Databento engine can opt in by monkeypatching this
 # process-local constant. It is deliberately not environment-configurable and
 # is false in every application runtime.
 ALLOW_LEGACY_PROJECTX_BACKTEST_FIXTURES = False
+# The retired relational Databento loader is likewise available only to
+# explicit SQLite compatibility tests. Merely retaining old market tables must
+# never make an application request bypass the canonical local cache.
+ALLOW_LEGACY_DATABENTO_SQLITE_FIXTURES = False
+BACKTEST_INSTRUMENTS = frozenset({"MNQ", "MES", "NQ", "ES"})
 # Retained as a compatibility constant for callers/tests that display the old
 # limit. It is deliberately not used to truncate or reject replay history.
 MAX_BACKTEST_BARS = 20_000
@@ -68,7 +84,7 @@ _DEFAULT_BACKTEST_MEMORY_BUDGET_BYTES = 1_536 * 1024 * 1024
 # cProfile showed CPU time scaling with evaluator-visible candle visits.  This
 # configurable ceiling replaces date/bar caps while rejecting pathological
 # repeated-indicator workloads before replay or persistence.
-_DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET = 500_000_000
+_DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET = 1_000_000_000
 _DEFAULT_BACKTEST_MAX_SERIES_POINTS = 50_000
 try:
     BACKTEST_MEMORY_BUDGET_BYTES = int(
@@ -103,6 +119,11 @@ except ValueError:
 # series, not only raw OHLCV payload bytes.
 ESTIMATED_REPLAY_CANDLE_BYTES = 640
 ESTIMATED_EXECUTION_RESULT_BYTES = 704
+# Lazy mmap replays do not retain an ORM/proxy object or timestamp object per
+# execution row.  This allowance covers bounded replay bookkeeping and the
+# possibility of unusually dense trade output; mapped array storage is charged
+# separately from the immutable sequence metadata.
+ESTIMATED_LAZY_EXECUTION_BYTES = 64
 MIN_EXECUTION_BARS = 2
 
 # These strategies have exact replay adapters for their required stored streams
@@ -180,6 +201,12 @@ class BacktestConfigurationError(BacktestError):
     pass
 
 
+class BacktestSupersededError(BacktestError):
+    """Raised when a newer backtest replaces an active run for the same user."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class BacktestSettings:
     start: datetime
@@ -230,9 +257,99 @@ class _TopBotReplayStreamSpec:
 
 @dataclass(frozen=True)
 class _PreparedReplayStream:
-    candles: list[ProjectXMarketCandle]
-    start_times: list[datetime]
-    close_times: list[datetime]
+    candles: Sequence[ProjectXMarketCandle]
+    start_times: Sequence[datetime]
+    close_times: Sequence[datetime]
+
+
+class _TopBotSourceEvaluationCounts(dict[str, int]):
+    """Evaluation counts plus strategy-aware expensive-window counts."""
+
+    def __init__(
+        self,
+        *args: Any,
+        expensive_evaluations: Mapping[str, int] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.expensive_evaluations = dict(expensive_evaluations or {})
+
+
+class _NanosecondDatetimeSequence(Sequence[datetime]):
+    """A zero-copy datetime facade over a sliced mmap nanosecond array."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Any) -> None:
+        self._values = values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int | slice) -> datetime | "_NanosecondDatetimeSequence":
+        if isinstance(index, slice):
+            return _NanosecondDatetimeSequence(self._values[index])
+        return _datetime_from_epoch_ns(int(self._values[index]))
+
+
+class _ScaledNanoPriceSequence(Sequence[float]):
+    """Expose mmap fixed-point closes with the eager candle float semantics."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Any) -> None:
+        self._values = values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int | slice) -> float | list[float]:
+        if isinstance(index, slice):
+            return [float(value) / 1_000_000_000 for value in self._values[index]]
+        return float(self._values[index]) / 1_000_000_000
+
+
+class _SessionMembershipSequence(Sequence[bool]):
+    """Compute configured-session membership on demand without a bool list."""
+
+    __slots__ = ("_timestamps", "_predicate")
+
+    def __init__(
+        self,
+        timestamps: Sequence[datetime],
+        predicate: Callable[[datetime], bool],
+    ) -> None:
+        self._timestamps = timestamps
+        self._predicate = predicate
+
+    def __len__(self) -> int:
+        return len(self._timestamps)
+
+    def __getitem__(self, index: int | slice) -> bool | list[bool]:
+        if isinstance(index, slice):
+            return [self._predicate(value) for value in self._timestamps[index]]
+        return self._predicate(self._timestamps[index])
+
+
+class _ConstantBoolSequence(Sequence[bool]):
+    __slots__ = ("_length", "_value")
+
+    def __init__(self, length: int, value: bool) -> None:
+        self._length = max(0, int(length))
+        self._value = bool(value)
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, index: int | slice) -> bool | list[bool]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._length)
+            return [self._value] * len(range(start, stop, step))
+        if index < 0:
+            index += self._length
+        if index < 0 or index >= self._length:
+            raise IndexError(index)
+        return self._value
 
 
 class _ClosedCandleList(list[ProjectXMarketCandle]):
@@ -241,6 +358,16 @@ class _ClosedCandleList(list[ProjectXMarketCandle]):
     _topsignal_sorted_closed = True
     _topsignal_physical_stream: tuple[str, str, str, int] | None = None
     _topsignal_physical_row_count: int | None = None
+    _topsignal_input_fingerprint: str | None = None
+    _topsignal_series_fingerprint: str | None = None
+    _topsignal_slice_start: int | None = None
+    _topsignal_slice_end: int | None = None
+    _topsignal_verified_replay: bool = False
+    _topsignal_user_id: str | None = None
+    _topsignal_contract_id: str | None = None
+    _topsignal_symbol: str | None = None
+    _topsignal_unit: str | None = None
+    _topsignal_unit_number: int | None = None
 
 
 class _PhysicalReplayList(list[ProjectXMarketCandle]):
@@ -297,6 +424,94 @@ class _OpenTrade:
 
 SignalEvaluator = Callable[[list[ProjectXMarketCandle]], SignalResult]
 BacktestProgressCallback = Callable[[dict[str, Any]], None]
+BacktestCancellationCallback = Callable[[], bool]
+
+
+def _raise_if_backtest_cancelled(
+    callback: BacktestCancellationCallback | None,
+) -> None:
+    if callback is not None and callback():
+        raise BacktestSupersededError("backtest_superseded_by_newer_run")
+
+
+def _backtest_cache_json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return _as_utc(value).isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    raise TypeError(f"unsupported backtest cache value: {type(value).__name__}")
+
+
+class _BacktestResultLru:
+    """Bound deterministic replay outputs so exact warm reruns skip replay CPU."""
+
+    def __init__(self) -> None:
+        try:
+            self.max_entries = max(
+                1, int(os.getenv("TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_ENTRIES", "8"))
+            )
+        except ValueError:
+            self.max_entries = 8
+        try:
+            self.max_bytes = max(
+                1,
+                int(
+                    os.getenv(
+                        "TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_BYTES",
+                        str(256 * 1024 * 1024),
+                    )
+                ),
+            )
+        except ValueError:
+            self.max_bytes = 256 * 1024 * 1024
+        self._lock = threading.RLock()
+        self._entries: dict[str, tuple[dict[str, Any], int]] = {}
+        self._order: list[str] = []
+        self._bytes = 0
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._order.remove(key)
+            self._order.append(key)
+            return deepcopy(entry[0])
+
+    def put(self, key: str, result: dict[str, Any]) -> None:
+        canonical = json.dumps(
+            result,
+            allow_nan=False,
+            default=_backtest_cache_json_default,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        # JSON bytes undercount Python dict/list/string overhead; a 3x charge
+        # keeps the configured ceiling conservative without walking every node.
+        size = len(canonical.encode("utf-8")) * 3
+        if size > self.max_bytes:
+            return
+        stored = deepcopy(result)
+        with self._lock:
+            prior = self._entries.pop(key, None)
+            if prior is not None:
+                self._bytes -= prior[1]
+                self._order.remove(key)
+            self._entries[key] = (stored, size)
+            self._order.append(key)
+            self._bytes += size
+            while self._order and (
+                len(self._order) > self.max_entries or self._bytes > self.max_bytes
+            ):
+                oldest = self._order.pop(0)
+                _value, evicted_size = self._entries.pop(oldest)
+                self._bytes -= evicted_size
+
+
+_BACKTEST_RESULT_CACHE = _BacktestResultLru()
 
 
 def _notify_backtest_progress(
@@ -324,9 +539,12 @@ class BacktestEngine:
         signal_evaluator: SignalEvaluator | None = None,
         replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
         progress_callback: BacktestProgressCallback | None = None,
+        cancellation_callback: BacktestCancellationCallback | None = None,
     ) -> None:
         self.config = config
         self.progress_callback = progress_callback
+        self.cancellation_callback = cancellation_callback
+        _raise_if_backtest_cancelled(self.cancellation_callback)
         self._last_replay_progress_percent = -1
         self.settings = _validate_settings(settings)
         self.strategy_type = str(config.strategy_type)
@@ -337,14 +555,15 @@ class BacktestEngine:
         self.signal_evaluator = signal_evaluator or self._evaluate_real_strategy
 
         self.all_candles, excluded_partial = _validate_and_sort_candles(candles, config=config)
-        self.all_start_times = [
-            _as_utc(candle.candle_timestamp) for candle in self.all_candles
-        ]
-        self.all_close_times = [
-            _candle_close_time(candle) for candle in self.all_candles
-        ]
+        _raise_if_backtest_cancelled(self.cancellation_callback)
+        self.all_start_times = _candle_time_sequence(self.all_candles, close=False)
+        self.all_close_times = _candle_time_sequence(self.all_candles, close=True)
         self._sma_close_values = (
-            [float(candle.close_price) for candle in self.all_candles]
+            (
+                _ScaledNanoPriceSequence(self.all_candles.close_nano_values)
+                if _is_mmap_candle_sequence(self.all_candles)
+                else [float(candle.close_price) for candle in self.all_candles]
+            )
             if uses_real_evaluator
             and self.strategy_type == "sma_cross"
             and evaluate_sma_cross is bot_service_module.evaluate_sma_cross
@@ -359,7 +578,7 @@ class BacktestEngine:
         self._topbot_cursor_state: dict[str, tuple[datetime, int]] = {}
         self._topbot_history_event: datetime | None = None
         self._topbot_history_cache: dict[
-            tuple[str, int, datetime | None], list[ProjectXMarketCandle]
+            tuple[str, int, datetime | None], Sequence[ProjectXMarketCandle]
         ] = {}
         self._current_event_timestamp: datetime | None = None
         self._current_event_in_session = False
@@ -377,9 +596,20 @@ class BacktestEngine:
                 replay_streams=replay_streams,
             )
             self._prepare_topbot_runtime()
+            _raise_if_backtest_cancelled(self.cancellation_callback)
 
-        execution_start = bisect_left(self.all_start_times, self.settings.start)
-        execution_end = bisect_right(self.all_close_times, self.settings.end)
+        execution_start = _search_candle_start(
+            self.all_candles,
+            self.settings.start,
+            side="left",
+            fallback=self.all_start_times,
+        )
+        execution_end = _search_candle_close(
+            self.all_candles,
+            self.settings.end,
+            side="right",
+            fallback=self.all_close_times,
+        )
         self.execution_candles = self.all_candles[execution_start:execution_end]
         self.execution_start_times = self.all_start_times[execution_start:execution_end]
         self.execution_close_times = self.all_close_times[execution_start:execution_end]
@@ -391,7 +621,12 @@ class BacktestEngine:
         if uses_real_evaluator and self.strategy_type != "orb_fibonacci_pullback":
             hard_minimum = _strategy_history_bars(config, hard_minimum=True)
             first_event = self.execution_close_times[0]
-            closed_by_first_event = bisect_right(self.all_close_times, first_event)
+            closed_by_first_event = _search_candle_close(
+                self.all_candles,
+                first_event,
+                side="right",
+                fallback=self.all_close_times,
+            )
             if closed_by_first_event < hard_minimum:
                 deferred_execution_bars = hard_minimum - closed_by_first_event
                 self.execution_candles = self.execution_candles[deferred_execution_bars:]
@@ -402,34 +637,32 @@ class BacktestEngine:
                     deferred_execution_bars:
                 ]
                 if len(self.execution_candles) < MIN_EXECUTION_BARS:
-                    available_closed_bars = bisect_right(
-                        self.all_close_times,
+                    available_closed_bars = _search_candle_close(
+                        self.all_candles,
                         self.settings.end,
+                        side="right",
+                        fallback=self.all_close_times,
                     )
                     raise InsufficientBacktestDataError(
                         "insufficient_backtest_data: insufficient_strategy_warmup: "
                         f"{self.strategy_type} requires at least {hard_minimum} closed bars; "
                         f"only {available_closed_bars} were available"
                     )
-        self.execution_in_session = (
-            [
-                self._event_in_configured_session(timestamp)
-                for timestamp in self.execution_start_times
-            ]
+        self.execution_in_session: Sequence[bool] = (
+            np.fromiter(
+                (
+                    self._event_in_configured_session(event_time)
+                    for event_time in self.execution_start_times
+                ),
+                dtype=np.bool_,
+                count=len(self.execution_start_times),
+            )
             if self.strategy_type == _TOPBOT_STRATEGY
-            else [True] * len(self.execution_candles)
+            else _ConstantBoolSequence(len(self.execution_candles), True)
         )
         if uses_real_evaluator and self.strategy_type == _TOPBOT_STRATEGY:
-            in_session_indexes = [
-                index
-                for index, inside in enumerate(self.execution_in_session)
-                if inside
-            ]
-            first_coverage_index = in_session_indexes[0] if in_session_indexes else 0
-            last_coverage_index = (
-                in_session_indexes[-1]
-                if in_session_indexes
-                else len(self.execution_candles) - 1
+            first_coverage_index, last_coverage_index = _session_coverage_indexes(
+                self.execution_in_session
             )
             self.topbot_unavailable_sources = _topbot_unavailable_sources(
                 config,
@@ -449,11 +682,11 @@ class BacktestEngine:
             in_session_event_times = [
                 event_time
                 for event_time, inside_session in zip(
-                    self.execution_close_times,
-                    self.execution_in_session,
+                    self.execution_close_times, self.execution_in_session
                 )
                 if inside_session
             ]
+            in_session_execution_bars = len(in_session_event_times)
             source_evaluations = _topbot_cached_source_evaluation_counts(
                 config,
                 streams=self.topbot_streams,
@@ -462,7 +695,7 @@ class BacktestEngine:
             )
             estimated_evaluator_work = _estimate_topbot_evaluator_operations(
                 config,
-                execution_bars=len(in_session_event_times),
+                execution_bars=in_session_execution_bars,
                 source_evaluations=source_evaluations,
                 unavailable_sources=self.topbot_unavailable_sources,
             )
@@ -476,41 +709,26 @@ class BacktestEngine:
                 self.max_evaluator_input_bars,
             )
         _enforce_backtest_work_budget(estimated_evaluator_work)
+        _raise_if_backtest_cancelled(self.cancellation_callback)
 
-        replay_row_count = len(self.all_candles)
+        budget_streams: list[Sequence[ProjectXMarketCandle]] = [self.all_candles]
         if self.topbot_streams:
             primary_stream_key = _topbot_asset_stream_key(
-                str(config.timeframe_unit),
-                int(config.timeframe_unit_number),
+                str(config.timeframe_unit), int(config.timeframe_unit_number)
             )
-            physical_stream_rows: dict[tuple[str, str, str, int], int] = {}
-            logical_stream_rows = 0
-            for key, stream in self.topbot_streams.items():
-                if key == primary_stream_key:
-                    continue
-                physical_stream = getattr(
-                    stream.candles,
-                    "_topsignal_physical_stream",
-                    None,
-                )
-                physical_row_count = getattr(
-                    stream.candles,
-                    "_topsignal_physical_row_count",
-                    None,
-                )
-                if physical_stream is None or physical_row_count is None:
-                    logical_stream_rows += len(stream.candles)
-                    continue
-                physical_stream_rows[physical_stream] = max(
-                    physical_stream_rows.get(physical_stream, 0),
-                    int(physical_row_count),
-                )
-            replay_row_count += logical_stream_rows + sum(
-                physical_stream_rows.values()
+            budget_streams.extend(
+                stream.candles
+                for key, stream in self.topbot_streams.items()
+                if key != primary_stream_key
             )
+        replay_storage_bytes, replay_eager_rows = _replay_storage_estimate(
+            budget_streams
+        )
         _enforce_backtest_resource_budget(
-            replay_rows=replay_row_count,
+            replay_rows=replay_eager_rows,
             execution_rows=len(self.execution_candles),
+            replay_storage_bytes=replay_storage_bytes,
+            lazy_execution=_is_mmap_candle_sequence(self.execution_candles),
         )
 
         self.warnings: list[str] = []
@@ -589,17 +807,19 @@ class BacktestEngine:
             _ClosedCandleList() if self._uses_real_evaluator else []
         )
         history_cursor = 0
-        timeline = zip(
-            self.execution_candles,
-            self.execution_start_times,
-            self.execution_close_times,
-            self.execution_in_session,
-        )
         total_bars = len(self.execution_candles)
         self._report_replay_progress(completed=0, total=total_bars)
-        for index, (candle, candle_start, event_time, inside_session) in enumerate(
-            timeline
-        ):
+        all_close_ns = (
+            self.all_candles.close_ns
+            if _is_mmap_candle_sequence(self.all_candles)
+            else None
+        )
+        for index in range(total_bars):
+            _raise_if_backtest_cancelled(self.cancellation_callback)
+            candle = self.execution_candles[index]
+            candle_start = self.execution_start_times[index]
+            event_time = self.execution_close_times[index]
+            inside_session = self.execution_in_session[index]
             self._current_bar_exposed = False
             self._current_event_timestamp = candle_start
             self._current_event_in_session = inside_session
@@ -621,9 +841,11 @@ class BacktestEngine:
                     self.position.bars_held += 1
                 self._process_intrabar_bracket(candle)
 
-            while (
-                history_cursor < len(self.all_candles)
-                and self.all_close_times[history_cursor] <= event_time
+            event_ns = _datetime_to_epoch_ns(event_time)
+            while history_cursor < len(self.all_candles) and (
+                int(all_close_ns[history_cursor]) <= event_ns
+                if all_close_ns is not None
+                else self.all_close_times[history_cursor] <= event_time
             ):
                 if self._sma_close_values is None:
                     closed_history.append(self.all_candles[history_cursor])
@@ -687,6 +909,7 @@ class BacktestEngine:
             )
 
         self._append_run_warnings()
+        _raise_if_backtest_cancelled(self.cancellation_callback)
         drawdown_series = self.drawdown_series
         metrics = _build_metrics(
             self.trades,
@@ -1262,16 +1485,48 @@ class BacktestEngine:
                 session_start_time=str(self.config.trading_start_time),
             )
         elif source_strategy == "vwap_gap_retrace":
-            source_candles = self._topbot_stream_history(
-                _topbot_asset_stream_key("minute", 1),
+            one_minute_key = _topbot_asset_stream_key("minute", 1)
+            latest_source_candles = self._topbot_stream_history(
+                one_minute_key,
                 event_time=event_time,
-                limit=int(source_params["bars_to_fetch"]),
+                limit=1,
             )
-            signal = bot_service_module.dispatch_strategy_evaluator(
-                source_strategy,
-                source_candles,
-                strategy_params=source_params,
+            latest_source = latest_source_candles[-1]
+            minutes_from_open = bot_service_module._regular_session_minutes_from_open(
+                latest_source
             )
+            wait_start = int(source_params["wait_start_minutes"])
+            wait_end = max(wait_start, int(source_params["wait_end_minutes"]))
+            if minutes_from_open < wait_start or minutes_from_open > wait_end:
+                # This strategy cannot emit outside its configured post-open
+                # window. Avoid rescanning two thousand one-minute bars merely
+                # to produce an ineligible HOLD that contributes no vote.
+                source_candles = latest_source_candles
+                signal = SignalResult(
+                    action="HOLD",
+                    reason=(
+                        "VWAP gap retrace entry window is inactive for the latest "
+                        "closed regular-session candle."
+                    ),
+                    candle_timestamp=_as_utc(latest_source.candle_timestamp),
+                    price=float(latest_source.close_price),
+                    raw_payload={
+                        "strategy_type": source_strategy,
+                        "settings": source_params,
+                        "minutes_from_open": minutes_from_open,
+                    },
+                )
+            else:
+                source_candles = self._topbot_stream_history(
+                    one_minute_key,
+                    event_time=event_time,
+                    limit=int(source_params["bars_to_fetch"]),
+                )
+                signal = bot_service_module.dispatch_strategy_evaluator(
+                    source_strategy,
+                    source_candles,
+                    strategy_params=source_params,
+                )
         elif source_strategy in _TOPBOT_LEVEL_STRATEGIES:
             bars_per_timeframe = int(source_params["bars_per_timeframe"])
             higher_candles = self._topbot_stream_history(
@@ -1404,7 +1659,7 @@ class BacktestEngine:
         event_time: datetime,
         limit: int,
         not_before: datetime | None = None,
-    ) -> list[ProjectXMarketCandle]:
+    ) -> Sequence[ProjectXMarketCandle]:
         stream = self.topbot_streams.get(key)
         if stream is None or not stream.candles:
             raise ValueError(f"missing_stored_replay_stream:{key}")
@@ -1423,8 +1678,19 @@ class BacktestEngine:
         if normalized_not_before is not None:
             start_index = max(
                 start_index,
-                bisect_left(stream.start_times, normalized_not_before),
+                _search_candle_start(
+                    stream.candles,
+                    normalized_not_before,
+                    side="left",
+                    fallback=stream.start_times,
+                ),
             )
+        # Preserve the mmap view through the evaluator boundary. Evaluators
+        # already treat engine-owned ``_topsignal_sorted_closed`` inputs as
+        # immutable sequences, so expanding every rolling window into Python
+        # dataclass objects only adds allocation and GC work. Contiguous mmap
+        # slicing is O(1), and individual candle proxies are created solely for
+        # fields an evaluator actually inspects.
         history = _closed_candle_slice(stream.candles, start_index, end_index)
         self._topbot_history_cache[cache_key] = history
         return history
@@ -1439,10 +1705,21 @@ class BacktestEngine:
             (datetime.min.replace(tzinfo=timezone.utc), 0),
         )
         if event_utc < previous_event:
-            count = bisect_right(stream.close_times, event_utc)
+            count = _search_candle_close(
+                stream.candles,
+                event_utc,
+                side="right",
+                fallback=stream.close_times,
+            )
         elif event_utc > previous_event:
-            while count < len(stream.close_times) and stream.close_times[count] <= event_utc:
-                count += 1
+            if _is_mmap_candle_sequence(stream.candles):
+                event_ns = _datetime_to_epoch_ns(event_utc)
+                close_ns = stream.candles.close_ns
+                while count < len(close_ns) and int(close_ns[count]) <= event_ns:
+                    count += 1
+            else:
+                while count < len(stream.close_times) and stream.close_times[count] <= event_utc:
+                    count += 1
         self._topbot_cursor_state[key] = (event_utc, count)
         return count
 
@@ -1818,7 +2095,7 @@ class BacktestEngine:
             self.warnings.append(
                 f"Small bar sample ({len(self.execution_candles)} bars); performance estimates may be unstable."
             )
-        zero_volume = sum(1 for row in self.execution_candles if float(row.volume or 0) == 0)
+        zero_volume = _zero_volume_count(self.execution_candles)
         if zero_volume:
             self.warnings.append(f"{zero_volume} execution candle(s) have zero volume.")
         expected_seconds = _timeframe_seconds(
@@ -1865,11 +2142,19 @@ class BacktestEngine:
                 stream = self.topbot_streams.get(key)
                 if stream is None or not stream.candles:
                     continue
-                auxiliary_warmup = sum(
-                    1
-                    for row in stream.candles
-                    if _as_utc(row.candle_timestamp) < self.settings.start
-                    and _candle_close_time(row) <= first_event
+                auxiliary_warmup = min(
+                    _search_candle_start(
+                        stream.candles,
+                        self.settings.start,
+                        side="left",
+                        fallback=stream.start_times,
+                    ),
+                    _search_candle_close(
+                        stream.candles,
+                        first_event,
+                        side="right",
+                        fallback=stream.close_times,
+                    ),
                 )
                 if auxiliary_warmup < spec.warmup_bars:
                     self.warnings.append(
@@ -1879,12 +2164,21 @@ class BacktestEngine:
                 expected = _timeframe_seconds(spec.unit, spec.unit_number)
                 if expected is None:
                     continue
-                execution_rows = [
-                    row
-                    for row in stream.candles
-                    if _as_utc(row.candle_timestamp) >= self.settings.start
-                    and _candle_close_time(row) <= self.settings.end
-                ]
+                execution_start = _search_candle_start(
+                    stream.candles,
+                    self.settings.start,
+                    side="left",
+                    fallback=stream.start_times,
+                )
+                execution_end = _search_candle_close(
+                    stream.candles,
+                    self.settings.end,
+                    side="right",
+                    fallback=stream.close_times,
+                )
+                execution_rows = _closed_candle_slice(
+                    stream.candles, execution_start, execution_end
+                )
                 gaps = _count_futures_session_gaps(
                     execution_rows,
                     interval_seconds=expected,
@@ -2173,8 +2467,8 @@ def _topbot_source_stream_keys(
 def _prepare_topbot_replay_streams(
     config: BotConfig,
     *,
-    primary_candles: list[ProjectXMarketCandle],
-    replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None,
+    primary_candles: Sequence[ProjectXMarketCandle],
+    replay_streams: Mapping[str, Sequence[ProjectXMarketCandle]] | None,
 ) -> tuple[dict[str, _PreparedReplayStream], int]:
     provided = dict(replay_streams or {})
     primary_key = _topbot_asset_stream_key(
@@ -2194,19 +2488,22 @@ def _prepare_topbot_replay_streams(
         excluded_partial += excluded
         prepared[key] = _PreparedReplayStream(
             candles=rows,
-            start_times=[_as_utc(row.candle_timestamp) for row in rows],
-            close_times=[_candle_close_time(row) for row in rows],
+            start_times=_candle_time_sequence(rows, close=False),
+            close_times=_candle_time_sequence(rows, close=True),
         )
     return prepared, excluded_partial
 
 
 def _validate_topbot_replay_stream(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     *,
     spec: _TopBotReplayStreamSpec,
     config: BotConfig,
-) -> tuple[list[ProjectXMarketCandle], int]:
-    if isinstance(candles, _ClosedCandleList):
+) -> tuple[Sequence[ProjectXMarketCandle], int]:
+    if _is_mmap_candle_sequence(candles):
+        closed = candles
+        excluded_partial = 0
+    elif isinstance(candles, _ClosedCandleList):
         closed = candles
         excluded_partial = 0
     elif getattr(candles, "_topsignal_sorted_closed", False):
@@ -2219,6 +2516,30 @@ def _validate_topbot_replay_stream(
         excluded_partial = len(candles) - len(closed)
         closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
     _copy_closed_candle_metadata(candles, closed)
+    if getattr(closed, "_topsignal_verified_replay", False):
+        cached_user = str(getattr(closed, "_topsignal_user_id", ""))
+        cached_contract = str(getattr(closed, "_topsignal_contract_id", ""))
+        cached_symbol = str(getattr(closed, "_topsignal_symbol", ""))
+        if config.user_id is not None and cached_user != str(config.user_id):
+            raise MalformedBacktestDataError(f"mixed_user_candles:{spec.key}:cached_context")
+        if str(getattr(closed, "_topsignal_unit", "")) != spec.unit or int(
+            getattr(closed, "_topsignal_unit_number", 0) or 0
+        ) != spec.unit_number:
+            raise MalformedBacktestDataError(f"mixed_timeframe_candles:{spec.key}")
+        if spec.contract_id is not None and cached_contract != spec.contract_id:
+            raise MalformedBacktestDataError(
+                f"mixed_contract_candles:{spec.key}:cached_context"
+            )
+        if (
+            spec.contract_id is None
+            and spec.symbol is not None
+            and cached_contract != spec.symbol
+            and cached_symbol != spec.symbol
+        ):
+            raise MalformedBacktestDataError(
+                f"mixed_benchmark_candles:{spec.key}:cached_context"
+            )
+        return closed, excluded_partial
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     contract_ids: set[str] = set()
@@ -2342,7 +2663,12 @@ def _prepared_stream_covers_replay_window(
         return False
     for event_time in (first_event, last_event):
         event_utc = _as_utc(event_time)
-        closed_count = bisect_right(stream.close_times, event_utc)
+        closed_count = _search_candle_close(
+            stream.candles,
+            event_utc,
+            side="right",
+            fallback=stream.close_times,
+        )
         if closed_count <= 0:
             return False
         latest_close = stream.close_times[closed_count - 1]
@@ -2359,20 +2685,18 @@ def _topbot_cached_source_evaluation_counts(
     config: BotConfig,
     *,
     streams: Mapping[str, _PreparedReplayStream],
-    event_times: list[datetime],
+    event_times: Iterable[datetime],
     unavailable_sources: Mapping[str, tuple[str, ...]],
 ) -> dict[str, int]:
     """Count source evaluations after unchanged synchronized states are cached."""
 
-    if not event_times:
-        return {}
     params = bot_service_module._normalize_strategy_params(
         _TOPBOT_STRATEGY,
         config.strategy_params,
     )
     overrides = params.get("source_strategy_params") or {}
-    counts_by_keys: dict[tuple[str, ...], int] = {}
-    source_counts: dict[str, int] = {}
+    sources_by_keys: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    every_event_sources: list[str] = []
     for source in params["source_strategies"]:
         if source in unavailable_sources:
             continue
@@ -2382,34 +2706,102 @@ def _topbot_cached_source_evaluation_counts(
         )
         if source in {"delayed_orb_confirmation", "donchian_breakout"}:
             # These signatures include the primary event or mutable position.
-            source_counts[source] = len(event_times)
+            every_event_sources.append(source)
             continue
         keys = _topbot_source_stream_keys(
             config,
             source,
             source_params=source_params,
         )
-        cached_count = counts_by_keys.get(keys)
-        if cached_count is None:
+        sources_by_keys[keys].append(source)
+
+    normalized_events = [_as_utc(event_time) for event_time in event_times]
+    event_count = len(normalized_events)
+    event_ns_values = np.fromiter(
+        (_datetime_to_epoch_ns(event_time) for event_time in normalized_events),
+        dtype=np.int64,
+        count=event_count,
+    )
+    opening_rvol_evaluations = 0
+    vwap_gap_evaluations = 0
+    configured_open = _parse_time(str(config.trading_start_time))
+    configured_sources = set(params["source_strategies"])
+    vwap_gap_params = (
+        bot_service_module._normalize_strategy_params(
+            "vwap_gap_retrace",
+            overrides.get("vwap_gap_retrace", {}),
+        )
+        if "vwap_gap_retrace" in configured_sources
+        else None
+    )
+    for event_utc in normalized_events:
+        if "opening_rvol_breakout" in configured_sources:
+            latest_five_minute_start = (event_utc - timedelta(minutes=5)).astimezone(
+                TRADING_TZ
+            )
+            if latest_five_minute_start.time().replace(tzinfo=None) == configured_open:
+                opening_rvol_evaluations += 1
+        if vwap_gap_params is not None:
+            latest_minute_start = (event_utc - timedelta(minutes=1)).astimezone(
+                TRADING_TZ
+            )
+            minute_of_day = latest_minute_start.hour * 60 + latest_minute_start.minute
+            regular_open_minute = 9 * 60 + 30
+            minutes_from_open = minute_of_day - regular_open_minute
+            wait_start = int(vwap_gap_params["wait_start_minutes"])
+            wait_end = max(wait_start, int(vwap_gap_params["wait_end_minutes"]))
+            if wait_start <= minutes_from_open <= wait_end:
+                vwap_gap_evaluations += 1
+    source_counts = _TopBotSourceEvaluationCounts(
+        {source: event_count for source in every_event_sources},
+        expensive_evaluations={
+            "opening_rvol_breakout": opening_rvol_evaluations,
+            "vwap_gap_retrace": vwap_gap_evaluations,
+        },
+    )
+    for keys, sources in sources_by_keys.items():
+        mmap_streams = [streams.get(key) for key in keys]
+        if event_count and all(
+            stream is None or _is_mmap_candle_sequence(stream.candles)
+            for stream in mmap_streams
+        ):
+            changed = np.zeros(event_count, dtype=np.bool_)
+            changed[0] = True
+            for stream in mmap_streams:
+                if stream is None:
+                    continue
+                closed_counts = np.searchsorted(
+                    stream.candles.close_ns,
+                    event_ns_values,
+                    side="right",
+                )
+                changed[1:] |= closed_counts[1:] != closed_counts[:-1]
+            count = int(np.count_nonzero(changed))
+        else:
+            previous: tuple[int, ...] | None = None
             cursors = [0] * len(keys)
-            previous_signature: tuple[int, ...] | None = None
-            cached_count = 0
-            for event_time in event_times:
+            count = 0
+            for event_utc in normalized_events:
                 signature: list[int] = []
                 for index, key in enumerate(keys):
                     stream = streams.get(key)
-                    close_times = stream.close_times if stream is not None else []
                     cursor = cursors[index]
-                    while cursor < len(close_times) and close_times[cursor] <= event_time:
+                    if stream is None:
+                        signature.append(0)
+                        continue
+                    while (
+                        cursor < len(stream.close_times)
+                        and stream.close_times[cursor] <= event_utc
+                    ):
                         cursor += 1
                     cursors[index] = cursor
                     signature.append(cursor)
-                current_signature = tuple(signature)
-                if current_signature != previous_signature:
-                    cached_count += 1
-                    previous_signature = current_signature
-            counts_by_keys[keys] = cached_count
-        source_counts[source] = cached_count
+                current = tuple(signature)
+                if current != previous:
+                    count += 1
+                    previous = current
+        for source in sources:
+            source_counts[source] = count
     return source_counts
 
 
@@ -2435,6 +2827,16 @@ def _estimate_topbot_evaluator_operations(
             source,
             overrides.get(source, {}),
         )
+        evaluation_count = (
+            int(source_evaluations.get(source, execution_bars))
+            if source_evaluations is not None
+            else execution_bars
+        )
+        expensive_evaluations = getattr(
+            source_evaluations,
+            "expensive_evaluations",
+            {},
+        )
         source_cost = 0
         if source in _TOPBOT_SHARED_CONFIGURED_STRATEGIES or source == "donchian_breakout":
             source_cost += _topbot_primary_source_history_limit(config, source)
@@ -2443,14 +2845,27 @@ def _estimate_topbot_evaluator_operations(
         elif source == "opening_rvol_breakout":
             lookback_days = int(source_params["relative_volume_lookback_days"])
             calendar_days = max(lookback_days + 14, 21)
-            source_cost += max(
+            deep_scan_cost = max(
                 int(config.lookback_bars),
                 (calendar_days + 1) * ((24 * 60) // 5),
                 int(source_params["atr_period"]) * 20,
                 500,
             )
+            # The evaluator reads only the newest candle unless it is exactly
+            # the configured opening bar. Charge one cheap precondition per
+            # evaluation and the full history scan only at those openings.
+            estimated += max(0, evaluation_count)
+            estimated += max(
+                0,
+                int(expensive_evaluations.get(source, evaluation_count)),
+            ) * max(1, deep_scan_cost - 1)
+            continue
         elif source == "delayed_orb_confirmation":
-            source_cost += 1500
+            source_cost += _topbot_configured_session_capacity(
+                config,
+                unit="minute",
+                unit_number=1,
+            )
         elif source == "orb_fibonacci_pullback":
             timeframe_seconds = _timeframe_seconds(
                 str(config.timeframe_unit),
@@ -2458,7 +2873,16 @@ def _estimate_topbot_evaluator_operations(
             ) or 60
             source_cost += max(1, math.ceil((25 * 60 * 60) / timeframe_seconds))
         elif source == "vwap_gap_retrace":
-            source_cost += int(source_params["bars_to_fetch"])
+            # Backtests inspect one latest minute outside the strategy's
+            # actionable 5-15 minute post-open window and scan the configured
+            # history only inside it.
+            deep_scan_cost = int(source_params["bars_to_fetch"])
+            estimated += max(0, evaluation_count)
+            estimated += max(
+                0,
+                int(expensive_evaluations.get(source, evaluation_count)),
+            ) * max(1, deep_scan_cost - 1)
+            continue
         elif source == "supertrend_pivot":
             source_cost += max(
                 int(config.lookback_bars),
@@ -2494,11 +2918,6 @@ def _estimate_topbot_evaluator_operations(
             ) * 2
         else:
             source_cost += _topbot_primary_source_history_limit(config, source)
-        evaluation_count = (
-            int(source_evaluations.get(source, execution_bars))
-            if source_evaluations is not None
-            else execution_bars
-        )
         estimated += max(0, evaluation_count) * max(1, source_cost)
     return estimated
 
@@ -2917,6 +3336,7 @@ def run_backtest(
     signal_evaluator: SignalEvaluator | None = None,
     replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
     progress_callback: BacktestProgressCallback | None = None,
+    cancellation_callback: BacktestCancellationCallback | None = None,
 ) -> dict[str, Any]:
     """Run a pure replay. This function cannot create or route an order."""
 
@@ -2936,6 +3356,7 @@ def run_backtest(
         signal_evaluator=signal_evaluator,
         replay_streams=replay_streams,
         progress_callback=progress_callback,
+        cancellation_callback=cancellation_callback,
     ).run()
 
 
@@ -3052,7 +3473,7 @@ def _requested_backtest_bounds(payload: Any) -> tuple[datetime, datetime] | None
 
 
 def _resolve_backtest_window(
-    rows: list[ProjectXMarketCandle],
+    rows: Sequence[ProjectXMarketCandle],
     *,
     payload: Any,
     now: datetime,
@@ -3062,29 +3483,33 @@ def _resolve_backtest_window(
     captured_now = _as_utc(now)
     requested = _requested_backtest_bounds(payload)
     if requested is None:
-        eligible = rows
+        eligible_count = len(rows)
+        first_eligible_index = 0
+        last_eligible_index = len(rows) - 1
         full_history = True
     else:
         requested_start, requested_end = requested
         effective_end = min(requested_end, captured_now)
-        eligible = [
-            row
-            for row in rows
-            if _as_utc(row.candle_timestamp) >= requested_start
-            and _candle_close_time(row) <= effective_end
-        ]
+        first_eligible_index = _search_candle_start(
+            rows, requested_start, side="left"
+        )
+        eligible_end_index = _search_candle_close(
+            rows, effective_end, side="right"
+        )
+        eligible_count = max(0, eligible_end_index - first_eligible_index)
+        last_eligible_index = eligible_end_index - 1
         full_history = False
 
-    if len(eligible) < MIN_EXECUTION_BARS:
+    if eligible_count < MIN_EXECUTION_BARS:
         mode = "full configured-contract history" if requested is None else "requested range"
         raise InsufficientBacktestDataError(
             "insufficient_backtest_data: at least 2 fully closed execution bars are required "
-            f"for the {mode}; found {len(eligible)}"
+            f"for the {mode}; found {eligible_count}"
         )
 
     if requested is None:
-        start = _as_utc(eligible[0].candle_timestamp)
-        end = _candle_close_time(eligible[-1])
+        start = _candle_start_time_at(rows, first_eligible_index)
+        end = _candle_close_time_at(rows, last_eligible_index)
         requested_start = start
         requested_end = end
     else:
@@ -3261,13 +3686,39 @@ def _prepare_topbot_primary_full_history(
 
 def databento_backtest_history_available(db: Session, *, config: BotConfig) -> bool:
     root = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
+    if not root:
+        return False
+    # SQLite relational history is retained only as a deterministic repository
+    # fixture. Production PostgreSQL/Supabase never probes market-data tables.
+    if _database_databento_fixture_bounds(db, root_symbol=root) is not None:
+        return True
+    if legacy_projectx_backtest_fixtures_enabled(db):
+        return False
+    try:
+        return get_default_databento_cache().history_bounds(root) is not None
+    except DatabentoCacheError:
+        return False
+
+
+def _database_databento_fixture_bounds(
+    db: Session,
+    *,
+    root_symbol: str,
+) -> tuple[datetime, datetime] | None:
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    if (
+        not ALLOW_LEGACY_DATABENTO_SQLITE_FIXTURES
+        or bind is None
+        or bind.dialect.name != "sqlite"
+    ):
+        return None
     try:
         table_names = set(inspect(db.connection()).get_table_names())
     except Exception:
-        return False
+        return None
     if not {"databento_ohlcv_1m", "databento_roll_schedule"}.issubset(table_names):
-        return False
-    return bool(root and databento_history_bounds(db, root_symbol=root) is not None)
+        return None
+    return databento_history_bounds(db, root_symbol=root_symbol)
 
 
 def legacy_projectx_backtest_fixtures_enabled(db: Session) -> bool:
@@ -3276,6 +3727,69 @@ def legacy_projectx_backtest_fixtures_enabled(db: Session) -> bool:
         ALLOW_LEGACY_PROJECTX_BACKTEST_FIXTURES
         and bind is not None
         and bind.dialect.name == "sqlite"
+    )
+
+
+def _config_for_backtest_request(config: BotConfig, payload: Any) -> Any:
+    """Return non-persistent strategy and instrument overrides for this run."""
+
+    requested = getattr(payload, "strategy_type", None)
+    requested_instrument = getattr(payload, "instrument", None)
+    instrument = (
+        str(requested_instrument).strip().upper()
+        if requested_instrument is not None
+        else None
+    )
+    if instrument is not None and instrument not in BACKTEST_INSTRUMENTS:
+        raise BacktestConfigurationError(
+            f"unsupported_backtest_instrument:{instrument}"
+        )
+    current_instrument = normalize_symbol_key(config.symbol) or normalize_symbol_key(
+        config.contract_id
+    )
+    strategy_unchanged = requested is None or str(requested) == str(config.strategy_type)
+    instrument_unchanged = instrument is None or instrument == current_instrument
+    if strategy_unchanged and instrument_unchanged:
+        return config
+    strategy_type = str(config.strategy_type) if strategy_unchanged else str(requested)
+    if strategy_unchanged:
+        strategy_params = config.strategy_params
+        fast_period = int(config.fast_period)
+        slow_period = int(config.slow_period)
+    else:
+        _require_supported_strategy(strategy_type)
+        raw_params: Mapping[str, Any] = {}
+        if str(config.strategy_type) == _TOPBOT_STRATEGY:
+            topbot_params = bot_service_module._normalize_strategy_params(
+                _TOPBOT_STRATEGY,
+                config.strategy_params,
+            )
+            overrides = topbot_params.get("source_strategy_params") or {}
+            candidate = overrides.get(strategy_type, {})
+            if isinstance(candidate, Mapping):
+                raw_params = candidate
+        strategy_params = bot_service_module._normalize_strategy_params(
+            strategy_type,
+            dict(raw_params),
+        )
+        fast_period, slow_period = bot_service_module._normalized_strategy_period_values(
+            strategy_type,
+            fast_period=int(config.fast_period),
+            slow_period=int(config.slow_period),
+        )
+    selected_instrument = instrument or current_instrument
+    return _SourceConfigView(
+        config,
+        strategy_type=strategy_type,
+        strategy_params=strategy_params,
+        fast_period=fast_period,
+        slow_period=slow_period,
+        symbol=selected_instrument if not instrument_unchanged else None,
+        contract_id=(
+            f"DATABENTO.CONTINUOUS.{selected_instrument}"
+            if not instrument_unchanged
+            else None
+        ),
     )
 
 
@@ -3288,6 +3802,7 @@ def create_bot_backtest(
     client: ProjectXClient | None = None,
     now: datetime | None = None,
     progress_callback: BacktestProgressCallback | None = None,
+    cancellation_callback: BacktestCancellationCallback | None = None,
 ) -> BotBacktest:
     """Replay global Databento history; ProjectX is never a production data source."""
 
@@ -3299,12 +3814,28 @@ def create_bot_backtest(
     )
     if config is None:
         raise LookupError("bot_config_not_found")
+    config = _config_for_backtest_request(config, payload)
+    _raise_if_backtest_cancelled(cancellation_callback)
     root = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
-    bounds = (
-        databento_history_bounds(db, root_symbol=root)
-        if root and databento_backtest_history_available(db, config=config)
-        else None
+    database_fixture_bounds = (
+        _database_databento_fixture_bounds(db, root_symbol=root) if root else None
     )
+    replay_store: DatabentoReplayStore | None = None
+    bounds = database_fixture_bounds
+    if (
+        bounds is None
+        and root
+        and not legacy_projectx_backtest_fixtures_enabled(db)
+    ):
+        replay_store = get_default_databento_cache()
+        try:
+            bounds = replay_store.history_bounds(root)
+        except DatabentoCacheMissingError:
+            bounds = None
+        except DatabentoCacheStaleError as exc:
+            raise BacktestConfigurationError(str(exc)) from exc
+        except DatabentoCacheError as exc:
+            raise BacktestConfigurationError(str(exc)) from exc
     if bounds is None:
         # The legacy path is retained solely so the repository's historical
         # SQLite engine fixtures remain useful. Application PostgreSQL requests
@@ -3318,6 +3849,7 @@ def create_bot_backtest(
                 client=client,
                 now=now,
                 progress_callback=progress_callback,
+                cancellation_callback=cancellation_callback,
             )
         raise InsufficientBacktestDataError(
             f"databento_history_missing:{root or config.contract_id}: import historical data before backtesting"
@@ -3329,8 +3861,10 @@ def create_bot_backtest(
         payload=payload,
         root_symbol=str(root),
         history_bounds=bounds,
+        replay_store=replay_store,
         now=now,
         progress_callback=progress_callback,
+        cancellation_callback=cancellation_callback,
     )
 
 
@@ -3342,9 +3876,12 @@ def _create_databento_bot_backtest(
     payload: Any,
     root_symbol: str,
     history_bounds: tuple[datetime, datetime],
+    replay_store: DatabentoReplayStore | None,
     now: datetime | None,
     progress_callback: BacktestProgressCallback | None,
+    cancellation_callback: BacktestCancellationCallback | None,
 ) -> BotBacktest:
+    _raise_if_backtest_cancelled(cancellation_callback)
     _notify_backtest_progress(
         progress_callback,
         phase="preparing",
@@ -3406,8 +3943,8 @@ def _create_databento_bot_backtest(
         // (ESTIMATED_REPLAY_CANDLE_BYTES + ESTIMATED_EXECUTION_RESULT_BYTES),
     )
     try:
-        primary_rows = _ClosedCandleList(
-            load_databento_replay_candles(
+        if replay_store is None:
+            loaded_primary = load_databento_replay_candles(
                 db,
                 max_rows=max_loaded_rows,
                 user_id=user_id,
@@ -3419,19 +3956,39 @@ def _create_databento_bot_backtest(
                 end=load_end,
                 closed_by=closed_by,
             )
-        )
-    except DatabentoMarketDataError as exc:
+            primary_rows: Sequence[ProjectXMarketCandle] = _ClosedCandleList(
+                loaded_primary
+            )
+            _copy_closed_candle_metadata(loaded_primary, primary_rows)
+        else:
+            primary_rows = replay_store.open_candles(
+                user_id=user_id,
+                contract_id=str(config.contract_id),
+                root_symbol=root_symbol,
+                unit=str(config.timeframe_unit),
+                unit_number=int(config.timeframe_unit_number),
+                start=load_start,
+                end=load_end,
+                closed_by=closed_by,
+            )
+    except (DatabentoMarketDataError, DatabentoCacheError) as exc:
         raise BacktestConfigurationError(str(exc)) from exc
+    _raise_if_backtest_cancelled(cancellation_callback)
     window = _resolve_backtest_window(primary_rows, payload=payload, now=closed_by)
 
-    primary_start_times = [_as_utc(row.candle_timestamp) for row in primary_rows]
-    primary_close_times = [_candle_close_time(row) for row in primary_rows]
-    execution_start_index = bisect_left(primary_start_times, window.start)
-    execution_end_index = bisect_right(primary_close_times, window.end)
-    execution_rows = _closed_candle_slice(
+    primary_start_times = _candle_time_sequence(primary_rows, close=False)
+    primary_close_times = _candle_time_sequence(primary_rows, close=True)
+    execution_start_index = _search_candle_start(
         primary_rows,
-        execution_start_index,
-        execution_end_index,
+        window.start,
+        side="left",
+        fallback=primary_start_times,
+    )
+    execution_end_index = _search_candle_close(
+        primary_rows,
+        window.end,
+        side="right",
+        fallback=primary_close_times,
     )
     rolling_warmup_limit = max(
         int(config.lookback_bars),
@@ -3450,9 +4007,13 @@ def _create_databento_bot_backtest(
         rolling_limit=rolling_warmup_limit,
     )
     warmup_start_index = max(0, execution_start_index - warmup_limit)
-    replay_rows = _ClosedCandleList(primary_rows[warmup_start_index:execution_end_index])
+    replay_rows = _closed_candle_slice(
+        primary_rows,
+        warmup_start_index,
+        execution_end_index,
+    )
 
-    replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None
+    replay_streams: dict[str, Sequence[ProjectXMarketCandle]] | None = None
     if str(config.strategy_type) == _TOPBOT_STRATEGY:
         replay_streams = _load_databento_topbot_replay_streams(
             db,
@@ -3463,30 +4024,77 @@ def _create_databento_bot_backtest(
             closed_by=closed_by,
             primary_rows=replay_rows,
             max_rows=max_loaded_rows,
+            replay_store=replay_store,
         )
+    _raise_if_backtest_cancelled(cancellation_callback)
 
     # Drop the discovery/window lists before the engine allocates its own
     # execution indexes. The replay slice (and any synchronized streams) retain
     # exactly the projected candle objects they need.
-    del primary_start_times, primary_close_times, primary_rows, execution_rows
+    del primary_start_times, primary_close_times, primary_rows
 
-    result = run_backtest(
-        config=config,
-        candles=replay_rows,
-        start=window.start,
-        end=window.end,
-        starting_balance=float(payload.starting_balance),
-        commission_per_contract=float(payload.commission_per_contract),
-        slippage_ticks=float(payload.slippage_ticks),
-        tick_size=instrument_spec.tick_size,
-        tick_value=instrument_spec.tick_value,
-        force_close_at_end=bool(payload.force_close_at_end),
-        replay_streams=replay_streams,
-        progress_callback=progress_callback,
+    result_cache_key = (
+        _backtest_result_cache_key(
+            config=config,
+            candles=replay_rows,
+            replay_streams=replay_streams,
+            start=window.start,
+            end=window.end,
+            starting_balance=float(payload.starting_balance),
+            commission_per_contract=float(payload.commission_per_contract),
+            slippage_ticks=float(payload.slippage_ticks),
+            tick_size=instrument_spec.tick_size,
+            tick_value=instrument_spec.tick_value,
+            force_close_at_end=bool(payload.force_close_at_end),
+        )
+        if replay_store is not None
+        else None
     )
+    result = (
+        _BACKTEST_RESULT_CACHE.get(result_cache_key)
+        if result_cache_key is not None
+        else None
+    )
+    _raise_if_backtest_cancelled(cancellation_callback)
+    if result is None:
+        result = run_backtest(
+            config=config,
+            candles=replay_rows,
+            start=window.start,
+            end=window.end,
+            starting_balance=float(payload.starting_balance),
+            commission_per_contract=float(payload.commission_per_contract),
+            slippage_ticks=float(payload.slippage_ticks),
+            tick_size=instrument_spec.tick_size,
+            tick_value=instrument_spec.tick_value,
+            force_close_at_end=bool(payload.force_close_at_end),
+            replay_streams=replay_streams,
+            progress_callback=progress_callback,
+            cancellation_callback=cancellation_callback,
+        )
+        _raise_if_backtest_cancelled(cancellation_callback)
+        if result_cache_key is not None:
+            _BACKTEST_RESULT_CACHE.put(result_cache_key, result)
+    else:
+        _notify_backtest_progress(
+            progress_callback,
+            phase="replaying",
+            completed=int(result["range"]["bar_count"]),
+            total=int(result["range"]["bar_count"]),
+            percent=100,
+            remaining_percent=0,
+            cache_hit=True,
+        )
+    if replay_store is not None:
+        result["assumptions"]["historical_source"] = "databento_local_cache"
+        result["assumptions"]["market_data_cache"] = "partitioned_parquet_numpy_memmap"
+        result["assumptions"]["source_fingerprint"] = getattr(
+            replay_rows[0], "source_file_sha256", None
+        )
     result["warnings"].append(
-        "Historical replay used Databento MNQ data with a prior-completed-session "
-        "volume rollover schedule; ProjectX market history was not read."
+        f"Historical replay used Databento {root_symbol} data from the "
+        f"{'local Parquet/memory-map cache' if replay_store is not None else 'SQLite test fixture'} "
+        "with a prior-completed-session volume rollover schedule; ProjectX market history was not read."
     )
     _notify_backtest_progress(
         progress_callback,
@@ -3501,6 +4109,7 @@ def _create_databento_bot_backtest(
         if replay_streams is not None
         else candle_input_fingerprint(replay_rows)
     )
+    _raise_if_backtest_cancelled(cancellation_callback)
     row = BotBacktest(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -3539,13 +4148,14 @@ def _load_databento_topbot_replay_streams(
     root_symbol: str,
     window: _ResolvedBacktestWindow,
     closed_by: datetime,
-    primary_rows: list[ProjectXMarketCandle],
+    primary_rows: Sequence[ProjectXMarketCandle],
     max_rows: int,
-) -> dict[str, list[ProjectXMarketCandle]]:
+    replay_store: DatabentoReplayStore | None,
+) -> dict[str, Sequence[ProjectXMarketCandle]]:
     primary_key = _topbot_asset_stream_key(
         str(config.timeframe_unit), int(config.timeframe_unit_number)
     )
-    streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
+    streams: dict[str, Sequence[ProjectXMarketCandle]] = {primary_key: primary_rows}
     total_rows = len(primary_rows)
     for key, stream_spec in _topbot_stream_specs(config).items():
         if key == primary_key:
@@ -3555,7 +4165,15 @@ def _load_databento_topbot_replay_streams(
         )
         if not stream_root:
             continue
-        bounds = databento_history_bounds(db, root_symbol=stream_root)
+        if replay_store is None:
+            bounds = databento_history_bounds(db, root_symbol=stream_root)
+        else:
+            try:
+                bounds = replay_store.history_bounds(stream_root)
+            except DatabentoCacheMissingError:
+                bounds = None
+            except DatabentoCacheError as exc:
+                raise BacktestConfigurationError(str(exc)) from exc
         if bounds is None:
             continue
         duration = _timeframe_seconds(stream_spec.unit, stream_spec.unit_number)
@@ -3571,20 +4189,38 @@ def _load_databento_topbot_replay_streams(
             ),
         )
         try:
-            rows = load_databento_replay_candles(
-                db,
-                max_rows=max(1, max_rows - total_rows),
-                user_id=user_id,
-                contract_id=str(stream_spec.contract_id or stream_spec.symbol),
-                root_symbol=stream_root,
-                unit=stream_spec.unit,
-                unit_number=stream_spec.unit_number,
-                start=stream_start,
-                end=min(bounds[1], window.end),
-                closed_by=closed_by,
-            )
-        except DatabentoMarketDataError:
+            if replay_store is None:
+                loaded_rows = load_databento_replay_candles(
+                    db,
+                    max_rows=max(1, max_rows - total_rows),
+                    user_id=user_id,
+                    contract_id=str(stream_spec.contract_id or stream_spec.symbol),
+                    root_symbol=stream_root,
+                    unit=stream_spec.unit,
+                    unit_number=stream_spec.unit_number,
+                    start=stream_start,
+                    end=min(bounds[1], window.end),
+                    closed_by=closed_by,
+                )
+                rows: Sequence[ProjectXMarketCandle] = _ClosedCandleList(
+                    loaded_rows
+                )
+                _copy_closed_candle_metadata(loaded_rows, rows)
+            else:
+                rows = replay_store.open_candles(
+                    user_id=user_id,
+                    contract_id=str(stream_spec.contract_id or stream_spec.symbol),
+                    root_symbol=stream_root,
+                    unit=stream_spec.unit,
+                    unit_number=stream_spec.unit_number,
+                    start=stream_start,
+                    end=min(bounds[1], window.end),
+                    closed_by=closed_by,
+                )
+        except DatabentoCacheMissingError:
             continue
+        except (DatabentoMarketDataError, DatabentoCacheError) as exc:
+            raise BacktestConfigurationError(str(exc)) from exc
         total_rows += len(rows)
         streams[key] = rows
     return streams
@@ -3617,7 +4253,9 @@ def _create_legacy_projectx_bot_backtest(
     client: ProjectXClient | None = None,
     now: datetime | None = None,
     progress_callback: BacktestProgressCallback | None = None,
+    cancellation_callback: BacktestCancellationCallback | None = None,
 ) -> BotBacktest:
+    _raise_if_backtest_cancelled(cancellation_callback)
     if not legacy_projectx_backtest_fixtures_enabled(db):
         raise BacktestConfigurationError(
             "legacy_projectx_backtest_fixture_path_disabled"
@@ -3638,6 +4276,7 @@ def _create_legacy_projectx_bot_backtest(
     )
     if config is None:
         raise LookupError("bot_config_not_found")
+    config = _config_for_backtest_request(config, payload)
     _require_supported_strategy(str(config.strategy_type))
     _validate_replay_configuration(config)
 
@@ -3770,7 +4409,9 @@ def _create_legacy_projectx_bot_backtest(
         force_close_at_end=bool(payload.force_close_at_end),
         replay_streams=replay_streams,
         progress_callback=progress_callback,
+        cancellation_callback=cancellation_callback,
     )
+    _raise_if_backtest_cancelled(cancellation_callback)
     result["assumptions"].update(
         {
             "market_data": "legacy_projectx_sqlite_test_fixture_only",
@@ -3799,6 +4440,7 @@ def _create_legacy_projectx_bot_backtest(
         if replay_streams is not None
         else candle_input_fingerprint(replay_rows)
     )
+    _raise_if_backtest_cancelled(cancellation_callback)
     assumptions = result["assumptions"]
     snapshot = result["config_snapshot"]
     row = BotBacktest(
@@ -3845,7 +4487,52 @@ def serialize_bot_backtest(row: BotBacktest) -> dict[str, Any]:
     return payload
 
 
+def _backtest_result_cache_key(
+    *,
+    config: BotConfig,
+    candles: list[ProjectXMarketCandle],
+    replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None,
+    start: datetime,
+    end: datetime,
+    starting_balance: float,
+    commission_per_contract: float,
+    slippage_ticks: float,
+    tick_size: float,
+    tick_value: float,
+    force_close_at_end: bool,
+) -> str:
+    input_fingerprint = (
+        candle_stream_input_fingerprint(replay_streams)
+        if replay_streams is not None
+        else candle_input_fingerprint(candles)
+    )
+    canonical = {
+        "engine_version": BACKTEST_ENGINE_VERSION,
+        "config": _config_snapshot(config),
+        "input_fingerprint": input_fingerprint,
+        "start": _as_utc(start).isoformat(),
+        "end": _as_utc(end).isoformat(),
+        "starting_balance": float(starting_balance),
+        "commission_per_contract": float(commission_per_contract),
+        "slippage_ticks": float(slippage_ticks),
+        "tick_size": float(tick_size),
+        "tick_value": float(tick_value),
+        "force_close_at_end": bool(force_close_at_end),
+    }
+    payload = json.dumps(
+        canonical,
+        allow_nan=False,
+        default=_backtest_cache_json_default,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
+    cached = getattr(candles, "_topsignal_input_fingerprint", None)
+    if cached:
+        return str(cached)
     ordered = (
         candles
         if getattr(candles, "_topsignal_sorted_closed", False)
@@ -3874,6 +4561,18 @@ def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
 def candle_stream_input_fingerprint(
     streams: Mapping[str, list[ProjectXMarketCandle]],
 ) -> str:
+    cached_streams = {
+        key: getattr(candles, "_topsignal_input_fingerprint", None)
+        for key, candles in streams.items()
+    }
+    if cached_streams and all(cached_streams.values()):
+        canonical = json.dumps(
+            {key: str(cached_streams[key]) for key in sorted(cached_streams)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
     def canonical_rows() -> Iterable[dict[str, Any]]:
         for key in sorted(streams):
             candles = streams[key]
@@ -3987,37 +4686,236 @@ def _contract_is_allowed(config: BotConfig) -> bool:
     return bool(allowed.intersection(candidates))
 
 
+def _is_mmap_candle_sequence(candles: Any) -> bool:
+    return bool(getattr(candles, "_topsignal_mmap_backed", False))
+
+
+def _datetime_to_epoch_ns(value: datetime) -> int:
+    normalized = _as_utc(value)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = normalized - epoch
+    return (
+        (delta.days * 86_400 + delta.seconds) * 1_000_000_000
+        + delta.microseconds * 1_000
+    )
+
+
+def _datetime_from_epoch_ns(value: int) -> datetime:
+    seconds, nanoseconds = divmod(int(value), 1_000_000_000)
+    return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+        seconds=seconds,
+        microseconds=nanoseconds // 1_000,
+    )
+
+
+def _candle_time_sequence(
+    candles: Sequence[ProjectXMarketCandle],
+    *,
+    close: bool,
+) -> Sequence[datetime]:
+    if _is_mmap_candle_sequence(candles):
+        return _NanosecondDatetimeSequence(
+            candles.close_ns if close else candles.start_ns
+        )
+    if close:
+        return [_candle_close_time(candle) for candle in candles]
+    return [_as_utc(candle.candle_timestamp) for candle in candles]
+
+
+def _candle_start_time_at(
+    candles: Sequence[ProjectXMarketCandle], index: int
+) -> datetime:
+    if _is_mmap_candle_sequence(candles):
+        return _datetime_from_epoch_ns(int(candles.start_ns[index]))
+    return _as_utc(candles[index].candle_timestamp)
+
+
+def _candle_close_time_at(
+    candles: Sequence[ProjectXMarketCandle], index: int
+) -> datetime:
+    if _is_mmap_candle_sequence(candles):
+        return _datetime_from_epoch_ns(int(candles.close_ns[index]))
+    return _candle_close_time(candles[index])
+
+
+def _search_candle_start(
+    candles: Sequence[ProjectXMarketCandle],
+    timestamp: datetime,
+    *,
+    side: str = "left",
+    fallback: Sequence[datetime] | None = None,
+) -> int:
+    search = getattr(candles, "search_start", None)
+    if callable(search):
+        return int(search(_as_utc(timestamp), side=side))
+    values = fallback
+    if values is not None:
+        return (
+            bisect_right(values, _as_utc(timestamp))
+            if side == "right"
+            else bisect_left(values, _as_utc(timestamp))
+        )
+    target = _as_utc(timestamp)
+    low, high = 0, len(candles)
+    while low < high:
+        middle = (low + high) // 2
+        value = _candle_start_time_at(candles, middle)
+        if value < target or (side == "right" and value == target):
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+
+def _search_candle_close(
+    candles: Sequence[ProjectXMarketCandle],
+    timestamp: datetime,
+    *,
+    side: str = "right",
+    fallback: Sequence[datetime] | None = None,
+) -> int:
+    search = getattr(candles, "search_close", None)
+    if callable(search):
+        return int(search(_as_utc(timestamp), side=side))
+    values = fallback
+    if values is not None:
+        return (
+            bisect_left(values, _as_utc(timestamp))
+            if side == "left"
+            else bisect_right(values, _as_utc(timestamp))
+        )
+    target = _as_utc(timestamp)
+    low, high = 0, len(candles)
+    while low < high:
+        middle = (low + high) // 2
+        value = _candle_close_time_at(candles, middle)
+        if value < target or (side == "right" and value == target):
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+
+def _session_coverage_indexes(values: Sequence[bool]) -> tuple[int, int]:
+    first = next((index for index in range(len(values)) if values[index]), 0)
+    last = next(
+        (index for index in range(len(values) - 1, -1, -1) if values[index]),
+        max(0, len(values) - 1),
+    )
+    return first, last
+
+
+def _replay_storage_estimate(
+    streams: Iterable[Sequence[ProjectXMarketCandle]],
+) -> tuple[int, int]:
+    """Return unique mmap bytes and the remaining eager row count."""
+
+    intervals: dict[Any, list[tuple[int, int, int]]] = defaultdict(list)
+    eager_rows = 0
+    for candles in streams:
+        if not _is_mmap_candle_sequence(candles):
+            eager_rows += len(candles)
+            continue
+        identity = getattr(candles, "_topsignal_physical_stream", None)
+        start = getattr(candles, "_topsignal_slice_start", None)
+        end = getattr(candles, "_topsignal_slice_end", None)
+        if identity is None or start is None or end is None:
+            identity = ("mmap-view", id(candles))
+            start, end = 0, len(candles)
+        bytes_per_row = max(
+            1, int(getattr(candles, "_topsignal_storage_bytes_per_row", 68))
+        )
+        intervals[identity].append((int(start), int(end), bytes_per_row))
+
+    mapped_bytes = 0
+    for ranges in intervals.values():
+        ranges.sort(key=lambda item: (item[0], item[1]))
+        current_start, current_end, bytes_per_row = ranges[0]
+        for start, end, row_bytes in ranges[1:]:
+            bytes_per_row = max(bytes_per_row, row_bytes)
+            if start <= current_end:
+                current_end = max(current_end, end)
+            else:
+                mapped_bytes += max(0, current_end - current_start) * bytes_per_row
+                current_start, current_end, bytes_per_row = start, end, row_bytes
+        mapped_bytes += max(0, current_end - current_start) * bytes_per_row
+    return mapped_bytes, eager_rows
+
+
 def _closed_candle_slice(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     start: int,
     end: int | None = None,
-) -> list[ProjectXMarketCandle]:
+) -> Sequence[ProjectXMarketCandle]:
     sliced = candles[start:end]
+    if _is_mmap_candle_sequence(candles):
+        return sliced
     if getattr(candles, "_topsignal_sorted_closed", False):
-        return _ClosedCandleList(sliced)
+        target = _ClosedCandleList(sliced)
+        _copy_closed_candle_metadata(candles, target)
+        parent_fingerprint = getattr(candles, "_topsignal_input_fingerprint", None)
+        if parent_fingerprint:
+            normalized_start, normalized_end, _step = slice(start, end).indices(
+                len(candles)
+            )
+            target._topsignal_input_fingerprint = hashlib.sha256(
+                (
+                    f"{parent_fingerprint}\0{normalized_start}\0{normalized_end}"
+                ).encode("utf-8")
+            ).hexdigest()
+            base_start = getattr(candles, "_topsignal_slice_start", None)
+            if base_start is not None:
+                target._topsignal_slice_start = int(base_start) + normalized_start
+                target._topsignal_slice_end = int(base_start) + normalized_end
+        return target
     return sliced
 
 
 def _copy_closed_candle_metadata(
-    source: list[ProjectXMarketCandle],
-    target: _ClosedCandleList,
+    source: Sequence[ProjectXMarketCandle],
+    target: Any,
 ) -> None:
+    if source is target:
+        return
     physical_stream = getattr(source, "_topsignal_physical_stream", None)
     physical_row_count = getattr(source, "_topsignal_physical_row_count", None)
     if physical_stream is not None and physical_row_count is not None:
         target._topsignal_physical_stream = physical_stream
         target._topsignal_physical_row_count = int(physical_row_count)
+    for attribute in (
+        "_topsignal_input_fingerprint",
+        "_topsignal_series_fingerprint",
+        "_topsignal_slice_start",
+        "_topsignal_slice_end",
+        "_topsignal_verified_replay",
+        "_topsignal_user_id",
+        "_topsignal_contract_id",
+        "_topsignal_symbol",
+        "_topsignal_unit",
+        "_topsignal_unit_number",
+    ):
+        value = getattr(source, attribute, None)
+        if value is not None:
+            setattr(target, attribute, value)
 
 
 def _enforce_backtest_resource_budget(
     *,
     replay_rows: int,
     execution_rows: int,
+    replay_storage_bytes: int = 0,
+    lazy_execution: bool = False,
 ) -> None:
     budget = max(1, int(BACKTEST_MEMORY_BUDGET_BYTES))
     estimated = (
-        max(0, int(replay_rows)) * ESTIMATED_REPLAY_CANDLE_BYTES
-        + max(0, int(execution_rows)) * ESTIMATED_EXECUTION_RESULT_BYTES
+        max(0, int(replay_storage_bytes))
+        + max(0, int(replay_rows)) * ESTIMATED_REPLAY_CANDLE_BYTES
+        + max(0, int(execution_rows))
+        * (
+            ESTIMATED_LAZY_EXECUTION_BYTES
+            if lazy_execution
+            else ESTIMATED_EXECUTION_RESULT_BYTES
+        )
     )
     if estimated <= budget:
         return
@@ -4068,11 +4966,14 @@ def _validate_settings(settings: BacktestSettings) -> BacktestSettings:
 
 
 def _validate_and_sort_candles(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     *,
     config: BotConfig,
-) -> tuple[list[ProjectXMarketCandle], int]:
-    if isinstance(candles, _ClosedCandleList):
+) -> tuple[Sequence[ProjectXMarketCandle], int]:
+    if _is_mmap_candle_sequence(candles):
+        closed = candles
+        excluded_partial = 0
+    elif isinstance(candles, _ClosedCandleList):
         closed = candles
         excluded_partial = 0
     elif getattr(candles, "_topsignal_sorted_closed", False):
@@ -4085,6 +4986,24 @@ def _validate_and_sort_candles(
         excluded_partial = len(candles) - len(closed)
         closed.sort(key=lambda row: _as_utc(row.candle_timestamp))
     _copy_closed_candle_metadata(candles, closed)
+    if getattr(closed, "_topsignal_verified_replay", False):
+        if str(getattr(closed, "_topsignal_contract_id", "")) != str(
+            config.contract_id
+        ):
+            raise MalformedBacktestDataError("mixed_contract_candles:cached_context")
+        if config.user_id is not None and str(
+            getattr(closed, "_topsignal_user_id", "")
+        ) != str(config.user_id):
+            raise MalformedBacktestDataError("mixed_user_candles:cached_context")
+        if str(getattr(closed, "_topsignal_unit", "")) != str(
+            config.timeframe_unit
+        ) or int(getattr(closed, "_topsignal_unit_number", 0) or 0) != int(
+            config.timeframe_unit_number
+        ):
+            raise MalformedBacktestDataError(
+                "mixed_timeframe_candles: every replay candle must match the bot timeframe"
+            )
+        return closed, excluded_partial
     seen: set[datetime] = set()
     previous_close_time: datetime | None = None
     for row in closed:
@@ -4338,15 +5257,27 @@ def _price_pnl(
     tick_size: float,
     tick_value: float,
 ) -> float:
-    direction = Decimal("1") if side == "long" else Decimal("-1")
-    value = (
-        (Decimal(str(exit)) - Decimal(str(entry)))
-        / Decimal(str(tick_size))
-        * Decimal(str(tick_value))
-        * Decimal(str(quantity))
+    # Replay prices are validated finite numbers and fills are tick-aligned.
+    # Keeping this inner-loop calculation in binary float is exact for the
+    # supported equity-index quarter ticks and final outputs still pass through
+    # the engine's established 10-decimal normalization.
+    if float(tick_size) != 0.25:
+        direction_decimal = Decimal("1") if side == "long" else Decimal("-1")
+        return float(
+            (Decimal(str(exit)) - Decimal(str(entry)))
+            / Decimal(str(tick_size))
+            * Decimal(str(tick_value))
+            * Decimal(str(quantity))
+            * direction_decimal
+        )
+    direction = 1.0 if side == "long" else -1.0
+    return (
+        (float(exit) - float(entry))
+        / float(tick_size)
+        * float(tick_value)
+        * float(quantity)
         * direction
     )
-    return float(value)
 
 
 def _build_metrics(
@@ -4579,11 +5510,13 @@ def _timeframe_seconds(unit: str, unit_number: int) -> int | None:
 
 
 def _count_futures_session_gaps(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     *,
     interval_seconds: int,
 ) -> int:
     gaps = 0
+    if not candles:
+        return 0
     symbol = next(
         (
             str(value)
@@ -4593,6 +5526,39 @@ def _count_futures_session_gaps(
         ),
         None,
     )
+    if _is_mmap_candle_sequence(candles):
+        starts = candles.start_ns
+        interval_ns = max(1, int(interval_seconds)) * 1_000_000_000
+        chunk_rows = 262_144
+        previous_ns: int | None = None
+        for chunk_start in range(0, len(starts), chunk_rows):
+            chunk = np.asarray(
+                starts[chunk_start : min(len(starts), chunk_start + chunk_rows)],
+                dtype=np.int64,
+            )
+            if chunk.size == 0:
+                continue
+            if previous_ns is None:
+                combined = chunk
+            else:
+                combined = np.concatenate(
+                    (np.asarray([previous_ns], dtype=np.int64), chunk)
+                )
+            candidate_offsets = np.flatnonzero(np.diff(combined) > interval_ns)
+            for offset in candidate_offsets:
+                prior_ns = int(combined[int(offset)])
+                current_ns = int(combined[int(offset) + 1])
+                elapsed_ns = current_ns - prior_ns
+                missing_slots = max(0, int(round(elapsed_ns / interval_ns)) - 1)
+                if missing_slots and _contains_open_futures_timestamp(
+                    _datetime_from_epoch_ns(prior_ns + interval_ns),
+                    _datetime_from_epoch_ns(current_ns),
+                    step_seconds=interval_seconds,
+                    symbol=symbol,
+                ):
+                    gaps += 1
+            previous_ns = int(chunk[-1])
+        return gaps
     for previous, current in zip(candles, candles[1:]):
         previous_timestamp = _as_utc(previous.candle_timestamp)
         current_timestamp = _as_utc(current.candle_timestamp)
@@ -4606,6 +5572,12 @@ def _count_futures_session_gaps(
         ):
             gaps += 1
     return gaps
+
+
+def _zero_volume_count(candles: Sequence[ProjectXMarketCandle]) -> int:
+    if _is_mmap_candle_sequence(candles):
+        return int(np.count_nonzero(candles.volume_values == 0))
+    return sum(1 for row in candles if float(row.volume or 0) == 0)
 
 
 def _has_open_futures_interval(
@@ -4686,9 +5658,11 @@ def _max_evaluator_input_bars(config: BotConfig, *, rolling_limit: int) -> int:
 
 
 def _first_index_at_or_after(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     timestamp: datetime,
 ) -> int:
+    if _is_mmap_candle_sequence(candles):
+        return _search_candle_start(candles, timestamp, side="left")
     target = _as_utc(timestamp)
     low = 0
     high = len(candles)

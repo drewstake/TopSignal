@@ -127,6 +127,8 @@ const sampleMetrics: CopyFullStatsMetrics = {
     pointPayoffByBasis: {
       MNQ: { avgPointGain: 31.76, avgPointLoss: 14.87 },
       MES: { avgPointGain: null, avgPointLoss: null },
+      NQ: { avgPointGain: null, avgPointLoss: null },
+      ES: { avgPointGain: null, avgPointLoss: null },
       MGC: { avgPointGain: null, avgPointLoss: null },
       SIL: { avgPointGain: null, avgPointLoss: null },
     },

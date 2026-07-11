@@ -11,6 +11,8 @@ import {
 } from "./botBacktest";
 
 const validForm: BotBacktestFormState = {
+  strategyType: "sma_cross",
+  instrument: "MNQ",
   startingBalance: "50000",
   commissionPerContract: "1.20",
   slippageTicks: "1",
@@ -39,6 +41,8 @@ describe("buildBacktestPayload", () => {
     const payload = buildBacktestPayload(validForm);
 
     expect(payload).toEqual({
+      strategy_type: "sma_cross",
+      instrument: "MNQ",
       starting_balance: 50_000,
       commission_per_contract: 1.2,
       slippage_ticks: 1,

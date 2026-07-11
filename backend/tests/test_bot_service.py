@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
 
+import numpy as np
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -131,6 +132,80 @@ def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMark
     }
     values.update(overrides)
     return ProjectXMarketCandle(**values)
+
+
+class _FakeMmapCandleSequence:
+    """Minimal verified array-backed sequence for evaluator parity tests."""
+
+    _topsignal_sorted_closed = True
+    _topsignal_verified_replay = True
+    _topsignal_mmap_backed = True
+
+    def __init__(self, candles):
+        self._candles = list(candles)
+        self._start_ns = np.asarray(
+            [
+                int(candle.candle_timestamp.timestamp()) * 1_000_000_000
+                + candle.candle_timestamp.microsecond * 1_000
+                for candle in self._candles
+            ],
+            dtype=np.int64,
+        )
+        self._open_nano = self._price_column("open_price")
+        self._high_nano = self._price_column("high_price")
+        self._low_nano = self._price_column("low_price")
+        self._close_nano = self._price_column("close_price")
+        self._volume = np.asarray(
+            [int(candle.volume) for candle in self._candles],
+            dtype=np.int64,
+        )
+
+    def _price_column(self, attribute):
+        return np.asarray(
+            [
+                int(round(float(getattr(candle, attribute)) * 1_000_000_000))
+                for candle in self._candles
+            ],
+            dtype=np.int64,
+        )
+
+    def __len__(self):
+        return len(self._candles)
+
+    def __iter__(self):
+        return iter(self._candles)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            if step != 1:
+                return self._candles[index]
+            return _FakeMmapCandleSequence(self._candles[start:stop])
+        return self._candles[index]
+
+    @property
+    def start_ns(self):
+        return self._start_ns
+
+    @property
+    def open_nano_values(self):
+        return self._open_nano
+
+    @property
+    def high_nano_values(self):
+        return self._high_nano
+
+    @property
+    def low_nano_values(self):
+        return self._low_nano
+
+    @property
+    def close_nano_values(self):
+        return self._close_nano
+
+    @property
+    def volume_values(self):
+        return self._volume
 
 
 def _make_hour_candle(timestamp: datetime, close: float, low: float, high: float, unit_number: int) -> ProjectXMarketCandle:
@@ -2294,11 +2369,17 @@ def test_fvg_sweep_mss_generates_buy_signal_on_structure_break():
         structure_candles=structure_candles,
         strategy_params={"swing_window": 3, "target_mode": "2r", "stop_buffer_percent": 0},
     )
+    mmap_signal = evaluate_fvg_sweep_mss(
+        fvg_candles=_FakeMmapCandleSequence(fvg_candles),
+        structure_candles=_FakeMmapCandleSequence(structure_candles),
+        strategy_params={"swing_window": 3, "target_mode": "2r", "stop_buffer_percent": 0},
+    )
 
     assert signal.action == "BUY"
     assert "structure break above 106.6" in signal.reason
     assert signal.raw_payload["stop_loss"] == pytest.approx(103.8)
     assert signal.raw_payload["take_profit"] == pytest.approx(112.5)
+    assert mmap_signal == signal
 
 
 def test_fvg_sweep_mss_generates_sell_signal_on_structure_break():
@@ -2322,11 +2403,17 @@ def test_fvg_sweep_mss_generates_sell_signal_on_structure_break():
         structure_candles=structure_candles,
         strategy_params={"swing_window": 3, "target_mode": "2r", "stop_buffer_percent": 0},
     )
+    mmap_signal = evaluate_fvg_sweep_mss(
+        fvg_candles=_FakeMmapCandleSequence(fvg_candles),
+        structure_candles=_FakeMmapCandleSequence(structure_candles),
+        strategy_params={"swing_window": 3, "target_mode": "2r", "stop_buffer_percent": 0},
+    )
 
     assert signal.action == "SELL"
     assert "structure break below 106.4" in signal.reason
     assert signal.raw_payload["stop_loss"] == pytest.approx(110.3)
     assert signal.raw_payload["take_profit"] == pytest.approx(98.3)
+    assert mmap_signal == signal
 
 
 def test_fvg_sweep_mss_holds_when_gap_is_invalidated_by_strong_volume_close():
@@ -2352,9 +2439,15 @@ def test_fvg_sweep_mss_holds_when_gap_is_invalidated_by_strong_volume_close():
         structure_candles=structure_candles,
         strategy_params={"swing_window": 3, "volume_lookback_bars": 3, "strong_volume_multiplier": 1.2},
     )
+    mmap_signal = evaluate_fvg_sweep_mss(
+        fvg_candles=_FakeMmapCandleSequence(fvg_candles),
+        structure_candles=_FakeMmapCandleSequence(structure_candles),
+        strategy_params={"swing_window": 3, "volume_lookback_bars": 3, "strong_volume_multiplier": 1.2},
+    )
 
     assert signal.action == "HOLD"
     assert "invalidated" in signal.reason.lower()
+    assert mmap_signal == signal
 
 
 def test_delayed_orb_confirmation_generates_buy_signal_after_five_full_minutes_above_range():

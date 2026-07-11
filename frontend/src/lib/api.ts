@@ -72,7 +72,7 @@ import { getAccessToken } from "./supabase";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
-const BACKTEST_REQUEST_TIMEOUT_MS = 15 * 60_000;
+const BACKTEST_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -757,7 +757,7 @@ interface AccountSummaryQuery {
   start?: string;
   end?: string;
   refresh?: boolean;
-  pointsBasis?: "auto" | "MNQ" | "MES" | "MGC" | "SIL";
+  pointsBasis?: "auto" | "MNQ" | "MES" | "NQ" | "ES" | "MGC" | "SIL";
 }
 
 interface AccountPnlCalendarQuery extends AccountSummaryQuery {
@@ -1853,7 +1853,7 @@ async function runBacktestRequest(
     });
   } catch (error) {
     if (isAbortError(error) && timedOut) {
-      throw new Error("Full-history backtest timed out after 15 minutes. Try again after the server finishes preparing candles.");
+      throw new Error("Full-history backtest timed out after two hours. Start a new Run to supersede it.");
     }
     throw error;
   } finally {

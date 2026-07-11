@@ -600,6 +600,14 @@ function buildSummaryWithPointBases(accountId: number, query: Record<string, Dem
         avgPointGain: summary.avgPointGain === null ? null : summary.avgPointGain / 4,
         avgPointLoss: summary.avgPointLoss === null ? null : summary.avgPointLoss / 4,
       },
+      NQ: {
+        avgPointGain: summary.avgPointGain === null ? null : summary.avgPointGain / 10,
+        avgPointLoss: summary.avgPointLoss === null ? null : summary.avgPointLoss / 10,
+      },
+      ES: {
+        avgPointGain: summary.avgPointGain === null ? null : summary.avgPointGain / 25,
+        avgPointLoss: summary.avgPointLoss === null ? null : summary.avgPointLoss / 25,
+      },
       MGC: {
         avgPointGain: summary.avgPointGain === null ? null : summary.avgPointGain / 10,
         avgPointLoss: summary.avgPointLoss === null ? null : summary.avgPointLoss / 10,

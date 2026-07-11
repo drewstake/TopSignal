@@ -43,10 +43,12 @@ class _Inspector:
         include_ledger=True,
         include_baseline=False,
         include_databento=True,
+        missing_table=None,
     ):
         self.include_ledger = include_ledger
         self.include_baseline = include_baseline
         self.include_databento = include_databento
+        self.missing_table = missing_table
 
     def get_table_names(self):
         tables = ["accounts", "bot_backtests", "bot_configs", "bot_order_attempts"]
@@ -64,7 +66,7 @@ class _Inspector:
             tables.append("topsignal_schema_migrations")
         if self.include_baseline:
             tables.append("topsignal_schema_baselines")
-        return tables
+        return [table for table in tables if table != self.missing_table]
 
     def get_columns(self, table_name):
         if table_name == "accounts":
@@ -133,7 +135,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260711_add_databento_historical_market_data.sql"} in db.params
+    assert {"version": "20260711_seed_nq_es_instrument_metadata.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -154,15 +156,24 @@ def test_readiness_rejects_unversioned_pre_runner_schema(monkeypatch):
     assert response.status_code == 503
 
 
-def test_readiness_rejects_schema_without_databento_store(monkeypatch):
+def test_readiness_accepts_schema_without_databento_market_tables(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "inspect",
         lambda _bind: _Inspector(include_databento=False),
     )
 
-    response = main_module.readiness(db=_Session())
+    assert main_module.readiness(db=_Session()) == {"status": "ready"}
 
+
+def test_readiness_still_requires_projectx_bot_persistence(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "inspect",
+        lambda _bind: _Inspector(missing_table="bot_order_attempts"),
+    )
+
+    response = main_module.readiness(db=_Session())
     assert response.status_code == 503
 
 
@@ -175,4 +186,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260711-v1"} in db.params
+    assert {"version": "schema-20260711-v2"} in db.params

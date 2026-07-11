@@ -29,12 +29,18 @@ class _SourceConfigView:
         strategy_params: dict[str, Any],
         fast_period: int,
         slow_period: int,
+        symbol: str | None = None,
+        contract_id: str | None = None,
     ) -> None:
         self._base = base
         self.strategy_type = strategy_type
         self.strategy_params = strategy_params
         self.fast_period = fast_period
         self.slow_period = slow_period
+        if symbol is not None:
+            self.symbol = symbol
+        if contract_id is not None:
+            self.contract_id = contract_id
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base, name)

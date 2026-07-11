@@ -241,7 +241,7 @@ Important bot behaviors:
 - New configurations default to dry-run mode and are saved disabled.
 - The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
-- Historical backtests read only the global Databento store. They never fetch or fall back to ProjectX candles.
+- Historical backtests read only the local fingerprinted Databento Parquet/mmap cache. They never fetch or fall back to ProjectX candles.
 - The interactive signal chart and live/dry-run evaluation retain their existing closed-bar cache and frontend cache for responsiveness.
 
 ### Themes
@@ -321,7 +321,7 @@ Important implementation detail:
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
-- Databento definitions, raw 1-minute bars, import provenance, and no-lookahead roll decisions use `databento_instruments`, `databento_ohlcv_1m`, `databento_import_*`, and `databento_roll_schedule`.
+- Canonical Databento definitions, raw 1-minute bars, statistics, and no-lookahead roll decisions live in the versioned local Parquet/mmap cache. Fresh PostgreSQL schemas omit the older `databento_*` market tables. Upgraded installations may retain them for compatibility; they are never dropped automatically and production backtests do not read them.
 - `projectx_market_candles` remains a compatibility cache for the interactive/live bot workspace and is never a backtest source.
 - Expense rows include `source_id` so imported or generated rows can be deduplicated by source identity without colliding with a manual row that has the same date, amount, category, and account fields.
 
@@ -510,7 +510,7 @@ Typical bot workflow:
 5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
 6. `POST /api/bots/{id}/stop` stops the latest running bot run
 7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
-8. `POST /api/bots/{id}/backtests` loads the requested Databento continuous-root history, resamples it, and runs an order-routing-free deterministic replay
+8. `POST /api/bots/{id}/backtests` binary-slices a prebuilt Databento continuous-root mmap and runs an order-routing-free deterministic replay
 
 Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
 
@@ -553,7 +553,7 @@ The simplest path is:
 2. create backend and frontend env files
 3. install backend and frontend dependencies
 4. apply the schema
-5. import Databento definitions and OHLCV archives for backtesting
+5. build the local Databento Parquet/mmap cache for backtesting
 6. run the root dev command
 
 #### 1. Start PostgreSQL
@@ -608,19 +608,71 @@ npm run db:baseline
 npm run db:check
 ```
 
-#### 5. Import historical backtest data
+#### 5. Build the local Databento backtest cache
 
-Pass the definition and OHLCV ZIPs in either order; the importer verifies every manifest
-hash, processes definitions first, checkpoints large inserts, and is safe to rerun:
+Databento ZIPs are the canonical backtest market-data source. This command discovers the
+ten known MNQ, MES, NQ, and ES jobs in your Downloads folder, validates them, and builds
+partitioned Parquet plus memory-mapped arrays without connecting to PostgreSQL or Supabase:
+
+The Backtest card can select MNQ, MES, NQ, or ES independently for each run. This changes
+only the Databento replay instrument and its contract economics; it never rewrites the
+saved bot's ProjectX trading contract.
 
 ```powershell
-backend\.venv\Scripts\python backend\tools\import_databento.py `
-  "C:\path\to\mnq-ohlcv.zip" `
-  "C:\path\to\mnq-definitions.zip"
+backend\.venv\Scripts\python backend\tools\build_databento_cache.py --downloads
 ```
 
-Only observed MNQ records are stored. The importer rejects pre-launch records and never
-synthesizes history from the batch query's earlier requested start date.
+To build only selected materialized timeframes, repeat `--timeframe` or use commas. The
+1-minute base is always retained, and an unchanged rerun reuses the existing fingerprinted
+cache:
+
+```powershell
+backend\.venv\Scripts\python backend\tools\build_databento_cache.py `
+  --downloads `
+  --timeframe 1m,5m,15m `
+  --timeframe 1h,4h,1d
+```
+
+You can instead pass ZIP paths positionally and select a cache directory with
+`--cache-dir`. Use `--force` only to rebuild the matching immutable version and `--json`
+for automation output.
+
+Application requests never build or rewrite a missing timeframe. Re-run the build tool
+with the required `--timeframe` so cache publication and integrity validation remain an
+explicit offline step.
+
+After building, benchmark a cold mmap open against repeated warm replays. The direct
+benchmark defaults to the same lazy, binary-sliced mmap sequence used by production; it
+does not allocate one Python object per source bar. The tool checks semantic digests
+across every sample and reports input preparation, replay, and cache-stat phases:
+
+```powershell
+backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
+  --root MNQ --timeframe 5m --days 30
+
+backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
+  --root ES --timeframe 1m --days 7 `
+  --profile backend\storage\profiles\databento-warm.prof --json
+
+backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
+  --root MNQ --timeframe 5m --days 30 `
+  --input-mode eager --max-rows 500000 --json
+
+backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
+  --root MNQ --timeframe 5m --days 30 `
+  --cold-repeats 1 --warm-repeats 5 `
+  --sqlite-persistence --json
+```
+
+`--input-mode eager` is an explicit comparison mode that materializes Python candle
+objects; `--max-rows` applies only to that mode. `--sqlite-persistence` additionally
+times `create_bot_backtest` through an in-memory SQLite commit, verifies that its cold
+sample used the canonical lazy mmap source (and not materialization), verifies cold
+result-cache misses and warm hits, and requires identical input fingerprints and
+semantic snapshots for every persisted run.
+
+See `docs/databento-backtest-benchmarks.md` for the checked cold/warm results
+from the supplied archives and the exact benchmark methodology.
 
 #### 6. Run the app
 
@@ -677,9 +729,16 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
 | `BACKTEST_MAX_CONCURRENT_GLOBAL` | Global concurrent backtest limit; defaults to `2` |
-| `BACKTEST_MAX_CONCURRENT_PER_USER` | Per-user concurrent backtest limit; defaults to `1` |
+| `BACKTEST_MAX_CONCURRENT_PER_USER` | Validated per-user backtest setting; the newest Run supersedes and cooperatively cancels that user's active replay, so only one result can persist at a time |
 | `TOPSIGNAL_BACKTEST_MEMORY_BUDGET_BYTES` | Maximum estimated in-memory replay working set; defaults to 1.5 GiB |
+| `TOPSIGNAL_BACKTEST_EVALUATOR_WORK_BUDGET` | Maximum strategy-aware estimated replay work before a run is rejected; defaults to `1000000000` weighted bar visits |
 | `TOPSIGNAL_BACKTEST_MAX_SERIES_POINTS` | Maximum persisted equity/drawdown chart points before deterministic sampling; defaults to `50000` |
+| `TOPSIGNAL_DATABENTO_CACHE_DIR` | Persistent local directory for canonical Databento Parquet and memory-mapped replay artifacts; defaults to `backend/storage/databento` |
+| `TOPSIGNAL_BACKTEST_CACHE_MAX_ENTRIES` | Maximum number of prepared replay entries retained by the in-process LRU; defaults to `8` |
+| `TOPSIGNAL_BACKTEST_CACHE_MAX_BYTES` | Maximum estimated size of the in-process replay LRU; defaults to `536870912` bytes (512 MiB) |
+| `TOPSIGNAL_BACKTEST_PROXY_CACHE_ROWS` | Maximum recently accessed lazy candle proxies retained per opened mmap stream; defaults to `16384` rows |
+| `TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_ENTRIES` | Maximum exact deterministic replay results retained for repeated Run requests; defaults to `8` |
+| `TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_BYTES` | Conservative estimated memory ceiling for cached replay results; defaults to `268435456` bytes (256 MiB) |
 | `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
 | `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
@@ -725,7 +784,7 @@ Frontend auth behavior:
 | `npm --prefix frontend run build` | Production frontend build |
 | `npm --prefix frontend run lint` | Frontend lint |
 | `npm --prefix frontend run test` | Frontend tests |
-| `backend\.venv\Scripts\python -m pytest backend\tests` | Backend tests |
+| `cd backend; .\.venv\Scripts\python -m pytest` | Backend tests |
 
 ## Current Limitations
 

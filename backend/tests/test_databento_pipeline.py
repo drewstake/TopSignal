@@ -20,7 +20,7 @@ from databento_dbn import (
     Schema,
     SecurityUpdateAction,
 )
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import sessionmaker
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -42,6 +42,10 @@ from app.services.databento_ingestion import (
     MNQ_HISTORY_START_UTC,
     DatabentoIngestionError,
     import_databento_archives,
+)
+from app.services.databento_cache import (
+    DatabentoReplayStore,
+    build_databento_cache,
 )
 from app.services.databento_market_data import (
     ROLL_POLICY_VERSION,
@@ -70,6 +74,15 @@ TABLES = [
     BotConfig.__table__,
     BotBacktest.__table__,
 ]
+
+
+@pytest.fixture(autouse=True)
+def enable_relational_databento_sqlite_fixtures(monkeypatch):
+    monkeypatch.setattr(
+        backtesting_module,
+        "ALLOW_LEGACY_DATABENTO_SQLITE_FIXTURES",
+        True,
+    )
 
 
 @pytest.fixture()
@@ -316,6 +329,159 @@ def test_generated_dbn_zstd_archives_import_in_dependency_order_and_are_idempote
     assert db_session.query(DatabentoOhlcv1m).count() == 2
 
 
+def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
+    db_session,
+    tmp_path,
+):
+    source_start = datetime(2024, 3, 4, 13, 30, tzinfo=timezone.utc)
+    definition_archive = _write_dbn_archive(
+        tmp_path / "parity-definition.zip",
+        job_id="parity-definition",
+        schema_name="definition",
+        records=[_definition(instrument_id=101, raw_symbol="MNQM4")],
+    )
+    ohlcv_archive = _write_dbn_archive(
+        tmp_path / "parity-ohlcv.zip",
+        job_id="parity-ohlcv",
+        schema_name="ohlcv-1m",
+        records=[
+            _ohlcv(
+                source_start + timedelta(minutes=index),
+                price_nano=18_000_000_000_000 + index * 250_000_000,
+                volume=10 + index,
+            )
+            for index in range(150)
+        ],
+    )
+
+    # Feed the exact same DBN payloads through the retained SQLite relational
+    # fixture loader and the canonical local builder.
+    import_databento_archives(
+        db_session,
+        [ohlcv_archive, definition_archive],
+        commit_batches=True,
+    )
+    db_session.add(_schedule(trading_day_date(source_start)))
+    db_session.commit()
+    cache_root = tmp_path / "parity-cache"
+    build_databento_cache(
+        [definition_archive, ohlcv_archive],
+        cache_root=cache_root,
+        timeframes=["5m"],
+    )
+    store = DatabentoReplayStore(cache_root, build_missing_timeframes=False)
+
+    load_options = {
+        "max_rows": 100,
+        "user_id": OWNER_ID,
+        "contract_id": CONTRACT_ID,
+        "root_symbol": "MNQ",
+        "unit": "minute",
+        "unit_number": 5,
+        "start": source_start,
+        "end": source_start + timedelta(minutes=150),
+        "closed_by": source_start + timedelta(minutes=150),
+    }
+    relational = load_databento_replay_candles(db_session, **load_options)
+    local = store.open_candles(
+        **{key: value for key, value in load_options.items() if key != "max_rows"}
+    )
+
+    def candle_values(row):
+        return (
+            row.candle_timestamp,
+            row.nominal_close_time,
+            row.open_price,
+            row.high_price,
+            row.low_price,
+            row.close_price,
+            row.volume,
+            row.source_instrument_id,
+            row.source_raw_symbol,
+            row.roll_policy_version,
+        )
+
+    assert [candle_values(row) for row in local] == [
+        candle_values(row) for row in relational
+    ]
+
+    config = BotConfig(
+        id=99,
+        user_id=OWNER_ID,
+        account_id=9001,
+        name="DBN path parity",
+        provider="projectx",
+        enabled=False,
+        execution_mode="dry_run",
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=1,
+        slow_period=2,
+        order_size=1,
+        max_contracts=10,
+        max_daily_loss=100_000,
+        max_trades_per_day=100,
+        max_open_position=10,
+        allowed_contracts=[CONTRACT_ID],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3_600,
+        allow_market_depth=False,
+    )
+    replay_options = {
+        "config": config,
+        "start": source_start,
+        "end": source_start + timedelta(minutes=150),
+        "starting_balance": 25_000.0,
+        "commission_per_contract": 1.25,
+        "slippage_ticks": 1.0,
+        "tick_size": 0.25,
+        "tick_value": 0.50,
+        "force_close_at_end": True,
+    }
+    try:
+        relational_result = backtesting_module.run_backtest(
+            candles=relational,
+            **replay_options,
+        )
+        local_result = backtesting_module.run_backtest(candles=local, **replay_options)
+        assert local_result == relational_result
+
+        # Exercise the TopBot history adapter too: its rolling evaluator
+        # inputs must remain zero-copy mmap slices and still produce the exact
+        # eager/list result.
+        config.strategy_type = "topbot_adaptive"
+        config.lookback_bars = 3
+        config.strategy_params = {
+            "source_strategies": ["sma_cross"],
+            "minimum_directional_votes": 1,
+            "max_opposing_votes": 0,
+            "minimum_confidence": 0,
+            "minimum_score": 0,
+            "minimum_reward_risk": 1,
+        }
+        primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
+        eager_topbot = backtesting_module.run_backtest(
+            candles=relational,
+            replay_streams={primary_key: relational},
+            **replay_options,
+        )
+        lazy_topbot = backtesting_module.run_backtest(
+            candles=local,
+            replay_streams={primary_key: local},
+            **replay_options,
+        )
+        assert lazy_topbot == eager_topbot
+    finally:
+        store.clear()
+
+
 def test_generated_dbn_rejects_mnq_bars_before_the_exchange_launch(db_session, tmp_path):
     definition_archive = _write_dbn_archive(
         tmp_path / "definition.zip",
@@ -475,6 +641,30 @@ def test_replay_loader_enforces_its_in_memory_row_ceiling(db_session):
         )
 
 
+def test_retained_sqlite_market_tables_do_not_override_the_canonical_cache(
+    db_session,
+    monkeypatch,
+):
+    start = datetime(2024, 3, 4, 14, 30, tzinfo=timezone.utc)
+    db_session.add(_instrument())
+    db_session.add(_bar(start))
+    db_session.add(_schedule(trading_day_date(start)))
+    db_session.commit()
+    monkeypatch.setattr(
+        backtesting_module,
+        "ALLOW_LEGACY_DATABENTO_SQLITE_FIXTURES",
+        False,
+    )
+
+    assert (
+        backtesting_module._database_databento_fixture_bounds(
+            db_session,
+            root_symbol="MNQ",
+        )
+        is None
+    )
+
+
 def test_create_bot_backtest_is_deterministic_and_never_reads_projectx(
     db_session,
     monkeypatch,
@@ -568,3 +758,197 @@ def test_create_bot_backtest_is_deterministic_and_never_reads_projectx(
         for warning in first.result_snapshot["warnings"]
     )
     assert db_session.query(BotBacktest).count() == 2
+
+
+def test_create_bot_backtest_uses_only_local_cache_and_persists_without_market_tables(
+    tmp_path,
+    monkeypatch,
+):
+    source_start = datetime(2024, 3, 4, 13, 30, tzinfo=timezone.utc)
+    definition_archive = _write_dbn_archive(
+        tmp_path / "definition.zip",
+        job_id="local-cache-definition",
+        schema_name="definition",
+        records=[_definition(instrument_id=101, raw_symbol="MNQM4")],
+    )
+    ohlcv_archive = _write_dbn_archive(
+        tmp_path / "ohlcv.zip",
+        job_id="local-cache-ohlcv",
+        schema_name="ohlcv-1m",
+        records=[
+            _ohlcv(
+                source_start + timedelta(minutes=index),
+                price_nano=18_000_000_000_000 + index * 250_000_000,
+                volume=10 + index,
+            )
+            for index in range(60)
+        ],
+    )
+    cache_root = tmp_path / "cache"
+    build_databento_cache(
+        [definition_archive, ohlcv_archive],
+        cache_root=cache_root,
+        timeframes=["5m"],
+    )
+    replay_store = DatabentoReplayStore(
+        cache_root,
+        max_entries=2,
+        max_bytes=8 * 1024 * 1024,
+        build_missing_timeframes=False,
+    )
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    persistence_tables = [
+        InstrumentMetadata.__table__,
+        BotConfig.__table__,
+        BotBacktest.__table__,
+    ]
+    Base.metadata.create_all(bind=engine, tables=persistence_tables)
+    assert set(inspect(engine).get_table_names()) == {
+        "instrument_metadata",
+        "bot_configs",
+        "bot_backtests",
+    }
+
+    session = sessionmaker(bind=engine)()
+    market_selects: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _record_market_selects(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        normalized = " ".join(str(statement).upper().split())
+        if normalized.startswith(("SELECT", "WITH")) and (
+            "DATABENTO_" in normalized
+            or "PROJECTX_MARKET_CANDLES" in normalized
+        ):
+            market_selects.append(str(statement))
+
+    def forbidden_market_path(*_args, **_kwargs):
+        raise AssertionError("backtest attempted to use a SQL or ProjectX market loader")
+
+    class ForbiddenProjectXClient:
+        def __getattr__(self, _name):
+            raise AssertionError("backtest attempted to call ProjectX")
+
+    monkeypatch.setattr(
+        backtesting_module,
+        "get_default_databento_cache",
+        lambda: replay_store,
+    )
+    monkeypatch.setattr(
+        replay_store,
+        "load_candles",
+        forbidden_market_path,
+    )
+    monkeypatch.setattr(
+        backtesting_module,
+        "ALLOW_LEGACY_DATABENTO_SQLITE_FIXTURES",
+        False,
+    )
+    for name in (
+        "databento_history_bounds",
+        "load_databento_replay_candles",
+        "_projected_candle_query",
+        "_create_legacy_projectx_bot_backtest",
+        "prepare_bot_backtest_data",
+    ):
+        monkeypatch.setattr(backtesting_module, name, forbidden_market_path)
+    monkeypatch.setattr(
+        backtesting_module.bot_service_module,
+        "fetch_and_store_market_candles",
+        forbidden_market_path,
+    )
+
+    try:
+        session.add(
+            InstrumentMetadata(symbol="MNQ", tick_size=0.25, tick_value=0.50)
+        )
+        config = BotConfig(
+            user_id=OWNER_ID,
+            account_id=9001,
+            name="Local cache only replay",
+            provider="projectx",
+            enabled=False,
+            execution_mode="live",
+            strategy_type="sma_cross",
+            strategy_params={},
+            contract_id=CONTRACT_ID,
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=1,
+            slow_period=2,
+            order_size=1,
+            max_contracts=10,
+            max_daily_loss=100_000,
+            max_trades_per_day=100,
+            max_open_position=10,
+            allowed_contracts=[CONTRACT_ID],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3_600,
+            allow_market_depth=False,
+        )
+        session.add(config)
+        session.commit()
+        payload = BotBacktestIn(
+            starting_balance=25_000,
+            commission_per_contract=1.25,
+            slippage_ticks=1,
+            force_close_at_end=True,
+        )
+        captured_now = source_start + timedelta(hours=2)
+
+        first = backtesting_module.create_bot_backtest(
+            session,
+            user_id=OWNER_ID,
+            bot_config_id=int(config.id),
+            payload=payload,
+            client=ForbiddenProjectXClient(),
+            now=captured_now,
+        )
+        first_fingerprint = first.input_fingerprint
+        first_result = dict(first.result_snapshot)
+        session.commit()
+        monkeypatch.setattr(
+            backtesting_module,
+            "run_backtest",
+            forbidden_market_path,
+        )
+
+        second = backtesting_module.create_bot_backtest(
+            session,
+            user_id=OWNER_ID,
+            bot_config_id=int(config.id),
+            payload=payload,
+            client=ForbiddenProjectXClient(),
+            now=captured_now,
+        )
+        session.commit()
+
+        assert market_selects == []
+        assert session.query(BotBacktest).count() == 2
+        assert first_fingerprint == second.input_fingerprint
+        assert first_result == second.result_snapshot
+        # The first two five-minute bars are intentionally deferred so the
+        # 1/2 SMA evaluator has its required three closed bars.
+        assert first_result["range"]["bar_count"] == 10
+        assert first_result["assumptions"]["historical_source"] == (
+            "databento_local_cache"
+        )
+        # Lazy views reuse the one mapped series; exact reruns are served by
+        # the backtest-result LRU rather than the eager candle-slice LRU.
+        assert replay_store.stats()["mapped_series"] == 1
+    finally:
+        replay_store.clear()
+        session.close()
+        Base.metadata.drop_all(bind=engine, tables=list(reversed(persistence_tables)))
+        engine.dispose()

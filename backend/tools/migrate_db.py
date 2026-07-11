@@ -17,7 +17,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 LEDGER_TABLE = "topsignal_schema_migrations"
 LOCK_NAME = "topsignal-schema-migrations-v1"
-CURRENT_SCHEMA_BASELINE = "schema-20260711-v1"
+CURRENT_SCHEMA_BASELINE = "schema-20260711-v2"
+LEGACY_DATABENTO_TABLE_NAMES = frozenset(
+    {
+        "databento_import_batches",
+        "databento_import_files",
+        "databento_instruments",
+        "databento_ohlcv_1m",
+        "databento_roll_schedule",
+    }
+)
+# This historical migration remains checksum-tracked for installations that
+# already applied it. New upgrades record it without executing its relational
+# market-table DDL, so existing tables are preserved but never recreated.
+RETIRED_NOOP_MIGRATIONS = frozenset(
+    {"20260711_add_databento_historical_market_data.sql"}
+)
 BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
     "accounts": {"user_id", "external_id", "balance", "account_state", "can_trade"},
     "provider_credentials": {"user_id", "username_encrypted", "api_key_encrypted"},
@@ -29,64 +44,9 @@ BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
     "bot_runs": {"last_evaluated_at", "last_error"},
     "bot_decisions": {"correlation_id", "idempotency_key"},
     "bot_order_attempts": {"execution_mode", "correlation_id", "idempotency_key"},
-    "databento_import_batches": {
-        "job_id",
-        "archive_sha256",
-        "dataset",
-        "schema_name",
-        "status",
-        "manifest_json",
-    },
-    "databento_import_files": {
-        "batch_id",
-        "filename",
-        "file_sha256",
-        "schema_name",
-        "status",
-    },
-    "databento_instruments": {
-        "dataset",
-        "instrument_id",
-        "raw_symbol",
-        "root_symbol",
-        "expiration",
-        "definition_ts",
-        "source_file_sha256",
-    },
-    "databento_ohlcv_1m": {
-        "dataset",
-        "instrument_id",
-        "ts_event",
-        "trading_date",
-        "open_nano",
-        "high_nano",
-        "low_nano",
-        "close_nano",
-        "volume",
-        "source_file_sha256",
-    },
-    "databento_roll_schedule": {
-        "root_symbol",
-        "trading_date",
-        "dataset",
-        "instrument_id",
-        "decision_session_date",
-        "from_instrument_id",
-        "current_volume",
-        "candidate_volume",
-        "policy_version",
-    },
     "topsignal_schema_baselines": {"version", "created_at"},
 }
 BASELINE_REQUIRED_INDEXES = {
-    "databento_instruments_pkey",
-    "databento_ohlcv_1m_pkey",
-    "databento_roll_schedule_pkey",
-    "idx_databento_instruments_root_expiration",
-    "idx_databento_ohlcv_1m_trading_date",
-    "idx_databento_roll_schedule_instrument_date",
-    "uq_databento_import_batches_archive_sha256",
-    "uq_databento_import_files_batch_filename",
     "uq_bot_order_attempts_idempotency_key",
     "uq_bot_runs_one_running_per_config",
 }
@@ -253,10 +213,12 @@ def _current_model_manifest() -> tuple[dict[str, set[str]], set[str]]:
     columns = {
         table.name: {column.name for column in table.columns}
         for table in Base.metadata.tables.values()
+        if table.name not in LEGACY_DATABENTO_TABLE_NAMES
     }
     indexes = {
         index.name
         for table in Base.metadata.tables.values()
+        if table.name not in LEGACY_DATABENTO_TABLE_NAMES
         for index in table.indexes
         if index.name
     }
@@ -277,6 +239,8 @@ def _current_model_uniqueness_manifest() -> tuple[
     constraints: list[tuple[str, tuple[str, ...]]] = []
     unique_indexes: dict[str, tuple[str, tuple[str, ...], bool]] = {}
     for table in Base.metadata.tables.values():
+        if table.name in LEGACY_DATABENTO_TABLE_NAMES:
+            continue
         for constraint in table.constraints:
             if isinstance(constraint, UniqueConstraint):
                 constraints.append(
@@ -518,11 +482,16 @@ def migration_status(
                 return 0
 
             for path in pending:
-                sql = path.read_text(encoding="utf-8")
                 checksum = _checksum(path)
-                print(f"Applying {path.name}...")
+                retired = path.name in RETIRED_NOOP_MIGRATIONS
+                if retired:
+                    print(f"Recording retired no-op {path.name}...")
+                else:
+                    print(f"Applying {path.name}...")
                 with connection.transaction():
-                    connection.execute(sql, prepare=False)
+                    if not retired:
+                        sql = path.read_text(encoding="utf-8")
+                        connection.execute(sql, prepare=False)
                     connection.execute(
                         f"insert into {LEDGER_TABLE} (version, checksum_sha256) values (%s, %s)",
                         (path.name, checksum),

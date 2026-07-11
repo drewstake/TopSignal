@@ -208,6 +208,7 @@ from .services.bot_service import (
 )
 from .services.bot_backtesting import (
     BacktestError,
+    BacktestSupersededError,
     InsufficientBacktestDataError,
     MalformedBacktestDataError,
     UnsupportedBacktestStrategyError,
@@ -226,13 +227,13 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260711_add_databento_historical_market_data.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260711-v1"
+_REQUIRED_SCHEMA_MIGRATION = "20260711_seed_nq_es_instrument_metadata.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260711-v2"
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0
-_backtest_active_by_user: dict[str, int] = {}
+_backtest_active_by_user: dict[str, "_BacktestCapacityLease"] = {}
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
@@ -247,19 +248,26 @@ class _BacktestCapacityLease:
     def __init__(self, user_id: str):
         self.user_id = user_id
         self.released = False
+        self.cancel_event = Event()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    def is_cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+    def _release_locked(self) -> None:
+        global _backtest_active_total
+        if self.released:
+            return
+        self.released = True
+        _backtest_active_total = max(0, _backtest_active_total - 1)
+        if _backtest_active_by_user.get(self.user_id) is self:
+            _backtest_active_by_user.pop(self.user_id, None)
 
     def release(self) -> None:
-        global _backtest_active_total
         with _backtest_capacity_lock:
-            if self.released:
-                return
-            self.released = True
-            _backtest_active_total = max(0, _backtest_active_total - 1)
-            remaining = _backtest_active_by_user.get(self.user_id, 0) - 1
-            if remaining > 0:
-                _backtest_active_by_user[self.user_id] = remaining
-            else:
-                _backtest_active_by_user.pop(self.user_id, None)
+            self._release_locked()
 
 
 def _backtest_capacity_limit(name: str, default: int) -> int:
@@ -276,18 +284,25 @@ def _backtest_capacity_limit(name: str, default: int) -> int:
 def _acquire_backtest_capacity(user_id: str) -> _BacktestCapacityLease:
     global _backtest_active_total
     global_limit = _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
-    per_user_limit = _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
+    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
     with _backtest_capacity_lock:
-        user_active = _backtest_active_by_user.get(user_id, 0)
-        if _backtest_active_total >= global_limit or user_active >= per_user_limit:
+        existing = _backtest_active_by_user.get(user_id)
+        if existing is not None:
+            # A newer Run supersedes this user's older worker. Release its
+            # accounting immediately; cooperative checks stop it before it can
+            # persist a partial or stale result.
+            existing.cancel()
+            existing._release_locked()
+        if _backtest_active_total >= global_limit:
             raise HTTPException(
                 status_code=429,
                 detail="backtest_capacity_exhausted",
                 headers={"Retry-After": "5"},
             )
+        lease = _BacktestCapacityLease(user_id)
         _backtest_active_total += 1
-        _backtest_active_by_user[user_id] = user_active + 1
-    return _BacktestCapacityLease(user_id)
+        _backtest_active_by_user[user_id] = lease
+    return lease
 
 
 @asynccontextmanager
@@ -423,52 +438,9 @@ def readiness(db: Session = Depends(get_db)):
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
-            "databento_import_batches",
-            "databento_import_files",
-            "databento_instruments",
-            "databento_ohlcv_1m",
-            "databento_roll_schedule",
         }
         if not required_tables.issubset(table_names):
             raise RuntimeError("schema_outdated")
-        required_databento_columns = {
-            "databento_import_batches": {"archive_sha256", "status", "manifest_json"},
-            "databento_import_files": {"batch_id", "filename", "file_sha256", "status"},
-            "databento_instruments": {
-                "dataset",
-                "instrument_id",
-                "raw_symbol",
-                "root_symbol",
-                "definition_ts",
-            },
-            "databento_ohlcv_1m": {
-                "dataset",
-                "instrument_id",
-                "ts_event",
-                "trading_date",
-                "open_nano",
-                "high_nano",
-                "low_nano",
-                "close_nano",
-                "volume",
-                "source_file_sha256",
-            },
-            "databento_roll_schedule": {
-                "root_symbol",
-                "trading_date",
-                "instrument_id",
-                "decision_session_date",
-                "current_volume",
-                "candidate_volume",
-                "policy_version",
-            },
-        }
-        for table_name, required_columns in required_databento_columns.items():
-            available_columns = {
-                column["name"] for column in schema.get_columns(table_name)
-            }
-            if not required_columns.issubset(available_columns):
-                raise RuntimeError("schema_outdated")
         attempt_column_rows = schema.get_columns("bot_order_attempts")
         attempt_columns = {column["name"] for column in attempt_column_rows}
         if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
@@ -1929,7 +1901,8 @@ def create_trading_bot_backtest(
         )
         client = (
             _projectx_client_for_user(db, user_id=user_id)
-            if str(config.strategy_type) == "topbot_adaptive" and use_legacy_sqlite_fixture
+            if str(payload.strategy_type or config.strategy_type) == "topbot_adaptive"
+            and use_legacy_sqlite_fixture
             else None
         )
         row = create_bot_backtest(
@@ -1938,7 +1911,10 @@ def create_trading_bot_backtest(
             bot_config_id=bot_config_id,
             payload=payload,
             client=client,
+            cancellation_callback=capacity_lease.is_cancelled,
         )
+        if capacity_lease.is_cancelled():
+            raise BacktestSupersededError("backtest_superseded_by_newer_run")
         db.commit()
     except ProjectXClientError as exc:
         db.rollback()
@@ -1952,6 +1928,9 @@ def create_trading_bot_backtest(
     except (InsufficientBacktestDataError, MalformedBacktestDataError) as exc:
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BacktestSupersededError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except BacktestError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2016,7 +1995,8 @@ def _stream_trading_bot_backtest(
                         )
                         client = (
                             _projectx_client_for_user(worker_db, user_id=user_id)
-                            if str(config.strategy_type) == "topbot_adaptive"
+                            if str(payload.strategy_type or config.strategy_type)
+                            == "topbot_adaptive"
                             and use_legacy_sqlite_fixture
                             else None
                         )
@@ -2027,7 +2007,12 @@ def _stream_trading_bot_backtest(
                             payload=payload,
                             client=client,
                             progress_callback=report_progress,
+                            cancellation_callback=capacity_lease.is_cancelled,
                         )
+                        if capacity_lease.is_cancelled():
+                            raise BacktestSupersededError(
+                                "backtest_superseded_by_newer_run"
+                            )
                         worker_db.commit()
                         report_progress(
                             {
@@ -2098,6 +2083,8 @@ def _backtest_stream_error(exc: Exception) -> dict[str, object]:
         return {"status": 404, "detail": str(exc)}
     if isinstance(exc, UnsupportedBacktestStrategyError):
         return {"status": 400, "detail": str(exc)}
+    if isinstance(exc, BacktestSupersededError):
+        return {"status": 409, "detail": str(exc)}
     if isinstance(exc, (InsufficientBacktestDataError, MalformedBacktestDataError)):
         return {"status": 422, "detail": str(exc)}
     if isinstance(exc, BacktestError):

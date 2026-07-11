@@ -125,7 +125,12 @@ Current migration list:
 20260710_enforce_bot_quantity_safety.sql
 20260710_preserve_bot_order_attempt_audit.sql
 20260711_add_databento_historical_market_data.sql
+20260711_seed_nq_es_instrument_metadata.sql
 ```
+
+`20260711_add_databento_historical_market_data.sql` remains in the checksummed
+ledger for installations that already applied it, but the migration runner
+records it as a retired no-op when it is still pending.
 
 Legacy manual PowerShell application loop (recovery/debugging only; prefer the
 migration runner above):
@@ -173,7 +178,7 @@ $migrations = @(
   "20260710_add_cached_account_balance.sql",
   "20260710_enforce_bot_quantity_safety.sql",
   "20260710_preserve_bot_order_attempt_audit.sql",
-  "20260711_add_databento_historical_market_data.sql"
+  "20260711_seed_nq_es_instrument_metadata.sql"
 )
 
 foreach ($name in $migrations) {
@@ -223,10 +228,10 @@ select count(*) from projectx_trade_events;
 select count(*) from journal_entries;
 select count(*) from expenses;
 select count(*) from payouts;
-select count(*) from databento_instruments;
-select count(*) from databento_ohlcv_1m;
-select count(*) from databento_roll_schedule;
 ```
+
+Only upgraded installations that already retain the optional legacy
+`databento_*` compatibility tables can query those tables directly.
 
 Recent trade-event sample:
 
@@ -240,6 +245,6 @@ limit 20;
 ## Notes
 
 - This repo does not include `db/seed.sql`
-- Databento is the historical market-data source for backtests; its raw one-minute bars use integer nanounit prices
+- Databento is the historical market-data source for backtests; canonical raw bars, rolls, and mmap timeframes are local cache artifacts. Fresh schemas omit the retired relational market tables, while upgraded installations retain any existing `databento_*` tables untouched and production replay never queries them
 - ProjectX remains the account, execution, position, journaling, analytics, and order-routing source
 - The legacy `trades` table still exists for old `/metrics/*` routes

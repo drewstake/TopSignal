@@ -3,6 +3,8 @@ import type {
   BotBacktestEquityPoint,
   BotBacktestInput,
   BotBacktestProgress,
+  BotBacktestInstrument,
+  BotStrategyType,
 } from "../../lib/types";
 
 export const BACKTEST_CHART_WIDTH = 720;
@@ -13,6 +15,8 @@ export const BACKTEST_DRAWDOWN_HEIGHT = 58;
 export const BACKTEST_MAX_RENDERED_CHART_POINTS = 2_000;
 
 export interface BotBacktestFormState {
+  strategyType: BotStrategyType;
+  instrument: BotBacktestInstrument;
   startingBalance: string;
   commissionPerContract: string;
   slippageTicks: string;
@@ -97,6 +101,8 @@ export function validateBacktestForm(form: BotBacktestFormState): string | null 
 
 export function buildBacktestPayload(form: BotBacktestFormState): BotBacktestInput {
   return {
+    strategy_type: form.strategyType,
+    instrument: form.instrument,
     starting_balance: Number(form.startingBalance),
     commission_per_contract: Number(form.commissionPerContract),
     slippage_ticks: Number(form.slippageTicks),

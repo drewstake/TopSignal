@@ -146,6 +146,12 @@ describe("BotBacktestPanel", () => {
     const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} />);
 
     expect(markup).toContain("Run Full History Backtest");
+    expect(markup).toContain("Backtest strategy");
+    expect(markup).toContain("Instrument");
+    expect(markup).toContain("MNQ — Micro Nasdaq-100");
+    expect(markup).toContain("ES — E-mini S&amp;P 500");
+    expect(markup).toContain("TopBot Adaptive (all configured sources)");
+    expect(markup).toContain("SMA Cross");
     expect(markup).toContain("No order routing");
     expect(markup).not.toContain("Start date");
     expect(markup).not.toContain("End date");

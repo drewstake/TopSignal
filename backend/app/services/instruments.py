@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..models import InstrumentMetadata
 
 POINTS_BASIS_AUTO = "auto"
-POINTS_BASIS_SYMBOLS = ("MNQ", "MES", "MGC", "SIL")
+POINTS_BASIS_SYMBOLS = ("MNQ", "MES", "NQ", "ES", "MGC", "SIL")
 _POINTS_BASIS_SYMBOL_SET = set(POINTS_BASIS_SYMBOLS)
 
 _CONTRACT_SUFFIX_PATTERN = re.compile(r"^([A-Z0-9]+?)[FGHJKMNQUVXZ]\d{1,4}$", re.IGNORECASE)
@@ -34,6 +34,8 @@ class InstrumentSpec:
 DEFAULT_INSTRUMENT_SPECS: dict[str, InstrumentSpec] = {
     "MNQ": InstrumentSpec(symbol="MNQ", tick_size=0.25, tick_value=0.50),
     "MES": InstrumentSpec(symbol="MES", tick_size=0.25, tick_value=1.25),
+    "NQ": InstrumentSpec(symbol="NQ", tick_size=0.25, tick_value=5.00),
+    "ES": InstrumentSpec(symbol="ES", tick_size=0.25, tick_value=12.50),
     "MGC": InstrumentSpec(symbol="MGC", tick_size=0.10, tick_value=1.00),
     "SIL": InstrumentSpec(symbol="SIL", tick_size=0.005, tick_value=5.00),
 }

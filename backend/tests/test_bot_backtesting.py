@@ -191,6 +191,8 @@ def _run(
     tick_value: float = 1,
     force_close_at_end: bool = True,
     replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancellation_callback: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     first = min(_utc(row.candle_timestamp) for row in candles)
     last = max(_utc(row.candle_timestamp) for row in candles)
@@ -207,6 +209,8 @@ def _run(
         force_close_at_end=force_close_at_end,
         signal_evaluator=evaluator,
         replay_streams=replay_streams,
+        progress_callback=progress_callback,
+        cancellation_callback=cancellation_callback,
     )
 
 
@@ -374,31 +378,98 @@ def test_streamed_backtest_does_not_reserve_capacity_before_worker_starts(monkey
         lease.release()
 
 
-def test_backtest_capacity_limits_global_and_per_user(monkeypatch):
+def test_backtest_capacity_supersedes_same_user_and_limits_global(monkeypatch):
     monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_GLOBAL", "2")
     monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_PER_USER", "1")
     first = main_module._acquire_backtest_capacity(OWNER_ID)
     second = None
     replacement = None
+    final = None
     try:
-        with pytest.raises(HTTPException) as per_user_error:
-            main_module._acquire_backtest_capacity(OWNER_ID)
-        assert per_user_error.value.status_code == 429
-        assert per_user_error.value.headers == {"Retry-After": "5"}
+        replacement = main_module._acquire_backtest_capacity(OWNER_ID)
+        assert first.is_cancelled() is True
+        assert first.released is True
+        assert replacement.is_cancelled() is False
 
         second = main_module._acquire_backtest_capacity(OTHER_USER_ID)
         with pytest.raises(HTTPException) as global_error:
-            main_module._acquire_backtest_capacity("22222222-2222-2222-2222-222222222222")
+            main_module._acquire_backtest_capacity("33333333-3333-3333-3333-333333333333")
         assert global_error.value.status_code == 429
 
-        first.release()
-        replacement = main_module._acquire_backtest_capacity(OWNER_ID)
+        replacement.release()
+        final = main_module._acquire_backtest_capacity(OWNER_ID)
     finally:
         first.release()
         if second is not None:
             second.release()
         if replacement is not None:
             replacement.release()
+        if final is not None:
+            final.release()
+
+
+def test_backtest_cooperatively_stops_when_superseded():
+    bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100 + index)
+        for index in range(10)
+    ]
+    cancelled = False
+
+    def progress(event: dict[str, Any]) -> None:
+        nonlocal cancelled
+        if event.get("phase") == "replaying" and int(event.get("completed") or 0) >= 2:
+            cancelled = True
+
+    with pytest.raises(
+        backtesting_module.BacktestSupersededError,
+        match="backtest_superseded_by_newer_run",
+    ):
+        _run(
+            bars,
+            evaluator=_hold,
+            progress_callback=progress,
+            cancellation_callback=lambda: cancelled,
+        )
+
+
+def test_backtest_strategy_override_does_not_mutate_saved_config():
+    config = _config(
+        strategy_type="topbot_adaptive",
+        strategy_params={
+            "source_strategy_params": {
+                "ema_trend_pullback": {"rsi_period": 9},
+            }
+        },
+    )
+    payload = BotBacktestIn(strategy_type="ema_trend_pullback")
+
+    effective = backtesting_module._config_for_backtest_request(config, payload)
+
+    assert effective is not config
+    assert effective.strategy_type == "ema_trend_pullback"
+    assert effective.strategy_params["rsi_period"] == 9
+    assert config.strategy_type == "topbot_adaptive"
+    assert config.strategy_params["source_strategy_params"]["ema_trend_pullback"] == {
+        "rsi_period": 9
+    }
+
+
+def test_backtest_instrument_override_does_not_mutate_saved_config():
+    config = _config(
+        strategy_type="sma_cross",
+        symbol="MNQ",
+        contract_id="CON.F.US.MNQ.M26",
+    )
+    payload = BotBacktestIn(instrument="ES")
+
+    effective = backtesting_module._config_for_backtest_request(config, payload)
+
+    assert effective is not config
+    assert effective.symbol == "ES"
+    assert effective.contract_id == "DATABENTO.CONTINUOUS.ES"
+    assert effective.strategy_type == "sma_cross"
+    assert config.symbol == "MNQ"
+    assert config.contract_id == "CON.F.US.MNQ.M26"
 
 
 def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
@@ -1887,7 +1958,17 @@ def test_backtest_range_reports_actual_stored_coverage():
 def test_topbot_replay_has_an_adapter_for_every_default_source(monkeypatch):
     config = _config(
         strategy_type="topbot_adaptive",
-        strategy_params={},
+        strategy_params={
+            # Keep the VWAP-gap adapter inside its actionable window for this
+            # dispatch-coverage test; production replay deliberately bypasses
+            # its expensive 2,000-bar scan outside that window.
+            "source_strategy_params": {
+                "vwap_gap_retrace": {
+                    "wait_start_minutes": 30,
+                    "wait_end_minutes": 45,
+                }
+            }
+        },
         lookback_bars=25,
         trading_start_time="10:00",
     )
@@ -3305,3 +3386,156 @@ def test_cache_coverage_budget_includes_retained_primary_rows(
             warmup_bars=1,
             reserved_replay_rows=1,
         )
+
+
+def test_topbot_auxiliary_cache_corruption_is_a_configuration_error(monkeypatch):
+    primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
+    auxiliary_key = "benchmark:synthetic"
+    specs = {
+        primary_key: backtesting_module._TopBotReplayStreamSpec(
+            key=primary_key,
+            unit="minute",
+            unit_number=5,
+            warmup_bars=25,
+            contract_id=CONTRACT_ID,
+            symbol="MNQ",
+        ),
+        auxiliary_key: backtesting_module._TopBotReplayStreamSpec(
+            key=auxiliary_key,
+            unit="minute",
+            unit_number=5,
+            warmup_bars=25,
+            contract_id="CON.F.US.MES.M26",
+            symbol="MES",
+        ),
+    }
+    monkeypatch.setattr(backtesting_module, "_topbot_stream_specs", lambda _config: specs)
+
+    class StaleAuxiliaryStore:
+        def history_bounds(self, _root):
+            return BASE_TIME - timedelta(days=2), BASE_TIME + timedelta(days=2)
+
+        def open_candles(self, **_kwargs):
+            raise backtesting_module.DatabentoCacheStaleError(
+                "databento_source_changed"
+            )
+
+    window = backtesting_module._ResolvedBacktestWindow(
+        requested_start=BASE_TIME,
+        requested_end=BASE_TIME + timedelta(hours=1),
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(hours=1),
+        full_history=False,
+    )
+    config = SimpleNamespace(timeframe_unit="minute", timeframe_unit_number=5)
+
+    with pytest.raises(
+        backtesting_module.BacktestConfigurationError,
+        match="databento_source_changed",
+    ):
+        backtesting_module._load_databento_topbot_replay_streams(
+            object(),
+            user_id=OWNER_ID,
+            config=config,
+            root_symbol="MNQ",
+            window=window,
+            closed_by=window.end,
+            primary_rows=[],
+            max_rows=1_000,
+            replay_store=StaleAuxiliaryStore(),
+        )
+
+
+def test_topbot_lazy_auxiliary_open_ignores_retired_aggregate_row_ceiling(monkeypatch):
+    primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
+    auxiliary_key = "asset:minute:1"
+    auxiliary_contract = "CON.F.US.MNQ.M26"
+    specs = {
+        primary_key: backtesting_module._TopBotReplayStreamSpec(
+            key=primary_key,
+            unit="minute",
+            unit_number=5,
+            warmup_bars=25,
+            contract_id=CONTRACT_ID,
+            symbol="MNQ",
+        ),
+        auxiliary_key: backtesting_module._TopBotReplayStreamSpec(
+            key=auxiliary_key,
+            unit="minute",
+            unit_number=1,
+            warmup_bars=25,
+            contract_id=auxiliary_contract,
+            symbol="MNQ",
+        ),
+    }
+    monkeypatch.setattr(backtesting_module, "_topbot_stream_specs", lambda _config: specs)
+    auxiliary_rows = backtesting_module._ClosedCandleList(
+        _candle(
+            BASE_TIME + timedelta(minutes=index),
+            contract_id=auxiliary_contract,
+            unit="minute",
+            unit_number=1,
+        )
+        for index in range(3)
+    )
+    opened: list[dict] = []
+
+    class LazyAuxiliaryStore:
+        def history_bounds(self, _root):
+            return BASE_TIME - timedelta(days=2), BASE_TIME + timedelta(days=2)
+
+        def open_candles(self, **kwargs):
+            # The lazy API deliberately has no max_rows argument. Previously
+            # this request received max_rows-total_rows == 1 and failed.
+            assert "max_rows" not in kwargs
+            opened.append(kwargs)
+            return auxiliary_rows
+
+        def load_candles(self, **_kwargs):
+            raise AssertionError("TopBot local replay must not materialize auxiliary history")
+
+    window = backtesting_module._ResolvedBacktestWindow(
+        requested_start=BASE_TIME,
+        requested_end=BASE_TIME + timedelta(hours=1),
+        start=BASE_TIME,
+        end=BASE_TIME + timedelta(hours=1),
+        full_history=False,
+    )
+    config = SimpleNamespace(timeframe_unit="minute", timeframe_unit_number=5)
+    primary_rows = backtesting_module._ClosedCandleList(
+        _candle(BASE_TIME + timedelta(minutes=5 * index)) for index in range(4)
+    )
+
+    streams = backtesting_module._load_databento_topbot_replay_streams(
+        object(),
+        user_id=OWNER_ID,
+        config=config,
+        root_symbol="MNQ",
+        window=window,
+        closed_by=window.end,
+        primary_rows=primary_rows,
+        max_rows=5,
+        replay_store=LazyAuxiliaryStore(),
+    )
+
+    assert opened
+    assert streams[auxiliary_key] is auxiliary_rows
+
+
+def test_backtest_result_lru_is_bounded_and_returns_defensive_copies(monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_ENTRIES", "1")
+    monkeypatch.setenv("TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_BYTES", "10000")
+    cache = backtesting_module._BacktestResultLru()
+    first = {"range": {"bar_count": 2}, "trades": []}
+    second = {"range": {"bar_count": 3}, "trades": []}
+
+    cache.put("first", first)
+    loaded = cache.get("first")
+    assert loaded == first
+    assert loaded is not first
+    loaded["range"]["bar_count"] = 999
+    assert cache.get("first")["range"]["bar_count"] == 2
+
+    cache.put("second", second)
+    assert cache.get("first") is None
+    assert cache.get("second") == second

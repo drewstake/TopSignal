@@ -10,11 +10,13 @@ def test_normalize_points_basis_accepts_auto_and_known_symbols():
     assert normalize_points_basis("auto") == "auto"
     assert normalize_points_basis("mnq") == "MNQ"
     assert normalize_points_basis("MES") == "MES"
+    assert normalize_points_basis("nq") == "NQ"
+    assert normalize_points_basis("ES") == "ES"
 
 
 def test_normalize_points_basis_rejects_unknown_values():
     try:
-        normalize_points_basis("NQ")
+        normalize_points_basis("CL")
     except ValueError as exc:
         assert "pointsBasis must be one of" in str(exc)
     else:
@@ -33,3 +35,17 @@ def test_resolve_point_value_supports_contract_id_symbol_variants():
 
     assert from_symbol == 10.0
     assert from_contract_id == 5.0
+
+
+def test_default_instrument_specs_include_micro_and_emini_index_contracts():
+    expected = {
+        "MNQ": (0.25, 0.50, 2.0),
+        "MES": (0.25, 1.25, 5.0),
+        "NQ": (0.25, 5.00, 20.0),
+        "ES": (0.25, 12.50, 50.0),
+    }
+
+    for symbol, (tick_size, tick_value, point_value) in expected.items():
+        spec = DEFAULT_INSTRUMENT_SPECS[symbol]
+        assert (spec.tick_size, spec.tick_value) == (tick_size, tick_value)
+        assert spec.point_value == point_value

@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
 from threading import Event, Lock
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
+
+import numpy as np
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -3510,8 +3512,8 @@ def evaluate_ema_trend_pullback(
 
 def evaluate_fvg_sweep_mss(
     *,
-    fvg_candles: list[ProjectXMarketCandle],
-    structure_candles: list[ProjectXMarketCandle],
+    fvg_candles: Sequence[ProjectXMarketCandle],
+    structure_candles: Sequence[ProjectXMarketCandle],
     strategy_params: dict[str, Any] | None = None,
 ) -> SignalResult:
     params = _normalize_strategy_params(_STRATEGY_FVG_SWEEP_MSS, strategy_params)
@@ -3599,8 +3601,8 @@ def evaluate_fvg_sweep_mss(
 def _evaluate_single_fvg_gap(
     *,
     gap: FairValueGapZone,
-    fvg_closed: list[ProjectXMarketCandle],
-    structure_closed: list[ProjectXMarketCandle],
+    fvg_closed: Sequence[ProjectXMarketCandle],
+    structure_closed: Sequence[ProjectXMarketCandle],
     supports: list[SupportResistanceLevel],
     resistances: list[SupportResistanceLevel],
     params: dict[str, Any],
@@ -3637,9 +3639,9 @@ def _evaluate_single_fvg_gap(
                 False,
             )
 
-    structure_start_index = next(
-        (index for index, candle in enumerate(structure_closed) if _as_utc(candle.candle_timestamp) > gap.timestamp),
-        None,
+    structure_start_index = _first_candle_index_after_timestamp(
+        structure_closed,
+        gap.timestamp,
     )
     if structure_start_index is None:
         return (
@@ -3662,10 +3664,42 @@ def _evaluate_single_fvg_gap(
     structure_level: SupportResistanceLevel | None = None
     touched_gap = False
 
-    for index in range(len(structure_closed) - 1, structure_start_index - 1, -1):
-        candle = structure_closed[index]
-        if not _candle_intersects_fvg(candle, gap):
-            continue
+    mmap_open_prices = _mmap_price_values(structure_closed, "open_nano_values")
+    mmap_high_prices = _mmap_price_values(structure_closed, "high_nano_values")
+    mmap_low_prices = _mmap_price_values(structure_closed, "low_nano_values")
+    mmap_close_prices = _mmap_price_values(structure_closed, "close_nano_values")
+    mmap_ohlc = (
+        mmap_open_prices,
+        mmap_high_prices,
+        mmap_low_prices,
+        mmap_close_prices,
+    )
+    has_mmap_ohlc = all(values is not None for values in mmap_ohlc)
+    if has_mmap_ohlc:
+        assert mmap_high_prices is not None
+        assert mmap_low_prices is not None
+        intersecting = np.flatnonzero(
+            (mmap_high_prices[structure_start_index:] >= gap.lower_price)
+            & (mmap_low_prices[structure_start_index:] <= gap.upper_price)
+        )
+        candidate_indexes: Iterable[int] = (
+            int(relative_index) + structure_start_index
+            for relative_index in reversed(intersecting)
+        )
+    else:
+        candidate_indexes = range(
+            len(structure_closed) - 1,
+            structure_start_index - 1,
+            -1,
+        )
+
+    for index in candidate_indexes:
+        if not has_mmap_ohlc:
+            candle = structure_closed[index]
+            if not _candle_intersects_fvg(candle, gap):
+                continue
+        else:
+            candle = None
         touched_gap = True
         if gap.side == "bullish":
             level = _latest_prior_swing(
@@ -3673,9 +3707,34 @@ def _evaluate_single_fvg_gap(
                 before_index=index,
                 max_age=recent_swing_max_age,
             )
-            if level is None or float(candle.low_price) >= level.price:
+            candle_low = (
+                float(mmap_low_prices[index])
+                if mmap_low_prices is not None
+                else float(candle.low_price)
+            )
+            if level is None or candle_low >= level.price:
                 continue
-            if not _has_rejection_wick(candle, side="bullish", gap=gap, reference_price=level.price):
+            rejected = (
+                _has_rejection_wick_values(
+                    open_price=float(mmap_open_prices[index]),
+                    high_price=float(mmap_high_prices[index]),
+                    low_price=candle_low,
+                    close_price=float(mmap_close_prices[index]),
+                    side="bullish",
+                    gap=gap,
+                    reference_price=level.price,
+                )
+                if mmap_open_prices is not None
+                and mmap_high_prices is not None
+                and mmap_close_prices is not None
+                else _has_rejection_wick(
+                    candle,
+                    side="bullish",
+                    gap=gap,
+                    reference_price=level.price,
+                )
+            )
+            if not rejected:
                 continue
             opposing = _latest_prior_swing(levels=resistances, before_index=index)
             fallback = _fallback_structure_level(structure_closed, start_index=structure_start_index, end_index=index, side="bullish")
@@ -3685,9 +3744,34 @@ def _evaluate_single_fvg_gap(
                 before_index=index,
                 max_age=recent_swing_max_age,
             )
-            if level is None or float(candle.high_price) <= level.price:
+            candle_high = (
+                float(mmap_high_prices[index])
+                if mmap_high_prices is not None
+                else float(candle.high_price)
+            )
+            if level is None or candle_high <= level.price:
                 continue
-            if not _has_rejection_wick(candle, side="bearish", gap=gap, reference_price=level.price):
+            rejected = (
+                _has_rejection_wick_values(
+                    open_price=float(mmap_open_prices[index]),
+                    high_price=candle_high,
+                    low_price=float(mmap_low_prices[index]),
+                    close_price=float(mmap_close_prices[index]),
+                    side="bearish",
+                    gap=gap,
+                    reference_price=level.price,
+                )
+                if mmap_open_prices is not None
+                and mmap_low_prices is not None
+                and mmap_close_prices is not None
+                else _has_rejection_wick(
+                    candle,
+                    side="bearish",
+                    gap=gap,
+                    reference_price=level.price,
+                )
+            )
+            if not rejected:
                 continue
             opposing = _latest_prior_swing(levels=supports, before_index=index)
             fallback = _fallback_structure_level(structure_closed, start_index=structure_start_index, end_index=index, side="bearish")
@@ -3835,7 +3919,125 @@ def _evaluate_single_fvg_gap(
     )
 
 
-def _detect_fair_value_gaps(candles: list[ProjectXMarketCandle]) -> list[FairValueGapZone]:
+_NANO_PRICE_SCALE = 1_000_000_000
+
+
+def _mmap_replay_array(candles: Any, attribute: str) -> np.ndarray | None:
+    """Return a verified zero-copy replay column without affecting live inputs."""
+
+    if not (
+        getattr(candles, "_topsignal_mmap_backed", False)
+        and getattr(candles, "_topsignal_verified_replay", False)
+    ):
+        return None
+    try:
+        values = getattr(candles, attribute)
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+    if not isinstance(values, np.ndarray) or values.ndim != 1:
+        return None
+    if len(values) != len(candles):
+        return None
+    return values
+
+
+def _mmap_price_values(candles: Any, attribute: str) -> np.ndarray | None:
+    nano_values = _mmap_replay_array(candles, attribute)
+    if nano_values is None:
+        return None
+    cache = _sequence_indicator_cache(candles)
+    cache_key = ("mmap_price_values", attribute)
+    if cache is not None:
+        cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
+        if cached is not _INDICATOR_CACHE_MISS:
+            return cached
+    values = nano_values.astype(np.float64, copy=False) / _NANO_PRICE_SCALE
+    if cache is not None:
+        cache[cache_key] = values
+    return values
+
+
+def _datetime_from_epoch_ns(value: int) -> datetime:
+    seconds, nanos = divmod(int(value), _NANO_PRICE_SCALE)
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
+        microsecond=nanos // 1_000
+    )
+
+
+def _datetime_to_epoch_ns(value: datetime) -> int:
+    normalized = _as_utc(value)
+    return (
+        int(normalized.timestamp()) * _NANO_PRICE_SCALE
+        + normalized.microsecond * 1_000
+    )
+
+
+def _first_candle_index_after_timestamp(
+    candles: Sequence[ProjectXMarketCandle],
+    timestamp: datetime,
+) -> int | None:
+    start_ns = _mmap_replay_array(candles, "start_ns")
+    if start_ns is not None:
+        # Candle proxies expose Python datetimes at microsecond precision. Skip
+        # the rest of the matching microsecond so the array path has identical
+        # ``datetime > timestamp`` semantics even for nanosecond source data.
+        first_later_microsecond_ns = (
+            _datetime_to_epoch_ns(timestamp) + 1_000
+        )
+        index = int(
+            np.searchsorted(
+                start_ns,
+                first_later_microsecond_ns,
+                side="left",
+            )
+        )
+        return index if index < len(candles) else None
+    return next(
+        (
+            index
+            for index, candle in enumerate(candles)
+            if _as_utc(candle.candle_timestamp) > timestamp
+        ),
+        None,
+    )
+
+
+def _detect_fair_value_gaps(candles: Sequence[ProjectXMarketCandle]) -> list[FairValueGapZone]:
+    high_nano = _mmap_replay_array(candles, "high_nano_values")
+    low_nano = _mmap_replay_array(candles, "low_nano_values")
+    start_ns = _mmap_replay_array(candles, "start_ns")
+    if high_nano is not None and low_nano is not None and start_ns is not None:
+        if len(candles) < 3:
+            return []
+        bullish = low_nano[2:] > high_nano[:-2]
+        bearish = high_nano[2:] < low_nano[:-2]
+        gaps: list[FairValueGapZone] = []
+        for relative_index in np.flatnonzero(bullish | bearish):
+            offset = int(relative_index)
+            index = offset + 2
+            timestamp = _datetime_from_epoch_ns(int(start_ns[index]))
+            if bool(bullish[offset]):
+                gaps.append(
+                    FairValueGapZone(
+                        side="bullish",
+                        lower_price=int(high_nano[index - 2]) / _NANO_PRICE_SCALE,
+                        upper_price=int(low_nano[index]) / _NANO_PRICE_SCALE,
+                        timestamp=timestamp,
+                        source_index=index,
+                    )
+                )
+            if bool(bearish[offset]):
+                gaps.append(
+                    FairValueGapZone(
+                        side="bearish",
+                        lower_price=int(high_nano[index]) / _NANO_PRICE_SCALE,
+                        upper_price=int(low_nano[index - 2]) / _NANO_PRICE_SCALE,
+                        timestamp=timestamp,
+                        source_index=index,
+                    )
+                )
+        return gaps
+
     gaps: list[FairValueGapZone] = []
     for index in range(2, len(candles)):
         left = candles[index - 2]
@@ -3871,11 +4073,43 @@ def _detect_fair_value_gaps(candles: list[ProjectXMarketCandle]) -> list[FairVal
 
 def _find_fvg_invalidation_candle(
     *,
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     gap: FairValueGapZone,
     volume_lookback_bars: int,
     strong_volume_multiplier: float,
 ) -> ProjectXMarketCandle | None:
+    open_prices = _mmap_price_values(candles, "open_nano_values")
+    close_prices = _mmap_price_values(candles, "close_nano_values")
+    volumes = _mmap_replay_array(candles, "volume_values")
+    if open_prices is not None and close_prices is not None and volumes is not None:
+        first_index = gap.source_index + 1
+        if first_index >= len(candles):
+            return None
+        if gap.side == "bullish":
+            closes_through = (
+                np.maximum(open_prices[first_index:], close_prices[first_index:])
+                < gap.lower_price
+            )
+        else:
+            closes_through = (
+                np.minimum(open_prices[first_index:], close_prices[first_index:])
+                > gap.upper_price
+            )
+        for relative_index in np.flatnonzero(closes_through):
+            index = first_index + int(relative_index)
+            start = max(0, index - volume_lookback_bars)
+            prior_volumes = [
+                float(int(volume))
+                for volume in volumes[start:index]
+                if int(volume) > 0
+            ]
+            average_volume = _average(prior_volumes) if prior_volumes else 0.0
+            if average_volume <= 0:
+                continue
+            if float(int(volumes[index])) >= average_volume * strong_volume_multiplier:
+                return candles[index]
+        return None
+
     for index in range(gap.source_index + 1, len(candles)):
         candle = candles[index]
         if not _full_body_closes_through_fvg(candle, gap):
@@ -3906,7 +4140,7 @@ def _latest_prior_swing(
 
 
 def _fallback_structure_level(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     *,
     start_index: int,
     end_index: int,
@@ -3914,6 +4148,28 @@ def _fallback_structure_level(
 ) -> SupportResistanceLevel | None:
     if end_index <= start_index:
         return None
+    high_nano = _mmap_replay_array(candles, "high_nano_values")
+    low_nano = _mmap_replay_array(candles, "low_nano_values")
+    start_ns = _mmap_replay_array(candles, "start_ns")
+    if high_nano is not None and low_nano is not None and start_ns is not None:
+        if side == "bullish":
+            relative_index = int(np.argmax(high_nano[start_index:end_index]))
+            source_index = start_index + relative_index
+            price = int(high_nano[source_index]) / _NANO_PRICE_SCALE
+            side_name = "resistance"
+        else:
+            relative_index = int(np.argmin(low_nano[start_index:end_index]))
+            source_index = start_index + relative_index
+            price = int(low_nano[source_index]) / _NANO_PRICE_SCALE
+            side_name = "support"
+        return SupportResistanceLevel(
+            side=side_name,
+            price=price,
+            timestamp=_datetime_from_epoch_ns(int(start_ns[source_index])),
+            timeframe="LTF-fallback",
+            source_index=source_index,
+            score=0.0,
+        )
     window = candles[start_index:end_index]
     if not window:
         return None
@@ -3946,13 +4202,28 @@ def _fallback_structure_level(
 
 def _find_fvg_structure_break_index(
     *,
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     sweep_index: int,
     structure_level: SupportResistanceLevel,
     side: str,
 ) -> int | None:
     if sweep_index >= len(candles) - 1:
         return None
+    close_prices = _mmap_price_values(candles, "close_nano_values")
+    if close_prices is not None:
+        first_index = max(1, sweep_index + 1)
+        previous = close_prices[first_index - 1 : len(candles) - 1]
+        current = close_prices[first_index:]
+        if side == "bullish":
+            breaks = (previous <= structure_level.price) & (
+                current > structure_level.price
+            )
+        else:
+            breaks = (previous >= structure_level.price) & (
+                current < structure_level.price
+            )
+        matches = np.flatnonzero(breaks)
+        return first_index + int(matches[0]) if len(matches) else None
     for index in range(max(1, sweep_index + 1), len(candles)):
         previous_close = float(candles[index - 1].close_price)
         current_close = float(candles[index].close_price)
@@ -3999,10 +4270,27 @@ def _has_rejection_wick(
     gap: FairValueGapZone,
     reference_price: float,
 ) -> bool:
-    open_price = float(candle.open_price)
-    close_price = float(candle.close_price)
-    high_price = float(candle.high_price)
-    low_price = float(candle.low_price)
+    return _has_rejection_wick_values(
+        open_price=float(candle.open_price),
+        close_price=float(candle.close_price),
+        high_price=float(candle.high_price),
+        low_price=float(candle.low_price),
+        side=side,
+        gap=gap,
+        reference_price=reference_price,
+    )
+
+
+def _has_rejection_wick_values(
+    *,
+    open_price: float,
+    high_price: float,
+    low_price: float,
+    close_price: float,
+    side: str,
+    gap: FairValueGapZone,
+    reference_price: float,
+) -> bool:
     body = abs(close_price - open_price)
     candle_range = high_price - low_price
     if candle_range <= 0:
@@ -8811,7 +9099,7 @@ def _directional_movement_dx(smoothed_tr: float, smoothed_plus_dm: float, smooth
 
 
 def _detect_support_resistance_levels(
-    candles: list[ProjectXMarketCandle],
+    candles: Sequence[ProjectXMarketCandle],
     *,
     timeframe: str,
     window_size: int,
@@ -8826,6 +9114,50 @@ def _detect_support_resistance_levels(
     levels: list[SupportResistanceLevel] = []
     timeframe_weight = 2.0 if timeframe == "4H" else 1.0
     last_index = len(candles) - 1
+    high_nano = _mmap_replay_array(candles, "high_nano_values")
+    low_nano = _mmap_replay_array(candles, "low_nano_values")
+    start_ns = _mmap_replay_array(candles, "start_ns")
+    if high_nano is not None and low_nano is not None and start_ns is not None:
+        high_windows = np.lib.stride_tricks.sliding_window_view(high_nano, span)
+        low_windows = np.lib.stride_tricks.sliding_window_view(low_nano, span)
+        center_highs = high_nano[radius : len(candles) - radius]
+        center_lows = low_nano[radius : len(candles) - radius]
+        resistance = (center_highs == np.max(high_windows, axis=1)) & (
+            np.count_nonzero(high_windows == center_highs[:, None], axis=1) == 1
+        )
+        support = (center_lows == np.min(low_windows, axis=1)) & (
+            np.count_nonzero(low_windows == center_lows[:, None], axis=1) == 1
+        )
+        for relative_index in np.flatnonzero(resistance | support):
+            offset = int(relative_index)
+            index = radius + offset
+            recency_score = index / last_index if last_index > 0 else 0
+            score = timeframe_weight + recency_score
+            timestamp = _datetime_from_epoch_ns(int(start_ns[index]))
+            if bool(resistance[offset]):
+                levels.append(
+                    SupportResistanceLevel(
+                        side="resistance",
+                        price=int(high_nano[index]) / _NANO_PRICE_SCALE,
+                        timestamp=timestamp,
+                        timeframe=timeframe,
+                        source_index=index,
+                        score=score,
+                    )
+                )
+            if bool(support[offset]):
+                levels.append(
+                    SupportResistanceLevel(
+                        side="support",
+                        price=int(low_nano[index]) / _NANO_PRICE_SCALE,
+                        timestamp=timestamp,
+                        timeframe=timeframe,
+                        source_index=index,
+                        score=score,
+                    )
+                )
+        return levels
+
     for index in range(radius, len(candles) - radius):
         center = candles[index]
         window = candles[index - radius : index + radius + 1]

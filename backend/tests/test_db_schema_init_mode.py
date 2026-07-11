@@ -33,3 +33,27 @@ def test_init_db_force_runs_schema_init_when_disabled(monkeypatch):
     db.init_db(force=True)
 
     assert calls == ["create_all", "accounts", "journal", "multi_tenant", "bot", "performance", "instruments"]
+
+
+def test_init_db_never_creates_legacy_databento_market_tables(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        db.Base.metadata,
+        "create_all",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    for name in (
+        "_ensure_accounts_schema_compatibility",
+        "_ensure_journal_schema_compatibility",
+        "_ensure_multi_tenant_schema_compatibility",
+        "_ensure_bot_schema_compatibility",
+        "_ensure_query_performance_indexes",
+        "_ensure_default_instrument_metadata",
+    ):
+        monkeypatch.setattr(db, name, lambda: None)
+
+    db.init_db(force=True)
+
+    created = {table.name for table in captured["tables"]}
+    assert created.isdisjoint(db.LEGACY_DATABENTO_TABLE_NAMES)
+    assert "bot_backtests" in created

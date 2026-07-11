@@ -7,6 +7,7 @@ from .trade_plan_schemas import TradeEvaluationResultOut
 
 
 TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
+BotBacktestInstrument = Literal["MNQ", "MES", "NQ", "ES"]
 MAX_BOT_CONTRACT_QUANTITY = 10_000
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
@@ -466,6 +467,8 @@ class BotActivityOut(BaseModel):
 class BotBacktestIn(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
+    strategy_type: BotStrategyType | None = None
+    instrument: BotBacktestInstrument | None = None
     starting_balance: float = Field(default=50_000, gt=0, le=1_000_000_000)
     commission_per_contract: float = Field(default=0, ge=0, le=10_000)
     slippage_ticks: float = Field(default=0, ge=0, le=1_000)
