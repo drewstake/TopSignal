@@ -329,8 +329,14 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
       {series.length > 0 ? <div className="pointer-events-none absolute inset-x-0 top-0 h-20" style={{ background: summaryTint }} /> : null}
       <CardHeader className="relative space-y-3">
         <div>
-          <CardTitle className="tracking-tight">Daily Account Balance</CardTitle>
-          <CardDescription>Daily balance curve built from calendar net PnL.</CardDescription>
+          <CardTitle className="tracking-tight">
+            {hasAnchoredBalance ? "Estimated Balance Path" : "Cumulative Net P&L"}
+          </CardTitle>
+          <CardDescription>
+            {hasAnchoredBalance
+              ? "Reconstructed from selected-range daily net P&L and today's balance; not historical broker closing balances."
+              : "Cumulative realized net P&L across the selected range."}
+          </CardDescription>
         </div>
         {stats ? (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -372,7 +378,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                 preserveAspectRatio="none"
                 className="h-72 w-full min-w-[860px]"
                 role="img"
-                aria-label="Daily account balance chart"
+                aria-label={hasAnchoredBalance ? "Estimated account balance path chart" : "Cumulative net profit and loss chart"}
                 onMouseMove={handleChartMouseMove}
                 onMouseLeave={handleChartMouseLeave}
               >
@@ -565,7 +571,9 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
                 <span className={netPnlTotal >= 0 ? "text-app-positive" : "text-app-negative"}>{formatPnl(netPnlTotal)}</span>
               </p>
               <p className={hasAnchoredBalance ? "text-app-secondary/80" : "text-app-muted"}>
-                {hasAnchoredBalance ? "Anchored to current account balance." : "Anchored to cumulative net PnL only."}
+                {hasAnchoredBalance
+                  ? "Estimate anchored to today's balance; historical closes are unavailable."
+                  : "Starts at $0 because historical balance snapshots are unavailable."}
               </p>
             </div>
           </>

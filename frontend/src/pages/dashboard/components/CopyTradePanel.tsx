@@ -5,9 +5,10 @@ import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/ui/Table";
-import { formatCurrency, formatInteger, formatNumber, formatPnl } from "../../../utils/formatters";
+import { formatInteger, formatNumber, formatPnl } from "../../../utils/formatters";
 import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
 import type { AccountInfo } from "../../../lib/types";
+import { formatAccountBalance, formatProviderLastSeen } from "../../../lib/accountProviderState";
 import type { CopyTradeAccountRow, CopyTradeDriftSummary, CopyTradeStatus, CopyTradeTotals } from "../copyTrade";
 
 interface CopyTradePanelProps {
@@ -134,7 +135,11 @@ export function CopyTradePanel({
             </p>
           </div>
           <CopyTradeStat label="Combined Daily P&L" value={formatPnl(totals.combinedDailyPnl)} valueClassName={contributionClass(totals.combinedDailyPnl)} />
-          <CopyTradeStat label="Combined Balance" value={formatCurrency(totals.combinedBalance)} />
+          <CopyTradeStat
+            label="Combined Balance"
+            value={formatAccountBalance(totals.combinedBalance)}
+            detail={totals.combinedBalance === null ? "One or more provider balances are unavailable." : undefined}
+          />
           <CopyTradeStat label="Leader P&L" value={formatPnl(totals.leaderNetPnl)} valueClassName={contributionClass(totals.leaderNetPnl)} />
           <CopyTradeStat
             label="Follower P&L"
@@ -179,7 +184,7 @@ export function CopyTradePanel({
                       };
                     })
                   }
-                  className="h-7 rounded-lg px-2 text-[10px]"
+                  className="h-11 rounded-lg px-2 text-[10px] sm:h-7"
                 >
                   {showFollowerEditor ? "Done" : "Edit"}
                 </Button>
@@ -199,6 +204,9 @@ export function CopyTradePanel({
                       <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
                         {status}
                       </Badge>
+                      {account.provider_data_stale ? (
+                        <Badge variant="warning" className="px-1.5 py-0.5 text-[9px]">Stale data</Badge>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -235,6 +243,9 @@ export function CopyTradePanel({
                         <Badge variant={status === "Active" ? "positive" : "warning"} className="px-1.5 py-0.5 text-[9px]">
                           {status}
                         </Badge>
+                        {account.provider_data_stale ? (
+                          <Badge variant="warning" className="px-1.5 py-0.5 text-[9px]">Stale data</Badge>
+                        ) : null}
                       </span>
                     </span>
                   </label>
@@ -282,6 +293,9 @@ export function CopyTradePanel({
                           {row.accountName}
                         </p>
                         <p className="text-[10px] text-app-muted">{row.accountId === null ? "Unassigned" : `ID ${getDemoAccountId(row.accountId)}`}</p>
+                        {row.providerDataStale ? (
+                          <p className="text-[10px] text-app-warning">{`Stale · ${formatProviderLastSeen(row.lastSeenAt)}`}</p>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="text-center">

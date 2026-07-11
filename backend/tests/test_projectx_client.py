@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from io import BytesIO
 from urllib import error
 
 import pytest
@@ -129,6 +130,7 @@ def test_request_once_maps_timeout_to_gateway_timeout(monkeypatch):
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 504
+    assert exc_info.value.submission_outcome_unknown is False
     assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
 
 
@@ -147,7 +149,40 @@ def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
     assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
 
 
-def test_fetch_trade_history_skips_voided_rows():
+@pytest.mark.parametrize(
+    ("path", "status_code", "outcome_unknown"),
+    [
+        ("/api/Order/place", 503, True),
+        ("/api/Order/place", 400, False),
+        ("/api/Trade/search", 503, False),
+    ],
+)
+def test_request_once_only_marks_order_submission_5xx_as_ambiguous(
+    monkeypatch,
+    path,
+    status_code,
+    outcome_unknown,
+):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+
+    def raise_http_error(*_args, **_kwargs):
+        raise error.HTTPError(
+            "https://example.test",
+            status_code,
+            "provider error",
+            hdrs=None,
+            fp=BytesIO(b'{"message":"provider error"}'),
+        )
+
+    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_http_error)
+
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", path, payload={}, with_auth=False)
+
+    assert exc_info.value.submission_outcome_unknown is outcome_unknown
+
+
+def test_fetch_trade_history_retains_voided_rows_for_local_tombstones():
     class StubClient(ProjectXClient):
         def __init__(self, payload):
             super().__init__(base_url="https://example.test", username="demo", api_key="demo")
@@ -204,8 +239,33 @@ def test_fetch_trade_history_skips_voided_rows():
 
     rows = client.fetch_trade_history(account_id=123, start=datetime(2025, 10, 20, tzinfo=timezone.utc))
 
-    assert len(rows) == 1
-    assert rows[0]["source_trade_id"] == "1"
+    assert [row["source_trade_id"] for row in rows] == ["1", "2", "3"]
+    assert [row["voided"] for row in rows] == [False, True, True]
+
+
+def test_strict_trade_history_rejects_missing_timestamp():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, *_args, **_kwargs):
+            return {
+                "trades": [
+                    {
+                        "accountId": 123,
+                        "fees": 1.25,
+                        "profitAndLoss": -10,
+                        "voided": False,
+                    }
+                ]
+            }
+
+    with pytest.raises(ProjectXClientError, match="valid timestamp"):
+        StubClient().fetch_trade_history(
+            account_id=123,
+            start=datetime(2026, 7, 10, tzinfo=timezone.utc),
+            require_valid_collection=True,
+        )
 
 
 def test_search_contracts_normalizes_projectx_contract_rows():
@@ -399,6 +459,164 @@ def test_place_order_uses_projectx_sell_market_payload_with_brackets():
     assert response["order_id"] == "9057"
 
 
+def test_search_open_positions_returns_authoritative_signed_sizes():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "positions": [
+                    {
+                        "id": 11,
+                        "accountId": 123,
+                        "contractId": "CON.F.US.MNQ.M26",
+                        "creationTimestamp": "2026-07-10T14:00:00Z",
+                        "type": 1,
+                        "size": 2,
+                        "averagePrice": 20100.25,
+                    },
+                    {
+                        "id": 12,
+                        "accountId": 123,
+                        "contractId": "CON.F.US.MES.M26",
+                        "creationTimestamp": "2026-07-10T14:01:00Z",
+                        "type": 2,
+                        "size": 1,
+                        "averagePrice": 6000,
+                    },
+                ]
+            }
+
+    client = StubClient()
+    rows = client.search_open_positions(account_id=123)
+
+    assert client.calls == [("POST", "/api/Position/searchOpen", {"accountId": 123}, True)]
+    assert [row["signed_size"] for row in rows] == [2.0, -1.0]
+
+
+def test_search_open_positions_rejects_malformed_collection_instead_of_assuming_flat():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, *_args, **_kwargs):
+            return {"success": True}
+
+    with pytest.raises(ProjectXClientError, match="invalid response collection"):
+        StubClient().search_open_positions(account_id=123)
+
+
+def test_search_orders_normalizes_custom_tag_for_reconciliation():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "orders": [
+                    {
+                        "id": 456,
+                        "accountId": 123,
+                        "contractId": "CON.F.US.MNQ.M26",
+                        "creationTimestamp": "2026-07-10T14:00:00Z",
+                        "updateTimestamp": "2026-07-10T14:00:01Z",
+                        "status": 2,
+                        "customTag": "topsignal-1-abc",
+                    }
+                ]
+            }
+
+    client = StubClient()
+    start = datetime(2026, 7, 10, 13, 55, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 10, 14, 5, tzinfo=timezone.utc)
+    rows = client.search_orders(account_id=123, start=start, end=end)
+
+    assert client.calls == [
+        (
+            "POST",
+            "/api/Order/search",
+            {
+                "accountId": 123,
+                "startTimestamp": "2026-07-10T13:55:00Z",
+                "endTimestamp": "2026-07-10T14:05:00Z",
+            },
+            True,
+        )
+    ]
+    assert rows[0]["order_id"] == "456"
+    assert rows[0]["custom_tag"] == "topsignal-1-abc"
+
+
+def test_search_orders_rejects_wrong_account_rows():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, *_args, **_kwargs):
+            return {"orders": [{"id": 456, "accountId": 999}]}
+
+    with pytest.raises(ProjectXClientError, match="wrong account"):
+        StubClient().search_orders(
+            account_id=123,
+            start=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        )
+
+
+def test_search_open_orders_requires_authoritative_working_order_rows():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return {
+                "orders": [
+                    {
+                        "id": 789,
+                        "accountId": 123,
+                        "contractId": "CON.F.US.MNQ.M26",
+                        "status": 1,
+                        "side": 0,
+                        "size": 1,
+                        "customTag": "topsignal-working",
+                    }
+                ]
+            }
+
+    client = StubClient()
+
+    rows = client.search_open_orders(account_id=123)
+
+    assert client.calls == [("POST", "/api/Order/searchOpen", {"accountId": 123}, True)]
+    assert rows == [
+        {
+            "order_id": "789",
+            "account_id": 123,
+            "contract_id": "CON.F.US.MNQ.M26",
+            "status": 1,
+            "side": 0,
+            "size": 1.0,
+            "signed_size": 1.0,
+            "custom_tag": "topsignal-working",
+            "raw_payload": {
+                "id": 789,
+                "accountId": 123,
+                "contractId": "CON.F.US.MNQ.M26",
+                "status": 1,
+                "side": 0,
+                "size": 1,
+                "customTag": "topsignal-working",
+            },
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("field", "kwargs", "message"),
     [
@@ -406,6 +624,8 @@ def test_place_order_uses_projectx_sell_market_payload_with_brackets():
         ("side", {"side": 3}, "Unsupported ProjectX order side."),
         ("size", {"size": 1.5}, "ProjectX order size must be a positive whole number."),
         ("size", {"size": 0}, "ProjectX order size must be a positive whole number."),
+        ("size", {"size": float("inf")}, "ProjectX order size must be a positive whole number."),
+        ("size", {"size": 10_001}, "ProjectX order size must be a positive whole number."),
     ],
 )
 def test_place_order_validates_projectx_order_enums_and_size(field, kwargs, message):
@@ -446,8 +666,8 @@ def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
             self.calls.append((method, path, payload, with_auth))
             return {
                 "accounts": [
-                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True},
-                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False},
+                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True, "isVisible": True},
+                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False, "isVisible": True},
                 ]
             }
 
@@ -463,7 +683,7 @@ def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
             "balance": 50000.0,
             "status": "ACTIVE",
             "can_trade": True,
-            "is_visible": None,
+            "is_visible": True,
         }
     ]
 
@@ -478,8 +698,8 @@ def test_list_accounts_can_request_all_accounts():
             self.calls.append((method, path, payload, with_auth))
             return {
                 "accounts": [
-                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False},
-                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True},
+                    {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False, "isVisible": True},
+                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True, "isVisible": True},
                 ]
             }
 
@@ -494,7 +714,7 @@ def test_list_accounts_can_request_all_accounts():
             "balance": 50000.0,
             "status": "ACTIVE",
             "can_trade": True,
-            "is_visible": None,
+            "is_visible": True,
         },
         {
             "id": 6,
@@ -502,7 +722,7 @@ def test_list_accounts_can_request_all_accounts():
             "balance": 25000.0,
             "status": "LOCKED_OUT",
             "can_trade": False,
-            "is_visible": None,
+            "is_visible": True,
         },
     ]
 
@@ -535,6 +755,44 @@ def test_list_accounts_marks_hidden_when_is_visible_false():
         }
     ]
     assert rows_active == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"accounts": ["invalid"]},
+        {"accounts": [{"canTrade": True, "isVisible": True}]},
+        {"accounts": [{"id": "invalid", "canTrade": True, "isVisible": True}]},
+        {"accounts": [{"id": 123, "isVisible": True}]},
+        {"accounts": [{"id": 123, "canTrade": True}]},
+    ],
+)
+def test_list_accounts_rejects_malformed_authoritative_payload(payload):
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, *_args, **_kwargs):
+            return payload
+
+    with pytest.raises(ProjectXClientError):
+        StubClient().list_accounts(only_active_accounts=False)
+
+
+def test_list_accounts_treats_non_finite_balance_as_unavailable():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, *_args, **_kwargs):
+            return {
+                "accounts": [
+                    {"id": 123, "canTrade": True, "isVisible": True, "balance": float("inf")}
+                ]
+            }
+
+    assert StubClient().list_accounts(only_active_accounts=False)[0]["balance"] is None
 
 
 def test_fetch_last_trade_timestamp_returns_latest_value():
@@ -599,6 +857,22 @@ def test_fetch_last_trade_timestamp_uses_latest_row_when_provider_returns_multip
     assert account_id == 778
     assert limit == 1
     assert offset is None
+
+
+def test_fetch_last_trade_timestamp_ignores_voided_execution(monkeypatch):
+    client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
+    older = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    newer_voided = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        client,
+        "fetch_trade_history",
+        lambda **_kwargs: [
+            {"timestamp": older, "voided": False},
+            {"timestamp": newer_voided, "voided": True},
+        ],
+    )
+
+    assert client.fetch_last_trade_timestamp(123) == older
 
 
 def test_access_token_cache_is_invalidated_when_api_key_changes():

@@ -227,12 +227,8 @@ def store_trade_events(
     if not events:
         return 0
 
-    non_voided_events = [event for event in events if not _event_is_voided(event)]
-    if not non_voided_events:
-        return 0
-
     events_sorted = sorted(
-        non_voided_events,
+        events,
         key=lambda item: (_as_utc(item["timestamp"]), str(item.get("order_id") or "")),
     )
 
@@ -1147,7 +1143,14 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
     status = _normalized_optional_text(event.get("status"))
     if status:
         row.status = status
-    row.raw_payload = event.get("raw_payload")
+    raw_payload = event.get("raw_payload")
+    if isinstance(raw_payload, dict):
+        raw_payload = dict(raw_payload)
+    else:
+        raw_payload = {}
+    if _event_is_voided(event):
+        raw_payload["voided"] = True
+    row.raw_payload = raw_payload
 
 
 def _event_to_insert_values(event: dict[str, Any], *, user_id: str) -> dict[str, Any]:
@@ -1430,7 +1433,14 @@ def _event_is_voided(event: dict[str, Any]) -> bool:
 def _non_voided_trade_event_expr():
     # ProjectX marks canceled/invalid rows as `raw_payload.voided = true`.
     # Excluding these keeps local metrics aligned with Topstep's day journal.
-    voided_text = func.lower(func.coalesce(ProjectXTradeEvent.raw_payload.op("->>")("voided"), "false"))
+    voided_text = func.lower(
+        func.coalesce(
+            ProjectXTradeEvent.raw_payload.op("->>")("voided"),
+            ProjectXTradeEvent.raw_payload.op("->>")("isVoided"),
+            ProjectXTradeEvent.raw_payload.op("->>")("is_voided"),
+            "false",
+        )
+    )
     return ~voided_text.in_(("true", "1", "yes", "y", "on"))
 
 

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "../components/ui/Button";
@@ -11,17 +11,21 @@ import {
   ACCOUNT_QUERY_PARAM,
   ACCOUNT_DISPLAY_NAME_UPDATED_EVENT,
   MAIN_ACCOUNT_UPDATED_EVENT,
+  buildAccountAwarePath,
   parseAccountId,
   readStoredAccountId,
   readStoredMainAccountId,
   writeStoredAccountId,
 } from "../lib/accountSelection";
 import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
+import { canApplyAccountScopedResult } from "../lib/appShellRequests";
 import { sortAccountsForSelection } from "../lib/accountOrdering";
+import { formatProviderLastSeen } from "../lib/accountProviderState";
 import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
+import { useLatestRequestGuard } from "../lib/latestRequest";
 
 export interface AppShellOutletContext {
   accounts: AccountInfo[];
@@ -53,28 +57,32 @@ export function AppShell() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const demoMode = useDemoMode();
+  const beginAccountsRequest = useLatestRequestGuard();
+  const beginSyncRequest = useLatestRequestGuard();
+  const activeSyncAccountIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadAccounts() {
+      const isCurrent = beginAccountsRequest();
       setAccountsLoading(true);
       setAccountsError(null);
 
       try {
         const payload = await getSelectableAccounts();
-        if (!isMounted) {
+        if (!isMounted || !isCurrent()) {
           return;
         }
         setAccounts(payload);
       } catch (err) {
-        if (!isMounted) {
+        if (!isMounted || !isCurrent()) {
           return;
         }
         setAccounts([]);
         setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
       } finally {
-        if (isMounted) {
+        if (isMounted && isCurrent()) {
           setAccountsLoading(false);
         }
       }
@@ -98,7 +106,7 @@ export function AppShell() {
         window.removeEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
       }
     };
-  }, []);
+  }, [beginAccountsRequest]);
 
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
   const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
@@ -124,6 +132,14 @@ export function AppShell() {
     return "";
   }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
+
+  useEffect(() => {
+    activeSyncAccountIdRef.current = selectedAccountId;
+    beginSyncRequest();
+    setSyncing(false);
+    setSyncMessage(null);
+  }, [beginSyncRequest, selectedAccountId]);
+
   const accountSuffix = selectedAccountId ? `?${ACCOUNT_QUERY_PARAM}=${selectedAccountId}` : "";
   const currentUserEmail = getCurrentUserEmailSync();
   const currentUserEmailDisplay = getDemoUserEmail(currentUserEmail);
@@ -140,6 +156,9 @@ export function AppShell() {
     }
 
     setSyncMessage(null);
+    activeSyncAccountIdRef.current = nextAccountId;
+    beginSyncRequest();
+    setSyncing(false);
     writeStoredAccountId(nextAccountId);
     const next = new URLSearchParams(location.search);
     next.set(ACCOUNT_QUERY_PARAM, String(nextAccountId));
@@ -157,28 +176,36 @@ export function AppShell() {
       return;
     }
 
+    const requestedAccountId = selectedAccountId;
+    const isCurrent = beginSyncRequest();
     setSyncing(true);
     setSyncMessage(null);
 
     try {
-      const result = await refreshTrades(selectedAccountId);
+      const result = await refreshTrades(requestedAccountId);
+      if (!canApplyAccountScopedResult(requestedAccountId, activeSyncAccountIdRef.current, isCurrent())) {
+        return;
+      }
       setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
       window.dispatchEvent(
         new CustomEvent<AccountTradesSyncedDetail>(ACCOUNT_TRADES_SYNCED_EVENT, {
           detail: {
-            accountId: selectedAccountId,
+            accountId: requestedAccountId,
             fetchedCount: result.fetched_count,
             insertedCount: result.inserted_count,
           },
         }),
       );
     } catch (err) {
+      if (!canApplyAccountScopedResult(requestedAccountId, activeSyncAccountIdRef.current, isCurrent())) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to sync account trades";
       setSyncMessage(message);
       window.dispatchEvent(
         new CustomEvent<AccountTradesSyncedDetail>(ACCOUNT_TRADES_SYNCED_EVENT, {
           detail: {
-            accountId: selectedAccountId,
+            accountId: requestedAccountId,
             fetchedCount: 0,
             insertedCount: 0,
             error: message,
@@ -186,7 +213,9 @@ export function AppShell() {
         }),
       );
     } finally {
-      setSyncing(false);
+      if (canApplyAccountScopedResult(requestedAccountId, activeSyncAccountIdRef.current, isCurrent())) {
+        setSyncing(false);
+      }
     }
   }
 
@@ -199,8 +228,8 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen flex-col bg-app-bg text-app-text">
-      <header className="sticky top-0 z-30 border-b border-app-border/80 bg-app-bg/95">
-        <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-4 px-4 py-4 lg:px-8">
+      <header className="relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">
+        <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-2 px-3 py-2 sm:gap-4 sm:px-4 sm:py-4 lg:px-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-end gap-3">
@@ -213,7 +242,7 @@ export function AppShell() {
                   </label>
                   <Select
                     id="app-active-account"
-                    className="h-9 min-w-[220px]"
+                    className="h-11 min-w-[220px] sm:h-9"
                     value={selectedAccountValue}
                     onChange={(event) => handleAccountChange(event.target.value)}
                     disabled={accountsLoading || orderedAccounts.length === 0}
@@ -222,28 +251,30 @@ export function AppShell() {
                     {!accountsLoading && orderedAccounts.length === 0 ? <option>No accounts</option> : null}
                     {orderedAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
-                        {getDemoAccountLabel(account)}
+                        {`${getDemoAccountLabel(account)}${
+                          account.provider_data_stale ? ` — stale provider data (${formatProviderLastSeen(account.last_seen_at)})` : ""
+                        }`}
                       </option>
                     ))}
                   </Select>
                 </div>
-                <Button className="h-9 whitespace-nowrap" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
+                <Button className="h-11 whitespace-nowrap sm:h-9" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
                   {syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 <Toggle
-                  className="h-9 self-end"
+                  className="h-11 self-end sm:h-9"
                   checked={demoMode.enabled}
                   onChange={handleDemoModeChange}
                   label="Demo Mode"
                   aria-label="Demo mode"
                 />
                 {hasSupabaseConfig ? (
-                  <div className="flex h-9 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:max-w-[340px]">
+                  <div className="flex min-h-11 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:max-w-[340px]">
                     <span className="min-w-0 truncate" title={currentUserEmailDisplay}>
                       {currentUserEmailDisplay}
                     </span>
                     <Button
-                      className="h-7 shrink-0 px-2"
+                      className="h-11 shrink-0 px-2 sm:h-7"
                       size="sm"
                       variant="ghost"
                       onClick={() => {
@@ -266,7 +297,7 @@ export function AppShell() {
 
           <Tabs
             items={[
-              { label: "Dashboard", to: "/" },
+              { label: "Dashboard", to: buildAccountAwarePath("/", selectedAccountId) },
               { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },

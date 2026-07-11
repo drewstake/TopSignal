@@ -7,6 +7,10 @@
   },
   "scripts": {
     "db:init": "node scripts/db-init.cjs",
+    "db:adopt-current": "node scripts/db-migrate.cjs --adopt-current --acknowledge-populated-database",
+    "db:baseline": "node scripts/db-migrate.cjs --baseline",
+    "db:migrate": "node scripts/db-migrate.cjs",
+    "db:check": "node scripts/db-migrate.cjs --check",
     "dev": "node scripts/dev.cjs",
     "dev:backend": "node scripts/dev-backend.cjs",
     "dev:frontend": "node scripts/dev-frontend.cjs"

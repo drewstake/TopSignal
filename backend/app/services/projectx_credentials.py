@@ -141,12 +141,12 @@ def _fernet() -> Fernet:
 
 def _allow_insecure_local_credentials_key() -> bool:
     raw = os.getenv("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY")
-    if raw is not None:
-        return _read_bool_env(raw, False)
+    if raw is None or not _read_bool_env(raw, False):
+        return False
 
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
-        return True
+        return False
     if database_url.startswith("sqlite"):
         return True
 

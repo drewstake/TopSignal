@@ -16,8 +16,10 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
 import { getDemoAccountId, getDemoAccountName, getDemoTradeId } from "../../lib/demoMode";
+import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tradeSymbol";
@@ -275,6 +277,9 @@ export function TradesPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const deferredSymbolQuery = useDeferredValue(symbolQuery);
+  const beginAccountsRequest = useLatestRequestGuard();
+  const beginTradeDataRequest = useLatestRequestGuard();
+  const beginSyncRequest = useLatestRequestGuard();
 
   const startIso = startDate ? toStartIso(startDate) : undefined;
   const endIso = endDate ? toEndIso(endDate) : undefined;
@@ -291,13 +296,18 @@ export function TradesPage() {
   );
 
   const loadAccounts = useCallback(async () => {
+    const isCurrent = beginAccountsRequest();
     try {
       const payload = await accountsApi.getSelectableAccounts();
-      setAccounts(payload);
+      if (isCurrent()) {
+        setAccounts(payload);
+      }
     } catch {
-      setAccounts([]);
+      if (isCurrent()) {
+        setAccounts([]);
+      }
     }
-  }, []);
+  }, [beginAccountsRequest]);
 
   useEffect(() => {
     void loadAccounts();
@@ -343,7 +353,10 @@ export function TradesPage() {
   const selectedAccountId = selectedAccount?.id ?? null;
 
   const loadTradesAndSummary = useCallback(async () => {
+    const isCurrent = beginTradeDataRequest();
     if (!selectedAccountId) {
+      setSummaryLoading(false);
+      setTradesLoading(false);
       setSummary(emptySummary);
       setTrades([]);
       setSummaryError(null);
@@ -352,6 +365,8 @@ export function TradesPage() {
     }
 
     if (dateRangeInvalid) {
+      setSummaryLoading(false);
+      setTradesLoading(false);
       const message = "Start date must be before end date.";
       setSummary(emptySummary);
       setTrades([]);
@@ -377,19 +392,26 @@ export function TradesPage() {
 
     try {
       const [nextSummary, nextTrades] = await Promise.all([summaryPromise, tradesPromise]);
-      setSummary(nextSummary);
-      setTrades(nextTrades);
+      if (isCurrent()) {
+        setSummary(nextSummary);
+        setTrades(nextTrades);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to load trade data";
       setSummaryError(message);
       setTradesError(message);
       setSummary(emptySummary);
       setTrades([]);
     } finally {
-      setSummaryLoading(false);
-      setTradesLoading(false);
+      if (isCurrent()) {
+        setSummaryLoading(false);
+        setTradesLoading(false);
+      }
     }
-  }, [dateRangeInvalid, endIso, limit, selectedAccountId, startIso]);
+  }, [beginTradeDataRequest, dateRangeInvalid, endIso, limit, selectedAccountId, startIso]);
 
   useEffect(() => {
     void loadTradesAndSummary();
@@ -398,6 +420,12 @@ export function TradesPage() {
   useEffect(() => {
     setPage(1);
   }, [symbolQuery, selectedAccountId, startDate, endDate, limit]);
+
+  useEffect(() => {
+    beginSyncRequest();
+    setSyncing(false);
+    setSyncMessage(null);
+  }, [beginSyncRequest, selectedAccountId]);
 
   useEffect(() => {
     function handleAccountTradesSynced(event: Event) {
@@ -505,6 +533,7 @@ export function TradesPage() {
   const hasActiveFilters = Boolean(startDate || endDate || symbolQuery || limit !== DEFAULT_LIMIT);
   const searchIsActive = symbolQuery.trim().length > 0;
   const accountAccess = tradingAccessBadge(selectedAccount?.can_trade ?? null);
+  const selectedAccountBalance = getAvailableAccountBalance(selectedAccount?.balance ?? null);
 
   const summaryWinShare = clampPercent(share(summary.win_count, summary.trade_count));
   const summaryLossShare = clampPercent(share(summary.loss_count, summary.trade_count));
@@ -521,6 +550,7 @@ export function TradesPage() {
       return;
     }
 
+    const isCurrent = beginSyncRequest();
     setSyncing(true);
     setSyncMessage(null);
 
@@ -530,11 +560,17 @@ export function TradesPage() {
         end: endIso,
       });
       await loadTradesAndSummary();
-      setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
+      if (isCurrent()) {
+        setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
+      }
     } catch (err) {
-      setSyncMessage(err instanceof Error ? err.message : "Failed to sync trades");
+      if (isCurrent()) {
+        setSyncMessage(err instanceof Error ? err.message : "Failed to sync trades");
+      }
     } finally {
-      setSyncing(false);
+      if (isCurrent()) {
+        setSyncing(false);
+      }
     }
   }
 
@@ -562,6 +598,9 @@ export function TradesPage() {
                 </Badge>
               ) : null}
               {selectedAccount?.is_main ? <Badge variant="accent">Main account</Badge> : null}
+              {selectedAccount?.provider_data_stale ? (
+                <Badge variant="warning" title={formatProviderLastSeen(selectedAccount.last_seen_at)}>Stale provider data</Badge>
+              ) : null}
               {selectedAccount ? <Badge variant={accountAccess.variant}>{accountAccess.label}</Badge> : null}
             </div>
 
@@ -599,8 +638,14 @@ export function TradesPage() {
         <div className="relative mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <HeroStat
             label="Balance"
-            value={selectedAccount ? formatCurrency(selectedAccount.balance) : "No account"}
-            detail={selectedAccount ? `Account #${getDemoAccountId(selectedAccount.id)}` : "Choose an account"}
+            value={selectedAccount ? formatAccountBalance(selectedAccountBalance) : "No account"}
+            detail={
+              selectedAccount
+                ? selectedAccount.provider_data_stale
+                  ? formatProviderLastSeen(selectedAccount.last_seen_at)
+                  : `Account #${getDemoAccountId(selectedAccount.id)}`
+                : "Choose an account"
+            }
           />
           <HeroStat
             label="Window Net"
@@ -621,24 +666,25 @@ export function TradesPage() {
         </div>
 
         <div className="relative mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_180px]">
-          <FilterField label="Start">
-            <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+          <FilterField label="Start" htmlFor="trades-start-date">
+            <Input id="trades-start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
           </FilterField>
 
-          <FilterField label="End">
-            <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+          <FilterField label="End" htmlFor="trades-end-date">
+            <Input id="trades-end-date" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
           </FilterField>
 
-          <FilterField label="Symbol">
+          <FilterField label="Symbol" htmlFor="trades-symbol">
             <Input
+              id="trades-symbol"
               value={symbolQuery}
               onChange={(event) => setSymbolQuery(event.target.value)}
               placeholder="NQ, ES, CL..."
             />
           </FilterField>
 
-          <FilterField label="Limit">
-            <Select value={String(limit)} onChange={(event) => setLimit(Number(event.target.value))}>
+          <FilterField label="Limit" htmlFor="trades-limit">
+            <Select id="trades-limit" value={String(limit)} onChange={(event) => setLimit(Number(event.target.value))}>
               <option value={100}>100</option>
               <option value={200}>200</option>
               <option value={500}>500</option>
@@ -1000,13 +1046,14 @@ function MetricTile({ label, value, hint, valueClassName, className }: MetricTil
 
 interface FilterFieldProps {
   label: string;
+  htmlFor: string;
   children: ReactNode;
 }
 
-function FilterField({ label, children }: FilterFieldProps) {
+function FilterField({ label, htmlFor, children }: FilterFieldProps) {
   return (
     <div>
-      <label className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</label>
+      <label htmlFor={htmlFor} className="mb-1.5 block text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</label>
       {children}
     </div>
   );

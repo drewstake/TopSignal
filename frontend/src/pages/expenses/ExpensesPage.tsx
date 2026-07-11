@@ -39,8 +39,11 @@ import {
   type ExpenseStage,
 } from "../../lib/expensePresets";
 import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
+import { isDemoModeEnabled } from "../../lib/demoMode";
+import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatCurrency } from "../../utils/formatters";
 import { buildNetRangeOptions, formatLocalIsoDate, getEarliestIsoDate, type NetRangeOption } from "./expenseNetRanges";
+import { decideExpenseReconciliation } from "./expenseReconciliation";
 
 const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
@@ -297,9 +300,55 @@ export function ExpensesPage() {
   const [addPayoutState, setAddPayoutState] = useState<AddPayoutState>(buildInitialAddPayoutState());
   const [addPayoutError, setAddPayoutError] = useState<string | null>(null);
   const [addingPayout, setAddingPayout] = useState(false);
-  const didInitialCombineSyncRef = useRef(false);
+  const [dataRevision, setDataRevision] = useState(0);
+  const allTimeExpenseTotalsRequestRef = useRef<Promise<ExpenseTotals> | null>(null);
+  const allTimePayoutTotalsRequestRef = useRef<Promise<PayoutTotals> | null>(null);
+  const beginExpensesRequest = useLatestRequestGuard();
+  const beginTotalsRequest = useLatestRequestGuard();
+  const beginPayoutsRequest = useLatestRequestGuard();
+  const beginPayoutTotalsRequest = useLatestRequestGuard();
+  const beginSpendRequest = useLatestRequestGuard();
+  const beginNetRangesRequest = useLatestRequestGuard();
+  const demoModeEnabled = isDemoModeEnabled();
+
+  const getAllTimeExpenseTotals = useCallback(() => {
+    if (!allTimeExpenseTotalsRequestRef.current) {
+      const request = getExpenseTotals(TOTAL_RANGE);
+      allTimeExpenseTotalsRequestRef.current = request;
+      void request.catch(() => {
+        if (allTimeExpenseTotalsRequestRef.current === request) {
+          allTimeExpenseTotalsRequestRef.current = null;
+        }
+      });
+    }
+    return allTimeExpenseTotalsRequestRef.current;
+  }, []);
+
+  const getAllTimePayoutTotals = useCallback(() => {
+    if (!allTimePayoutTotalsRequestRef.current) {
+      const request = getPayoutTotals();
+      allTimePayoutTotalsRequestRef.current = request;
+      void request.catch(() => {
+        if (allTimePayoutTotalsRequestRef.current === request) {
+          allTimePayoutTotalsRequestRef.current = null;
+        }
+      });
+    }
+    return allTimePayoutTotalsRequestRef.current;
+  }, []);
+
+  const invalidateFinancialSummaryRequests = useCallback(() => {
+    allTimeExpenseTotalsRequestRef.current = null;
+    allTimePayoutTotalsRequestRef.current = null;
+  }, []);
+
+  const refreshFinancialData = useCallback(() => {
+    invalidateFinancialSummaryRequests();
+    setDataRevision((current) => current + 1);
+  }, [invalidateFinancialSummaryRequests]);
 
   const loadExpenses = useCallback(async () => {
+    const isCurrent = beginExpensesRequest();
     setLoading(true);
     setError(null);
     try {
@@ -310,32 +359,48 @@ export function ExpensesPage() {
         limit,
         offset,
       });
-      setItems(payload.items);
-      setTotal(payload.total);
+      if (isCurrent()) {
+        setItems(payload.items);
+        setTotal(payload.total);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setItems([]);
       setTotal(0);
       setError(err instanceof Error ? err.message : "Failed to load expenses");
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+      }
     }
-  }, [category, endDate, limit, offset, startDate]);
+  }, [beginExpensesRequest, category, endDate, limit, offset, startDate]);
 
   const loadTotals = useCallback(async () => {
+    const isCurrent = beginTotalsRequest();
     setTotalsLoading(true);
     setTotalsError(null);
     try {
-      const response = await getExpenseTotals(TOTAL_RANGE);
-      setTotals(response);
+      const response = await getAllTimeExpenseTotals();
+      if (isCurrent()) {
+        setTotals(response);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setTotals(null);
       setTotalsError(err instanceof Error ? err.message : "Failed to load totals");
     } finally {
-      setTotalsLoading(false);
+      if (isCurrent()) {
+        setTotalsLoading(false);
+      }
     }
-  }, []);
+  }, [beginTotalsRequest, getAllTimeExpenseTotals]);
 
   const loadPayouts = useCallback(async () => {
+    const isCurrent = beginPayoutsRequest();
     setPayoutLoading(true);
     setPayoutError(null);
     try {
@@ -343,69 +408,96 @@ export function ExpensesPage() {
         limit: PAYOUT_PAGE_SIZE,
         offset: payoutOffset,
       });
-      setPayoutItems(payload.items);
-      setPayoutTotal(payload.total);
+      if (isCurrent()) {
+        setPayoutItems(payload.items);
+        setPayoutTotal(payload.total);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setPayoutItems([]);
       setPayoutTotal(0);
       setPayoutError(err instanceof Error ? err.message : "Failed to load payouts");
     } finally {
-      setPayoutLoading(false);
+      if (isCurrent()) {
+        setPayoutLoading(false);
+      }
     }
-  }, [payoutOffset]);
+  }, [beginPayoutsRequest, payoutOffset]);
 
   const loadPayoutTotals = useCallback(async () => {
+    const isCurrent = beginPayoutTotalsRequest();
     setPayoutTotalsLoading(true);
     setPayoutTotalsError(null);
     try {
-      const response = await getPayoutTotals();
-      setPayoutTotals(response);
+      const response = await getAllTimePayoutTotals();
+      if (isCurrent()) {
+        setPayoutTotals(response);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setPayoutTotals(null);
       setPayoutTotalsError(err instanceof Error ? err.message : "Failed to load payout totals");
     } finally {
-      setPayoutTotalsLoading(false);
+      if (isCurrent()) {
+        setPayoutTotalsLoading(false);
+      }
     }
-  }, []);
+  }, [beginPayoutTotalsRequest, getAllTimePayoutTotals]);
 
   const loadSpendSinceLastPayout = useCallback(async () => {
+    const isCurrent = beginSpendRequest();
     setSpendSinceLastPayoutLoading(true);
     setSpendSinceLastPayoutError(null);
     try {
       const latestPayoutPage = await listPayouts({ limit: 1, offset: 0 });
       const lastPayoutDate = latestPayoutPage.items[0]?.payout_date ?? null;
-      const expenseTotals = await getExpenseTotals(
-        TOTAL_RANGE,
-        lastPayoutDate === null ? {} : { startDate: lastPayoutDate },
-      );
+      const expenseTotals = lastPayoutDate === null
+        ? await getAllTimeExpenseTotals()
+        : await getExpenseTotals(TOTAL_RANGE, { startDate: lastPayoutDate });
 
-      setSpendSinceLastPayout({
-        lastPayoutDate,
-        totalAmount: expenseTotals.total_amount,
-        totalAmountCents: expenseTotals.total_amount_cents,
-        expenseCount: expenseTotals.count,
-      });
+      if (isCurrent()) {
+        setSpendSinceLastPayout({
+          lastPayoutDate,
+          totalAmount: expenseTotals.total_amount,
+          totalAmountCents: expenseTotals.total_amount_cents,
+          expenseCount: expenseTotals.count,
+        });
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setSpendSinceLastPayout(null);
       setSpendSinceLastPayoutError(err instanceof Error ? err.message : "Failed to load spend since last payout");
     } finally {
-      setSpendSinceLastPayoutLoading(false);
+      if (isCurrent()) {
+        setSpendSinceLastPayoutLoading(false);
+      }
     }
-  }, []);
+  }, [beginSpendRequest, getAllTimeExpenseTotals]);
 
   const loadNetRanges = useCallback(async () => {
+    const isCurrent = beginNetRangesRequest();
     setNetRangesLoading(true);
     setNetRangesError(null);
     try {
       const firstCashFlowDate = await getFirstCashFlowDate();
       const nextNetRangeOptions = buildNetRangeOptions(firstCashFlowDate);
+      if (!isCurrent()) {
+        return;
+      }
       setNetRangeOptions(nextNetRangeOptions);
 
       const summaries = await Promise.all(
         nextNetRangeOptions.map(async (option) => {
+          const allTime = option.key === "all_time";
           const [expenseTotal, payoutTotal] = await Promise.all([
-            getExpenseTotals(TOTAL_RANGE, option.dateRange),
-            getPayoutTotals(option.dateRange),
+            allTime ? getAllTimeExpenseTotals() : getExpenseTotals(TOTAL_RANGE, option.dateRange),
+            allTime ? getAllTimePayoutTotals() : getPayoutTotals(option.dateRange),
           ]);
 
           return {
@@ -419,14 +511,21 @@ export function ExpensesPage() {
           };
         }),
       );
-      setNetRanges(summaries);
+      if (isCurrent()) {
+        setNetRanges(summaries);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setNetRanges([]);
       setNetRangesError(err instanceof Error ? err.message : "Failed to load net ranges");
     } finally {
-      setNetRangesLoading(false);
+      if (isCurrent()) {
+        setNetRangesLoading(false);
+      }
     }
-  }, []);
+  }, [beginNetRangesRequest, getAllTimeExpenseTotals, getAllTimePayoutTotals]);
 
   const listAllExpensesByCategory = useCallback(async (expenseCategory: Extract<ExpenseCategory, "evaluation_fee" | "activation_fee">) => {
     const rows: ExpenseRecord[] = [];
@@ -458,6 +557,11 @@ export function ExpensesPage() {
   }, [listAllExpensesByCategory]);
 
   const syncCombineTracker = useCallback(async () => {
+    if (isDemoModeEnabled()) {
+      setCombineTrackerError("Demo mode is read-only. Turn it off before reconciling combine expenses.");
+      return;
+    }
+
     setCombineTrackerLoading(true);
     setCombineTrackerError(null);
 
@@ -597,7 +701,7 @@ export function ExpensesPage() {
         }
 
         if (didMutateExpenses) {
-          await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
+          refreshFinancialData();
         }
 
         const failedCount = failedCreateCount + failedDeleteCount;
@@ -615,39 +719,41 @@ export function ExpensesPage() {
       setCombineSpendSnapshot(nextSnapshot);
       setCombineTrackerLoading(false);
     }
-  }, [listAllCombineRelevantExpenses, loadExpenses, loadNetRanges, loadSpendSinceLastPayout, loadTotals]);
+  }, [listAllCombineRelevantExpenses, refreshFinancialData]);
 
-  useEffect(() => {
-    void loadExpenses();
-  }, [loadExpenses]);
-
-  useEffect(() => {
-    void loadTotals();
-  }, [loadTotals]);
-
-  useEffect(() => {
-    void loadPayouts();
-  }, [loadPayouts]);
-
-  useEffect(() => {
-    void loadPayoutTotals();
-  }, [loadPayoutTotals]);
-
-  useEffect(() => {
-    void loadSpendSinceLastPayout();
-  }, [loadSpendSinceLastPayout]);
-
-  useEffect(() => {
-    void loadNetRanges();
-  }, [loadNetRanges]);
-
-  useEffect(() => {
-    if (didInitialCombineSyncRef.current) {
+  const handleReconcileCombineExpenses = useCallback(() => {
+    const confirmed = demoModeEnabled
+      ? false
+      : window.confirm(
+          "Reconcile combine expenses now? This may create missing auto-tracked evaluation fees and remove duplicate auto-tracked rows.",
+        );
+    const decision = decideExpenseReconciliation(demoModeEnabled, confirmed);
+    if (!decision.allowed && decision.reason === "demo_mode") {
+      setCombineTrackerError("Demo mode is read-only. Turn it off before reconciling combine expenses.");
       return;
     }
-    didInitialCombineSyncRef.current = true;
-    void syncCombineTracker();
-  }, [syncCombineTracker]);
+    if (decision.allowed) {
+      void syncCombineTracker();
+    }
+  }, [demoModeEnabled, syncCombineTracker]);
+
+  useEffect(() => {
+    void dataRevision;
+    void loadExpenses();
+  }, [dataRevision, loadExpenses]);
+
+  useEffect(() => {
+    void dataRevision;
+    void loadPayouts();
+  }, [dataRevision, loadPayouts]);
+
+  useEffect(() => {
+    void dataRevision;
+    void loadTotals();
+    void loadPayoutTotals();
+    void loadSpendSinceLastPayout();
+    void loadNetRanges();
+  }, [dataRevision, loadNetRanges, loadPayoutTotals, loadSpendSinceLastPayout, loadTotals]);
 
   useEffect(() => {
     setOffset(0);
@@ -712,13 +818,7 @@ export function ExpensesPage() {
       if (isAutoTrackedCombineExpense(expense) && expense.account_id !== null) {
         setCombineSpendSnapshot(suppressEvaluationExpenseSync([expense.account_id]));
       }
-      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
-      if (
-        !isAutoTrackedCombineExpense(expense) &&
-        (expense.category === "evaluation_fee" || expense.category === "activation_fee")
-      ) {
-        await syncCombineTracker();
-      }
+      refreshFinancialData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete expense");
     }
@@ -732,7 +832,7 @@ export function ExpensesPage() {
 
     try {
       await deletePayout(payout.id);
-      await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
+      refreshFinancialData();
     } catch (err) {
       setPayoutError(err instanceof Error ? err.message : "Failed to delete payout");
     }
@@ -777,10 +877,8 @@ export function ExpensesPage() {
       });
 
       setAddOpen(false);
-      await Promise.all([loadExpenses(), loadTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
-      if (addState.stage === "evaluation_fee" || addState.stage === "activation_fee") {
-        await syncCombineTracker();
-      }
+      setOffset(0);
+      refreshFinancialData();
     } catch (err) {
       if (isApiError(err) && err.status === 400 && err.detail === "practice_accounts_are_free") {
         setAddError("Practice accounts are free. Expenses are disabled.");
@@ -816,11 +914,9 @@ export function ExpensesPage() {
       });
 
       setAddPayoutOpen(false);
+      refreshFinancialData();
       if (payoutOffset !== 0) {
         setPayoutOffset(0);
-        await Promise.all([loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
-      } else {
-        await Promise.all([loadPayouts(), loadPayoutTotals(), loadNetRanges(), loadSpendSinceLastPayout()]);
       }
     } catch (err) {
       setAddPayoutError(err instanceof Error ? err.message : "Failed to create payout");
@@ -831,6 +927,7 @@ export function ExpensesPage() {
 
   return (
     <div className="space-y-6 pb-10">
+      <h1 className="sr-only">Expenses and Payouts</h1>
       <section className="grid gap-3">
         <Card>
           <CardContent className="space-y-5">
@@ -846,8 +943,14 @@ export function ExpensesPage() {
                   <p className="text-xs text-slate-400">
                     {totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}
                   </p>
-                  <Button variant="ghost" size="sm" onClick={() => void syncCombineTracker()} disabled={combineTrackerLoading}>
-                    {combineTrackerLoading ? "Syncing..." : "Sync Combine Expenses"}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleReconcileCombineExpenses}
+                    disabled={combineTrackerLoading || demoModeEnabled}
+                    title={demoModeEnabled ? "Demo mode is read-only" : undefined}
+                  >
+                    {combineTrackerLoading ? "Reconciling..." : "Reconcile Combine Expenses"}
                   </Button>
                 </div>
                 {combineTrackerError ? <p className="text-xs text-rose-300">{combineTrackerError}</p> : null}
@@ -944,23 +1047,24 @@ export function ExpensesPage() {
               <CardTitle>Expenses</CardTitle>
               <CardDescription>Track paid account fees and operational costs.</CardDescription>
             </div>
-            <Button onClick={handleOpenAdd}>Add Expense</Button>
+            <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? "Demo mode is read-only" : undefined}>Add Expense</Button>
           </div>
         </CardHeader>
 
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
-              <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+              <label htmlFor="expenses-start-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
+              <Input id="expenses-start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">End Date</label>
-              <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+              <label htmlFor="expenses-end-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">End Date</label>
+              <Input id="expenses-end-date" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Category</label>
+              <label htmlFor="expenses-category" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Category</label>
               <Select
+                id="expenses-category"
                 value={category}
                 onChange={(event) => setCategory((event.target.value as ExpenseCategory | "") || "")}
               >
@@ -973,8 +1077,8 @@ export function ExpensesPage() {
               </Select>
             </div>
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Page Size</label>
-              <Select value={String(limit)} onChange={(event) => setLimit(Number(event.target.value))}>
+              <label htmlFor="expenses-page-size" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Page Size</label>
+              <Select id="expenses-page-size" value={String(limit)} onChange={(event) => setLimit(Number(event.target.value))}>
                 <option value={25}>25</option>
                 <option value={50}>50</option>
                 <option value={100}>100</option>
@@ -1027,7 +1131,7 @@ export function ExpensesPage() {
                         {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" onClick={() => void handleDeleteExpense(expense)}>
+                        <Button variant="danger" size="sm" disabled={demoModeEnabled} onClick={() => void handleDeleteExpense(expense)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1071,7 +1175,7 @@ export function ExpensesPage() {
               <CardTitle>Payouts</CardTitle>
               <CardDescription>Log the final payouts you receive after the profit split.</CardDescription>
             </div>
-            <Button onClick={handleOpenAddPayout}>Add Payout</Button>
+            <Button onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? "Demo mode is read-only" : undefined}>Add Payout</Button>
           </div>
         </CardHeader>
 
@@ -1137,7 +1241,7 @@ export function ExpensesPage() {
                         {payout.notes ?? "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" onClick={() => void handleDeletePayout(payout)}>
+                        <Button variant="danger" size="sm" disabled={demoModeEnabled} onClick={() => void handleDeletePayout(payout)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1182,8 +1286,9 @@ export function ExpensesPage() {
       >
         <form className="space-y-3" onSubmit={(event) => void handleSubmitNewPayout(event)}>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Payout Date</label>
+            <label htmlFor="payout-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Payout Date</label>
             <Input
+              id="payout-date"
               type="date"
               value={addPayoutState.payoutDate}
               onChange={(event) =>
@@ -1197,8 +1302,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
+            <label htmlFor="payout-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
             <Input
+              id="payout-amount"
               value={addPayoutState.amount}
               onChange={(event) =>
                 setAddPayoutState((current) => ({
@@ -1213,8 +1319,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Notes (Optional)</label>
+            <label htmlFor="payout-notes" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Notes (Optional)</label>
             <Textarea
+              id="payout-notes"
               value={addPayoutState.notes}
               onChange={(event) =>
                 setAddPayoutState((current) => ({
@@ -1248,8 +1355,9 @@ export function ExpensesPage() {
       >
         <form className="space-y-3" onSubmit={(event) => void handleSubmitNewExpense(event)}>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account Type</label>
+            <label htmlFor="expense-account-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account Type</label>
             <Select
+              id="expense-account-type"
               value={addState.accountType}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1267,8 +1375,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Plan Size</label>
+            <label htmlFor="expense-plan-size" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Plan Size</label>
             <Select
+              id="expense-plan-size"
               value={addState.planSize}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1287,8 +1396,9 @@ export function ExpensesPage() {
 
           {addState.accountType === "standard" ? (
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Stage</label>
+              <label htmlFor="expense-stage" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Stage</label>
               <Select
+                id="expense-stage"
                 value={addState.stage}
                 onChange={(event) =>
                   setAddState((current) => ({
@@ -1303,14 +1413,15 @@ export function ExpensesPage() {
             </div>
           ) : (
             <div>
-              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Stage</label>
-              <Input value="evaluation_fee" disabled readOnly />
+              <label htmlFor="expense-stage-readonly" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Stage</label>
+              <Input id="expense-stage-readonly" value="evaluation_fee" disabled readOnly />
             </div>
           )}
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Date</label>
+            <label htmlFor="expense-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Date</label>
             <Input
+              id="expense-date"
               type="date"
               value={addState.expenseDate}
               onChange={(event) =>
@@ -1323,8 +1434,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
+            <label htmlFor="expense-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
             <Input
+              id="expense-amount"
               value={addState.amount}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1337,8 +1449,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account ID (Optional)</label>
+            <label htmlFor="expense-account-id" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account ID (Optional)</label>
             <Input
+              id="expense-account-id"
               value={addState.accountId}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1351,8 +1464,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Description (Optional)</label>
+            <label htmlFor="expense-description" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Description (Optional)</label>
             <Input
+              id="expense-description"
               value={addState.description}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1365,8 +1479,9 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Tags (Optional)</label>
+            <label htmlFor="expense-tags" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Tags (Optional)</label>
             <Input
+              id="expense-tags"
               value={addState.tags}
               onChange={(event) =>
                 setAddState((current) => ({

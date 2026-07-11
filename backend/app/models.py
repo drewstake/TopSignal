@@ -35,6 +35,7 @@ class Account(Base):
     external_id = Column(Text, nullable=False)
     name = Column(Text, nullable=True)
     display_name = Column(Text, nullable=True)
+    balance = Column(Numeric(18, 6), nullable=True)
     account_state = Column(Text, nullable=False, server_default="ACTIVE")
     can_trade = Column(Boolean, nullable=True)
     is_visible = Column(Boolean, nullable=True)
@@ -296,10 +297,22 @@ class BotConfig(Base):
         CheckConstraint("fast_period > 0", name="bot_configs_fast_period_positive_check"),
         CheckConstraint("slow_period > fast_period", name="bot_configs_slow_period_gt_fast_check"),
         CheckConstraint("order_size > 0", name="bot_configs_order_size_positive_check"),
+        CheckConstraint(
+            "order_size <= 10000 and order_size = trunc(order_size)",
+            name="bot_configs_order_size_supported_check",
+        ),
         CheckConstraint("max_contracts > 0", name="bot_configs_max_contracts_positive_check"),
+        CheckConstraint(
+            "max_contracts <= 10000 and max_contracts = trunc(max_contracts)",
+            name="bot_configs_max_contracts_supported_check",
+        ),
         CheckConstraint("max_daily_loss >= 0", name="bot_configs_max_daily_loss_nonnegative_check"),
         CheckConstraint("max_trades_per_day >= 0", name="bot_configs_max_trades_per_day_nonnegative_check"),
         CheckConstraint("max_open_position > 0", name="bot_configs_max_open_position_positive_check"),
+        CheckConstraint(
+            "max_open_position <= 10000 and max_open_position = trunc(max_open_position)",
+            name="bot_configs_max_open_position_supported_check",
+        ),
         CheckConstraint("cooldown_seconds >= 0", name="bot_configs_cooldown_seconds_nonnegative_check"),
         CheckConstraint("max_data_staleness_seconds > 0", name="bot_configs_data_staleness_positive_check"),
         Index("idx_bot_configs_user_account", "user_id", "account_id"),
@@ -438,7 +451,7 @@ class BotOrderAttempt(Base):
         nullable=False,
         server_default=text(f"'{DEFAULT_USER_ID}'"),
     )
-    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="CASCADE"), nullable=False)
+    bot_config_id = Column(BigInteger, ForeignKey("bot_configs.id", ondelete="SET NULL"), nullable=True)
     bot_run_id = Column(BigInteger, ForeignKey("bot_runs.id", ondelete="SET NULL"), nullable=True)
     bot_decision_id = Column(BigInteger, ForeignKey("bot_decisions.id", ondelete="SET NULL"), nullable=True)
     account_id = Column(BigInteger, nullable=False)
@@ -468,7 +481,7 @@ class BotOrderAttempt(Base):
         CheckConstraint("side in ('BUY','SELL')", name="bot_order_attempts_side_check"),
         CheckConstraint("order_type in ('market','limit','stop','trailing_stop')", name="bot_order_attempts_order_type_check"),
         CheckConstraint(
-            "status in ('pending','dry_run','submitted','blocked','rejected','error')",
+            "status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error')",
             name="bot_order_attempts_status_check",
         ),
         CheckConstraint("size > 0", name="bot_order_attempts_size_positive_check"),

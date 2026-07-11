@@ -1,4 +1,5 @@
 import { getDemoAccountName } from "../../lib/demoMode";
+import { getScopedStorageKey } from "../../lib/storageScope";
 import { tradingDayKey } from "../../lib/tradingDay";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 
@@ -37,7 +38,9 @@ export interface CopyTradeAccountRow {
   accountName: string;
   role: CopyTradeRole;
   status: CopyTradeStatus;
-  balance: number;
+  balance: number | null;
+  providerDataStale: boolean;
+  lastSeenAt: string | null;
   dailyPnl: number;
   netPnl: number;
   openPositions: number;
@@ -53,7 +56,7 @@ export interface CopyTradeTotals {
   canCalculate: boolean;
   combinedNetPnl: number;
   combinedDailyPnl: number;
-  combinedBalance: number;
+  combinedBalance: number | null;
   leaderNetPnl: number;
   leaderDailyPnl: number;
   followerContributionNetPnl: number;
@@ -104,7 +107,7 @@ export function readStoredCopyTradeSettings(): CopyTradeSettings {
 
   let rawValue: string | null;
   try {
-    rawValue = window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY);
+    rawValue = window.localStorage.getItem(getScopedStorageKey(COPY_TRADE_SETTINGS_STORAGE_KEY));
   } catch {
     return defaultSettings;
   }
@@ -125,7 +128,10 @@ export function writeStoredCopyTradeSettings(settings: CopyTradeSettings): void 
     return;
   }
 
-  window.localStorage.setItem(COPY_TRADE_SETTINGS_STORAGE_KEY, JSON.stringify(normalizeCopyTradeSettings(settings)));
+  window.localStorage.setItem(
+    getScopedStorageKey(COPY_TRADE_SETTINGS_STORAGE_KEY),
+    JSON.stringify(normalizeCopyTradeSettings(settings)),
+  );
 }
 
 export function updateCopyTradeModeSetting(settings: CopyTradeSettings, modeEnabled: boolean): CopyTradeSettings {
@@ -301,6 +307,10 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
   }
 
   rows.forEach((row) => {
+    if (row.accountId !== null && row.providerDataStale) {
+      warnings.push(`${row.accountName} is using stale provider account data.`);
+    }
+
     if (row.role !== "Follower" || row.accountId === null) {
       return;
     }
@@ -325,7 +335,7 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
       canCalculate,
       combinedNetPnl: 0,
       combinedDailyPnl: 0,
-      combinedBalance: 0,
+      combinedBalance: null,
       leaderNetPnl: 0,
       leaderDailyPnl: 0,
       followerContributionNetPnl: 0,
@@ -338,13 +348,21 @@ export function computeCopyTradeTotals(rows: readonly CopyTradeAccountRow[]): Co
 
   const includedRows = rows.filter((row) => getExclusionReason(row) === null);
   const followerRows = includedRows.filter((row) => row.role === "Follower");
+  const unavailableBalanceRows = includedRows.filter((row) => row.balance === null);
+  if (unavailableBalanceRows.length > 0) {
+    warnings.push(
+      `Combined balance is unavailable because ${unavailableBalanceRows.map((row) => row.accountName).join(", ")} ${
+        unavailableBalanceRows.length === 1 ? "has" : "have"
+      } no current provider balance.`,
+    );
+  }
 
   return {
     hasLeader,
     canCalculate,
     combinedNetPnl: sum(includedRows.map((row) => row.netPnl)),
     combinedDailyPnl: sum(includedRows.map((row) => row.dailyPnl)),
-    combinedBalance: sum(includedRows.map((row) => row.balance)),
+    combinedBalance: unavailableBalanceRows.length === 0 ? sum(includedRows.map((row) => row.balance as number)) : null,
     leaderNetPnl: leader.netPnl,
     leaderDailyPnl: leader.dailyPnl,
     followerContributionNetPnl: sum(followerRows.map((row) => row.netPnl)),
@@ -549,7 +567,9 @@ function buildAccountRow(
     }),
     role,
     status,
-    balance: safeNumber(account.balance),
+    balance: typeof account.balance === "number" && Number.isFinite(account.balance) ? account.balance : null,
+    providerDataStale: account.provider_data_stale,
+    lastSeenAt: account.last_seen_at,
     dailyPnl: safeNumber(snapshot?.dailyPnl),
     netPnl: safeNumber(snapshot?.netPnl),
     openPositions: Math.max(0, safeNumber(snapshot?.openPositions)),
@@ -567,7 +587,9 @@ function buildEmptyFollowerSlot(slotNumber: number): CopyTradeAccountRow {
     accountName: `Follower Slot ${slotNumber}`,
     role: "Follower",
     status: "Inactive",
-    balance: 0,
+    balance: null,
+    providerDataStale: false,
+    lastSeenAt: null,
     dailyPnl: 0,
     netPnl: 0,
     openPositions: 0,

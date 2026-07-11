@@ -108,7 +108,7 @@ def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
 def serialize_bot_order_attempt(row: BotOrderAttempt) -> dict[str, Any]:
     return {
         "id": int(row.id),
-        "bot_config_id": int(row.bot_config_id),
+        "bot_config_id": int(row.bot_config_id) if row.bot_config_id is not None else None,
         "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
         "bot_decision_id": int(row.bot_decision_id) if row.bot_decision_id is not None else None,
         "account_id": int(row.account_id),

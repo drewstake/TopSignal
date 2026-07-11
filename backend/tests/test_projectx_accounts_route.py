@@ -43,6 +43,7 @@ def db_session():
 @pytest.fixture(autouse=True)
 def allow_legacy_env_projectx_credentials(monkeypatch):
     monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
 
 
 def test_accounts_route_default_view_shows_active_plus_main_with_state_sync(db_session, monkeypatch):
@@ -163,10 +164,13 @@ def test_accounts_route_returns_provider_and_custom_display_names(db_session, mo
             "account_state": "ACTIVE",
             "is_main": False,
             "can_trade": True,
-            "is_visible": True,
-            "last_trade_at": None,
-        }
-    ]
+                "is_visible": True,
+                "last_trade_at": None,
+                "last_seen_at": payload[0]["last_seen_at"],
+                "provider_data_stale": False,
+            }
+        ]
+    assert isinstance(payload[0]["last_seen_at"], datetime)
 
 
 def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(db_session, monkeypatch):
@@ -198,10 +202,13 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
             "account_state": "ACTIVE",
             "is_main": False,
             "can_trade": True,
-            "is_visible": True,
-            "last_trade_at": None,
-        }
-    ]
+                "is_visible": True,
+                "last_trade_at": None,
+                "last_seen_at": payload[0]["last_seen_at"],
+                "provider_data_stale": False,
+            }
+        ]
+    assert isinstance(payload[0]["last_seen_at"], datetime)
 
     row = (
         db_session.query(Account)
@@ -462,23 +469,109 @@ def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_sess
     assert exc_info.value.detail == "projectx_credentials_not_configured"
 
 
-def test_local_only_origins_still_allow_legacy_env_credentials_in_authenticated_dev(db_session, monkeypatch):
+def test_local_only_origins_do_not_enable_shared_credentials_in_cloud_runtime(db_session, monkeypatch):
     Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
-    monkeypatch.delenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", raising=False)
-    monkeypatch.delenv("AUTH_REQUIRED", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
     monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:5173")
     monkeypatch.setenv("ALLOWED_ORIGIN_REGEX", main_module._LOCAL_ORIGIN_REGEX)
+    monkeypatch.setattr(
+        main_module.ProjectXClient,
+        "from_env",
+        lambda: (_ for _ in ()).throw(AssertionError("shared env credentials should not be used")),
+    )
 
+    with pytest.raises(HTTPException) as exc_info:
+        list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "projectx_credentials_not_configured"
+
+
+def test_accounts_route_serves_last_known_local_balance_during_provider_outage(db_session, monkeypatch):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7102",
+            name="Cached Account",
+            balance=12345.67,
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module.ProjectXClient,
+        "from_env",
+        lambda: (_ for _ in ()).throw(
+            main_module.ProjectXClientError("provider unavailable", status_code=503)
+        ),
+    )
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert [int(row["id"]) for row in payload] == [7102]
+    assert payload[0]["balance"] == pytest.approx(12345.67)
+    assert payload[0]["provider_data_stale"] is True
+
+
+def test_accounts_route_preserves_unknown_balance_during_provider_outage(db_session, monkeypatch):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7103",
+            name="Never Synced",
+            balance=None,
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module.ProjectXClient,
+        "from_env",
+        lambda: (_ for _ in ()).throw(
+            main_module.ProjectXClientError("provider unavailable", status_code=503)
+        ),
+    )
+
+    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert payload[0]["balance"] is None
+    assert payload[0]["provider_data_stale"] is True
+
+
+def test_account_sync_does_not_erase_last_known_balance_when_provider_omits_it(db_session, monkeypatch):
     class StubClient:
         def list_accounts(self, *, only_active_accounts=True):
-            return [{"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True}]
+            assert only_active_accounts is False
+            return [
+                {
+                    "id": 7104,
+                    "name": "Partial Provider Account",
+                    "balance": None,
+                    "can_trade": True,
+                    "is_visible": True,
+                }
+            ]
 
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7104",
+            name="Cached Account",
+            balance=45678.9,
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
     monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
 
     payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
-    assert [int(row["id"]) for row in payload] == [7101]
+    assert payload[0]["balance"] == pytest.approx(45678.9)
+    stored_balance = db_session.query(Account).filter(Account.external_id == "7104").one().balance
+    assert float(stored_balance) == pytest.approx(45678.9)
 
 
 def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_are_unavailable_in_local_dev(

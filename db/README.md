@@ -4,8 +4,11 @@ This folder contains:
 
 - `schema.sql`: full schema for a fresh PostgreSQL database
 - `migrations/`: incremental SQL updates for older databases
+- `backend/tools/migrate_db.py`: ordered, checksummed migration runner
 
-TopSignal does not currently ship a migration runner. Apply SQL directly with `psql`.
+The runner records applied filenames and SHA-256 checksums in
+`topsignal_schema_migrations`, serializes upgrades with a PostgreSQL advisory
+lock, and applies each migration in its own transaction.
 
 ## Local Postgres Container
 
@@ -30,9 +33,52 @@ Apply the full schema:
 Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
 ```
 
+Then validate the current schema, initialize its migration ledger without
+replaying historical upgrades, and verify it. Baseline mode is intentionally
+limited to a brand-new database whose application tables are still empty:
+
+```powershell
+npm run db:baseline
+npm run db:check
+```
+
 ## Existing Database
 
-If the database already exists and predates newer features, apply the missing migrations in order.
+If the database already exists, use the migration runner rather than piping SQL
+files manually:
+
+```powershell
+npm run db:migrate
+npm run db:check
+```
+
+Do not baseline a populated pre-runner database and do not replay the entire
+history over a schema that is already current. Use this one-time, backup-first
+adoption sequence during a maintenance window with application writers stopped:
+
+```powershell
+# 1. Create and verify a database backup outside TopSignal.
+# 2. Bring legacy compatibility-managed schema objects to this release.
+npm run db:init
+# 3. Validate every ORM table/column, required index, critical constraint,
+#    nullable audit FK, and existing bot quantities before recording history.
+npm run db:adopt-current
+npm run db:check
+```
+
+`db:adopt-current` never replays historical data migrations. It requires an
+explicit populated-database acknowledgement, refuses a partial ledger, and
+records history only after current-schema validation succeeds. Restore the
+backup and investigate rather than bypassing a failed validation.
+
+The quantity-safety migration deliberately fails if a legacy bot configuration
+contains fractional, non-finite, non-positive, or greater-than-10,000 contract
+quantities. Review and correct those rows before retrying; the migration will
+not preserve an unvalidated live-order safety state.
+
+The list below documents the historical order. The runner discovers this order
+from filenames, records checksums, stops on the first error, and will not rerun
+an applied migration.
 
 Current migration list:
 
@@ -74,9 +120,14 @@ Current migration list:
 20260709_add_bot_execution_safety.sql
 20260709_add_bot_backtests.sql
 20260709_add_topbot_adaptive_strategy.sql
+20260710_add_bot_submission_unknown_status.sql
+20260710_add_cached_account_balance.sql
+20260710_enforce_bot_quantity_safety.sql
+20260710_preserve_bot_order_attempt_audit.sql
 ```
 
-Example PowerShell application loop:
+Legacy manual PowerShell application loop (recovery/debugging only; prefer the
+migration runner above):
 
 ```powershell
 $migrations = @(
@@ -116,7 +167,11 @@ $migrations = @(
   "20260630_add_topbot_adaptive_strategy.sql",
   "20260709_add_bot_execution_safety.sql",
   "20260709_add_bot_backtests.sql",
-  "20260709_add_topbot_adaptive_strategy.sql"
+  "20260709_add_topbot_adaptive_strategy.sql",
+  "20260710_add_bot_submission_unknown_status.sql",
+  "20260710_add_cached_account_balance.sql",
+  "20260710_enforce_bot_quantity_safety.sql",
+  "20260710_preserve_bot_order_attempt_audit.sql"
 )
 
 foreach ($name in $migrations) {
@@ -136,12 +191,17 @@ Those patches currently help older dev databases by:
 - creating `provider_credentials` when absent
 - seeding default `instrument_metadata`
 
-Treat those patches as a safety net, not as the primary schema-upgrade path.
+Treat those patches as a temporary safety net, not as the primary
+schema-upgrade path. Production deployments should run migrations before
+starting application instances and use `TOPSIGNAL_DB_SCHEMA_INIT=skip`.
 
-For faster local dev startup, the root `npm run dev` backend wrapper sets `TOPSIGNAL_DB_SCHEMA_INIT=skip` unless you override it. Run the compatibility pass explicitly when you change schema-related code or apply new migrations:
+For faster local dev startup, the root `npm run dev` backend wrapper sets
+`TOPSIGNAL_DB_SCHEMA_INIT=skip` unless you override it. Apply and verify
+migrations explicitly when schema-related code changes:
 
 ```powershell
-npm run db:init
+npm run db:migrate
+npm run db:check
 ```
 
 ## Verifying The Schema

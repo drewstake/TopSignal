@@ -11,13 +11,15 @@ class ProjectXAccountOut(BaseModel):
     name: str
     provider_name: str
     custom_display_name: str | None = None
-    balance: float
+    balance: float | None = None
     status: ProjectXAccountState
     account_state: ProjectXAccountState
     is_main: bool
     can_trade: bool | None = None
     is_visible: bool | None = None
     last_trade_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    provider_data_stale: bool = False
 
 
 class ProjectXAccountMainOut(BaseModel):

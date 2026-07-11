@@ -8,14 +8,16 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from threading import Event, Lock
 from time import perf_counter
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func
+from sqlalchemy import func, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -35,6 +37,7 @@ from .db import (
     guard_against_local_database_url,
     init_db,
     log_runtime_connection_targets,
+    resolve_database_host_mode,
     resolve_supabase_mode,
 )
 from .expense_schemas import (
@@ -217,23 +220,79 @@ from .services.trade_plan_evaluator import MarketContext, TradePlan, TradePlanEv
 logger = logging.getLogger(__name__)
 _DEFAULT_PNL_CALENDAR_LOOKBACK_MONTHS = 6
 _LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
+_REQUIRED_SCHEMA_MIGRATION = "20260710_preserve_bot_order_attempt_audit.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260710-v1"
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
+_backtest_capacity_lock = Lock()
+_backtest_active_total = 0
+_backtest_active_by_user: dict[str, int] = {}
 _ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin.strip()
 ]
 _ALLOW_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
-_EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, Content-Length"
+_EXPOSE_HEADERS = "Server-Timing, X-Server-Time-Ms, X-Request-ID, Content-Length"
 _ALLOW_ORIGIN_PATTERN = re.compile(_ALLOW_ORIGIN_REGEX) if _ALLOW_ORIGIN_REGEX else None
+
+
+class _BacktestCapacityLease:
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        self.released = False
+
+    def release(self) -> None:
+        global _backtest_active_total
+        with _backtest_capacity_lock:
+            if self.released:
+                return
+            self.released = True
+            _backtest_active_total = max(0, _backtest_active_total - 1)
+            remaining = _backtest_active_by_user.get(self.user_id, 0) - 1
+            if remaining > 0:
+                _backtest_active_by_user[self.user_id] = remaining
+            else:
+                _backtest_active_by_user.pop(self.user_id, None)
+
+
+def _backtest_capacity_limit(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+def _acquire_backtest_capacity(user_id: str) -> _BacktestCapacityLease:
+    global _backtest_active_total
+    global_limit = _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
+    per_user_limit = _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
+    with _backtest_capacity_lock:
+        user_active = _backtest_active_by_user.get(user_id, 0)
+        if _backtest_active_total >= global_limit or user_active >= per_user_limit:
+            raise HTTPException(
+                status_code=429,
+                detail="backtest_capacity_exhausted",
+                headers={"Retry-After": "5"},
+            )
+        _backtest_active_total += 1
+        _backtest_active_by_user[user_id] = user_active + 1
+    return _BacktestCapacityLease(user_id)
 
 
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
+    _validate_runtime_security_configuration()
+    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
+    _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
     guard_against_local_database_url()
     log_runtime_connection_targets()
     init_db()
@@ -298,8 +357,16 @@ async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
     should_time_request = _is_authenticated_route(path)
     started_at = perf_counter() if should_time_request else None
+    incoming_request_id = request.headers.get("x-request-id", "").strip()
+    request_id = (
+        incoming_request_id
+        if _REQUEST_ID_PATTERN.fullmatch(incoming_request_id)
+        else str(uuid4())
+    )
+    request.state.request_id = request_id
 
     def _with_timing_headers(response: Response) -> Response:
+        response.headers["X-Request-ID"] = request_id
         if started_at is None:
             return response
         duration_ms = max((perf_counter() - started_at) * 1000.0, 0.0)
@@ -343,6 +410,76 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/ready")
+def readiness(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("select 1"))
+        schema = inspect(db.get_bind())
+        table_names = set(schema.get_table_names())
+        if not {"accounts", "bot_backtests", "bot_configs", "bot_order_attempts"}.issubset(table_names):
+            raise RuntimeError("schema_outdated")
+        attempt_column_rows = schema.get_columns("bot_order_attempts")
+        attempt_columns = {column["name"] for column in attempt_column_rows}
+        if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
+            raise RuntimeError("schema_outdated")
+        bot_config_column = next(
+            (column for column in attempt_column_rows if column["name"] == "bot_config_id"),
+            None,
+        )
+        if bot_config_column is None or not bool(bot_config_column.get("nullable")):
+            raise RuntimeError("schema_outdated")
+        account_columns = {column["name"] for column in schema.get_columns("accounts")}
+        if "balance" not in account_columns:
+            raise RuntimeError("schema_outdated")
+        attempt_checks = schema.get_check_constraints("bot_order_attempts")
+        if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
+            raise RuntimeError("schema_outdated")
+        attempt_foreign_keys = schema.get_foreign_keys("bot_order_attempts")
+        config_fk = next(
+            (
+                foreign_key
+                for foreign_key in attempt_foreign_keys
+                if foreign_key.get("constrained_columns") == ["bot_config_id"]
+            ),
+            None,
+        )
+        on_delete = str((config_fk or {}).get("options", {}).get("ondelete") or "").upper()
+        if config_fk is None or on_delete != "SET NULL":
+            raise RuntimeError("schema_outdated")
+        config_checks = " ".join(
+            str(check.get("sqltext") or "").lower()
+            for check in schema.get_check_constraints("bot_configs")
+        )
+        if "10000" not in config_checks or "trunc" not in config_checks:
+            raise RuntimeError("schema_outdated")
+        if "topsignal_schema_migrations" in table_names:
+            migration_applied = db.execute(
+                text(
+                    "select 1 from topsignal_schema_migrations "
+                    "where version = :version limit 1"
+                ),
+                {"version": _REQUIRED_SCHEMA_MIGRATION},
+            ).scalar_one_or_none()
+            if migration_applied is None:
+                raise RuntimeError("schema_outdated")
+        elif "topsignal_schema_baselines" in table_names:
+            baseline_applied = db.execute(
+                text(
+                    "select 1 from topsignal_schema_baselines "
+                    "where version = :version limit 1"
+                ),
+                {"version": _REQUIRED_SCHEMA_BASELINE},
+            ).scalar_one_or_none()
+            if baseline_applied is None:
+                raise RuntimeError("schema_outdated")
+        else:
+            raise RuntimeError("schema_outdated")
+    except Exception:
+        db.rollback()
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
+    return {"status": "ready"}
+
+
 @app.get("/api/auth/me", response_model=AuthMeOut)
 def get_auth_me():
     user = get_authenticated_user_or_default()
@@ -382,7 +519,7 @@ def delete_projectx_credentials_for_user(db: Session = Depends(get_db)):
 
 @app.get("/trades", response_model=list[TradeOut])
 def list_trades(
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=1000),
     account_id: int | None = None,
     db: Session = Depends(get_db),
 ):
@@ -890,6 +1027,7 @@ def list_projectx_accounts(
         show_missing = not only_active_accounts
 
     provider_accounts: list[dict[str, object]] = []
+    provider_error: ProjectXClientError | HTTPException | None = None
     try:
         client = _projectx_client_for_user(db, user_id=user_id)
         provider_accounts = client.list_accounts(only_active_accounts=False)
@@ -904,13 +1042,25 @@ def list_projectx_accounts(
         db.commit()
     except ProjectXClientError as exc:
         db.rollback()
-        raise _to_http_exception(exc) from exc
-    except Exception:
+        provider_error = exc
+        logger.warning(
+            "projectx_account_sync_failed_using_local",
+            extra={"user_id": user_id, "status_code": exc.status_code},
+        )
+    except HTTPException as exc:
         db.rollback()
-        raise
+        provider_error = exc
+        logger.warning(
+            "projectx_account_sync_unavailable_using_local",
+            extra={"user_id": user_id, "status_code": exc.status_code},
+        )
 
     provider_by_external_id = _provider_account_payloads_by_external_id(provider_accounts)
     rows = get_projectx_account_rows(db, user_id=user_id)
+    if provider_error is not None and not rows:
+        if isinstance(provider_error, ProjectXClientError):
+            raise _to_http_exception(provider_error) from provider_error
+        raise provider_error
     visible_rows = [
         row
         for row in rows
@@ -954,13 +1104,19 @@ def list_projectx_accounts(
                 "name": effective_name,
                 "provider_name": provider_name,
                 "custom_display_name": row.display_name,
-                "balance": float(provider_balance) if provider_balance is not None else 0.0,
+                "balance": (
+                    float(provider_balance)
+                    if provider_balance is not None
+                    else (float(row.balance) if row.balance is not None else None)
+                ),
                 "status": account_state,
                 "account_state": account_state,
                 "is_main": bool(row.is_main),
                 "can_trade": can_trade,
                 "is_visible": is_visible,
                 "last_trade_at": last_trade_by_account_id.get(account_id),
+                "last_seen_at": row.last_seen_at,
+                "provider_data_stale": provider_error is not None,
             }
         )
 
@@ -1711,6 +1867,7 @@ def create_trading_bot_backtest(
             bot_config_id=bot_config_id,
             payload=payload,
         )
+    capacity_lease = _acquire_backtest_capacity(user_id)
     try:
         config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
         if config is None:
@@ -1746,6 +1903,8 @@ def create_trading_bot_backtest(
     except Exception:
         db.rollback()
         raise
+    finally:
+        capacity_lease.release()
     return serialize_bot_backtest(row)
 
 
@@ -1758,11 +1917,17 @@ def _stream_trading_bot_backtest(
 ) -> StreamingResponse:
     """Run a backtest off the event loop and stream replay progress to the caller."""
 
+    capacity_lease = _acquire_backtest_capacity(user_id)
+
     async def events():
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+        accept_events = Event()
+        accept_events.set()
 
         def enqueue(event: dict[str, object] | None) -> None:
+            if not accept_events.is_set():
+                return
             try:
                 loop.call_soon_threadsafe(queue.put_nowait, event)
             except RuntimeError:
@@ -1815,11 +1980,13 @@ def _stream_trading_bot_backtest(
                     worker_db.rollback()
                     enqueue({"event": "error", "data": _backtest_stream_error(exc)})
                 finally:
+                    capacity_lease.release()
                     enqueue(None)
 
-        worker = asyncio.create_task(asyncio.to_thread(run))
-        yield ": connected\n\n"
+        worker: asyncio.Task[None] | None = None
         try:
+            worker = asyncio.create_task(asyncio.to_thread(run))
+            yield ": connected\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -1832,12 +1999,14 @@ def _stream_trading_bot_backtest(
                     break
                 yield _serialize_sse_event(event)
         finally:
-            if worker.done():
+            accept_events.clear()
+            if worker is None:
+                capacity_lease.release()
+            elif worker.done():
                 await worker
-            else:
-                # Cancelling the await does not terminate the worker thread; it
-                # may safely finish its transaction after a browser disconnect.
-                worker.cancel()
+            # A disconnected client does not terminate the worker thread. Leave
+            # its task running so the DB transaction finishes and its capacity
+            # lease is released by run(). Progress events are dropped above.
 
     return StreamingResponse(
         events(),
@@ -2721,29 +2890,27 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
 
 
 def _allow_legacy_projectx_env_credentials() -> bool:
-    if os.getenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS") is not None:
-        return _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", True)
-    if not auth_required():
-        return True
-    if _uses_local_only_allowed_origins():
-        return True
-    return resolve_supabase_mode() == "local"
+    # Shared provider credentials are a single-user development escape hatch,
+    # never an authenticated/cloud fallback. CORS is not a trust boundary and
+    # must not decide whether one user's brokerage credentials serve another.
+    return _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", False) and _runtime_is_local_only()
 
 
-def _uses_local_only_allowed_origins() -> bool:
-    allow_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", _LOCAL_ORIGIN_REGEX)
-    if allow_origin_regex and allow_origin_regex != _LOCAL_ORIGIN_REGEX:
-        return False
-    allowed_origins = [
-        origin.strip()
-        for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
-        if origin.strip()
-    ]
-    return all(_is_local_origin(origin) for origin in allowed_origins)
+def _runtime_is_local_only() -> bool:
+    _, database_mode = resolve_database_host_mode()
+    return database_mode == "local" and resolve_supabase_mode() in {"disabled", "local"}
 
 
-def _is_local_origin(origin: str) -> bool:
-    return bool(re.fullmatch(_LOCAL_ORIGIN_REGEX, origin))
+def _validate_runtime_security_configuration() -> None:
+    local_only = _runtime_is_local_only()
+    if not auth_required() and not local_only:
+        raise RuntimeError(
+            "AUTH_REQUIRED=false is allowed only with a local database and local/disabled Supabase runtime."
+        )
+    if _read_bool_env("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", False) and not local_only:
+        raise RuntimeError(
+            "ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS=true is allowed only in a fully local runtime."
+        )
 
 
 def _resolve_amount_cents(amount_cents: int | None) -> int:

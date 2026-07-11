@@ -65,7 +65,6 @@ import type {
   TradePlanEvaluationInput,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
-import { getDemoApiResponse } from "./demoData";
 import { isDemoModeEnabled, sanitizeDemoApiResponse } from "./demoMode";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
@@ -383,6 +382,7 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
     throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
   }
   if (method === "GET" && isDemoModeEnabled()) {
+    const { getDemoApiResponse } = await import("./demoData");
     const demoResponse = getDemoApiResponse<T>(path, query);
     if (demoResponse) {
       return demoResponse.data;

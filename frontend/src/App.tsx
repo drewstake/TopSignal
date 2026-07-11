@@ -86,5 +86,5 @@ export default function App() {
     );
   }
 
-  return <RouterProvider router={router} />;
+  return <RouterProvider key={session.user.id} router={router} />;
 }

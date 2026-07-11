@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+
+
+MAX_SUPPORTED_ORDER_SIZE = 10_000
 
 
 @dataclass(frozen=True)
@@ -103,17 +107,63 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
             )
     if not context.contract_allowed:
         blocks.append(RiskBlock(code="contract_not_allowed", message="Contract is outside this bot's allowed contract list."))
-    if context.order_size <= 0:
+    order_size_is_finite = math.isfinite(context.order_size)
+    resulting_position_is_finite = math.isfinite(context.resulting_position_qty)
+    max_contracts_is_valid = (
+        math.isfinite(context.max_contracts)
+        and 0 < context.max_contracts <= MAX_SUPPORTED_ORDER_SIZE
+    )
+    max_open_position_is_valid = (
+        math.isfinite(context.max_open_position)
+        and 0 < context.max_open_position <= MAX_SUPPORTED_ORDER_SIZE
+    )
+    if not order_size_is_finite or context.order_size <= 0:
         blocks.append(RiskBlock(code="invalid_order_size", message="Computed order size must be positive."))
-    if abs(context.order_size - round(context.order_size)) > 1e-9:
+    elif context.order_size > MAX_SUPPORTED_ORDER_SIZE:
+        blocks.append(
+            RiskBlock(
+                code="order_size_too_large",
+                message=f"Computed order size exceeds the supported limit of {MAX_SUPPORTED_ORDER_SIZE} contracts.",
+                severity="critical",
+            )
+        )
+    elif abs(context.order_size - round(context.order_size)) > 1e-9:
         blocks.append(RiskBlock(code="fractional_contract_size", message="ProjectX futures order size must be a whole number."))
-    if abs(context.resulting_position_qty) > context.max_contracts:
-        blocks.append(RiskBlock(code="max_contracts", message="Resulting position exceeds max contracts."))
-    if abs(context.resulting_position_qty) > context.max_open_position:
-        blocks.append(RiskBlock(code="max_open_position", message="Resulting position exceeds max open position setting."))
+    if not resulting_position_is_finite:
+        blocks.append(
+            RiskBlock(
+                code="invalid_resulting_position",
+                message="Resulting position could not be represented safely.",
+                severity="critical",
+            )
+        )
+    if not max_contracts_is_valid or not max_open_position_is_valid:
+        blocks.append(
+            RiskBlock(
+                code="invalid_position_limit",
+                message=(
+                    "Configured position limits must be finite positive values no greater than "
+                    f"{MAX_SUPPORTED_ORDER_SIZE} contracts."
+                ),
+                severity="critical",
+            )
+        )
+    elif resulting_position_is_finite:
+        if abs(context.resulting_position_qty) > context.max_contracts:
+            blocks.append(RiskBlock(code="max_contracts", message="Resulting position exceeds max contracts."))
+        if abs(context.resulting_position_qty) > context.max_open_position:
+            blocks.append(RiskBlock(code="max_open_position", message="Resulting position exceeds max open position setting."))
     if context.trades_today >= context.max_trades_per_day:
         blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
-    if context.daily_pnl <= -context.max_daily_loss:
+    if not math.isfinite(context.daily_pnl) or not math.isfinite(context.max_daily_loss):
+        blocks.append(
+            RiskBlock(
+                code="invalid_daily_pnl_risk_data",
+                message="Daily P&L risk data is not finite.",
+                severity="critical",
+            )
+        )
+    elif context.daily_pnl <= -context.max_daily_loss:
         blocks.append(
             RiskBlock(
                 code="max_daily_loss",
@@ -142,4 +192,4 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
     return blocks
 
 
-__all__ = ["RiskBlock", "RiskEvaluationContext", "evaluate_risk"]
+__all__ = ["MAX_SUPPORTED_ORDER_SIZE", "RiskBlock", "RiskEvaluationContext", "evaluate_risk"]

@@ -31,7 +31,7 @@ export function Tabs({ items }: TabsProps) {
           to={item.to}
           className={({ isActive }) =>
             cn(
-              "rounded-lg px-3 py-2 text-sm font-medium transition duration-200",
+              "inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium transition duration-200",
               isActive
                 ? "bg-gradient-to-r from-app-accent/20 to-app-highlight/25 text-app-accent"
                 : "text-app-muted hover:bg-app-raised/80 hover:text-app-text-soft",

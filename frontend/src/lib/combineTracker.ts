@@ -1,4 +1,5 @@
 import type { ExpenseAccountType, ExpenseCategory, ExpensePlanSize } from "./types";
+import { getScopedStorageKey } from "./storageScope";
 
 export type CombinePlanSize = Extract<ExpensePlanSize, "50k" | "100k" | "150k">;
 
@@ -653,7 +654,7 @@ function readCombineSpendLedger(): CombineSpendLedger {
     return createEmptyCombineSpendLedger();
   }
 
-  const rawValue = window.localStorage.getItem(COMBINE_SPEND_TRACKER_STORAGE_KEY);
+  const rawValue = window.localStorage.getItem(getScopedStorageKey(COMBINE_SPEND_TRACKER_STORAGE_KEY));
   if (!rawValue) {
     return createEmptyCombineSpendLedger();
   }
@@ -670,7 +671,7 @@ function writeCombineSpendLedger(ledger: CombineSpendLedger): void {
     return;
   }
 
-  window.localStorage.setItem(COMBINE_SPEND_TRACKER_STORAGE_KEY, JSON.stringify(ledger));
+  window.localStorage.setItem(getScopedStorageKey(COMBINE_SPEND_TRACKER_STORAGE_KEY), JSON.stringify(ledger));
 }
 
 export function readCombineSpendSnapshot(): CombineSpendSnapshot {

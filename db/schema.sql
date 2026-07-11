@@ -7,6 +7,19 @@
 -- ============================================
 
 
+-- Marker consumed by `npm run db:baseline`. Baseline mode also verifies that
+-- application tables are empty, so re-running this idempotent file over an
+-- existing database cannot silently skip its historical upgrades.
+create table if not exists topsignal_schema_baselines (
+  version text primary key,
+  created_at timestamptz not null default now()
+);
+
+insert into topsignal_schema_baselines (version)
+values ('schema-20260710-v1')
+on conflict (version) do nothing;
+
+
 -- ============================================
 -- TABLE: accounts
 -- One row per trading account you track.
@@ -33,6 +46,9 @@ create table if not exists accounts (
 
   -- Optional local-only display name override used in the app UI.
   display_name text,
+
+  -- Last known provider balance, retained for stale-local reads during outages.
+  balance numeric(18,6),
 
   -- Derived TopSignal lifecycle state from ProjectX account flags.
   account_state text not null default 'ACTIVE'
@@ -373,11 +389,14 @@ create table if not exists bot_configs (
   lookback_bars integer not null default 200 check (lookback_bars >= 25),
   fast_period integer not null default 9 check (fast_period > 0),
   slow_period integer not null default 21 check (slow_period > fast_period),
-  order_size numeric(18,6) not null default 1 check (order_size > 0),
-  max_contracts numeric(18,6) not null default 1 check (max_contracts > 0),
+  order_size numeric(18,6) not null default 1
+    check (order_size > 0 and order_size <= 10000 and order_size = trunc(order_size)),
+  max_contracts numeric(18,6) not null default 1
+    check (max_contracts > 0 and max_contracts <= 10000 and max_contracts = trunc(max_contracts)),
   max_daily_loss numeric(18,6) not null default 250 check (max_daily_loss >= 0),
   max_trades_per_day integer not null default 3 check (max_trades_per_day >= 0),
-  max_open_position numeric(18,6) not null default 1 check (max_open_position > 0),
+  max_open_position numeric(18,6) not null default 1
+    check (max_open_position > 0 and max_open_position <= 10000 and max_open_position = trunc(max_open_position)),
   allowed_contracts jsonb not null default '[]'::jsonb,
   trading_start_time text not null default '09:30',
   trading_end_time text not null default '15:45',
@@ -396,6 +415,54 @@ create index if not exists idx_bot_configs_user_enabled
 
 
 -- ============================================
+-- TABLE: bot_backtests
+-- Reproducible user-scoped backtest inputs and result snapshots.
+-- ============================================
+create table if not exists bot_backtests (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  bot_config_id bigint references bot_configs(id) on delete set null,
+  account_id bigint not null,
+  engine_version text not null,
+  strategy_type text not null,
+  contract_id text not null,
+  symbol text,
+  timeframe_unit text not null,
+  timeframe_unit_number integer not null,
+  requested_start timestamptz not null,
+  requested_end timestamptz not null,
+  actual_start timestamptz not null,
+  actual_end timestamptz not null,
+  starting_balance numeric(18,6) not null,
+  commission_per_contract numeric(18,6) not null default 0,
+  slippage_ticks numeric(18,6) not null default 0,
+  tick_size numeric(18,6) not null,
+  tick_value numeric(18,6) not null,
+  bar_count integer not null,
+  input_fingerprint text not null,
+  config_snapshot jsonb not null,
+  assumptions_snapshot jsonb not null,
+  result_snapshot jsonb not null,
+  created_at timestamptz not null default now(),
+  constraint bot_backtests_requested_range_check check (requested_end > requested_start),
+  constraint bot_backtests_actual_range_check check (actual_end >= actual_start),
+  constraint bot_backtests_starting_balance_positive_check check (starting_balance > 0),
+  constraint bot_backtests_commission_nonnegative_check check (commission_per_contract >= 0),
+  constraint bot_backtests_slippage_nonnegative_check check (slippage_ticks >= 0),
+  constraint bot_backtests_tick_size_positive_check check (tick_size > 0),
+  constraint bot_backtests_tick_value_positive_check check (tick_value > 0),
+  constraint bot_backtests_timeframe_positive_check check (timeframe_unit_number > 0),
+  constraint bot_backtests_bar_count_positive_check check (bar_count > 0)
+);
+
+create index if not exists idx_bot_backtests_user_config_created
+  on bot_backtests (user_id, bot_config_id, created_at desc);
+
+create index if not exists idx_bot_backtests_user_created
+  on bot_backtests (user_id, created_at desc);
+
+
+-- ============================================
 -- TABLE: bot_runs
 -- Deployment/run records for bot lifecycle control.
 -- ============================================
@@ -410,6 +477,8 @@ create table if not exists bot_runs (
   stopped_at timestamptz,
   stop_reason text,
   last_heartbeat_at timestamptz,
+  last_evaluated_at timestamptz,
+  last_error text,
   raw_state jsonb
 );
 
@@ -418,6 +487,10 @@ create index if not exists idx_bot_runs_config_started
 
 create index if not exists idx_bot_runs_account_status
   on bot_runs (user_id, account_id, status);
+
+create unique index if not exists uq_bot_runs_one_running_per_config
+  on bot_runs (user_id, bot_config_id)
+  where status = 'running';
 
 
 -- ============================================
@@ -432,12 +505,14 @@ create table if not exists bot_decisions (
   account_id bigint not null,
   contract_id text not null,
   symbol text,
-  decision_type text not null check (decision_type in ('signal','risk_reject','order_attempt','lifecycle')),
+  decision_type text not null check (decision_type in ('signal','risk_reject','order_attempt','lifecycle','duplicate_skip')),
   action text not null check (action in ('BUY','SELL','HOLD','NONE','STOP','RISK_REJECT')),
   reason text not null,
   candle_timestamp timestamptz,
   price numeric(18,6),
   quantity numeric(18,6),
+  correlation_id text,
+  idempotency_key text,
   raw_payload jsonb,
   created_at timestamptz not null default now()
 );
@@ -453,18 +528,22 @@ create index if not exists idx_bot_decisions_config_created
 create table if not exists bot_order_attempts (
   id bigserial primary key,
   user_id uuid not null default '00000000-0000-0000-0000-000000000000',
-  bot_config_id bigint not null references bot_configs(id) on delete cascade,
+  -- Attempts are immutable execution audit records and survive bot deletion.
+  bot_config_id bigint references bot_configs(id) on delete set null,
   bot_run_id bigint references bot_runs(id) on delete set null,
   bot_decision_id bigint references bot_decisions(id) on delete set null,
   account_id bigint not null,
   contract_id text not null,
+  execution_mode text not null default 'dry_run' check (execution_mode in ('dry_run','live')),
+  correlation_id text,
+  idempotency_key text,
   side text not null check (side in ('BUY','SELL')),
   order_type text not null default 'market' check (order_type in ('market','limit','stop','trailing_stop')),
   size numeric(18,6) not null check (size > 0),
   limit_price numeric(18,6),
   stop_price numeric(18,6),
   trail_price numeric(18,6),
-  status text not null default 'pending' check (status in ('pending','dry_run','submitted','blocked','rejected','error')),
+  status text not null default 'pending' check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error')),
   provider_order_id text,
   rejection_reason text,
   raw_request jsonb,
@@ -478,6 +557,10 @@ create index if not exists idx_bot_order_attempts_config_created
 
 create index if not exists idx_bot_order_attempts_account_created
   on bot_order_attempts (user_id, account_id, created_at);
+
+create unique index if not exists uq_bot_order_attempts_idempotency_key
+  on bot_order_attempts (user_id, bot_config_id, idempotency_key)
+  where idempotency_key is not null;
 
 
 -- ============================================

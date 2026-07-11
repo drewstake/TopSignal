@@ -80,7 +80,9 @@ export interface AccountInfo {
   name: string;
   provider_name: string;
   custom_display_name: string | null;
-  balance: number;
+  balance: number | null;
+  provider_data_stale: boolean;
+  last_seen_at: string | null;
   status: string;
   account_state: "ACTIVE" | "LOCKED_OUT" | "HIDDEN" | "MISSING";
   is_main: boolean;
@@ -1173,7 +1175,7 @@ export interface BotDecision {
 
 export interface BotOrderAttempt {
   id: number;
-  bot_config_id: number;
+  bot_config_id: number | null;
   bot_run_id: number | null;
   bot_decision_id: number | null;
   account_id: number;
@@ -1181,7 +1183,7 @@ export interface BotOrderAttempt {
   side: "BUY" | "SELL";
   order_type: string;
   size: number;
-  status: "pending" | "dry_run" | "submitted" | "blocked" | "rejected" | "error";
+  status: "pending" | "dry_run" | "submitted" | "submission_unknown" | "blocked" | "rejected" | "error";
   execution_mode?: BotExecutionMode;
   correlation_id?: string | null;
   idempotency_key?: string | null;
@@ -1370,7 +1372,7 @@ export interface BotBacktestTrade {
 
 export interface BotBacktestResult {
   id: number;
-  bot_config_id: number;
+  bot_config_id: number | null;
   engine_version: string;
   input_fingerprint: string;
   created_at: string;

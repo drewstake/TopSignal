@@ -60,6 +60,12 @@ from .trading_day import (
 
 
 logger = logging.getLogger(__name__)
+_LIVE_SUBMISSION_SETTLEMENT_WINDOW = timedelta(seconds=60)
+_TRANSIENT_LIVE_RISK_CODES = {
+    "recent_live_submission_settling",
+    "working_order_direction_conflict",
+    "working_order_exposure",
+}
 
 _PROJECTX_UNIT_BY_NAME = {
     "second": 1,
@@ -510,6 +516,16 @@ class OpenPositionState:
 
 
 @dataclass(frozen=True)
+class LiveExecutionPreflight:
+    account_state: str
+    account_can_trade: bool
+    current_position_qty: float
+    working_order_signed_sizes: tuple[float, ...]
+    daily_pnl: float
+    observed_at: datetime
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     status: EvaluationStatus
     correlation_id: str
@@ -663,7 +679,14 @@ def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
         raise LookupError("bot_config_not_found")
 
     filters = {"user_id": user_id, "bot_config_id": bot_config_id}
-    db.query(BotOrderAttempt).filter_by(**filters).delete(synchronize_session=False)
+    db.query(BotOrderAttempt).filter_by(**filters).update(
+        {
+            BotOrderAttempt.bot_config_id: None,
+            BotOrderAttempt.bot_run_id: None,
+            BotOrderAttempt.bot_decision_id: None,
+        },
+        synchronize_session=False,
+    )
     db.query(BotRiskEvent).filter_by(**filters).delete(synchronize_session=False)
     db.query(BotDecision).filter_by(**filters).delete(synchronize_session=False)
     db.query(BotRun).filter_by(**filters).delete(synchronize_session=False)
@@ -911,7 +934,11 @@ def _evaluate_bot_config_impl(
         reason=signal.reason,
         candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
         price=signal.price,
-        quantity=signal_order_size if signal.action in {"BUY", "SELL"} else None,
+        quantity=(
+            _finite_optional_float(signal_order_size)
+            if signal.action in {"BUY", "SELL"}
+            else None
+        ),
         correlation_id=correlation_id,
         idempotency_key=idempotency_key,
         raw_payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else signal.raw_payload,
@@ -953,6 +980,7 @@ def _evaluate_bot_config_impl(
                 target_position_qty=target_position_qty,
                 dry_run=resolved_dry_run,
                 confirm_live_order_routing=confirm_live_order_routing,
+                client=client,
             )
             if idempotency_key is None:
                 blocks.append(
@@ -988,14 +1016,14 @@ def _evaluate_bot_config_impl(
                     reason="; ".join(block.message for block in blocks),
                     candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
                     price=signal.price,
-                    quantity=signal_order_size,
+                    quantity=_finite_optional_float(signal_order_size),
                     correlation_id=correlation_id,
                     idempotency_key=idempotency_key,
                     raw_payload={"risk_blocks": [block.__dict__ for block in blocks]},
                 )
             )
             evaluation_status = "risk_blocked"
-            if run is not None:
+            if run is not None and not _only_transient_live_blocks(blocks):
                 transition_bot_run(run, "blocked", reason="risk_gate_blocked_order")
                 config.enabled = False
         elif existing_attempt is None:
@@ -1035,6 +1063,16 @@ def _evaluate_bot_config_impl(
                     bot_config_id=int(config.id),
                     lock_for_update=True,
                 )
+                # Serialize the final authoritative preflight and provider call
+                # across every bot configured on the same brokerage account.
+                # The initial audit commit releases earlier locks, so this
+                # account lock is deliberately reacquired before rechecking.
+                resolved_account = _require_owned_account(
+                    db,
+                    user_id=user_id,
+                    account_id=int(config.account_id),
+                    lock_for_update=True,
+                )
                 order_attempt = _require_order_attempt(
                     db,
                     user_id=user_id,
@@ -1072,21 +1110,72 @@ def _evaluate_bot_config_impl(
                     ]
                     evaluation_status = "risk_blocked"
                 else:
-                    # The config lock is held through the provider call, so stop cannot
-                    # overtake an already claimed submission.
-                    _submit_order_attempt(client=client, order_attempt=order_attempt)
-                    if order_attempt.status == "submitted":
-                        evaluation_status = "submitted"
-                    else:
-                        evaluation_status = "error"
-                        config.enabled = False
-                        if run is not None and run.status == "running":
+                    final_blocks = evaluate_risk_gates(
+                        db,
+                        user_id=user_id,
+                        config=config,
+                        account=resolved_account,
+                        latest_candle=latest_candle,
+                        contract_id=execution_contract_id,
+                        symbol=execution_symbol,
+                        action=signal.action,
+                        requested_order_size=signal_order_size,
+                        current_position_qty=current_position_qty,
+                        target_position_qty=target_position_qty,
+                        dry_run=resolved_dry_run,
+                        confirm_live_order_routing=confirm_live_order_routing,
+                        client=client,
+                        ignore_order_attempt_id=order_attempt_id,
+                    )
+                    if final_blocks:
+                        order_attempt.status = "blocked"
+                        order_attempt.rejection_reason = "; ".join(block.message for block in final_blocks)
+                        risk_events = [
+                            _create_risk_event(
+                                db,
+                                user_id=user_id,
+                                config=config,
+                                run=run,
+                                block=block,
+                                correlation_id=correlation_id,
+                            )
+                            for block in final_blocks
+                        ]
+                        evaluation_status = "risk_blocked"
+                        if not _only_transient_live_blocks(final_blocks):
+                            config.enabled = False
+                        if (
+                            run is not None
+                            and run.status == "running"
+                            and not _only_transient_live_blocks(final_blocks)
+                        ):
                             transition_bot_run(
                                 run,
-                                "error",
-                                reason="provider_order_submission_failed",
-                                error=order_attempt.rejection_reason or "Provider order submission failed.",
+                                "blocked",
+                                reason="final_live_preflight_blocked_order",
                             )
+                    else:
+                        # The config and shared account locks are held through
+                        # the provider call, so stop and sibling bots cannot
+                        # overtake an already claimed submission.
+                        _submit_order_attempt(client=client, order_attempt=order_attempt)
+                        if order_attempt.status == "submitted":
+                            evaluation_status = "submitted"
+                        else:
+                            evaluation_status = "error"
+                            config.enabled = False
+                            if run is not None and run.status == "running":
+                                stop_reason = (
+                                    "provider_order_submission_unknown"
+                                    if order_attempt.status == "submission_unknown"
+                                    else "provider_order_submission_failed"
+                                )
+                                transition_bot_run(
+                                    run,
+                                    "error",
+                                    reason=stop_reason,
+                                    error=order_attempt.rejection_reason or "Provider order submission failed.",
+                                )
             db.flush()
 
     if run is not None and run.status == "running":
@@ -1124,6 +1213,10 @@ def _evaluate_bot_config_impl(
         analysis=analysis,
         candles=candles,
     )
+
+
+def _only_transient_live_blocks(blocks: list[RiskBlock]) -> bool:
+    return bool(blocks) and all(block.code in _TRANSIENT_LIVE_RISK_CODES for block in blocks)
 
 
 def stop_latest_bot_run(
@@ -9035,21 +9128,165 @@ def evaluate_risk_gates(
     target_position_qty: float | None = None,
     dry_run: bool,
     confirm_live_order_routing: bool,
+    client: ProjectXClient | None = None,
+    ignore_order_attempt_id: int | None = None,
 ) -> list[RiskBlock]:
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
-    resulting_position_qty = float(target_position_qty) if target_position_qty is not None else float(current_position_qty) + signed_change
+    resulting_position_qty = (
+        float(target_position_qty)
+        if target_position_qty is not None
+        else float(current_position_qty) + signed_change
+    )
     daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+    account_state = str(account.account_state)
+    account_can_trade = account.can_trade
+    additional_blocks: list[RiskBlock] = []
+
+    live_preflight_required = (
+        not dry_run
+        and str(config.execution_mode) == "live"
+        and confirm_live_order_routing
+        and not running_under_tests()
+        and live_execution_environment_enabled()
+        and bool(config.enabled)
+        and not _looks_like_live_funded_account(account)
+    )
+    if live_preflight_required:
+        if client is None:
+            additional_blocks.append(
+                RiskBlock(
+                    code="live_preflight_unavailable",
+                    message="Authoritative provider risk data is unavailable for live routing.",
+                    severity="critical",
+                )
+            )
+        else:
+            try:
+                preflight = _fetch_live_execution_preflight(
+                    client,
+                    account_id=int(config.account_id),
+                    contract_id=contract_id,
+                )
+            except Exception as exc:
+                additional_blocks.append(
+                    RiskBlock(
+                        code="live_preflight_unavailable",
+                        message=(
+                            "Authoritative provider position, tradability, and daily P&L checks failed: "
+                            f"{sanitize_error(exc, max_length=240)}"
+                        ),
+                        severity="critical",
+                    )
+                )
+            else:
+                account_state = preflight.account_state
+                account_can_trade = preflight.account_can_trade
+                # Live routing always applies the proposed order to the provider's
+                # current position. Strategy payload position hints are advisory.
+                resulting_position_qty = preflight.current_position_qty + signed_change
+                daily_pnl = preflight.daily_pnl
+                if preflight.working_order_signed_sizes:
+                    current_provider_position = preflight.current_position_qty
+                    safe_combined_reduction = (
+                        abs(current_provider_position) > 1e-9
+                        and signed_change * current_provider_position < 0
+                        and all(
+                            size * current_provider_position < 0
+                            for size in preflight.working_order_signed_sizes
+                        )
+                        and (
+                            abs(signed_change)
+                            + sum(abs(size) for size in preflight.working_order_signed_sizes)
+                            <= abs(current_provider_position) + 1e-9
+                        )
+                    )
+                    positive_working = sum(
+                        max(0.0, size) for size in preflight.working_order_signed_sizes
+                    )
+                    negative_working = sum(
+                        min(0.0, size) for size in preflight.working_order_signed_sizes
+                    )
+                    worst_case_position = max(
+                        abs(resulting_position_qty),
+                        abs(resulting_position_qty + positive_working),
+                        abs(resulting_position_qty + negative_working),
+                    )
+                    position_limit = min(float(config.max_contracts), float(config.max_open_position))
+                    if not safe_combined_reduction:
+                        additional_blocks.append(
+                            RiskBlock(
+                                code="working_order_direction_conflict",
+                                message=(
+                                    "A working provider order already has the proposed side; routing another order "
+                                    "could duplicate or reverse the intended trade."
+                                ),
+                                severity="critical",
+                            )
+                        )
+                    elif worst_case_position > position_limit:
+                        additional_blocks.append(
+                            RiskBlock(
+                                code="working_order_exposure",
+                                message=(
+                                    "Working provider orders plus the proposed order could exceed the configured "
+                                    "position limit."
+                                ),
+                                severity="critical",
+                            )
+                        )
+
+            unresolved_count, reconciliation_error = reconcile_unresolved_order_attempts(
+                db,
+                user_id=user_id,
+                account_id=int(config.account_id),
+                client=client,
+                ignore_order_attempt_id=ignore_order_attempt_id,
+            )
+            if unresolved_count:
+                suffix = (
+                    f" Provider reconciliation failed: {sanitize_error(reconciliation_error, max_length=180)}"
+                    if reconciliation_error is not None
+                    else ""
+                )
+                additional_blocks.append(
+                    RiskBlock(
+                        code="unresolved_order_submission",
+                        message=(
+                            f"{unresolved_count} prior live order submission(s) remain unresolved; "
+                            f"new routing is blocked until reconciled.{suffix}"
+                        ),
+                        severity="critical",
+                    )
+                )
+            settling_count = _recent_live_submission_count(
+                db,
+                user_id=user_id,
+                account_id=int(config.account_id),
+                ignore_order_attempt_id=ignore_order_attempt_id,
+            )
+            if settling_count:
+                additional_blocks.append(
+                    RiskBlock(
+                        code="recent_live_submission_settling",
+                        message=(
+                            f"{settling_count} recent live order submission(s) may not yet be reflected in "
+                            "provider positions; new routing is temporarily blocked."
+                        ),
+                        severity="critical",
+                    )
+                )
+
     latest_candle_age_seconds = (
-        (datetime.now(timezone.utc) - _as_utc(latest_candle.candle_timestamp)).total_seconds()
+        (datetime.now(timezone.utc) - _market_candle_close_timestamp(latest_candle)).total_seconds()
         if latest_candle is not None
         else None
     )
-    return evaluate_risk(
+    return additional_blocks + evaluate_risk(
         RiskEvaluationContext(
             bot_enabled=bool(config.enabled),
-            account_state=str(account.account_state),
-            account_can_trade=account.can_trade,
+            account_state=account_state,
+            account_can_trade=account_can_trade,
             live_funded_account=_looks_like_live_funded_account(account),
             configured_execution_mode=str(config.execution_mode),
             dry_run=dry_run,
@@ -9076,6 +9313,239 @@ def evaluate_risk_gates(
             cooldown_block=_cooldown_block(db, user_id=user_id, config=config),
         )
     )
+
+
+def _fetch_live_execution_preflight(
+    client: ProjectXClient,
+    *,
+    account_id: int,
+    contract_id: str,
+    now: datetime | None = None,
+) -> LiveExecutionPreflight:
+    observed_at = _as_utc(now or datetime.now(timezone.utc))
+    accounts = client.list_accounts(only_active_accounts=False)
+    provider_account = next(
+        (
+            row
+            for row in accounts
+            if isinstance(row, dict) and int(row.get("id", -1)) == int(account_id)
+        ),
+        None,
+    )
+    if provider_account is None:
+        raise ProjectXClientError("ProjectX did not return the configured account during live preflight.")
+    provider_can_trade = provider_account.get("can_trade")
+    if not isinstance(provider_can_trade, bool):
+        raise ProjectXClientError("ProjectX did not provide authoritative account tradability.")
+    provider_account_state = str(provider_account.get("status") or "").strip().upper()
+    if provider_account_state not in {"ACTIVE", "LOCKED_OUT", "HIDDEN"}:
+        raise ProjectXClientError("ProjectX returned an unknown account state during live preflight.")
+
+    positions = client.search_open_positions(account_id=int(account_id))
+    current_position_qty = 0.0
+    for position in positions:
+        if not isinstance(position, dict) or int(position.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a position for the wrong account.")
+        if str(position.get("contract_id") or "") != str(contract_id):
+            continue
+        signed_size = _finite_optional_float(position.get("signed_size"))
+        if signed_size is None:
+            raise ProjectXClientError("ProjectX returned an invalid signed open-position size.")
+        current_position_qty += signed_size
+    if not math.isfinite(current_position_qty):
+        raise ProjectXClientError("ProjectX open-position total is not finite.")
+
+    open_orders = client.search_open_orders(account_id=int(account_id))
+    working_order_signed_sizes: list[float] = []
+    for open_order in open_orders:
+        if not isinstance(open_order, dict) or int(open_order.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned an open order for the wrong account.")
+        if str(open_order.get("contract_id") or "") != str(contract_id):
+            continue
+        if open_order.get("status") not in {1, 6}:
+            raise ProjectXClientError("ProjectX Order/searchOpen returned a non-working order status.")
+        signed_size = _finite_optional_float(open_order.get("signed_size"))
+        if signed_size is None or abs(signed_size) <= 0:
+            raise ProjectXClientError("ProjectX returned an invalid working-order size.")
+        working_order_signed_sizes.append(signed_size)
+
+    pnl_start, pnl_end = trading_day_bounds_utc(trading_day_date(observed_at))
+    trade_events = client.fetch_trade_history(
+        account_id=int(account_id),
+        start=pnl_start,
+        end=min(pnl_end, observed_at),
+        require_valid_collection=True,
+    )
+    daily_pnl = 0.0
+    for event in trade_events:
+        if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a trade for the wrong account.")
+        if _trade_payload_is_voided(event):
+            continue
+        event_timestamp = event.get("timestamp")
+        if not isinstance(event_timestamp, datetime):
+            raise ProjectXClientError("ProjectX returned a trade without a valid timestamp.")
+        event_timestamp = _as_utc(event_timestamp)
+        if event_timestamp < pnl_start or event_timestamp > min(pnl_end, observed_at):
+            continue
+        fees = _finite_optional_float(event.get("fees"))
+        pnl = _finite_optional_float(event.get("pnl")) if event.get("pnl") is not None else 0.0
+        if fees is None or pnl is None:
+            raise ProjectXClientError("ProjectX returned non-finite daily P&L data.")
+        daily_pnl += pnl - fees
+    if not math.isfinite(daily_pnl):
+        raise ProjectXClientError("ProjectX daily P&L total is not finite.")
+
+    return LiveExecutionPreflight(
+        account_state=provider_account_state,
+        account_can_trade=provider_can_trade,
+        current_position_qty=current_position_qty,
+        working_order_signed_sizes=tuple(working_order_signed_sizes),
+        daily_pnl=daily_pnl,
+        observed_at=observed_at,
+    )
+
+
+def reconcile_unresolved_order_attempts(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    client: ProjectXClient,
+    now: datetime | None = None,
+    ignore_order_attempt_id: int | None = None,
+) -> tuple[int, Exception | None]:
+    """Reconcile ambiguous/crash-window submissions by deterministic provider tag.
+
+    A provider miss is intentionally not treated as proof that no order was
+    accepted. Such attempts remain unresolved until a matching provider order
+    is observed or an operator resolves the audit row.
+    """
+
+    query = (
+        db.query(BotOrderAttempt)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.account_id == int(account_id))
+        .filter(BotOrderAttempt.execution_mode == "live")
+        .filter(BotOrderAttempt.status.in_(["pending", "submission_unknown"]))
+    )
+    if ignore_order_attempt_id is not None:
+        query = query.filter(BotOrderAttempt.id != int(ignore_order_attempt_id))
+    rows = query.order_by(BotOrderAttempt.created_at.asc(), BotOrderAttempt.id.asc()).all()
+    if not rows:
+        return 0, None
+
+    observed_at = _as_utc(now or datetime.now(timezone.utc))
+    created_values = [_as_utc(row.created_at) for row in rows if row.created_at is not None]
+    search_start = (min(created_values) if created_values else observed_at) - timedelta(minutes=5)
+    try:
+        provider_orders = client.search_orders(
+            account_id=int(account_id),
+            start=search_start,
+            end=observed_at,
+        )
+    except Exception as exc:
+        return len(rows), exc
+
+    orders_by_tag: dict[str, list[dict[str, Any]]] = {}
+    for provider_order in provider_orders:
+        if not isinstance(provider_order, dict):
+            continue
+        custom_tag = _normalized_optional_text(provider_order.get("custom_tag"))
+        if custom_tag:
+            orders_by_tag.setdefault(custom_tag, []).append(provider_order)
+
+    for row in rows:
+        request_payload = row.raw_request if isinstance(row.raw_request, dict) else {}
+        custom_tag = _normalized_optional_text(request_payload.get("customTag"))
+        matches = orders_by_tag.get(custom_tag or "", [])
+        if len(matches) != 1:
+            continue
+        match = matches[0]
+        provider_order_id = _normalized_optional_text(match.get("order_id"))
+        if provider_order_id is None:
+            continue
+        row.provider_order_id = provider_order_id
+        row.raw_response = {
+            "reconciled": True,
+            "provider_order": match.get("raw_payload") or match,
+        }
+        provider_status = match.get("status")
+        if provider_status in {1, 6}:
+            # Open and Pending are still working orders. Preserve the unresolved
+            # state so a later candle cannot route additional exposure.
+            row.rejection_reason = "Provider order is still open or pending; live routing remains blocked."
+        elif provider_status == 5:
+            row.status = "rejected"
+            row.rejection_reason = "Provider order was found by custom tag with rejected status."
+        elif provider_status in {2, 3, 4}:
+            row.status = "submitted"
+            row.rejection_reason = None
+
+    unresolved_count = sum(str(row.status) in {"pending", "submission_unknown"} for row in rows)
+    return int(unresolved_count), None
+
+
+def _recent_live_submission_count(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    ignore_order_attempt_id: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    cutoff = _as_utc(now or datetime.now(timezone.utc)) - _LIVE_SUBMISSION_SETTLEMENT_WINDOW
+    query = (
+        db.query(BotOrderAttempt.id)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.account_id == int(account_id))
+        .filter(BotOrderAttempt.execution_mode == "live")
+        .filter(BotOrderAttempt.status == "submitted")
+        .filter(BotOrderAttempt.created_at >= cutoff)
+    )
+    if ignore_order_attempt_id is not None:
+        query = query.filter(BotOrderAttempt.id != int(ignore_order_attempt_id))
+    return int(query.count())
+
+
+def _market_candle_close_timestamp(candle: ProjectXMarketCandle) -> datetime:
+    opened_at = _as_utc(candle.candle_timestamp)
+    unit = str(candle.unit).strip().lower()
+    unit_number = max(1, int(candle.unit_number))
+    if unit == "month":
+        year = opened_at.year
+        month_index = opened_at.month - 1 + unit_number
+        year += month_index // 12
+        month = month_index % 12 + 1
+        return opened_at.replace(year=year, month=month, day=1)
+    seconds = _UNIT_SECONDS_BY_NAME.get(unit)
+    if seconds is None:
+        return opened_at
+    return opened_at + timedelta(seconds=seconds * unit_number)
+
+
+def _trade_payload_is_voided(event: dict[str, Any]) -> bool:
+    if bool(event.get("voided")):
+        return True
+    raw_payload = event.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        return False
+    raw = raw_payload.get("voided", raw_payload.get("isVoided", raw_payload.get("is_voided")))
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(raw)
+
+
+def _non_voided_trade_event_expr():
+    voided_text = func.lower(
+        func.coalesce(
+            ProjectXTradeEvent.raw_payload.op("->>")("voided"),
+            ProjectXTradeEvent.raw_payload.op("->>")("isVoided"),
+            ProjectXTradeEvent.raw_payload.op("->>")("is_voided"),
+            "false",
+        )
+    )
+    return ~voided_text.in_(("true", "1", "yes", "y", "on"))
 
 
 def serialize_bot_config(row: BotConfig) -> dict[str, Any]:
@@ -9469,8 +9939,19 @@ def _claim_order_attempt(
         return None, winner
 
 
-def _require_owned_account(db: Session, *, user_id: str, account_id: int) -> Account:
-    account = get_projectx_account_row(db, account_id, user_id=user_id)
+def _require_owned_account(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    lock_for_update: bool = False,
+) -> Account:
+    account = get_projectx_account_row(
+        db,
+        account_id,
+        user_id=user_id,
+        lock_for_update=lock_for_update,
+    )
     if account is None:
         raise LookupError("account_not_found")
     return account
@@ -9603,13 +10084,33 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             stop_loss_bracket=request_payload.get("stopLossBracket"),
             take_profit_bracket=request_payload.get("takeProfitBracket"),
         )
+        provider_order_id = _normalized_optional_text(response.get("order_id"))
+        if provider_order_id is None:
+            order_attempt.status = "submission_unknown"
+            order_attempt.rejection_reason = (
+                "ProjectX returned without a provider order ID; submission outcome requires reconciliation."
+            )
+            order_attempt.raw_response = response.get("raw_payload")
+            return
         order_attempt.status = "submitted"
-        order_attempt.provider_order_id = response.get("order_id")
+        order_attempt.provider_order_id = provider_order_id
+        order_attempt.rejection_reason = None
         order_attempt.raw_response = response.get("raw_payload")
     except Exception as exc:
         safe_error = sanitize_error(exc)
-        order_attempt.status = "error"
-        order_attempt.rejection_reason = safe_error
+        submission_outcome_unknown = (
+            isinstance(exc, (TimeoutError, ConnectionError))
+            or (
+                isinstance(exc, ProjectXClientError)
+                and bool(getattr(exc, "submission_outcome_unknown", False))
+            )
+        )
+        order_attempt.status = "submission_unknown" if submission_outcome_unknown else "error"
+        order_attempt.rejection_reason = (
+            f"Submission outcome is unknown and requires reconciliation: {safe_error}"
+            if submission_outcome_unknown
+            else safe_error
+        )
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
 
 
@@ -9634,10 +10135,10 @@ def _strategy_bracket_payloads(
         return {}
 
     stop_ticks = max(1, int(round(abs(float(entry_price) - float(stop_loss)) / tick_size)))
-    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks}}
+    payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks, "type": 4}}
     if isinstance(take_profit, (int, float)):
         take_profit_ticks = max(1, int(round(abs(float(take_profit) - float(entry_price)) / tick_size)))
-        payload["takeProfitBracket"] = {"ticks": take_profit_ticks}
+        payload["takeProfitBracket"] = {"ticks": take_profit_ticks, "type": 1}
     return payload
 
 
@@ -9676,6 +10177,7 @@ def load_open_position_state(
         .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(ProjectXTradeEvent.contract_id == contract_id)
+        .filter(_non_voided_trade_event_expr())
         .order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc())
         .all()
     )
@@ -9684,6 +10186,7 @@ def load_open_position_state(
             db.query(ProjectXTradeEvent)
             .filter(ProjectXTradeEvent.user_id == user_id)
             .filter(ProjectXTradeEvent.account_id == account_id)
+            .filter(_non_voided_trade_event_expr())
             .filter(
                 or_(
                     ProjectXTradeEvent.contract_id == contract_id,
@@ -9701,6 +10204,8 @@ def _open_position_state_from_trade_rows(rows: list[ProjectXTradeEvent]) -> Open
     lots: list[OpenPositionLot] = []
 
     for row in rows:
+        if _trade_payload_is_voided({"raw_payload": row.raw_payload}):
+            continue
         qty = abs(float(row.size) if row.size is not None else 0.0)
         sign = _trade_side_sign(row.side)
         if qty <= epsilon or sign == 0:
@@ -9864,6 +10369,7 @@ def _todays_account_net_pnl(db: Session, *, user_id: str, account_id: int) -> fl
         .filter(ProjectXTradeEvent.trade_timestamp >= start)
         .filter(ProjectXTradeEvent.trade_timestamp <= end)
         .filter(ProjectXTradeEvent.pnl.isnot(None))
+        .filter(_non_voided_trade_event_expr())
         .scalar()
     )
     return float(total or 0.0)
@@ -9936,6 +10442,7 @@ def _cooldown_block(db: Session, *, user_id: str, config: BotConfig) -> RiskBloc
         .filter(ProjectXTradeEvent.contract_id == str(config.contract_id))
         .filter(ProjectXTradeEvent.trade_timestamp >= threshold)
         .filter(ProjectXTradeEvent.pnl < 0)
+        .filter(_non_voided_trade_event_expr())
         .order_by(ProjectXTradeEvent.trade_timestamp.desc())
         .first()
     )
@@ -11398,7 +11905,7 @@ def _optional_float(value: Any) -> float | None:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    if parsed != parsed:
+    if not math.isfinite(parsed):
         return None
     return parsed
 

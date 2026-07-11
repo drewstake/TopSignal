@@ -3,10 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAIN_ACCOUNT_STORAGE_KEY,
   MAIN_ACCOUNT_UPDATED_EVENT,
+  buildAccountAwarePath,
   readStoredMainAccountId,
   writeStoredMainAccountId,
   type MainAccountUpdatedDetail,
 } from "./accountSelection";
+
+describe("buildAccountAwarePath", () => {
+  it("preserves the active account when navigating to the Dashboard", () => {
+    expect(buildAccountAwarePath("/", 7012)).toBe("/?account=7012");
+    expect(buildAccountAwarePath("/", null)).toBe("/");
+  });
+});
 
 describe("accountSelection main account persistence", () => {
   beforeEach(() => {

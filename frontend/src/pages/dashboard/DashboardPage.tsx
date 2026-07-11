@@ -25,6 +25,7 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
+import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import { getDemoTradeId } from "../../lib/demoMode";
@@ -34,6 +35,7 @@ import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountTrade } from "../../lib/types";
 import { logPerfInfo } from "../../lib/perf";
+import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatCurrency, formatInteger, formatMinutes, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { computeActivityMetrics } from "../../utils/activityMetrics";
 import {
@@ -65,6 +67,7 @@ import {
 } from "./copyTrade";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
+import { resolveCustomDateRangeDraft } from "./customDateRange";
 
 const CopyFullStatsButton = lazy(() =>
   import("../../components/dashboard/CopyFullStatsButton").then((module) => ({ default: module.CopyFullStatsButton })),
@@ -567,6 +570,11 @@ export function DashboardPage() {
   const copyTradeSettingsRef = useRef(copyTradeSettings);
   const copyTradeTogglePendingRef = useRef(false);
   const copyTradeToggleTimerRef = useRef<number | null>(null);
+  const beginAccountsRequest = useLatestRequestGuard();
+  const beginSummaryRequest = useLatestRequestGuard();
+  const beginTradesRequest = useLatestRequestGuard();
+  const beginJournalDaysRequest = useLatestRequestGuard();
+  const beginMetricsTradesRequest = useLatestRequestGuard();
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
@@ -607,13 +615,18 @@ export function DashboardPage() {
   );
 
   const loadAccounts = useCallback(async () => {
+    const isCurrent = beginAccountsRequest();
     try {
       const payload = await accountsApi.getSelectableAccounts();
-      setAccounts(payload);
+      if (isCurrent()) {
+        setAccounts(payload);
+      }
     } catch {
-      setAccounts([]);
+      if (isCurrent()) {
+        setAccounts([]);
+      }
     }
-  }, []);
+  }, [beginAccountsRequest]);
 
   useEffect(() => {
     void loadAccounts();
@@ -704,6 +717,18 @@ export function DashboardPage() {
   const analyticsRangeQuery = selectedTradeDayRangeQuery ?? metricsRangeQuery;
   const selectedTradeDayRefresh = selectedTradeDayRangeQuery !== null;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
+
+  function updateCustomRangeFromDraft(startDate: string, endDate: string) {
+    const resolution = resolveCustomDateRangeDraft(startDate, endDate, metricsRange === "CUSTOM");
+    setCustomRange(resolution.appliedRange);
+    if (resolution.nextMode === "CUSTOM") {
+      setMetricsRange("CUSTOM");
+      setSelectedTradeDate(null);
+    } else if (resolution.nextMode === "ALL") {
+      setMetricsRange("ALL");
+      setSelectedTradeDate(null);
+    }
+  }
   const dashboardLoadPerfRef = useRef<{
     accountId: number;
     startedAtMs: number;
@@ -724,7 +749,10 @@ export function DashboardPage() {
   }, [selectedTradeDate]);
 
   const loadSummaryAndCalendar = useCallback(async () => {
+    const isCurrent = beginSummaryRequest();
     if (!selectedAccountId) {
+      setSummaryLoading(false);
+      setPnlCalendarLoading(false);
       setSummary(emptySummary);
       setPointPayoffByBasis(createEmptyPointPayoffByBasis());
       setSummaryError(null);
@@ -824,6 +852,10 @@ export function DashboardPage() {
         followerResultsRequest,
       ]);
 
+      if (!isCurrent()) {
+        return;
+      }
+
       const nextPointPayoffByBasis = createEmptyPointPayoffByBasis();
       PAYOFF_POINTS_BASES.forEach((basis) => {
         const pointPayoff = nextSummaryBundle.point_payoff_by_basis[basis];
@@ -856,6 +888,9 @@ export function DashboardPage() {
 
       setCopyTradeAccountDataById(nextCopyTradeAccountDataById);
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to load dashboard data";
       setSummaryError(message);
       setPnlCalendarError(message);
@@ -864,8 +899,10 @@ export function DashboardPage() {
       setPnlCalendarDays([]);
       setCopyTradeAccountDataById({});
     } finally {
-      setSummaryLoading(false);
-      setPnlCalendarLoading(false);
+      if (isCurrent()) {
+        setSummaryLoading(false);
+        setPnlCalendarLoading(false);
+      }
     }
   }, [
     analyticsRangeQuery.end,
@@ -873,15 +910,16 @@ export function DashboardPage() {
     copyTradeRosterAccountIds,
     copyTradeSettings.modeEnabled,
     currentTradingDayKey,
-    metricsRangeQuery.allTime,
-    metricsRangeQuery.end,
-    metricsRangeQuery.start,
+    metricsRangeQuery,
     selectedAccountId,
     selectedTradeDayRefresh,
+    beginSummaryRequest,
   ]);
 
   const loadTrades = useCallback(async () => {
+    const isCurrent = beginTradesRequest();
     if (!selectedAccountId) {
+      setTradesLoading(false);
       setTrades([]);
       setTradesError(null);
       return;
@@ -896,18 +934,27 @@ export function DashboardPage() {
         ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange, refresh: true }
         : { limit: TRADE_LIMIT };
       const nextTrades = await accountsApi.getTrades(selectedAccountId, query);
-      setTrades(nextTrades);
+      if (isCurrent()) {
+        setTrades(nextTrades);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to load trade events";
       setTradesError(message);
       setTrades([]);
     } finally {
-      setTradesLoading(false);
+      if (isCurrent()) {
+        setTradesLoading(false);
+      }
     }
-  }, [selectedAccountId, selectedTradeDate]);
+  }, [beginTradesRequest, selectedAccountId, selectedTradeDate]);
 
   const loadJournalDays = useCallback(async () => {
+    const isCurrent = beginJournalDaysRequest();
     if (!selectedAccountId || !calendarVisibleRange) {
+      setJournalDaysLoading(false);
       setJournalDays(new Set());
       return;
     }
@@ -918,15 +965,22 @@ export function DashboardPage() {
         start_date: calendarVisibleRange.startDate,
         end_date: calendarVisibleRange.endDate,
       });
-      setJournalDays(new Set(payload.days));
+      if (isCurrent()) {
+        setJournalDays(new Set(payload.days));
+      }
     } catch {
-      setJournalDays(new Set());
+      if (isCurrent()) {
+        setJournalDays(new Set());
+      }
     } finally {
-      setJournalDaysLoading(false);
+      if (isCurrent()) {
+        setJournalDaysLoading(false);
+      }
     }
-  }, [calendarVisibleRange, selectedAccountId]);
+  }, [beginJournalDaysRequest, calendarVisibleRange, selectedAccountId]);
 
   const loadMetricsTrades = useCallback(async () => {
+    const isCurrent = beginMetricsTradesRequest();
     if (!selectedAccountId) {
       setMetricsTrades([]);
       setMetricsTradesError(null);
@@ -945,15 +999,22 @@ export function DashboardPage() {
         refresh: selectedTradeDayRefresh,
         includeLifecycle: false,
       });
-      setMetricsTrades(nextTrades);
+      if (isCurrent()) {
+        setMetricsTrades(nextTrades);
+      }
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       const message = err instanceof Error ? err.message : "Failed to load directional trade history";
       setMetricsTradesError(message);
       setMetricsTrades([]);
     } finally {
-      setMetricsTradesLoading(false);
+      if (isCurrent()) {
+        setMetricsTradesLoading(false);
+      }
     }
-  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, selectedAccountId, selectedTradeDayRefresh]);
+  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, beginMetricsTradesRequest, selectedAccountId, selectedTradeDayRefresh]);
 
   const reloadDashboard = useCallback(async () => {
     await Promise.all([loadSummaryAndCalendar(), loadTrades(), loadMetricsTrades()]);
@@ -1132,7 +1193,9 @@ export function DashboardPage() {
         : summary,
     [copyTradeStatsActive, copyTradeTotals.combinedDailyPnl, copyTradeTotals.combinedNetPnl, summary],
   );
-  const dashboardCurrentBalance = copyTradeStatsActive ? copyTradeTotals.combinedBalance : selectedAccount?.balance ?? null;
+  const dashboardCurrentBalance = copyTradeStatsActive
+    ? copyTradeTotals.combinedBalance
+    : getAvailableAccountBalance(selectedAccount?.balance ?? null);
   const selectedDayLoadedTradeCount = !copyTradeStatsActive && selectedTradeDate && !tradesLoading && !tradesError ? trades.length : null;
   const displayTradeCount = selectedDayLoadedTradeCount ?? summary.trade_count;
   const displayActiveDays = selectedDayLoadedTradeCount !== null ? (selectedDayLoadedTradeCount > 0 ? 1 : 0) : summary.active_days;
@@ -1366,8 +1429,8 @@ export function DashboardPage() {
       };
     }
 
-    const currentBalance = selectedAccount?.balance ?? null;
-    if (currentBalance !== null && Number.isFinite(currentBalance) && currentBalance > 0) {
+    const currentBalance = getAvailableAccountBalance(selectedAccount?.balance ?? null);
+    if (currentBalance !== null && currentBalance > 0) {
       return {
         value: currentBalance,
         label: "Current balance",
@@ -1864,6 +1927,7 @@ export function DashboardPage() {
 
   return (
     <div className="dashboard-surface space-y-5 pb-8">
+      <h1 className="sr-only">Trading Dashboard</h1>
       <div className="space-y-1.5">
         <div className="max-w-full pb-1">
           <div className="flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
@@ -1872,8 +1936,12 @@ export function DashboardPage() {
                 type="date"
                 value={customStartDate}
                 max={customEndDate || undefined}
-                onChange={(event) => setCustomStartDate(event.target.value)}
-                className="h-8 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:w-[140px]"
+                onChange={(event) => {
+                  const nextStartDate = event.target.value;
+                  setCustomStartDate(nextStartDate);
+                  updateCustomRangeFromDraft(nextStartDate, customEndDate);
+                }}
+                className="h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:h-8 sm:w-[140px]"
                 aria-label="Custom start date"
               />
               <Input
@@ -1883,13 +1951,9 @@ export function DashboardPage() {
                 onChange={(event) => {
                   const nextEndDate = event.target.value;
                   setCustomEndDate(nextEndDate);
-                  if (customStartDate !== "" && nextEndDate !== "" && customStartDate <= nextEndDate) {
-                    setCustomRange({ startDate: customStartDate, endDate: nextEndDate });
-                    setMetricsRange("CUSTOM");
-                    setSelectedTradeDate(null);
-                  }
+                  updateCustomRangeFromDraft(customStartDate, nextEndDate);
                 }}
-                className="h-8 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:w-[140px]"
+                className="h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:h-8 sm:w-[140px]"
                 aria-label="Custom end date"
               />
             </div>
@@ -1929,7 +1993,7 @@ export function DashboardPage() {
                   aria-describedby={copyTradeModeStatusMessage ? "copy-trade-toggle-status" : undefined}
                   disabled={copyTradeToggleDisabled}
                   className={cn(
-                    "h-8 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:flex-none",
+                    "h-11 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:h-8 sm:flex-none",
                     copyTradeSettings.modeEnabled ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
                   )}
                 />
@@ -1954,7 +2018,7 @@ export function DashboardPage() {
                 rangeLabel={fullStatsRangeLabel}
                 calendarDays={analyticsPnlCalendarDays}
                 disabled={selectedAccountId === null || summaryLoading || pnlCalendarLoading || metricsTradesLoading || summaryError !== null || pnlCalendarError !== null}
-                className="h-8 w-full rounded-lg px-2.5 text-[11px] sm:w-auto"
+                className="h-11 w-full rounded-lg px-2.5 text-[11px] sm:h-8 sm:w-auto"
               />
             </Suspense>
           </div>
@@ -1984,6 +2048,19 @@ export function DashboardPage() {
           onFollowerSelectionChange={handleCopyTradeFollowerSelectionChange}
           onResetUncopyEvents={handleResetUncopyEvents}
         />
+      ) : null}
+
+      {selectedAccount?.provider_data_stale ? (
+        <Card className="border-app-warning/40 bg-app-warning/10 p-4">
+          <p className="text-sm font-medium text-app-warning">Provider account data is stale.</p>
+          <p className="mt-1 text-xs text-app-warning/90">
+            {`${formatProviderLastSeen(selectedAccount.last_seen_at)}. ${
+              getAvailableAccountBalance(selectedAccount.balance) === null
+                ? "The current balance is unavailable, so balance-based charts and risk metrics remain unanchored."
+                : "Balance and trading status may be out of date."
+            }`}
+          </p>
+        </Card>
       ) : null}
 
       <MasonryGrid>
@@ -2040,7 +2117,9 @@ export function DashboardPage() {
                     </div>
                     <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Combined Balance</p>
-                      <p className="mt-1 text-sm font-semibold text-app-text">{formatCurrency(copyTradeTotals.combinedBalance)}</p>
+                      <p className="mt-1 text-sm font-semibold text-app-text">
+                        {formatAccountBalance(copyTradeTotals.combinedBalance)}
+                      </p>
                     </div>
                     <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
                       <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Leader P&L</p>

@@ -9,7 +9,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
 from app.models import DEFAULT_USER_ID, ProjectXTradeEvent
-from app.services.projectx_trades import store_trade_events
+from app.services.projectx_trades import list_trade_events, store_trade_events
 
 
 def _make_session():
@@ -61,6 +61,37 @@ def test_store_trade_events_updates_existing_open_row_when_closed_pnl_arrives():
         assert second_inserted == 0
         assert len(rows) == 1
         assert float(rows[0].pnl) == 45.0
+    finally:
+        db_session.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_store_trade_events_tombstones_an_execution_later_marked_voided():
+    engine, db_session = _make_session()
+    try:
+        store_trade_events(db_session, [_event(pnl=45.0)], user_id=DEFAULT_USER_ID)
+        db_session.commit()
+        voided_event = _event(pnl=45.0)
+        voided_event["voided"] = True
+        voided_event["raw_payload"] = {
+            "id": "SRC-8801-1",
+            "profitAndLoss": 45.0,
+            "voided": True,
+        }
+
+        inserted = store_trade_events(db_session, [voided_event], user_id=DEFAULT_USER_ID)
+        db_session.commit()
+
+        row = db_session.query(ProjectXTradeEvent).one()
+        assert inserted == 0
+        assert row.raw_payload["voided"] is True
+        assert list_trade_events(
+            db_session,
+            account_id=8801,
+            user_id=DEFAULT_USER_ID,
+            limit=100,
+        ) == []
     finally:
         db_session.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__])

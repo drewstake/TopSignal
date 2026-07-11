@@ -16,6 +16,7 @@ import {
   syncCombineSpendTracker,
   syncCombineSpendTrackerFromExpenses,
 } from "./combineTracker";
+import { getScopedStorageKey } from "./storageScope";
 
 describe("getCombinePlanSizeFromAccountName", () => {
   it("maps account name prefixes to combine plan sizes", () => {
@@ -211,7 +212,7 @@ describe("storage-backed helpers", () => {
 
   it("keeps legacy ledger entries at their original paid prices", () => {
     window.localStorage.setItem(
-      "topsignal.combineSpendTracker.v3",
+      getScopedStorageKey("topsignal.combineSpendTracker.v3"),
       JSON.stringify({
         startedOn: "2026-03-01",
         startedAt: "2026-03-01T12:00:00.000Z",
@@ -251,6 +252,19 @@ describe("storage-backed helpers", () => {
         amountCents: 16_800,
       },
     ]);
+  });
+
+  it("does not inherit a ledger from the old unscoped key", () => {
+    window.localStorage.setItem(
+      "topsignal.combineSpendTracker.v3",
+      JSON.stringify({
+        purchasesByAccountId: { "7001": "50k" },
+        knownCombineAccountIds: { "7001": true },
+        baselineCaptured: true,
+      }),
+    );
+
+    expect(readCombineSpendSnapshot().totalTrackedCombines).toBe(0);
   });
 
   it("returns unsynced combine purchases and marks them synced", () => {

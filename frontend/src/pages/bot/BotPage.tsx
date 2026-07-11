@@ -2518,6 +2518,7 @@ export function BotPage() {
   if (loading) {
     return (
       <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+        <h1 className="sr-only">Trading Bot</h1>
         <Skeleton className="h-[520px]" />
         <Skeleton className="h-[520px]" />
       </div>
@@ -2526,6 +2527,7 @@ export function BotPage() {
 
   return (
     <div className="space-y-5 pb-8">
+      <h1 className="sr-only">Trading Bot</h1>
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
       {configWarnings.map((warning) => (
         <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">

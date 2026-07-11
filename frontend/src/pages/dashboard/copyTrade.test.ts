@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountInfo, AccountTrade } from "../../lib/types";
+import { getScopedStorageKey } from "../../lib/storageScope";
 import {
   COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
   COPY_TRADE_SETTINGS_STORAGE_KEY,
@@ -29,6 +30,8 @@ function row(overrides: Partial<CopyTradeAccountRow>): CopyTradeAccountRow {
     role: "Follower",
     status: "Active",
     balance: 50_000,
+    providerDataStale: false,
+    lastSeenAt: null,
     dailyPnl: 300,
     netPnl: 300,
     openPositions: 0,
@@ -69,6 +72,8 @@ function account(overrides: Partial<AccountInfo> & Pick<AccountInfo, "id" | "nam
     provider_name: overrides.name,
     custom_display_name: null,
     balance: 50_000,
+    provider_data_stale: false,
+    last_seen_at: null,
     status: "ACTIVE",
     account_state: "ACTIVE",
     is_main: false,
@@ -156,6 +161,20 @@ describe("computeCopyTradeTotals", () => {
     expect(totals.followersCopyingCount).toBe(1);
     expect(totals.warnings).toEqual([]);
   });
+
+  it("never coerces an unavailable account balance to zero", () => {
+    const totals = computeCopyTradeTotals([
+      row({ accountId: 1, accountName: "Leader", role: "Leader", balance: 50_000 }),
+      row({ accountId: 2, accountName: "Follower", balance: null }),
+    ]);
+
+    expect(totals.canCalculate).toBe(true);
+    expect(totals.combinedNetPnl).toBe(600);
+    expect(totals.combinedBalance).toBeNull();
+    expect(totals.warnings).toContain(
+      "Combined balance is unavailable because Follower has no current provider balance.",
+    );
+  });
 });
 
 describe("buildCopyTradeAccountRows", () => {
@@ -166,6 +185,8 @@ describe("buildCopyTradeAccountRows", () => {
       provider_name: `Account ${id}`,
       custom_display_name: null,
       balance: 50_000,
+      provider_data_stale: false,
+      last_seen_at: null,
       status: "ACTIVE",
       account_state: "ACTIVE",
       is_main: id === 1,
@@ -201,6 +222,8 @@ describe("buildCopyTradeAccountRows", () => {
         provider_name: "EXPRESS-V2-DLL-192577-18143397",
         custom_display_name: null,
         balance: 50_000,
+        provider_data_stale: false,
+        last_seen_at: null,
         status: "LOCKED_OUT",
         account_state: "LOCKED_OUT",
         is_main: true,
@@ -214,6 +237,8 @@ describe("buildCopyTradeAccountRows", () => {
         provider_name: "50KTC-V2-DLL-192577-19128574",
         custom_display_name: null,
         balance: 50_000,
+        provider_data_stale: false,
+        last_seen_at: null,
         status: "LOCKED_OUT",
         account_state: "LOCKED_OUT",
         is_main: false,
@@ -263,6 +288,28 @@ describe("buildCopyTradeAccountRows", () => {
 
     expect(rows.map((candidate) => candidate.accountId)).toEqual([10, 30, 31, null, null]);
     expect(computeCopyTradeTotals(rows).combinedNetPnl).toBe(600);
+  });
+
+  it("preserves unavailable and stale provider balance state on account rows", () => {
+    const rows = buildCopyTradeAccountRows({
+      accounts: [
+        account({
+          id: 10,
+          name: "Leader",
+          balance: null,
+          provider_data_stale: true,
+          last_seen_at: "2026-07-10T14:30:00.000Z",
+        }),
+      ],
+      leaderAccountId: 10,
+      snapshotsByAccountId: { 10: { netPnl: 100, dailyPnl: 100, openPositions: 0 } },
+    });
+
+    expect(rows[0]).toMatchObject({
+      balance: null,
+      providerDataStale: true,
+      lastSeenAt: "2026-07-10T14:30:00.000Z",
+    });
   });
 });
 
@@ -652,7 +699,7 @@ describe("copy-trade settings storage", () => {
 
     writeStoredCopyTradeSettings(settings);
 
-    expect(JSON.parse(window.localStorage.getItem(COPY_TRADE_SETTINGS_STORAGE_KEY) ?? "{}")).toEqual({
+    expect(JSON.parse(window.localStorage.getItem(getScopedStorageKey(COPY_TRADE_SETTINGS_STORAGE_KEY)) ?? "{}")).toEqual({
       modeEnabled: true,
       followerAccountIdsByLeaderAccountId: {},
       uncopyEventsResetAtByLeaderAccountId: {
@@ -660,6 +707,12 @@ describe("copy-trade settings storage", () => {
       },
     });
     expect(readStoredCopyTradeSettings()).toEqual(settings);
+  });
+
+  it("does not inherit settings from the old unscoped key", () => {
+    window.localStorage.setItem(COPY_TRADE_SETTINGS_STORAGE_KEY, JSON.stringify({ modeEnabled: true }));
+
+    expect(readStoredCopyTradeSettings().modeEnabled).toBe(false);
   });
 
   it("falls back to disabled settings when localStorage cannot be read", () => {

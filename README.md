@@ -569,7 +569,9 @@ DATABASE_URL=postgresql+psycopg://topsignal:topsignal_password@127.0.0.1:5432/to
 PROJECTX_API_BASE_URL=https://api.topstepx.com
 PROJECTX_USERNAME=your_topstepx_username
 PROJECTX_API_KEY=your_topstepx_api_key
+ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS=true
 AUTH_REQUIRED=false
+TOPSIGNAL_DB_SCHEMA_INIT=skip
 ```
 
 Recommended minimum frontend variables:
@@ -596,6 +598,8 @@ npm --prefix frontend install
 
 ```powershell
 Get-Content .\db\schema.sql | docker exec -i topsignal_db psql -U topsignal -d topsignal
+npm run db:baseline
+npm run db:check
 ```
 
 #### 5. Run the app
@@ -622,18 +626,19 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | SQLAlchemy database connection URL |
+| `MIGRATION_DATABASE_URL` | Optional direct/session-mode PostgreSQL URL used only by the migration runner; transaction pooler port `6543` is rejected |
 | `PROJECTX_API_BASE_URL` | Base URL for ProjectX API |
 | `PROJECTX_USERNAME` | Legacy env-based TopstepX username used for ProjectX API auth |
 | `PROJECTX_API_KEY` | Legacy env-based TopstepX API key generated from `Settings -> API` |
-| `AUTH_REQUIRED` | Forces API auth on or off |
+| `AUTH_REQUIRED` | Requires API auth by default; `false` is accepted only in a fully local runtime |
 | `SUPABASE_URL` | Enables Supabase-aware auth and optional storage |
 | `SUPABASE_JWKS_URL` | Custom JWKS endpoint for JWT validation |
 | `SUPABASE_JWT_ISSUER` | Expected JWT issuer |
 | `SUPABASE_JWT_AUDIENCE` | Expected JWT audience |
 | `SUPABASE_JWT_SECRET` | Shared secret for local HS-signed tokens |
 | `CREDENTIALS_ENCRYPTION_KEY` | Fernet key for encrypting stored provider credentials |
-| `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Allows env credentials as fallback in authenticated deployments |
-| `ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY` | Allows local-only encryption-key fallback |
+| `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Explicitly allows one server-wide ProjectX identity only in a fully local, single-user runtime |
+| `ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY` | Explicitly allows the deterministic encryption key only with a local/SQLite database; never use it for real credentials |
 | `PROJECTX_INITIAL_LOOKBACK_DAYS` | First-sync history window |
 | `PROJECTX_RECENT_REFRESH_DAYS` | Recent trailing sync window used to catch late provider updates |
 | `PROJECTX_SYNC_CHUNK_DAYS` | Trade-sync chunk size |
@@ -651,6 +656,8 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `ALLOWED_ORIGIN_REGEX` | Regex-based CORS allowlist |
 | `ALLOW_QUERY_BEARER_TOKENS` | Allows `access_token` query param auth for special cases |
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
+| `BACKTEST_MAX_CONCURRENT_GLOBAL` | Global concurrent backtest limit; defaults to `2` |
+| `BACKTEST_MAX_CONCURRENT_PER_USER` | Per-user concurrent backtest limit; defaults to `1` |
 | `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
 | `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
@@ -686,6 +693,10 @@ Frontend auth behavior:
 | Command | Purpose |
 | --- | --- |
 | `npm run db:init` | Run backend schema compatibility initialization explicitly |
+| `npm run db:adopt-current` | After a verified backup, validate and adopt a populated pre-runner database into the migration ledger without replaying history |
+| `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
+| `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
+| `npm run db:check` | Check migration version/checksum state without changing the database |
 | `npm run dev` | Run backend and frontend together |
 | `npm run dev:backend` | Run backend dev script |
 | `npm run dev:frontend` | Run frontend dev script |
@@ -702,7 +713,8 @@ Frontend auth behavior:
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
 - The optional streaming lifecycle runtime persists position data, but the current UI does not expose those records directly.
 - The bot page exposes dry-run start/evaluate/stop controls, while live order routing remains backend-gated and intentionally absent from the current UI.
-- There is no formal migration runner; schema evolution relies on raw SQL plus startup compatibility helpers.
+- Schema evolution uses the checksummed migration runner; startup compatibility helpers remain as a temporary local-development safety net.
+- Backtest concurrency limits are process-local. Use a single API worker until a distributed queue or lease is added for multi-worker or multi-replica deployments.
 - Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
 
 ## Documentation Map

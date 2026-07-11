@@ -342,6 +342,33 @@ def test_streamed_backtest_emits_progress_then_result_after_commit(monkeypatch):
     assert body.index('"phase":"complete"') < body.index('"id":99')
 
 
+def test_backtest_capacity_limits_global_and_per_user(monkeypatch):
+    monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_GLOBAL", "2")
+    monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_PER_USER", "1")
+    first = main_module._acquire_backtest_capacity(OWNER_ID)
+    second = None
+    replacement = None
+    try:
+        with pytest.raises(HTTPException) as per_user_error:
+            main_module._acquire_backtest_capacity(OWNER_ID)
+        assert per_user_error.value.status_code == 429
+        assert per_user_error.value.headers == {"Retry-After": "5"}
+
+        second = main_module._acquire_backtest_capacity(OTHER_USER_ID)
+        with pytest.raises(HTTPException) as global_error:
+            main_module._acquire_backtest_capacity("22222222-2222-2222-2222-222222222222")
+        assert global_error.value.status_code == 429
+
+        first.release()
+        replacement = main_module._acquire_backtest_capacity(OWNER_ID)
+    finally:
+        first.release()
+        if second is not None:
+            second.release()
+        if replacement is not None:
+            replacement.release()
+
+
 def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
     bars = [
         _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)

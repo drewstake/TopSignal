@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: topsignal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d topsignal"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/topsignal
+      AUTH_REQUIRED: "true"
+      TOPSIGNAL_DB_SCHEMA_INIT: skip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+          python -m pip install -r backend/requirements.txt
+
+      - name: Validate fresh PostgreSQL schema and migrations
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d topsignal -v ON_ERROR_STOP=1 -f db/schema.sql
+          python backend/tools/migrate_db.py --baseline
+          python backend/tools/migrate_db.py --check
+
+      - name: Validate latest incremental upgrade path
+        env:
+          PGPASSWORD: postgres
+          UPGRADE_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/topsignal_upgrade
+        run: |
+          createdb -h 127.0.0.1 -U postgres topsignal_upgrade
+          psql -h 127.0.0.1 -U postgres -d topsignal_upgrade -v ON_ERROR_STOP=1 -f db/schema.sql
+          DATABASE_URL="$UPGRADE_DATABASE_URL" python backend/tools/migrate_db.py --baseline
+          psql -h 127.0.0.1 -U postgres -d topsignal_upgrade -v ON_ERROR_STOP=1 <<'SQL'
+          alter table bot_order_attempts drop constraint if exists bot_order_attempts_status_check;
+          alter table bot_order_attempts add constraint bot_order_attempts_status_check
+            check (status in ('pending','dry_run','submitted','blocked','rejected','error'));
+          alter table bot_order_attempts drop constraint if exists bot_order_attempts_bot_config_id_fkey;
+          alter table bot_order_attempts alter column bot_config_id set not null;
+          alter table bot_order_attempts add constraint bot_order_attempts_bot_config_id_fkey
+            foreign key (bot_config_id) references bot_configs(id) on delete cascade;
+          alter table accounts drop column if exists balance;
+          delete from topsignal_schema_migrations
+          where version in (
+            '20260710_add_bot_submission_unknown_status.sql',
+            '20260710_add_cached_account_balance.sql',
+            '20260710_enforce_bot_quantity_safety.sql',
+            '20260710_preserve_bot_order_attempt_audit.sql'
+          );
+          SQL
+          DATABASE_URL="$UPGRADE_DATABASE_URL" python backend/tools/migrate_db.py
+          DATABASE_URL="$UPGRADE_DATABASE_URL" python backend/tools/migrate_db.py --check
+
+      - name: Validate populated pre-runner adoption
+        env:
+          PGPASSWORD: postgres
+          ADOPT_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/topsignal_adopt
+        run: |
+          createdb -h 127.0.0.1 -U postgres topsignal_adopt
+          psql -h 127.0.0.1 -U postgres -d topsignal_adopt -v ON_ERROR_STOP=1 -f db/schema.sql
+          psql -h 127.0.0.1 -U postgres -d topsignal_adopt -v ON_ERROR_STOP=1 -c \
+            "insert into accounts (provider, external_id, name) values ('projectx', '999001', 'Adoption Fixture')"
+          psql -h 127.0.0.1 -U postgres -d topsignal_adopt -v ON_ERROR_STOP=1 <<'SQL'
+          drop index uq_bot_order_attempts_idempotency_key;
+          create index uq_bot_order_attempts_idempotency_key
+            on bot_order_attempts (user_id, bot_config_id, idempotency_key);
+          SQL
+          if DATABASE_URL="$ADOPT_DATABASE_URL" python backend/tools/migrate_db.py \
+            --adopt-current --acknowledge-populated-database; then
+            echo "Adoption unexpectedly accepted a non-unique idempotency index."
+            exit 1
+          fi
+          psql -h 127.0.0.1 -U postgres -d topsignal_adopt -v ON_ERROR_STOP=1 <<'SQL'
+          drop index uq_bot_order_attempts_idempotency_key;
+          create unique index uq_bot_order_attempts_idempotency_key
+            on bot_order_attempts (user_id, bot_config_id, idempotency_key)
+            where idempotency_key is not null;
+          alter table provider_credentials
+            drop constraint provider_credentials_user_id_provider_key;
+          create unique index uq_provider_credentials_user_provider_adopt
+            on provider_credentials (user_id, provider);
+          SQL
+          DATABASE_URL="$ADOPT_DATABASE_URL" python backend/tools/migrate_db.py \
+            --adopt-current --acknowledge-populated-database
+          DATABASE_URL="$ADOPT_DATABASE_URL" python backend/tools/migrate_db.py --check
+
+      - name: Backend tests
+        working-directory: backend
+        env:
+          DATABASE_URL: "sqlite+pysqlite:///:memory:"
+        run: python -m pytest -q
+
+      - name: Frontend tests
+        run: npm --prefix frontend test
+
+      - name: Frontend lint
+        run: npm --prefix frontend run lint -- --max-warnings=0
+
+      - name: Frontend production build
+        run: npm --prefix frontend run build
+
+      - name: Dependency audits
+        run: |
+          npm audit
+          npm --prefix frontend audit --omit=dev

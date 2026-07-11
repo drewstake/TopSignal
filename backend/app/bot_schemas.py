@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .trade_plan_schemas import TradeEvaluationResultOut
 
 
 TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
+MAX_BOT_CONTRACT_QUANTITY = 10_000
 BotExecutionMode = Literal["dry_run", "live"]
 BotRunStatus = Literal["running", "stopped", "blocked", "error"]
 BotEvaluationStatus = Literal[
@@ -91,17 +92,24 @@ class BotConfigBase(BaseModel):
     lookback_bars: int = Field(default=200, ge=25, le=20000)
     fast_period: int = Field(default=9, gt=0, le=500)
     slow_period: int = Field(default=21, gt=1, le=1000)
-    order_size: float = Field(default=1, gt=0)
-    max_contracts: float = Field(default=1, gt=0)
-    max_daily_loss: float = Field(default=250, ge=0)
+    order_size: float = Field(default=1, gt=0, le=MAX_BOT_CONTRACT_QUANTITY, allow_inf_nan=False)
+    max_contracts: float = Field(default=1, gt=0, le=MAX_BOT_CONTRACT_QUANTITY, allow_inf_nan=False)
+    max_daily_loss: float = Field(default=250, ge=0, allow_inf_nan=False)
     max_trades_per_day: int = Field(default=3, ge=0)
-    max_open_position: float = Field(default=1, gt=0)
+    max_open_position: float = Field(default=1, gt=0, le=MAX_BOT_CONTRACT_QUANTITY, allow_inf_nan=False)
     allowed_contracts: list[str] = Field(default_factory=list)
     trading_start_time: str = "09:30"
     trading_end_time: str = "15:45"
     cooldown_seconds: int = Field(default=300, ge=0)
     max_data_staleness_seconds: int = Field(default=600, gt=0)
     allow_market_depth: bool = False
+
+    @field_validator("order_size", "max_contracts", "max_open_position")
+    @classmethod
+    def validate_whole_contract_quantity(cls, value: float) -> float:
+        if abs(value - round(value)) > 1e-9:
+            raise ValueError("ProjectX futures contract quantities must be whole numbers")
+        return value
 
 
 class BotConfigCreateIn(BotConfigBase):
@@ -122,17 +130,39 @@ class BotConfigUpdateIn(BaseModel):
     lookback_bars: int | None = Field(default=None, ge=25, le=20000)
     fast_period: int | None = Field(default=None, gt=0, le=500)
     slow_period: int | None = Field(default=None, gt=1, le=1000)
-    order_size: float | None = Field(default=None, gt=0)
-    max_contracts: float | None = Field(default=None, gt=0)
-    max_daily_loss: float | None = Field(default=None, ge=0)
+    order_size: float | None = Field(
+        default=None,
+        gt=0,
+        le=MAX_BOT_CONTRACT_QUANTITY,
+        allow_inf_nan=False,
+    )
+    max_contracts: float | None = Field(
+        default=None,
+        gt=0,
+        le=MAX_BOT_CONTRACT_QUANTITY,
+        allow_inf_nan=False,
+    )
+    max_daily_loss: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     max_trades_per_day: int | None = Field(default=None, ge=0)
-    max_open_position: float | None = Field(default=None, gt=0)
+    max_open_position: float | None = Field(
+        default=None,
+        gt=0,
+        le=MAX_BOT_CONTRACT_QUANTITY,
+        allow_inf_nan=False,
+    )
     allowed_contracts: list[str] | None = None
     trading_start_time: str | None = None
     trading_end_time: str | None = None
     cooldown_seconds: int | None = Field(default=None, ge=0)
     max_data_staleness_seconds: int | None = Field(default=None, gt=0)
     allow_market_depth: bool | None = None
+
+    @field_validator("order_size", "max_contracts", "max_open_position")
+    @classmethod
+    def validate_whole_contract_quantity(cls, value: float | None) -> float | None:
+        if value is not None and abs(value - round(value)) > 1e-9:
+            raise ValueError("ProjectX futures contract quantities must be whole numbers")
+        return value
 
 
 class BotConfigOut(BotConfigBase):
@@ -183,7 +213,7 @@ class BotDecisionOut(BaseModel):
 
 class BotOrderAttemptOut(BaseModel):
     id: int
-    bot_config_id: int
+    bot_config_id: int | None = None
     bot_run_id: int | None = None
     bot_decision_id: int | None = None
     account_id: int
@@ -570,7 +600,7 @@ class BotBacktestTradeOut(BaseModel):
 
 class BotBacktestOut(BaseModel):
     id: int
-    bot_config_id: int
+    bot_config_id: int | None = None
     engine_version: str
     input_fingerprint: str
     created_at: datetime

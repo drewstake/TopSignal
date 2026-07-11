@@ -158,6 +158,8 @@ def _ensure_accounts_schema_compatibility() -> None:
             )
         if "display_name" not in column_names:
             conn.execute(text("alter table accounts add column if not exists display_name text"))
+        if "balance" not in column_names:
+            conn.execute(text("alter table accounts add column if not exists balance numeric(18,6)"))
         if "can_trade" not in column_names:
             conn.execute(text("alter table accounts add column if not exists can_trade boolean"))
         if "is_visible" not in column_names:
@@ -762,6 +764,55 @@ def _ensure_bot_schema_compatibility() -> None:
             conn.execute(text("update bot_configs set trading_end_time = '15:45' where trading_end_time is null or btrim(trading_end_time) = ''"))
             conn.execute(text("update bot_configs set cooldown_seconds = 300 where cooldown_seconds is null or cooldown_seconds < 0"))
             conn.execute(text("update bot_configs set max_data_staleness_seconds = 600 where max_data_staleness_seconds is null or max_data_staleness_seconds <= 0"))
+            unsafe_quantity_count = conn.execute(
+                text(
+                    """
+                    select count(*)
+                    from bot_configs
+                    where order_size is null
+                       or order_size::text in ('NaN', 'Infinity', '-Infinity')
+                       or order_size <= 0
+                       or order_size > 10000
+                       or order_size <> trunc(order_size)
+                       or max_contracts is null
+                       or max_contracts::text in ('NaN', 'Infinity', '-Infinity')
+                       or max_contracts <= 0
+                       or max_contracts > 10000
+                       or max_contracts <> trunc(max_contracts)
+                       or max_open_position is null
+                       or max_open_position::text in ('NaN', 'Infinity', '-Infinity')
+                       or max_open_position <= 0
+                       or max_open_position > 10000
+                       or max_open_position <> trunc(max_open_position)
+                    """
+                )
+            ).scalar_one()
+            if unsafe_quantity_count:
+                raise RuntimeError(
+                    "Unsafe bot contract quantities exist; correct order_size, "
+                    "max_contracts, and max_open_position before starting TopSignal."
+                )
+            for constraint_name, expression in (
+                (
+                    "bot_configs_order_size_supported_check",
+                    "order_size <= 10000 and order_size = trunc(order_size)",
+                ),
+                (
+                    "bot_configs_max_contracts_supported_check",
+                    "max_contracts <= 10000 and max_contracts = trunc(max_contracts)",
+                ),
+                (
+                    "bot_configs_max_open_position_supported_check",
+                    "max_open_position <= 10000 and max_open_position = trunc(max_open_position)",
+                ),
+            ):
+                conn.execute(text(f"alter table bot_configs drop constraint if exists {constraint_name}"))
+                conn.execute(
+                    text(
+                        f"alter table bot_configs add constraint {constraint_name} "
+                        f"check ({expression})"
+                    )
+                )
             conn.execute(text("alter table bot_configs drop constraint if exists uq_bot_configs_user_account"))
             conn.execute(text("drop index if exists uq_bot_configs_user_account"))
             conn.execute(text("create index if not exists idx_bot_configs_user_account on bot_configs (user_id, account_id)"))
@@ -887,6 +938,17 @@ def _ensure_bot_schema_compatibility() -> None:
             conn.execute(text("create index if not exists idx_bot_decisions_config_created on bot_decisions (user_id, bot_config_id, created_at)"))
         if "bot_order_attempts" in table_names:
             attempt_columns = {column["name"] for column in inspector.get_columns("bot_order_attempts")}
+            conn.execute(text("alter table bot_order_attempts alter column bot_config_id drop not null"))
+            conn.execute(text("alter table bot_order_attempts drop constraint if exists bot_order_attempts_bot_config_id_fkey"))
+            conn.execute(
+                text(
+                    """
+                    alter table bot_order_attempts
+                    add constraint bot_order_attempts_bot_config_id_fkey
+                    foreign key (bot_config_id) references bot_configs(id) on delete set null
+                    """
+                )
+            )
             _add_column(conn, "bot_order_attempts", attempt_columns, "execution_mode", "text")
             _add_column(conn, "bot_order_attempts", attempt_columns, "correlation_id", "text")
             _add_column(conn, "bot_order_attempts", attempt_columns, "idempotency_key", "text")
@@ -925,6 +987,16 @@ def _ensure_bot_schema_compatibility() -> None:
                     alter table bot_order_attempts
                     add constraint bot_order_attempts_execution_mode_check
                     check (execution_mode in ('dry_run','live'))
+                    """
+                )
+            )
+            conn.execute(text("alter table bot_order_attempts drop constraint if exists bot_order_attempts_status_check"))
+            conn.execute(
+                text(
+                    """
+                    alter table bot_order_attempts
+                    add constraint bot_order_attempts_status_check
+                    check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error'))
                     """
                 )
             )

@@ -65,6 +65,14 @@ export function writeStoredMainAccountId(accountId: number): void {
   );
 }
 
+export function buildAccountAwarePath(path: string, accountId: number | null): string {
+  if (accountId === null) {
+    return path;
+  }
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}${ACCOUNT_QUERY_PARAM}=${encodeURIComponent(String(accountId))}`;
+}
+
 export function dispatchAccountDisplayNameUpdated(accountId: number): void {
   if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
     return;

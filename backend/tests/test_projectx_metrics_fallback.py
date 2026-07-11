@@ -25,6 +25,13 @@ from app.services.trading_day import trading_day_bounds_utc
 OTHER_USER_ID = "11111111-1111-1111-1111-111111111111"
 
 
+@pytest.fixture(autouse=True)
+def explicit_local_legacy_credentials(monkeypatch):
+    """These compatibility fixtures intentionally exercise the local env client."""
+    monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(

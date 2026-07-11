@@ -16,11 +16,12 @@ import {
   writeStoredMainAccountId,
 } from "../../lib/accountSelection";
 import { logPerfInfo } from "../../lib/perf";
+import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { getDemoAccountId, getDemoAccountName } from "../../lib/demoMode";
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
-import { formatCurrency } from "../../utils/formatters";
 import { MergeJournalCard } from "./components/MergeJournalCard";
 import {
   type MergeJournalFormState,
@@ -138,6 +139,9 @@ export function AccountsPage() {
   const [mergeJournalResult, setMergeJournalResult] = useState<JournalMergeResult | null>(null);
   const [mergeOldAccountSearch, setMergeOldAccountSearch] = useState("");
   const editInputRef = useRef<HTMLInputElement | null>(null);
+  const accountsVersionRef = useRef(0);
+  const lastTradeRequestVersionByIdRef = useRef<Record<number, number>>({});
+  const beginAccountsRequest = useLatestRequestGuard();
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -150,6 +154,8 @@ export function AccountsPage() {
   );
 
   const loadAccounts = useCallback(async () => {
+    const isCurrent = beginAccountsRequest();
+    accountsVersionRef.current += 1;
     const startedAtIso = new Date().toISOString();
     const startedAtMs = performance.now();
     logPerfInfo("[perf][accounts] load-start", {
@@ -172,6 +178,9 @@ export function AccountsPage() {
           showMissing: true,
         }),
       ]);
+      if (!isCurrent()) {
+        return;
+      }
       setAccounts(visibleAccounts.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
       setMergeAccounts(mergeableAccounts);
       setEditingAccountId(null);
@@ -181,9 +190,15 @@ export function AccountsPage() {
       setLastTradeLoadingById({});
       setLastTradeResolvedById({});
     } catch (err) {
+      if (!isCurrent()) {
+        return;
+      }
       setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
       setAccounts([]);
       setMergeAccounts([]);
+      setLastTradeOverridesById({});
+      setLastTradeLoadingById({});
+      setLastTradeResolvedById({});
     } finally {
       const totalMs = Math.max(performance.now() - startedAtMs, 0);
       logPerfInfo("[perf][accounts] load-end", {
@@ -193,25 +208,40 @@ export function AccountsPage() {
         show_hidden: showHiddenAccounts,
         show_missing: showMissingAccounts,
       });
-      setAccountsLoading(false);
+      if (isCurrent()) {
+        setAccountsLoading(false);
+      }
     }
-  }, [showHiddenAccounts, showMissingAccounts]);
+  }, [beginAccountsRequest, showHiddenAccounts, showMissingAccounts]);
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
     if (lastTradeLoadingById[accountId]) {
       return;
     }
 
+    const accountsVersion = accountsVersionRef.current;
+    const requestVersion = (lastTradeRequestVersionByIdRef.current[accountId] ?? 0) + 1;
+    lastTradeRequestVersionByIdRef.current[accountId] = requestVersion;
+    const isCurrent = () =>
+      accountsVersionRef.current === accountsVersion &&
+      lastTradeRequestVersionByIdRef.current[accountId] === requestVersion;
+
     setLastTradeLoadingById((prev) => ({ ...prev, [accountId]: true }));
     setLastTradeError(null);
     try {
       const payload = await accountsApi.getLastTrade(accountId, refresh);
-      setLastTradeOverridesById((prev) => ({ ...prev, [accountId]: payload.last_trade_at }));
+      if (isCurrent()) {
+        setLastTradeOverridesById((prev) => ({ ...prev, [accountId]: payload.last_trade_at }));
+      }
     } catch (err) {
-      setLastTradeError(err instanceof Error ? err.message : "Failed to resolve last trade timestamp");
+      if (isCurrent()) {
+        setLastTradeError(err instanceof Error ? err.message : "Failed to resolve last trade timestamp");
+      }
     } finally {
-      setLastTradeResolvedById((prev) => ({ ...prev, [accountId]: true }));
-      setLastTradeLoadingById((prev) => ({ ...prev, [accountId]: false }));
+      if (isCurrent()) {
+        setLastTradeResolvedById((prev) => ({ ...prev, [accountId]: true }));
+        setLastTradeLoadingById((prev) => ({ ...prev, [accountId]: false }));
+      }
     }
   }, [lastTradeLoadingById]);
 
@@ -405,6 +435,7 @@ export function AccountsPage() {
 
   return (
     <div className="space-y-6 pb-10">
+      <h1 className="sr-only">Accounts</h1>
       <section>
         <Card>
           <CardHeader>
@@ -470,6 +501,7 @@ export function AccountsPage() {
                       const isEditingName = editingAccountId === account.id;
                       const renameErrorMessage = renameErrorById[account.id];
                       const savingName = renamingAccountId === account.id;
+                      const availableBalance = getAvailableAccountBalance(account.balance);
                       const localLastTradeAt = account.last_trade_at;
                       const resolvedLastTradeAt =
                         lastTradeOverridesById[account.id] !== undefined
@@ -571,7 +603,14 @@ export function AccountsPage() {
                           </td>
                           <td className="px-3 py-3 text-right text-slate-300">{getDemoAccountId(account.id)}</td>
                           <td className="px-3 py-3 text-right font-mono text-slate-200">
-                            {formatCurrency(account.balance)}
+                            <span className={availableBalance === null ? "font-sans text-amber-300" : undefined}>
+                              {formatAccountBalance(account.balance)}
+                            </span>
+                            {account.provider_data_stale ? (
+                              <p className="mt-1 font-sans text-[10px] text-amber-300" title={account.last_seen_at ?? undefined}>
+                                {`Stale · ${formatProviderLastSeen(account.last_seen_at)}`}
+                              </p>
+                            ) : null}
                           </td>
                           <td className="px-3 py-3 text-right text-slate-300">
                             {resolvedLastTradeAt ? (
@@ -597,6 +636,7 @@ export function AccountsPage() {
                             <Badge variant={accountStateBadgeVariant(account.account_state)}>
                               {formatAccountStateLabel(account.account_state)}
                             </Badge>
+                            {account.provider_data_stale ? <Badge className="ml-1" variant="warning">Stale data</Badge> : null}
                           </td>
                           <td className="px-3 py-3 text-right">
                             {isMainAccount ? (

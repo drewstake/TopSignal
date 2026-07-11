@@ -353,6 +353,28 @@ def _make_bot_create_payload(name: str = "Test Bot") -> BotConfigCreateIn:
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("order_size", float("nan")),
+        ("order_size", float("inf")),
+        ("order_size", 10_001),
+        ("max_contracts", float("inf")),
+        ("max_contracts", 10_001),
+        ("max_open_position", float("inf")),
+        ("max_open_position", 10_001),
+    ],
+)
+def test_bot_config_schemas_reject_non_finite_or_unreasonable_quantities(field, value):
+    create_values = _make_bot_create_payload().model_dump()
+    create_values[field] = value
+
+    with pytest.raises(ValueError):
+        BotConfigCreateIn(**create_values)
+    with pytest.raises(ValueError):
+        BotConfigUpdateIn(**{field: value})
+
+
 def _make_analysis_config() -> BotConfig:
     return BotConfig(
         user_id="00000000-0000-0000-0000-000000000000",
@@ -3491,7 +3513,7 @@ def test_update_bot_config_rejects_duplicate_name_for_user():
         engine.dispose()
 
 
-def test_delete_bot_config_removes_activity_rows():
+def test_delete_bot_config_preserves_order_attempt_audit_rows():
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -3585,7 +3607,12 @@ def test_delete_bot_config_removes_activity_rows():
         assert db.query(BotConfig).count() == 0
         assert db.query(BotRun).count() == 0
         assert db.query(BotDecision).count() == 0
-        assert db.query(BotOrderAttempt).count() == 0
+        attempts = db.query(BotOrderAttempt).all()
+        assert len(attempts) == 1
+        assert attempts[0].bot_config_id is None
+        assert attempts[0].bot_run_id is None
+        assert attempts[0].bot_decision_id is None
+        assert bot_service_module.serialize_bot_order_attempt(attempts[0])["bot_config_id"] is None
         assert db.query(BotRiskEvent).count() == 0
     finally:
         db.close()

@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
-from app.models import Account, BotConfig, BotDecision, BotOrderAttempt, BotRun, ProjectXMarketCandle
+from app.models import Account, BotConfig, BotDecision, BotOrderAttempt, BotRun, InstrumentMetadata, ProjectXMarketCandle
 from app.services import bot_service
 from app.services.bot_execution_safety import (
     InvalidBotRunTransition,
@@ -21,6 +21,7 @@ from app.services.bot_execution_safety import (
     transition_bot_run,
 )
 from app.services.bot_service import BotRunEvaluationError, SignalResult, evaluate_bot_config, start_bot_run
+from app.services.projectx_client import ProjectXClientError
 
 
 USER_A = "00000000-0000-0000-0000-000000000001"
@@ -48,9 +49,48 @@ def db_session():
 
 
 class RecordingClient:
-    def __init__(self, *, order_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        order_error: Exception | None = None,
+        account_can_trade: bool = True,
+        positions: list[dict] | None = None,
+        open_orders: list[dict] | None = None,
+        trades: list[dict] | None = None,
+        orders: list[dict] | None = None,
+    ):
         self.order_error = order_error
+        self.account_can_trade = account_can_trade
+        self.positions = positions or []
+        self.open_orders = open_orders or []
+        self.trades = trades or []
+        self.orders = orders or []
         self.place_order_calls: list[dict] = []
+
+    def list_accounts(self, *, only_active_accounts=True):
+        del only_active_accounts
+        return [
+            {
+                "id": 9001,
+                "name": "Practice 9001",
+                "status": "ACTIVE" if self.account_can_trade else "LOCKED_OUT",
+                "can_trade": self.account_can_trade,
+            }
+        ]
+
+    def search_open_positions(self, *, account_id):
+        del account_id
+        return list(self.positions)
+
+    def search_open_orders(self, *, account_id):
+        del account_id
+        return list(self.open_orders)
+
+    def fetch_trade_history(self, **_kwargs):
+        return list(self.trades)
+
+    def search_orders(self, **_kwargs):
+        return list(self.orders)
 
     def place_order(self, **kwargs):
         self.place_order_calls.append(kwargs)
@@ -355,6 +395,16 @@ def test_database_uniqueness_allows_only_one_running_run_per_bot(db_session):
     assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 1
 
 
+def test_database_constraint_rejects_fractional_bot_contract_quantities(db_session):
+    _, config = _add_account_and_config(db_session)
+    db_session.commit()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            config.order_size = 1.5
+            db_session.flush()
+
+
 def test_provider_candle_failure_on_start_persists_error_run_and_no_running_run(db_session, monkeypatch):
     _, config = _add_account_and_config(db_session, enabled=False)
     db_session.commit()
@@ -420,6 +470,479 @@ def test_provider_order_failure_preserves_error_attempt_and_terminal_run(db_sess
     assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 0
     assert db_session.get(BotConfig, config.id).enabled is False
     assert len(client.place_order_calls) == 1
+
+
+def test_live_risk_uses_authoritative_provider_position_instead_of_signal_default(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        positions=[
+            {
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "signed_size": 1.0,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert {"max_contracts", "max_open_position"} <= _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_live_risk_fails_closed_when_provider_preflight_is_unavailable(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+
+    class UnavailableClient(RecordingClient):
+        def search_open_positions(self, *, account_id):
+            del account_id
+            raise ProjectXClientError("position endpoint unavailable")
+
+    client = UnavailableClient()
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "live_preflight_unavailable" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_flat_account_blocks_opposite_side_signal_while_order_is_working(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch, action="SELL")
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        open_orders=[
+            {
+                "order_id": "working-buy",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": 1.0,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "working_order_direction_conflict" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_live_risk_blocks_while_provider_order_is_working(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        open_orders=[
+            {
+                "order_id": "provider-working",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": 1.0,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "working_order_direction_conflict" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_reducing_exit_fails_closed_when_same_side_working_order_could_reverse_position(
+    db_session,
+    monkeypatch,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch, action="SELL")
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        positions=[
+            {
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "signed_size": 1.0,
+            }
+        ],
+        open_orders=[
+            {
+                "order_id": "protective-sell",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": -1.0,
+            }
+        ],
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "working_order_direction_conflict" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_recent_submission_blocks_sibling_bot_during_provider_settlement(db_session, monkeypatch):
+    _, first_config = _add_account_and_config(db_session, execution_mode="live", name="First live bot")
+    second_config = BotConfig(
+        user_id=USER_A,
+        account_id=9001,
+        name="Second live bot",
+        enabled=True,
+        execution_mode="live",
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=2,
+        slow_period=3,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=10,
+        max_open_position=1,
+        allowed_contracts=[CONTRACT_ID],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3600,
+    )
+    db_session.add(second_config)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient()
+
+    first = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=first_config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+    db_session.commit()
+    second = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=second_config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert first.status == "submitted"
+    assert second.status == "risk_blocked"
+    assert "recent_live_submission_settling" in _risk_codes(second)
+    assert len(client.place_order_calls) == 1
+
+
+def test_live_risk_uses_authoritative_provider_daily_pnl(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        trades=[
+            {
+                "account_id": 9001,
+                "timestamp": datetime.now(timezone.utc),
+                "pnl": -300.0,
+                "fees": 0.0,
+                "voided": False,
+                "raw_payload": {"voided": False},
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "max_daily_loss" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    decision = BotDecision(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        contract_id=CONTRACT_ID,
+        decision_type="signal",
+        action="BUY",
+        reason="test",
+        candle_timestamp=datetime.now(timezone.utc),
+        quantity=1,
+    )
+    db_session.add(decision)
+    db_session.flush()
+    attempt = BotOrderAttempt(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        bot_decision_id=int(decision.id),
+        account_id=9001,
+        contract_id=CONTRACT_ID,
+        execution_mode="live",
+        side="BUY",
+        order_type="market",
+        size=1,
+        status="pending",
+        raw_request={"customTag": "topsignal-1-reconcile"},
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    client = RecordingClient(
+        orders=[
+            {
+                "order_id": "provider-456",
+                "account_id": 9001,
+                "status": 2,
+                "custom_tag": "topsignal-1-reconcile",
+                "raw_payload": {"id": 456, "customTag": "topsignal-1-reconcile"},
+            }
+        ]
+    )
+
+    unresolved_count, error = bot_service.reconcile_unresolved_order_attempts(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client=client,
+    )
+
+    assert error is None
+    assert unresolved_count == 0
+    assert attempt.status == "submitted"
+    assert attempt.provider_order_id == "provider-456"
+    assert attempt.raw_response["reconciled"] is True
+
+
+@pytest.mark.parametrize("provider_status", [1, 6])
+def test_reconciliation_keeps_open_or_pending_provider_order_unresolved(db_session, provider_status):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    attempt = BotOrderAttempt(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        contract_id=CONTRACT_ID,
+        execution_mode="live",
+        side="BUY",
+        order_type="market",
+        size=1,
+        status="submission_unknown",
+        raw_request={"customTag": "topsignal-working-order"},
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    client = RecordingClient(
+        orders=[
+            {
+                "order_id": "provider-working",
+                "account_id": 9001,
+                "status": provider_status,
+                "custom_tag": "topsignal-working-order",
+                "raw_payload": {"id": "provider-working", "status": provider_status},
+            }
+        ]
+    )
+
+    unresolved_count, error = bot_service.reconcile_unresolved_order_attempts(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client=client,
+    )
+
+    assert error is None
+    assert unresolved_count == 1
+    assert attempt.status == "submission_unknown"
+    assert attempt.provider_order_id == "provider-working"
+    assert "remains blocked" in attempt.rejection_reason
+
+
+def test_strategy_brackets_include_required_projectx_order_types(db_session):
+    db_session.add(InstrumentMetadata(symbol="MNQ", tick_size=0.25, tick_value=0.5))
+    db_session.flush()
+
+    payload = bot_service._strategy_bracket_payloads(
+        db_session,
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        action="BUY",
+        entry_price=100,
+        decision_payload={"stop_loss": 99, "take_profit": 102},
+    )
+
+    assert payload == {
+        "stopLossBracket": {"ticks": 4, "type": 4},
+        "takeProfitBracket": {"ticks": 8, "type": 1},
+    }
+
+
+def test_network_timeout_marks_submission_unknown_for_reconciliation():
+    attempt = SimpleNamespace(
+        raw_request={
+            "accountId": 9001,
+            "contractId": CONTRACT_ID,
+            "type": 2,
+            "side": 0,
+            "size": 1,
+            "customTag": "topsignal-timeout",
+        },
+        status="pending",
+        provider_order_id=None,
+        rejection_reason=None,
+        raw_response=None,
+    )
+    client = RecordingClient(
+        order_error=ProjectXClientError(
+            "request timed out",
+            status_code=504,
+            submission_outcome_unknown=True,
+        )
+    )
+
+    bot_service._submit_order_attempt(client=client, order_attempt=attempt)
+
+    assert attempt.status == "submission_unknown"
+    assert "requires reconciliation" in attempt.rejection_reason
+    assert attempt.provider_order_id is None
+
+
+def test_success_response_without_provider_order_id_is_not_marked_submitted():
+    attempt = SimpleNamespace(
+        raw_request={
+            "accountId": 9001,
+            "contractId": CONTRACT_ID,
+            "type": 2,
+            "side": 0,
+            "size": 1,
+            "customTag": "topsignal-missing-id",
+        },
+        status="pending",
+        provider_order_id=None,
+        rejection_reason=None,
+        raw_response=None,
+    )
+
+    class MissingIdClient:
+        def place_order(self, **_kwargs):
+            return {"order_id": None, "raw_payload": {"success": True}}
+
+    bot_service._submit_order_attempt(client=MissingIdClient(), order_attempt=attempt)
+
+    assert attempt.status == "submission_unknown"
+    assert "without a provider order ID" in attempt.rejection_reason
+
+
+def test_higher_timeframe_staleness_is_measured_from_bar_close(db_session):
+    account, config = _add_account_and_config(db_session)
+    config.max_data_staleness_seconds = 60
+    candle = ProjectXMarketCandle(
+        user_id=USER_A,
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        live=False,
+        unit="hour",
+        unit_number=4,
+        candle_timestamp=datetime.now(timezone.utc) - timedelta(hours=4, seconds=30),
+        open_price=100,
+        high_price=102,
+        low_price=99,
+        close_price=101,
+        volume=100,
+        is_partial=False,
+    )
+
+    blocks = bot_service.evaluate_risk_gates(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=account,
+        latest_candle=candle,
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        action="BUY",
+        requested_order_size=1,
+        dry_run=True,
+        confirm_live_order_routing=False,
+    )
+
+    assert "stale_market_data" not in {block.code for block in blocks}
 
 
 def test_risk_blocked_signal_creates_no_order_attempt(db_session, monkeypatch):

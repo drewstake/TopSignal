@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -70,6 +71,8 @@ def sync_projectx_accounts(
             existing_by_external_id[external_id] = row
 
         row.name = payload["name"]
+        if payload["balance"] is not None:
+            row.balance = payload["balance"]
         row.account_state = payload["account_state"]
         row.can_trade = payload["can_trade"]
         row.is_visible = payload["is_visible"]
@@ -108,15 +111,23 @@ def get_projectx_account_rows(db: Session, *, user_id: str | None = None) -> lis
     )
 
 
-def get_projectx_account_row(db: Session, account_id: int, *, user_id: str | None = None) -> Account | None:
+def get_projectx_account_row(
+    db: Session,
+    account_id: int,
+    *,
+    user_id: str | None = None,
+    lock_for_update: bool = False,
+) -> Account | None:
     resolved_user_id = _resolve_user_id(user_id)
-    return (
+    query = (
         db.query(Account)
         .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.external_id == str(account_id))
-        .first()
     )
+    if lock_for_update:
+        query = query.with_for_update()
+    return query.first()
 
 
 def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | None = None) -> None:
@@ -239,9 +250,18 @@ def _normalize_provider_account(payload: dict[str, Any]) -> dict[str, Any] | Non
     is_visible_raw = payload.get("is_visible")
     is_visible = is_visible_raw if isinstance(is_visible_raw, bool) else None
 
+    balance_raw = payload.get("balance")
+    try:
+        balance = float(balance_raw) if balance_raw is not None else None
+    except (TypeError, ValueError, OverflowError):
+        balance = None
+    if balance is not None and not math.isfinite(balance):
+        balance = None
+
     return {
         "external_id": normalized_id,
         "name": str(payload.get("name") or f"Account {normalized_id}"),
+        "balance": balance,
         "can_trade": can_trade,
         "is_visible": is_visible,
         "account_state": account_state_from_flags(can_trade=can_trade, is_visible=is_visible),

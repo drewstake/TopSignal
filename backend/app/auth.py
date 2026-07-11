@@ -27,12 +27,10 @@ class AuthError(RuntimeError):
 
 
 def auth_required() -> bool:
-    # If AUTH_REQUIRED is not explicitly set, default to requiring auth only
-    # when Supabase auth is configured. This keeps local dev usable without
-    # bearer tokens while preserving strict mode in deployed environments.
-    if os.getenv("AUTH_REQUIRED") is not None:
-        return _read_bool_env("AUTH_REQUIRED", True)
-    return bool(os.getenv("SUPABASE_URL", "").strip())
+    # Authentication is fail-closed. A deliberately anonymous local instance
+    # must opt out explicitly with AUTH_REQUIRED=false; a missing or misspelled
+    # deployment variable must never expose the default tenant.
+    return _read_bool_env("AUTH_REQUIRED", True)
 
 
 def bind_authenticated_user(user: AuthenticatedUser | None) -> Token:

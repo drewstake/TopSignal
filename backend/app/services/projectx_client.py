@@ -23,14 +23,24 @@ _TOKEN_CACHE_BY_KEY: dict[str, _TokenCache] = {}
 _TOKEN_SAFETY_WINDOW = timedelta(seconds=60)
 _PROJECTX_ORDER_TYPES = {1, 2, 4, 5, 6, 7}
 _PROJECTX_ORDER_SIDES = {0, 1}
+_PROJECTX_POSITION_LONG = 1
+_PROJECTX_POSITION_SHORT = 2
+_MAX_PROJECTX_ORDER_SIZE = 10_000
 _PROJECTX_INTRADAY_UNIT_SECONDS = {1: 1, 2: 60, 3: 60 * 60}
 _PARTIAL_BAR_KEYS = ("isPartial", "is_partial", "partial")
 
 
 class ProjectXClientError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        submission_outcome_unknown: bool = False,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.submission_outcome_unknown = bool(submission_outcome_unknown)
 
 
 class ProjectXClient:
@@ -91,23 +101,36 @@ class ProjectXClient:
         payload = {"onlyActiveAccounts": bool(only_active_accounts)}
         data = self._request("POST", "/api/Account/search", payload=payload, with_auth=True)
 
-        rows = _unwrap_list(data, preferred_keys=["accounts", "data", "items"])
+        rows = _require_list(data, key="accounts", endpoint="Account/search")
         output: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
-                continue
+                raise ProjectXClientError("ProjectX Account/search returned an invalid account row.")
 
             account_id_raw = _first_value(row, ["id", "accountId", "account_id"])
             if account_id_raw is None:
-                continue
+                raise ProjectXClientError("ProjectX Account/search returned an account without an ID.")
 
             account_id = _safe_int(account_id_raw)
             if account_id is None:
-                continue
+                raise ProjectXClientError("ProjectX Account/search returned an invalid account ID.")
 
             can_trade = _safe_bool(_first_value(row, ["canTrade", "can_trade"]))
+            if can_trade is None:
+                raise ProjectXClientError("ProjectX Account/search omitted authoritative account tradability.")
             is_visible = _safe_bool(_first_value(row, ["isVisible", "is_visible"]))
+            if is_visible is None:
+                raise ProjectXClientError("ProjectX Account/search omitted authoritative account visibility.")
             status = _account_status_from_flags(can_trade=can_trade, is_visible=is_visible)
+            balance = _safe_float(
+                _first_value(
+                    row,
+                    ["balance", "cashBalance", "netLiquidatingValue", "equity", "availableBalance"],
+                ),
+                default=None,
+            )
+            if balance is not None and not _is_finite_number(balance):
+                balance = None
 
             # Keep this defensive filter for active-only requests.
             if only_active_accounts and status != "ACTIVE":
@@ -119,18 +142,7 @@ class ProjectXClient:
                     "name": str(
                         _first_value(row, ["name", "accountName", "displayName"]) or f"Account {account_id}"
                     ),
-                    "balance": _safe_float(
-                        _first_value(
-                            row,
-                            [
-                                "balance",
-                                "cashBalance",
-                                "netLiquidatingValue",
-                                "equity",
-                                "availableBalance",
-                            ],
-                        )
-                    ),
+                    "balance": balance,
                     "status": status,
                     "can_trade": can_trade,
                     "is_visible": is_visible,
@@ -257,6 +269,142 @@ class ProjectXClient:
             "request_payload": payload,
         }
 
+    def search_open_positions(self, *, account_id: int) -> list[dict[str, Any]]:
+        """Return the provider's current open positions for an account.
+
+        An absent or malformed ``positions`` collection is an error rather than
+        an empty account. Live risk checks must never turn an unknown provider
+        response into a flat position.
+        """
+
+        payload = {"accountId": int(account_id)}
+        data = self._request("POST", "/api/Position/searchOpen", payload=payload, with_auth=True)
+        rows = _require_list(data, key="positions", endpoint="Position/searchOpen")
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ProjectXClientError("ProjectX Position/searchOpen returned an invalid position row.")
+
+            row_account_id = _safe_int(_first_value(row, ["accountId", "account_id"]))
+            contract_id = _string_or_none(_first_value(row, ["contractId", "contract_id"]))
+            position_type = _safe_int(_first_value(row, ["type", "positionType", "position_type"]))
+            size = _safe_float(_first_value(row, ["size", "quantity", "qty"]), default=None)
+            if row_account_id is None or contract_id is None or position_type not in {
+                _PROJECTX_POSITION_LONG,
+                _PROJECTX_POSITION_SHORT,
+            }:
+                raise ProjectXClientError("ProjectX Position/searchOpen returned an incomplete position row.")
+            if size is None or not _is_finite_number(size) or size <= 0:
+                raise ProjectXClientError("ProjectX Position/searchOpen returned an invalid position size.")
+
+            normalized.append(
+                {
+                    "id": _string_or_none(_first_value(row, ["id", "positionId", "position_id"])),
+                    "account_id": row_account_id,
+                    "contract_id": contract_id,
+                    "type": position_type,
+                    "size": float(size),
+                    "signed_size": float(size) if position_type == _PROJECTX_POSITION_LONG else -float(size),
+                    "average_price": _safe_float(
+                        _first_value(row, ["averagePrice", "average_price"]),
+                        default=None,
+                    ),
+                    "creation_timestamp": _parse_datetime(
+                        _first_value(row, ["creationTimestamp", "createdAt", "timestamp"])
+                    ),
+                    "raw_payload": row,
+                }
+            )
+
+        return normalized
+
+    def search_orders(
+        self,
+        *,
+        account_id: int,
+        start: datetime,
+        end: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search provider orders for deterministic-tag reconciliation."""
+
+        payload: dict[str, Any] = {
+            "accountId": int(account_id),
+            "startTimestamp": _iso_utc(_as_utc(start)),
+        }
+        if end is not None:
+            payload["endTimestamp"] = _iso_utc(_as_utc(end))
+        data = self._request("POST", "/api/Order/search", payload=payload, with_auth=True)
+        rows = _require_list(data, key="orders", endpoint="Order/search")
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ProjectXClientError("ProjectX Order/search returned an invalid order row.")
+            order_id = _string_or_none(_first_value(row, ["id", "orderId", "order_id"]))
+            row_account_id = _safe_int(_first_value(row, ["accountId", "account_id"]))
+            if order_id is None or row_account_id is None:
+                raise ProjectXClientError("ProjectX Order/search returned an incomplete order row.")
+            if row_account_id != int(account_id):
+                raise ProjectXClientError("ProjectX Order/search returned an order for the wrong account.")
+            normalized.append(
+                {
+                    "order_id": order_id,
+                    "account_id": row_account_id,
+                    "contract_id": _string_or_none(_first_value(row, ["contractId", "contract_id"])),
+                    "status": _safe_int(_first_value(row, ["status", "orderStatus", "order_status"])),
+                    "custom_tag": _string_or_none(_first_value(row, ["customTag", "custom_tag"])),
+                    "creation_timestamp": _parse_datetime(
+                        _first_value(row, ["creationTimestamp", "createdAt", "timestamp"])
+                    ),
+                    "update_timestamp": _parse_datetime(
+                        _first_value(row, ["updateTimestamp", "updatedAt"])
+                    ),
+                    "raw_payload": row,
+                }
+            )
+        return normalized
+
+    def search_open_orders(self, *, account_id: int) -> list[dict[str, Any]]:
+        """Return working provider orders so live exposure cannot race fills."""
+
+        payload = {"accountId": int(account_id)}
+        data = self._request("POST", "/api/Order/searchOpen", payload=payload, with_auth=True)
+        rows = _require_list(data, key="orders", endpoint="Order/searchOpen")
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ProjectXClientError("ProjectX Order/searchOpen returned an invalid order row.")
+            order_id = _string_or_none(_first_value(row, ["id", "orderId", "order_id"]))
+            row_account_id = _safe_int(_first_value(row, ["accountId", "account_id"]))
+            contract_id = _string_or_none(_first_value(row, ["contractId", "contract_id"]))
+            status = _safe_int(_first_value(row, ["status", "orderStatus", "order_status"]))
+            side = _safe_int(_first_value(row, ["side", "orderSide", "order_side"]))
+            size = _safe_float(_first_value(row, ["size", "quantity", "qty"]), default=None)
+            if (
+                order_id is None
+                or row_account_id is None
+                or contract_id is None
+                or status is None
+                or side not in _PROJECTX_ORDER_SIDES
+                or size is None
+                or not _is_finite_number(size)
+                or size <= 0
+            ):
+                raise ProjectXClientError("ProjectX Order/searchOpen returned an incomplete order row.")
+            normalized.append(
+                {
+                    "order_id": order_id,
+                    "account_id": row_account_id,
+                    "contract_id": contract_id,
+                    "status": status,
+                    "side": side,
+                    "size": float(size),
+                    "signed_size": float(size) if side == 0 else -float(size),
+                    "custom_tag": _string_or_none(_first_value(row, ["customTag", "custom_tag"])),
+                    "raw_payload": row,
+                }
+            )
+        return normalized
+
     def fetch_trade_history(
         self,
         account_id: int,
@@ -265,6 +413,7 @@ class ProjectXClient:
         *,
         limit: int | None = None,
         offset: int | None = None,
+        require_valid_collection: bool = False,
     ) -> list[dict[str, Any]]:
         start_utc = _as_utc(start)
         end_utc = _as_utc(end) if end is not None else None
@@ -282,21 +431,40 @@ class ProjectXClient:
 
         data = self._request("POST", "/api/Trade/search", payload=payload, with_auth=True)
 
-        rows = _unwrap_list(data, preferred_keys=["trades", "data", "items"])
+        rows = (
+            _require_list(data, key="trades", endpoint="Trade/search")
+            if require_valid_collection
+            else _unwrap_list(data, preferred_keys=["trades", "data", "items"])
+        )
         normalized: list[dict[str, Any]] = []
 
         for row in rows:
             if not isinstance(row, dict):
+                if require_valid_collection:
+                    raise ProjectXClientError("ProjectX Trade/search returned an invalid trade row.")
                 continue
 
-            if _is_truthy(_first_value(row, ["voided", "isVoided", "is_voided"])):
-                # Voided/canceled executions should not affect local trade history or PnL.
-                continue
+            if require_valid_collection:
+                account_value = _safe_int(_first_value(row, ["accountId", "account_id"]))
+                fees_value = _safe_float(
+                    _first_value(row, ["fees", "commission", "totalFees"]),
+                    default=None,
+                )
+                voided_keys = {"voided", "isVoided", "is_voided"}
+                if account_value is None or fees_value is None or not _is_finite_number(fees_value):
+                    raise ProjectXClientError("ProjectX Trade/search returned incomplete daily P&L data.")
+                if not any(key in row for key in voided_keys):
+                    raise ProjectXClientError("ProjectX Trade/search omitted the execution void status.")
+                pnl_value = _first_value(row, ["profitAndLoss", "pnl", "realizedPnl"])
+                if pnl_value is not None and not _is_finite_number(pnl_value):
+                    raise ProjectXClientError("ProjectX Trade/search returned invalid daily P&L data.")
 
             timestamp = _parse_datetime(
                 _first_value(row, ["creationTimestamp", "timestamp", "createdAt", "updatedAt"])
             )
             if timestamp is None:
+                if require_valid_collection:
+                    raise ProjectXClientError("ProjectX Trade/search returned a trade without a valid timestamp.")
                 continue
 
             row_account = _safe_int(_first_value(row, ["accountId", "account_id"]))
@@ -329,6 +497,7 @@ class ProjectXClient:
                     "order_id": order_id_text,
                     "source_trade_id": source_trade_id_text,
                     "status": _string_or_none(_first_value(row, ["status", "tradeStatus", "state"])),
+                    "voided": _is_truthy(_first_value(row, ["voided", "isVoided", "is_voided"])),
                     "raw_payload": row,
                 }
             )
@@ -354,7 +523,11 @@ class ProjectXClient:
         )
         timestamps = [
             _as_utc(timestamp)
-            for timestamp in (row.get("timestamp") for row in rows if isinstance(row, dict))
+            for timestamp in (
+                row.get("timestamp")
+                for row in rows
+                if isinstance(row, dict) and not bool(row.get("voided"))
+            )
             if isinstance(timestamp, datetime)
         ]
         if not timestamps:
@@ -446,21 +619,25 @@ class ProjectXClient:
             raise ProjectXClientError(
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
+                submission_outcome_unknown=(_is_order_submission_path(path) and 500 <= int(exc.code) <= 599),
             ) from exc
         except TimeoutError as exc:
             raise ProjectXClientError(
                 "ProjectX request timed out. Check the ProjectX connection and try again.",
                 status_code=504,
+                submission_outcome_unknown=_is_order_submission_path(path),
             ) from exc
         except error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 raise ProjectXClientError(
                     "ProjectX request timed out. Check the ProjectX connection and try again.",
                     status_code=504,
+                    submission_outcome_unknown=_is_order_submission_path(path),
                 ) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
+                submission_outcome_unknown=_is_order_submission_path(path),
             ) from exc
 
         if raw.strip() == "":
@@ -472,6 +649,7 @@ class ProjectXClient:
             raise ProjectXClientError(
                 "ProjectX returned a non-JSON response.",
                 status_code=502,
+                submission_outcome_unknown=_is_order_submission_path(path),
             ) from exc
 
         if isinstance(parsed, dict) and parsed.get("success") is False:
@@ -557,6 +735,16 @@ def _unwrap_list(payload: Any, preferred_keys: list[str]) -> list[Any]:
     return []
 
 
+def _require_list(payload: Any, *, key: str, endpoint: str) -> list[Any]:
+    if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+        raise ProjectXClientError(f"ProjectX {endpoint} returned an invalid response collection.")
+    return payload[key]
+
+
+def _is_order_submission_path(path: str) -> bool:
+    return path.rstrip("/").lower() == "/api/order/place"
+
+
 def _normalize_contract_rows(payload: Any) -> list[dict[str, Any]]:
     rows = _unwrap_list(payload, preferred_keys=["contracts", "data", "items"])
     output: list[dict[str, Any]] = []
@@ -627,11 +815,24 @@ def _validate_projectx_order_side(value: Any) -> int:
 def _validate_projectx_order_size(value: Any) -> int:
     try:
         parsed = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ProjectXClientError("ProjectX order size must be a positive whole number.") from exc
-    if parsed != parsed or parsed <= 0 or abs(parsed - round(parsed)) > 1e-9:
+    if (
+        not _is_finite_number(parsed)
+        or parsed <= 0
+        or parsed > _MAX_PROJECTX_ORDER_SIZE
+        or abs(parsed - round(parsed)) > 1e-9
+    ):
         raise ProjectXClientError("ProjectX order size must be a positive whole number.")
     return int(round(parsed))
+
+
+def _is_finite_number(value: Any) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return numeric == numeric and numeric not in {float("inf"), float("-inf")}
 
 
 def _safe_bool(value: Any) -> bool | None:
