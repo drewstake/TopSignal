@@ -19,7 +19,7 @@ It is built for traders who want to:
 - understand risk, drawdown, expectancy, and pacing in plain numbers
 - journal trading days per account with autosave and trade-stat snapshots
 - track real cash costs such as evaluation fees, activations, resets, data fees, and actual payouts
-- test simple rule-based bot decisions against ProjectX candles with a server-side audit trail
+- test rule-based bot decisions against imported Databento history with a server-side audit trail
 
 ## What The App Does
 
@@ -209,7 +209,8 @@ Notable journal behavior:
 
 ### Bot
 
-The Bot page is the account-scoped rule-execution workspace for ProjectX market data.
+The Bot page is the account-scoped strategy and execution workspace. ProjectX remains the
+account/execution/order-routing provider; historical backtests use Databento exclusively.
 
 Bot control page:
 
@@ -240,7 +241,8 @@ Important bot behaviors:
 - New configurations default to dry-run mode and are saved disabled.
 - The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
-- Candle reads use ProjectX market-data endpoints, backend `projectx_market_candles` storage, and a small frontend candle cache for chart responsiveness.
+- Historical backtests read only the global Databento store. They never fetch or fall back to ProjectX candles.
+- The interactive signal chart and live/dry-run evaluation retain their existing closed-bar cache and frontend cache for responsiveness.
 
 ### Themes
 
@@ -319,14 +321,16 @@ Important implementation detail:
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
-- ProjectX market candles are cached in `projectx_market_candles` for bot charting and replay-style reads.
+- Databento definitions, raw 1-minute bars, import provenance, and no-lookahead roll decisions use `databento_instruments`, `databento_ohlcv_1m`, `databento_import_*`, and `databento_roll_schedule`.
+- `projectx_market_candles` remains a compatibility cache for the interactive/live bot workspace and is never a backtest source.
 - Expense rows include `source_id` so imported or generated rows can be deduplicated by source identity without colliding with a manual row that has the same date, amount, category, and account fields.
 
 ### External Integrations
 
 | Integration | Purpose |
 | --- | --- |
-| ProjectX API | Account discovery, provider auth, trade history sync, last-trade lookup, contract search, market candles, and optional bot order routing |
+| ProjectX API | Account discovery, provider auth, executions, positions, trade/journal sync, contract lookup, and optional order routing |
+| Databento DBN archives | Sole historical OHLCV and contract-definition source for backtesting |
 | Supabase Auth | Optional JWT-based user auth |
 | Supabase Storage | Optional journal image storage backend |
 | ProjectX market/user hubs | Optional streaming lifecycle tracking |
@@ -506,6 +510,7 @@ Typical bot workflow:
 5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
 6. `POST /api/bots/{id}/stop` stops the latest running bot run
 7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
+8. `POST /api/bots/{id}/backtests` loads the requested Databento continuous-root history, resamples it, and runs an order-routing-free deterministic replay
 
 Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
 
@@ -548,7 +553,8 @@ The simplest path is:
 2. create backend and frontend env files
 3. install backend and frontend dependencies
 4. apply the schema
-5. run the root dev command
+5. import Databento definitions and OHLCV archives for backtesting
+6. run the root dev command
 
 #### 1. Start PostgreSQL
 
@@ -602,7 +608,21 @@ npm run db:baseline
 npm run db:check
 ```
 
-#### 5. Run the app
+#### 5. Import historical backtest data
+
+Pass the definition and OHLCV ZIPs in either order; the importer verifies every manifest
+hash, processes definitions first, checkpoints large inserts, and is safe to rerun:
+
+```powershell
+backend\.venv\Scripts\python backend\tools\import_databento.py `
+  "C:\path\to\mnq-ohlcv.zip" `
+  "C:\path\to\mnq-definitions.zip"
+```
+
+Only observed MNQ records are stored. The importer rejects pre-launch records and never
+synthesizes history from the batch query's earlier requested start date.
+
+#### 6. Run the app
 
 ```powershell
 npm run dev
@@ -658,6 +678,8 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `TOPSIGNAL_DB_SCHEMA_INIT` | `full` runs startup schema compatibility patches; `skip` bypasses them for faster dev startup |
 | `BACKTEST_MAX_CONCURRENT_GLOBAL` | Global concurrent backtest limit; defaults to `2` |
 | `BACKTEST_MAX_CONCURRENT_PER_USER` | Per-user concurrent backtest limit; defaults to `1` |
+| `TOPSIGNAL_BACKTEST_MEMORY_BUDGET_BYTES` | Maximum estimated in-memory replay working set; defaults to 1.5 GiB |
+| `TOPSIGNAL_BACKTEST_MAX_SERIES_POINTS` | Maximum persisted equity/drawdown chart points before deterministic sampling; defaults to `50000` |
 | `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
 | `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
@@ -726,9 +748,10 @@ Frontend auth behavior:
 
 ## Summary
 
-TopSignal is best understood as a local-first trading intelligence layer on top of ProjectX:
+TopSignal is best understood as a local-first trading intelligence layer with separated providers:
 
-- ProjectX is the upstream data source
+- ProjectX owns accounts, executions, positions, trade/journal synchronization, and order routing
+- Databento is the sole historical market-data source for backtesting
 - PostgreSQL is the local analytics cache and journal/expense store
 - FastAPI is the normalization and metrics layer
 - React is the trader-facing review workspace

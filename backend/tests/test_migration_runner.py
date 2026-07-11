@@ -69,9 +69,15 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "is_archived boolean not null default false",
         "balance numeric(18,6)",
         "'submission_unknown'",
-        "schema-20260710-v1",
+        "schema-20260711-v1",
         "order_size <= 10000 and order_size = trunc(order_size)",
         "bot_config_id bigint references bot_configs(id) on delete set null",
+        "create table if not exists databento_import_batches",
+        "create table if not exists databento_instruments",
+        "create table if not exists databento_ohlcv_1m",
+        "create table if not exists databento_roll_schedule",
+        "primary key (dataset, instrument_id, ts_event)",
+        "decision_session_date is null or decision_session_date < trading_date",
     ]
     for fragment in required_fragments:
         assert fragment in schema
@@ -86,8 +92,27 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_is_audit_preservation_contract():
-    assert migrate_db._migration_files()[-1].name == "20260710_preserve_bot_order_attempt_audit.sql"
+def test_latest_migration_is_databento_historical_store():
+    assert (
+        migrate_db._migration_files()[-1].name
+        == "20260711_add_databento_historical_market_data.sql"
+    )
+
+
+def test_databento_migration_preserves_natural_keys_and_roll_provenance():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260711_add_databento_historical_market_data.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "unique (archive_sha256)" in migration
+    assert "unique (batch_id, filename)" in migration
+    assert "primary key (dataset, instrument_id, ts_event)" in migration
+    assert "primary key (root_symbol, trading_date)" in migration
+    assert "decision_session_date < trading_date" in migration
+    assert "source_file_sha256 text not null" in migration
 
 
 def test_quantity_safety_migration_rejects_unsafe_legacy_rows_and_validates_constraints():
@@ -110,8 +135,15 @@ def test_adoption_manifest_covers_current_orm_safety_objects():
 
     assert {"balance", "last_seen_at"} <= columns["accounts"]
     assert {"execution_mode", "idempotency_key", "bot_config_id"} <= columns["bot_order_attempts"]
+    assert {"dataset", "instrument_id", "ts_event", "trading_date"} <= columns[
+        "databento_ohlcv_1m"
+    ]
+    assert {"decision_session_date", "policy_version"} <= columns[
+        "databento_roll_schedule"
+    ]
     assert "uq_bot_order_attempts_idempotency_key" in indexes
     assert "uq_bot_runs_one_running_per_config" in indexes
+    assert "idx_databento_ohlcv_1m_trading_date" in indexes
 
 
 def test_adoption_requires_explicit_backup_acknowledgement():

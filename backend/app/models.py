@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -114,6 +115,232 @@ class InstrumentMetadata(Base):
     __table_args__ = (
         CheckConstraint("tick_size > 0", name="instrument_metadata_tick_size_positive_check"),
         CheckConstraint("tick_value > 0", name="instrument_metadata_tick_value_positive_check"),
+    )
+
+
+class DatabentoImportBatch(Base):
+    __tablename__ = "databento_import_batches"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    job_id = Column(Text, nullable=False)
+    archive_name = Column(Text, nullable=False)
+    archive_sha256 = Column(Text, nullable=False)
+    dataset = Column(Text, nullable=False)
+    schema_name = Column(Text, nullable=False)
+    root_symbol = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, server_default="pending")
+    records_read = Column(BigInteger, nullable=False, server_default="0")
+    records_inserted = Column(BigInteger, nullable=False, server_default="0")
+    files_completed = Column(Integer, nullable=False, server_default="0")
+    manifest_json = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending','running','completed','failed')",
+            name="databento_import_batches_status_check",
+        ),
+        CheckConstraint(
+            "records_read >= 0 and records_inserted >= 0 and files_completed >= 0",
+            name="databento_import_batches_counts_nonnegative_check",
+        ),
+        CheckConstraint(
+            "length(archive_sha256) = 64",
+            name="databento_import_batches_archive_sha256_length_check",
+        ),
+        CheckConstraint(
+            "completed_at is null or completed_at >= started_at",
+            name="databento_import_batches_completed_at_check",
+        ),
+        UniqueConstraint("job_id", name="uq_databento_import_batches_job_id"),
+        UniqueConstraint(
+            "archive_sha256",
+            name="uq_databento_import_batches_archive_sha256",
+        ),
+        Index("idx_databento_import_batches_status_started", "status", "started_at"),
+    )
+
+
+class DatabentoImportFile(Base):
+    __tablename__ = "databento_import_files"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    batch_id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("databento_import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    filename = Column(Text, nullable=False)
+    file_sha256 = Column(Text, nullable=False)
+    schema_name = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, server_default="pending")
+    records_read = Column(BigInteger, nullable=False, server_default="0")
+    records_inserted = Column(BigInteger, nullable=False, server_default="0")
+    error_message = Column(Text, nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending','running','completed','failed')",
+            name="databento_import_files_status_check",
+        ),
+        CheckConstraint(
+            "records_read >= 0 and records_inserted >= 0",
+            name="databento_import_files_counts_nonnegative_check",
+        ),
+        CheckConstraint(
+            "length(file_sha256) = 64",
+            name="databento_import_files_sha256_length_check",
+        ),
+        UniqueConstraint(
+            "batch_id",
+            "filename",
+            name="uq_databento_import_files_batch_filename",
+        ),
+        Index("idx_databento_import_files_batch_status", "batch_id", "status"),
+    )
+
+
+class DatabentoInstrument(Base):
+    __tablename__ = "databento_instruments"
+
+    dataset = Column(Text, primary_key=True)
+    instrument_id = Column(BigInteger, primary_key=True)
+    raw_symbol = Column(Text, nullable=False)
+    root_symbol = Column(Text, nullable=False)
+    instrument_class = Column(Text, nullable=False)
+    security_type = Column(Text, nullable=False)
+    activation = Column(DateTime(timezone=True), nullable=True)
+    expiration = Column(DateTime(timezone=True), nullable=True)
+    min_price_increment_nano = Column(BigInteger, nullable=True)
+    unit_of_measure_qty_nano = Column(BigInteger, nullable=True)
+    definition_ts = Column(DateTime(timezone=True), nullable=False)
+    source_file_sha256 = Column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "expiration is null or activation is null or expiration >= activation",
+            name="databento_instruments_active_range_check",
+        ),
+        CheckConstraint(
+            "min_price_increment_nano is null or min_price_increment_nano > 0",
+            name="databento_instruments_price_increment_positive_check",
+        ),
+        CheckConstraint(
+            "unit_of_measure_qty_nano is null or unit_of_measure_qty_nano > 0",
+            name="databento_instruments_unit_qty_positive_check",
+        ),
+        CheckConstraint(
+            "length(source_file_sha256) = 64",
+            name="databento_instruments_source_sha256_length_check",
+        ),
+        Index(
+            "idx_databento_instruments_root_expiration",
+            "dataset",
+            "root_symbol",
+            "expiration",
+            "instrument_id",
+        ),
+        Index(
+            "idx_databento_instruments_raw_symbol",
+            "dataset",
+            "raw_symbol",
+        ),
+    )
+
+
+class DatabentoOhlcv1m(Base):
+    __tablename__ = "databento_ohlcv_1m"
+
+    dataset = Column(Text, primary_key=True)
+    instrument_id = Column(BigInteger, primary_key=True)
+    ts_event = Column(DateTime(timezone=True), primary_key=True)
+    trading_date = Column(Date, nullable=False)
+    open_nano = Column(BigInteger, nullable=False)
+    high_nano = Column(BigInteger, nullable=False)
+    low_nano = Column(BigInteger, nullable=False)
+    close_nano = Column(BigInteger, nullable=False)
+    volume = Column(BigInteger, nullable=False)
+    source_file_sha256 = Column(Text, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dataset", "instrument_id"],
+            ["databento_instruments.dataset", "databento_instruments.instrument_id"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "low_nano <= high_nano "
+            "and open_nano between low_nano and high_nano "
+            "and close_nano between low_nano and high_nano",
+            name="databento_ohlcv_1m_price_envelope_check",
+        ),
+        CheckConstraint("volume >= 0", name="databento_ohlcv_1m_volume_nonnegative_check"),
+        CheckConstraint(
+            "length(source_file_sha256) = 64",
+            name="databento_ohlcv_1m_source_sha256_length_check",
+        ),
+        Index(
+            "idx_databento_ohlcv_1m_trading_date",
+            "dataset",
+            "trading_date",
+            "instrument_id",
+            "ts_event",
+        ),
+    )
+
+
+class DatabentoRollSchedule(Base):
+    __tablename__ = "databento_roll_schedule"
+
+    root_symbol = Column(Text, primary_key=True)
+    trading_date = Column(Date, primary_key=True)
+    dataset = Column(Text, nullable=False)
+    instrument_id = Column(BigInteger, nullable=False)
+    raw_symbol = Column(Text, nullable=False)
+    decision_session_date = Column(Date, nullable=True)
+    from_instrument_id = Column(BigInteger, nullable=True)
+    current_volume = Column(BigInteger, nullable=True)
+    candidate_volume = Column(BigInteger, nullable=True)
+    reason = Column(Text, nullable=False)
+    policy_version = Column(Text, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dataset", "instrument_id"],
+            ["databento_instruments.dataset", "databento_instruments.instrument_id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["dataset", "from_instrument_id"],
+            ["databento_instruments.dataset", "databento_instruments.instrument_id"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "decision_session_date is null or decision_session_date < trading_date",
+            name="databento_roll_schedule_decision_before_trading_date_check",
+        ),
+        CheckConstraint(
+            "current_volume is null or current_volume >= 0",
+            name="databento_roll_schedule_current_volume_nonnegative_check",
+        ),
+        CheckConstraint(
+            "candidate_volume is null or candidate_volume >= 0",
+            name="databento_roll_schedule_candidate_volume_nonnegative_check",
+        ),
+        Index(
+            "idx_databento_roll_schedule_instrument_date",
+            "dataset",
+            "instrument_id",
+            "trading_date",
+        ),
+        Index(
+            "idx_databento_roll_schedule_policy_date",
+            "policy_version",
+            "trading_date",
+        ),
     )
 
 

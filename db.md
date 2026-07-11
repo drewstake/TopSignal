@@ -16,18 +16,23 @@ It persists:
 - optional per-user encrypted provider credentials
 - optional position lifecycle snapshots from the streaming runtime
 - user-scoped bot configurations, deterministic backtest snapshots, lifecycle runs, decisions, risk events, and order-attempt audit records
+- global Databento import provenance, instrument definitions, raw one-minute OHLCV, and deterministic continuous-contract roll schedules
 
-The main analytics path today is `projectx_trade_events`, not the legacy `trades` table.
+ProjectX remains the source for accounts, executions, positions, journaling, and
+order routing. Databento is the sole historical market-data source for
+backtesting. The main execution-analytics path is `projectx_trade_events`, not
+the legacy `trades` table.
 
 ## Persistence Strategy
 
 The repo uses three layers together:
 
 1. `db/schema.sql` for fresh databases
-2. raw SQL files in `db/migrations/` for incremental upgrades
+2. checksummed raw SQL files in `db/migrations/` for incremental upgrades
 3. backend startup compatibility patches in `backend/app/db.py`
 
-There is no Alembic or other migration runner in this repository.
+`backend/tools/migrate_db.py` applies the ordered SQL migrations and records
+their SHA-256 checksums in `topsignal_schema_migrations`.
 
 The startup compatibility code currently backfills:
 
@@ -124,6 +129,35 @@ Important columns:
 - `tick_value`
 
 Default rows are seeded at startup for `MNQ`, `MES`, `MGC`, and `SIL`.
+
+### Databento historical tables
+
+These global tables are intentionally not user-scoped: every backtest should
+replay the same verified market history.
+
+- `databento_import_batches` records the Databento job/archive identity,
+  archive SHA-256, manifest, progress counts, status, and error/timestamp
+  provenance. Job IDs and archive hashes are unique, so retrying an archive is
+  idempotent.
+- `databento_import_files` records each DBN/zstd member and its SHA-256 under a
+  batch. `(batch_id, filename)` is unique.
+- `databento_instruments` maps `(dataset, instrument_id)` to its raw and root
+  symbols, lifecycle timestamps, instrument/security classes, nanounit tick
+  metadata, latest definition timestamp, and source-file hash.
+- `databento_ohlcv_1m` stores the immutable raw one-minute bars. Its primary key
+  is `(dataset, instrument_id, ts_event)`; OHLC values are signed 64-bit integer
+  nanounits, volume is nonnegative, and each row retains the source-file hash
+  and exchange trading date.
+- `databento_roll_schedule` maps `(root_symbol, trading_date)` to the selected
+  outright contract and policy version. `decision_session_date`, prior/current
+  instrument ID, and prior-session current/candidate volumes make each roll
+  decision auditable. Non-initial decisions are constrained to use a session
+  strictly before the trading date, preventing same-session lookahead.
+
+The raw-bar primary key makes repeated ingestion safe, while hashes and import
+rows distinguish a verified no-op retry from a changed input. Higher timeframes
+are derived from these one-minute rows rather than stored as another source of
+truth.
 
 ### `position_lifecycles`
 
@@ -370,6 +404,15 @@ Trade sync is local-first:
 
 Trade ingestion writes to `projectx_trade_events`, not `trades`.
 
+### Historical market-data import and replay
+
+Databento definition archives populate `databento_instruments` before OHLCV
+archives are accepted. OHLCV imports stream DBN/zstd members in bounded batches,
+verify manifest hashes, and insert by the immutable natural key. The continuous
+MNQ schedule is materialized separately using only the preceding session's
+volume evidence. MNQ history begins at the product's 2019 launch; the database
+does not synthesize bars before that boundary.
+
 ### Journal
 
 Journal writes are versioned updates against `journal_entries`.
@@ -407,7 +450,8 @@ The ordered migration list is documented in [db/README.md](db/README.md).
 - Local anonymous mode uses the synthetic default UUID `00000000-0000-0000-0000-000000000000`
 - The backend contains compatibility patches for older Postgres dev databases
 - The main routed analytics read from `projectx_trade_events`
-- Backtests read closed, non-live rows from `projectx_market_candles` and persist completed evidence in `bot_backtests`
+- Backtests read Databento-derived historical candles and persist completed evidence in `bot_backtests`
+- `projectx_market_candles` is retained for live/evaluation workflows, not historical backtest acquisition
 - The legacy `/metrics/*` routes still read from `trades`
 
 ## Where To Inspect In Code

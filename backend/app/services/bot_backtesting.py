@@ -11,7 +11,7 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Any, Callable, Iterable, Mapping
 
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_
 from sqlalchemy.orm import Session
 
 from ..models import BotBacktest, BotConfig, ProjectXMarketCandle
@@ -34,6 +34,12 @@ from .bot_service import (
 )
 from .instruments import load_instrument_specs, normalize_symbol_key
 from .projectx_client import ProjectXClient
+from .databento_market_data import (
+    ROLL_POLICY_VERSION,
+    DatabentoMarketDataError,
+    databento_history_bounds,
+    load_databento_replay_candles,
+)
 from .bot_strategy_registry import (
     BACKTEST_SUPPORTED_STRATEGY_IDENTIFIERS,
     get_strategy_definition,
@@ -46,7 +52,12 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "1.3.0"
+BACKTEST_ENGINE_VERSION = "2.0.0-databento"
+LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
+# Unit tests for the pre-Databento engine can opt in by monkeypatching this
+# process-local constant. It is deliberately not environment-configurable and
+# is false in every application runtime.
+ALLOW_LEGACY_PROJECTX_BACKTEST_FIXTURES = False
 # Retained as a compatibility constant for callers/tests that display the old
 # limit. It is deliberately not used to truncate or reject replay history.
 MAX_BACKTEST_BARS = 20_000
@@ -58,6 +69,7 @@ _DEFAULT_BACKTEST_MEMORY_BUDGET_BYTES = 1_536 * 1024 * 1024
 # configurable ceiling replaces date/bar caps while rejecting pathological
 # repeated-indicator workloads before replay or persistence.
 _DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET = 500_000_000
+_DEFAULT_BACKTEST_MAX_SERIES_POINTS = 50_000
 try:
     BACKTEST_MEMORY_BUDGET_BYTES = int(
         os.getenv(
@@ -76,6 +88,15 @@ try:
     )
 except ValueError:
     BACKTEST_EVALUATOR_WORK_BUDGET = _DEFAULT_BACKTEST_EVALUATOR_WORK_BUDGET
+try:
+    BACKTEST_MAX_SERIES_POINTS = int(
+        os.getenv(
+            "TOPSIGNAL_BACKTEST_MAX_SERIES_POINTS",
+            str(_DEFAULT_BACKTEST_MAX_SERIES_POINTS),
+        )
+    )
+except ValueError:
+    BACKTEST_MAX_SERIES_POINTS = _DEFAULT_BACKTEST_MAX_SERIES_POINTS
 
 # Calibrated with tracemalloc and the projected-row benchmark. These estimates
 # intentionally include Python container overhead and the two per-bar result
@@ -528,6 +549,30 @@ class BacktestEngine:
                 "unrealized_pnl": 0.0,
             }
         ]
+        self.drawdown_series: list[dict[str, Any]] = [
+            {
+                "timestamp": self.settings.start.isoformat(),
+                "equity": _clean(self.settings.starting_balance),
+                "drawdown_dollars": 0.0,
+                "drawdown_percent": 0.0,
+            }
+        ]
+        self._equity_observation_count = 0
+        self._equity_sample_stride = max(
+            1,
+            math.ceil(
+                len(self.execution_candles)
+                / max(2, int(BACKTEST_MAX_SERIES_POINTS) - 1)
+            ),
+        )
+        self._equity_peak = float(self.settings.starting_balance)
+        self._max_drawdown_dollars = 0.0
+        self._max_drawdown_percent = 0.0
+        if self._equity_sample_stride > 1:
+            self.warnings.append(
+                "Equity and drawdown output was deterministically sampled to bound replay memory; "
+                "trade metrics and maximum drawdown still use every replay bar."
+            )
         self.exposed_bar_count = 0
         self._current_bar_exposed = False
         self.daily_entry_counts: dict[Any, int] = defaultdict(int)
@@ -580,8 +625,14 @@ class BacktestEngine:
                 history_cursor < len(self.all_candles)
                 and self.all_close_times[history_cursor] <= event_time
             ):
-                closed_history.append(self.all_candles[history_cursor])
+                if self._sma_close_values is None:
+                    closed_history.append(self.all_candles[history_cursor])
                 history_cursor += 1
+            if (
+                self._uses_real_evaluator
+                and len(closed_history) > self.max_evaluator_input_bars
+            ):
+                del closed_history[: -self.max_evaluator_input_bars]
             if self.strategy_type == _TOPBOT_STRATEGY and not inside_session:
                 self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
                 self._report_replay_progress(completed=index + 1, total=total_bars)
@@ -636,11 +687,13 @@ class BacktestEngine:
             )
 
         self._append_run_warnings()
-        drawdown_series = _build_drawdown_series(self.equity_curve)
+        drawdown_series = self.drawdown_series
         metrics = _build_metrics(
             self.trades,
             equity_curve=self.equity_curve,
             drawdown_series=drawdown_series,
+            max_drawdown_dollars=self._max_drawdown_dollars,
+            max_drawdown_percent=self._max_drawdown_percent,
             exposure_percent=(
                 self.exposed_bar_count / len(self.execution_candles) * 100.0
             ),
@@ -1685,14 +1738,37 @@ class BacktestEngine:
                 tick_value=self.settings.tick_value,
             )
         realized = self.cash - self.settings.starting_balance
-        self.equity_curve.append(
-            {
-                "timestamp": _as_utc(event_time).isoformat(),
-                "equity": _clean(self.cash + unrealized),
-                "realized_pnl": _clean(realized),
-                "unrealized_pnl": _clean(unrealized),
-            }
+        timestamp = _as_utc(event_time).isoformat()
+        equity = _clean(self.cash + unrealized)
+        self._equity_peak = max(self._equity_peak, float(equity))
+        drawdown = max(0.0, self._equity_peak - float(equity))
+        drawdown_percent = (
+            drawdown / self._equity_peak * 100.0 if self._equity_peak > 0 else 0.0
         )
+        self._max_drawdown_dollars = max(self._max_drawdown_dollars, drawdown)
+        self._max_drawdown_percent = max(self._max_drawdown_percent, drawdown_percent)
+        self._equity_observation_count += 1
+        should_sample = (
+            self._equity_observation_count % self._equity_sample_stride == 0
+            or self._equity_observation_count == len(self.execution_candles)
+        )
+        if should_sample:
+            self.equity_curve.append(
+                {
+                    "timestamp": timestamp,
+                    "equity": equity,
+                    "realized_pnl": _clean(realized),
+                    "unrealized_pnl": _clean(unrealized),
+                }
+            )
+            self.drawdown_series.append(
+                {
+                    "timestamp": timestamp,
+                    "equity": equity,
+                    "drawdown_dollars": _clean(drawdown),
+                    "drawdown_percent": _clean(drawdown_percent),
+                }
+            )
 
     def _replace_last_equity(self, *, event_time: datetime) -> None:
         point = {
@@ -1703,6 +1779,19 @@ class BacktestEngine:
         }
         if self.equity_curve:
             self.equity_curve[-1] = point
+            self._equity_peak = max(self._equity_peak, float(point["equity"]))
+            drawdown = max(0.0, self._equity_peak - float(point["equity"]))
+            drawdown_percent = (
+                drawdown / self._equity_peak * 100.0 if self._equity_peak > 0 else 0.0
+            )
+            self._max_drawdown_dollars = max(self._max_drawdown_dollars, drawdown)
+            self._max_drawdown_percent = max(self._max_drawdown_percent, drawdown_percent)
+            self.drawdown_series[-1] = {
+                "timestamp": point["timestamp"],
+                "equity": point["equity"],
+                "drawdown_dollars": _clean(drawdown),
+                "drawdown_percent": _clean(drawdown_percent),
+            }
         else:
             self.equity_curve.append(point)
 
@@ -2117,7 +2206,10 @@ def _validate_topbot_replay_stream(
     spec: _TopBotReplayStreamSpec,
     config: BotConfig,
 ) -> tuple[list[ProjectXMarketCandle], int]:
-    if getattr(candles, "_topsignal_sorted_closed", False):
+    if isinstance(candles, _ClosedCandleList):
+        closed = candles
+        excluded_partial = 0
+    elif getattr(candles, "_topsignal_sorted_closed", False):
         closed = _ClosedCandleList(candles)
         excluded_partial = 0
     else:
@@ -2537,6 +2629,11 @@ def prepare_bot_backtest_data(
     primary_execution_rows: list[ProjectXMarketCandle] | None = None,
 ) -> int:
     """Populate TopBot's deterministic replay cache without running a replay."""
+
+    if not legacy_projectx_backtest_fixtures_enabled(db):
+        raise BacktestConfigurationError(
+            "legacy_projectx_backtest_fixture_path_disabled"
+        )
 
     config = (
         db.query(BotConfig)
@@ -3162,6 +3259,26 @@ def _prepare_topbot_primary_full_history(
     )
 
 
+def databento_backtest_history_available(db: Session, *, config: BotConfig) -> bool:
+    root = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
+    try:
+        table_names = set(inspect(db.connection()).get_table_names())
+    except Exception:
+        return False
+    if not {"databento_ohlcv_1m", "databento_roll_schedule"}.issubset(table_names):
+        return False
+    return bool(root and databento_history_bounds(db, root_symbol=root) is not None)
+
+
+def legacy_projectx_backtest_fixtures_enabled(db: Session) -> bool:
+    bind = db.get_bind() if hasattr(db, "get_bind") else None
+    return bool(
+        ALLOW_LEGACY_PROJECTX_BACKTEST_FIXTURES
+        and bind is not None
+        and bind.dialect.name == "sqlite"
+    )
+
+
 def create_bot_backtest(
     db: Session,
     *,
@@ -3172,6 +3289,339 @@ def create_bot_backtest(
     now: datetime | None = None,
     progress_callback: BacktestProgressCallback | None = None,
 ) -> BotBacktest:
+    """Replay global Databento history; ProjectX is never a production data source."""
+
+    config = (
+        db.query(BotConfig)
+        .filter(BotConfig.user_id == user_id)
+        .filter(BotConfig.id == bot_config_id)
+        .one_or_none()
+    )
+    if config is None:
+        raise LookupError("bot_config_not_found")
+    root = normalize_symbol_key(config.symbol) or normalize_symbol_key(config.contract_id)
+    bounds = (
+        databento_history_bounds(db, root_symbol=root)
+        if root and databento_backtest_history_available(db, config=config)
+        else None
+    )
+    if bounds is None:
+        # The legacy path is retained solely so the repository's historical
+        # SQLite engine fixtures remain useful. Application PostgreSQL requests
+        # fail closed and cannot read or fetch ProjectX market history.
+        if legacy_projectx_backtest_fixtures_enabled(db):
+            return _create_legacy_projectx_bot_backtest(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                payload=payload,
+                client=client,
+                now=now,
+                progress_callback=progress_callback,
+            )
+        raise InsufficientBacktestDataError(
+            f"databento_history_missing:{root or config.contract_id}: import historical data before backtesting"
+        )
+    return _create_databento_bot_backtest(
+        db,
+        user_id=user_id,
+        config=config,
+        payload=payload,
+        root_symbol=str(root),
+        history_bounds=bounds,
+        now=now,
+        progress_callback=progress_callback,
+    )
+
+
+def _create_databento_bot_backtest(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    payload: Any,
+    root_symbol: str,
+    history_bounds: tuple[datetime, datetime],
+    now: datetime | None,
+    progress_callback: BacktestProgressCallback | None,
+) -> BotBacktest:
+    _notify_backtest_progress(
+        progress_callback,
+        phase="preparing",
+        completed=None,
+        total=None,
+        percent=None,
+        remaining_percent=None,
+    )
+    _require_supported_strategy(str(config.strategy_type))
+    _validate_replay_configuration(config)
+    specs = load_instrument_specs(db)
+    instrument_spec = specs.get(root_symbol)
+    if instrument_spec is None:
+        raise BacktestConfigurationError(f"instrument_metadata_missing:{root_symbol}")
+
+    captured_now = _as_utc(now or datetime.now(timezone.utc))
+    source_start, source_end = history_bounds
+    closed_by = min(captured_now, _as_utc(source_end))
+    requested_bounds = _requested_backtest_bounds(payload)
+    if requested_bounds is None:
+        load_start = _as_utc(source_start)
+        load_end = closed_by
+    else:
+        requested_start, requested_end = requested_bounds
+        warmup_bars = max(
+            int(config.lookback_bars),
+            _strategy_history_bars(config, hard_minimum=False),
+        )
+        if str(config.strategy_type) == _TOPBOT_STRATEGY:
+            primary_key = _topbot_asset_stream_key(
+                str(config.timeframe_unit), int(config.timeframe_unit_number)
+            )
+            warmup_bars = max(
+                warmup_bars,
+                _topbot_stream_specs(config)[primary_key].warmup_bars,
+            )
+        load_start = max(
+            _as_utc(source_start),
+            _databento_warmup_start(
+                requested_start,
+                unit=str(config.timeframe_unit),
+                unit_number=int(config.timeframe_unit_number),
+                warmup_bars=warmup_bars,
+            ),
+        )
+        load_end = min(_as_utc(requested_end), closed_by)
+
+    _notify_backtest_progress(
+        progress_callback,
+        phase="loading",
+        completed=None,
+        total=None,
+        percent=None,
+        remaining_percent=None,
+    )
+    max_loaded_rows = max(
+        MIN_EXECUTION_BARS,
+        int(BACKTEST_MEMORY_BUDGET_BYTES)
+        // (ESTIMATED_REPLAY_CANDLE_BYTES + ESTIMATED_EXECUTION_RESULT_BYTES),
+    )
+    try:
+        primary_rows = _ClosedCandleList(
+            load_databento_replay_candles(
+                db,
+                max_rows=max_loaded_rows,
+                user_id=user_id,
+                contract_id=str(config.contract_id),
+                root_symbol=root_symbol,
+                unit=str(config.timeframe_unit),
+                unit_number=int(config.timeframe_unit_number),
+                start=load_start,
+                end=load_end,
+                closed_by=closed_by,
+            )
+        )
+    except DatabentoMarketDataError as exc:
+        raise BacktestConfigurationError(str(exc)) from exc
+    window = _resolve_backtest_window(primary_rows, payload=payload, now=closed_by)
+
+    primary_start_times = [_as_utc(row.candle_timestamp) for row in primary_rows]
+    primary_close_times = [_candle_close_time(row) for row in primary_rows]
+    execution_start_index = bisect_left(primary_start_times, window.start)
+    execution_end_index = bisect_right(primary_close_times, window.end)
+    execution_rows = _closed_candle_slice(
+        primary_rows,
+        execution_start_index,
+        execution_end_index,
+    )
+    rolling_warmup_limit = max(
+        int(config.lookback_bars),
+        _strategy_history_bars(config, hard_minimum=False),
+    )
+    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+        primary_key = _topbot_asset_stream_key(
+            str(config.timeframe_unit), int(config.timeframe_unit_number)
+        )
+        rolling_warmup_limit = max(
+            rolling_warmup_limit,
+            _topbot_stream_specs(config)[primary_key].warmup_bars,
+        )
+    warmup_limit = _max_evaluator_input_bars(
+        config,
+        rolling_limit=rolling_warmup_limit,
+    )
+    warmup_start_index = max(0, execution_start_index - warmup_limit)
+    replay_rows = _ClosedCandleList(primary_rows[warmup_start_index:execution_end_index])
+
+    replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None
+    if str(config.strategy_type) == _TOPBOT_STRATEGY:
+        replay_streams = _load_databento_topbot_replay_streams(
+            db,
+            user_id=user_id,
+            config=config,
+            root_symbol=root_symbol,
+            window=window,
+            closed_by=closed_by,
+            primary_rows=replay_rows,
+            max_rows=max_loaded_rows,
+        )
+
+    # Drop the discovery/window lists before the engine allocates its own
+    # execution indexes. The replay slice (and any synchronized streams) retain
+    # exactly the projected candle objects they need.
+    del primary_start_times, primary_close_times, primary_rows, execution_rows
+
+    result = run_backtest(
+        config=config,
+        candles=replay_rows,
+        start=window.start,
+        end=window.end,
+        starting_balance=float(payload.starting_balance),
+        commission_per_contract=float(payload.commission_per_contract),
+        slippage_ticks=float(payload.slippage_ticks),
+        tick_size=instrument_spec.tick_size,
+        tick_value=instrument_spec.tick_value,
+        force_close_at_end=bool(payload.force_close_at_end),
+        replay_streams=replay_streams,
+        progress_callback=progress_callback,
+    )
+    result["warnings"].append(
+        "Historical replay used Databento MNQ data with a prior-completed-session "
+        "volume rollover schedule; ProjectX market history was not read."
+    )
+    _notify_backtest_progress(
+        progress_callback,
+        phase="finalizing",
+        completed=int(result["range"]["bar_count"]),
+        total=int(result["range"]["bar_count"]),
+        percent=100,
+        remaining_percent=0,
+    )
+    input_fingerprint = (
+        candle_stream_input_fingerprint(replay_streams)
+        if replay_streams is not None
+        else candle_input_fingerprint(replay_rows)
+    )
+    row = BotBacktest(
+        user_id=user_id,
+        bot_config_id=int(config.id),
+        account_id=int(config.account_id),
+        engine_version=BACKTEST_ENGINE_VERSION,
+        strategy_type=str(config.strategy_type),
+        contract_id=str(config.contract_id),
+        symbol=config.symbol,
+        timeframe_unit=str(config.timeframe_unit),
+        timeframe_unit_number=int(config.timeframe_unit_number),
+        requested_start=window.requested_start,
+        requested_end=window.requested_end,
+        actual_start=_as_utc(datetime.fromisoformat(str(result["range"]["start"]))),
+        actual_end=_as_utc(datetime.fromisoformat(str(result["range"]["end"]))),
+        starting_balance=float(payload.starting_balance),
+        commission_per_contract=float(payload.commission_per_contract),
+        slippage_ticks=float(payload.slippage_ticks),
+        tick_size=instrument_spec.tick_size,
+        tick_value=instrument_spec.tick_value,
+        bar_count=int(result["range"]["bar_count"]),
+        input_fingerprint=input_fingerprint,
+        config_snapshot=result["config_snapshot"],
+        assumptions_snapshot=result["assumptions"],
+        result_snapshot=result,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _load_databento_topbot_replay_streams(
+    db: Session,
+    *,
+    user_id: str,
+    config: BotConfig,
+    root_symbol: str,
+    window: _ResolvedBacktestWindow,
+    closed_by: datetime,
+    primary_rows: list[ProjectXMarketCandle],
+    max_rows: int,
+) -> dict[str, list[ProjectXMarketCandle]]:
+    primary_key = _topbot_asset_stream_key(
+        str(config.timeframe_unit), int(config.timeframe_unit_number)
+    )
+    streams: dict[str, list[ProjectXMarketCandle]] = {primary_key: primary_rows}
+    total_rows = len(primary_rows)
+    for key, stream_spec in _topbot_stream_specs(config).items():
+        if key == primary_key:
+            continue
+        stream_root = normalize_symbol_key(stream_spec.symbol) or normalize_symbol_key(
+            stream_spec.contract_id
+        )
+        if not stream_root:
+            continue
+        bounds = databento_history_bounds(db, root_symbol=stream_root)
+        if bounds is None:
+            continue
+        duration = _timeframe_seconds(stream_spec.unit, stream_spec.unit_number)
+        if duration is None:
+            continue
+        stream_start = max(
+            bounds[0],
+            _databento_warmup_start(
+                window.start,
+                unit=stream_spec.unit,
+                unit_number=stream_spec.unit_number,
+                warmup_bars=stream_spec.warmup_bars,
+            ),
+        )
+        try:
+            rows = load_databento_replay_candles(
+                db,
+                max_rows=max(1, max_rows - total_rows),
+                user_id=user_id,
+                contract_id=str(stream_spec.contract_id or stream_spec.symbol),
+                root_symbol=stream_root,
+                unit=stream_spec.unit,
+                unit_number=stream_spec.unit_number,
+                start=stream_start,
+                end=min(bounds[1], window.end),
+                closed_by=closed_by,
+            )
+        except DatabentoMarketDataError:
+            continue
+        total_rows += len(rows)
+        streams[key] = rows
+    return streams
+
+
+def _databento_warmup_start(
+    requested_start: datetime,
+    *,
+    unit: str,
+    unit_number: int,
+    warmup_bars: int,
+) -> datetime:
+    seconds = _timeframe_seconds(unit, unit_number)
+    if seconds is None:
+        seconds = 86_400
+    # Four bar-spans plus a week covers maintenance gaps, weekends, and normal
+    # holidays without scanning all available history for a bounded request.
+    return _as_utc(requested_start) - timedelta(
+        seconds=max(1, int(warmup_bars)) * seconds * 4,
+        days=7,
+    )
+
+
+def _create_legacy_projectx_bot_backtest(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    payload: Any,
+    client: ProjectXClient | None = None,
+    now: datetime | None = None,
+    progress_callback: BacktestProgressCallback | None = None,
+) -> BotBacktest:
+    if not legacy_projectx_backtest_fixtures_enabled(db):
+        raise BacktestConfigurationError(
+            "legacy_projectx_backtest_fixture_path_disabled"
+        )
     _notify_backtest_progress(
         progress_callback,
         phase="preparing",
@@ -3321,6 +3771,14 @@ def create_bot_backtest(
         replay_streams=replay_streams,
         progress_callback=progress_callback,
     )
+    result["assumptions"].update(
+        {
+            "market_data": "legacy_projectx_sqlite_test_fixture_only",
+            "historical_source": "projectx_test_fixture",
+            "roll_policy_version": None,
+            "engine_version": LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION,
+        }
+    )
     _notify_backtest_progress(
         progress_callback,
         phase="finalizing",
@@ -3347,7 +3805,7 @@ def create_bot_backtest(
         user_id=user_id,
         bot_config_id=int(config.id),
         account_id=int(config.account_id),
-        engine_version=BACKTEST_ENGINE_VERSION,
+        engine_version=LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION,
         strategy_type=str(config.strategy_type),
         contract_id=str(config.contract_id),
         symbol=config.symbol,
@@ -3406,6 +3864,7 @@ def candle_input_fingerprint(candles: list[ProjectXMarketCandle]) -> str:
             "close": str(row.close_price),
             "volume": str(row.volume),
             "is_partial": bool(row.is_partial),
+            **_databento_fingerprint_fields(row),
         }
         for row in ordered
         if not _cached_candle_is_effectively_partial(row)
@@ -3442,6 +3901,7 @@ def candle_stream_input_fingerprint(
                     "close": str(row.close_price),
                     "volume": str(row.volume),
                     "is_partial": bool(row.is_partial),
+                    **_databento_fingerprint_fields(row),
                 }
 
     return _incremental_candle_fingerprint(canonical_rows())
@@ -3461,6 +3921,18 @@ def _incremental_candle_fingerprint(rows: Iterable[dict[str, Any]]) -> str:
         )
     digest.update(b"]")
     return digest.hexdigest()
+
+
+def _databento_fingerprint_fields(row: Any) -> dict[str, Any]:
+    if str(getattr(row, "source", "")) != "databento":
+        return {}
+    return {
+        "source": "databento",
+        "source_instrument_id": getattr(row, "source_instrument_id", None),
+        "source_raw_symbol": getattr(row, "source_raw_symbol", None),
+        "source_file_sha256": getattr(row, "source_file_sha256", None),
+        "roll_policy_version": getattr(row, "roll_policy_version", None),
+    }
 
 
 def _require_supported_strategy(strategy_type: str) -> None:
@@ -3600,7 +4072,10 @@ def _validate_and_sort_candles(
     *,
     config: BotConfig,
 ) -> tuple[list[ProjectXMarketCandle], int]:
-    if getattr(candles, "_topsignal_sorted_closed", False):
+    if isinstance(candles, _ClosedCandleList):
+        closed = candles
+        excluded_partial = 0
+    elif getattr(candles, "_topsignal_sorted_closed", False):
         closed = _ClosedCandleList(candles)
         excluded_partial = 0
     else:
@@ -3697,6 +4172,9 @@ def _candle_stream_has_overlaps(candles: list[ProjectXMarketCandle]) -> bool:
 
 
 def _candle_close_time(candle: ProjectXMarketCandle) -> datetime:
+    source_close = getattr(candle, "nominal_close_time", None)
+    if source_close is not None:
+        return _as_utc(source_close)
     timestamp = _as_utc(candle.candle_timestamp)
     unit = str(candle.unit)
     unit_number = int(candle.unit_number)
@@ -3876,6 +4354,8 @@ def _build_metrics(
     *,
     equity_curve: list[dict[str, Any]],
     drawdown_series: list[dict[str, Any]],
+    max_drawdown_dollars: float | None = None,
+    max_drawdown_percent: float | None = None,
     exposure_percent: float,
 ) -> dict[str, Any]:
     overall = _trade_breakdown(trades)
@@ -3897,12 +4377,14 @@ def _build_metrics(
         max_wins = max(max_wins, consecutive_wins)
         max_losses = max(max_losses, consecutive_losses)
 
-    max_drawdown_dollars = max(
-        (float(point["drawdown_dollars"]) for point in drawdown_series), default=0.0
-    )
-    max_drawdown_percent = max(
-        (float(point["drawdown_percent"]) for point in drawdown_series), default=0.0
-    )
+    if max_drawdown_dollars is None:
+        max_drawdown_dollars = max(
+            (float(point["drawdown_dollars"]) for point in drawdown_series), default=0.0
+        )
+    if max_drawdown_percent is None:
+        max_drawdown_percent = max(
+            (float(point["drawdown_percent"]) for point in drawdown_series), default=0.0
+        )
     total_commission = sum(float(trade["commission"]) for trade in trades)
     return {
         "gross_pnl": overall["gross_pnl"],
@@ -4075,9 +4557,11 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
         "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
         "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
         "market_data": (
-            "preparation_may_fetch_exact_configured_contract; replay_uses_persisted_"
-            "user_scoped_non_live_closed_candles_only"
+            "databento_global_ohlcv_1m_resampled_on_session_anchored_buckets; "
+            "continuous_delivery_uses_only_previous_completed_session_volume"
         ),
+        "historical_source": "databento",
+        "roll_policy_version": ROLL_POLICY_VERSION,
         "live_order_routing": "disabled_by_architecture",
         "timezone": str(getattr(TRADING_TZ, "key", "America/New_York")),
         "commission_per_contract": _clean(settings.commission_per_contract),

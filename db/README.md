@@ -124,6 +124,7 @@ Current migration list:
 20260710_add_cached_account_balance.sql
 20260710_enforce_bot_quantity_safety.sql
 20260710_preserve_bot_order_attempt_audit.sql
+20260711_add_databento_historical_market_data.sql
 ```
 
 Legacy manual PowerShell application loop (recovery/debugging only; prefer the
@@ -171,7 +172,8 @@ $migrations = @(
   "20260710_add_bot_submission_unknown_status.sql",
   "20260710_add_cached_account_balance.sql",
   "20260710_enforce_bot_quantity_safety.sql",
-  "20260710_preserve_bot_order_attempt_audit.sql"
+  "20260710_preserve_bot_order_attempt_audit.sql",
+  "20260711_add_databento_historical_market_data.sql"
 )
 
 foreach ($name in $migrations) {
@@ -221,6 +223,9 @@ select count(*) from projectx_trade_events;
 select count(*) from journal_entries;
 select count(*) from expenses;
 select count(*) from payouts;
+select count(*) from databento_instruments;
+select count(*) from databento_ohlcv_1m;
+select count(*) from databento_roll_schedule;
 ```
 
 Recent trade-event sample:
@@ -235,5 +240,6 @@ limit 20;
 ## Notes
 
 - This repo does not include `db/seed.sql`
-- For the current product, `projectx_trade_events` is the primary analytics dataset
+- Databento is the historical market-data source for backtests; its raw one-minute bars use integer nanounit prices
+- ProjectX remains the account, execution, position, journaling, analytics, and order-routing source
 - The legacy `trades` table still exists for old `/metrics/*` routes

@@ -212,6 +212,8 @@ from .services.bot_backtesting import (
     MalformedBacktestDataError,
     UnsupportedBacktestStrategyError,
     create_bot_backtest,
+    databento_backtest_history_available,
+    legacy_projectx_backtest_fixtures_enabled,
     serialize_bot_backtest,
 )
 from .services.bot_serialization import serialize_supported_bot_configs
@@ -224,8 +226,8 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260710_preserve_bot_order_attempt_audit.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260710-v1"
+_REQUIRED_SCHEMA_MIGRATION = "20260711_add_databento_historical_market_data.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260711-v1"
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
 _backtest_capacity_lock = Lock()
@@ -416,8 +418,57 @@ def readiness(db: Session = Depends(get_db)):
         db.execute(text("select 1"))
         schema = inspect(db.get_bind())
         table_names = set(schema.get_table_names())
-        if not {"accounts", "bot_backtests", "bot_configs", "bot_order_attempts"}.issubset(table_names):
+        required_tables = {
+            "accounts",
+            "bot_backtests",
+            "bot_configs",
+            "bot_order_attempts",
+            "databento_import_batches",
+            "databento_import_files",
+            "databento_instruments",
+            "databento_ohlcv_1m",
+            "databento_roll_schedule",
+        }
+        if not required_tables.issubset(table_names):
             raise RuntimeError("schema_outdated")
+        required_databento_columns = {
+            "databento_import_batches": {"archive_sha256", "status", "manifest_json"},
+            "databento_import_files": {"batch_id", "filename", "file_sha256", "status"},
+            "databento_instruments": {
+                "dataset",
+                "instrument_id",
+                "raw_symbol",
+                "root_symbol",
+                "definition_ts",
+            },
+            "databento_ohlcv_1m": {
+                "dataset",
+                "instrument_id",
+                "ts_event",
+                "trading_date",
+                "open_nano",
+                "high_nano",
+                "low_nano",
+                "close_nano",
+                "volume",
+                "source_file_sha256",
+            },
+            "databento_roll_schedule": {
+                "root_symbol",
+                "trading_date",
+                "instrument_id",
+                "decision_session_date",
+                "current_volume",
+                "candidate_volume",
+                "policy_version",
+            },
+        }
+        for table_name, required_columns in required_databento_columns.items():
+            available_columns = {
+                column["name"] for column in schema.get_columns(table_name)
+            }
+            if not required_columns.issubset(available_columns):
+                raise RuntimeError("schema_outdated")
         attempt_column_rows = schema.get_columns("bot_order_attempts")
         attempt_columns = {column["name"] for column in attempt_column_rows}
         if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
@@ -1872,9 +1923,13 @@ def create_trading_bot_backtest(
         config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
         if config is None:
             raise LookupError("bot_config_not_found")
+        use_legacy_sqlite_fixture = (
+            legacy_projectx_backtest_fixtures_enabled(db)
+            and not databento_backtest_history_available(db, config=config)
+        )
         client = (
             _projectx_client_for_user(db, user_id=user_id)
-            if str(config.strategy_type) == "topbot_adaptive"
+            if str(config.strategy_type) == "topbot_adaptive" and use_legacy_sqlite_fixture
             else None
         )
         row = create_bot_backtest(
@@ -1917,8 +1972,6 @@ def _stream_trading_bot_backtest(
 ) -> StreamingResponse:
     """Run a backtest off the event loop and stream replay progress to the caller."""
 
-    capacity_lease = _acquire_backtest_capacity(user_id)
-
     async def events():
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
@@ -1938,50 +1991,68 @@ def _stream_trading_bot_backtest(
             enqueue({"event": "progress", "data": progress})
 
         def run() -> None:
-            with SessionLocal() as worker_db:
-                try:
-                    config = get_bot_config(
-                        worker_db,
-                        user_id=user_id,
-                        bot_config_id=bot_config_id,
-                    )
-                    if config is None:
-                        raise LookupError("bot_config_not_found")
-                    client = (
-                        _projectx_client_for_user(worker_db, user_id=user_id)
-                        if str(config.strategy_type) == "topbot_adaptive"
-                        else None
-                    )
-                    row = create_bot_backtest(
-                        worker_db,
-                        user_id=user_id,
-                        bot_config_id=bot_config_id,
-                        payload=payload,
-                        client=client,
-                        progress_callback=report_progress,
-                    )
-                    worker_db.commit()
-                    report_progress(
-                        {
-                            "phase": "complete",
-                            "completed": int(row.bar_count),
-                            "total": int(row.bar_count),
-                            "percent": 100,
-                            "remaining_percent": 0,
-                        }
-                    )
-                    enqueue(
-                        {
-                            "event": "result",
-                            "data": serialize_bot_backtest(row),
-                        }
-                    )
-                except Exception as exc:
-                    worker_db.rollback()
-                    enqueue({"event": "error", "data": _backtest_stream_error(exc)})
-                finally:
+            capacity_lease: _BacktestCapacityLease | None = None
+            try:
+                # Reserve capacity only once the worker actually starts. A client
+                # can disconnect after receiving response headers but before this
+                # generator is scheduled; acquiring outside the worker leaked the
+                # per-user slot forever in that race.
+                capacity_lease = _acquire_backtest_capacity(user_id)
+                with SessionLocal() as worker_db:
+                    try:
+                        config = get_bot_config(
+                            worker_db,
+                            user_id=user_id,
+                            bot_config_id=bot_config_id,
+                        )
+                        if config is None:
+                            raise LookupError("bot_config_not_found")
+                        use_legacy_sqlite_fixture = (
+                            legacy_projectx_backtest_fixtures_enabled(worker_db)
+                            and not databento_backtest_history_available(
+                                worker_db,
+                                config=config,
+                            )
+                        )
+                        client = (
+                            _projectx_client_for_user(worker_db, user_id=user_id)
+                            if str(config.strategy_type) == "topbot_adaptive"
+                            and use_legacy_sqlite_fixture
+                            else None
+                        )
+                        row = create_bot_backtest(
+                            worker_db,
+                            user_id=user_id,
+                            bot_config_id=bot_config_id,
+                            payload=payload,
+                            client=client,
+                            progress_callback=report_progress,
+                        )
+                        worker_db.commit()
+                        report_progress(
+                            {
+                                "phase": "complete",
+                                "completed": int(row.bar_count),
+                                "total": int(row.bar_count),
+                                "percent": 100,
+                                "remaining_percent": 0,
+                            }
+                        )
+                        enqueue(
+                            {
+                                "event": "result",
+                                "data": serialize_bot_backtest(row),
+                            }
+                        )
+                    except Exception:
+                        worker_db.rollback()
+                        raise
+            except Exception as exc:
+                enqueue({"event": "error", "data": _backtest_stream_error(exc)})
+            finally:
+                if capacity_lease is not None:
                     capacity_lease.release()
-                    enqueue(None)
+                enqueue(None)
 
         worker: asyncio.Task[None] | None = None
         try:
@@ -2000,9 +2071,7 @@ def _stream_trading_bot_backtest(
                 yield _serialize_sse_event(event)
         finally:
             accept_events.clear()
-            if worker is None:
-                capacity_lease.release()
-            elif worker.done():
+            if worker is not None and worker.done():
                 await worker
             # A disconnected client does not terminate the worker thread. Leave
             # its task running so the DB transaction finishes and its capacity

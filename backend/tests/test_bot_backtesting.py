@@ -41,6 +41,17 @@ CONTRACT_ID = "CON.F.US.MNQ.M26"
 BASE_TIME = datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def enable_legacy_projectx_backtest_fixtures(monkeypatch):
+    """This module preserves pre-Databento engine fixtures, never app behavior."""
+
+    monkeypatch.setattr(
+        backtesting_module,
+        "ALLOW_LEGACY_PROJECTX_BACKTEST_FIXTURES",
+        True,
+    )
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(
@@ -340,6 +351,27 @@ def test_streamed_backtest_emits_progress_then_result_after_commit(monkeypatch):
     assert session.rolled_back is False
     assert body.index('"phase":"replaying"') < body.index('"phase":"complete"')
     assert body.index('"phase":"complete"') < body.index('"id":99')
+
+
+def test_streamed_backtest_does_not_reserve_capacity_before_worker_starts(monkeypatch):
+    class FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return True
+
+    monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_GLOBAL", "1")
+    monkeypatch.setenv("BACKTEST_MAX_CONCURRENT_PER_USER", "1")
+
+    response = main_module._stream_trading_bot_backtest(
+        FakeRequest(),
+        user_id=OWNER_ID,
+        bot_config_id=101,
+        payload=BotBacktestIn(),
+    )
+    lease = main_module._acquire_backtest_capacity(OWNER_ID)
+    try:
+        assert response.media_type == "text/event-stream"
+    finally:
+        lease.release()
 
 
 def test_backtest_capacity_limits_global_and_per_user(monkeypatch):

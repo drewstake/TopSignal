@@ -37,12 +37,29 @@ class _Session:
 
 
 class _Inspector:
-    def __init__(self, *, include_ledger=True, include_baseline=False):
+    def __init__(
+        self,
+        *,
+        include_ledger=True,
+        include_baseline=False,
+        include_databento=True,
+    ):
         self.include_ledger = include_ledger
         self.include_baseline = include_baseline
+        self.include_databento = include_databento
 
     def get_table_names(self):
         tables = ["accounts", "bot_backtests", "bot_configs", "bot_order_attempts"]
+        if self.include_databento:
+            tables.extend(
+                [
+                    "databento_import_batches",
+                    "databento_import_files",
+                    "databento_instruments",
+                    "databento_ohlcv_1m",
+                    "databento_roll_schedule",
+                ]
+            )
         if self.include_ledger:
             tables.append("topsignal_schema_migrations")
         if self.include_baseline:
@@ -52,6 +69,43 @@ class _Inspector:
     def get_columns(self, table_name):
         if table_name == "accounts":
             return [{"name": "balance", "nullable": True}]
+        databento_columns = {
+            "databento_import_batches": {"archive_sha256", "status", "manifest_json"},
+            "databento_import_files": {"batch_id", "filename", "file_sha256", "status"},
+            "databento_instruments": {
+                "dataset",
+                "instrument_id",
+                "raw_symbol",
+                "root_symbol",
+                "definition_ts",
+            },
+            "databento_ohlcv_1m": {
+                "dataset",
+                "instrument_id",
+                "ts_event",
+                "trading_date",
+                "open_nano",
+                "high_nano",
+                "low_nano",
+                "close_nano",
+                "volume",
+                "source_file_sha256",
+            },
+            "databento_roll_schedule": {
+                "root_symbol",
+                "trading_date",
+                "instrument_id",
+                "decision_session_date",
+                "current_volume",
+                "candidate_volume",
+                "policy_version",
+            },
+        }
+        if table_name in databento_columns:
+            return [
+                {"name": column_name, "nullable": False}
+                for column_name in databento_columns[table_name]
+            ]
         return [
             {"name": "bot_config_id", "nullable": True},
             {"name": "execution_mode", "nullable": False},
@@ -79,7 +133,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260710_preserve_bot_order_attempt_audit.sql"} in db.params
+    assert {"version": "20260711_add_databento_historical_market_data.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -100,6 +154,18 @@ def test_readiness_rejects_unversioned_pre_runner_schema(monkeypatch):
     assert response.status_code == 503
 
 
+def test_readiness_rejects_schema_without_databento_store(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "inspect",
+        lambda _bind: _Inspector(include_databento=False),
+    )
+
+    response = main_module.readiness(db=_Session())
+
+    assert response.status_code == 503
+
+
 def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     monkeypatch.setattr(
         main_module,
@@ -109,4 +175,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260710-v1"} in db.params
+    assert {"version": "schema-20260711-v1"} in db.params
