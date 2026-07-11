@@ -63,7 +63,7 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "3.1.0-databento-lazy-mmap"
+BACKTEST_ENGINE_VERSION = "3.1.1-databento-lazy-mmap"
 LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
 # Unit tests for the pre-Databento engine can opt in by monkeypatching this
 # process-local constant. It is deliberately not environment-configurable and
@@ -402,6 +402,7 @@ class _ProjectedCandle:
 class _PendingSignal:
     action: str
     signal_timestamp: datetime
+    decision_timestamp: datetime
     signal_price: float | None
     reason: str
     payload: dict[str, Any]
@@ -866,6 +867,18 @@ class BacktestEngine:
             if self.strategy_type == _TOPBOT_STRATEGY:
                 self._record_topbot_source_failures(signal)
             if signal.action in {"BUY", "SELL"}:
+                if not _inside_session(
+                    event_time,
+                    start_text=str(self.config.trading_start_time),
+                    end_text=str(self.config.trading_end_time),
+                ):
+                    self.block_counts["outside_session"] += 1
+                    self._record_equity(
+                        event_time=event_time,
+                        mark_price=float(candle.close_price),
+                    )
+                    self._report_replay_progress(completed=index + 1, total=total_bars)
+                    continue
                 source_signal_timestamp = (
                     _as_utc(signal.candle_timestamp)
                     if self.strategy_type == _TOPBOT_STRATEGY and signal.candle_timestamp is not None
@@ -881,6 +894,7 @@ class BacktestEngine:
                 self.pending = _PendingSignal(
                     action=signal.action,
                     signal_timestamp=candle_start,
+                    decision_timestamp=event_time,
                     signal_price=float(signal.price) if signal.price is not None else None,
                     reason=signal.reason,
                     payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else {},
@@ -1731,7 +1745,7 @@ class BacktestEngine:
     ) -> None:
         fill_time = _as_utc(candle.candle_timestamp)
         if not _signal_fill_is_in_same_session(
-            pending.signal_timestamp,
+            pending.decision_timestamp,
             fill_time,
             start_text=str(self.config.trading_start_time),
             end_text=str(self.config.trading_end_time),
@@ -2200,7 +2214,7 @@ class BacktestEngine:
         for code in sorted(self.block_counts):
             count = self.block_counts[code]
             label = code.replace("_", " ")
-            self.warnings.append(f"Blocked {count} pending signal(s) due to {label}.")
+            self.warnings.append(f"Blocked {count} replay signal(s) due to {label}.")
         if not self.trades:
             self.warnings.append("No closed trades were produced in the requested range.")
         elif len(self.trades) < 30:
@@ -3778,6 +3792,11 @@ def _config_for_backtest_request(config: BotConfig, payload: Any) -> Any:
             slow_period=int(config.slow_period),
         )
     selected_instrument = instrument or current_instrument
+    replay_contract_id = (
+        f"DATABENTO.CONTINUOUS.{selected_instrument}"
+        if not instrument_unchanged
+        else None
+    )
     return _SourceConfigView(
         config,
         strategy_type=strategy_type,
@@ -3785,10 +3804,13 @@ def _config_for_backtest_request(config: BotConfig, payload: Any) -> Any:
         fast_period=fast_period,
         slow_period=slow_period,
         symbol=selected_instrument if not instrument_unchanged else None,
-        contract_id=(
-            f"DATABENTO.CONTINUOUS.{selected_instrument}"
-            if not instrument_unchanged
-            else None
+        contract_id=replay_contract_id,
+        # A selected historical instrument is an explicit, validated replay
+        # scope. Do not inherit the saved bot's exact live-delivery allowlist,
+        # which belongs to a different ProjectX contract and cannot authorize
+        # the synthetic Databento continuous contract.
+        allowed_contracts=(
+            [replay_contract_id] if replay_contract_id is not None else None
         ),
     )
 
@@ -5225,20 +5247,20 @@ def _inside_session(timestamp: datetime, *, start_text: str, end_text: str) -> b
 
 
 def _signal_fill_is_in_same_session(
-    signal_timestamp: datetime,
+    decision_timestamp: datetime,
     fill_timestamp: datetime,
     *,
     start_text: str,
     end_text: str,
 ) -> bool:
     session_start, session_end = _session_window_utc_for_reference(
-        _as_utc(signal_timestamp),
+        _as_utc(decision_timestamp),
         start_text=start_text,
         end_text=end_text,
     )
-    signal = _as_utc(signal_timestamp)
+    decision = _as_utc(decision_timestamp)
     fill = _as_utc(fill_timestamp)
-    return session_start <= signal <= session_end and session_start <= fill <= session_end
+    return session_start <= decision <= session_end and session_start <= fill <= session_end
 
 
 def _parse_time(value: str) -> time:

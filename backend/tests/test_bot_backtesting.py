@@ -467,9 +467,45 @@ def test_backtest_instrument_override_does_not_mutate_saved_config():
     assert effective is not config
     assert effective.symbol == "ES"
     assert effective.contract_id == "DATABENTO.CONTINUOUS.ES"
+    assert effective.allowed_contracts == ["DATABENTO.CONTINUOUS.ES"]
+    assert backtesting_module._contract_is_allowed(effective) is True
     assert effective.strategy_type == "sma_cross"
     assert config.symbol == "MNQ"
     assert config.contract_id == "CON.F.US.MNQ.M26"
+    assert config.allowed_contracts == [CONTRACT_ID]
+
+
+def test_backtest_instrument_override_can_open_a_replay_trade():
+    config = _config(
+        strategy_type="sma_cross",
+        symbol="MNQ",
+        contract_id="CON.F.US.MNQ.M26",
+        allowed_contracts=["CON.F.US.MNQ.M26"],
+        trading_start_time="09:30",
+        trading_end_time="15:45",
+    )
+    effective = backtesting_module._config_for_backtest_request(
+        config,
+        BotBacktestIn(instrument="NQ"),
+    )
+    bars = [
+        _candle(
+            BASE_TIME + timedelta(minutes=5 * index),
+            close_price=100 + index,
+            contract_id="DATABENTO.CONTINUOUS.NQ",
+            symbol="NQ",
+        )
+        for index in range(3)
+    ]
+
+    result = _run(
+        bars,
+        config=effective,
+        evaluator=_scripted_evaluator({BASE_TIME: {"action": "BUY", "price": 100}}),
+    )
+
+    assert result["metrics"]["trade_count"] == 1
+    assert not any("contract not allowed" in warning for warning in result["warnings"])
 
 
 def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
@@ -606,15 +642,16 @@ def test_session_vwap_rejects_an_interior_prefix_gap():
 def test_pending_signal_expires_at_session_end_instead_of_filling_next_day():
     session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
     session_end = datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
+    signal_bar_start = session_end - timedelta(minutes=5)
     next_open = datetime(2026, 7, 7, 13, 30, tzinfo=timezone.utc)
     bars = [
         _candle(session_open + timedelta(minutes=5 * index), close_price=100)
-        for index in range(8)
+        for index in range(6)
     ]
     bars.append(_candle(next_open, close_price=100))
 
     def end_of_session_signal(candles: list[ProjectXMarketCandle]) -> SignalResult:
-        if candles and any(_utc(row.candle_timestamp) == session_end for row in candles):
+        if candles and _utc(candles[-1].candle_timestamp) == signal_bar_start:
             latest = candles[-1]
             return SignalResult(
                 action="BUY",
@@ -638,6 +675,48 @@ def test_pending_signal_expires_at_session_end_instead_of_filling_next_day():
 
     assert result["trades"] == []
     assert any("stale session signal" in warning for warning in result["warnings"])
+
+
+def test_signal_available_at_session_open_fills_on_the_opening_bar():
+    session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
+    signal_bar_start = session_open - timedelta(minutes=5)
+    bars = [
+        _candle(
+            signal_bar_start + timedelta(minutes=5 * index),
+            close_price=100 + index,
+        )
+        for index in range(3)
+    ]
+
+    result = _run(
+        bars,
+        config=_config(trading_start_time="09:30", trading_end_time="15:45"),
+        evaluator=_scripted_evaluator(
+            {signal_bar_start: {"action": "BUY", "price": 100}}
+        ),
+    )
+
+    assert result["metrics"]["trade_count"] == 1
+    assert result["trades"][0]["signal_timestamp"] == signal_bar_start.isoformat()
+    assert result["trades"][0]["entry_timestamp"] == session_open.isoformat()
+
+
+def test_off_session_decision_is_not_misclassified_as_stale():
+    before_open = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    bars = [
+        _candle(before_open + timedelta(minutes=5 * index), close_price=100 + index)
+        for index in range(3)
+    ]
+
+    result = _run(
+        bars,
+        config=_config(trading_start_time="09:30", trading_end_time="15:45"),
+        evaluator=_scripted_evaluator({before_open: {"action": "BUY", "price": 100}}),
+    )
+
+    assert result["trades"] == []
+    assert any("outside session" in warning for warning in result["warnings"])
+    assert not any("stale session signal" in warning for warning in result["warnings"])
 
 
 def test_missing_required_session_open_is_rejected_instead_of_approximated():

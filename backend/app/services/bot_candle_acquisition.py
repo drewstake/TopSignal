@@ -31,6 +31,7 @@ class _SourceConfigView:
         slow_period: int,
         symbol: str | None = None,
         contract_id: str | None = None,
+        allowed_contracts: list[str] | None = None,
     ) -> None:
         self._base = base
         self.strategy_type = strategy_type
@@ -41,6 +42,8 @@ class _SourceConfigView:
             self.symbol = symbol
         if contract_id is not None:
             self.contract_id = contract_id
+        if allowed_contracts is not None:
+            self.allowed_contracts = list(allowed_contracts)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base, name)
