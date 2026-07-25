@@ -51,7 +51,14 @@ class _Inspector:
         self.missing_table = missing_table
 
     def get_table_names(self):
-        tables = ["accounts", "bot_backtests", "bot_configs", "bot_order_attempts"]
+        tables = [
+            "accounts",
+            "bot_backtests",
+            "bot_configs",
+            "bot_order_attempts",
+            "projectx_trade_events",
+            "trade_import_batches",
+        ]
         if self.include_databento:
             tables.extend(
                 [
@@ -70,7 +77,36 @@ class _Inspector:
 
     def get_columns(self, table_name):
         if table_name == "accounts":
-            return [{"name": "balance", "nullable": True}]
+            return [
+                {"name": "balance", "nullable": True},
+                {"name": "trade_data_source", "nullable": False},
+            ]
+        if table_name == "trade_import_batches":
+            return [
+                {"name": column_name, "nullable": False}
+                for column_name in {
+                    "user_id",
+                    "account_id",
+                    "source_file_name",
+                    "file_sha256",
+                    "total_rows",
+                    "inserted_rows",
+                    "duplicate_rows",
+                    "imported_at",
+                }
+            ]
+        if table_name == "projectx_trade_events":
+            return [
+                {"name": column_name, "nullable": column_name == "import_batch_id"}
+                for column_name in {
+                    "commissions",
+                    "fee_scope",
+                    "trade_date",
+                    "entry_timestamp",
+                    "entry_price",
+                    "import_batch_id",
+                }
+            ]
         databento_columns = {
             "databento_import_batches": {"archive_sha256", "status", "manifest_json"},
             "databento_import_files": {"batch_id", "filename", "file_sha256", "status"},
@@ -120,7 +156,15 @@ class _Inspector:
             return [{"sqltext": "order_size <= 10000 and order_size = trunc(order_size)"}]
         return [{"sqltext": "status in ('pending', 'submission_unknown')"}]
 
-    def get_foreign_keys(self, _table_name):
+    def get_foreign_keys(self, table_name):
+        if table_name == "projectx_trade_events":
+            return [
+                {
+                    "constrained_columns": ["import_batch_id"],
+                    "referred_table": "trade_import_batches",
+                    "options": {"ondelete": "SET NULL"},
+                }
+            ]
         return [
             {
                 "constrained_columns": ["bot_config_id"],
@@ -135,7 +179,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260711_seed_nq_es_instrument_metadata.sql"} in db.params
+    assert {"version": "20260724_restore_express_trade_data_source.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -177,6 +221,28 @@ def test_readiness_still_requires_projectx_bot_persistence(monkeypatch):
     assert response.status_code == 503
 
 
+def test_readiness_requires_trade_import_schema(monkeypatch):
+    class MissingTradeImportColumnInspector(_Inspector):
+        def get_columns(self, table_name):
+            columns = super().get_columns(table_name)
+            if table_name == "projectx_trade_events":
+                return [
+                    column
+                    for column in columns
+                    if column["name"] != "import_batch_id"
+                ]
+            return columns
+
+    monkeypatch.setattr(
+        main_module,
+        "inspect",
+        lambda _bind: MissingTradeImportColumnInspector(),
+    )
+
+    response = main_module.readiness(db=_Session())
+    assert response.status_code == 503
+
+
 def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     monkeypatch.setattr(
         main_module,
@@ -186,4 +252,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260711-v2"} in db.params
+    assert {"version": "schema-20260724-v2"} in db.params

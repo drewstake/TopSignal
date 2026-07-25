@@ -720,6 +720,119 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     assert entry.stats_json["avg_loss"] == 0.0
 
 
+def test_pull_journal_entry_trade_stats_uses_imported_trade_date_and_provider_timestamp(db_session):
+    user_id = "test-user-authoritative-trade-date"
+    entry, _ = create_journal_entry(
+        db_session,
+        user_id=user_id,
+        account_id=1004,
+        entry_date=date(2026, 3, 2),
+        title="Authoritative trade date",
+        mood=JournalMood.NEUTRAL,
+        tags=[],
+        body="",
+    )
+
+    db_session.add_all(
+        [
+            # Included by the imported trade date despite an out-of-range
+            # timestamp.
+            ProjectXTradeEvent(
+                user_id=user_id,
+                account_id=1004,
+                contract_id="MNQH6",
+                symbol="MNQ",
+                side="BUY",
+                size=1,
+                price=20000,
+                trade_timestamp=datetime(2026, 3, 5, 14, 0, tzinfo=timezone.utc),
+                fees=0.0,
+                commissions=0.0,
+                fee_scope="round_turn",
+                pnl=100.0,
+                trade_date=date(2026, 3, 2),
+                order_id="journal-imported-in",
+                raw_payload={},
+            ),
+            # Excluded by the imported trade date despite an in-range
+            # timestamp.
+            ProjectXTradeEvent(
+                user_id=user_id,
+                account_id=1004,
+                contract_id="MNQH6",
+                symbol="MNQ",
+                side="BUY",
+                size=1,
+                price=20001,
+                trade_timestamp=datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc),
+                fees=0.0,
+                commissions=0.0,
+                fee_scope="round_turn",
+                pnl=200.0,
+                trade_date=date(2026, 3, 3),
+                order_id="journal-imported-out",
+                raw_payload={},
+            ),
+            ProjectXTradeEvent(
+                user_id=user_id,
+                account_id=1004,
+                contract_id="MNQH6",
+                symbol="MNQ",
+                side="BUY",
+                size=1,
+                price=20002,
+                trade_timestamp=datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc),
+                fees=0.0,
+                pnl=50.0,
+                order_id="journal-provider-in",
+                raw_payload={},
+            ),
+            ProjectXTradeEvent(
+                user_id=user_id,
+                account_id=1004,
+                contract_id="MNQH6",
+                symbol="MNQ",
+                side="BUY",
+                size=1,
+                price=20003,
+                trade_timestamp=datetime(2026, 3, 5, 15, 0, tzinfo=timezone.utc),
+                fees=0.0,
+                pnl=400.0,
+                order_id="journal-provider-out",
+                raw_payload={},
+            ),
+        ]
+    )
+    db_session.commit()
+
+    pull_journal_entry_trade_stats(
+        db_session,
+        user_id=user_id,
+        account_id=1004,
+        entry_id=int(entry.id),
+        entry_date=date(2026, 3, 2),
+    )
+    db_session.refresh(entry)
+    assert entry.stats_json is not None
+    assert entry.stats_json["trade_count"] == 2
+    assert entry.stats_json["total_pnl"] == 150.0
+    assert entry.stats_json["net_realized_pnl"] == 150.0
+
+    pull_journal_entry_trade_stats(
+        db_session,
+        user_id=user_id,
+        account_id=1004,
+        entry_id=int(entry.id),
+        start_date=date(2026, 3, 2),
+        end_date=date(2026, 3, 2),
+    )
+    db_session.refresh(entry)
+    assert entry.stats_json is not None
+    assert entry.stats_json["trade_count"] == 2
+    assert entry.stats_json["total_pnl"] == 150.0
+    assert entry.stats_json["net_realized_pnl"] == 150.0
+
+
 def test_pull_journal_entry_trade_stats_uses_combined_position_size_from_execution_history(db_session):
     user_id = "test-user-position-size"
     entry, _ = create_journal_entry(

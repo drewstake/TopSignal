@@ -96,7 +96,10 @@ export function CopyTradePanel({
   const driftResetLabel = formatResetTime(driftResetAt);
   const selectedFollowerIds = useMemo(() => new Set(selectedFollowerAccountIds), [selectedFollowerAccountIds]);
   const followerCandidates = accounts.filter(
-    (account) => account.id !== leaderAccountId && (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
+    (account) =>
+      account.id !== leaderAccountId &&
+      account.trade_data_source === "projectx" &&
+      (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
   );
   const selectedFollowerAccounts = followerCandidates.filter((account) => selectedFollowerIds.has(account.id));
   const followerSelectionFull = selectedFollowerCount >= maxFollowers;

@@ -34,6 +34,12 @@ class Account(Base):
     )
     provider = Column(Text, nullable=False)
     external_id = Column(Text, nullable=False)
+    trade_data_source = Column(
+        Text,
+        nullable=False,
+        default="projectx",
+        server_default="projectx",
+    )
     name = Column(Text, nullable=True)
     display_name = Column(Text, nullable=True)
     balance = Column(Numeric(18, 6), nullable=True)
@@ -50,6 +56,10 @@ class Account(Base):
         CheckConstraint(
             "account_state in ('ACTIVE','LOCKED_OUT','HIDDEN','MISSING')",
             name="accounts_account_state_check",
+        ),
+        CheckConstraint(
+            "trade_data_source in ('projectx','csv_import')",
+            name="accounts_trade_data_source_check",
         ),
         UniqueConstraint("user_id", "provider", "external_id", name="uq_accounts_provider_external_id"),
         Index("idx_accounts_is_main", "user_id", "is_main"),
@@ -344,6 +354,49 @@ class DatabentoRollSchedule(Base):
     )
 
 
+class TradeImportBatch(Base):
+    __tablename__ = "trade_import_batches"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    # ProjectX routes and trade events use the provider's external account ID,
+    # not the local accounts.id primary key.
+    account_id = Column(BigInteger, nullable=False)
+    source_file_name = Column(Text, nullable=False)
+    file_sha256 = Column(Text, nullable=False)
+    total_rows = Column(Integer, nullable=False, server_default="0")
+    inserted_rows = Column(Integer, nullable=False, server_default="0")
+    duplicate_rows = Column(Integer, nullable=False, server_default="0")
+    imported_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(file_sha256) = 64",
+            name="trade_import_batches_sha256_length_check",
+        ),
+        CheckConstraint(
+            "total_rows >= 0 and inserted_rows >= 0 and duplicate_rows >= 0",
+            name="trade_import_batches_counts_nonnegative_check",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "account_id",
+            "file_sha256",
+            name="uq_trade_import_batches_account_file",
+        ),
+        Index(
+            "idx_trade_import_batches_user_account_imported",
+            "user_id",
+            "account_id",
+            "imported_at",
+        ),
+    )
+
+
 class ProjectXTradeEvent(Base):
     __tablename__ = "projectx_trade_events"
 
@@ -361,15 +414,29 @@ class ProjectXTradeEvent(Base):
     price = Column(Numeric(18, 6), nullable=False)
     trade_timestamp = Column(DateTime(timezone=True), nullable=False)
     fees = Column(Numeric(18, 6), nullable=False, server_default="0")
+    commissions = Column(Numeric(18, 6), nullable=True)
+    fee_scope = Column(Text, nullable=False, server_default="per_side")
     pnl = Column(Numeric(18, 6), nullable=True)
+    trade_date = Column(Date, nullable=True)
+    entry_timestamp = Column(DateTime(timezone=True), nullable=True)
+    entry_price = Column(Numeric(18, 6), nullable=True)
     order_id = Column(Text, nullable=False)
     source_trade_id = Column(Text, nullable=True)
     status = Column(Text, nullable=True)
     raw_payload = Column(JSON, nullable=True)
+    import_batch_id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("trade_import_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint("side in ('BUY','SELL','UNKNOWN')", name="projectx_trade_events_side_check"),
+        CheckConstraint(
+            "fee_scope in ('per_side','round_turn')",
+            name="projectx_trade_events_fee_scope_check",
+        ),
         UniqueConstraint(
             "user_id",
             "account_id",
@@ -389,6 +456,10 @@ class ProjectXTradeEvent(Base):
             "account_id",
             "trade_timestamp",
             "id",
+        ),
+        Index(
+            "idx_projectx_trade_events_import_batch",
+            "import_batch_id",
         ),
     )
 

@@ -190,7 +190,12 @@ def test_compute_daily_pnl_calendar_groups_by_new_york_trading_day():
             "trade_count": 3,
             "gross_pnl": 110.0,
             "fees": 8.5,
+            "non_commission_fees": 8.5,
+            "commissions": 0.0,
             "net_pnl": 101.5,
+            "win_count": 2,
+            "loss_count": 1,
+            "breakeven_count": 0,
         }
     ]
 
@@ -209,7 +214,12 @@ def test_compute_daily_pnl_calendar_rolls_sunday_trades_into_monday_bucket():
             "trade_count": 2,
             "gross_pnl": 100.0,
             "fees": 2.5,
+            "non_commission_fees": 2.5,
+            "commissions": 0.0,
             "net_pnl": 97.5,
+            "win_count": 2,
+            "loss_count": 0,
+            "breakeven_count": 0,
         }
     ]
 
@@ -232,14 +242,24 @@ def test_compute_daily_pnl_calendar_rolls_after_6pm_et_to_next_day():
             "trade_count": 1,
             "gross_pnl": 10.0,
             "fees": 1.0,
+            "non_commission_fees": 1.0,
+            "commissions": 0.0,
             "net_pnl": 9.0,
+            "win_count": 1,
+            "loss_count": 0,
+            "breakeven_count": 0,
         },
         {
             "date": "2026-03-03",
             "trade_count": 2,
             "gross_pnl": 50.0,
             "fees": 2.0,
+            "non_commission_fees": 2.0,
+            "commissions": 0.0,
             "net_pnl": 48.0,
+            "win_count": 2,
+            "loss_count": 0,
+            "breakeven_count": 0,
         },
     ]
 
@@ -347,6 +367,34 @@ def test_compute_trade_summary_calculates_avg_win_and_loss_durations():
     summary = compute_trade_summary(samples)
 
     assert summary["trade_count"] == 2
+    assert summary["avg_win_duration_minutes"] == 10.0
+    assert summary["avg_loss_duration_minutes"] == 12.0
+
+
+def test_compute_trade_summary_uses_explicit_imported_entry_timestamps():
+    samples = [
+        TradeMetricSample(
+            timestamp=_dt(9, 10),
+            entry_timestamp=_dt(9, 0),
+            pnl=100.0,
+            fees=0.0,
+            symbol="NQ",
+            side="SELL",
+            size=1.0,
+        ),
+        TradeMetricSample(
+            timestamp=_dt(9, 32),
+            entry_timestamp=_dt(9, 20),
+            pnl=-80.0,
+            fees=0.0,
+            symbol="NQ",
+            side="BUY",
+            size=1.0,
+        ),
+    ]
+
+    summary = compute_trade_summary(samples)
+
     assert summary["avg_win_duration_minutes"] == 10.0
     assert summary["avg_loss_duration_minutes"] == 12.0
 

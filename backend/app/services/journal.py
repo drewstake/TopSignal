@@ -15,6 +15,7 @@ from ..auth import get_authenticated_user_id
 from ..journal_schemas import JournalMergeConflictStrategy, JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
+from .trade_event_ranges import trade_event_range_filters
 from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import trading_day_bounds_utc
 
@@ -674,6 +675,7 @@ def pull_journal_entry_trade_stats(
                 ProjectXTradeEvent.size,
                 ProjectXTradeEvent.trade_timestamp,
                 ProjectXTradeEvent.fees,
+                ProjectXTradeEvent.commissions,
                 ProjectXTradeEvent.pnl,
             )
         )
@@ -692,10 +694,11 @@ def pull_journal_entry_trade_stats(
         validate_date_range(start_date=start_date, end_date=end_date)
         if start_date is not None:
             window_start, _ = _trading_day_bounds(start_date)
-            closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp >= window_start)
         if end_date is not None:
             _, window_end = _trading_day_bounds(end_date)
-            closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp <= window_end)
+        closed_query = closed_query.filter(
+            *trade_event_range_filters(start=window_start, end=window_end)
+        )
         if before_query_sync is not None:
             before_query_sync(window_start, window_end)
     else:
@@ -703,8 +706,9 @@ def pull_journal_entry_trade_stats(
         window_start, window_end = _trading_day_bounds(effective_date)
         if before_query_sync is not None:
             before_query_sync(window_start, window_end)
-        closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp >= window_start)
-        closed_query = closed_query.filter(ProjectXTradeEvent.trade_timestamp <= window_end)
+        closed_query = closed_query.filter(
+            *trade_event_range_filters(start=window_start, end=window_end)
+        )
 
     closed_rows = (
         closed_query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
@@ -1172,6 +1176,7 @@ def _effective_trade_fee(
     symbol: str | None,
     contract_id: str | None,
     size: float | None,
+    commissions: float | None = None,
 ) -> float:
     if pnl is None:
         return 0.0
@@ -1183,6 +1188,7 @@ def _effective_trade_fee(
         contract_id=contract_id,
         size=size,
         raw_fee_is_per_side=False,
+        commissions=commissions,
     )
 
 
@@ -1207,6 +1213,11 @@ def _compute_trade_stats_snapshot(
             symbol=getattr(row, "symbol", None),
             contract_id=getattr(row, "contract_id", None),
             size=abs(float(row.size)) if getattr(row, "size", None) is not None else None,
+            commissions=(
+                float(row.commissions)
+                if getattr(row, "commissions", None) is not None
+                else None
+            ),
         )
         fees.append(fee_value)
         net_values.append(pnl_value - fee_value)

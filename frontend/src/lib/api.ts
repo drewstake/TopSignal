@@ -19,6 +19,7 @@ import type {
   JournalMergeInput,
   JournalMergeResult,
   JournalPullTradeStatsInput,
+  LiveImportAccountInput,
   AccountPnlCalendarDay,
   AccountSummary,
   AccountSummaryWithPointBases,
@@ -43,6 +44,8 @@ import type {
   SummaryMetrics,
   SymbolPnlPoint,
   TradeRecord,
+  TradeImportConfirmResult,
+  TradeImportPreview,
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
   BotActivity,
@@ -696,8 +699,12 @@ function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): 
   return getAccountsFromApi(options);
 }
 
-function isSelectableAccount(account: Pick<AccountInfo, "account_state">): boolean {
-  return account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT";
+function isSelectableAccount(account: Pick<AccountInfo, "account_state" | "trade_data_source">): boolean {
+  return (
+    account.trade_data_source === "csv_import" ||
+    account.account_state === "ACTIVE" ||
+    account.account_state === "LOCKED_OUT"
+  );
 }
 
 function getSelectableAccountsFromApi(): Promise<AccountInfo[]> {
@@ -767,6 +774,15 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 export const accountsApi = {
   getAccounts,
   getSelectableAccounts,
+  createLiveImportAccount: (payload: LiveImportAccountInput) =>
+    requestJson<AccountInfo>("/api/accounts/import-target", {
+      method: "POST",
+      body: payload,
+    }).then((account) => {
+      invalidateAccountsListCaches();
+      dispatchAccountDisplayNameUpdated(account.id);
+      return account;
+    }),
   getAuthMe: () => requestJson<AuthMe>("/api/auth/me"),
   getProjectXCredentialsStatus: () =>
     requestJson<ProjectXCredentialsStatus>("/api/me/providers/projectx/credentials/status"),
@@ -907,6 +923,32 @@ export const accountsApi = {
     });
   },
   refreshTrades,
+  previewTradeImport: (accountId: number, file: File, options: RequestSignalOptions = {}) => {
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    return requestMultipart<TradeImportPreview>(`/api/accounts/${accountId}/trade-imports/preview`, {
+      formData,
+      signal: options.signal,
+    });
+  },
+  confirmTradeImport: (
+    accountId: number,
+    file: File,
+    previewSha256: string,
+    options: RequestSignalOptions = {},
+  ) => {
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    formData.append("preview_sha256", previewSha256);
+    return requestMultipart<TradeImportConfirmResult>(`/api/accounts/${accountId}/trade-imports/confirm`, {
+      formData,
+      signal: options.signal,
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId);
+      invalidateAccountsListCaches();
+      return result;
+    });
+  },
   getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: RequestSignalOptions = {}) =>
     requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
       query: {

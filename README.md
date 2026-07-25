@@ -1,6 +1,6 @@
 # TopSignal
 
-TopSignal is a trading analytics and journaling application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, trading-bot controls, and a daily trading journal.
+TopSignal is a trading analytics and journaling application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider or imports reviewed Topstep Live trade exports, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, trading-bot controls, and a daily trading journal.
 
 This repository contains:
 
@@ -37,6 +37,7 @@ Core features in the current routed app:
 - Main-account selection
 - Local account display-name overrides
 - Manual trade sync from ProjectX
+- Reviewed Topstep CSV/XLSX trade imports with duplicate prevention and source-file audit history
 - Account-level performance summaries
 - Analytics-only Copy Trade Mode for combined leader/follower dashboard views
 - Trading-day PnL calendar
@@ -64,6 +65,7 @@ It shows:
 - payoff and activity metrics
 - sustainability scoring
 - a trading-day PnL calendar
+- a Topstep trade-file preview/import panel with exact gross P&L, fees, commissions, and net P&L
 - a daily account-balance curve derived from the calendar
 - a recent trade-event feed
 - optional combined copied-account stats for leader/follower workflows
@@ -88,6 +90,7 @@ Important dashboard behaviors:
 
 - The active account comes from the global account picker in the app shell.
 - The page can sync trades, change time range, and drill into a specific trading day.
+- Topstep CSV/XLSX exports can be reviewed and confirmed directly above the P&L calendar; duplicate source IDs are skipped.
 - Clicking a PnL-calendar day filters the trade feed to that trading day.
 - Calendar days can open or create a journal entry for that date/account.
 - `Summary` opens a coach-style trading summary for the selected dashboard range, including verdict, sample quality, top levers, risks, improvements, and a short action plan.
@@ -100,7 +103,8 @@ Important dashboard behaviors:
 
 ### Accounts
 
-The Accounts page is the account-management surface for ProjectX accounts.
+The Accounts page is the account-management surface for ProjectX-synced and
+Live CSV accounts.
 
 A user can:
 
@@ -110,6 +114,8 @@ A user can:
 - mark one account as the main account
 - set the active account used across the rest of the app
 - override the provider account name with a local display name
+- use the dashboard's `Live Account (CSV)` control to switch to a separate
+  local Live account backed by manually imported Topstep trades
 - merge journal history from an older account into a replacement account
 - resolve the last trade timestamp from the provider when local data is stale or absent
 
@@ -123,6 +129,17 @@ TopSignal tracks four account states:
 - `LOCKED_OUT`: account exists but cannot trade
 - `HIDDEN`: provider returned it as not visible
 - `MISSING`: previously seen, now absent from provider results after a buffer window
+
+Each account has a trade-data source assigned when it is created:
+
+- `projectx`: sync account metadata and trades through the ProjectX API
+- `csv_import`: keep analytics local and update trades through reviewed
+  Topstep CSV/XLSX imports
+
+The dashboard control switches between separate ProjectX and Live CSV account
+records; it never converts an Express/XFA account into a CSV account. Live CSV
+accounts disable ProjectX refreshes and Copy Trade Mode. They do not delete or
+change stored trades, journals, or ProjectX credentials for other accounts.
 
 Account selectors prioritize the main account inside account-type groups so Express, combine, other, and practice accounts are easier to scan during trading workflows.
 
@@ -320,6 +337,7 @@ Important implementation detail:
 - The current app's main analytics dataset is `projectx_trade_events`, not the legacy `trades` table.
 - The legacy `/metrics/*` endpoints and `/trades` endpoint still read from `trades`.
 - The account dashboard, trade review, PnL calendar, and journal trade-stat flows use `projectx_trade_events`.
+- Confirmed file imports use the same `projectx_trade_events` analytics path and are audited in `trade_import_batches`.
 - Bot configuration and audit history use `bot_configs`, `bot_runs`, `bot_decisions`, `bot_order_attempts`, and `bot_risk_events`.
 - Canonical Databento definitions, raw 1-minute bars, statistics, and no-lookahead roll decisions live in the versioned local Parquet/mmap cache. Fresh PostgreSQL schemas omit the older `databento_*` market tables. Upgraded installations may retain them for compatibility; they are never dropped automatically and production backtests do not read them.
 - `projectx_market_candles` remains a compatibility cache for the interactive/live bot workspace and is never a backtest source.
@@ -368,13 +386,13 @@ Important implementation detail:
 
 When the frontend requests `GET /api/accounts`:
 
-1. the backend creates a `ProjectXClient` for the current user
-2. it calls ProjectX account search
+1. the backend checks whether any account still uses the `projectx` trade-data source
+2. when provider sync is needed, it creates a `ProjectXClient` and calls ProjectX account search
 3. it normalizes provider account flags into TopSignal account states
-4. it upserts local `accounts` rows
-5. it marks older accounts as `MISSING` if they disappear from provider results for longer than the configured buffer
+4. it upserts ProjectX-backed `accounts` rows without overwriting CSV-import accounts
+5. it marks older ProjectX accounts as `MISSING` if they disappear from provider results for longer than the configured buffer
 6. it joins locally stored last-trade timestamps from `projectx_trade_events`
-7. it returns a frontend-friendly account list
+7. it returns a frontend-friendly account list; CSV-import accounts are never marked as having stale provider data
 
 This means the accounts endpoint is both a read endpoint and the main account-state reconciliation step.
 
@@ -417,6 +435,30 @@ For single-day trade-range requests, TopSignal uses `projectx_trade_day_syncs` t
 
 Repeated or truncated provider pages keep the day marked `partial` rather than `complete`, which lets later sync attempts repair the day. This keeps normal navigation cheap while still handling late-arriving fills around today and yesterday.
 
+#### Topstep Live file import
+
+The dashboard accepts Topstep `.csv` and `.xlsx` trade exports in two phases.
+Use `Add Live Account` to create a local, read-only account from the Topstep
+Live account number. The `Live Account (CSV)` control then selects that
+separate account; it never repurposes the selected Express account. Selecting a
+Live account turns off Copy Trade Mode and prevents paused Express accounts
+from being auto-selected as copy followers.
+
+1. preview parses and validates the file, calculates new-row gross P&L,
+   non-commission fees, commissions, net P&L, wins/losses, and marks duplicate
+   rows for review
+2. confirm verifies the reviewed file hash and transactionally inserts only new
+   trades
+
+Each confirmed file records its original name, SHA-256, import timestamp, and
+row counts in `trade_import_batches`. Topstep `Id` is the primary account-scoped
+trade identity, with the existing order/exit-timestamp key as a compatibility
+fallback, so re-uploading the same file or an overlapping date range does not
+overwrite or duplicate existing provider/imported trades. Missing accounts
+remain selectable so their locally imported history stays available. Uploads
+are limited to 10 MB and 5,000 trades, and the review table displays 100 rows
+per page.
+
 ### 3. Trade Analytics Flow
 
 Trade analytics are derived from normalized execution events.
@@ -426,7 +468,7 @@ Key rules in code:
 - rows with `pnl = null` are treated as open-leg or half-turn events and do not count as closed trades
 - open-leg rows also do not reduce net PnL through fees in the summary logic
 - trading-day grouping uses a New York trading session boundary of `6:00 PM ET -> 5:59:59 PM ET next day`
-- entry and exit timing for the trade feed is inferred from execution history rather than stored directly by the provider
+- entry and exit timing for provider trades is inferred from execution history; imported closed trades preserve the export's explicit entry/exit fields
 
 The backend computes summaries from `projectx_trade_events`, then the frontend computes several additional display-only metrics from the returned summary and trade feed.
 

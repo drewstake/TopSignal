@@ -132,6 +132,8 @@ export function AppShell() {
     return "";
   }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
+  const selectedAccount = orderedAccounts.find((account) => account.id === selectedAccountId) ?? null;
+  const selectedAccountIsLocalOnly = selectedAccount?.trade_data_source === "csv_import";
 
   useEffect(() => {
     activeSyncAccountIdRef.current = selectedAccountId;
@@ -172,7 +174,7 @@ export function AppShell() {
   }
 
   async function handleSyncNow() {
-    if (!selectedAccountId) {
+    if (!selectedAccountId || selectedAccountIsLocalOnly) {
       return;
     }
 
@@ -252,14 +254,23 @@ export function AppShell() {
                     {orderedAccounts.map((account) => (
                       <option key={account.id} value={account.id}>
                         {`${getDemoAccountLabel(account)}${
-                          account.provider_data_stale ? ` — stale provider data (${formatProviderLastSeen(account.last_seen_at)})` : ""
+                          account.trade_data_source === "csv_import"
+                            ? " — Live CSV"
+                            : account.provider_data_stale
+                              ? ` — stale provider data (${formatProviderLastSeen(account.last_seen_at)})`
+                              : ""
                         }`}
                       </option>
                     ))}
                   </Select>
                 </div>
-                <Button className="h-11 whitespace-nowrap sm:h-9" onClick={handleSyncNow} disabled={syncing || !selectedAccountId}>
-                  {syncing ? "Syncing..." : "Sync Latest Trades"}
+                <Button
+                  className="h-11 whitespace-nowrap sm:h-9"
+                  onClick={handleSyncNow}
+                  disabled={syncing || !selectedAccountId || selectedAccountIsLocalOnly}
+                  title={selectedAccountIsLocalOnly ? "This account uses manually imported trade history." : undefined}
+                >
+                  {selectedAccountIsLocalOnly ? "Import-only Account" : syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 <Toggle
                   className="h-11 self-end sm:h-9"

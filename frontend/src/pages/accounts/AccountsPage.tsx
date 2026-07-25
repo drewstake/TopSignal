@@ -439,8 +439,8 @@ export function AccountsPage() {
       <section>
         <Card>
           <CardHeader>
-            <CardTitle>ProjectX Accounts</CardTitle>
-            <CardDescription>Select an account to make it active, or mark one as your default main account.</CardDescription>
+            <CardTitle>Trading Accounts</CardTitle>
+            <CardDescription>Manage ProjectX accounts and Live accounts that use CSV trade imports.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-end">
@@ -606,7 +606,7 @@ export function AccountsPage() {
                             <span className={availableBalance === null ? "font-sans text-amber-300" : undefined}>
                               {formatAccountBalance(account.balance)}
                             </span>
-                            {account.provider_data_stale ? (
+                            {account.trade_data_source === "projectx" && account.provider_data_stale ? (
                               <p className="mt-1 font-sans text-[10px] text-amber-300" title={account.last_seen_at ?? undefined}>
                                 {`Stale · ${formatProviderLastSeen(account.last_seen_at)}`}
                               </p>
@@ -633,10 +633,16 @@ export function AccountsPage() {
                             )}
                           </td>
                           <td className="px-3 py-3 text-right">
-                            <Badge variant={accountStateBadgeVariant(account.account_state)}>
-                              {formatAccountStateLabel(account.account_state)}
-                            </Badge>
-                            {account.provider_data_stale ? <Badge className="ml-1" variant="warning">Stale data</Badge> : null}
+                            {account.trade_data_source === "csv_import" ? (
+                              <Badge variant="accent">Live · CSV</Badge>
+                            ) : (
+                              <>
+                                <Badge variant={accountStateBadgeVariant(account.account_state)}>
+                                  {formatAccountStateLabel(account.account_state)}
+                                </Badge>
+                                {account.provider_data_stale ? <Badge className="ml-1" variant="warning">Stale data</Badge> : null}
+                              </>
+                            )}
                           </td>
                           <td className="px-3 py-3 text-right">
                             {isMainAccount ? (

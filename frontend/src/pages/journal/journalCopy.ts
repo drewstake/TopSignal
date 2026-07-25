@@ -1,5 +1,6 @@
 import type { AccountSummary, AccountTrade, JournalEntry } from "../../lib/types";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
+import { getTradeNetPnl } from "../../lib/tradePnl";
 import { formatDemoPnl } from "../../lib/demoMode";
 import { stripJournalImageMarkdown } from "./journalImages";
 import { hasJournalTradeStatsSnapshot } from "./journalUtils";
@@ -69,17 +70,9 @@ function formatRatio(value: number) {
   return ratioFormatter.format(value);
 }
 
-function getAccountTradeNetPnl(trade: AccountTrade) {
-  if (!isFiniteNumber(trade.pnl)) {
-    return null;
-  }
-  const fees = isFiniteNumber(trade.fees) ? trade.fees : 0;
-  return trade.pnl - fees;
-}
-
 function getTradeOutcomeRange(trades: AccountTrade[]) {
   const netValues = trades
-    .map((trade) => getAccountTradeNetPnl(trade))
+    .map((trade) => getTradeNetPnl(trade))
     .filter((value): value is number => value !== null);
 
   if (netValues.length === 0) {
@@ -105,7 +98,7 @@ function getMainSymbolsTraded(trades: AccountTrade[]) {
     }
 
     const current = symbolStats.get(symbol) ?? { tradeCount: 0, absNetPnl: 0 };
-    const netPnl = getAccountTradeNetPnl(trade) ?? 0;
+    const netPnl = getTradeNetPnl(trade) ?? 0;
     symbolStats.set(symbol, {
       tradeCount: current.tradeCount + 1,
       absNetPnl: current.absNetPnl + Math.abs(netPnl),

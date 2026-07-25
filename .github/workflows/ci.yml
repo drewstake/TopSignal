@@ -175,4 +175,4 @@ jobs:
       - name: Dependency audits
         run: |
           npm audit
-          npm --prefix frontend audit --omit=dev
+          node scripts/audit-frontend.cjs

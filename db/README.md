@@ -126,6 +126,9 @@ Current migration list:
 20260710_preserve_bot_order_attempt_audit.sql
 20260711_add_databento_historical_market_data.sql
 20260711_seed_nq_es_instrument_metadata.sql
+20260723_add_topstep_trade_imports.sql
+20260724_add_account_trade_data_source.sql
+20260724_restore_express_trade_data_source.sql
 ```
 
 `20260711_add_databento_historical_market_data.sql` remains in the checksummed
@@ -178,7 +181,10 @@ $migrations = @(
   "20260710_add_cached_account_balance.sql",
   "20260710_enforce_bot_quantity_safety.sql",
   "20260710_preserve_bot_order_attempt_audit.sql",
-  "20260711_seed_nq_es_instrument_metadata.sql"
+  "20260711_seed_nq_es_instrument_metadata.sql",
+  "20260723_add_topstep_trade_imports.sql",
+  "20260724_add_account_trade_data_source.sql",
+  "20260724_restore_express_trade_data_source.sql"
 )
 
 foreach ($name in $migrations) {
@@ -192,7 +198,7 @@ The backend also applies some safe Postgres compatibility patches in `backend/ap
 
 Those patches currently help older dev databases by:
 
-- adding missing `accounts` columns such as `display_name`, `account_state`, and `is_main`
+- adding missing `accounts` columns such as `display_name`, `account_state`, `trade_data_source`, and `is_main`
 - backfilling journal versioning and image support
 - ensuring multi-tenant `user_id` columns and related indexes
 - creating `provider_credentials` when absent

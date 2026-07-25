@@ -36,21 +36,27 @@ def effective_topstep_trade_fee(
     contract_id: str | None = None,
     size: float | None = None,
     raw_fee_is_per_side: bool,
+    commissions: float | None = None,
 ) -> float:
     fee_amount = float(fees) if fees is not None else 0.0
     if pnl is not None and raw_fee_is_per_side:
         fee_amount *= 2
     if pnl is None:
         return fee_amount
-    return fee_amount + _topstep_commission_round_turn(
-        trade_timestamp=trade_timestamp,
-        symbol=symbol,
-        contract_id=contract_id,
-        size=size,
+    commission_amount = (
+        float(commissions)
+        if commissions is not None
+        else topstep_commission_round_turn(
+            trade_timestamp=trade_timestamp,
+            symbol=symbol,
+            contract_id=contract_id,
+            size=size,
+        )
     )
+    return fee_amount + commission_amount
 
 
-def _topstep_commission_round_turn(
+def topstep_commission_round_turn(
     *,
     trade_timestamp: datetime | None,
     symbol: str | None,

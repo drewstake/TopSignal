@@ -1,9 +1,10 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 ProjectXAccountState = Literal["ACTIVE", "LOCKED_OUT", "HIDDEN", "MISSING"]
+ProjectXTradeDataSource = Literal["projectx", "csv_import"]
 
 
 class ProjectXAccountOut(BaseModel):
@@ -20,6 +21,16 @@ class ProjectXAccountOut(BaseModel):
     last_trade_at: datetime | None = None
     last_seen_at: datetime | None = None
     provider_data_stale: bool = False
+    trade_data_source: ProjectXTradeDataSource
+
+
+class TopstepLiveAccountCreateIn(BaseModel):
+    account_id: int = Field(gt=0, le=9_223_372_036_854_775_807)
+    name: str | None = None
+
+
+class ProjectXAccountTradeDataSourceIn(BaseModel):
+    trade_data_source: ProjectXTradeDataSource
 
 
 class ProjectXAccountMainOut(BaseModel):
@@ -59,6 +70,8 @@ class ProjectXTradeOut(BaseModel):
     entry_price: float | None = None
     exit_price: float
     fees: float
+    non_commission_fees: float = 0.0
+    commissions: float = 0.0
     pnl: float | None = None
     order_id: str
     source_trade_id: str | None = None
@@ -142,7 +155,61 @@ class ProjectXPnlCalendarDayOut(BaseModel):
     trade_count: int
     gross_pnl: float
     fees: float
+    non_commission_fees: float = 0.0
+    commissions: float = 0.0
     net_pnl: float
+    win_count: int = 0
+    loss_count: int = 0
+    breakeven_count: int = 0
+
+
+class TopstepTradeImportSummaryOut(BaseModel):
+    gross_pnl: float
+    fees: float
+    commissions: float
+    net_pnl: float
+    wins: int
+    losses: int
+    breakeven: int
+
+
+class TopstepTradeImportPreviewRowOut(BaseModel):
+    row_number: int
+    source_trade_id: str
+    contract_name: str
+    symbol: str
+    entered_at: datetime
+    exited_at: datetime
+    entry_price: float
+    exit_price: float
+    fees: float
+    commissions: float
+    gross_pnl: float
+    net_pnl: float
+    size: float
+    direction: Literal["Long", "Short"]
+    trade_day: date
+    duration: str | None = None
+    status: Literal["new", "duplicate"]
+
+
+class TopstepTradeImportPreviewOut(BaseModel):
+    source_file_name: str
+    file_sha256: str
+    total_rows: int
+    new_rows: int
+    duplicate_rows: int
+    summary: TopstepTradeImportSummaryOut
+    trades: list[TopstepTradeImportPreviewRowOut]
+
+
+class TopstepTradeImportConfirmOut(BaseModel):
+    import_id: int
+    source_file_name: str
+    imported_at: datetime
+    total_rows: int
+    inserted_rows: int
+    duplicate_rows: int
 
 
 class ProjectXCredentialsUpsertIn(BaseModel):

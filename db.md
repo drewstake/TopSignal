@@ -9,7 +9,8 @@ TopSignal uses PostgreSQL as a local-first analytics cache and application store
 It persists:
 
 - ProjectX account metadata
-- normalized ProjectX trade events
+- normalized ProjectX trade events and confirmed Topstep file imports
+- Topstep import-batch provenance (source filename, file hash, import time, and row counts)
 - daily trade-sync completeness state
 - journal entries and journal images
 - expenses and payouts
@@ -18,10 +19,11 @@ It persists:
 - user-scoped bot configurations, deterministic backtest snapshots, lifecycle runs, decisions, risk events, and order-attempt audit records
 - on upgraded installations only, any pre-existing global Databento relational tables; fresh schemas omit them, while existing tables remain untouched for compatibility
 
-ProjectX remains the source for accounts, executions, positions, journaling, and
-order routing. Databento is the sole historical market-data source for
-backtesting. The main execution-analytics path is `projectx_trade_events`, not
-the legacy `trades` table.
+ProjectX remains the source for API-connected accounts, executions, positions,
+journaling, and order routing. Topstep Live account executions can also enter
+through the reviewed CSV/XLSX import flow. Databento is the sole historical
+market-data source for backtesting. Both API and imported trade analytics use
+`projectx_trade_events`, not the legacy `trades` table.
 
 ## Persistence Strategy
 
@@ -36,7 +38,7 @@ their SHA-256 checksums in `topsignal_schema_migrations`.
 
 The startup compatibility code currently backfills:
 
-- older `accounts` columns such as `display_name`, `account_state`, and `is_main`
+- older `accounts` columns such as `display_name`, `account_state`, `trade_data_source`, and `is_main`
 - journal versioning and image-storage support
 - multi-tenant `user_id` columns and related indexes
 - `provider_credentials`
@@ -56,6 +58,7 @@ Important columns:
 - `user_id`
 - `provider`
 - `external_id`
+- `trade_data_source` (`projectx` or `csv_import`)
 - `name`
 - `display_name`
 - `account_state`
@@ -71,6 +74,13 @@ Notes:
 - uniqueness is `(user_id, provider, external_id)`
 - account display in the UI resolves from `display_name` first, then provider `name`
 - account states are `ACTIVE`, `LOCKED_OUT`, `HIDDEN`, and `MISSING`
+- `trade_data_source` is assigned at account creation; application routes reject
+  attempts to convert an existing ProjectX account into a CSV-import account or
+  vice versa
+- CSV-import accounts remain locally available and are excluded from ProjectX
+  account-missing transitions and provider trade refreshes
+- trade data sources are immutable after account creation; ProjectX and Live
+  CSV data must use separate account records
 
 ### `projectx_trade_events`
 
@@ -87,11 +97,17 @@ Important columns:
 - `price`
 - `trade_timestamp`
 - `fees`
+- `commissions`
+- `fee_scope`
 - `pnl`
+- `trade_date`
+- `entry_timestamp`
+- `entry_price`
 - `order_id`
 - `source_trade_id`
 - `status`
 - `raw_payload`
+- `import_batch_id`
 
 Deduplication rules:
 
@@ -102,6 +118,29 @@ Behavior notes:
 
 - voided or canceled provider rows are skipped at ingest time
 - `pnl = null` rows are treated as open-leg or half-turn events and do not count as closed trades
+- provider rows use `fee_scope = per_side`; imported rows use `round_turn` and
+  preserve the exact exported commission so costs are never inferred twice
+- imported `trade_date` is Topstep's authoritative futures trading day
+
+### `trade_import_batches`
+
+Audit record for each confirmed Topstep trade file.
+
+Important columns:
+
+- `user_id`
+- `account_id`
+- `source_file_name`
+- `file_sha256`
+- `imported_at`
+- `total_rows`
+- `inserted_rows`
+- `duplicate_rows`
+
+The unique key `(user_id, account_id, file_sha256)` makes confirming the same
+file idempotent. Individual overlapping trades are independently deduplicated
+by the `projectx_trade_events` source-trade key and its existing
+order/timestamp compatibility key.
 
 ### `projectx_trade_day_syncs`
 
