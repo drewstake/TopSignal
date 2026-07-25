@@ -1,12 +1,16 @@
-import { accountsApi } from "./api";
+import { accountsApi, type SelectableAccountsOptions } from "./api";
 
 export interface TradeRefreshRange {
   start?: string;
   end?: string;
 }
 
-export function getSelectableAccounts() {
-  return accountsApi.getSelectableAccounts();
+export function getSelectableAccounts(options: SelectableAccountsOptions = {}) {
+  return accountsApi.getSelectableAccounts(options);
+}
+
+export function getSelectableAccountsLocalFirst() {
+  return accountsApi.getSelectableAccountsLocalFirst();
 }
 
 export function refreshTrades(accountId: number, query: TradeRefreshRange = {}) {

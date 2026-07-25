@@ -17,9 +17,13 @@ import {
   readStoredMainAccountId,
   writeStoredAccountId,
 } from "../lib/accountSelection";
-import { getSelectableAccounts, refreshTrades } from "../lib/appShellApi";
+import {
+  getSelectableAccounts,
+  getSelectableAccountsLocalFirst,
+  refreshTrades,
+} from "../lib/appShellApi";
 import { canApplyAccountScopedResult } from "../lib/appShellRequests";
-import { sortAccountsForSelection } from "../lib/accountOrdering";
+import { sortAccountsForActiveSelection } from "../lib/accountOrdering";
 import { formatProviderLastSeen } from "../lib/accountProviderState";
 import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
@@ -58,6 +62,7 @@ export function AppShell() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const demoMode = useDemoMode();
   const beginAccountsRequest = useLatestRequestGuard();
+  const beginProviderAccountsRequest = useLatestRequestGuard();
   const beginSyncRequest = useLatestRequestGuard();
   const activeSyncAccountIdRef = useRef<number | null>(null);
 
@@ -70,7 +75,7 @@ export function AppShell() {
       setAccountsError(null);
 
       try {
-        const payload = await getSelectableAccounts();
+        const payload = await getSelectableAccountsLocalFirst();
         if (!isMounted || !isCurrent()) {
           return;
         }
@@ -109,7 +114,7 @@ export function AppShell() {
   }, [beginAccountsRequest]);
 
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
-  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+  const orderedAccounts = useMemo(() => sortAccountsForActiveSelection(accounts), [accounts]);
   const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
   const mainAccountId = readStoredMainAccountId();
   const storedActiveAccountId = readStoredAccountId();
@@ -134,6 +139,28 @@ export function AppShell() {
   const selectedAccountId = parseAccountId(selectedAccountValue);
   const selectedAccount = orderedAccounts.find((account) => account.id === selectedAccountId) ?? null;
   const selectedAccountIsLocalOnly = selectedAccount?.trade_data_source === "csv_import";
+
+  useEffect(() => {
+    const isCurrent = beginProviderAccountsRequest();
+    if (accountsLoading || selectedAccount?.trade_data_source !== "projectx") {
+      return;
+    }
+
+    void getSelectableAccounts({ refreshProvider: true })
+      .then((payload) => {
+        if (isCurrent()) {
+          setAccounts(payload);
+        }
+      })
+      .catch(() => {
+        // The saved account snapshot remains usable when ProjectX is unavailable.
+      });
+  }, [
+    accountsLoading,
+    beginProviderAccountsRequest,
+    selectedAccount?.id,
+    selectedAccount?.trade_data_source,
+  ]);
 
   useEffect(() => {
     activeSyncAccountIdRef.current = selectedAccountId;

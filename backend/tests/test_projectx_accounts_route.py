@@ -372,6 +372,59 @@ def test_accounts_route_skips_projectx_when_every_account_uses_csv_import(
     assert payload[0]["provider_data_stale"] is False
 
 
+def test_accounts_route_local_snapshot_skips_projectx_for_mixed_accounts(
+    db_session,
+    monkeypatch,
+):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88020",
+                name="Topstep Live Funded",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88021",
+                name="Express Account",
+                trade_data_source="projectx",
+                account_state="ACTIVE",
+                balance=50000,
+                can_trade=True,
+                is_visible=True,
+                is_main=False,
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A local account snapshot must not contact ProjectX")
+        ),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=True,
+        show_missing=False,
+        refresh_provider=False,
+        db=db_session,
+    )
+    by_id = {row["id"]: row for row in payload}
+
+    assert list(by_id) == [88020, 88021]
+    assert by_id[88020]["is_main"] is True
+    assert by_id[88020]["trade_data_source"] == "csv_import"
+    assert by_id[88020]["provider_data_stale"] is False
+    assert by_id[88021]["trade_data_source"] == "projectx"
+    assert by_id[88021]["provider_data_stale"] is True
+    assert by_id[88021]["balance"] == 50000
+
+
 def test_provider_sync_skips_csv_id_collision_and_missing_transition(
     db_session,
     monkeypatch,

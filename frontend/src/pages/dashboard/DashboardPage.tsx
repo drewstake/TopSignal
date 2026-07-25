@@ -47,6 +47,7 @@ import {
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
 import { CopyTradePanel } from "./components/CopyTradePanel";
+import { TradeImportPanel } from "./components/TradeImportPanel";
 import {
   COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
   MAX_COPY_TRADE_FOLLOWERS,
@@ -581,6 +582,7 @@ export function DashboardPage() {
   const copyTradeToggleTimerRef = useRef<number | null>(null);
   const lastProjectXAccountIdRef = useRef<number | null>(null);
   const beginAccountsRequest = useLatestRequestGuard();
+  const beginProviderAccountsRequest = useLatestRequestGuard();
   const beginSummaryRequest = useLatestRequestGuard();
   const beginTradesRequest = useLatestRequestGuard();
   const beginJournalDaysRequest = useLatestRequestGuard();
@@ -627,7 +629,7 @@ export function DashboardPage() {
   const loadAccounts = useCallback(async () => {
     const isCurrent = beginAccountsRequest();
     try {
-      const payload = await accountsApi.getSelectableAccounts();
+      const payload = await accountsApi.getSelectableAccountsLocalFirst();
       if (isCurrent()) {
         setAccounts(payload);
       }
@@ -725,6 +727,29 @@ export function DashboardPage() {
     () => orderedAccounts.filter((account) => account.trade_data_source === "csv_import"),
     [orderedAccounts],
   );
+
+  useEffect(() => {
+    const isCurrent = beginProviderAccountsRequest();
+    if (selectedAccount?.trade_data_source !== "projectx") {
+      return;
+    }
+
+    void accountsApi
+      .getSelectableAccounts({ refreshProvider: true })
+      .then((payload) => {
+        if (isCurrent()) {
+          setAccounts(payload);
+        }
+      })
+      .catch(() => {
+        // Keep rendering the saved account snapshot if ProjectX is unavailable.
+      });
+  }, [
+    beginProviderAccountsRequest,
+    selectedAccount?.id,
+    selectedAccount?.trade_data_source,
+  ]);
+
   const copyTradeModeActive = copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport;
   const copyTradeRosterAccountIds = useMemo(
     () => (copyTradeModeActive ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings) : []),
@@ -1881,13 +1906,14 @@ export function DashboardPage() {
         }
 
         setLiveAccountSetupRequest((current) => current + 1);
-        setTradeDataSourceFeedback({
-          tone: "neutral",
-          message:
-            decision.liveAccountCount === 0
-              ? "Add a separate Live CSV account below. Your current Express account will stay unchanged."
-              : `Choose one of ${decision.liveAccountCount} Live CSV accounts below. Your current Express account will stay unchanged.`,
-        });
+        setTradeDataSourceFeedback(
+          decision.liveAccountCount === 0
+            ? null
+            : {
+                tone: "neutral",
+                message: `Choose one of ${decision.liveAccountCount} Live CSV accounts below. Your current Express account will stay unchanged.`,
+              },
+        );
         return;
       }
 
@@ -2180,6 +2206,16 @@ export function DashboardPage() {
         </div>
         {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
       </div>
+
+      <TradeImportPanel
+        accountId={selectedAccountId}
+        tradeDataSource={selectedAccount?.trade_data_source ?? null}
+        liveAccounts={liveCsvAccounts}
+        accountSetupRequest={liveAccountSetupRequest}
+        onImportComplete={reloadDashboard}
+        onAccountCreated={handleLiveImportAccountCreated}
+        onAccountSelected={handleLiveImportAccountCreated}
+      />
 
       {selectedAccountIsCsvImport ? (
         <Card className="border-app-accent/35 bg-app-accent/10 p-4">
@@ -3079,10 +3115,6 @@ export function DashboardPage() {
           days={dashboardPnlCalendarDays}
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
-          accountId={selectedAccountId}
-          tradeDataSource={selectedAccount?.trade_data_source ?? null}
-          liveAccounts={liveCsvAccounts}
-          accountSetupRequest={liveAccountSetupRequest}
           journalDays={journalDays}
           journalDaysLoading={journalDaysLoading}
           selectedDate={selectedTradeDate}
@@ -3090,9 +3122,6 @@ export function DashboardPage() {
           onJournalDayOpen={openJournalForDate}
           onAddJournalForSelectedDay={openJournalForDate}
           onVisibleRangeChange={handleCalendarVisibleRangeChange}
-          onImportComplete={reloadDashboard}
-          onAccountCreated={handleLiveImportAccountCreated}
-          onAccountSelected={handleLiveImportAccountCreated}
         />
       </Suspense>
 

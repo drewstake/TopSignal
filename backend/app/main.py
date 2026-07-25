@@ -1107,6 +1107,7 @@ def list_projectx_accounts(
     show_inactive: bool = False,
     show_missing: bool = False,
     only_active_accounts: bool | None = None,
+    refresh_provider: bool = True,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -1115,9 +1116,12 @@ def list_projectx_accounts(
         show_missing = not only_active_accounts
 
     rows = get_projectx_account_rows(db, user_id=user_id)
-    provider_sync_required = not rows or any(
-        row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
-        for row in rows
+    provider_sync_required = refresh_provider and (
+        not rows
+        or any(
+            row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+            for row in rows
+        )
     )
     provider_accounts: list[dict[str, object]] = []
     provider_error: ProjectXClientError | HTTPException | None = None
@@ -1184,7 +1188,7 @@ def list_projectx_accounts(
                 account_id=account_id,
                 last_trade_at=last_trade_by_account_id.get(account_id),
                 provider_payload=provider_by_external_id.get(row.external_id),
-                provider_data_stale=provider_error is not None,
+                provider_data_stale=provider_error is not None or not refresh_provider,
             )
         )
 

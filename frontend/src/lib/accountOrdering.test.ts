@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sortAccountsForSelection } from "./accountOrdering";
+import { sortAccountsForActiveSelection, sortAccountsForSelection } from "./accountOrdering";
 
 describe("sortAccountsForSelection", () => {
   it("orders express accounts before combine, regular, and practice accounts", () => {
@@ -44,5 +44,38 @@ describe("sortAccountsForSelection", () => {
     ]);
 
     expect(sorted.map((account) => account.id)).toEqual([9001, 9002]);
+  });
+});
+
+describe("sortAccountsForActiveSelection", () => {
+  it("always places Live CSV accounts above Express and other ProjectX accounts", () => {
+    const sorted = sortAccountsForActiveSelection([
+      {
+        id: 9103,
+        name: "EXPRESS-V2-DLL-192577-50519642",
+        is_main: true,
+        trade_data_source: "projectx" as const,
+      },
+      {
+        id: 9102,
+        name: "Topstep Live Funded B",
+        is_main: false,
+        trade_data_source: "csv_import" as const,
+      },
+      {
+        id: 9104,
+        name: "50KTC-V2-DLL-192577-11530403",
+        is_main: false,
+        trade_data_source: "projectx" as const,
+      },
+      {
+        id: 9101,
+        name: "Topstep Live Funded A",
+        is_main: true,
+        trade_data_source: "csv_import" as const,
+      },
+    ]);
+
+    expect(sorted.map((account) => account.id)).toEqual([9101, 9102, 9103, 9104]);
   });
 });

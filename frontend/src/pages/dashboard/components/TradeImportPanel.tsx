@@ -83,10 +83,17 @@ export interface TradeImportReviewProps {
   preview: TradeImportPreview;
   confirming: boolean;
   onConfirm: () => void;
-  onCancel: () => void;
+  onChooseAnother: () => void;
+  onClose: () => void;
 }
 
-export function TradeImportReview({ preview, confirming, onConfirm, onCancel }: TradeImportReviewProps) {
+export function TradeImportReview({
+  preview,
+  confirming,
+  onConfirm,
+  onChooseAnother,
+  onClose,
+}: TradeImportReviewProps) {
   const { summary } = preview;
   const canConfirm = preview.new_rows > 0 && !confirming;
   const [pageIndex, setPageIndex] = useState(0);
@@ -95,6 +102,43 @@ export function TradeImportReview({ preview, confirming, onConfirm, onCancel }: 
   const firstVisibleRow = safePageIndex * REVIEW_PAGE_SIZE;
   const lastVisibleRow = Math.min(firstVisibleRow + REVIEW_PAGE_SIZE, preview.trades.length);
   const visibleTrades = preview.trades.slice(firstVisibleRow, firstVisibleRow + REVIEW_PAGE_SIZE);
+
+  if (preview.new_rows === 0 && preview.duplicate_rows > 0) {
+    const duplicateLabel = `${preview.duplicate_rows.toLocaleString("en-US")} duplicate${
+      preview.duplicate_rows === 1 ? "" : "s"
+    }`;
+
+    return (
+      <div
+        className="rounded-xl border border-app-warning/35 bg-app-warning/10 p-4"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-app-text">Duplicate file</p>
+            <p className="mt-0.5 truncate text-xs text-app-muted" title={preview.source_file_name}>
+              {preview.source_file_name}
+            </p>
+          </div>
+          <Badge variant="neutral">{duplicateLabel}</Badge>
+        </div>
+        <p className="mt-3 text-xs text-app-text-soft">
+          {preview.duplicate_rows === 1
+            ? "That trade is already imported. Nothing new was added."
+            : `All ${preview.duplicate_rows.toLocaleString("en-US")} trades are already imported. Nothing new was added.`}
+        </p>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+          <Button type="button" size="sm" onClick={onChooseAnother}>
+            Choose Another File
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -229,7 +273,7 @@ export function TradeImportReview({ preview, confirming, onConfirm, onCancel }: 
       )}
 
       <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="ghost" size="sm" disabled={confirming} onClick={onCancel}>
+        <Button variant="ghost" size="sm" disabled={confirming} onClick={onChooseAnother}>
           Choose Another File
         </Button>
         <Button size="sm" disabled={!canConfirm} onClick={onConfirm}>
@@ -310,6 +354,12 @@ export function TradeImportPanel({
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+
+    if (accountId !== null && tradeDataSource === "csv_import") {
+      setShowAccountForm(false);
+      setLiveAccountId("");
+      setLiveAccountName("");
+    }
   }, [accountId, tradeDataSource]);
 
   useEffect(() => {
@@ -327,6 +377,10 @@ export function TradeImportPanel({
     }
 
     lastAccountSetupRequestRef.current = accountSetupRequest;
+    if (canImport) {
+      return;
+    }
+
     setShowAccountForm(true);
     setError(null);
     const scrollTimer = window.setTimeout(() => {
@@ -336,7 +390,7 @@ export function TradeImportPanel({
       });
     }, 0);
     return () => window.clearTimeout(scrollTimer);
-  }, [accountSetupRequest]);
+  }, [accountSetupRequest, canImport]);
 
   async function previewFile(file: File) {
     if (!accountId) {
@@ -393,6 +447,36 @@ export function TradeImportPanel({
     }
 
     void previewFile(file);
+  }
+
+  function handleChooseFile() {
+    setError(null);
+    setResult(null);
+
+    if (!canImport) {
+      setShowAccountForm(true);
+      setError(
+        accountId === null
+          ? "Add or select a Live CSV account before choosing a trade file."
+          : "Select or add a separate Live CSV account before choosing a trade file.",
+      );
+      return;
+    }
+
+    const fileInput = fileInputRef.current;
+    if (!fileInput) {
+      setError("The file picker is unavailable. Refresh the page and try again.");
+      return;
+    }
+
+    // Clearing the native value lets selecting the same export fire onChange again.
+    fileInput.value = "";
+    fileInput.click();
+  }
+
+  function handleChooseAnotherFile() {
+    resetSelection();
+    fileInputRef.current?.click();
   }
 
   async function handleConfirm() {
@@ -517,22 +601,42 @@ export function TradeImportPanel({
             {showAccountForm ? "Cancel Live Account Setup" : "Add Live Account"}
           </Button>
         </div>
-        <label className="block w-full max-w-md space-y-1" htmlFor={inputId}>
-          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">Trade export file</span>
-          <Input
+        <div className="block w-full max-w-md space-y-1">
+          <span id={`${inputId}-label`} className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
+            Trade export file
+          </span>
+          <input
             ref={fileInputRef}
             id={inputId}
             type="file"
             accept={acceptedFileTypes}
             disabled={!canImport || busy}
+            tabIndex={-1}
+            className="sr-only"
+            aria-labelledby={`${inputId}-label`}
             aria-describedby={`${inputId}-help`}
             onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-            className="h-auto min-h-10 py-1.5 file:mr-3 file:rounded-lg file:border-0 file:bg-app-accent/15 file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-app-text"
           />
+          <div className="flex min-h-10 items-center gap-3 rounded-xl border border-app-border bg-app-surface/70 px-2 py-1.5">
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              aria-describedby={`${inputId}-help`}
+              onClick={handleChooseFile}
+            >
+              {previewing ? "Reading file..." : "Choose file"}
+            </Button>
+            <span className="min-w-0 flex-1 truncate text-xs text-app-muted" title={selectedFile?.name}>
+              {selectedFile?.name ?? "No file selected"}
+            </span>
+          </div>
           <span id={`${inputId}-help`} className="block text-[10px] text-app-muted-strong">
-            Accepted: .csv and .xlsx
+            {canImport
+              ? "Accepted: .csv and .xlsx"
+              : "Choose this to add or select the Live CSV account required for imports."}
           </span>
-        </label>
+        </div>
       </div>
 
       {showAccountForm ? (
@@ -651,7 +755,8 @@ export function TradeImportPanel({
             preview={preview}
             confirming={confirming}
             onConfirm={() => void handleConfirm()}
-            onCancel={resetSelection}
+            onChooseAnother={handleChooseAnotherFile}
+            onClose={resetSelection}
           />
         </div>
       ) : null}

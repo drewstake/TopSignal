@@ -10,7 +10,6 @@ describe("PnlCalendarCard", () => {
     const date = formatIsoDateUtc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 2)));
     const markup = renderToStaticMarkup(
       <PnlCalendarCard
-        accountId={42}
         days={[
           {
             date,

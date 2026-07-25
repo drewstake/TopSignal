@@ -1,26 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { getSelectableAccountsMock, refreshTradesMock } = vi.hoisted(() => ({
+const { getSelectableAccountsMock, getSelectableAccountsLocalFirstMock, refreshTradesMock } = vi.hoisted(() => ({
   getSelectableAccountsMock: vi.fn(),
+  getSelectableAccountsLocalFirstMock: vi.fn(),
   refreshTradesMock: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
   accountsApi: {
     getSelectableAccounts: getSelectableAccountsMock,
+    getSelectableAccountsLocalFirst: getSelectableAccountsLocalFirstMock,
     refreshTrades: refreshTradesMock,
   },
 }));
 
-import { getSelectableAccounts, refreshTrades } from "./appShellApi";
+import { getSelectableAccounts, getSelectableAccountsLocalFirst, refreshTrades } from "./appShellApi";
 
 describe("appShellApi", () => {
   it("delegates account loading to the shared accounts api", async () => {
     const accounts = [{ id: 1, name: "Main", account_state: "ACTIVE" }];
     getSelectableAccountsMock.mockResolvedValueOnce(accounts);
 
-    await expect(getSelectableAccounts()).resolves.toBe(accounts);
-    expect(getSelectableAccountsMock).toHaveBeenCalledTimes(1);
+    await expect(getSelectableAccounts({ refreshProvider: false })).resolves.toBe(accounts);
+    expect(getSelectableAccountsMock).toHaveBeenCalledWith({ refreshProvider: false });
+  });
+
+  it("delegates local-first startup account loading", async () => {
+    const accounts = [{ id: 1, name: "Live", account_state: "ACTIVE", trade_data_source: "csv_import" }];
+    getSelectableAccountsLocalFirstMock.mockResolvedValueOnce(accounts);
+
+    await expect(getSelectableAccountsLocalFirst()).resolves.toBe(accounts);
+    expect(getSelectableAccountsLocalFirstMock).toHaveBeenCalledTimes(1);
   });
 
   it("delegates trade refresh to the shared accounts api", async () => {

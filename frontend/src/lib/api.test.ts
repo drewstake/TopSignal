@@ -134,6 +134,62 @@ describe("accountsApi", () => {
     expect(String(url)).toContain("show_missing=false");
   });
 
+  it("loads saved accounts first and keeps local and provider cache lanes separate", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(getAccessToken).mockResolvedValue(jwt("local-first-account-cache"));
+    const liveAccount = {
+      id: 88001,
+      account_state: "ACTIVE",
+      trade_data_source: "csv_import",
+      is_main: true,
+    };
+    const expressAccount = {
+      id: 77001,
+      account_state: "ACTIVE",
+      trade_data_source: "projectx",
+      is_main: false,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse([liveAccount, expressAccount]))
+      .mockResolvedValueOnce(jsonResponse([liveAccount, expressAccount]));
+
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([liveAccount, expressAccount]);
+    await expect(accountsApi.getSelectableAccounts({ refreshProvider: false })).resolves.toEqual([
+      liveAccount,
+      expressAccount,
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await expect(accountsApi.getSelectableAccounts({ refreshProvider: true })).resolves.toEqual([
+      liveAccount,
+      expressAccount,
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    const [localUrl] = vi.mocked(fetch).mock.calls[0];
+    const [providerUrl] = vi.mocked(fetch).mock.calls[1];
+    expect(String(localUrl)).toContain("refresh_provider=false");
+    expect(String(providerUrl)).toContain("refresh_provider=true");
+  });
+
+  it("falls back to provider discovery when no saved selectable account exists", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(getAccessToken).mockResolvedValue(jwt("empty-local-account-cache"));
+    const expressAccount = {
+      id: 77002,
+      account_state: "ACTIVE",
+      trade_data_source: "projectx",
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([expressAccount]));
+
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([expressAccount]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("refresh_provider=false");
+    expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain("refresh_provider=true");
+  });
+
   it("creates a local Live import account when ProjectX cannot list it", async () => {
     installDemoModeStorage(false);
     const account = {

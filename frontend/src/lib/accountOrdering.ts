@@ -3,6 +3,9 @@ import type { AccountInfo } from "./types";
 const COMBINE_ACCOUNT_PREFIXES = ["50KTC", "100KTC", "150KTC"] as const;
 const EXPRESS_ACCOUNT_PREFIX = "EXPRESS";
 const PRACTICE_ACCOUNT_PATTERN = /^PA(?:[-_\s]|$)|\bPRACTICE\b/i;
+type AccountSelectionItem = Pick<AccountInfo, "id" | "name" | "is_main"> &
+  Partial<Pick<AccountInfo, "provider_name">>;
+type ActiveAccountSelectionItem = AccountSelectionItem & Pick<AccountInfo, "trade_data_source">;
 
 function isExpressAccountName(name: string): boolean {
   return name.trim().toUpperCase().startsWith(EXPRESS_ACCOUNT_PREFIX);
@@ -50,8 +53,8 @@ function getGroupingName(account: Pick<AccountInfo, "name"> & Partial<Pick<Accou
 }
 
 export function compareAccountsForSelection(
-  left: Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
-  right: Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
+  left: AccountSelectionItem,
+  right: AccountSelectionItem,
 ): number {
   const groupDifference = getSelectionGroup(getGroupingName(left)) - getSelectionGroup(getGroupingName(right));
   if (groupDifference !== 0) {
@@ -80,9 +83,26 @@ export function compareAccountsForSelection(
 }
 
 export function sortAccountsForSelection<
-  T extends Pick<AccountInfo, "id" | "name" | "is_main"> & Partial<Pick<AccountInfo, "provider_name">>,
+  T extends AccountSelectionItem,
 >(
   accounts: readonly T[],
 ): T[] {
   return [...accounts].sort(compareAccountsForSelection);
+}
+
+export function compareAccountsForActiveSelection(
+  left: ActiveAccountSelectionItem,
+  right: ActiveAccountSelectionItem,
+): number {
+  const liveAccountDifference =
+    Number(right.trade_data_source === "csv_import") - Number(left.trade_data_source === "csv_import");
+  if (liveAccountDifference !== 0) {
+    return liveAccountDifference;
+  }
+
+  return compareAccountsForSelection(left, right);
+}
+
+export function sortAccountsForActiveSelection<T extends ActiveAccountSelectionItem>(accounts: readonly T[]): T[] {
+  return [...accounts].sort(compareAccountsForActiveSelection);
 }

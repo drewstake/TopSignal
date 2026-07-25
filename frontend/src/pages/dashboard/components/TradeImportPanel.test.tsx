@@ -85,7 +85,13 @@ function liveAccount(id: number, name: string): AccountInfo {
 describe("TradeImportReview", () => {
   it("renders totals and marks new and duplicate rows before confirmation", () => {
     const markup = renderToStaticMarkup(
-      <TradeImportReview preview={preview} confirming={false} onConfirm={() => undefined} onCancel={() => undefined} />,
+      <TradeImportReview
+        preview={preview}
+        confirming={false}
+        onConfirm={() => undefined}
+        onChooseAnother={() => undefined}
+        onClose={() => undefined}
+      />,
     );
 
     expect(markup).toContain("trades_export.csv");
@@ -110,13 +116,19 @@ describe("TradeImportReview", () => {
         preview={duplicateOnly}
         confirming={false}
         onConfirm={() => undefined}
-        onCancel={() => undefined}
+        onChooseAnother={() => undefined}
+        onClose={() => undefined}
       />,
     );
 
-    expect(markup).toContain("Every parsed trade is already stored");
-    expect(markup).toContain("Confirm Import (0)");
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Confirm Import \(0\)<\/button>/);
+    expect(markup).toContain("Duplicate file");
+    expect(markup).toContain("3 duplicates");
+    expect(markup).toContain("All 3 trades are already imported. Nothing new was added.");
+    expect(markup).toContain("Choose Another File");
+    expect(markup).toContain("Close");
+    expect(markup).not.toContain("Confirm Import");
+    expect(markup).not.toContain("Review parsed trades");
+    expect(markup).not.toContain("2815118967");
   });
 
   it("renders only one review page for large parsed files", () => {
@@ -136,7 +148,8 @@ describe("TradeImportReview", () => {
         }}
         confirming={false}
         onConfirm={() => undefined}
-        onCancel={() => undefined}
+        onChooseAnother={() => undefined}
+        onClose={() => undefined}
       />,
     );
 
@@ -163,6 +176,8 @@ describe("TradeImportPanel", () => {
 
     expect(markup).toContain("Select or add a separate Live CSV account");
     expect(markup).toMatch(/<input[^>]*type="file"[^>]*disabled=""/);
+    expect(markup).toContain("Choose this to add or select the Live CSV account required for imports.");
+    expect(markup).toMatch(/<button[^>]*>Choose file<\/button>/);
   });
 
   it("accepts a trade export for a Live CSV account", () => {
@@ -172,6 +187,9 @@ describe("TradeImportPanel", () => {
 
     expect(markup).not.toContain("Select or add a separate Live CSV account");
     expect(markup).not.toMatch(/<input[^>]*type="file"[^>]*disabled=""/);
+    expect(markup).toContain("Accepted: .csv and .xlsx");
+    expect(markup).toContain("No file selected");
+    expect(markup).not.toContain("Topstep Live account ID");
   });
 
   it("offers existing Live CSV accounts in the separate account setup flow", () => {

@@ -571,23 +571,30 @@ interface GetAccountsOptions {
   showInactive?: boolean;
   showMissing?: boolean;
   bypassCache?: boolean;
+  refreshProvider?: boolean;
+}
+
+export interface SelectableAccountsOptions {
+  bypassCache?: boolean;
+  refreshProvider?: boolean;
 }
 
 function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | boolean): Required<GetAccountsOptions> {
   if (typeof optionsOrOnlyActive === "boolean") {
     return optionsOrOnlyActive
-      ? { showInactive: false, showMissing: false, bypassCache: false }
-      : { showInactive: true, showMissing: true, bypassCache: false };
+      ? { showInactive: false, showMissing: false, bypassCache: false, refreshProvider: true }
+      : { showInactive: true, showMissing: true, bypassCache: false, refreshProvider: true };
   }
   return {
     showInactive: optionsOrOnlyActive?.showInactive ?? false,
     showMissing: optionsOrOnlyActive?.showMissing ?? false,
     bypassCache: optionsOrOnlyActive?.bypassCache ?? false,
+    refreshProvider: optionsOrOnlyActive?.refreshProvider ?? true,
   };
 }
 
 function accountsQueryCacheKey(options: Required<GetAccountsOptions>) {
-  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}`;
+  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}:${options.refreshProvider ? 1 : 0}`;
 }
 
 function getAccountCacheVersion(accountId: number) {
@@ -688,6 +695,7 @@ function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<Acco
         query: {
           show_inactive: options.showInactive,
           show_missing: options.showMissing,
+          refresh_provider: options.refreshProvider,
         },
         accessTokenOverride: accessToken,
       }),
@@ -707,18 +715,29 @@ function isSelectableAccount(account: Pick<AccountInfo, "account_state" | "trade
   );
 }
 
-function getSelectableAccountsFromApi(): Promise<AccountInfo[]> {
-  return getAccountsFromApi({ showInactive: true, showMissing: false, bypassCache: false }).then((accounts) =>
-    accounts.filter((account) => isSelectableAccount(account)),
-  );
+function getSelectableAccountsFromApi(options: SelectableAccountsOptions = {}): Promise<AccountInfo[]> {
+  return getAccountsFromApi({
+    showInactive: true,
+    showMissing: false,
+    bypassCache: options.bypassCache ?? false,
+    refreshProvider: options.refreshProvider ?? true,
+  }).then((accounts) => accounts.filter((account) => isSelectableAccount(account)));
 }
 
 export function getAccounts(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
   return getAccountsCached(optionsOrOnlyActive);
 }
 
-export function getSelectableAccounts(): Promise<AccountInfo[]> {
-  return getSelectableAccountsFromApi();
+export function getSelectableAccounts(options: SelectableAccountsOptions = {}): Promise<AccountInfo[]> {
+  return getSelectableAccountsFromApi(options);
+}
+
+export async function getSelectableAccountsLocalFirst(): Promise<AccountInfo[]> {
+  const localAccounts = await getSelectableAccountsFromApi({ refreshProvider: false });
+  if (localAccounts.length > 0) {
+    return localAccounts;
+  }
+  return getSelectableAccountsFromApi({ refreshProvider: true });
 }
 
 export function refreshTrades(accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) {
@@ -774,6 +793,7 @@ interface AccountPnlCalendarQuery extends AccountSummaryQuery {
 export const accountsApi = {
   getAccounts,
   getSelectableAccounts,
+  getSelectableAccountsLocalFirst,
   createLiveImportAccount: (payload: LiveImportAccountInput) =>
     requestJson<AccountInfo>("/api/accounts/import-target", {
       method: "POST",

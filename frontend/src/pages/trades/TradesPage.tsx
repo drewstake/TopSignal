@@ -299,7 +299,7 @@ export function TradesPage() {
   const loadAccounts = useCallback(async () => {
     const isCurrent = beginAccountsRequest();
     try {
-      const payload = await accountsApi.getSelectableAccounts();
+      const payload = await accountsApi.getSelectableAccountsLocalFirst();
       if (isCurrent()) {
         setAccounts(payload);
       }

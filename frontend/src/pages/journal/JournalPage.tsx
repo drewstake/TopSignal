@@ -298,7 +298,7 @@ export function JournalPage() {
 
   const loadAccounts = useCallback(async () => {
     try {
-      const payload = await accountsApi.getSelectableAccounts();
+      const payload = await accountsApi.getSelectableAccountsLocalFirst();
       setAccounts(payload);
     } catch {
       setAccounts([]);

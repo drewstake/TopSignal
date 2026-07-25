@@ -5,17 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui
 import { Skeleton } from "../../../components/ui/Skeleton";
 import { formatDemoPnl } from "../../../lib/demoMode";
 import { formatIsoDateUtc } from "../../../lib/tradingDay";
-import type { AccountInfo, AccountPnlCalendarDay, AccountTradeDataSource } from "../../../lib/types";
-import { TradeImportPanel } from "./TradeImportPanel";
+import type { AccountPnlCalendarDay } from "../../../lib/types";
 
 interface PnlCalendarCardProps {
   days: AccountPnlCalendarDay[];
   loading: boolean;
   error: string | null;
-  accountId?: number | null;
-  tradeDataSource?: AccountTradeDataSource | null;
-  liveAccounts?: readonly AccountInfo[];
-  accountSetupRequest?: number;
   journalDays?: Set<string>;
   journalDaysLoading?: boolean;
   selectedDate?: string | null;
@@ -23,9 +18,6 @@ interface PnlCalendarCardProps {
   onJournalDayOpen?: (date: string) => void;
   onAddJournalForSelectedDay?: (date: string) => void;
   onVisibleRangeChange?: (startDate: string, endDate: string) => void;
-  onImportComplete?: () => void | Promise<void>;
-  onAccountCreated?: (account: AccountInfo) => void | Promise<void>;
-  onAccountSelected?: (account: AccountInfo) => void | Promise<void>;
 }
 
 interface CalendarCell {
@@ -203,10 +195,6 @@ export function PnlCalendarCard({
   days,
   loading,
   error,
-  accountId = null,
-  tradeDataSource = null,
-  liveAccounts = [],
-  accountSetupRequest = 0,
   journalDays,
   journalDaysLoading = false,
   selectedDate,
@@ -214,9 +202,6 @@ export function PnlCalendarCard({
   onJournalDayOpen,
   onAddJournalForSelectedDay,
   onVisibleRangeChange,
-  onImportComplete,
-  onAccountCreated,
-  onAccountSelected,
 }: PnlCalendarCardProps) {
   const dayMap = useMemo(() => {
     const map = new Map<string, AccountPnlCalendarDay>();
@@ -437,15 +422,6 @@ export function PnlCalendarCard({
         )}
       </CardHeader>
       <CardContent className="space-y-4">
-        <TradeImportPanel
-          accountId={accountId}
-          tradeDataSource={tradeDataSource}
-          liveAccounts={liveAccounts}
-          accountSetupRequest={accountSetupRequest}
-          onImportComplete={onImportComplete}
-          onAccountCreated={onAccountCreated}
-          onAccountSelected={onAccountSelected}
-        />
         {loading ? (
           <div className="grid grid-cols-7 gap-2">
             {Array.from({ length: 35 }).map((_, index) => (
