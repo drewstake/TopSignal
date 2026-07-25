@@ -5,12 +5,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui
 import { Skeleton } from "../../../components/ui/Skeleton";
 import { formatDemoPnl } from "../../../lib/demoMode";
 import { formatIsoDateUtc } from "../../../lib/tradingDay";
-import type { AccountPnlCalendarDay } from "../../../lib/types";
+import type { AccountInfo, AccountPnlCalendarDay, AccountTradeDataSource } from "../../../lib/types";
+import { TradeImportPanel } from "./TradeImportPanel";
 
 interface PnlCalendarCardProps {
   days: AccountPnlCalendarDay[];
   loading: boolean;
   error: string | null;
+  accountId?: number | null;
+  tradeDataSource?: AccountTradeDataSource | null;
+  liveAccounts?: readonly AccountInfo[];
+  accountSetupRequest?: number;
   journalDays?: Set<string>;
   journalDaysLoading?: boolean;
   selectedDate?: string | null;
@@ -18,6 +23,9 @@ interface PnlCalendarCardProps {
   onJournalDayOpen?: (date: string) => void;
   onAddJournalForSelectedDay?: (date: string) => void;
   onVisibleRangeChange?: (startDate: string, endDate: string) => void;
+  onImportComplete?: () => void | Promise<void>;
+  onAccountCreated?: (account: AccountInfo) => void | Promise<void>;
+  onAccountSelected?: (account: AccountInfo) => void | Promise<void>;
 }
 
 interface CalendarCell {
@@ -89,8 +97,37 @@ function formatPnl(value: number) {
   });
 }
 
+function formatCostCompact(value: number) {
+  return compactCurrencyFormatter.format(Math.abs(Number.isFinite(value) ? value : 0));
+}
+
 function formatCopyDay(value: string) {
   return copyDayFormatter.format(parseIsoDate(value));
+}
+
+function calendarDayDetails(point: AccountPnlCalendarDay) {
+  const commissions = point.commissions ?? 0;
+  const nonCommissionFees = point.non_commission_fees ?? Math.max(point.fees - commissions, 0);
+  const wins = point.win_count ?? 0;
+  const losses = point.loss_count ?? 0;
+  const breakeven = point.breakeven_count ?? 0;
+
+  return {
+    commissions,
+    nonCommissionFees,
+    wins,
+    losses,
+    breakeven,
+    accessibleLabel: [
+      `${formatCopyDay(point.date)}.`,
+      `Net P&L ${formatPnl(point.net_pnl)}.`,
+      `${wins} wins, ${losses} losses, ${breakeven} breakeven, ${point.trade_count} total trades.`,
+      `Gross P&L ${formatPnl(point.gross_pnl)}.`,
+      `Non-commission fees ${formatCostCompact(nonCommissionFees)}.`,
+      `Commissions ${formatCostCompact(commissions)}.`,
+      `Total fees ${formatCostCompact(point.fees)}.`,
+    ].join(" "),
+  };
 }
 
 function buildPnlCalendarMonthCopyText(month: Date, netPnl: number, tradeDays: AccountPnlCalendarDay[]) {
@@ -166,6 +203,10 @@ export function PnlCalendarCard({
   days,
   loading,
   error,
+  accountId = null,
+  tradeDataSource = null,
+  liveAccounts = [],
+  accountSetupRequest = 0,
   journalDays,
   journalDaysLoading = false,
   selectedDate,
@@ -173,6 +214,9 @@ export function PnlCalendarCard({
   onJournalDayOpen,
   onAddJournalForSelectedDay,
   onVisibleRangeChange,
+  onImportComplete,
+  onAccountCreated,
+  onAccountSelected,
 }: PnlCalendarCardProps) {
   const dayMap = useMemo(() => {
     const map = new Map<string, AccountPnlCalendarDay>();
@@ -392,18 +436,27 @@ export function PnlCalendarCard({
           <CardTitle>PnL Calendar</CardTitle>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <TradeImportPanel
+          accountId={accountId}
+          tradeDataSource={tradeDataSource}
+          liveAccounts={liveAccounts}
+          accountSetupRequest={accountSetupRequest}
+          onImportComplete={onImportComplete}
+          onAccountCreated={onAccountCreated}
+          onAccountSelected={onAccountSelected}
+        />
         {loading ? (
           <div className="grid grid-cols-7 gap-2">
             {Array.from({ length: 35 }).map((_, index) => (
-              <Skeleton key={`calendar-skeleton-${index}`} className="h-20" />
+              <Skeleton key={`calendar-skeleton-${index}`} className="h-28" />
             ))}
           </div>
         ) : error ? (
           <p className="rounded-xl border border-app-negative/30 bg-app-negative/10 px-3 py-2 text-sm text-app-negative">{error}</p>
         ) : days.length === 0 ? (
           <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-4 text-sm text-app-muted">
-            No stored trade events yet. Sync trades to populate the calendar.
+            No stored trade events yet. Sync or import trades to populate the calendar.
           </p>
         ) : (
           <div className="space-y-3">
@@ -426,11 +479,12 @@ export function PnlCalendarCard({
                       <div key={`calendar-row-${rowStart}`} className="grid grid-cols-[repeat(7,minmax(0,1fr))_96px] gap-2">
                         {weekCells.map((cell) => {
                           if (cell.dayNumber === null) {
-                            return <div key={cell.key} className="h-20 rounded-lg border border-transparent" />;
+                            return <div key={cell.key} className="h-28 rounded-lg border border-transparent" />;
                           }
 
                           const point = cell.point;
                           const netPnl = point?.net_pnl ?? 0;
+                          const pointDetails = point ? calendarDayDetails(point) : null;
                           const backgroundColor = point
                             ? tileBackground(netPnl, maxAbsMonthPnl)
                             : "var(--dashboard-calendar-empty)";
@@ -442,8 +496,10 @@ export function PnlCalendarCard({
                               key={cell.key}
                               type="button"
                               aria-pressed={isSelected}
+                              aria-label={pointDetails?.accessibleLabel ?? `${formatCopyDay(cell.key)}. No trades.`}
+                              title={pointDetails?.accessibleLabel ?? "No trades"}
                               onClick={() => onDaySelect?.(isSelected ? null : cell.key)}
-                              className={`h-20 rounded-lg border p-2 text-left transition ${
+                              className={`h-28 rounded-lg border p-2 text-left transition ${
                                 isSelected
                                   ? "border-app-accent/90 ring-1 ring-app-accent/70"
                                   : "border-app-border/80 hover:border-app-border/80"
@@ -478,7 +534,15 @@ export function PnlCalendarCard({
                               {point ? (
                                 <>
                                   <p className={`mt-1 text-sm font-semibold ${pnlClass(netPnl)}`}>{formatPnlCompact(netPnl)}</p>
-                                  <p className="text-[11px] text-app-muted">{point.trade_count} trade(s)</p>
+                                  <p className="mt-0.5 text-[10px] font-medium text-app-text-soft">
+                                    W {pointDetails?.wins ?? 0} · L {pointDetails?.losses ?? 0} · T {point.trade_count}
+                                  </p>
+                                  <p className="mt-1 truncate text-[9px] text-app-muted">
+                                    Fees {formatCostCompact(pointDetails?.nonCommissionFees ?? 0)}
+                                  </p>
+                                  <p className="truncate text-[9px] text-app-muted">
+                                    Comm {formatCostCompact(pointDetails?.commissions ?? 0)}
+                                  </p>
                                 </>
                               ) : (
                                 <p className="mt-2 text-[11px] text-app-muted-strong">No trades</p>
@@ -487,7 +551,7 @@ export function PnlCalendarCard({
                           );
                         })}
                         <div
-                          className="flex h-20 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
+                          className="flex h-28 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
                           style={{ backgroundColor: tileBackground(summary.netPnl, maxAbsWeekPnl) }}
                         >
                           <p className="text-xs font-medium uppercase tracking-wide text-app-muted">Week {rowIndex + 1}</p>

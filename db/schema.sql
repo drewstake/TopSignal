@@ -17,7 +17,7 @@ create table if not exists topsignal_schema_baselines (
 );
 
 insert into topsignal_schema_baselines (version)
-values ('schema-20260711-v2')
+values ('schema-20260724-v2')
 on conflict (version) do nothing;
 
 
@@ -40,6 +40,10 @@ create table if not exists accounts (
 
   -- The account ID from the provider (Topstep account id)
   external_id text not null,
+
+  -- Controls whether trades are synchronized from ProjectX or uploaded files.
+  trade_data_source text not null default 'projectx'
+    check (trade_data_source in ('projectx','csv_import')),
 
   -- Friendly name you can show in the UI (optional)
   -- This stores the original provider account name from ProjectX.
@@ -224,6 +228,29 @@ on conflict (symbol) do nothing;
 
 
 -- ============================================
+-- TABLE: trade_import_batches
+-- Audit trail for confirmed Topstep CSV/XLSX trade imports.
+-- ============================================
+create table if not exists trade_import_batches (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  -- Matches projectx_trade_events.account_id: the provider's external account ID.
+  account_id bigint not null,
+  source_file_name text not null,
+  file_sha256 text not null check (length(file_sha256) = 64),
+  total_rows integer not null default 0,
+  inserted_rows integer not null default 0,
+  duplicate_rows integer not null default 0,
+  imported_at timestamptz not null default now(),
+  check (total_rows >= 0 and inserted_rows >= 0 and duplicate_rows >= 0),
+  unique (user_id, account_id, file_sha256)
+);
+
+create index if not exists idx_trade_import_batches_user_account_imported
+  on trade_import_batches (user_id, account_id, imported_at desc);
+
+
+-- ============================================
 -- TABLE: projectx_trade_events
 -- Raw/normalized trade events from ProjectX.
 -- Deduplicated by account_id + order_id + trade_timestamp.
@@ -239,11 +266,18 @@ create table if not exists projectx_trade_events (
   price numeric(18,6) not null,
   trade_timestamp timestamptz not null,
   fees numeric(18,6) not null default 0,
+  commissions numeric(18,6),
+  fee_scope text not null default 'per_side'
+    check (fee_scope in ('per_side','round_turn')),
   pnl numeric(18,6),
+  trade_date date,
+  entry_timestamp timestamptz,
+  entry_price numeric(18,6),
   order_id text not null,
   source_trade_id text,
   status text,
   raw_payload jsonb,
+  import_batch_id bigint references trade_import_batches(id) on delete set null,
   created_at timestamptz not null default now(),
   unique (user_id, account_id, source_trade_id),
   unique (user_id, account_id, order_id, trade_timestamp)
@@ -262,6 +296,9 @@ create index if not exists idx_projectx_trade_events_user_account_ts
 
 create index if not exists idx_projectx_trade_events_user_account_ts_id
   on projectx_trade_events (user_id, account_id, trade_timestamp desc, id desc);
+
+create index if not exists idx_projectx_trade_events_import_batch
+  on projectx_trade_events (import_batch_id);
 
 create index if not exists idx_projectx_trade_events_user_account_closed_ts_nonvoided
   on projectx_trade_events (user_id, account_id, trade_timestamp desc, id desc)

@@ -69,6 +69,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     name: "50KTC-DEMO-Primary",
     provider_name: "50KTC-DEMO-Primary",
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 52874.65,
     provider_data_stale: false,
     last_seen_at: "2026-07-07T15:37:00.000Z",
@@ -84,6 +85,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     name: "50KTC-DEMO-Follower-A",
     provider_name: "50KTC-DEMO-Follower-A",
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 51620.2,
     provider_data_stale: false,
     last_seen_at: "2026-07-07T15:35:00.000Z",
@@ -99,6 +101,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     name: "100KTC-DEMO-Swing",
     provider_name: "100KTC-DEMO-Swing",
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 101980.75,
     provider_data_stale: false,
     last_seen_at: "2026-07-06T18:35:00.000Z",
@@ -114,6 +117,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     name: "Practice-DEMO-Charting",
     provider_name: "Practice-DEMO-Charting",
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 50000,
     provider_data_stale: false,
     last_seen_at: "2026-07-02T14:18:00.000Z",
@@ -129,6 +133,7 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     name: "50KTC-DEMO-Archived",
     provider_name: "50KTC-DEMO-Archived",
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 49880.5,
     provider_data_stale: true,
     last_seen_at: "2026-05-29T14:12:00.000Z",
@@ -462,13 +467,27 @@ function buildCalendarDays(trades: AccountTrade[]): AccountPnlCalendarDay[] {
     const current = byDate.get(date) ?? {
       date,
       trade_count: 0,
+      win_count: 0,
+      loss_count: 0,
+      breakeven_count: 0,
       gross_pnl: 0,
+      non_commission_fees: 0,
+      commissions: 0,
       fees: 0,
       net_pnl: 0,
     };
+    const pnl = trade.pnl ?? 0;
     current.trade_count += 1;
+    if (pnl > 0) {
+      current.win_count = (current.win_count ?? 0) + 1;
+    } else if (pnl < 0) {
+      current.loss_count = (current.loss_count ?? 0) + 1;
+    } else {
+      current.breakeven_count = (current.breakeven_count ?? 0) + 1;
+    }
     current.fees = Number((current.fees + Math.abs(trade.fees)).toFixed(2));
-    current.net_pnl = Number((current.net_pnl + (trade.pnl ?? 0)).toFixed(2));
+    current.non_commission_fees = current.fees;
+    current.net_pnl = Number((current.net_pnl + pnl).toFixed(2));
     current.gross_pnl = Number((current.net_pnl + current.fees).toFixed(2));
     byDate.set(date, current);
   }

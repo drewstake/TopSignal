@@ -18,6 +18,7 @@ from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient, ProjectXClientError
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
+from .trade_event_ranges import trade_event_range_filters
 from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import trading_day_bounds_utc, trading_day_date
 
@@ -363,9 +364,15 @@ def list_trade_events(
                 ProjectXTradeEvent.price,
                 ProjectXTradeEvent.trade_timestamp,
                 ProjectXTradeEvent.fees,
+                ProjectXTradeEvent.commissions,
+                ProjectXTradeEvent.fee_scope,
                 ProjectXTradeEvent.pnl,
+                ProjectXTradeEvent.trade_date,
+                ProjectXTradeEvent.entry_timestamp,
+                ProjectXTradeEvent.entry_price,
                 ProjectXTradeEvent.order_id,
                 ProjectXTradeEvent.source_trade_id,
+                ProjectXTradeEvent.import_batch_id,
             )
         )
         .filter(ProjectXTradeEvent.user_id == resolved_user_id)
@@ -375,10 +382,7 @@ def list_trade_events(
         .filter(ProjectXTradeEvent.pnl.isnot(None))
     )
 
-    if start is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp >= _as_utc(start))
-    if end is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp <= _as_utc(end))
+    query = query.filter(*trade_event_range_filters(start=start, end=end))
     if symbol_query:
         normalized = symbol_query.strip().lower()
         if normalized:
@@ -649,12 +653,20 @@ def serialize_trade_event(
     lifecycle: TradeExecutionLifecycle | None = None,
 ) -> dict[str, Any]:
     symbol = row.symbol or row.contract_id
-    fees = _normalized_trade_fees(row)
+    non_commission_fees = _round_decimal(_round_turn_trade_fees(row), 2)
+    commissions = _round_decimal(_trade_commissions(row), 2)
+    fees = _round_decimal(non_commission_fees + commissions, 2)
     exit_timestamp = lifecycle.exit_timestamp if lifecycle is not None else _as_utc(row.trade_timestamp)
     exit_price = lifecycle.exit_price if lifecycle is not None else float(row.price)
     entry_timestamp = lifecycle.entry_timestamp if lifecycle is not None else None
     entry_price = lifecycle.entry_price if lifecycle is not None else None
     duration_minutes = lifecycle.duration_minutes if lifecycle is not None else None
+    if row.entry_timestamp is not None:
+        entry_timestamp = _as_utc(row.entry_timestamp)
+        entry_price = float(row.entry_price) if row.entry_price is not None else None
+        exit_timestamp = _as_utc(row.trade_timestamp)
+        exit_price = float(row.price)
+        duration_minutes = max(0.0, (exit_timestamp - entry_timestamp).total_seconds() / 60.0)
     return {
         "id": int(row.id),
         "account_id": int(row.account_id),
@@ -670,6 +682,8 @@ def serialize_trade_event(
         "entry_price": entry_price,
         "exit_price": exit_price,
         "fees": fees,
+        "non_commission_fees": non_commission_fees,
+        "commissions": commissions,
         "pnl": float(row.pnl) if row.pnl is not None else None,
         "order_id": row.order_id,
         "source_trade_id": row.source_trade_id,
@@ -1125,6 +1139,12 @@ def _sync_row_covers_window(
 
 
 def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) -> None:
+    # A confirmed file import is the audited source of truth for a Live trade.
+    # Later provider syncs may surface the same identifier with incomplete fee
+    # fields; do not erase the reviewed values or their provenance.
+    if row.import_batch_id is not None and event.get("import_batch_id") is None:
+        return
+
     if "user_id" in event and event["user_id"] is not None:
         row.user_id = str(event["user_id"])
     row.account_id = int(event["account_id"])
@@ -1135,7 +1155,26 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
     row.price = float(event.get("price") or 0.0)
     row.trade_timestamp = _as_utc(event["timestamp"])
     row.fees = float(event.get("fees") or 0.0)
+    row.commissions = (
+        float(event["commissions"])
+        if event.get("commissions") is not None
+        else None
+    )
+    row.fee_scope = str(event.get("fee_scope") or "per_side")
     row.pnl = float(event["pnl"]) if event.get("pnl") is not None else None
+    row.trade_date = event.get("trade_date")
+    row.entry_timestamp = (
+        _as_utc(event["entry_timestamp"])
+        if event.get("entry_timestamp") is not None
+        else None
+    )
+    row.entry_price = (
+        float(event["entry_price"])
+        if event.get("entry_price") is not None
+        else None
+    )
+    if event.get("import_batch_id") is not None:
+        row.import_batch_id = int(event["import_batch_id"])
     row.order_id = str(event["order_id"])
     source_trade_id = _normalized_optional_text(event.get("source_trade_id"))
     if source_trade_id:
@@ -1166,7 +1205,13 @@ def _event_to_insert_values(event: dict[str, Any], *, user_id: str) -> dict[str,
         "price": float(event.get("price") or 0.0),
         "trade_timestamp": _as_utc(event["timestamp"]),
         "fees": float(event.get("fees") or 0.0),
+        "commissions": float(event["commissions"]) if event.get("commissions") is not None else None,
+        "fee_scope": str(event.get("fee_scope") or "per_side"),
         "pnl": float(event["pnl"]) if event.get("pnl") is not None else None,
+        "trade_date": event.get("trade_date"),
+        "entry_timestamp": _as_utc(event["entry_timestamp"]) if event.get("entry_timestamp") is not None else None,
+        "entry_price": float(event["entry_price"]) if event.get("entry_price") is not None else None,
+        "import_batch_id": int(event["import_batch_id"]) if event.get("import_batch_id") is not None else None,
         "order_id": str(event["order_id"]),
         "source_trade_id": source_trade_id,
         "status": status,
@@ -1304,6 +1349,10 @@ def _load_trade_metric_samples(
             ProjectXTradeEvent.trade_timestamp,
             ProjectXTradeEvent.pnl,
             ProjectXTradeEvent.fees,
+            ProjectXTradeEvent.commissions,
+            ProjectXTradeEvent.fee_scope,
+            ProjectXTradeEvent.trade_date,
+            ProjectXTradeEvent.entry_timestamp,
             ProjectXTradeEvent.order_id,
             ProjectXTradeEvent.symbol,
             ProjectXTradeEvent.contract_id,
@@ -1315,10 +1364,7 @@ def _load_trade_metric_samples(
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(_non_voided_trade_event_expr())
     )
-    if start is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp >= _as_utc(start))
-    if end is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp <= _as_utc(end))
+    query = query.filter(*trade_event_range_filters(start=start, end=end))
 
     rows = query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
     return [_to_metric_sample(row) for row in rows]
@@ -1338,6 +1384,9 @@ def _load_pnl_calendar_metric_samples(
             ProjectXTradeEvent.trade_timestamp,
             ProjectXTradeEvent.pnl,
             ProjectXTradeEvent.fees,
+            ProjectXTradeEvent.commissions,
+            ProjectXTradeEvent.fee_scope,
+            ProjectXTradeEvent.trade_date,
             ProjectXTradeEvent.symbol,
             ProjectXTradeEvent.contract_id,
             ProjectXTradeEvent.size,
@@ -1347,10 +1396,7 @@ def _load_pnl_calendar_metric_samples(
         .filter(ProjectXTradeEvent.pnl.isnot(None))
         .filter(_non_voided_trade_event_expr())
     )
-    if start is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp >= _as_utc(start))
-    if end is not None:
-        query = query.filter(ProjectXTradeEvent.trade_timestamp <= _as_utc(end))
+    query = query.filter(*trade_event_range_filters(start=start, end=end))
 
     rows = query.order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc()).all()
     return [_to_pnl_calendar_metric_sample(row) for row in rows]
@@ -1361,6 +1407,13 @@ def _to_metric_sample(row: Any) -> TradeMetricSample:
         timestamp=_as_utc(row.trade_timestamp),
         pnl=float(row.pnl) if row.pnl is not None else None,
         fees=_round_turn_trade_fees(row),
+        commissions=float(row.commissions) if row.commissions is not None else None,
+        trade_date=row.trade_date,
+        entry_timestamp=(
+            _as_utc(row.entry_timestamp)
+            if row.entry_timestamp is not None
+            else None
+        ),
         order_id=row.order_id,
         symbol=row.symbol or row.contract_id,
         contract_id=row.contract_id,
@@ -1375,6 +1428,8 @@ def _to_pnl_calendar_metric_sample(row: Any) -> TradeMetricSample:
         timestamp=_as_utc(row.trade_timestamp),
         pnl=float(row.pnl) if row.pnl is not None else None,
         fees=_round_turn_trade_fees(row),
+        commissions=float(row.commissions) if row.commissions is not None else None,
+        trade_date=row.trade_date,
         symbol=row.symbol or row.contract_id,
         contract_id=row.contract_id,
         size=float(row.size) if row.size is not None else None,
@@ -1393,7 +1448,8 @@ def _normalized_trade_fees(row: ProjectXTradeEvent) -> float:
             symbol=row.symbol,
             contract_id=row.contract_id,
             size=float(row.size) if row.size is not None else None,
-            raw_fee_is_per_side=True,
+            raw_fee_is_per_side=row.fee_scope != "round_turn",
+            commissions=float(row.commissions) if row.commissions is not None else None,
         ),
         2,
     )
@@ -1401,9 +1457,25 @@ def _normalized_trade_fees(row: ProjectXTradeEvent) -> float:
 
 def _round_turn_trade_fees(row: Any) -> float:
     fees = float(row.fees) if row.fees is not None else 0.0
-    if row.pnl is not None:
+    if row.pnl is not None and getattr(row, "fee_scope", "per_side") != "round_turn":
         fees *= 2
     return fees
+
+
+def _trade_commissions(row: Any) -> float:
+    if row.pnl is None:
+        return 0.0
+    if getattr(row, "commissions", None) is not None:
+        return float(row.commissions)
+    return effective_topstep_trade_fee(
+        trade_timestamp=_as_utc(row.trade_timestamp),
+        pnl=row.pnl,
+        fees=0.0,
+        symbol=getattr(row, "symbol", None),
+        contract_id=getattr(row, "contract_id", None),
+        size=float(row.size) if getattr(row, "size", None) is not None else None,
+        raw_fee_is_per_side=False,
+    )
 
 
 def _round_decimal(value: float, digits: int) -> float:

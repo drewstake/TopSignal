@@ -71,6 +71,7 @@ function account(overrides: Partial<AccountInfo> & Pick<AccountInfo, "id" | "nam
   return {
     provider_name: overrides.name,
     custom_display_name: null,
+    trade_data_source: "projectx",
     balance: 50_000,
     provider_data_stale: false,
     last_seen_at: null,
@@ -184,6 +185,7 @@ describe("buildCopyTradeAccountRows", () => {
       name: `Account ${id}`,
       provider_name: `Account ${id}`,
       custom_display_name: null,
+      trade_data_source: "projectx",
       balance: 50_000,
       provider_data_stale: false,
       last_seen_at: null,
@@ -221,6 +223,7 @@ describe("buildCopyTradeAccountRows", () => {
         name: "EXPRESS-V2-DLL-192577-18143397",
         provider_name: "EXPRESS-V2-DLL-192577-18143397",
         custom_display_name: null,
+        trade_data_source: "projectx",
         balance: 50_000,
         provider_data_stale: false,
         last_seen_at: null,
@@ -236,6 +239,7 @@ describe("buildCopyTradeAccountRows", () => {
         name: "50KTC-V2-DLL-192577-19128574",
         provider_name: "50KTC-V2-DLL-192577-19128574",
         custom_display_name: null,
+        trade_data_source: "projectx",
         balance: 50_000,
         provider_data_stale: false,
         last_seen_at: null,
@@ -311,6 +315,32 @@ describe("buildCopyTradeAccountRows", () => {
       lastSeenAt: "2026-07-10T14:30:00.000Z",
     });
   });
+
+  it("does not apply provider staleness to a Live CSV account", () => {
+    const rows = buildCopyTradeAccountRows({
+      accounts: [
+        account({
+          id: 10,
+          name: "Topstep Live Funded",
+          trade_data_source: "csv_import",
+          provider_data_stale: true,
+          account_state: "MISSING",
+          status: "MISSING",
+        }),
+      ],
+      leaderAccountId: 10,
+      snapshotsByAccountId: { 10: { netPnl: 100, dailyPnl: 100, openPositions: 0 } },
+    });
+
+    expect(rows[0]).toMatchObject({
+      status: "Active",
+      providerDataStale: false,
+      includedInTotals: true,
+    });
+    expect(computeCopyTradeTotals(rows).warnings).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("stale provider")]),
+    );
+  });
 });
 
 describe("getCopyTradeRosterAccountIds", () => {
@@ -342,6 +372,17 @@ describe("getCopyTradeRosterAccountIds", () => {
     expect(getCopyTradeSelectedFollowerAccountIds(emptySettings, 1)).toEqual([]);
     expect(getCopyTradeRosterAccountIds(accounts, 1, emptySettings)).toEqual([1]);
   });
+
+  it("keeps a Live CSV leader isolated even when followers were previously configured", () => {
+    const accounts: AccountInfo[] = [
+      account({ id: 1, name: "Topstep Live Funded", trade_data_source: "csv_import" }),
+      account({ id: 2, name: "EXPRESS-V2-DLL-192577-19008334" }),
+      account({ id: 3, name: "EXPRESS-V2-DLL-192577-34672635" }),
+    ];
+    const settings = updateCopyTradeFollowerAccountIds({ modeEnabled: true }, 1, [2, 3]);
+
+    expect(getCopyTradeRosterAccountIds(accounts, 1, settings)).toEqual([1]);
+  });
 });
 
 describe("combineCopyTradePnlCalendarDays", () => {
@@ -359,9 +400,42 @@ describe("combineCopyTradePnlCalendarDays", () => {
         }),
       ],
       {
-        1: [{ date: "2026-05-28", trade_count: 1, gross_pnl: 310, fees: 10, net_pnl: 300 }],
-        2: [{ date: "2026-05-28", trade_count: 1, gross_pnl: 310, fees: 10, net_pnl: 300 }],
-        3: [{ date: "2026-05-28", trade_count: 1, gross_pnl: 310, fees: 10, net_pnl: 300 }],
+        1: [{
+          date: "2026-05-28",
+          trade_count: 1,
+          win_count: 1,
+          loss_count: 0,
+          breakeven_count: 0,
+          gross_pnl: 310,
+          non_commission_fees: 6,
+          commissions: 4,
+          fees: 10,
+          net_pnl: 300,
+        }],
+        2: [{
+          date: "2026-05-28",
+          trade_count: 1,
+          win_count: 1,
+          loss_count: 0,
+          breakeven_count: 0,
+          gross_pnl: 310,
+          non_commission_fees: 6,
+          commissions: 4,
+          fees: 10,
+          net_pnl: 300,
+        }],
+        3: [{
+          date: "2026-05-28",
+          trade_count: 1,
+          win_count: 1,
+          loss_count: 0,
+          breakeven_count: 0,
+          gross_pnl: 310,
+          non_commission_fees: 6,
+          commissions: 4,
+          fees: 10,
+          net_pnl: 300,
+        }],
       },
     );
 
@@ -369,7 +443,12 @@ describe("combineCopyTradePnlCalendarDays", () => {
       {
         date: "2026-05-28",
         trade_count: 1,
+        win_count: 1,
+        loss_count: 0,
+        breakeven_count: 0,
         gross_pnl: 620,
+        non_commission_fees: 12,
+        commissions: 8,
         fees: 20,
         net_pnl: 600,
       },
@@ -384,7 +463,18 @@ describe("combineCopyTradePnlCalendarDays", () => {
       row({ accountId: 4 }),
       row({ accountId: 5 }),
     ];
-    const copiedDay = { date: "2026-06-18", trade_count: 6, gross_pnl: 100, fees: 5, net_pnl: 95 };
+    const copiedDay = {
+      date: "2026-06-18",
+      trade_count: 6,
+      win_count: 4,
+      loss_count: 2,
+      breakeven_count: 0,
+      gross_pnl: 100,
+      non_commission_fees: 3,
+      commissions: 2,
+      fees: 5,
+      net_pnl: 95,
+    };
 
     const days = combineCopyTradePnlCalendarDays(rows, {
       1: [copiedDay],
@@ -398,7 +488,12 @@ describe("combineCopyTradePnlCalendarDays", () => {
       {
         date: "2026-06-18",
         trade_count: 6,
+        win_count: 4,
+        loss_count: 2,
+        breakeven_count: 0,
         gross_pnl: 500,
+        non_commission_fees: 15,
+        commissions: 10,
         fees: 25,
         net_pnl: 475,
       },
@@ -551,7 +646,7 @@ describe("computeCopyTradeDriftSummary", () => {
     expect(summary.likelyUncopyEventCount).toBe(1);
     expect(summary.followerOnlyTradeCount).toBe(4);
     expect(summary.affectedAccountCount).toBe(4);
-    expect(summary.followerOnlyNetPnl).toBe(-2_010);
+    expect(summary.followerOnlyNetPnl).toBeCloseTo(-2_015.6);
   });
 
   it("flags a follower trade outside the leader match window", () => {
@@ -568,7 +663,7 @@ describe("computeCopyTradeDriftSummary", () => {
     expect(summary.accounts[0]).toMatchObject({
       accountId: 2,
       followerOnlyTradeCount: 1,
-      netPnl: -250,
+      netPnl: -251.4,
     });
   });
 
@@ -587,7 +682,7 @@ describe("computeCopyTradeDriftSummary", () => {
 
     expect(summary.likelyUncopyEventCount).toBe(1);
     expect(summary.followerOnlyTradeCount).toBe(1);
-    expect(summary.followerOnlyNetPnl).toBe(-125);
+    expect(summary.followerOnlyNetPnl).toBe(-126.4);
   });
 });
 

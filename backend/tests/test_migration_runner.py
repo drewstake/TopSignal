@@ -68,8 +68,12 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "create unique index if not exists uq_bot_order_attempts_idempotency_key",
         "is_archived boolean not null default false",
         "balance numeric(18,6)",
+        "trade_data_source text not null default 'projectx'",
         "'submission_unknown'",
-        "schema-20260711-v2",
+        "schema-20260724-v2",
+        "create table if not exists trade_import_batches",
+        "commissions numeric(18,6)",
+        "fee_scope text not null default 'per_side'",
         "order_size <= 10000 and order_size = trunc(order_size)",
         "bot_config_id bigint references bot_configs(id) on delete set null",
         "('NQ', 0.25, 5.00)",
@@ -89,11 +93,38 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_seeds_emini_instrument_metadata():
+def test_latest_migration_repairs_converted_express_accounts():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260711_seed_nq_es_instrument_metadata.sql"
+        == "20260724_restore_express_trade_data_source.sql"
     )
+
+
+def test_express_trade_data_source_repair_uses_narrow_provider_name_predicate():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260724_restore_express_trade_data_source.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "set trade_data_source = 'projectx'" in migration
+    assert "where provider = 'projectx'" in migration
+    assert "and trade_data_source = 'csv_import'" in migration
+    assert "and name ilike 'express-%'" in migration
+
+
+def test_account_trade_data_source_migration_is_backfilled_and_constrained():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260724_add_account_trade_data_source.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "set trade_data_source = 'projectx'" in migration
+    assert "alter column trade_data_source set not null" in migration
+    assert "trade_data_source in ('projectx','csv_import')" in migration
 
 
 def test_emini_seed_migration_preserves_existing_instrument_overrides():
@@ -148,7 +179,7 @@ def test_quantity_safety_migration_rejects_unsafe_legacy_rows_and_validates_cons
 def test_adoption_manifest_covers_current_orm_safety_objects():
     columns, indexes = migrate_db._current_model_manifest()
 
-    assert {"balance", "last_seen_at"} <= columns["accounts"]
+    assert {"balance", "last_seen_at", "trade_data_source"} <= columns["accounts"]
     assert {"execution_mode", "idempotency_key", "bot_config_id"} <= columns["bot_order_attempts"]
     assert set(columns).isdisjoint(migrate_db.LEGACY_DATABENTO_TABLE_NAMES)
     assert "uq_bot_order_attempts_idempotency_key" in indexes

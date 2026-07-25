@@ -21,6 +21,7 @@ import { accountsApi } from "../../lib/api";
 import { getDemoAccountId, getDemoAccountName, getDemoTradeId } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
+import { getTradeNetPnl } from "../../lib/tradePnl";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
@@ -351,6 +352,7 @@ export function TradesPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
 
   const loadTradesAndSummary = useCallback(async () => {
     const isCurrent = beginTradeDataRequest();
@@ -474,11 +476,11 @@ export function TradesPage() {
     let sizeTotal = 0;
 
     filteredTrades.forEach((trade) => {
-      const pnlValue = trade.pnl ?? 0;
+      const pnlValue = getTradeNetPnl(trade) ?? 0;
       const normalizedSide = formatTradeDirection(trade.side);
 
       netPnl += pnlValue;
-      fees += Math.abs(trade.fees);
+      fees += Number.isFinite(trade.fees) ? Math.max(trade.fees, 0) : 0;
       sizeTotal += Math.abs(trade.size);
 
       if (pnlValue > 0) {
@@ -525,7 +527,7 @@ export function TradesPage() {
   const pageStart = pagedTrades.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
   const pageEnd = pagedTrades.length === 0 ? 0 : pageStart + pagedTrades.length - 1;
   const pageNetPnl = useMemo(
-    () => pagedTrades.reduce((total, trade) => total + (trade.pnl ?? 0), 0),
+    () => pagedTrades.reduce((total, trade) => total + (getTradeNetPnl(trade) ?? 0), 0),
     [pagedTrades],
   );
 
@@ -546,7 +548,7 @@ export function TradesPage() {
   const syncMessageIsError = Boolean(syncMessage && /failed|error/i.test(syncMessage));
 
   async function handleSyncNow() {
-    if (!selectedAccountId || dateRangeInvalid) {
+    if (!selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid) {
       return;
     }
 
@@ -592,16 +594,22 @@ export function TradesPage() {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-[11px] uppercase tracking-[0.26em] text-cyan-200/75">Trades Desk</p>
-              {selectedAccount ? (
+              {selectedAccountIsCsvImport ? (
+                <Badge variant="accent">Live · CSV</Badge>
+              ) : selectedAccount ? (
                 <Badge variant={accountStateBadgeVariant(selectedAccount.account_state)}>
                   {formatAccountStateLabel(selectedAccount.account_state)}
                 </Badge>
               ) : null}
               {selectedAccount?.is_main ? <Badge variant="accent">Main account</Badge> : null}
-              {selectedAccount?.provider_data_stale ? (
+              {!selectedAccountIsCsvImport && selectedAccount?.provider_data_stale ? (
                 <Badge variant="warning" title={formatProviderLastSeen(selectedAccount.last_seen_at)}>Stale provider data</Badge>
               ) : null}
-              {selectedAccount ? <Badge variant={accountAccess.variant}>{accountAccess.label}</Badge> : null}
+              {selectedAccountIsCsvImport ? (
+                <Badge variant="neutral">Imported history</Badge>
+              ) : selectedAccount ? (
+                <Badge variant={accountAccess.variant}>{accountAccess.label}</Badge>
+              ) : null}
             </div>
 
             <div>
@@ -616,8 +624,13 @@ export function TradesPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={handleSyncNow} disabled={syncing || !selectedAccountId || dateRangeInvalid}>
-              {syncing ? "Syncing..." : "Sync Latest"}
+            <Button
+              size="sm"
+              onClick={handleSyncNow}
+              disabled={syncing || !selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid}
+              title={selectedAccountIsCsvImport ? "This Live account uses CSV trade imports." : undefined}
+            >
+              {selectedAccountIsCsvImport ? "Import-only Account" : syncing ? "Syncing..." : "Sync Latest"}
             </Button>
             <Button
               variant="secondary"
@@ -641,7 +654,9 @@ export function TradesPage() {
             value={selectedAccount ? formatAccountBalance(selectedAccountBalance) : "No account"}
             detail={
               selectedAccount
-                ? selectedAccount.provider_data_stale
+                ? selectedAccountIsCsvImport
+                  ? "Balance is not included in CSV exports"
+                  : selectedAccount.provider_data_stale
                   ? formatProviderLastSeen(selectedAccount.last_seen_at)
                   : `Account #${getDemoAccountId(selectedAccount.id)}`
                 : "Choose an account"
@@ -723,7 +738,13 @@ export function TradesPage() {
         ) : null}
       </section>
 
-      {selectedAccount?.account_state === "MISSING" ? (
+      {selectedAccountIsCsvImport ? (
+        <Card className="border-cyan-400/35 bg-cyan-500/10 p-4 lg:shrink-0">
+          <p className="text-sm text-cyan-100">
+            Live CSV account: trade metrics use imported Topstep history, and ProjectX sync is disabled.
+          </p>
+        </Card>
+      ) : selectedAccount?.account_state === "MISSING" ? (
         <Card className="border-amber-400/40 bg-amber-500/10 p-4 lg:shrink-0">
           <p className="text-sm text-amber-100">
             This account is missing from ProjectX. Trade metrics are shown from locally stored data when live sync is unavailable.
@@ -936,7 +957,7 @@ export function TradesPage() {
                       </thead>
                       <tbody className="divide-y divide-slate-800/70">
                         {pagedTrades.map((trade) => {
-                          const pnlValue = trade.pnl ?? 0;
+                          const pnlValue = getTradeNetPnl(trade) ?? 0;
                           const direction = formatTradeDirection(trade.side);
                           const entryTime = trade.entry_time;
                           const exitTime = trade.exit_time ?? trade.timestamp;
@@ -1101,7 +1122,7 @@ interface TradeFeedCardProps {
 }
 
 function TradeFeedCard({ trade }: TradeFeedCardProps) {
-  const pnlValue = trade.pnl ?? 0;
+  const pnlValue = getTradeNetPnl(trade) ?? 0;
   const direction = formatTradeDirection(trade.side);
   const entryTime = trade.entry_time;
   const exitTime = trade.exit_time ?? trade.timestamp;

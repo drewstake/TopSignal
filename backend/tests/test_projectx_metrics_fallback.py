@@ -16,6 +16,7 @@ from app.main import (
     get_projectx_account_summary,
     get_projectx_account_summary_with_point_bases,
     list_projectx_account_trades,
+    refresh_projectx_account_trades,
 )
 from app.models import Account, ProjectXTradeDaySync, ProjectXTradeEvent
 from app.services.projectx_client import ProjectXClientError
@@ -61,6 +62,14 @@ class MissingAccountStubClient:
         raise ProjectXClientError("missing account", status_code=404)
 
 
+class TradeHistoryErrorStubClient:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+    def fetch_trade_history(self, *args, **kwargs):
+        raise ProjectXClientError("provider error", status_code=self.status_code)
+
+
 class RecordingTradeHistoryClient:
     def __init__(self, events):
         self.events = events
@@ -76,7 +85,15 @@ class CrashingTradeHistoryClient:
         raise RuntimeError("provider sync crashed")
 
 
-def _add_trade_event(db_session, *, event_id: int, account_id: int, pnl: float = 125.0, fees: float = 3.0):
+def _add_trade_event(
+    db_session,
+    *,
+    event_id: int,
+    account_id: int,
+    pnl: float = 125.0,
+    fees: float = 3.0,
+    import_batch_id: int | None = None,
+):
     db_session.add(
         ProjectXTradeEvent(
             id=event_id,
@@ -90,6 +107,7 @@ def _add_trade_event(db_session, *, event_id: int, account_id: int, pnl: float =
             fees=fees,
             pnl=pnl,
             order_id=f"ORD-{event_id}",
+            import_batch_id=import_batch_id,
         )
     )
 
@@ -116,6 +134,141 @@ def test_summary_raises_gateway_error_for_non_missing_account_on_provider_404(db
 
     with pytest.raises(HTTPException) as exc_info:
         get_projectx_account_summary(account_id=7302, refresh=True, db=db_session)
+
+    assert exc_info.value.status_code == 502
+
+
+def test_imported_history_falls_back_locally_when_live_trade_history_is_forbidden(db_session, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: TradeHistoryErrorStubClient(403),
+    )
+    db_session.add(Account(provider="projectx", external_id="7310", account_state="ACTIVE", is_main=False))
+    _add_trade_event(
+        db_session,
+        event_id=10,
+        account_id=7310,
+        pnl=90.0,
+        fees=2.0,
+        import_batch_id=1,
+    )
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=7310, refresh=True, db=db_session)
+
+    assert payload["trade_count"] == 1
+    assert payload["realized_pnl"] == 90.0
+
+
+def test_missing_imported_account_day_refresh_does_not_require_provider_credentials(db_session, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("provider credentials should not be requested")
+        ),
+    )
+    db_session.add(Account(provider="projectx", external_id="7312", account_state="MISSING", is_main=False))
+    _add_trade_event(
+        db_session,
+        event_id=12,
+        account_id=7312,
+        pnl=90.0,
+        fees=2.0,
+        import_batch_id=1,
+    )
+    db_session.commit()
+
+    payload = get_projectx_account_summary(account_id=7312, refresh=True, db=db_session)
+
+    assert payload["trade_count"] == 1
+    assert payload["realized_pnl"] == 90.0
+
+
+def test_csv_import_summary_refresh_stays_local_even_before_first_import(
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("CSV summary reads must not request provider credentials")
+        ),
+    )
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7313",
+            trade_data_source="csv_import",
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    payload = get_projectx_account_summary(
+        account_id=7313,
+        refresh=True,
+        db=db_session,
+    )
+
+    assert payload["trade_count"] == 0
+    assert payload["net_pnl"] == 0
+
+
+def test_csv_import_explicit_projectx_refresh_is_rejected_before_client_load(
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("CSV refresh rejection must precede provider access")
+        ),
+    )
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="7314",
+            trade_data_source="csv_import",
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        refresh_projectx_account_trades(
+            account_id=7314,
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "csv_import_accounts_cannot_refresh_from_projectx"
+
+
+def test_imported_history_does_not_hide_unexpected_provider_failures(db_session, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *args, **kwargs: TradeHistoryErrorStubClient(500),
+    )
+    db_session.add(Account(provider="projectx", external_id="7311", account_state="ACTIVE", is_main=False))
+    _add_trade_event(
+        db_session,
+        event_id=11,
+        account_id=7311,
+        pnl=90.0,
+        fees=2.0,
+        import_batch_id=1,
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_projectx_account_summary(account_id=7311, refresh=True, db=db_session)
 
     assert exc_info.value.status_code == 502
 

@@ -1,9 +1,10 @@
+import io
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -13,13 +14,21 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 import app.main as main_module
 from app.db import Base
 from app.main import (
+    confirm_topstep_trade_import,
+    create_topstep_live_import_target,
     get_projectx_account_last_trade,
     list_projectx_accounts,
+    preview_topstep_trade_import,
     rename_projectx_account,
     set_projectx_main_account,
+    update_projectx_account_trade_data_source,
 )
 from app.models import Account, ProjectXTradeEvent, ProviderCredential
-from app.projectx_schemas import ProjectXAccountRenameIn
+from app.projectx_schemas import (
+    ProjectXAccountRenameIn,
+    ProjectXAccountTradeDataSourceIn,
+    TopstepLiveAccountCreateIn,
+)
 
 
 @pytest.fixture()
@@ -168,6 +177,7 @@ def test_accounts_route_returns_provider_and_custom_display_names(db_session, mo
                 "last_trade_at": None,
                 "last_seen_at": payload[0]["last_seen_at"],
                 "provider_data_stale": False,
+                "trade_data_source": "projectx",
             }
         ]
     assert isinstance(payload[0]["last_seen_at"], datetime)
@@ -206,6 +216,7 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
                 "last_trade_at": None,
                 "last_seen_at": payload[0]["last_seen_at"],
                 "provider_data_stale": False,
+                "trade_data_source": "projectx",
             }
         ]
     assert isinstance(payload[0]["last_seen_at"], datetime)
@@ -217,6 +228,442 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
         .one()
     )
     assert row.name == "50KTC-7304"
+
+
+def test_create_live_import_target_is_local_missing_and_idempotent(db_session):
+    payload = TopstepLiveAccountCreateIn(
+        account_id=88001,
+        name="Topstep Live Funded",
+    )
+
+    first = create_topstep_live_import_target(payload=payload, db=db_session)
+    second = create_topstep_live_import_target(payload=payload, db=db_session)
+
+    assert first == second
+    assert first["id"] == 88001
+    assert first["name"] == "Topstep Live Funded"
+    assert first["account_state"] == "ACTIVE"
+    assert first["can_trade"] is None
+    assert first["is_main"] is True
+    assert first["provider_data_stale"] is False
+    assert first["trade_data_source"] == "csv_import"
+    assert db_session.query(Account).count() == 1
+
+    row = db_session.query(Account).one()
+    assert row.external_id == "88001"
+    assert row.last_seen_at is None
+    assert row.last_missing_at is None
+
+
+def test_create_live_import_target_keeps_existing_csv_account_unchanged(db_session):
+    last_missing_at = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88003",
+            name="Topstep Live Existing",
+            trade_data_source="csv_import",
+            account_state="MISSING",
+            last_missing_at=last_missing_at,
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    payload = create_topstep_live_import_target(
+        payload=TopstepLiveAccountCreateIn(
+            account_id=88003,
+            name="Replacement Name Must Not Win",
+        ),
+        db=db_session,
+    )
+
+    assert payload["trade_data_source"] == "csv_import"
+    assert payload["name"] == "Topstep Live Existing"
+    assert db_session.query(Account).count() == 1
+    row = db_session.query(Account).one()
+    assert row.account_state == "MISSING"
+    assert row.last_missing_at == last_missing_at.replace(tzinfo=None)
+
+
+def test_create_live_import_target_rejects_existing_projectx_account(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88004",
+            name="EXPRESS-V2-DLL-192577-19008334",
+            trade_data_source="projectx",
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_topstep_live_import_target(
+            payload=TopstepLiveAccountCreateIn(
+                account_id=88004,
+                name="Topstep Live Funded",
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "account_trade_data_source_conflict",
+        "message": (
+            "Account 88004 already uses projectx; cross-source conversion to "
+            "csv_import is not allowed. ProjectX and Live CSV accounts must remain separate."
+        ),
+        "account_id": 88004,
+        "current_trade_data_source": "projectx",
+        "requested_trade_data_source": "csv_import",
+    }
+    row = db_session.query(Account).one()
+    assert row.name == "EXPRESS-V2-DLL-192577-19008334"
+    assert row.trade_data_source == "projectx"
+
+
+def test_create_live_import_target_rejects_unsafe_name(db_session):
+    with pytest.raises(HTTPException) as exc_info:
+        create_topstep_live_import_target(
+            payload=TopstepLiveAccountCreateIn(
+                account_id=88002,
+                name="Unsafe\x00Name",
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert db_session.query(Account).count() == 0
+
+
+def test_accounts_route_skips_projectx_when_every_account_uses_csv_import(
+    db_session,
+    monkeypatch,
+):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88010",
+            name="Topstep Live",
+            trade_data_source="csv_import",
+            account_state="ACTIVE",
+            is_main=False,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("CSV-only account lists must not load ProjectX credentials")
+        ),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=False,
+        show_missing=False,
+        db=db_session,
+    )
+
+    assert [row["id"] for row in payload] == [88010]
+    assert payload[0]["trade_data_source"] == "csv_import"
+    assert payload[0]["provider_data_stale"] is False
+
+
+def test_provider_sync_skips_csv_id_collision_and_missing_transition(
+    db_session,
+    monkeypatch,
+):
+    old_seen_at = datetime.now(timezone.utc) - timedelta(days=2)
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88011",
+                name="Local Live Name",
+                balance=43210,
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                last_seen_at=old_seen_at,
+                is_main=False,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88012",
+                name="Provider Account",
+                trade_data_source="projectx",
+                account_state="ACTIVE",
+                last_seen_at=old_seen_at,
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88016",
+                name="Local Live Omitted By Provider",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                last_seen_at=old_seen_at,
+                is_main=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            assert only_active_accounts is False
+            return [
+                {
+                    "id": 88011,
+                    "name": "Provider Must Not Win",
+                    "balance": 99999,
+                    "can_trade": False,
+                    "is_visible": False,
+                },
+                {
+                    "id": 88012,
+                    "name": "Provider Account",
+                    "balance": 50000,
+                    "can_trade": True,
+                    "is_visible": True,
+                },
+            ]
+
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: StubClient(),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=True,
+        show_missing=True,
+        db=db_session,
+    )
+    by_id = {row["id"]: row for row in payload}
+
+    assert db_session.query(Account).count() == 3
+    assert by_id[88011]["name"] == "Local Live Name"
+    assert by_id[88011]["balance"] is None
+    assert by_id[88011]["can_trade"] is None
+    assert by_id[88011]["last_seen_at"] is None
+    assert by_id[88011]["account_state"] == "ACTIVE"
+    assert by_id[88011]["provider_data_stale"] is False
+    assert by_id[88011]["trade_data_source"] == "csv_import"
+    assert by_id[88016]["account_state"] == "ACTIVE"
+    assert by_id[88016]["provider_data_stale"] is False
+
+    stored_csv_account = (
+        db_session.query(Account)
+        .filter(Account.external_id == "88011")
+        .one()
+    )
+    assert stored_csv_account.name == "Local Live Name"
+    assert float(stored_csv_account.balance) == pytest.approx(43210)
+    assert stored_csv_account.account_state == "ACTIVE"
+
+
+def test_trade_import_routes_reject_projectx_accounts_before_reading_files(
+    db_session,
+):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88017",
+            name="Provider Account",
+            trade_data_source="projectx",
+            account_state="ACTIVE",
+        )
+    )
+    db_session.commit()
+
+    preview_file = UploadFile(
+        filename="trades.csv",
+        file=io.BytesIO(b"must not be parsed"),
+    )
+    with pytest.raises(HTTPException) as preview_exc:
+        preview_topstep_trade_import(
+            account_id=88017,
+            file=preview_file,
+            db=db_session,
+        )
+    assert preview_exc.value.status_code == 409
+    assert preview_exc.value.detail == "trade_import_requires_csv_import_account"
+    assert preview_file.file.tell() == 0
+    preview_file.file.close()
+
+    confirm_file = UploadFile(
+        filename="trades.csv",
+        file=io.BytesIO(b"must not be parsed"),
+    )
+    with pytest.raises(HTTPException) as confirm_exc:
+        confirm_topstep_trade_import(
+            account_id=88017,
+            file=confirm_file,
+            preview_sha256="0" * 64,
+            db=db_session,
+        )
+    assert confirm_exc.value.status_code == 409
+    assert confirm_exc.value.detail == "trade_import_requires_csv_import_account"
+    assert confirm_file.file.tell() == 0
+    confirm_file.file.close()
+
+
+def test_mixed_account_provider_outage_marks_only_projectx_rows_stale(
+    db_session,
+    monkeypatch,
+):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88014",
+                name="Local Live",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                is_main=False,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88015",
+                name="API Account",
+                trade_data_source="projectx",
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            main_module.ProjectXClientError(
+                "provider unavailable",
+                status_code=503,
+            )
+        ),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=True,
+        show_missing=True,
+        db=db_session,
+    )
+    by_id = {row["id"]: row for row in payload}
+
+    assert by_id[88014]["provider_data_stale"] is False
+    assert by_id[88015]["provider_data_stale"] is True
+
+
+def test_trade_data_source_patch_is_idempotent_for_same_source(db_session):
+    csv_missing_at = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88013",
+                name="Paused XFA",
+                trade_data_source="projectx",
+                account_state="MISSING",
+                last_missing_at=datetime.now(timezone.utc),
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88018",
+                name="Topstep Live",
+                trade_data_source="csv_import",
+                account_state="MISSING",
+                last_missing_at=csv_missing_at,
+                is_main=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    projectx_payload = update_projectx_account_trade_data_source(
+        account_id=88013,
+        payload=ProjectXAccountTradeDataSourceIn(
+            trade_data_source="projectx",
+        ),
+        db=db_session,
+    )
+    csv_payload = update_projectx_account_trade_data_source(
+        account_id=88018,
+        payload=ProjectXAccountTradeDataSourceIn(
+            trade_data_source="csv_import",
+        ),
+        db=db_session,
+    )
+
+    assert projectx_payload["id"] == 88013
+    assert projectx_payload["trade_data_source"] == "projectx"
+    assert projectx_payload["provider_data_stale"] is True
+    assert projectx_payload["account_state"] == "MISSING"
+    assert csv_payload["id"] == 88018
+    assert csv_payload["trade_data_source"] == "csv_import"
+    assert csv_payload["provider_data_stale"] is False
+    assert csv_payload["account_state"] == "MISSING"
+
+    rows = {
+        row.external_id: row
+        for row in db_session.query(Account).all()
+    }
+    assert rows["88013"].trade_data_source == "projectx"
+    assert rows["88018"].trade_data_source == "csv_import"
+    assert rows["88018"].last_missing_at == csv_missing_at.replace(tzinfo=None)
+
+
+@pytest.mark.parametrize(
+    ("account_id", "current_source", "requested_source"),
+    [
+        (88019, "projectx", "csv_import"),
+        (88020, "csv_import", "projectx"),
+    ],
+)
+def test_trade_data_source_patch_rejects_cross_source_conversion(
+    db_session,
+    account_id,
+    current_source,
+    requested_source,
+):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id=str(account_id),
+            name="Express Account" if current_source == "projectx" else "Topstep Live",
+            trade_data_source=current_source,
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        update_projectx_account_trade_data_source(
+            account_id=account_id,
+            payload=ProjectXAccountTradeDataSourceIn(
+                trade_data_source=requested_source,
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "account_trade_data_source_conflict",
+        "message": (
+            f"Account {account_id} already uses {current_source}; "
+            f"cross-source conversion to {requested_source} is not allowed. "
+            "ProjectX and Live CSV accounts must remain separate."
+        ),
+        "account_id": account_id,
+        "current_trade_data_source": current_source,
+        "requested_trade_data_source": requested_source,
+    }
+    assert db_session.query(Account).one().trade_data_source == current_source
 
 
 def test_set_main_account_endpoint_keeps_single_main_flag(db_session):
@@ -447,6 +894,56 @@ def test_account_last_trade_endpoint_uses_provider_when_local_missing(db_session
     assert payload["last_trade_at"] == datetime(2026, 1, 29, 17, 5, tzinfo=timezone.utc)
     assert payload["source"] == "provider"
     assert client.calls == [(7020, 3650)]
+
+
+def test_csv_import_last_trade_refresh_stays_local(db_session, monkeypatch):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="7021",
+                name="Topstep Live",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+            ),
+            ProjectXTradeEvent(
+                id=11,
+                account_id=7021,
+                contract_id="CON.F.US.MNQ.H26",
+                symbol="MNQ",
+                side="BUY",
+                size=1.0,
+                price=20500.0,
+                trade_timestamp=datetime(2026, 2, 5, 9, 15, tzinfo=timezone.utc),
+                fees=1.2,
+                order_id="LOCAL-CSV-1",
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("CSV last-trade reads must stay local")
+        ),
+    )
+
+    payload = get_projectx_account_last_trade(
+        account_id=7021,
+        refresh=True,
+        db=db_session,
+    )
+
+    assert payload["last_trade_at"] == datetime(
+        2026,
+        2,
+        5,
+        9,
+        15,
+        tzinfo=timezone.utc,
+    )
+    assert payload["source"] == "local"
 
 
 def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_session, monkeypatch):

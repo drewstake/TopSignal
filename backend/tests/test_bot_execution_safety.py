@@ -107,12 +107,14 @@ def _add_account_and_config(
     enabled: bool = True,
     execution_mode: str = "dry_run",
     name: str = "Safety Bot",
+    trade_data_source: str = "projectx",
 ) -> tuple[Account, BotConfig]:
     account = Account(
         user_id=user_id,
         provider="projectx",
         external_id=str(account_id),
         name=f"Practice {account_id}",
+        trade_data_source=trade_data_source,
         account_state="ACTIVE",
         can_trade=True,
         is_visible=True,
@@ -184,6 +186,32 @@ def _patch_actionable_signal(monkeypatch, *, candle_timestamp: datetime | None =
 
 def _risk_codes(result) -> set[str]:
     return {event.code for event in result.risk_events}
+
+
+def test_csv_import_account_is_rejected_before_any_projectx_bot_call(db_session):
+    _, config = _add_account_and_config(
+        db_session,
+        trade_data_source="csv_import",
+    )
+    db_session.commit()
+
+    class NoProviderCalls:
+        def __getattr__(self, name):
+            raise AssertionError(f"ProjectX method {name} must not be called")
+
+    with pytest.raises(
+        ValueError,
+        match="csv_import_accounts_cannot_run_bots",
+    ):
+        evaluate_bot_config(
+            db_session,
+            user_id=USER_A,
+            config=config,
+            account=None,
+            client=NoProviderCalls(),
+            dry_run=False,
+            confirm_live_order_routing=True,
+        )
 
 
 def test_repeated_actionable_candle_creates_one_attempt_and_duplicate_skip_audit(db_session, monkeypatch):

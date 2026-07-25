@@ -113,6 +113,112 @@ describe("accountsApi", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("keeps CSV accounts selectable without resurrecting missing ProjectX accounts", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse([
+        { id: 1, account_state: "ACTIVE", trade_data_source: "projectx" },
+        { id: 2, account_state: "MISSING", trade_data_source: "projectx" },
+        { id: 3, account_state: "HIDDEN", trade_data_source: "projectx" },
+        { id: 4, account_state: "MISSING", trade_data_source: "csv_import" },
+      ]),
+    );
+
+    await expect(accountsApi.getSelectableAccounts()).resolves.toEqual([
+      { id: 1, account_state: "ACTIVE", trade_data_source: "projectx" },
+      { id: 4, account_state: "MISSING", trade_data_source: "csv_import" },
+    ]);
+
+    const [url] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toContain("show_inactive=true");
+    expect(String(url)).toContain("show_missing=false");
+  });
+
+  it("creates a local Live import account when ProjectX cannot list it", async () => {
+    installDemoModeStorage(false);
+    const account = {
+      id: 88001,
+      name: "Topstep Live Funded",
+      provider_name: "Topstep Live Funded",
+      custom_display_name: null,
+      trade_data_source: "csv_import",
+      balance: null,
+      status: "ACTIVE",
+      account_state: "ACTIVE",
+      is_main: true,
+      can_trade: null,
+      is_visible: true,
+      last_trade_at: null,
+      last_seen_at: null,
+      provider_data_stale: false,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(account));
+
+    await expect(
+      accountsApi.createLiveImportAccount({
+        account_id: 88001,
+        name: "Topstep Live Funded",
+      }),
+    ).resolves.toEqual(account);
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/accounts/import-target");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      account_id: 88001,
+      name: "Topstep Live Funded",
+    });
+  });
+
+  it("previews and confirms a trade import with multipart file identity", async () => {
+    installDemoModeStorage(false);
+    const file = new File(["Id,PnL\n1,100"], "trades_export.csv", { type: "text/csv" });
+    const previewPayload = {
+      source_file_name: file.name,
+      file_sha256: "abc123",
+      total_rows: 1,
+      new_rows: 1,
+      duplicate_rows: 0,
+      summary: {
+        gross_pnl: 100,
+        fees: 0.74,
+        commissions: 0.5,
+        net_pnl: 98.76,
+        wins: 1,
+        losses: 0,
+        breakeven: 0,
+      },
+      trades: [],
+    };
+    const confirmPayload = {
+      import_id: 17,
+      source_file_name: file.name,
+      imported_at: "2026-07-23T15:00:00Z",
+      total_rows: 1,
+      inserted_rows: 1,
+      duplicate_rows: 0,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(previewPayload))
+      .mockResolvedValueOnce(jsonResponse(confirmPayload));
+
+    await expect(accountsApi.previewTradeImport(7301, file)).resolves.toEqual(previewPayload);
+    await expect(accountsApi.confirmTradeImport(7301, file, previewPayload.file_sha256)).resolves.toEqual(confirmPayload);
+
+    const previewCall = vi.mocked(fetch).mock.calls[0];
+    expect(previewCall[0]).toBe("http://127.0.0.1:8000/api/accounts/7301/trade-imports/preview");
+    expect(previewCall[1]?.method).toBe("POST");
+    const previewBody = previewCall[1]?.body as FormData;
+    expect((previewBody.get("file") as File).name).toBe(file.name);
+
+    const confirmCall = vi.mocked(fetch).mock.calls[1];
+    expect(confirmCall[0]).toBe("http://127.0.0.1:8000/api/accounts/7301/trade-imports/confirm");
+    expect(confirmCall[1]?.method).toBe("POST");
+    const confirmBody = confirmCall[1]?.body as FormData;
+    expect((confirmBody.get("file") as File).name).toBe(file.name);
+    expect(confirmBody.get("preview_sha256")).toBe(previewPayload.file_sha256);
+  });
+
   it("deduplicates within one user while isolating cache and in-flight work across auth switches", async () => {
     installDemoModeStorage(false);
     const tokenOne = jwt("user-one");

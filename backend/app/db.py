@@ -174,6 +174,13 @@ def _ensure_accounts_schema_compatibility() -> None:
             conn.execute(text("alter table accounts add column if not exists display_name text"))
         if "balance" not in column_names:
             conn.execute(text("alter table accounts add column if not exists balance numeric(18,6)"))
+        if "trade_data_source" not in column_names:
+            conn.execute(
+                text(
+                    "alter table accounts add column if not exists "
+                    "trade_data_source text not null default 'projectx'"
+                )
+            )
         if "can_trade" not in column_names:
             conn.execute(text("alter table accounts add column if not exists can_trade boolean"))
         if "is_visible" not in column_names:
@@ -188,7 +195,35 @@ def _ensure_accounts_schema_compatibility() -> None:
             conn.execute(text("alter table accounts add column if not exists is_main boolean not null default false"))
 
         conn.execute(text("update accounts set account_state = 'ACTIVE' where account_state is null"))
+        conn.execute(text("update accounts set trade_data_source = 'projectx' where trade_data_source is null"))
         conn.execute(text("update accounts set is_main = false where is_main is null"))
+        conn.execute(
+            text(
+                """
+                alter table accounts
+                  alter column trade_data_source set default 'projectx',
+                  alter column trade_data_source set not null
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                do $$
+                begin
+                  if not exists (
+                    select 1
+                    from pg_constraint
+                    where conname = 'accounts_trade_data_source_check'
+                  ) then
+                    alter table accounts
+                      add constraint accounts_trade_data_source_check
+                      check (trade_data_source in ('projectx','csv_import'));
+                  end if;
+                end $$;
+                """
+            )
+        )
         conn.execute(text("create index if not exists idx_accounts_is_main on accounts (is_main)"))
         conn.execute(text("create index if not exists idx_accounts_account_state on accounts (account_state)"))
 

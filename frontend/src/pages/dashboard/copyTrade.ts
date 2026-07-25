@@ -1,6 +1,7 @@
 import { getDemoAccountName } from "../../lib/demoMode";
 import { getScopedStorageKey } from "../../lib/storageScope";
 import { tradingDayKey } from "../../lib/tradingDay";
+import { getTradeNetPnl } from "../../lib/tradePnl";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSummary, AccountTrade } from "../../lib/types";
 
 export const COPY_TRADE_SETTINGS_STORAGE_KEY = "topsignal.dashboard.copyTradeSettings";
@@ -254,6 +255,9 @@ export function getCopyTradeRosterAccountIds(
   if (!leader) {
     return [];
   }
+  if (leader.trade_data_source === "csv_import") {
+    return [leader.id];
+  }
 
   const normalizedSettings = settings ? normalizeCopyTradeSettings(settings) : null;
   const followerKey = String(leader.id);
@@ -393,15 +397,27 @@ export function combineCopyTradePnlCalendarDays(
         ({
           date: day.date,
           trade_count: 0,
+          win_count: 0,
+          loss_count: 0,
+          breakeven_count: 0,
           gross_pnl: 0,
+          non_commission_fees: 0,
+          commissions: 0,
           fees: 0,
           net_pnl: 0,
         } satisfies AccountPnlCalendarDay);
 
       if (row.accountId === leaderAccountId) {
         current.trade_count = day.trade_count;
+        current.win_count = day.win_count ?? 0;
+        current.loss_count = day.loss_count ?? 0;
+        current.breakeven_count = day.breakeven_count ?? 0;
       }
       current.gross_pnl += day.gross_pnl;
+      const commissions = day.commissions ?? 0;
+      current.non_commission_fees =
+        (current.non_commission_fees ?? 0) + (day.non_commission_fees ?? Math.max(day.fees - commissions, 0));
+      current.commissions = (current.commissions ?? 0) + commissions;
       current.fees += day.fees;
       current.net_pnl += day.net_pnl;
       byDate.set(day.date, current);
@@ -489,7 +505,7 @@ export function computeCopyTradeDriftSummary(
         return;
       }
 
-      const netPnl = safeNumber(trade.pnl);
+      const netPnl = getTradeNetPnl(trade) ?? 0;
       unmatchedFollowerTrades.push({
         accountId,
         accountName: row.accountName,
@@ -568,7 +584,7 @@ function buildAccountRow(
     role,
     status,
     balance: typeof account.balance === "number" && Number.isFinite(account.balance) ? account.balance : null,
-    providerDataStale: account.provider_data_stale,
+    providerDataStale: account.trade_data_source === "projectx" && account.provider_data_stale,
     lastSeenAt: account.last_seen_at,
     dailyPnl: safeNumber(snapshot?.dailyPnl),
     netPnl: safeNumber(snapshot?.netPnl),
@@ -635,6 +651,10 @@ function getExclusionReason(row: CopyTradeAccountRow): string | null {
 }
 
 function getCopyTradeStatusForAccount(account: AccountInfo): CopyTradeStatus {
+  if (account.trade_data_source === "csv_import") {
+    return "Active";
+  }
+
   if (account.account_state === "ACTIVE") {
     return "Active";
   }
@@ -712,7 +732,10 @@ function getDefaultFollowerPriority(account: AccountInfo, leaderFamily: string):
 }
 
 function isCopyTradeSelectableFollower(account: AccountInfo): boolean {
-  return account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT";
+  return (
+    account.trade_data_source === "projectx" &&
+    (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT")
+  );
 }
 
 function getAccountFamilyName(account: AccountInfo): string {

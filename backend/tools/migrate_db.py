@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 LEDGER_TABLE = "topsignal_schema_migrations"
 LOCK_NAME = "topsignal-schema-migrations-v1"
-CURRENT_SCHEMA_BASELINE = "schema-20260711-v2"
+CURRENT_SCHEMA_BASELINE = "schema-20260724-v2"
 LEGACY_DATABENTO_TABLE_NAMES = frozenset(
     {
         "databento_import_batches",
@@ -34,12 +34,40 @@ RETIRED_NOOP_MIGRATIONS = frozenset(
     {"20260711_add_databento_historical_market_data.sql"}
 )
 BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
-    "accounts": {"user_id", "external_id", "balance", "account_state", "can_trade"},
+    "accounts": {
+        "user_id",
+        "external_id",
+        "balance",
+        "account_state",
+        "can_trade",
+        "trade_data_source",
+    },
     "provider_credentials": {"user_id", "username_encrypted", "api_key_encrypted"},
     "journal_entries": {"user_id", "account_id", "version", "is_archived"},
     "expenses": {"user_id", "account_id", "source_id"},
     "payouts": {"user_id", "amount_cents", "payout_date"},
-    "projectx_trade_events": {"user_id", "account_id", "source_trade_id", "raw_payload"},
+    "trade_import_batches": {
+        "user_id",
+        "account_id",
+        "source_file_name",
+        "file_sha256",
+        "total_rows",
+        "inserted_rows",
+        "duplicate_rows",
+        "imported_at",
+    },
+    "projectx_trade_events": {
+        "user_id",
+        "account_id",
+        "source_trade_id",
+        "raw_payload",
+        "commissions",
+        "fee_scope",
+        "trade_date",
+        "entry_timestamp",
+        "entry_price",
+        "import_batch_id",
+    },
     "bot_backtests": {"user_id", "input_fingerprint", "result_snapshot"},
     "bot_runs": {"last_evaluated_at", "last_error"},
     "bot_decisions": {"correlation_id", "idempotency_key"},

@@ -31,6 +31,7 @@ import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import { getDemoTradeId } from "../../lib/demoMode";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
+import { getTradeNetPnl } from "../../lib/tradePnl";
 import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountTrade } from "../../lib/types";
@@ -68,6 +69,10 @@ import {
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
 import { resolveCustomDateRangeDraft } from "./customDateRange";
+import {
+  resolveLiveAccountEnableDecision,
+  resolveProjectXAccountId,
+} from "./liveAccountMode";
 
 const CopyFullStatsButton = lazy(() =>
   import("../../components/dashboard/CopyFullStatsButton").then((module) => ({ default: module.CopyFullStatsButton })),
@@ -569,9 +574,12 @@ export function DashboardPage() {
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
+  const [liveAccountSetupRequest, setLiveAccountSetupRequest] = useState(0);
+  const [tradeDataSourceFeedback, setTradeDataSourceFeedback] = useState<CopyTradeToggleFeedback | null>(null);
   const copyTradeSettingsRef = useRef(copyTradeSettings);
   const copyTradeTogglePendingRef = useRef(false);
   const copyTradeToggleTimerRef = useRef<number | null>(null);
+  const lastProjectXAccountIdRef = useRef<number | null>(null);
   const beginAccountsRequest = useLatestRequestGuard();
   const beginSummaryRequest = useLatestRequestGuard();
   const beginTradesRequest = useLatestRequestGuard();
@@ -629,6 +637,21 @@ export function DashboardPage() {
       }
     }
   }, [beginAccountsRequest]);
+
+  const handleLiveImportAccountCreated = useCallback(
+    (account: AccountInfo) => {
+      setAccounts((current) => [
+        account,
+        ...current.filter((candidate) => candidate.id !== account.id),
+      ]);
+      setActiveAccount(account.id);
+      setTradeDataSourceFeedback({
+        tone: "success",
+        message: "Switched to the separate Live CSV account. Your Express accounts were not changed.",
+      });
+    },
+    [setActiveAccount],
+  );
 
   useEffect(() => {
     void loadAccounts();
@@ -697,9 +720,15 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
+  const liveCsvAccounts = useMemo(
+    () => orderedAccounts.filter((account) => account.trade_data_source === "csv_import"),
+    [orderedAccounts],
+  );
+  const copyTradeModeActive = copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport;
   const copyTradeRosterAccountIds = useMemo(
-    () => (copyTradeSettings.modeEnabled ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings) : []),
-    [copyTradeSettings, orderedAccounts, selectedAccountId],
+    () => (copyTradeModeActive ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings) : []),
+    [copyTradeModeActive, copyTradeSettings, orderedAccounts, selectedAccountId],
   );
   const copyTradeFollowerAccountIds = useMemo(
     () => getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings).filter((accountId) => accountId !== selectedAccountId),
@@ -719,6 +748,12 @@ export function DashboardPage() {
   const analyticsRangeQuery = selectedTradeDayRangeQuery ?? metricsRangeQuery;
   const selectedTradeDayRefresh = selectedTradeDayRangeQuery !== null;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
+
+  useEffect(() => {
+    if (selectedAccount?.trade_data_source === "projectx") {
+      lastProjectXAccountIdRef.current = selectedAccount.id;
+    }
+  }, [selectedAccount]);
 
   function updateCustomRangeFromDraft(startDate: string, endDate: string) {
     const resolution = resolveCustomDateRangeDraft(startDate, endDate, metricsRange === "CUSTOM");
@@ -770,7 +805,7 @@ export function DashboardPage() {
     setPnlCalendarError(null);
 
     try {
-      if (copyTradeSettings.modeEnabled) {
+      if (copyTradeModeActive) {
         await refreshCopyTradeRange(copyTradeRosterAccountIds, getCopyTradeRefreshQuery(metricsRangeQuery, currentTradingDayKey));
       }
 
@@ -779,7 +814,7 @@ export function DashboardPage() {
         end: analyticsRangeQuery.end,
         refresh: selectedTradeDayRefresh,
       };
-      const followerAccountIds = copyTradeSettings.modeEnabled
+      const followerAccountIds = copyTradeModeActive
         ? copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId)
         : [];
       const followerResultsRequest = Promise.all(
@@ -910,7 +945,7 @@ export function DashboardPage() {
     analyticsRangeQuery.end,
     analyticsRangeQuery.start,
     copyTradeRosterAccountIds,
-    copyTradeSettings.modeEnabled,
+    copyTradeModeActive,
     currentTradingDayKey,
     metricsRangeQuery,
     selectedAccountId,
@@ -1182,7 +1217,7 @@ export function DashboardPage() {
     () => computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId, { resetAt: copyTradeDriftResetAt }),
     [copyTradeDriftResetAt, copyTradeRows, copyTradeTradesByAccountId],
   );
-  const copyTradeStatsActive = copyTradeSettings.modeEnabled && copyTradeTotals.canCalculate;
+  const copyTradeStatsActive = copyTradeModeActive && copyTradeTotals.canCalculate;
   const rawDashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
   const dashboardSummary = useMemo(
     () =>
@@ -1816,9 +1851,77 @@ export function DashboardPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!selectedAccountIsCsvImport || !copyTradeSettings.modeEnabled) {
+      return;
+    }
+
+    const saveResult = saveCopyTradeSettings((current) => updateCopyTradeModeSetting(current, false));
+    setCopyTradeToggleFeedback(
+      saveResult.ok
+        ? { tone: "success", message: "Copy Trade Mode disabled for Live CSV imports." }
+        : {
+            tone: "error",
+            message: `Live CSV mode is active, but the old Copy Trade preference could not be cleared: ${saveResult.errorMessage}`,
+          },
+    );
+  }, [copyTradeSettings.modeEnabled, saveCopyTradeSettings, selectedAccountIsCsvImport]);
+
+  const handleLiveAccountModeChange = useCallback(
+    (liveAccountEnabled: boolean) => {
+      if (liveAccountEnabled) {
+        const decision = resolveLiveAccountEnableDecision(orderedAccounts);
+        if (decision.kind === "select") {
+          setActiveAccount(decision.accountId);
+          setTradeDataSourceFeedback({
+            tone: "success",
+            message: "Switched to the separate Live CSV account. Your Express accounts were not changed.",
+          });
+          return;
+        }
+
+        setLiveAccountSetupRequest((current) => current + 1);
+        setTradeDataSourceFeedback({
+          tone: "neutral",
+          message:
+            decision.liveAccountCount === 0
+              ? "Add a separate Live CSV account below. Your current Express account will stay unchanged."
+              : `Choose one of ${decision.liveAccountCount} Live CSV accounts below. Your current Express account will stay unchanged.`,
+        });
+        return;
+      }
+
+      const projectXAccountId = resolveProjectXAccountId(
+        orderedAccounts,
+        lastProjectXAccountIdRef.current,
+      );
+      if (projectXAccountId === null) {
+        setTradeDataSourceFeedback({
+          tone: "error",
+          message: "No ProjectX account is available to switch to. The Live CSV account remains selected.",
+        });
+        return;
+      }
+
+      setActiveAccount(projectXAccountId);
+      setTradeDataSourceFeedback({
+        tone: "success",
+        message: "Switched back to your ProjectX account. The separate Live CSV account was not changed.",
+      });
+    },
+    [orderedAccounts, setActiveAccount],
+  );
+
   const handleCopyTradeModeChange = useCallback(
     (enabled: boolean) => {
       if (copyTradeTogglePendingRef.current) {
+        return;
+      }
+      if (enabled && selectedAccountIsCsvImport) {
+        setCopyTradeToggleFeedback({
+          tone: "error",
+          message: "Copy Trade Mode is unavailable while this account uses Live CSV imports.",
+        });
         return;
       }
 
@@ -1865,7 +1968,7 @@ export function DashboardPage() {
         setCopyTradeTogglePending(false);
       }, 0);
     },
-    [saveCopyTradeSettings, selectedAccountId],
+    [saveCopyTradeSettings, selectedAccountId, selectedAccountIsCsvImport],
   );
 
   const handleResetUncopyEvents = useCallback(() => {
@@ -1917,13 +2020,23 @@ export function DashboardPage() {
     [orderedAccounts, saveCopyTradeSettings, selectedAccountId],
   );
 
-  const copyTradeToggleDisabled = copyTradeTogglePending || (selectedAccountId === null && !copyTradeSettings.modeEnabled);
+  const copyTradeToggleDisabled =
+    copyTradeTogglePending ||
+    selectedAccountIsCsvImport ||
+    (selectedAccountId === null && !copyTradeSettings.modeEnabled);
   const copyTradeModeStatusMessage = copyTradeToggleFeedback?.message ?? null;
   const copyTradeModeStatusTone: CopyTradeToggleFeedbackTone = copyTradeToggleFeedback?.tone ?? "neutral";
   const copyTradeModeStatusClassName =
     copyTradeModeStatusTone === "error"
       ? "text-app-negative"
       : copyTradeModeStatusTone === "success"
+        ? "text-app-accent"
+        : "text-app-muted";
+  const tradeDataSourceStatusMessage = tradeDataSourceFeedback?.message ?? null;
+  const tradeDataSourceStatusClassName =
+    tradeDataSourceFeedback?.tone === "error"
+      ? "text-app-negative"
+      : tradeDataSourceFeedback?.tone === "success"
         ? "text-app-accent"
         : "text-app-muted";
 
@@ -1982,11 +2095,51 @@ export function DashboardPage() {
             <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
               <div className="flex items-center gap-1.5">
                 <Toggle
-                  checked={copyTradeSettings.modeEnabled}
+                  checked={selectedAccountIsCsvImport}
+                  onChange={handleLiveAccountModeChange}
+                  label="Live Account (CSV)"
+                  aria-label={selectedAccountIsCsvImport ? "Live Account CSV mode is on" : "Live Account CSV mode is off"}
+                  aria-describedby={tradeDataSourceStatusMessage ? "trade-data-source-toggle-status" : undefined}
+                  disabled={copyTradeTogglePending}
+                  className={cn(
+                    "h-11 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:h-8 sm:flex-none",
+                    selectedAccountIsCsvImport ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
+                  )}
+                />
+                <Badge
+                  variant={selectedAccountIsCsvImport ? "positive" : "neutral"}
+                  className="h-8 rounded-lg"
+                >
+                  {selectedAccountIsCsvImport ? "CSV" : "API"}
+                </Badge>
+              </div>
+              {tradeDataSourceStatusMessage ? (
+                <p
+                  id="trade-data-source-toggle-status"
+                  role="status"
+                  aria-live={tradeDataSourceFeedback?.tone === "error" ? "assertive" : "polite"}
+                  className={cn("text-[10px] leading-snug", tradeDataSourceStatusClassName)}
+                >
+                  {tradeDataSourceStatusMessage}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
+              <div className="flex items-center gap-1.5">
+                <Toggle
+                  checked={copyTradeModeActive}
                   onChange={handleCopyTradeModeChange}
-                  label={copyTradeTogglePending ? "Updating..." : "Copy Trade Mode"}
+                  label={
+                    copyTradeTogglePending
+                      ? "Updating..."
+                      : selectedAccountIsCsvImport
+                        ? "Copy Trade unavailable"
+                        : "Copy Trade Mode"
+                  }
                   aria-label={
-                    copyTradeSettings.modeEnabled
+                    selectedAccountIsCsvImport
+                      ? "Copy Trade Mode is unavailable for Live CSV accounts"
+                      : copyTradeModeActive
                       ? "Copy Trade Mode is on"
                       : copyTradeToggleDisabled
                         ? "Copy Trade Mode unavailable"
@@ -1996,11 +2149,11 @@ export function DashboardPage() {
                   disabled={copyTradeToggleDisabled}
                   className={cn(
                     "h-11 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:h-8 sm:flex-none",
-                    copyTradeSettings.modeEnabled ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
+                    copyTradeModeActive ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
                   )}
                 />
-                <Badge variant={copyTradeTogglePending ? "accent" : copyTradeSettings.modeEnabled ? "positive" : "neutral"} className="h-8 rounded-lg">
-                  {copyTradeTogglePending ? "Saving" : copyTradeSettings.modeEnabled ? "On" : "Off"}
+                <Badge variant={copyTradeTogglePending ? "accent" : copyTradeModeActive ? "positive" : "neutral"} className="h-8 rounded-lg">
+                  {copyTradeTogglePending ? "Saving" : copyTradeModeActive ? "On" : "Off"}
                 </Badge>
               </div>
               {copyTradeModeStatusMessage ? (
@@ -2028,7 +2181,17 @@ export function DashboardPage() {
         {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
       </div>
 
-      {selectedAccount?.account_state === "MISSING" ? (
+      {selectedAccountIsCsvImport ? (
+        <Card className="border-app-accent/35 bg-app-accent/10 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="accent">Live · CSV</Badge>
+            <p className="text-sm font-medium text-app-text">This account uses imported Topstep trade history.</p>
+          </div>
+          <p className="mt-1 text-xs text-app-muted">
+            ProjectX sync and Copy Trade Mode are disabled. Current provider balance and trading status are not included in trade exports.
+          </p>
+        </Card>
+      ) : selectedAccount?.account_state === "MISSING" ? (
         <Card className="border-app-warning/40 bg-app-warning/10 p-4">
           <p className="text-sm text-app-warning">
             This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
@@ -2036,7 +2199,7 @@ export function DashboardPage() {
         </Card>
       ) : null}
 
-      {copyTradeSettings.modeEnabled ? (
+      {copyTradeModeActive ? (
         <CopyTradePanel
           rows={copyTradeRows}
           totals={copyTradeTotals}
@@ -2052,7 +2215,7 @@ export function DashboardPage() {
         />
       ) : null}
 
-      {selectedAccount?.provider_data_stale ? (
+      {!selectedAccountIsCsvImport && selectedAccount?.provider_data_stale ? (
         <Card className="border-app-warning/40 bg-app-warning/10 p-4">
           <p className="text-sm font-medium text-app-warning">Provider account data is stale.</p>
           <p className="mt-1 text-xs text-app-warning/90">
@@ -2916,6 +3079,10 @@ export function DashboardPage() {
           days={dashboardPnlCalendarDays}
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
+          accountId={selectedAccountId}
+          tradeDataSource={selectedAccount?.trade_data_source ?? null}
+          liveAccounts={liveCsvAccounts}
+          accountSetupRequest={liveAccountSetupRequest}
           journalDays={journalDays}
           journalDaysLoading={journalDaysLoading}
           selectedDate={selectedTradeDate}
@@ -2923,6 +3090,9 @@ export function DashboardPage() {
           onJournalDayOpen={openJournalForDate}
           onAddJournalForSelectedDay={openJournalForDate}
           onVisibleRangeChange={handleCalendarVisibleRangeChange}
+          onImportComplete={reloadDashboard}
+          onAccountCreated={handleLiveImportAccountCreated}
+          onAccountSelected={handleLiveImportAccountCreated}
         />
       </Suspense>
 
@@ -2980,7 +3150,7 @@ export function DashboardPage() {
                   </tr>
                 ) : (
                   recentTrades.map((trade) => {
-                    const pnlValue = trade.pnl ?? 0;
+                    const pnlValue = getTradeNetPnl(trade) ?? 0;
                     const direction = formatTradeDirection(trade.side);
                     const entryTime = trade.entry_time;
                     const exitTime = trade.exit_time ?? trade.timestamp;

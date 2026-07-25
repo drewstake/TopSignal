@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import math
 from typing import Iterable, Literal, Mapping, Optional
@@ -13,7 +13,7 @@ from .instruments import (
     resolve_point_value,
     symbol_candidates,
 )
-from .topstep_fees import effective_topstep_trade_fee
+from .topstep_fees import topstep_commission_round_turn
 from .trading_day import trading_day_key
 
 
@@ -22,6 +22,9 @@ class TradeMetricSample:
     timestamp: datetime
     pnl: Optional[float]
     fees: Optional[float]
+    commissions: Optional[float] = None
+    trade_date: Optional[date] = None
+    entry_timestamp: Optional[datetime] = None
     order_id: Optional[str] = None
     symbol: Optional[str] = None
     contract_id: Optional[str] = None
@@ -193,8 +196,10 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
             # Calendar trade counts should reflect closed trades only.
             continue
 
-        day_key = trading_day_key(trade.timestamp)
-        fees = _effective_fee(trade)
+        day_key = trade.trade_date.isoformat() if trade.trade_date is not None else trading_day_key(trade.timestamp)
+        non_commission_fees, commissions = _effective_fee_components(trade)
+        total_fees = non_commission_fees + commissions
+        trade_net = realized - total_fees
         bucket = buckets.setdefault(
             day_key,
             {
@@ -202,13 +207,28 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
                 "trade_count": 0,
                 "gross_pnl": 0.0,
                 "fees": 0.0,
+                "non_commission_fees": 0.0,
+                "commissions": 0.0,
                 "net_pnl": 0.0,
+                "win_count": 0,
+                "loss_count": 0,
+                "breakeven_count": 0,
             },
         )
         bucket["trade_count"] = int(bucket["trade_count"]) + 1
         bucket["gross_pnl"] = float(bucket["gross_pnl"]) + realized
-        bucket["fees"] = float(bucket["fees"]) + fees
-        bucket["net_pnl"] = float(bucket["net_pnl"]) + realized - fees
+        # `fees` remains the legacy all-in cost field. The two component
+        # fields make Topstep's exported Fees and Commissions auditable.
+        bucket["fees"] = float(bucket["fees"]) + total_fees
+        bucket["non_commission_fees"] = float(bucket["non_commission_fees"]) + non_commission_fees
+        bucket["commissions"] = float(bucket["commissions"]) + commissions
+        bucket["net_pnl"] = float(bucket["net_pnl"]) + trade_net
+        if trade_net > 0:
+            bucket["win_count"] = int(bucket["win_count"]) + 1
+        elif trade_net < 0:
+            bucket["loss_count"] = int(bucket["loss_count"]) + 1
+        else:
+            bucket["breakeven_count"] = int(bucket["breakeven_count"]) + 1
 
     output: list[dict[str, str | int | float]] = []
     for day in sorted(buckets):
@@ -219,7 +239,12 @@ def compute_daily_pnl_calendar(samples: Iterable[TradeMetricSample]) -> list[dic
                 "trade_count": int(bucket["trade_count"]),
                 "gross_pnl": _round(float(bucket["gross_pnl"])),
                 "fees": _round(float(bucket["fees"])),
+                "non_commission_fees": _round(float(bucket["non_commission_fees"])),
+                "commissions": _round(float(bucket["commissions"])),
                 "net_pnl": _round(float(bucket["net_pnl"])),
+                "win_count": int(bucket["win_count"]),
+                "loss_count": int(bucket["loss_count"]),
+                "breakeven_count": int(bucket["breakeven_count"]),
             }
         )
     return output
@@ -316,20 +341,28 @@ def _empty_trade_summary(*, points_basis: str) -> dict[str, TradeSummaryValue]:
 
 
 def _effective_fee(trade: TradeMetricSample) -> float:
-    # Open-leg rows should not reduce realized net PnL. Closed rows use the
-    # stored round-turn fee plus the Topstep commission introduced on
-    # April 12, 2026.
+    non_commission_fees, commissions = _effective_fee_components(trade)
+    return non_commission_fees + commissions
+
+
+def _effective_fee_components(trade: TradeMetricSample) -> tuple[float, float]:
+    # Open-leg rows should not reduce realized net PnL. Metric samples already
+    # carry round-turn non-commission fees. Imported trades carry the exact
+    # commission from the file; provider events continue to use the schedule.
     if trade.pnl is None:
-        return 0.0
-    return effective_topstep_trade_fee(
-        trade_timestamp=trade.timestamp,
-        pnl=trade.pnl,
-        fees=trade.fees,
-        symbol=trade.symbol,
-        contract_id=trade.contract_id,
-        size=trade.size,
-        raw_fee_is_per_side=False,
+        return 0.0, 0.0
+    non_commission_fees = _safe_float(trade.fees)
+    commissions = (
+        _safe_float(trade.commissions)
+        if trade.commissions is not None
+        else topstep_commission_round_turn(
+            trade_timestamp=trade.timestamp,
+            symbol=trade.symbol,
+            contract_id=trade.contract_id,
+            size=trade.size,
+        )
     )
+    return non_commission_fees, commissions
 
 
 def _safe_float(value: Optional[float]) -> float:
@@ -565,7 +598,7 @@ def _trade_matches_points_basis(*, trade: TradeMetricSample, points_basis: str) 
 def _compute_daily_net_values(trades: list[TradeMetricSample], net_values: list[float]) -> dict[str, float]:
     daily_net: dict[str, float] = {}
     for trade, net in zip(trades, net_values):
-        day_key = trading_day_key(trade.timestamp)
+        day_key = trade.trade_date.isoformat() if trade.trade_date is not None else trading_day_key(trade.timestamp)
         daily_net[day_key] = daily_net.get(day_key, 0.0) + net
     return daily_net
 
@@ -588,6 +621,13 @@ def _compute_closed_trade_hold_durations_minutes(trades: list[TradeMetricSample]
 
     for index, trade in enumerate(trades):
         trade_ts = _as_utc(trade.timestamp)
+        if trade.pnl is not None and trade.entry_timestamp is not None:
+            durations[index] = _duration_minutes(
+                _as_utc(trade.entry_timestamp),
+                trade_ts,
+            )
+            continue
+
         qty = abs(_safe_float(trade.size))
         side_sign = _side_sign(trade.side)
         if qty <= epsilon or side_sign == 0:

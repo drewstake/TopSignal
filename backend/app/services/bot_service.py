@@ -43,7 +43,10 @@ from .bot_execution_safety import (
     touch_bot_run,
     transition_bot_run,
 )
-from .projectx_accounts import get_projectx_account_row
+from .projectx_accounts import (
+    TRADE_DATA_SOURCE_PROJECTX,
+    get_projectx_account_row,
+)
 from .projectx_client import ProjectXClient, ProjectXClientError
 from .bot_strategy_registry import (
     SUPPORTED_STRATEGY_IDENTIFIERS,
@@ -708,6 +711,7 @@ def start_bot_run(
     correlation_id = new_correlation_id()
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
     account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    _require_projectx_trade_data_source(account)
     now = datetime.now(timezone.utc)
     config.enabled = True
     config.updated_at = now
@@ -861,6 +865,7 @@ def _evaluate_bot_config_impl(
         lock_for_update=True,
     )
     resolved_account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    _require_projectx_trade_data_source(resolved_account)
     resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     execution_mode = "dry_run" if resolved_dry_run else "live"
     if run is not None:
@@ -10287,6 +10292,11 @@ def _require_owned_account(
     if account is None:
         raise LookupError("account_not_found")
     return account
+
+
+def _require_projectx_trade_data_source(account: Account) -> None:
+    if account.trade_data_source != TRADE_DATA_SOURCE_PROJECTX:
+        raise ValueError("csv_import_accounts_cannot_run_bots")
 
 
 def _create_risk_event(

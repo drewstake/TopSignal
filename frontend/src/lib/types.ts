@@ -75,11 +75,14 @@ export interface BehaviorMetrics {
   rule_following_pnl: number;
 }
 
+export type AccountTradeDataSource = "projectx" | "csv_import";
+
 export interface AccountInfo {
   id: number;
   name: string;
   provider_name: string;
   custom_display_name: string | null;
+  trade_data_source: AccountTradeDataSource;
   balance: number | null;
   provider_data_stale: boolean;
   last_seen_at: string | null;
@@ -124,6 +127,8 @@ export interface AccountTrade {
   entry_price?: number | null;
   exit_price?: number;
   fees: number;
+  non_commission_fees?: number;
+  commissions?: number;
   pnl: number | null;
   mfe?: number | null;
   mae?: number | null;
@@ -207,10 +212,71 @@ export interface AccountTradeRefreshResult {
   inserted_count: number;
 }
 
+export interface LiveImportAccountInput {
+  account_id: number;
+  name?: string;
+}
+
+export type TradeImportRowStatus = "new" | "duplicate";
+
+export interface TradeImportPreviewSummary {
+  gross_pnl: number;
+  fees: number;
+  commissions: number;
+  net_pnl: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+}
+
+export interface TradeImportPreviewTrade {
+  row_number: number;
+  source_trade_id: string;
+  contract_name: string;
+  symbol: string;
+  entered_at: string;
+  exited_at: string;
+  entry_price: number;
+  exit_price: number;
+  fees: number;
+  commissions: number;
+  gross_pnl: number;
+  net_pnl: number;
+  size: number;
+  direction: string;
+  trade_day: string;
+  duration: string | null;
+  status: TradeImportRowStatus;
+}
+
+export interface TradeImportPreview {
+  source_file_name: string;
+  file_sha256: string;
+  total_rows: number;
+  new_rows: number;
+  duplicate_rows: number;
+  summary: TradeImportPreviewSummary;
+  trades: TradeImportPreviewTrade[];
+}
+
+export interface TradeImportConfirmResult {
+  import_id: number;
+  source_file_name: string;
+  imported_at: string;
+  total_rows: number;
+  inserted_rows: number;
+  duplicate_rows: number;
+}
+
 export interface AccountPnlCalendarDay {
   date: string;
   trade_count: number;
+  win_count?: number;
+  loss_count?: number;
+  breakeven_count?: number;
   gross_pnl: number;
+  non_commission_fees?: number;
+  commissions?: number;
   fees: number;
   net_pnl: number;
 }

@@ -16,7 +16,28 @@ ACCOUNT_STATE_LOCKED_OUT = "LOCKED_OUT"
 ACCOUNT_STATE_HIDDEN = "HIDDEN"
 ACCOUNT_STATE_MISSING = "MISSING"
 ACCOUNT_STATE_INACTIVE = {ACCOUNT_STATE_LOCKED_OUT, ACCOUNT_STATE_HIDDEN}
+TRADE_DATA_SOURCE_PROJECTX = "projectx"
+TRADE_DATA_SOURCE_CSV_IMPORT = "csv_import"
+TRADE_DATA_SOURCES = {
+    TRADE_DATA_SOURCE_PROJECTX,
+    TRADE_DATA_SOURCE_CSV_IMPORT,
+}
 ACCOUNT_DISPLAY_NAME_MAX_LENGTH = 120
+MAX_PROJECTX_ACCOUNT_ID = 9_223_372_036_854_775_807
+
+
+class AccountTradeDataSourceConflictError(Exception):
+    def __init__(
+        self,
+        *,
+        account_id: int,
+        current_trade_data_source: str,
+        requested_trade_data_source: str,
+    ) -> None:
+        super().__init__("account_trade_data_source_conflict")
+        self.account_id = account_id
+        self.current_trade_data_source = current_trade_data_source
+        self.requested_trade_data_source = requested_trade_data_source
 
 
 def _resolve_user_id(user_id: str | None) -> str:
@@ -61,11 +82,19 @@ def sync_projectx_accounts(
     for payload in normalized_rows:
         external_id = payload["external_id"]
         row = existing_by_external_id.get(external_id)
+        if (
+            row is not None
+            and row.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT
+        ):
+            # An explicit local-data choice owns this external ID. Provider
+            # discovery must neither overwrite it nor try to insert a duplicate.
+            continue
         if row is None:
             row = Account(
                 user_id=resolved_user_id,
                 provider=ACCOUNT_PROVIDER,
                 external_id=external_id,
+                trade_data_source=TRADE_DATA_SOURCE_PROJECTX,
             )
             db.add(row)
             existing_by_external_id[external_id] = row
@@ -86,6 +115,7 @@ def sync_projectx_accounts(
         db.query(Account)
         .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
+        .filter(Account.trade_data_source == TRADE_DATA_SOURCE_PROJECTX)
     )
     if seen_external_ids:
         missing_query = missing_query.filter(~Account.external_id.in_(sorted(seen_external_ids)))
@@ -128,6 +158,92 @@ def get_projectx_account_row(
     if lock_for_update:
         query = query.with_for_update()
     return query.first()
+
+
+def create_projectx_import_account(
+    db: Session,
+    *,
+    account_id: int,
+    name: str | None = None,
+    user_id: str | None = None,
+) -> Account:
+    resolved_user_id = _resolve_user_id(user_id)
+    external_id = normalize_projectx_account_external_id(account_id)
+    if external_id is None:
+        raise ValueError("Account ID must be a positive integer.")
+    if int(external_id) > MAX_PROJECTX_ACCOUNT_ID:
+        raise ValueError("Account ID is outside the supported range.")
+
+    existing = get_projectx_account_row(
+        db,
+        int(external_id),
+        user_id=resolved_user_id,
+    )
+    if existing is not None:
+        if existing.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+            return existing
+        raise AccountTradeDataSourceConflictError(
+            account_id=int(external_id),
+            current_trade_data_source=existing.trade_data_source,
+            requested_trade_data_source=TRADE_DATA_SOURCE_CSV_IMPORT,
+        )
+
+    normalized_name = _normalize_optional_text(name)
+    if normalized_name is None:
+        normalized_name = f"Topstep Live {external_id}"
+    if len(normalized_name) > ACCOUNT_DISPLAY_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"Account name must be {ACCOUNT_DISPLAY_NAME_MAX_LENGTH} characters or fewer."
+        )
+    if _has_control_character(normalized_name):
+        raise ValueError("Account name cannot contain control characters.")
+
+    has_main_account = (
+        db.query(Account.id)
+        .filter(Account.user_id == resolved_user_id)
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+        .filter(Account.is_main.is_(True))
+        .first()
+        is not None
+    )
+    row = Account(
+        user_id=resolved_user_id,
+        provider=ACCOUNT_PROVIDER,
+        external_id=external_id,
+        name=normalized_name,
+        trade_data_source=TRADE_DATA_SOURCE_CSV_IMPORT,
+        account_state=ACCOUNT_STATE_ACTIVE,
+        can_trade=None,
+        is_visible=True,
+        is_main=not has_main_account,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def set_projectx_account_trade_data_source(
+    db: Session,
+    account_id: int,
+    trade_data_source: str,
+    *,
+    user_id: str | None = None,
+) -> Account:
+    if trade_data_source not in TRADE_DATA_SOURCES:
+        raise ValueError("Unsupported trade data source.")
+
+    target = get_projectx_account_row(db, account_id, user_id=user_id)
+    if target is None:
+        raise LookupError("projectx_account_not_found")
+
+    if target.trade_data_source == trade_data_source:
+        return target
+
+    raise AccountTradeDataSourceConflictError(
+        account_id=account_id,
+        current_trade_data_source=target.trade_data_source,
+        requested_trade_data_source=trade_data_source,
+    )
 
 
 def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | None = None) -> None:
@@ -187,6 +303,8 @@ def should_include_account(
     show_inactive: bool,
     show_missing: bool,
 ) -> bool:
+    if row.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+        return True
     if row.is_main:
         return True
     if row.account_state == ACCOUNT_STATE_ACTIVE:

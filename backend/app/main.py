@@ -13,7 +13,7 @@ from time import perf_counter
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -89,7 +89,7 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
+from .models import Account, Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
@@ -97,6 +97,7 @@ from .projectx_schemas import (
     ProjectXAccountRenameIn,
     ProjectXAccountRenameOut,
     ProjectXAccountOut,
+    ProjectXAccountTradeDataSourceIn,
     ProjectXCredentialsStatusOut,
     ProjectXPointPayoffOut,
     ProjectXCredentialsUpsertIn,
@@ -106,6 +107,9 @@ from .projectx_schemas import (
     ProjectXTradeRefreshOut,
     ProjectXTradeSummaryOut,
     ProjectXTradeSummaryWithPointBasesOut,
+    TopstepLiveAccountCreateIn,
+    TopstepTradeImportConfirmOut,
+    TopstepTradeImportPreviewOut,
 )
 from .schemas import TradeOut
 from .services.metrics import (
@@ -146,13 +150,18 @@ from .services.journal_storage import delete_journal_image as delete_journal_ima
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
     ACCOUNT_STATE_MISSING,
+    AccountTradeDataSourceConflictError,
+    TRADE_DATA_SOURCE_CSV_IMPORT,
+    TRADE_DATA_SOURCE_PROJECTX,
     account_id_from_external_id,
+    create_projectx_import_account,
     get_projectx_account_row,
     get_projectx_account_rows,
     normalize_projectx_account_external_id,
     resolve_projectx_account_effective_name,
     resolve_projectx_account_provider_name,
     set_projectx_account_display_name,
+    set_projectx_account_trade_data_source,
     set_main_projectx_account,
     should_include_account,
     sync_projectx_accounts,
@@ -177,6 +186,12 @@ from .services.projectx_trades import (
     serialize_trade_event,
     summarize_trade_events,
     summarize_trade_events_with_point_bases,
+)
+from .services.trade_imports import (
+    MAX_TRADE_IMPORT_BYTES,
+    TradeImportValidationError,
+    confirm_trade_import,
+    preview_trade_import,
 )
 from .services.bot_service import (
     _looks_like_projectx_contract_id,
@@ -227,8 +242,8 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260711_seed_nq_es_instrument_metadata.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260711-v2"
+_REQUIRED_SCHEMA_MIGRATION = "20260724_restore_express_trade_data_source.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260724-v2"
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
 _backtest_capacity_lock = Lock()
@@ -438,6 +453,8 @@ def readiness(db: Session = Depends(get_db)):
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
+            "projectx_trade_events",
+            "trade_import_batches",
         }
         if not required_tables.issubset(table_names):
             raise RuntimeError("schema_outdated")
@@ -452,7 +469,55 @@ def readiness(db: Session = Depends(get_db)):
         if bot_config_column is None or not bool(bot_config_column.get("nullable")):
             raise RuntimeError("schema_outdated")
         account_columns = {column["name"] for column in schema.get_columns("accounts")}
-        if "balance" not in account_columns:
+        if not {"balance", "trade_data_source"}.issubset(account_columns):
+            raise RuntimeError("schema_outdated")
+        trade_import_batch_columns = {
+            column["name"]
+            for column in schema.get_columns("trade_import_batches")
+        }
+        if not {
+            "user_id",
+            "account_id",
+            "source_file_name",
+            "file_sha256",
+            "total_rows",
+            "inserted_rows",
+            "duplicate_rows",
+            "imported_at",
+        }.issubset(trade_import_batch_columns):
+            raise RuntimeError("schema_outdated")
+        trade_event_columns = {
+            column["name"]
+            for column in schema.get_columns("projectx_trade_events")
+        }
+        if not {
+            "commissions",
+            "fee_scope",
+            "trade_date",
+            "entry_timestamp",
+            "entry_price",
+            "import_batch_id",
+        }.issubset(trade_event_columns):
+            raise RuntimeError("schema_outdated")
+        trade_event_foreign_keys = schema.get_foreign_keys(
+            "projectx_trade_events"
+        )
+        import_batch_fk = next(
+            (
+                foreign_key
+                for foreign_key in trade_event_foreign_keys
+                if foreign_key.get("constrained_columns") == ["import_batch_id"]
+            ),
+            None,
+        )
+        import_batch_on_delete = str(
+            (import_batch_fk or {}).get("options", {}).get("ondelete") or ""
+        ).upper()
+        if (
+            import_batch_fk is None
+            or import_batch_fk.get("referred_table") != "trade_import_batches"
+            or import_batch_on_delete != "SET NULL"
+        ):
             raise RuntimeError("schema_outdated")
         attempt_checks = schema.get_check_constraints("bot_order_attempts")
         if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
@@ -1049,34 +1114,40 @@ def list_projectx_accounts(
         show_inactive = not only_active_accounts
         show_missing = not only_active_accounts
 
+    rows = get_projectx_account_rows(db, user_id=user_id)
+    provider_sync_required = not rows or any(
+        row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+        for row in rows
+    )
     provider_accounts: list[dict[str, object]] = []
     provider_error: ProjectXClientError | HTTPException | None = None
-    try:
-        client = _projectx_client_for_user(db, user_id=user_id)
-        provider_accounts = client.list_accounts(only_active_accounts=False)
-        sync_projectx_accounts(
-            db,
-            provider_accounts,
-            user_id=user_id,
-            missing_buffer=timedelta(
-                seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
-            ),
-        )
-        db.commit()
-    except ProjectXClientError as exc:
-        db.rollback()
-        provider_error = exc
-        logger.warning(
-            "projectx_account_sync_failed_using_local",
-            extra={"user_id": user_id, "status_code": exc.status_code},
-        )
-    except HTTPException as exc:
-        db.rollback()
-        provider_error = exc
-        logger.warning(
-            "projectx_account_sync_unavailable_using_local",
-            extra={"user_id": user_id, "status_code": exc.status_code},
-        )
+    if provider_sync_required:
+        try:
+            client = _projectx_client_for_user(db, user_id=user_id)
+            provider_accounts = client.list_accounts(only_active_accounts=False)
+            sync_projectx_accounts(
+                db,
+                provider_accounts,
+                user_id=user_id,
+                missing_buffer=timedelta(
+                    seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
+                ),
+            )
+            db.commit()
+        except ProjectXClientError as exc:
+            db.rollback()
+            provider_error = exc
+            logger.warning(
+                "projectx_account_sync_failed_using_local",
+                extra={"user_id": user_id, "status_code": exc.status_code},
+            )
+        except HTTPException as exc:
+            db.rollback()
+            provider_error = exc
+            logger.warning(
+                "projectx_account_sync_unavailable_using_local",
+                extra={"user_id": user_id, "status_code": exc.status_code},
+            )
 
     provider_by_external_id = _provider_account_payloads_by_external_id(provider_accounts)
     rows = get_projectx_account_rows(db, user_id=user_id)
@@ -1107,44 +1178,153 @@ def list_projectx_accounts(
         if account_id is None:
             continue
 
-        provider_payload = provider_by_external_id.get(row.external_id, {})
-        provider_balance = provider_payload.get("balance") if isinstance(provider_payload, dict) else None
-        provider_can_trade = provider_payload.get("can_trade") if isinstance(provider_payload, dict) else None
-        provider_is_visible = provider_payload.get("is_visible") if isinstance(provider_payload, dict) else None
-
-        provider_name = resolve_projectx_account_provider_name(row.name, account_id=account_id)
-        effective_name = resolve_projectx_account_effective_name(
-            provider_name=provider_name,
-            display_name=row.display_name,
-        )
-        account_state = row.account_state or ACCOUNT_STATE_ACTIVE
-        can_trade = provider_can_trade if isinstance(provider_can_trade, bool) else row.can_trade
-        is_visible = provider_is_visible if isinstance(provider_is_visible, bool) else row.is_visible
-
         payload.append(
-            {
-                "id": account_id,
-                "name": effective_name,
-                "provider_name": provider_name,
-                "custom_display_name": row.display_name,
-                "balance": (
-                    float(provider_balance)
-                    if provider_balance is not None
-                    else (float(row.balance) if row.balance is not None else None)
-                ),
-                "status": account_state,
-                "account_state": account_state,
-                "is_main": bool(row.is_main),
-                "can_trade": can_trade,
-                "is_visible": is_visible,
-                "last_trade_at": last_trade_by_account_id.get(account_id),
-                "last_seen_at": row.last_seen_at,
-                "provider_data_stale": provider_error is not None,
-            }
+            _serialize_projectx_account(
+                row,
+                account_id=account_id,
+                last_trade_at=last_trade_by_account_id.get(account_id),
+                provider_payload=provider_by_external_id.get(row.external_id),
+                provider_data_stale=provider_error is not None,
+            )
         )
 
     payload.sort(key=lambda row: (-int(bool(row["is_main"])), int(row["id"])))
     return payload
+
+
+def _trade_data_source_conflict_detail(
+    exc: AccountTradeDataSourceConflictError,
+) -> dict[str, object]:
+    return {
+        "code": "account_trade_data_source_conflict",
+        "message": (
+            f"Account {exc.account_id} already uses "
+            f"{exc.current_trade_data_source}; cross-source conversion to "
+            f"{exc.requested_trade_data_source} is not allowed. "
+            "ProjectX and Live CSV accounts must remain separate."
+        ),
+        "account_id": exc.account_id,
+        "current_trade_data_source": exc.current_trade_data_source,
+        "requested_trade_data_source": exc.requested_trade_data_source,
+    }
+
+
+@app.post(
+    "/api/accounts/import-target",
+    response_model=ProjectXAccountOut,
+    status_code=201,
+)
+def create_topstep_live_import_target(
+    payload: TopstepLiveAccountCreateIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(payload.account_id)
+
+    try:
+        row = create_projectx_import_account(
+            db,
+            user_id=user_id,
+            account_id=payload.account_id,
+            name=payload.name,
+        )
+        db.commit()
+        db.refresh(row)
+    except AccountTradeDataSourceConflictError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_trade_data_source_conflict_detail(exc),
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        row = get_projectx_account_row(
+            db,
+            payload.account_id,
+            user_id=user_id,
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "live_import_account_conflict",
+                    "message": "The Live CSV account could not be created because its account ID is already in use.",
+                    "account_id": payload.account_id,
+                },
+            ) from exc
+        if row.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
+            conflict = AccountTradeDataSourceConflictError(
+                account_id=payload.account_id,
+                current_trade_data_source=row.trade_data_source,
+                requested_trade_data_source=TRADE_DATA_SOURCE_CSV_IMPORT,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=_trade_data_source_conflict_detail(conflict),
+            ) from exc
+
+    account_id = account_id_from_external_id(row.external_id)
+    if account_id is None:
+        raise HTTPException(status_code=500, detail="invalid_stored_account_id")
+    return _serialize_projectx_account(
+        row,
+        account_id=account_id,
+        last_trade_at=None,
+    )
+
+
+@app.patch(
+    "/api/accounts/{account_id}/trade-data-source",
+    response_model=ProjectXAccountOut,
+)
+def update_projectx_account_trade_data_source(
+    account_id: int,
+    payload: ProjectXAccountTradeDataSourceIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+
+    try:
+        row = set_projectx_account_trade_data_source(
+            db,
+            account_id,
+            payload.trade_data_source,
+            user_id=user_id,
+        )
+        db.commit()
+        db.refresh(row)
+    except AccountTradeDataSourceConflictError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_trade_data_source_conflict_detail(exc),
+        ) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found.") from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    last_trade_at = _load_last_trade_timestamps(
+        db,
+        user_id=user_id,
+        account_ids=[account_id],
+    ).get(account_id)
+    return _serialize_projectx_account(
+        row,
+        account_id=account_id,
+        last_trade_at=last_trade_at,
+        # This mutation does not contact ProjectX. A later successful account
+        # list sync is the first point that can establish fresh provider data.
+        provider_data_stale=(
+            row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+        ),
+    )
 
 
 @app.patch("/api/accounts/{account_id}/display-name", response_model=ProjectXAccountRenameOut)
@@ -1219,8 +1399,18 @@ def get_projectx_account_last_trade(
 ):
     user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
+    account = get_projectx_account_row(db, account_id, user_id=user_id)
 
     local_timestamp = _load_last_trade_timestamps(db, user_id=user_id, account_ids=[account_id]).get(account_id)
+    if (
+        account is not None
+        and account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT
+    ):
+        return {
+            "account_id": account_id,
+            "last_trade_at": local_timestamp,
+            "source": "local" if local_timestamp is not None else "none",
+        }
     if local_timestamp is not None and not refresh:
         return {
             "account_id": account_id,
@@ -2104,6 +2294,23 @@ def start_trading_bot(
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     body = payload or BotStartIn()
     try:
+        config = get_bot_config(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+        )
+        if config is None:
+            raise LookupError("bot_config_not_found")
+        account = _require_owned_projectx_account(
+            db,
+            user_id=user_id,
+            account_id=int(config.account_id),
+        )
+        if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+            raise HTTPException(
+                status_code=409,
+                detail="csv_import_accounts_cannot_run_bots",
+            )
         client = _projectx_client_for_user(db, user_id=user_id)
         result = start_bot_run(
             db,
@@ -2166,6 +2373,11 @@ def evaluate_trading_bot(
         if config is None:
             raise LookupError("bot_config_not_found")
         account = _require_owned_projectx_account(db, user_id=user_id, account_id=int(config.account_id))
+        if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+            raise HTTPException(
+                status_code=409,
+                detail="csv_import_accounts_cannot_run_bots",
+            )
         client = _projectx_client_for_user(db, user_id=user_id)
         result = evaluate_bot_config(
             db,
@@ -2631,6 +2843,11 @@ def pull_projectx_account_journal_trade_stats(
     _validate_account_id(account_id)
     if entry_id <= 0:
         raise HTTPException(status_code=400, detail="entry_id must be a positive integer")
+    account = _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+    )
 
     def sync_window(start: datetime | None, end: datetime | None) -> None:
         client = _projectx_client_for_user(db, user_id=user_id)
@@ -2654,7 +2871,12 @@ def pull_projectx_account_journal_trade_stats(
                 entry_date=payload.entry_date,
                 start_date=payload.start_date,
                 end_date=payload.end_date,
-                before_query_sync=sync_window,
+                before_query_sync=(
+                    None
+                    if account.trade_data_source
+                    == TRADE_DATA_SOURCE_CSV_IMPORT
+                    else sync_window
+                ),
             )
         except ProjectXClientError as exc:
             if not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
@@ -2689,7 +2911,16 @@ def refresh_projectx_account_trades(
     user_id = get_authenticated_user_id()
     _validate_account_id(account_id)
     _validate_time_range(start=start, end=end)
-    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    account = _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+        raise HTTPException(
+            status_code=409,
+            detail="csv_import_accounts_cannot_refresh_from_projectx",
+        )
 
     try:
         client = _projectx_client_for_user(db, user_id=user_id)
@@ -2705,6 +2936,75 @@ def refresh_projectx_account_trades(
         raise _to_http_exception(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/accounts/{account_id}/trade-imports/preview",
+    response_model=TopstepTradeImportPreviewOut,
+)
+def preview_topstep_trade_import(
+    account_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    account = _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    _require_csv_import_account(account)
+    try:
+        content = file.file.read(MAX_TRADE_IMPORT_BYTES + 1)
+    finally:
+        file.file.close()
+    try:
+        return preview_trade_import(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            filename=file.filename or "trade-export",
+            content=content,
+        )
+    except TradeImportValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
+
+
+@app.post(
+    "/api/accounts/{account_id}/trade-imports/confirm",
+    response_model=TopstepTradeImportConfirmOut,
+    status_code=201,
+)
+def confirm_topstep_trade_import(
+    account_id: int,
+    file: UploadFile = File(...),
+    preview_sha256: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    account = _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    _require_csv_import_account(account)
+    try:
+        content = file.file.read(MAX_TRADE_IMPORT_BYTES + 1)
+    finally:
+        file.file.close()
+    try:
+        return confirm_trade_import(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            filename=file.filename or "trade-export",
+            content=content,
+            expected_sha256=preview_sha256,
+        )
+    except TradeImportValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
 
 
 @app.get("/api/accounts/{account_id}/trades", response_model=list[ProjectXTradeOut])
@@ -3167,6 +3467,81 @@ def _provider_account_payloads_by_external_id(
     return output
 
 
+def _serialize_projectx_account(
+    row: Account,
+    *,
+    account_id: int,
+    last_trade_at: datetime | None,
+    provider_payload: dict[str, object] | None = None,
+    provider_data_stale: bool = False,
+) -> dict[str, object]:
+    trade_data_source = (
+        row.trade_data_source
+        if row.trade_data_source in {
+            TRADE_DATA_SOURCE_PROJECTX,
+            TRADE_DATA_SOURCE_CSV_IMPORT,
+        }
+        else TRADE_DATA_SOURCE_PROJECTX
+    )
+    use_provider_payload = (
+        trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+        and isinstance(provider_payload, dict)
+    )
+    effective_provider_payload = provider_payload if use_provider_payload else {}
+    provider_balance = effective_provider_payload.get("balance")
+    provider_can_trade = effective_provider_payload.get("can_trade")
+    provider_is_visible = effective_provider_payload.get("is_visible")
+
+    provider_name = resolve_projectx_account_provider_name(
+        row.name,
+        account_id=account_id,
+    )
+    effective_name = resolve_projectx_account_effective_name(
+        provider_name=provider_name,
+        display_name=row.display_name,
+    )
+    account_state = row.account_state or ACCOUNT_STATE_ACTIVE
+    is_csv_import = trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT
+    return {
+        "id": account_id,
+        "name": effective_name,
+        "provider_name": provider_name,
+        "custom_display_name": row.display_name,
+        # CSV exports do not carry a current balance or provider capability
+        # state. Preserve cached values in the database for a later switch back
+        # to ProjectX, but never present them as current in CSV mode.
+        "balance": None
+        if is_csv_import
+        else (
+            float(provider_balance)
+            if provider_balance is not None
+            else (float(row.balance) if row.balance is not None else None)
+        ),
+        "status": account_state,
+        "account_state": account_state,
+        "is_main": bool(row.is_main),
+        "can_trade": None
+        if is_csv_import
+        else (
+            provider_can_trade
+            if isinstance(provider_can_trade, bool)
+            else row.can_trade
+        ),
+        "is_visible": None
+        if is_csv_import
+        else (
+            provider_is_visible
+            if isinstance(provider_is_visible, bool)
+            else row.is_visible
+        ),
+        "last_trade_at": last_trade_at,
+        "last_seen_at": None if is_csv_import else row.last_seen_at,
+        "provider_data_stale": bool(provider_data_stale)
+        and trade_data_source == TRADE_DATA_SOURCE_PROJECTX,
+        "trade_data_source": trade_data_source,
+    }
+
+
 def _require_owned_projectx_account(
     db: Session,
     *,
@@ -3178,6 +3553,14 @@ def _require_owned_projectx_account(
     if account is None:
         raise HTTPException(status_code=404, detail=error_detail)
     return account
+
+
+def _require_csv_import_account(account: Account) -> None:
+    if account.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
+        raise HTTPException(
+            status_code=409,
+            detail="trade_import_requires_csv_import_account",
+        )
 
 
 def _should_fallback_to_local_metrics(
@@ -3206,6 +3589,29 @@ def _ensure_trade_cache_or_fallback(
     end: datetime | None,
     refresh: bool,
 ) -> None:
+    account = get_projectx_account_row(db, account_id, user_id=user_id)
+    if (
+        account is not None
+        and account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT
+    ):
+        # CSV-import accounts are explicitly local, including an empty account
+        # before its first confirmed file. A refresh query must never turn into
+        # an implicit provider credential or network dependency.
+        return
+    if (
+        refresh
+        and account is not None
+        and account.account_state == ACCOUNT_STATE_MISSING
+        and _has_imported_trade_history(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+        )
+    ):
+        # Preserve the existing local fallback for already-imported accounts
+        # that became missing before trade_data_source was introduced.
+        return
+
     try:
         ensure_trade_cache_for_request(
             db,
@@ -3218,7 +3624,17 @@ def _ensure_trade_cache_or_fallback(
         )
     except ProjectXClientError as exc:
         db.rollback()
-        if refresh and not _should_fallback_to_local_metrics(db, user_id=user_id, account_id=account_id, exc=exc):
+        can_use_imported_history = exc.status_code in {403, 404} and _has_imported_trade_history(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+        )
+        if refresh and not can_use_imported_history and not _should_fallback_to_local_metrics(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            exc=exc,
+        ):
             raise
         logger.warning(
             "projectx_trade_cache_sync_failed_using_local",
@@ -3232,6 +3648,23 @@ def _ensure_trade_cache_or_fallback(
             "projectx_trade_cache_sync_failed_using_local",
             extra={"account_id": account_id, "user_id": user_id},
         )
+
+
+def _has_imported_trade_history(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+) -> bool:
+    return (
+        db.query(ProjectXTradeEvent.id)
+        .filter(ProjectXTradeEvent.user_id == user_id)
+        .filter(ProjectXTradeEvent.account_id == account_id)
+        .filter(ProjectXTradeEvent.import_batch_id.isnot(None))
+        .limit(1)
+        .first()
+        is not None
+    )
 
 
 def _read_int_env(name: str, default: int) -> int:
