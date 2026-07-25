@@ -9,7 +9,7 @@ const easternDateTimePartsFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
-  hour12: false,
+  hourCycle: "h23",
 });
 
 type ParsedIsoDate = {
@@ -38,7 +38,11 @@ function getEasternOffsetMs(utcInstant: Date) {
   const year = readDatePart(parts, "year");
   const month = readDatePart(parts, "month");
   const day = readDatePart(parts, "day");
-  const hour = readDatePart(parts, "hour");
+  // Some Node/ICU combinations render midnight as 24:00 even when a
+  // zero-based hour cycle is requested. Treat that as 00:00 on the formatted
+  // calendar date so the UTC offset calculation does not advance a day.
+  const formattedHour = readDatePart(parts, "hour");
+  const hour = formattedHour === 24 ? 0 : formattedHour;
   const minute = readDatePart(parts, "minute");
   const second = readDatePart(parts, "second");
   const asUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
