@@ -53,8 +53,16 @@ describe("accountSelection main account persistence", () => {
 
     writeStoredMainAccountId(7012);
 
-    expect(window.localStorage.getItem(MAIN_ACCOUNT_STORAGE_KEY)).toBe("7012");
+    expect(window.localStorage.getItem(`${MAIN_ACCOUNT_STORAGE_KEY}:anonymous`)).toBe("7012");
     expect(readStoredMainAccountId()).toBe(7012);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("migrates a valid unscoped live preference once", () => {
+    window.localStorage.setItem(MAIN_ACCOUNT_STORAGE_KEY, "7044");
+
+    expect(readStoredMainAccountId()).toBe(7044);
+    expect(window.localStorage.getItem(MAIN_ACCOUNT_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(`${MAIN_ACCOUNT_STORAGE_KEY}:anonymous`)).toBe("7044");
   });
 });

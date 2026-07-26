@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Drawer } from "../../components/ui/Drawer";
@@ -234,6 +236,7 @@ function buildInitialAddPayoutState(): AddPayoutState {
 }
 
 export function ExpensesPage() {
+  const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [category, setCategory] = useState<ExpenseCategory | "">("");
@@ -280,7 +283,6 @@ export function ExpensesPage() {
   const beginExpensesRequest = useLatestRequestGuard();
   const beginPayoutsRequest = useLatestRequestGuard();
   const beginFinancialSummaryRequest = useLatestRequestGuard();
-  const demoModeEnabled = isDemoModeEnabled();
 
   const refreshFinancialData = useCallback(() => {
     setDataRevision((current) => current + 1);
@@ -681,16 +683,25 @@ export function ExpensesPage() {
   }
 
   function handleOpenAdd() {
+    if (demoModeEnabled) {
+      return;
+    }
     resetAddForm();
     setAddOpen(true);
   }
 
   function handleOpenAddPayout() {
+    if (demoModeEnabled) {
+      return;
+    }
     resetAddPayoutForm();
     setAddPayoutOpen(true);
   }
 
   async function handleDeleteExpense(expense: ExpenseRecord) {
+    if (demoModeEnabled) {
+      return;
+    }
     const confirmed = window.confirm(`Delete expense #${expense.id} for ${formatCurrency(expense.amount)}?`);
     if (!confirmed) {
       return;
@@ -708,6 +719,9 @@ export function ExpensesPage() {
   }
 
   async function handleDeletePayout(payout: PayoutRecord) {
+    if (demoModeEnabled) {
+      return;
+    }
     const confirmed = window.confirm(`Delete payout #${payout.id} for ${formatCurrency(payout.amount)}?`);
     if (!confirmed) {
       return;
@@ -724,6 +738,11 @@ export function ExpensesPage() {
   async function handleSubmitNewExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAddError(null);
+
+    if (demoModeEnabled) {
+      setAddError("Demo Mode uses a read-only financial snapshot.");
+      return;
+    }
 
     if (practiceBlocked) {
       setAddError("Practice accounts are free. Expenses are disabled.");
@@ -777,6 +796,11 @@ export function ExpensesPage() {
     event.preventDefault();
     setAddPayoutError(null);
 
+    if (demoModeEnabled) {
+      setAddPayoutError("Demo Mode uses a read-only financial snapshot.");
+      return;
+    }
+
     if (!addPayoutState.payoutDate) {
       setAddPayoutError("Payout date is required.");
       return;
@@ -811,6 +835,11 @@ export function ExpensesPage() {
   return (
     <div className="space-y-6 pb-10">
       <h1 className="sr-only">Expenses and Payouts</h1>
+      <DemoModeNotice>
+        <p>
+          Expenses, payouts, and net ranges are a fixed sample ledger. Filtering and pagination are available; adding, deleting, and combine reconciliation are disabled.
+        </p>
+      </DemoModeNotice>
       <section className="grid gap-3">
         <Card>
           <CardContent className="space-y-5">
@@ -830,17 +859,22 @@ export function ExpensesPage() {
                         ? `${totals.count} expense${totals.count === 1 ? "" : "s"}`
                         : "No data"}
                   </p>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleReconcileCombineExpenses}
-                    disabled={combineTrackerLoading || demoModeEnabled}
-                    title={demoModeEnabled ? "Demo mode is read-only" : undefined}
-                  >
-                    {combineTrackerLoading ? "Reconciling..." : "Reconcile Combine Expenses"}
-                  </Button>
+                  {demoModeEnabled ? (
+                    <p className="text-xs text-app-muted-strong">
+                      Local combine tracking is excluded from this sample ledger.
+                    </p>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleReconcileCombineExpenses}
+                      disabled={combineTrackerLoading}
+                    >
+                      {combineTrackerLoading ? "Reconciling..." : "Reconcile Combine Expenses"}
+                    </Button>
+                  )}
                 </div>
-                {combineTrackerError ? <p className="text-xs text-rose-300">{combineTrackerError}</p> : null}
+                {combineTrackerError ? <p className="text-xs text-rose-300" role="alert">{combineTrackerError}</p> : null}
               </div>
 
               <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
@@ -853,7 +887,7 @@ export function ExpensesPage() {
                   </CardTitle>
                 </div>
                 {spendSinceLastPayoutError ? (
-                  <p className="text-xs text-rose-300">{spendSinceLastPayoutError}</p>
+                  <p className="text-xs text-rose-300" role="alert">{spendSinceLastPayoutError}</p>
                 ) : (
                   <p className="text-xs text-slate-400">
                     {spendSinceLastPayoutLoading || !spendSinceLastPayout
@@ -877,7 +911,7 @@ export function ExpensesPage() {
                   </CardTitle>
                 </div>
                 {totalsError || payoutTotalsError ? (
-                  <p className="text-xs text-rose-300">{totalsError ?? payoutTotalsError}</p>
+                  <p className="text-xs text-rose-300" role="alert">{totalsError ?? payoutTotalsError}</p>
                 ) : (
                   <p className="text-xs text-slate-400">
                     {netProfitLoading
@@ -890,7 +924,7 @@ export function ExpensesPage() {
               </div>
             </div>
 
-            {netRangesError ? <p className="text-xs text-rose-300">{netRangesError}</p> : null}
+            {netRangesError ? <p className="text-xs text-rose-300" role="alert">{netRangesError}</p> : null}
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               {netRangeOptions.map((option) => {
                 const summary = netRanges.find((item) => item.key === option.key);
@@ -917,15 +951,21 @@ export function ExpensesPage() {
             </div>
             <p className="text-xs text-slate-500">
               Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted:{" "}
-              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}. Standard activations:{" "}
-              {combineSpendSnapshot.standardActivationCount} (
-              {formatCurrency(combineSpendSnapshot.standardActivationCostCents / 100)}).
+              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}.
+              {demoModeEnabled ? (
+                <> Demo totals exclude the device's local combine tracker.</>
+              ) : (
+                <>
+                  {" "}Standard activations: {combineSpendSnapshot.standardActivationCount} (
+                  {formatCurrency(combineSpendSnapshot.standardActivationCostCents / 100)}).
+                </>
+              )}
             </p>
           </CardContent>
         </Card>
       </section>
 
-      {totalsError ? <p className="text-sm text-rose-300">{totalsError}</p> : null}
+      {totalsError ? <p className="text-sm text-rose-300" role="alert">{totalsError}</p> : null}
 
       <Card>
         <CardHeader>
@@ -934,7 +974,7 @@ export function ExpensesPage() {
               <CardTitle>Expenses</CardTitle>
               <CardDescription>Track paid account fees and operational costs.</CardDescription>
             </div>
-            <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? "Demo mode is read-only" : undefined}>Add Expense</Button>
+            <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Expense</Button>
           </div>
         </CardHeader>
 
@@ -990,13 +1030,13 @@ export function ExpensesPage() {
                 {loading ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-slate-400">
-                      Loading expenses...
+                      <span role="status" aria-live="polite">Loading expenses...</span>
                     </TableCell>
                   </TableRow>
                 ) : error ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-rose-300">
-                      {error}
+                      <span role="alert">{error}</span>
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
@@ -1018,7 +1058,7 @@ export function ExpensesPage() {
                         {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" disabled={demoModeEnabled} onClick={() => void handleDeleteExpense(expense)}>
+                        <Button variant="danger" size="sm" disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeleteExpense(expense)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1028,6 +1068,7 @@ export function ExpensesPage() {
               </TableBody>
             </Table>
           </div>
+          <p className="mt-2 text-xs text-slate-500 md:hidden">Swipe horizontally to review every expense column.</p>
 
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
@@ -1064,7 +1105,7 @@ export function ExpensesPage() {
               <CardTitle>Payouts</CardTitle>
               <CardDescription>Log the final payouts you receive after the profit split.</CardDescription>
             </div>
-            <Button onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? "Demo mode is read-only" : undefined}>Add Payout</Button>
+            <Button onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Payout</Button>
           </div>
         </CardHeader>
 
@@ -1090,7 +1131,7 @@ export function ExpensesPage() {
             </div>
           </div>
 
-          {payoutTotalsError ? <p className="mt-4 text-sm text-rose-300">{payoutTotalsError}</p> : null}
+          {payoutTotalsError ? <p className="mt-4 text-sm text-rose-300" role="alert">{payoutTotalsError}</p> : null}
 
           <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
             <Table className="min-w-[720px]">
@@ -1106,13 +1147,13 @@ export function ExpensesPage() {
                 {payoutLoading ? (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-slate-400">
-                      Loading payouts...
+                      <span role="status" aria-live="polite">Loading payouts...</span>
                     </TableCell>
                   </TableRow>
                 ) : payoutError ? (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-rose-300">
-                      {payoutError}
+                      <span role="alert">{payoutError}</span>
                     </TableCell>
                   </TableRow>
                 ) : payoutItems.length === 0 ? (
@@ -1130,7 +1171,7 @@ export function ExpensesPage() {
                         {payout.notes ?? "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" disabled={demoModeEnabled} onClick={() => void handleDeletePayout(payout)}>
+                        <Button variant="danger" size="sm" disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeletePayout(payout)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1140,6 +1181,7 @@ export function ExpensesPage() {
               </TableBody>
             </Table>
           </div>
+          <p className="mt-2 text-xs text-slate-500 md:hidden">Swipe horizontally to review every payout column.</p>
 
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
@@ -1170,7 +1212,7 @@ export function ExpensesPage() {
       </Card>
 
       <Drawer
-        open={addPayoutOpen}
+        open={!demoModeEnabled && addPayoutOpen}
         onClose={() => setAddPayoutOpen(false)}
         title="Add Payout"
         description="Log the final payout amount you received after the profit split."
@@ -1231,7 +1273,7 @@ export function ExpensesPage() {
             <Button variant="ghost" onClick={() => setAddPayoutOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={addingPayout}>
+            <Button type="submit" disabled={demoModeEnabled || addingPayout}>
               {addingPayout ? "Saving..." : "Save Payout"}
             </Button>
           </div>
@@ -1239,7 +1281,7 @@ export function ExpensesPage() {
       </Drawer>
 
       <Drawer
-        open={addOpen}
+        open={!demoModeEnabled && addOpen}
         onClose={() => setAddOpen(false)}
         title="Add Expense"
         description="Use paid-account presets for Topstep evaluation and activation fees."
@@ -1396,7 +1438,7 @@ export function ExpensesPage() {
             <Button variant="ghost" onClick={() => setAddOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={adding || practiceBlocked}>
+            <Button type="submit" disabled={demoModeEnabled || adding || practiceBlocked}>
               {adding ? "Saving..." : "Save Expense"}
             </Button>
           </div>

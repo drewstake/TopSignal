@@ -5,6 +5,7 @@ vi.mock("./supabase", () => ({
 }));
 
 import { accountsApi, botsApi, buildProjectXCandleRequestKey, buildUserScopedProjectXCandleRequestKey } from "./api";
+import { DEMO_AS_OF_DATE } from "./demoScenario";
 import { getAccessToken } from "./supabase";
 
 function installDemoModeStorage(enabled: boolean) {
@@ -88,19 +89,19 @@ describe("accountsApi", () => {
 
     const accounts = await accountsApi.getSelectableAccounts();
     const summary = await accountsApi.getSummary(accounts[0].id, {
-      start: "2026-06-01",
-      end: "2026-06-30",
+      start: "2026-07-01",
+      end: DEMO_AS_OF_DATE,
       refresh: true,
     });
     const trades = await accountsApi.getTrades(accounts[0].id, {
-      start: "2026-06-01",
-      end: "2026-06-30",
+      start: "2026-07-01",
+      end: DEMO_AS_OF_DATE,
       limit: 200,
       refresh: true,
     });
     const calendar = await accountsApi.getPnlCalendar(accounts[0].id, {
-      start: "2026-06-01",
-      end: "2026-06-30",
+      start: "2026-07-01",
+      end: DEMO_AS_OF_DATE,
       refresh: true,
     });
 

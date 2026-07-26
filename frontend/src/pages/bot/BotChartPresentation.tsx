@@ -139,7 +139,7 @@ export function ChartToolButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className={`grid h-8 w-9 place-items-center border-r border-app-border/80 text-app-text-soft transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45 ${active ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]" : "hover:bg-app-accent/10 hover:text-app-text"}`}
+      className={`grid h-11 w-11 place-items-center border-r border-app-border/80 text-app-text-soft transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45 sm:h-9 sm:w-10 ${active ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]" : "hover:bg-app-accent/10 hover:text-app-text"}`}
     >
       {children}
     </button>
@@ -148,7 +148,7 @@ export function ChartToolButton({
 
 export function LegendDot({ active, className, label, onClick }: LegendProps) {
   return (
-    <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
+    <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 transition sm:min-h-8 ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
       <span className={`h-2.5 w-2.5 rounded-full ${className} ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
     </button>
@@ -157,7 +157,7 @@ export function LegendDot({ active, className, label, onClick }: LegendProps) {
 
 export function LegendLine({ active, className, label, onClick }: LegendProps) {
   return (
-    <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-1.5 py-1 transition ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
+    <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 transition sm:min-h-8 ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
       <span className={`h-0 w-5 border-t-2 border-dotted ${className} ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
     </button>

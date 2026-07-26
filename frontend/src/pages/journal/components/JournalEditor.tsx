@@ -23,6 +23,7 @@ export interface JournalEditorProps {
   imagesError: string | null;
   uploadingImage: boolean;
   deletingEntry: boolean;
+  readOnly?: boolean;
   onDraftChange: (next: JournalDraft) => void;
   onArchiveToggle: () => void;
   onRetrySave: () => void;
@@ -160,6 +161,7 @@ export function JournalEditor(props: JournalEditorProps) {
     imagesError,
     uploadingImage,
     deletingEntry,
+    readOnly = false,
     onDraftChange,
     onArchiveToggle,
     onRetrySave,
@@ -191,6 +193,9 @@ export function JournalEditor(props: JournalEditorProps) {
   }
 
   const handleNotesPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (readOnly) {
+      return;
+    }
     const imageFile = getClipboardImageFile(event.clipboardData?.items);
     if (!imageFile) {
       return;
@@ -203,7 +208,13 @@ export function JournalEditor(props: JournalEditorProps) {
     });
   };
 
-  const saveStateDisplay = saveStateMeta[saveState];
+  const saveStateDisplay = readOnly
+    ? {
+        label: "Demo snapshot",
+        variant: "accent" as const,
+        description: "Demo journal entries are read-only and are never synced.",
+      }
+    : saveStateMeta[saveState];
   const notesCharacterCount = draft.body.length;
   const showImagePanel = imagesLoading || imagesError || uploadingImage || images.length > 0;
 
@@ -237,7 +248,8 @@ export function JournalEditor(props: JournalEditorProps) {
               value={draft.title}
               maxLength={160}
               placeholder="Summarize the session in one line"
-              className="h-9 text-sm"
+              className="h-11 text-sm sm:h-9"
+              readOnly={readOnly}
               onChange={(event) => onDraftChange({ ...draft, title: event.target.value })}
             />
           </label>
@@ -246,7 +258,8 @@ export function JournalEditor(props: JournalEditorProps) {
             <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Mood</span>
             <Select
               value={draft.mood}
-              className="h-9 text-sm"
+              className="h-11 text-sm sm:h-9"
+              disabled={readOnly}
               onChange={(event) => onDraftChange({ ...draft, mood: event.target.value as JournalMood })}
             >
               {moodOptions.map((mood) => (
@@ -263,7 +276,8 @@ export function JournalEditor(props: JournalEditorProps) {
               value={draft.tagsInput}
               maxLength={1024}
               placeholder="nq, open-drive, patience, execution"
-              className="h-9 text-sm"
+              className="h-11 text-sm sm:h-9"
+              readOnly={readOnly}
               onChange={(event) => onDraftChange({ ...draft, tagsInput: event.target.value })}
             />
           </label>
@@ -284,14 +298,16 @@ export function JournalEditor(props: JournalEditorProps) {
 
         <section className="flex min-h-0 flex-1 flex-col space-y-2.5 overflow-hidden rounded-[20px] border border-slate-800/80 bg-gradient-to-b from-slate-950/80 via-slate-950/45 to-slate-950/30 px-3 py-3 shadow-panel">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Journal Entry</span>
+            <span id="journal-entry-body-label" className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">Journal Entry</span>
             <span className="text-[11px] text-slate-500">{notesCharacterCount}/20,000</span>
           </div>
           <label className="block min-h-0 flex-1">
             <Textarea
+              aria-labelledby="journal-entry-body-label"
               value={draft.body}
               maxLength={20000}
               className="h-full min-h-[360px] resize-none overflow-y-auto border-slate-800 bg-slate-950/70 leading-6"
+              readOnly={readOnly}
               placeholder="What did the market do, how did you respond, what should you repeat or correct next time?"
               onPaste={handleNotesPaste}
               onChange={(event) => onDraftChange({ ...draft, body: event.target.value })}
@@ -332,7 +348,12 @@ export function JournalEditor(props: JournalEditorProps) {
                             ? "border-cyan-400/80 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
                             : "border-slate-800/80 hover:border-slate-700/80"
                         } focus-visible:border-cyan-400/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/40`}
-                        aria-label={`Journal image ${index + 1}. Press Backspace or Delete to remove it.`}
+                        aria-label={
+                          readOnly
+                            ? `Journal image ${index + 1}. Demo image is read-only.`
+                            : `Journal image ${index + 1}. Press Backspace or Delete to remove it.`
+                        }
+                        disabled={readOnly}
                         onClick={() => setSelectedImageId(image.id)}
                         onFocus={() => setSelectedImageId(image.id)}
                         onKeyDown={(event) => handleImageKeyDown(event, image.id)}
@@ -349,7 +370,7 @@ export function JournalEditor(props: JournalEditorProps) {
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3">
           <div>
-            {saveState === "error" ? (
+            {saveState === "error" && !readOnly ? (
               <Button type="button" size="sm" variant="secondary" onClick={onRetrySave}>
                 Retry Save
               </Button>
@@ -360,7 +381,9 @@ export function JournalEditor(props: JournalEditorProps) {
               type="button"
               size="sm"
               variant="secondary"
-              disabled={savingDisabled || deletingEntry}
+              disabled={readOnly || savingDisabled || deletingEntry}
+              title={readOnly ? "Journal changes are unavailable in Demo Mode." : undefined}
+              aria-disabled={readOnly || undefined}
               onClick={onArchiveToggle}
             >
               {draft.is_archived ? "Restore Entry" : "Archive Entry"}
@@ -369,7 +392,8 @@ export function JournalEditor(props: JournalEditorProps) {
               type="button"
               size="sm"
               variant="ghost"
-              disabled={deletingEntry}
+              disabled={deletingEntry || readOnly}
+              title={readOnly ? "Journal changes are unavailable in Demo Mode." : undefined}
               onClick={onDeleteEntry}
             >
               {deletingEntry ? "Deleting..." : "Delete Entry"}

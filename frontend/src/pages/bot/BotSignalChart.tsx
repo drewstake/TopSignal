@@ -243,6 +243,7 @@ interface ChartHandles {
 
 interface BotSignalChartProps {
   bot: BotConfig | null;
+  demoMode?: boolean;
   /** Stable non-secret namespace for persisted per-user chart state. */
   authenticatedCacheScope: string | null;
   activity: BotActivity | null;
@@ -313,7 +314,7 @@ interface LiquidityDragState {
   pointerId: number;
 }
 
-export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
+export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
   const livePriceLineRef = useRef<IPriceLine | null>(null);
@@ -2676,16 +2677,20 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     // These requests use independent latest-wins lanes and merge with
     // closed-over-partial precedence, so starting them together gives a cached
     // chart its live quote immediately instead of waiting for history refresh.
+    if (demoMode) {
+      void loadCandles();
+      return;
+    }
     void runChartContextLoadsInParallel(
       () => loadCandles(),
       () => loadLivePrice({ force: true }),
     );
-  }, [loadCandles, loadLivePrice, refreshToken]);
+  }, [demoMode, loadCandles, loadLivePrice, refreshToken]);
 
   useEffect(() => {
     warmTimeframesControllerRef.current?.abort();
     const selectedBot = warmBotRef.current;
-    if (!selectedBot || !authenticatedCacheScope) {
+    if (demoMode || !selectedBot || !authenticatedCacheScope) {
       warmTimeframesControllerRef.current = null;
       return;
     }
@@ -2775,10 +2780,11 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
         warmTimeframesControllerRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, commitCandleFetch, warmContractKey]);
+  }, [authenticatedCacheScope, commitCandleFetch, demoMode, warmContractKey]);
 
   useEffect(() => {
     if (
+      demoMode ||
       canonicalLoadVersion <= 0 ||
       automaticRepairLoadVersionRef.current === canonicalLoadVersion ||
       unrepairedDataGaps.length === 0 ||
@@ -2794,7 +2800,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     // eligible on the next poll or through the explicit Backfill control.
     automaticRepairLoadVersionRef.current = canonicalLoadVersion;
     void repairDataGaps();
-  }, [canonicalLoadVersion, gapRepairing, historyLoading, loading, refreshing, repairDataGaps, unrepairedDataGaps.length]);
+  }, [canonicalLoadVersion, demoMode, gapRepairing, historyLoading, loading, refreshing, repairDataGaps, unrepairedDataGaps.length]);
 
   useEffect(() => {
     const candleRequests = candleRequestsRef.current;
@@ -2832,7 +2838,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
 
   useEffect(() => {
     autoHistoryHookRef.current = (range: LogicalRange | null) => {
-      if (!range || Number(range.from) > HISTORY_AUTOLOAD_EDGE_BARS) {
+      if (demoMode || !range || Number(range.from) > HISTORY_AUTOLOAD_EDGE_BARS) {
         return;
       }
       void loadOlderCandles();
@@ -2840,12 +2846,12 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     return () => {
       autoHistoryHookRef.current = null;
     };
-  }, [loadOlderCandles]);
+  }, [demoMode, loadOlderCandles]);
 
   // Poll closed candles for any selected bot. Review of a stopped bot still
   // needs a fresh chart; the backend serves cached rows cheaply when fresh.
   useEffect(() => {
-    if (!bot || !authenticatedCacheScope) {
+    if (demoMode || !bot || !authenticatedCacheScope) {
       return;
     }
 
@@ -2854,10 +2860,10 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     }, POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [authenticatedCacheScope, bot, loadCandles]);
+  }, [authenticatedCacheScope, bot, demoMode, loadCandles]);
 
   useEffect(() => {
-    if (!bot) {
+    if (demoMode || !bot) {
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
       setStreamPrice(null);
@@ -2902,10 +2908,10 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
         liveStreamRenderTimeoutRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, bot, scheduleLiveStreamPrice]);
+  }, [authenticatedCacheScope, bot, demoMode, scheduleLiveStreamPrice]);
 
   useEffect(() => {
-    if (!bot) {
+    if (demoMode || !bot) {
       return;
     }
 
@@ -2919,7 +2925,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
     }, LIVE_PRICE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [bot, loadLivePrice]);
+  }, [bot, demoMode, loadLivePrice]);
 
   const subtitle = bot
     ? buildChartSubtitle(bot, chartTimeframe)
@@ -3070,7 +3076,11 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
             <CardTitle>Signal Chart</CardTitle>
             <CardDescription className="mt-1">{subtitle}</CardDescription>
             <div className="mt-2">
-              <BotChartStatus
+              {demoMode ? (
+                <div className="inline-flex min-h-8 items-center rounded-md border border-app-accent/35 bg-app-accent/10 px-2.5 text-xs font-semibold text-app-accent" role="note">
+                  Demo snapshot · closed sample bars · live quote disabled
+                </div>
+              ) : <BotChartStatus
                 connection={connectionState}
                 connectionTitle={livePriceError ?? livePriceTitle ?? undefined}
                 barState={latestBarState}
@@ -3080,11 +3090,15 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
                 unrepairedGapCount={unrepairedDataGaps.length}
                 timeframeLabel={chartTimeframe.label}
                 timezoneLabel="ET"
-              />
+              />}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 md:justify-end">
-            {livePriceText ? (
+            {demoMode ? (
+              <span className="inline-flex min-h-8 items-center rounded-md border border-app-accent/35 bg-app-accent/10 px-2.5 text-xs font-semibold text-app-accent">
+                Demo snapshot
+              </span>
+            ) : livePriceText ? (
               <span
                 className={`inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border px-2.5 text-xs font-semibold ${
                   livePriceIsStale || livePriceError
@@ -3104,7 +3118,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
                 Live price unavailable
               </span>
             ) : null}
-            {bot && unrepairedDataGaps.length > 0 ? (
+            {!demoMode && bot && unrepairedDataGaps.length > 0 ? (
               <span
                 className="inline-flex h-8 items-center gap-2 whitespace-nowrap rounded-md border border-app-warning/35 bg-app-warning/10 pl-2.5 pr-1 text-xs font-semibold text-app-warning"
                 title={gapChipTitle}
@@ -3124,7 +3138,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
         </div>
         <div className="mt-3 flex flex-col gap-2 rounded-lg border border-app-border/80 bg-app-bg/40 p-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex h-8 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)]" aria-label="Chart timeframe">
+            <div className="inline-flex min-h-11 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)] sm:min-h-9" aria-label="Chart timeframe">
               {BOT_CHART_TIMEFRAMES.map((option) => {
                 const active = option.id === selectedTimeframeId;
                 return (
@@ -3135,7 +3149,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
                     aria-label={`Show ${option.label} candles`}
                     onClick={() => setTimeframeSelection({ key: botTimeframeSelectionKey, id: option.id })}
                     disabled={!bot}
-                    className={`min-w-11 border-r border-app-border/80 px-2.5 text-xs font-semibold transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`min-h-11 min-w-11 border-r border-app-border/80 px-2.5 text-xs font-semibold transition last:border-r-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9 ${
                       active
                         ? "bg-app-accent/15 text-app-accent shadow-[inset_0_0_0_1px_rgb(var(--theme-accent)/0.32)]"
                         : "text-app-text-soft hover:bg-app-accent/10 hover:text-app-text"
@@ -3146,7 +3160,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
                 );
               })}
             </div>
-            <div className="inline-flex h-8 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)]" aria-label="Chart drawing tools">
+            <div className="inline-flex min-h-11 overflow-hidden rounded-md border border-app-border-strong/70 bg-app-surface/95 shadow-[0_10px_24px_-22px_rgb(var(--theme-shadow-color)/0.55)] sm:min-h-9" aria-label="Chart drawing tools">
               <ChartToolButton
                 label="Cursor"
                 active={drawingTool === "cursor"}
@@ -3217,9 +3231,11 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
               size="sm"
               className="disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void loadOlderCandles()}
-              disabled={!bot || loading || historyLoading || candles.length === 0 || !hasMoreHistory}
+              disabled={demoMode || !bot || loading || historyLoading || candles.length === 0 || !hasMoreHistory}
               title={
-                hasMoreHistory
+                demoMode
+                  ? "Live history requests are disabled in Demo Mode."
+                  : hasMoreHistory
                   ? "Load older candles. Panning to the left edge also loads more automatically."
                   : "No further history is available for this market and timeframe."
               }
@@ -3232,10 +3248,14 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
               size="sm"
               className="disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => {
+                if (demoMode) {
+                  return;
+                }
                 void loadCandles({ silent: true, forceRefresh: true });
                 void loadLivePrice({ force: true });
               }}
-              disabled={!bot || loading || refreshing || historyLoading || gapRepairing}
+              disabled={demoMode || !bot || loading || refreshing || historyLoading || gapRepairing}
+              title={demoMode ? "Live market refresh is disabled in Demo Mode." : undefined}
             >
               <RefreshIcon />
               <span>{refreshing ? "Refreshing" : "Refresh"}</span>
@@ -3322,7 +3342,7 @@ export function BotSignalChart({ bot, authenticatedCacheScope, activity, lastEva
               event.stopPropagation();
               fitPriceScaleToVisibleRange();
             }}
-            className="absolute bottom-3 right-3 z-30 inline-flex h-8 items-center gap-1.5 rounded-md border border-app-accent/45 bg-app-surface/95 px-2.5 text-xs font-semibold text-app-text shadow-[0_14px_30px_-20px_rgb(var(--theme-shadow-color)/0.8)] backdrop-blur transition hover:border-app-accent/70 hover:bg-app-accent/15 hover:text-app-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45"
+            className="absolute bottom-3 right-3 z-30 inline-flex h-11 items-center gap-1.5 rounded-md border border-app-accent/45 bg-app-surface/95 px-2.5 text-xs font-semibold text-app-text shadow-[0_14px_30px_-20px_rgb(var(--theme-shadow-color)/0.8)] backdrop-blur transition hover:border-app-accent/70 hover:bg-app-accent/15 hover:text-app-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/45 disabled:cursor-not-allowed disabled:opacity-45 sm:h-8"
           >
             <FitChartIcon />
             <span>Fit</span>

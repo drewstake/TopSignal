@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
 
+import { hasActiveLiveMutationRequests } from "./liveMutationState";
+
 export const DEMO_MODE_CHANGED_EVENT = "topsignal:demo-mode-changed";
 
-const DEMO_MODE_STORAGE_KEY = "topsignal.demoMode";
+export const DEMO_MODE_STORAGE_KEY = "topsignal.demoMode";
 const DEMO_USER_EMAIL = "demo@topsignal.local";
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
+const CANONICAL_DEMO_ACCOUNT_IDS = new Set([910001, 910002, 910003, 910004, 910005, 910099]);
 
 type JsonObject = Record<string, unknown>;
 
-interface DemoModeChangeDetail {
+export type DemoModeChangeSource = "local" | "storage";
+
+export interface DemoModeChangeDetail {
   enabled: boolean;
+  source: DemoModeChangeSource;
+  blockedByLiveMutation?: boolean;
 }
+
+export type DemoModeChangeListener = (detail: DemoModeChangeDetail) => void;
+
+let volatilePreference: boolean | null = null;
 
 function parseBooleanLike(value: unknown): boolean | null {
   if (typeof value === "boolean") {
@@ -37,11 +48,15 @@ function getEnvDefault() {
 function getStoredPreference(): boolean | null {
   try {
     if (typeof localStorage === "undefined") {
-      return null;
+      return volatilePreference;
     }
-    return parseBooleanLike(localStorage.getItem(DEMO_MODE_STORAGE_KEY));
+    const stored = parseBooleanLike(localStorage.getItem(DEMO_MODE_STORAGE_KEY));
+    if (stored !== null) {
+      volatilePreference = null;
+    }
+    return stored ?? volatilePreference;
   } catch {
-    return null;
+    return volatilePreference;
   }
 }
 
@@ -49,7 +64,7 @@ export function isDemoModeEnabled(): boolean {
   return getStoredPreference() ?? getEnvDefault();
 }
 
-function emitDemoModeChanged(enabled: boolean) {
+function emitDemoModeChanged(enabled: boolean, source: DemoModeChangeSource) {
   if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
     return;
   }
@@ -57,7 +72,7 @@ function emitDemoModeChanged(enabled: boolean) {
   if (typeof CustomEvent === "function") {
     window.dispatchEvent(
       new CustomEvent<DemoModeChangeDetail>(DEMO_MODE_CHANGED_EVENT, {
-        detail: { enabled },
+        detail: { enabled, source },
       }),
     );
     return;
@@ -69,37 +84,98 @@ function emitDemoModeChanged(enabled: boolean) {
 }
 
 export function setDemoModeEnabled(enabled: boolean) {
+  let persisted = false;
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(DEMO_MODE_STORAGE_KEY, enabled ? "true" : "false");
+      persisted = true;
     }
   } catch {
-    // The app can still update in-memory state even when browser storage is unavailable.
+    // Fall through to the in-memory preference below.
   }
-  emitDemoModeChanged(enabled);
+  volatilePreference = persisted ? null : enabled;
+  emitDemoModeChanged(enabled, "local");
+}
+
+function demoModeFromStorageEvent(event: StorageEvent): boolean | null {
+  if (event.key !== DEMO_MODE_STORAGE_KEY && event.key !== null) {
+    return null;
+  }
+  if (event.key === null) {
+    volatilePreference = null;
+    return getEnvDefault();
+  }
+  const parsed = parseBooleanLike(event.newValue);
+  volatilePreference = null;
+  return parsed ?? getEnvDefault();
+}
+
+function rejectStorageDrivenDemoEntry(): void {
+  let persisted = false;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DEMO_MODE_STORAGE_KEY, "false");
+      persisted = true;
+    }
+  } catch {
+    // Fall through to the in-memory preference below.
+  }
+  volatilePreference = persisted ? null : false;
+}
+
+/**
+ * Subscribes to same-tab preference changes and native cross-tab storage
+ * events. Keeping this outside React also lets long-lived transports stop as
+ * soon as a different tab enters Demo Mode.
+ */
+export function subscribeToDemoModeChanges(listener: DemoModeChangeListener): () => void {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+
+  function handleDemoModeChanged(event: Event) {
+    const detail = (event as CustomEvent<DemoModeChangeDetail>).detail;
+    listener({
+      enabled: typeof detail?.enabled === "boolean" ? detail.enabled : isDemoModeEnabled(),
+      source: detail?.source ?? "local",
+    });
+  }
+
+  function handleStorage(event: StorageEvent) {
+    const enabled = demoModeFromStorageEvent(event);
+    if (enabled !== null) {
+      if (enabled && hasActiveLiveMutationRequests()) {
+        rejectStorageDrivenDemoEntry();
+        listener({ enabled: false, source: "storage", blockedByLiveMutation: true });
+        return;
+      }
+      listener({ enabled, source: "storage" });
+    }
+  }
+
+  window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoModeChanged);
+  window.addEventListener("storage", handleStorage);
+  return () => {
+    window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoModeChanged);
+    window.removeEventListener("storage", handleStorage);
+  };
 }
 
 export function useDemoMode() {
-  const [enabled, setEnabled] = useState(() => isDemoModeEnabled());
+  const [snapshot, setSnapshot] = useState<{ enabled: boolean; changeSource: DemoModeChangeSource | null }>(() => ({
+    enabled: isDemoModeEnabled(),
+    changeSource: null,
+  }));
 
   useEffect(() => {
-    function handleDemoModeChanged(event: Event) {
-      const nextEnabled = (event as CustomEvent<DemoModeChangeDetail>).detail?.enabled;
-      setEnabled(typeof nextEnabled === "boolean" ? nextEnabled : isDemoModeEnabled());
-    }
-
-    if (typeof window === "undefined") {
-      return undefined;
-    }
-
-    window.addEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoModeChanged);
-    return () => {
-      window.removeEventListener(DEMO_MODE_CHANGED_EVENT, handleDemoModeChanged);
-    };
+    return subscribeToDemoModeChanges(({ enabled, source }) => {
+      setSnapshot({ enabled, changeSource: source });
+    });
   }, []);
 
   return {
-    enabled,
+    enabled: snapshot.enabled,
+    changeSource: snapshot.changeSource,
     setEnabled: setDemoModeEnabled,
   };
 }
@@ -118,9 +194,21 @@ function demoOrdinal(seed: string | number | null | undefined) {
   return (hash % 90) + 10;
 }
 
-export function getDemoAccountName(account: { id: number; name: string }) {
+function isCanonicalDemoAccount(accountId: unknown, name?: unknown): accountId is number {
+  return (
+    typeof accountId === "number" &&
+    CANONICAL_DEMO_ACCOUNT_IDS.has(accountId) &&
+    (name === undefined || (typeof name === "string" && /demo/i.test(name)))
+  );
+}
+
+export function getDemoAccountName(account: { id: number; name: string; custom_display_name?: string | null }) {
   if (!isDemoModeEnabled()) {
     return account.name;
+  }
+  if (isCanonicalDemoAccount(account.id, account.name)) {
+    const customName = account.custom_display_name?.trim();
+    return customName && /demo/i.test(customName) ? customName : account.name;
   }
   return `Demo Account ${demoOrdinal(account.id)}`;
 }
@@ -129,10 +217,14 @@ export function getDemoAccountId(accountId: string | number | null | undefined) 
   if (!isDemoModeEnabled()) {
     return accountId === null || accountId === undefined ? "" : String(accountId);
   }
+  const numericAccountId = typeof accountId === "number" ? accountId : Number(accountId);
+  if (isCanonicalDemoAccount(numericAccountId)) {
+    return String(numericAccountId);
+  }
   return `ACCT-${demoOrdinal(accountId)}${stableHash(String(accountId ?? "demo")) % 100}`;
 }
 
-export function getDemoAccountLabel(account: { id: number; name: string }) {
+export function getDemoAccountLabel(account: { id: number; name: string; custom_display_name?: string | null }) {
   return `${getDemoAccountName(account)} (${getDemoAccountId(account.id)})`;
 }
 
@@ -271,6 +363,9 @@ function looksLikeBotConfig(value: JsonObject) {
 
 function sanitizeKnownObject(value: JsonObject): JsonObject {
   if (looksLikeAccountInfo(value)) {
+    if (isCanonicalDemoAccount(value.id, value.name)) {
+      return value;
+    }
     const demoName = `Demo Account ${demoOrdinal(Number(value.id))}`;
     return {
       ...value,

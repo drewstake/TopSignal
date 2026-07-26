@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -115,6 +117,7 @@ function XIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
 }
 
 export function AccountsPage() {
+  const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
@@ -596,6 +599,12 @@ export function AccountsPage() {
   return (
     <div className="space-y-6 pb-10">
       <h1 className="sr-only">Accounts</h1>
+      <DemoModeNotice>
+        <p>
+          These are isolated sample accounts. Selecting an account and filtering rows are simulated locally;
+          provider refresh, renaming, Main-account changes, archiving, and journal merges are disabled.
+        </p>
+      </DemoModeNotice>
       <section>
         <Card>
           <CardHeader>
@@ -609,7 +618,8 @@ export function AccountsPage() {
                   type="button"
                   variant="secondary"
                   size="sm"
-                  disabled={accountsLoading || refreshingExpressAccounts}
+                  disabled={demoModeEnabled || accountsLoading || refreshingExpressAccounts}
+                  title={demoDisabledTitle}
                   onClick={() => void refreshExpressAccounts()}
                 >
                   {refreshingExpressAccounts ? "Refreshing Express Accounts..." : "Refresh Express Accounts"}
@@ -727,7 +737,7 @@ export function AccountsPage() {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 w-7 rounded-lg px-0 text-emerald-300 hover:text-emerald-200"
+                                    className="h-11 w-11 rounded-lg px-0 text-emerald-300 hover:text-emerald-200 sm:h-8 sm:w-8"
                                     disabled={savingName}
                                     aria-label={`Save account name for ${accountDisplayName}`}
                                     onClick={(event) => {
@@ -740,7 +750,7 @@ export function AccountsPage() {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 w-7 rounded-lg px-0 text-slate-400 hover:text-slate-200"
+                                    className="h-11 w-11 rounded-lg px-0 text-slate-400 hover:text-slate-200 sm:h-8 sm:w-8"
                                     disabled={savingName}
                                     aria-label={`Cancel editing account name for ${accountDisplayName}`}
                                     onClick={(event) => {
@@ -757,8 +767,9 @@ export function AccountsPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="h-7 w-7 shrink-0 rounded-lg px-0 text-slate-400 hover:text-slate-100"
-                                  disabled={renamingAccountId !== null}
+                                  className="h-11 w-11 shrink-0 rounded-lg px-0 text-slate-400 hover:text-slate-100 sm:h-8 sm:w-8"
+                                  disabled={demoModeEnabled || renamingAccountId !== null}
+                                  title={demoDisabledTitle}
                                   aria-label={`Edit account name for ${accountDisplayName}`}
                                   onClick={(event) => {
                                     event.stopPropagation();
@@ -840,7 +851,8 @@ export function AccountsPage() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                disabled={settingMainAccountId === account.id}
+                                disabled={demoModeEnabled || settingMainAccountId === account.id}
+                                title={demoDisabledTitle}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void setMainAccount(account.id);
@@ -855,7 +867,8 @@ export function AccountsPage() {
                               <Button
                                 size="sm"
                                 variant={account.is_archived ? "secondary" : "ghost"}
-                                disabled={lifecycleAccountId !== null}
+                                disabled={demoModeEnabled || lifecycleAccountId !== null}
+                                title={demoDisabledTitle}
                                 aria-label={`${account.is_archived ? "Restore" : "Archive"} ${accountDisplayName}`}
                                 onClick={() => void changeLiveAccountArchiveState(account)}
                               >
@@ -878,10 +891,26 @@ export function AccountsPage() {
                 </tbody>
               </table>
             </AccountTableScrollArea>
+            <p className="text-[11px] text-app-muted sm:hidden">
+              Swipe the account table horizontally to review balances, status, and actions.
+            </p>
           </CardContent>
         </Card>
       </section>
       <section>
+        {demoModeEnabled ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Merge Journal</CardTitle>
+              <CardDescription>Journal history changes are unavailable while viewing sample accounts.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="rounded-xl border border-app-border bg-app-bg/35 px-4 py-4 text-sm text-app-muted" role="status">
+                Turn off Demo Mode to merge journal history between your connected accounts.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
         <MergeJournalCard
           sourceAccounts={filteredMergeSourceAccounts}
           destinationAccounts={orderedMergeDestinationAccounts}
@@ -920,6 +949,7 @@ export function AccountsPage() {
           }
           onSubmit={() => void handleMergeJournal()}
         />
+        )}
       </section>
     </div>
   );

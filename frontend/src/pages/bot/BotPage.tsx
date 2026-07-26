@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -1182,6 +1184,7 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
 }
 
 export function BotPage() {
+  const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
   const { accounts, accountsLoading } = useOutletContext<AppShellOutletContext>();
@@ -1833,7 +1836,7 @@ export function BotPage() {
   }
 
   async function handleDeleteSelectedBot() {
-    if (!selectedBot) {
+    if (demoModeEnabled || !selectedBot) {
       return;
     }
 
@@ -1864,6 +1867,10 @@ export function BotPage() {
 
   async function handleSaveBot(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (demoModeEnabled) {
+      setFormError("Demo Mode is a read-only strategy snapshot. Configuration changes are not saved.");
+      return;
+    }
     const accountId = parsePositiveInt(form.accountId);
     const timeframeUnitNumber = parsePositiveInt(form.timeframeUnitNumber);
     const lookbackBars = parsePositiveInt(form.lookbackBars);
@@ -2540,7 +2547,7 @@ export function BotPage() {
   }
 
   async function runBotAction(kind: "start" | "evaluate" | "stop") {
-    if (!selectedBot) {
+    if (demoModeEnabled || !selectedBot) {
       return;
     }
     setActionLoading(kind);
@@ -2576,8 +2583,9 @@ export function BotPage() {
 
   if (accountsLoading) {
     return (
-      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]" role="status" aria-live="polite" aria-busy="true">
         <h1 className="sr-only">Trading Bot</h1>
+        <p className="sr-only">Loading bot workspace accounts.</p>
         <Skeleton className="h-[520px]" />
         <Skeleton className="h-[520px]" />
       </div>
@@ -2603,8 +2611,9 @@ export function BotPage() {
 
   if (loading) {
     return (
-      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]" role="status" aria-live="polite" aria-busy="true">
         <h1 className="sr-only">Trading Bot</h1>
+        <p className="sr-only">Loading bot configurations and activity.</p>
         <Skeleton className="h-[520px]" />
         <Skeleton className="h-[520px]" />
       </div>
@@ -2624,9 +2633,14 @@ export function BotPage() {
     >
     <div className="space-y-5 pb-8">
       <h1 className="sr-only">Trading Bot</h1>
-      {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+      <DemoModeNotice>
+        <p>
+          Strategy settings, signals, activity, and charts are a fixed read-only snapshot. Saving, deleting, evaluating, starting, stopping, backtesting, and live market streams are disabled.
+        </p>
+      </DemoModeNotice>
+      {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200" role="alert">{error}</div> : null}
       {configWarnings.map((warning) => (
-        <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+        <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="status">
           {warning}
         </div>
       ))}
@@ -3970,9 +3984,9 @@ export function BotPage() {
                 </label>
               </div>
 
-              {formError ? <p className="text-sm text-rose-300">{formError}</p> : null}
+              {formError ? <p className="text-sm text-rose-300" role="alert">{formError}</p> : null}
               <div className="flex gap-2">
-                <Button className="flex-1" type="submit" disabled={saving}>
+                <Button className="flex-1" type="submit" disabled={demoModeEnabled || saving} title={demoModeEnabled ? demoDisabledTitle : undefined}>
                   {saving ? (editingBotId ? "Updating" : "Saving") : editingBotId ? "Update Bot" : "Save Bot"}
                 </Button>
                 {editingBotId ? (
@@ -4025,17 +4039,17 @@ export function BotPage() {
                   title="Edit strategy"
                   disabled={!selectedBot || saving || actionLoading !== null}
                   onClick={handleEditSelectedBot}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300 transition hover:border-cyan-400/50 hover:bg-slate-900 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300 transition hover:border-cyan-400/50 hover:bg-slate-900 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-45 sm:h-10 sm:w-10"
                 >
                   <EditIcon />
                 </button>
                 <button
                   type="button"
                   aria-label={selectedBot ? `Delete ${selectedBot.name}` : "Delete selected strategy"}
-                  title="Delete strategy"
-                  disabled={!selectedBot || saving || actionLoading !== null}
+                  title={demoModeEnabled ? demoDisabledTitle : "Delete strategy"}
+                  disabled={demoModeEnabled || !selectedBot || saving || actionLoading !== null}
                   onClick={() => void handleDeleteSelectedBot()}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rose-400/30 bg-rose-500/10 text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-500/15 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/55 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-rose-400/30 bg-rose-500/10 text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-500/15 hover:text-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/55 disabled:cursor-not-allowed disabled:opacity-45 sm:h-10 sm:w-10"
                 >
                   {actionLoading === "delete" ? (
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100" />
@@ -4059,13 +4073,13 @@ export function BotPage() {
                       <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button onClick={() => void runBotAction("start")} disabled={actionLoading !== null}>
+                      <Button onClick={() => void runBotAction("start")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
                         {actionLoading === "start" ? "Starting" : "Start Dry Run"}
                       </Button>
-                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={actionLoading !== null}>
+                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
                         {actionLoading === "evaluate" ? "Evaluating" : "Evaluate"}
                       </Button>
-                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={actionLoading !== null}>
+                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
                         {actionLoading === "stop" ? "Stopping" : "Stop"}
                       </Button>
                     </div>
@@ -4126,7 +4140,7 @@ export function BotPage() {
                     <p className="text-xs text-slate-400">Signals, risk events, and order attempts</p>
                   </div>
                   {activityLoading ? (
-                    <Skeleton className="h-64" />
+                    <div role="status" aria-live="polite" aria-label="Loading bot activity"><Skeleton className="h-64" aria-hidden="true" /></div>
                   ) : selectedBotActivity ? (
                     <div className="grid gap-4 xl:grid-cols-2">
                       <ActivityTable
@@ -4185,12 +4199,14 @@ export function BotPage() {
               activity={selectedBotActivity}
               lastEvaluation={selectedBotEvaluation}
               refreshToken={chartRefreshToken}
+              demoMode={demoModeEnabled}
               onMarketData={setMarketSnapshot}
             />
             <OrderBookPanel
               key={selectedBot?.contract_id ?? "no-contract"}
               contractId={selectedBot?.contract_id}
               symbol={selectedBot?.symbol}
+              demoMode={demoModeEnabled}
             />
             <Suspense fallback={<Skeleton className="h-[360px]" />}>
               <BotAnalysisPanel
@@ -4198,14 +4214,14 @@ export function BotPage() {
                 evaluation={selectedBotEvaluation}
                 marketSnapshot={marketSnapshot}
                 loading={actionLoading === "start" || actionLoading === "evaluate"}
-                onEvaluate={selectedBot ? () => void runBotAction("evaluate") : undefined}
+                onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
               />
             </Suspense>
           </div>
         </div>
       </div>
       <Suspense fallback={<Skeleton className="h-[420px]" />}>
-        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
+        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} demoMode={demoModeEnabled} />
       </Suspense>
     </div>
     </BotProviderWorkspaceBoundary>

@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatDemoCurrency,
   formatDemoPnl,
+  getDemoAccountId,
   getDemoAccountLabel,
+  getDemoAccountName,
   isDemoModeEnabled,
   sanitizeDemoApiResponse,
   setDemoModeEnabled,
@@ -47,6 +49,19 @@ describe("demoMode", () => {
     expect(label).toContain("ACCT-");
     expect(label).not.toContain("Andrew");
     expect(label).not.toContain("12345678");
+  });
+
+  it("preserves explicit canonical fixture names and synthetic ids", () => {
+    setDemoModeEnabled(true);
+    const account = {
+      id: 910002,
+      name: "50KTC-DEMO-Copy-Follower",
+      custom_display_name: "Demo Copy — Conservative",
+    };
+
+    expect(getDemoAccountName(account)).toBe("Demo Copy — Conservative");
+    expect(getDemoAccountId(account.id)).toBe("910002");
+    expect(getDemoAccountLabel(account)).toBe("Demo Copy — Conservative (910002)");
   });
 
   it("formats dummy money values instead of placeholders when enabled", () => {

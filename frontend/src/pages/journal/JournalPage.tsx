@@ -2,6 +2,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -254,6 +256,7 @@ function getCopyFailureMessage(error: unknown) {
 }
 
 export function JournalPage() {
+  const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const [searchParams] = useSearchParams();
   const dateFromQuery = parseJournalDateParam(searchParams.get(JOURNAL_DATE_QUERY_PARAM));
   const {
@@ -721,9 +724,12 @@ export function JournalPage() {
 
   const handleDraftChange = useCallback(
     (nextDraft: JournalDraft) => {
+      if (demoModeEnabled) {
+        return;
+      }
       commitDraft(nextDraft);
     },
-    [commitDraft],
+    [commitDraft, demoModeEnabled],
   );
 
   const handleSelectEntry = useCallback(
@@ -743,7 +749,7 @@ export function JournalPage() {
 
   const handleCreateEntry = useCallback(
     async (entryDate?: string) => {
-      if (!selectedAccountId) {
+      if (!selectedAccountId || demoModeEnabled) {
         return;
       }
 
@@ -789,7 +795,7 @@ export function JournalPage() {
         }
       }
     },
-    [accountRequestGate, currentPage, flushAutosave, loadEntries, selectedAccountId],
+    [accountRequestGate, currentPage, demoModeEnabled, flushAutosave, loadEntries, selectedAccountId],
   );
 
   const handleGenerateAiRecap = useCallback(async () => {
@@ -886,8 +892,14 @@ export function JournalPage() {
       return;
     }
 
+    if (demoModeEnabled) {
+      setSelectedId(null);
+      setEntriesInfo(`No sample journal entry exists for ${dateFromQuery}. Demo Mode does not create or save entries.`);
+      return;
+    }
+
     void handleCreateEntry(dateFromQuery ?? undefined);
-  }, [dateFromQuery, entries, handleCreateEntry, loadingEntries, selectedAccountId]);
+  }, [dateFromQuery, demoModeEnabled, entries, handleCreateEntry, loadingEntries, selectedAccountId]);
 
   const handleArchiveToggle = useCallback(async () => {
     const queue = autosaveRef.current;
@@ -1230,7 +1242,7 @@ export function JournalPage() {
     [handleCopyPayload, listQuery, selectedAccountId],
   );
 
-  const savingDisabled = saveState === "saving" || !selectedEntry;
+  const savingDisabled = demoModeEnabled || saveState === "saving" || !selectedEntry;
   const copyDisabled = loadingEntries || !selectedAccountId || totalEntries === 0;
 
   const moodOptions: Array<JournalMoodFilter> = ["ALL", "Focused", "Neutral", "Frustrated", "Confident"];
@@ -1300,6 +1312,13 @@ export function JournalPage() {
         </div>
       </section>
 
+      <DemoModeNotice>
+        <p>
+          Journal entries and trade context are sample records. Filtering and copying remain available; creating,
+          editing, image uploads, AI recap generation, archiving, and deletion are disabled.
+        </p>
+      </DemoModeNotice>
+
       <Card className="px-2 py-1.5 md:px-2.5 md:py-2">
         <CardHeader className="mb-0 py-0">
           <div className="flex flex-wrap items-center gap-1.5 lg:flex-nowrap">
@@ -1309,7 +1328,7 @@ export function JournalPage() {
                   type="date"
                   value={startDate}
                   onChange={(event) => setStartDate(event.target.value)}
-                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  className="h-11 min-w-0 rounded-lg px-1.5 text-[11px] sm:h-7"
                 />
               </FilterField>
               <FilterField label="End" className="flex-[0_1_176px]">
@@ -1317,14 +1336,14 @@ export function JournalPage() {
                   type="date"
                   value={endDate}
                   onChange={(event) => setEndDate(event.target.value)}
-                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  className="h-11 min-w-0 rounded-lg px-1.5 text-[11px] sm:h-7"
                 />
               </FilterField>
               <FilterField label="Mood" className="flex-[0_1_148px]">
                 <Select
                   value={moodFilter}
                   onChange={(event) => setMoodFilter(event.target.value as JournalMoodFilter)}
-                  className="h-7 min-w-0 rounded-lg px-1.5 text-[11px]"
+                  className="h-11 min-w-0 rounded-lg px-1.5 text-[11px] sm:h-7"
                 >
                   {moodOptions.map((option) => (
                     <option key={option} value={option}>
@@ -1344,17 +1363,19 @@ export function JournalPage() {
               <Button
                 size="sm"
                 variant="secondary"
-                className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
+                className="h-11 shrink-0 rounded-lg px-2.5 text-[11px] sm:h-7"
                 onClick={() => void handleGenerateAiRecap()}
-                disabled={generatingAiRecap || creatingEntry || !selectedAccountId}
+                disabled={demoModeEnabled || generatingAiRecap || creatingEntry || !selectedAccountId}
+                title={demoDisabledTitle}
               >
                 {generatingAiRecap ? "Generating recap..." : "AI Recap"}
               </Button>
               <Button
                 size="sm"
-                className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]"
+                className="h-11 shrink-0 rounded-lg px-2.5 text-[11px] sm:h-7"
                 onClick={() => void handleCreateEntry()}
-                disabled={creatingEntry || !selectedAccountId}
+                disabled={demoModeEnabled || creatingEntry || !selectedAccountId}
+                title={demoDisabledTitle}
               >
                 {creatingEntry ? "Creating..." : "New Entry"}
               </Button>
@@ -1395,6 +1416,7 @@ export function JournalPage() {
             imagesError={imagesError}
             uploadingImage={uploadingImage}
             deletingEntry={deletingEntry}
+            readOnly={demoModeEnabled}
             onDraftChange={handleDraftChange}
             onArchiveToggle={() => void handleArchiveToggle()}
             onRetrySave={() => void handleRetrySave()}

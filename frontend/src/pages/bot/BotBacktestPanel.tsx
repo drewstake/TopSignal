@@ -75,9 +75,10 @@ const timestampFormatter = new Intl.DateTimeFormat("en-US", {
 
 interface BotBacktestPanelProps {
   bot: BotConfig | null;
+  demoMode?: boolean;
 }
 
-export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
+export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProps) {
   const [form, setForm] = useState<BotBacktestFormState>(() =>
     buildDefaultForm(
       bot?.strategy_type ?? "sma_cross",
@@ -99,6 +100,10 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (demoMode) {
+      setError("Backtest jobs are disabled in Demo Mode because they run on the connected server workspace.");
+      return;
+    }
     if (!bot) {
       setError("Select a saved bot before running a backtest.");
       return;
@@ -151,6 +156,7 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
             <CardDescription>Deterministic replay of the configured contract&apos;s complete closed-candle history</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
+            {demoMode ? <Badge variant="accent">Demo snapshot</Badge> : null}
             <Badge variant="accent">Next-bar fills</Badge>
             <Badge variant="neutral">No order routing</Badge>
           </div>
@@ -210,7 +216,12 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
             value={form.slippageTicks}
             onChange={(value) => setForm((current) => ({ ...current, slippageTicks: value }))}
           />
-          <Button type="submit" disabled={!bot} className="w-full xl:w-auto">
+          <Button
+            type="submit"
+            disabled={demoMode || !bot}
+            className="w-full xl:w-auto"
+            title={demoMode ? "Backtest server jobs are disabled in Demo Mode." : undefined}
+          >
             {running ? "Stop & Run New Backtest" : "Run Full History Backtest"}
           </Button>
         </form>
@@ -221,7 +232,9 @@ export function BotBacktestPanel({ bot }: BotBacktestPanelProps) {
           </div>
         ) : null}
 
-        {!bot ? (
+        {demoMode ? (
+          <BacktestEmptyState message="Backtest inputs are available for review, but Demo Mode does not start a server replay job." />
+        ) : !bot ? (
           <BacktestEmptyState message="Save or select a bot to configure a historical replay." />
         ) : running ? (
           <BacktestRunningState progress={progress} />

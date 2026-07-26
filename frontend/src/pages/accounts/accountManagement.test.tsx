@@ -108,5 +108,7 @@ describe("account management accessibility", () => {
     expect(markup).toContain('aria-label="Select Live Funded account"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("focus-visible:ring-2");
+    expect(markup).toContain("min-h-11");
+    expect(markup).toContain("sm:min-h-0");
   });
 });
