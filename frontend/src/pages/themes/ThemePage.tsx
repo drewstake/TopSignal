@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
 import { Badge } from "../../components/ui/Badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
@@ -87,6 +88,11 @@ export function ThemePage() {
 
   return (
     <div className="space-y-6 pb-8">
+      <DemoModeNotice>
+        <p>
+          Theme selection is safe in Demo Mode and remains your workspace preference after you return to live data.
+        </p>
+      </DemoModeNotice>
       <section className="flex flex-col gap-4 border-b border-app-border/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-app-accent">Appearance</p>
@@ -166,8 +172,10 @@ export function ThemePage() {
       <section className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Card className="rounded-lg">
           <CardHeader>
-            <CardTitle>Live Preview</CardTitle>
-            <CardDescription>Controls, surfaces, metrics, and status colors using the active palette.</CardDescription>
+            <CardTitle>Sample Style Preview</CardTitle>
+            <CardDescription>
+              Illustrative controls, surfaces, metrics, and status colors. These values are not account data.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-3 sm:grid-cols-3">

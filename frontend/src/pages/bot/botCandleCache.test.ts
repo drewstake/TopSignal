@@ -129,6 +129,26 @@ describe("buildBotCandleCacheKey", () => {
     expect(removed).toEqual(["topsignal:bot-candles:v1:practice%7CCON.F.US.MNQ.M26%7CMNQ%7Cminute%7C5"]);
   });
 
+  it("leaves the unscoped live v1 entry untouched during Demo hydration", () => {
+    const removed: string[] = [];
+    vi.stubGlobal("window", {
+      localStorage: {
+        removeItem: (key: string) => removed.push(key),
+      },
+    });
+
+    invalidateLegacyBotCandleCache({
+      userScope: "demo",
+      contractId: "CON.F.US.MNQ.M26",
+      symbol: "MNQ",
+      live: false,
+      unit: "minute",
+      unitNumber: 5,
+    });
+
+    expect(removed).toEqual([]);
+  });
+
   it("isolates timeframe/cache-key switching", () => {
     const minuteKey = buildBotCandleCacheKey({
       userScope: "user:one",

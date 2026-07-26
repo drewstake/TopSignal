@@ -158,6 +158,14 @@ describe("BotBacktestPanel", () => {
     expect(markup).not.toContain('type="date"');
   });
 
+  it("explains and disables server replay jobs in Demo Mode", () => {
+    const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} demoMode />);
+
+    expect(markup).toContain("Demo snapshot");
+    expect(markup).toContain("Demo Mode does not start a server replay job");
+    expect(markup).toContain('disabled=""');
+  });
+
   it("shows the replay percent and amount remaining", () => {
     const markup = renderToStaticMarkup(
       <BacktestRunningState

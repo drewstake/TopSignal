@@ -180,6 +180,11 @@ function getBrowserStorage(): BotDrawingStorageAdapter | null {
 }
 
 function removeLegacyBotDrawings(scope: BotDrawingStorageScope, storage: BotDrawingStorageAdapter): void {
+  // Legacy v1 keys are unscoped. Demo hydration must never delete browser data
+  // that may belong to the signed-in live user.
+  if (scope.userScope.trim() === "demo") {
+    return;
+  }
   try {
     storage.removeItem(buildLegacyBotDrawingStorageKey(scope));
   } catch {

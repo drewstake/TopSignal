@@ -2,6 +2,8 @@ import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useS
 import { useOutletContext } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -22,7 +24,7 @@ import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types"
 import { formatCurrency, formatInteger, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
 import { runAccountScopedTradeSync } from "./tradesAccountRequests";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 20;
 const DEFAULT_LIMIT = 200;
 
 const timestampFormatter = new Intl.DateTimeFormat("en-US", {
@@ -286,6 +288,7 @@ function TradesAccountState({ error }: { error?: string }) {
 }
 
 export function TradesPage() {
+  const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
   const {
     accounts: orderedAccounts,
     accountsLoading,
@@ -530,7 +533,7 @@ export function TradesPage() {
   const syncMessageIsError = Boolean(syncMessage && /failed|error/i.test(syncMessage));
 
   async function handleSyncNow() {
-    if (!selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid) {
+    if (demoModeEnabled || !selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid) {
       return;
     }
 
@@ -587,6 +590,11 @@ export function TradesPage() {
 
   return (
     <div className="flex flex-col gap-4 pb-8 lg:min-h-0 lg:flex-1 lg:gap-3 lg:overflow-hidden lg:pb-0">
+      <DemoModeNotice compact>
+        <p>
+          Filters, paging, and refresh explore the fixed sample timeline. Provider sync is disabled so this page never contacts or changes a connected account.
+        </p>
+      </DemoModeNotice>
       <section className="relative overflow-hidden rounded-[26px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.15),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(251,191,36,0.1),transparent_24%),linear-gradient(145deg,rgba(15,23,42,0.96),rgba(15,23,42,0.84))] p-4 shadow-[0_20px_70px_-42px_rgba(8,47,73,0.82)] lg:shrink-0">
         <div aria-hidden="true" className="pointer-events-none absolute -left-10 top-4 h-28 w-28 rounded-full bg-cyan-300/10 blur-3xl" />
         <div aria-hidden="true" className="pointer-events-none absolute bottom-0 right-0 h-32 w-32 rounded-full bg-amber-300/8 blur-3xl" />
@@ -628,8 +636,14 @@ export function TradesPage() {
             <Button
               size="sm"
               onClick={handleSyncNow}
-              disabled={syncing || !selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid}
-              title={selectedAccountIsCsvImport ? "This Live account uses CSV trade imports." : undefined}
+              disabled={demoModeEnabled || syncing || !selectedAccountId || selectedAccountIsCsvImport || dateRangeInvalid}
+              title={
+                demoModeEnabled
+                  ? demoDisabledTitle
+                  : selectedAccountIsCsvImport
+                    ? "This Live account uses CSV trade imports."
+                    : undefined
+              }
             >
               {selectedAccountIsCsvImport ? "Import-only Account" : syncing ? "Syncing..." : "Sync Latest"}
             </Button>
@@ -720,7 +734,7 @@ export function TradesPage() {
         </div>
 
         {dateRangeInvalid ? (
-          <div className="relative mt-3 rounded-2xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          <div className="relative mt-3 rounded-2xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-200" role="alert">
             Start date must be before end date.
           </div>
         ) : null}
@@ -733,6 +747,8 @@ export function TradesPage() {
                 ? "border-rose-400/35 bg-rose-500/10 text-rose-200"
                 : "border-cyan-400/25 bg-cyan-500/10 text-cyan-100",
             )}
+            role={syncMessageIsError ? "alert" : "status"}
+            aria-live="polite"
           >
             {syncMessage}
           </div>
@@ -759,7 +775,7 @@ export function TradesPage() {
             <Skeleton key={`summary-skeleton-${index}`} className="h-[220px] xl:col-span-4" />
           ))
         ) : summaryError ? (
-          <Card className="xl:col-span-12">
+          <Card className="xl:col-span-12" role="alert">
             <p className="text-sm text-rose-300">{summaryError}</p>
           </Card>
         ) : (
@@ -922,7 +938,7 @@ export function TradesPage() {
               </div>
             </>
           ) : tradesError ? (
-            <div className="rounded-[24px] border border-rose-400/35 bg-rose-500/10 px-4 py-5 text-sm text-rose-200">
+            <div className="rounded-[24px] border border-rose-400/35 bg-rose-500/10 px-4 py-5 text-sm text-rose-200" role="alert">
               {tradesError}
             </div>
           ) : pagedTrades.length === 0 ? (

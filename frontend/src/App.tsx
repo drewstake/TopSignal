@@ -2,6 +2,7 @@
 import type { Session } from "@supabase/supabase-js";
 import { RouterProvider } from "react-router-dom";
 import { router } from "./app/routes";
+import { isDemoModeEnabled } from "./lib/demoMode";
 import { bootstrapSupabaseSession, hasSupabaseConfig, signInWithGoogle, subscribeSupabaseAuthChanges } from "./lib/supabase";
 
 function formatGoogleSignInError(err: unknown): string {
@@ -18,12 +19,13 @@ function formatGoogleSignInError(err: unknown): string {
 }
 
 export default function App() {
+  const [demoModeAtStartup] = useState(isDemoModeEnabled);
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(hasSupabaseConfig);
+  const [loading, setLoading] = useState(hasSupabaseConfig && !demoModeAtStartup);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!hasSupabaseConfig) {
+    if (!hasSupabaseConfig || demoModeAtStartup) {
       return;
     }
 
@@ -55,9 +57,9 @@ export default function App() {
       mounted = false;
       unsubscribe();
     };
-  }, []);
+  }, [demoModeAtStartup]);
 
-  if (!hasSupabaseConfig) {
+  if (!hasSupabaseConfig || demoModeAtStartup) {
     return <RouterProvider router={router} />;
   }
 

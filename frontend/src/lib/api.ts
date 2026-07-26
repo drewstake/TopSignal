@@ -71,7 +71,8 @@ import type {
   TradePlanEvaluationInput,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
-import { isDemoModeEnabled, sanitizeDemoApiResponse } from "./demoMode";
+import { isDemoModeEnabled, sanitizeDemoApiResponse, subscribeToDemoModeChanges } from "./demoMode";
+import { beginLiveMutationRequest } from "./liveMutationState";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
 
@@ -87,6 +88,8 @@ interface RequestJsonOptions {
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
+  /** GET endpoints that may refresh or persist real provider-backed cache rows. */
+  tracksLiveMutation?: boolean;
   /** Reuse the token captured while selecting a user-scoped cache lane. */
   accessTokenOverride?: string | null;
 }
@@ -114,6 +117,69 @@ export class ApiError extends Error {
     this.body = body;
     this.detail = detail;
   }
+}
+
+const DEMO_READ_ONLY_MESSAGE = "Demo mode is read-only. Turn it off to sync or save changes.";
+
+function demoDataUnavailableError(path: string): ApiError {
+  return new ApiError(
+    `No demonstration data is available for ${path}. No live request was sent.`,
+    409,
+    null,
+    null,
+  );
+}
+
+function demoLiveTransportUnavailableError(transport: string): ApiError {
+  return new ApiError(
+    `${transport} is unavailable in Demo Mode. No live connection was opened.`,
+    409,
+    null,
+    null,
+  );
+}
+
+function demoLiveTransportStoppedError(transport: string): ApiError {
+  return new ApiError(
+    `${transport} was stopped when Demo Mode was enabled.`,
+    409,
+    null,
+    null,
+  );
+}
+
+interface DemoAwareRequestGuard {
+  signal: AbortSignal;
+  dispose: () => void;
+  wasBlockedByDemo: () => boolean;
+}
+
+function createDemoAwareRequestGuard(externalSignal?: AbortSignal): DemoAwareRequestGuard {
+  const controller = new AbortController();
+  let blockedByDemo = false;
+
+  const abortFromCaller = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) {
+    abortFromCaller();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  const unsubscribeFromDemoMode = subscribeToDemoModeChanges(({ enabled }) => {
+    if (enabled && !controller.signal.aborted) {
+      blockedByDemo = true;
+      controller.abort();
+    }
+  });
+
+  return {
+    signal: controller.signal,
+    wasBlockedByDemo: () => blockedByDemo || isDemoModeEnabled(),
+    dispose: () => {
+      externalSignal?.removeEventListener("abort", abortFromCaller);
+      unsubscribeFromDemoMode();
+    },
+  };
 }
 
 export function isApiError(value: unknown): value is ApiError {
@@ -207,14 +273,18 @@ async function getRequestAuthContext(): Promise<RequestAuthContext> {
   }
 
   const accessToken = await getAccessToken();
+  if (isDemoModeEnabled()) {
+    return { accessToken: null, cacheScope: "demo" };
+  }
   if (!accessToken) {
     return { accessToken: null, cacheScope: "anonymous" };
   }
 
-  return {
-    accessToken,
-    cacheScope: getJwtUserScope(accessToken) ?? await getOpaqueTokenScope(accessToken),
-  };
+  const cacheScope = getJwtUserScope(accessToken) ?? await getOpaqueTokenScope(accessToken);
+  if (isDemoModeEnabled()) {
+    return { accessToken: null, cacheScope: "demo" };
+  }
+  return { accessToken, cacheScope };
 }
 
 function getJwtUserScope(accessToken: string): string | null {
@@ -383,18 +453,25 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 }
 
 async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
-  const { method = "GET", query, body, signal, accessTokenOverride } = options;
-  if (method !== "GET" && isDemoModeEnabled()) {
-    throw new ApiError("Demo mode is read-only. Turn it off to sync or save changes.", 409, null, null);
-  }
-  if (method === "GET" && isDemoModeEnabled()) {
+  const { method = "GET", query, body, signal, tracksLiveMutation = false, accessTokenOverride } = options;
+  if (isDemoModeEnabled()) {
+    if (method !== "GET") {
+      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+    }
     const { getDemoApiResponse } = await import("./demoData");
     const demoResponse = getDemoApiResponse<T>(path, query);
     if (demoResponse) {
       return demoResponse.data;
     }
+    throw demoDataUnavailableError(path);
   }
+  const finishLiveMutation = method === "GET" && !tracksLiveMutation ? null : beginLiveMutationRequest();
+  const demoGuard = createDemoAwareRequestGuard(signal);
+  try {
   const accessToken = accessTokenOverride === undefined ? await getAccessToken() : accessTokenOverride;
+  if (demoGuard.wasBlockedByDemo()) {
+    throw demoLiveTransportStoppedError("Live data access");
+  }
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
     method,
@@ -415,7 +492,7 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
     method,
     headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
+    signal: demoGuard.signal,
   });
   logApiPerfEnd(perfContext, response);
 
@@ -441,10 +518,26 @@ async function requestJson<T>(path: string, options: RequestJsonOptions = {}): P
   }
 
   if (response.status === 204) {
+    if (demoGuard.wasBlockedByDemo()) {
+      throw demoLiveTransportStoppedError("Live data access");
+    }
     return undefined as T;
   }
 
-  return sanitizeDemoApiResponse(path, (await response.json()) as T);
+  const payload = (await response.json()) as T;
+  if (demoGuard.wasBlockedByDemo()) {
+    throw demoLiveTransportStoppedError("Live data access");
+  }
+  return sanitizeDemoApiResponse(path, payload);
+  } catch (error) {
+    if (demoGuard.wasBlockedByDemo()) {
+      throw demoLiveTransportStoppedError("Live data access");
+    }
+    throw error;
+  } finally {
+    demoGuard.dispose();
+    finishLiveMutation?.();
+  }
 }
 
 async function requestMultipart<T>(path: string, options: RequestMultipartOptions): Promise<T> {
@@ -452,7 +545,13 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
   if (isDemoModeEnabled()) {
     throw new ApiError("Demo mode is read-only. Turn it off to upload or save changes.", 409, null, null);
   }
+  const finishLiveMutation = beginLiveMutationRequest();
+  const demoGuard = createDemoAwareRequestGuard(signal);
+  try {
   const accessToken = await getAccessToken();
+  if (demoGuard.wasBlockedByDemo()) {
+    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+  }
   const url = buildUrl(path, query);
   const perfContext: RequestPerfContext = {
     method,
@@ -470,7 +569,7 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
     method,
     headers: Object.keys(headers).length === 0 ? undefined : headers,
     body: formData,
-    signal,
+    signal: demoGuard.signal,
   });
   logApiPerfEnd(perfContext, response);
 
@@ -495,12 +594,33 @@ async function requestMultipart<T>(path: string, options: RequestMultipartOption
     throw new ApiError(detail, response.status, errorBody, detailValue);
   }
 
-  return sanitizeDemoApiResponse(path, (await response.json()) as T);
+  const payload = (await response.json()) as T;
+  if (demoGuard.wasBlockedByDemo()) {
+    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+  }
+  return sanitizeDemoApiResponse(path, payload);
+  } catch (error) {
+    if (demoGuard.wasBlockedByDemo()) {
+      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+    }
+    throw error;
+  } finally {
+    demoGuard.dispose();
+    finishLiveMutation();
+  }
 }
 
 export async function requestBlob(path: string, options: RequestBlobOptions = {}): Promise<Blob> {
   const { signal } = options;
+  if (isDemoModeEnabled()) {
+    throw demoLiveTransportUnavailableError("File download");
+  }
+  const demoGuard = createDemoAwareRequestGuard(signal);
+  try {
   const accessToken = await getAccessToken();
+  if (demoGuard.wasBlockedByDemo()) {
+    throw demoLiveTransportStoppedError("File download");
+  }
   const url = toAbsoluteApiUrl(path);
   const perfContext: RequestPerfContext = {
     method: "GET",
@@ -519,7 +639,7 @@ export async function requestBlob(path: string, options: RequestBlobOptions = {}
   const response = await fetch(url, {
     method: "GET",
     headers: Object.keys(headers).length === 0 ? undefined : headers,
-    signal,
+    signal: demoGuard.signal,
   });
   logApiPerfEnd(perfContext, response);
 
@@ -544,7 +664,19 @@ export async function requestBlob(path: string, options: RequestBlobOptions = {}
     throw new ApiError(detail, response.status, errorBody, detailValue);
   }
 
-  return await response.blob();
+  const payload = await response.blob();
+  if (demoGuard.wasBlockedByDemo()) {
+    throw demoLiveTransportStoppedError("File download");
+  }
+  return payload;
+  } catch (error) {
+    if (demoGuard.wasBlockedByDemo()) {
+      throw demoLiveTransportStoppedError("File download");
+    }
+    throw error;
+  } finally {
+    demoGuard.dispose();
+  }
 }
 
 const accountsCacheByQuery = new Map<string, TimedCache<AccountInfo[]>>();
@@ -703,6 +835,7 @@ function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<Acco
           refresh_provider: options.refreshProvider,
           include_archived: options.includeArchived,
         },
+        tracksLiveMutation: options.refreshProvider,
         accessTokenOverride: accessToken,
       }),
   });
@@ -891,6 +1024,7 @@ export const accountsApi = {
       load: (accessToken) =>
         requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
           query: requestQuery,
+          tracksLiveMutation: true,
           accessTokenOverride: accessToken,
         }),
     });
@@ -916,6 +1050,7 @@ export const accountsApi = {
       load: (accessToken) =>
         requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
           query: requestQuery,
+          tracksLiveMutation: true,
           accessTokenOverride: accessToken,
         }),
     });
@@ -939,6 +1074,7 @@ export const accountsApi = {
       load: (accessToken) =>
         requestJson<AccountSummaryWithPointBases>(`/api/accounts/${accountId}/summary-with-point-bases`, {
           query: requestQuery,
+          tracksLiveMutation: true,
           accessTokenOverride: accessToken,
         }),
     });
@@ -964,6 +1100,7 @@ export const accountsApi = {
       load: (accessToken) =>
         requestJson<AccountPnlCalendarDay[]>(`/api/accounts/${accountId}/pnl-calendar`, {
           query: requestQuery,
+          tracksLiveMutation: true,
           accessTokenOverride: accessToken,
         }),
     });
@@ -1223,23 +1360,47 @@ function botStartPayload(options: BotStartOptions = {}) {
 export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
   const controller = new AbortController();
   let closed = false;
+  let blockedByDemo = false;
   const guardedCallbacks: MarketPriceStreamCallbacks = {
     ...callbacks,
     onPrice: (price) => {
-      if (!closed) {
+      if (!closed && !blockedByDemo && !isDemoModeEnabled()) {
         callbacks.onPrice(price);
       }
     },
   };
 
-  void runProjectXMarketPriceStream(query, guardedCallbacks, controller.signal).catch((error) => {
-    if (!closed && !isAbortError(error)) {
-      callbacks.onError?.(error);
+  if (isDemoModeEnabled()) {
+    queueMicrotask(() => {
+      if (!closed) {
+        callbacks.onError?.(demoLiveTransportUnavailableError("Live market price streaming"));
+      }
+    });
+    return () => {
+      closed = true;
+      controller.abort();
+    };
+  }
+
+  const unsubscribeFromDemoMode = subscribeToDemoModeChanges(({ enabled }) => {
+    if (enabled && !closed) {
+      blockedByDemo = true;
+      controller.abort();
+      callbacks.onError?.(demoLiveTransportStoppedError("Live market price streaming"));
     }
   });
 
+  void runProjectXMarketPriceStream(query, guardedCallbacks, controller.signal)
+    .catch((error) => {
+      if (!closed && !blockedByDemo && !isAbortError(error)) {
+        callbacks.onError?.(error);
+      }
+    })
+    .finally(unsubscribeFromDemoMode);
+
   return () => {
     closed = true;
+    unsubscribeFromDemoMode();
     controller.abort();
   };
 }
@@ -1249,7 +1410,13 @@ async function runProjectXMarketPriceStream(
   callbacks: MarketPriceStreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
+  if (isDemoModeEnabled()) {
+    throw demoLiveTransportUnavailableError("Live market price streaming");
+  }
   const accessToken = await getAccessToken();
+  if (isDemoModeEnabled()) {
+    throw demoLiveTransportUnavailableError("Live market price streaming");
+  }
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
@@ -1393,35 +1560,81 @@ export function streamProjectXMarketDepth(
   const controller = new AbortController();
   const expectedContractId = normalizeContractId(query.contractId);
   let closed = false;
+  let blockedByDemo = false;
 
   const guardedCallbacks: MarketDepthStreamCallbacks = {
     onState: (state) => {
-      if (!closed && contractIdsMatch(state.contract_id, expectedContractId)) {
+      if (
+        !closed &&
+        !blockedByDemo &&
+        !isDemoModeEnabled() &&
+        contractIdsMatch(state.contract_id, expectedContractId)
+      ) {
         callbacks.onState(state);
       }
     },
     onSnapshot: (snapshot) => {
-      if (!closed && contractIdsMatch(snapshot.contract_id, expectedContractId)) {
+      if (
+        !closed &&
+        !blockedByDemo &&
+        !isDemoModeEnabled() &&
+        contractIdsMatch(snapshot.contract_id, expectedContractId)
+      ) {
         callbacks.onSnapshot(snapshot);
       }
     },
     onUpdate: (update) => {
-      if (!closed && contractIdsMatch(update.contract_id, expectedContractId)) {
+      if (
+        !closed &&
+        !blockedByDemo &&
+        !isDemoModeEnabled() &&
+        contractIdsMatch(update.contract_id, expectedContractId)
+      ) {
         callbacks.onUpdate(update);
       }
     },
   };
+
+  if (isDemoModeEnabled()) {
+    queueMicrotask(() => {
+      if (!closed) {
+        callbacks.onState({
+          contract_id: expectedContractId,
+          state: "unavailable",
+          message: "Live market depth is unavailable in Demo Mode.",
+        });
+      }
+    });
+    return () => {
+      closed = true;
+      controller.abort();
+    };
+  }
+
+  const unsubscribeFromDemoMode = subscribeToDemoModeChanges(({ enabled }) => {
+    if (enabled && !closed) {
+      blockedByDemo = true;
+      callbacks.onState({
+        contract_id: expectedContractId,
+        state: "unavailable",
+        message: "Live market depth is unavailable in Demo Mode.",
+      });
+      controller.abort();
+    }
+  });
 
   if (!expectedContractId) {
     queueMicrotask(() => {
       guardedCallbacks.onState({ contract_id: "", state: "unavailable", message: "No contract selected." });
     });
   } else {
-    void runProjectXMarketDepthStream(expectedContractId, guardedCallbacks, controller.signal);
+    void runProjectXMarketDepthStream(expectedContractId, guardedCallbacks, controller.signal)
+      .finally(unsubscribeFromDemoMode);
   }
 
   return () => {
     closed = true;
+    unsubscribeFromDemoMode();
     controller.abort();
   };
 }
@@ -1434,6 +1647,14 @@ async function runProjectXMarketDepthStream(
   let reconnectDelayMs = MARKET_DEPTH_RECONNECT_MIN_MS;
 
   while (!signal.aborted) {
+    if (isDemoModeEnabled()) {
+      callbacks.onState({
+        contract_id: contractId,
+        state: "unavailable",
+        message: "Live market depth is unavailable in Demo Mode.",
+      });
+      return;
+    }
     try {
       await readProjectXMarketDepthConnection(contractId, callbacks, signal, () => {
         reconnectDelayMs = MARKET_DEPTH_RECONNECT_MIN_MS;
@@ -1482,7 +1703,13 @@ async function readProjectXMarketDepthConnection(
   signal: AbortSignal,
   onHealthy: () => void,
 ): Promise<void> {
+  if (isDemoModeEnabled()) {
+    throw demoLiveTransportUnavailableError("Live market depth");
+  }
   const accessToken = await getAccessToken();
+  if (isDemoModeEnabled()) {
+    throw demoLiveTransportUnavailableError("Live market depth");
+  }
   const headers: Record<string, string> = {};
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
@@ -1832,6 +2059,9 @@ async function runBacktestStream(
   const path = `/api/bots/${botConfigId}/backtests`;
   const url = buildUrl(path);
   const accessToken = await getAccessToken();
+  if (isDemoModeEnabled()) {
+    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+  }
   const headers: Record<string, string> = {
     Accept: "text/event-stream",
     "Content-Type": "application/json",
@@ -1869,6 +2099,9 @@ async function runBacktestStream(
   let result: BotBacktestResult | null = null;
 
   const handleFrame = (frame: string) => {
+    if (signal.aborted || isDemoModeEnabled()) {
+      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+    }
     const parsed = parseBacktestSseFrame(frame);
     if (!parsed) {
       return;
@@ -1916,6 +2149,9 @@ async function runBacktestStream(
   if (!result) {
     throw new Error("Backtest progress stream ended before returning a result.");
   }
+  if (signal.aborted || isDemoModeEnabled()) {
+    throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+  }
   return result;
 }
 
@@ -1926,6 +2162,7 @@ async function runBacktestRequest(
 ): Promise<BotBacktestResult> {
   const controller = new AbortController();
   let timedOut = false;
+  let blockedByDemo = isDemoModeEnabled();
   const abortFromCaller = () => controller.abort();
   if (options.signal?.aborted) {
     abortFromCaller();
@@ -1936,28 +2173,46 @@ async function runBacktestRequest(
     timedOut = true;
     controller.abort();
   }, BACKTEST_REQUEST_TIMEOUT_MS);
+  const unsubscribeFromDemoMode = subscribeToDemoModeChanges(({ enabled }) => {
+    if (enabled) {
+      blockedByDemo = true;
+      controller.abort();
+    }
+  });
+  const finishLiveMutation = options.onProgress && !blockedByDemo ? beginLiveMutationRequest() : null;
   try {
+    let result: BotBacktestResult;
     if (options.onProgress) {
-      return await runBacktestStream(
+      result = await runBacktestStream(
         botConfigId,
         payload,
         controller.signal,
         options.onProgress,
       );
+    } else {
+      result = await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
+        method: "POST",
+        body: payload,
+        signal: controller.signal,
+      });
     }
-    return await requestJson<BotBacktestResult>(`/api/bots/${botConfigId}/backtests`, {
-      method: "POST",
-      body: payload,
-      signal: controller.signal,
-    });
+    if (blockedByDemo || isDemoModeEnabled()) {
+      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+    }
+    return result;
   } catch (error) {
+    if (blockedByDemo || isDemoModeEnabled()) {
+      throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
+    }
     if (isAbortError(error) && timedOut) {
       throw new Error("Full-history backtest timed out after two hours. Start a new Run to supersede it.");
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    unsubscribeFromDemoMode();
     options.signal?.removeEventListener("abort", abortFromCaller);
+    finishLiveMutation?.();
   }
 }
 
@@ -1973,6 +2228,7 @@ export const botsApi = {
     requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {
       query: projectXCandleQueryParams(query),
       signal: options.signal,
+      tracksLiveMutation: true,
     }),
   listConfigs: (accountId?: number) =>
     requestJson<BotConfigListResponse>("/api/bots", {

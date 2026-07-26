@@ -34,6 +34,17 @@ describe("OrderBookPanel", () => {
     expect(markup).toContain('role="alert"');
   });
 
+  it("replaces live depth controls with an explicit Demo Mode snapshot state", () => {
+    const markup = renderToStaticMarkup(
+      <OrderBookPanel contractId="CON.F.US.MNQ.U26" symbol="MNQ" demoMode />,
+    );
+
+    expect(markup).toContain("Demo · stream off");
+    expect(markup).toContain("Live market depth is paused in Demo Mode");
+    expect(markup).not.toContain("Loading order book");
+    expect(markup).not.toContain("Visible order book levels per side");
+  });
+
   it("restarts a custom stream factory after the store detects a sequence gap", async () => {
     const contractId = "CON.F.US.MNQ.U26";
     const store = new OrderBookStore(contractId);

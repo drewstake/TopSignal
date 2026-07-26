@@ -108,7 +108,7 @@ describe("AppShell account lifecycle reconciliation", () => {
 
     render(<RouterProvider router={router} />);
     const accountSelect = await screen.findByRole("combobox", { name: "Active Account" });
-    expect((accountSelect as HTMLSelectElement).value).toBe("88001");
+    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe("88001"));
 
     act(() => {
       dispatchAccountListChanged({

@@ -59,6 +59,16 @@ describe("drawing persistence", () => {
     expect(storage.getItem(legacyKey)).toBeNull();
   });
 
+  it("leaves unscoped live v1 drawings untouched during Demo hydration", () => {
+    const storage = new MemoryStorage();
+    const legacyKey = "topsignal:bot-chart-drawings:v1:42%7CCON.F.US.MNQ.U26%7C5m";
+    const legacyPayload = JSON.stringify({ version: 1, drawings: [drawing("legacy", "line")] });
+    storage.setItem(legacyKey, legacyPayload);
+
+    expect(readBotDrawings({ ...scope, userScope: "demo" }, storage)).toEqual([]);
+    expect(storage.getItem(legacyKey)).toBe(legacyPayload);
+  });
+
   it("returns an empty collection for malformed JSON, unsupported versions, and invalid envelopes", () => {
     expect(parseBotDrawings("not json")).toEqual([]);
     expect(parseBotDrawings(JSON.stringify({ version: 999, drawings: [drawing("one", "line")] }))).toEqual([]);

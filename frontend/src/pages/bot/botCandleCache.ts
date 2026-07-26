@@ -65,6 +65,11 @@ export function buildBotCandleCacheKey(input: BotCandleCacheKeyInput): string {
 
 /** Remove v1 entries rather than assigning their unknown owner to this user. */
 export function invalidateLegacyBotCandleCache(input: BotCandleCacheKeyInput): void {
+  // Legacy v1 keys are unscoped. Demo hydration must not invalidate a live
+  // user's previously cached market data.
+  if (input.userScope.trim() === "demo") {
+    return;
+  }
   const storage = getLocalStorage();
   if (!storage) {
     return;

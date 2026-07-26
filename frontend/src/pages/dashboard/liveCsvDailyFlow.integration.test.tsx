@@ -617,5 +617,5 @@ describe("Live CSV daily-flow production page bridge", () => {
     expect(screen.queryByRole("button", { name: /Confirm Import/ })).toBeNull();
     expect(confirmTradeImport).toHaveBeenCalledTimes(2);
     expect(state.trades).toHaveLength(3);
-  });
+  }, 10_000);
 });

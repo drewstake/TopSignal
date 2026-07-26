@@ -31,12 +31,14 @@ const sizeFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 
 export interface OrderBookPanelProps {
   contractId: string | null | undefined;
   symbol?: string | null;
+  demoMode?: boolean;
   streamFactory?: MarketDepthStreamFactory;
 }
 
 export function OrderBookPanel({
   contractId,
   symbol,
+  demoMode = false,
   streamFactory = streamProjectXMarketDepth,
 }: OrderBookPanelProps) {
   const normalizedContractId = normalizeOrderBookContractId(contractId);
@@ -49,11 +51,11 @@ export function OrderBookPanel({
   }, [store, visibleLevelCount]);
 
   useEffect(() => {
-    if (!normalizedContractId) {
+    if (demoMode || !normalizedContractId) {
       return undefined;
     }
     return connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
-  }, [normalizedContractId, store, streamFactory]);
+  }, [demoMode, normalizedContractId, store, streamFactory]);
 
   const rowIndexes = useMemo(
     () => Array.from({ length: visibleLevelCount }, (_, index) => index),
@@ -75,12 +77,16 @@ export function OrderBookPanel({
               {displayMarket} · aggregate size by price
             </CardDescription>
           </div>
-          <OrderBookConnectionStatus store={store} />
+          {demoMode ? (
+            <span className="inline-flex min-h-7 items-center rounded-md border border-app-accent/35 bg-app-accent/10 px-2 text-[11px] font-semibold text-app-accent">
+              Demo · stream off
+            </span>
+          ) : <OrderBookConnectionStatus store={store} />}
         </div>
-        <label className="flex items-center justify-between gap-3 text-xs text-app-muted">
+        {!demoMode ? <label className="flex items-center justify-between gap-3 text-xs text-app-muted">
           <span>Levels / side</span>
           <Select
-            className="h-8 w-24 py-0 text-xs"
+            className="h-11 w-24 py-0 text-xs sm:h-9"
             aria-label="Visible order book levels per side"
             value={visibleLevelCount}
             onChange={(event) => {
@@ -95,9 +101,18 @@ export function OrderBookPanel({
             <option value={20}>20</option>
             <option value={50}>50</option>
           </Select>
-        </label>
+        </label> : null}
       </CardHeader>
       <CardContent className="relative">
+        {demoMode ? (
+          <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-app-accent/35 bg-app-accent/5 px-6 text-center" role="note">
+            <p className="text-sm font-semibold text-app-text">Live market depth is paused in Demo Mode</p>
+            <p className="mt-2 max-w-lg text-xs leading-5 text-app-muted">
+              TopSignal does not open a ProjectX depth stream while sample data is active. Return to live mode to view bid and ask liquidity.
+            </p>
+          </div>
+        ) : (
+        <>
         <div
           ref={ladderRef}
           className="relative h-[430px] overflow-y-auto rounded-xl border border-app-border bg-app-bg/35 font-mono text-xs [scrollbar-color:rgb(var(--theme-border-strong))_transparent]"
@@ -118,6 +133,8 @@ export function OrderBookPanel({
           </div>
         </div>
         <OrderBookStateOverlay store={store} />
+        </>
+        )}
       </CardContent>
     </Card>
   );

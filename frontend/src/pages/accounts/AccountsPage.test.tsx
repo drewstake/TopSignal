@@ -102,6 +102,7 @@ describe("AccountsPage local-first management", () => {
 
     renderAccountsPage("/accounts?account=88001");
     const refreshButton = await screen.findByRole("button", { name: "Refresh Express Accounts" });
+    await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
 
     fireEvent.click(refreshButton);
     fireEvent.click(refreshButton);
@@ -158,7 +159,7 @@ describe("AccountsPage accessibility and Live lifecycle", () => {
     expect(scrollRegion.classList.contains("overflow-x-auto")).toBe(true);
     expect(scrollRegion.getAttribute("tabindex")).toBe("0");
 
-    const secondButton = screen.getByRole("button", { name: "Select Live Two account" });
+    const secondButton = await screen.findByRole("button", { name: "Select Live Two account" });
     secondButton.focus();
     await user.keyboard("{Enter}");
     await waitFor(() => expect(router.state.location.search).toBe("?account=88002"));

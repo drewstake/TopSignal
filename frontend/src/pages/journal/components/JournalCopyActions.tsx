@@ -58,7 +58,7 @@ export function JournalCopyActions({
     <div ref={containerRef} className="relative flex items-center">
       <Button
         size="sm"
-        className="h-7 rounded-r-none px-2.5 text-[11px]"
+        className="h-11 rounded-r-none px-2.5 text-[11px] sm:h-7"
         disabled={disabled || isBusy}
         onClick={onCopyEntry}
       >
@@ -67,7 +67,7 @@ export function JournalCopyActions({
       <Button
         variant="secondary"
         size="sm"
-        className="h-7 rounded-l-none border-l border-slate-700/80 px-2.5 text-[11px]"
+        className="h-11 rounded-l-none border-l border-slate-700/80 px-2.5 text-[11px] sm:h-7"
         disabled={disabled || isBusy}
         aria-label="Open recent journal copy actions"
         aria-expanded={open}
@@ -91,7 +91,7 @@ export function JournalCopyActions({
               type="button"
               role="menuitem"
               className={cn(
-                "flex w-full rounded-lg px-3 py-2 text-left text-xs text-slate-200 transition",
+                "flex min-h-11 w-full items-center rounded-lg px-3 py-2 text-left text-xs text-slate-200 transition sm:min-h-0",
                 "hover:bg-slate-900/90 hover:text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/45",
               )}
               onClick={() => {

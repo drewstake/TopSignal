@@ -1,7 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
+import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
+import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
 import { Chip } from "../../components/metrics/Chip";
 import { DonutRing } from "../../components/metrics/DonutRing";
 import { GaugeBar } from "../../components/metrics/GaugeBar";
@@ -28,6 +30,8 @@ import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
 import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForActiveSelection } from "../../lib/accountOrdering";
+import { isCompactModeEnabled, setCompactModeEnabled } from "../../lib/compactMode";
+import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountTrade } from "../../lib/types";
@@ -42,6 +46,8 @@ import {
   computeStabilityScoreFromWorstDayPercent,
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
+import type { AppShellOutletContext } from "../../app/AppShell";
+import { CompactDashboardSkeleton, CompactDashboardView } from "./components/CompactDashboardView";
 import { CopyTradePanel } from "./components/CopyTradePanel";
 import { RecentTradesCard } from "./components/RecentTradesCard";
 import { TradeImportPanel } from "./components/TradeImportPanel";
@@ -76,11 +82,23 @@ import {
   RECENT_TRADES_RENDER_PAGE_SIZE,
   getNextRecentTradesVisibleCount,
 } from "./recentTradesPagination";
+import {
+  buildCompactAccountRequestPlan,
+  buildCompactDashboardScopes,
+  combineCompactCalendarDays,
+  combineCompactSummaries,
+  combineCompactTrades,
+  computeCompactCalendarMaxDrawdown,
+  COMPACT_RECENT_TRADES_LIMIT,
+  refreshCompactCopyThenInvalidate,
+  type CompactDashboardScopes,
+} from "./compactDashboardData";
 import { resolveCustomDateRangeDraft } from "./customDateRange";
 import {
   resolveLiveAccountEnableDecision,
   resolveProjectXAccountId,
 } from "./liveAccountMode";
+import { useAccountScopedDaySelection } from "./useAccountScopedDaySelection";
 
 const CopyFullStatsButton = lazy(() =>
   import("../../components/dashboard/CopyFullStatsButton").then((module) => ({ default: module.CopyFullStatsButton })),
@@ -503,6 +521,32 @@ interface CopyTradeLoadedAccountData {
   error: string | null;
 }
 
+interface CompactAccountLoadState {
+  summary: AccountSummary | null;
+  days: AccountPnlCalendarDay[] | null;
+  trades: AccountTrade[] | null;
+  summaryLoading: boolean;
+  daysLoading: boolean;
+  tradesLoading: boolean;
+  summaryError: string | null;
+  daysError: string | null;
+  tradesError: string | null;
+}
+
+function createCompactAccountLoadState(): CompactAccountLoadState {
+  return {
+    summary: null,
+    days: null,
+    trades: null,
+    summaryLoading: true,
+    daysLoading: true,
+    tradesLoading: true,
+    summaryError: null,
+    daysError: null,
+    tradesError: null,
+  };
+}
+
 type CopyTradeToggleFeedbackTone = "neutral" | "success" | "error";
 
 interface CopyTradeToggleFeedback {
@@ -649,10 +693,21 @@ function DashboardLoadingState() {
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const shellContext = useOutletContext<AppShellOutletContext | null>();
+  const standaloneCompactMode = useMemo(
+    () => ({ enabled: isCompactModeEnabled(), setEnabled: setCompactModeEnabled }),
+    [],
+  );
+  const compactMode = shellContext?.compactMode ?? standaloneCompactMode;
+  const shellAccountsError = shellContext?.accountsError ?? null;
+  const reloadShellAccounts = shellContext?.reloadAccounts;
+  const usingShellAccounts = compactMode.enabled && shellContext != null;
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
+  const { demoModeEnabled } = useDemoInteractionPolicy();
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+  const [compactAccountsError, setCompactAccountsError] = useState<string | null>(null);
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
@@ -668,6 +723,10 @@ export function DashboardPage() {
   const beginTradesRequest = useLatestRequestGuard();
   const beginJournalDaysRequest = useLatestRequestGuard();
   const beginMetricsTradesRequest = useLatestRequestGuard();
+  const beginCompactAnalysisRequest = useLatestRequestGuard();
+  const beginCompactCalendarRequest = useLatestRequestGuard();
+  const beginCompactCopyRefreshRequest = useLatestRequestGuard();
+  const beginCompactJournalDaysRequest = useLatestRequestGuard();
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
@@ -677,8 +736,6 @@ export function DashboardPage() {
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
   const [customRange, setCustomRange] = useState<CustomDateRange | null>(null);
-
-  const [selectedTradeDate, setSelectedTradeDate] = useState<string | null>(null);
 
   const [trades, setTrades] = useState<AccountTrade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
@@ -694,8 +751,32 @@ export function DashboardPage() {
   const [pnlCalendarError, setPnlCalendarError] = useState<string | null>(null);
   const [journalDays, setJournalDays] = useState<Set<string>>(new Set());
   const [journalDaysLoading, setJournalDaysLoading] = useState(false);
-  const [calendarVisibleRange, setCalendarVisibleRange] = useState<{ startDate: string; endDate: string } | null>(null);
-  const [currentTradingDayKey, setCurrentTradingDayKey] = useState(() => tradingDayKey(new Date()));
+  const [journalDaysError, setJournalDaysError] = useState<string | null>(null);
+  const [standardCalendarVisibleRange, setStandardCalendarVisibleRange] = useState<{
+    startDate: string;
+    endDate: string;
+  } | null>(null);
+  const [compactCalendarVisibleRange, setCompactCalendarVisibleRange] = useState<{
+    startDate: string;
+    endDate: string;
+  } | null>(null);
+  const [currentTradingDayKey, setCurrentTradingDayKey] = useState(() =>
+    tradingDayKey(demoModeEnabled ? DEMO_AS_OF_ISO : new Date()),
+  );
+  const [compactAccountDataById, setCompactAccountDataById] = useState<Record<number, CompactAccountLoadState>>({});
+  const [compactReloadNonce, setCompactReloadNonce] = useState(0);
+  const [compactCopyRefreshVersion, setCompactCopyRefreshVersion] = useState(0);
+  const compactAnalysisReloadHandledRef = useRef(0);
+  const compactCalendarReloadHandledRef = useRef(0);
+  const compactAnalysisCopyRefreshHandledRef = useRef(0);
+  const compactCalendarCopyRefreshHandledRef = useRef(0);
+  const compactAnalysisStartedKeyRef = useRef<string | null>(null);
+  const compactCalendarStartedKeyRef = useRef<string | null>(null);
+  const compactCopyRefreshInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const [compactJournalDays, setCompactJournalDays] = useState<Set<string>>(new Set());
+  const [compactJournalDaysLoading, setCompactJournalDaysLoading] = useState(false);
+  const [compactJournalDaysError, setCompactJournalDaysError] = useState<string | null>(null);
+  const [compactJournalActionError, setCompactJournalActionError] = useState<string | null>(null);
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -703,7 +784,6 @@ export function DashboardPage() {
       next.set(ACCOUNT_QUERY_PARAM, String(accountId));
       setSearchParams(next, { replace: true });
       writeStoredAccountId(accountId);
-      setSelectedTradeDate(null);
     },
     [searchParams, setSearchParams],
   );
@@ -711,14 +791,16 @@ export function DashboardPage() {
   const loadAccounts = useCallback(async () => {
     const isCurrent = beginAccountsRequest();
     setAccountsLoading(true);
+    setCompactAccountsError(null);
     try {
       const payload = await accountsApi.getSelectableAccountsLocalFirst();
       if (isCurrent()) {
         setAccounts(payload);
       }
-    } catch {
+    } catch (error) {
       if (isCurrent()) {
         setAccounts([]);
+        setCompactAccountsError(error instanceof Error && error.message ? error.message : "Failed to load accounts");
       }
     } finally {
       if (isCurrent()) {
@@ -740,8 +822,11 @@ export function DashboardPage() {
   );
 
   useEffect(() => {
+    if (usingShellAccounts) {
+      return;
+    }
     void loadAccounts();
-  }, [loadAccounts]);
+  }, [loadAccounts, usingShellAccounts]);
 
   useEffect(() => {
     copyTradeSettingsRef.current = copyTradeSettings;
@@ -757,18 +842,24 @@ export function DashboardPage() {
 
   useEffect(() => {
     function syncCurrentTradingDayKey() {
-      const nextTradingDayKey = tradingDayKey(new Date());
+      const nextTradingDayKey = tradingDayKey(demoModeEnabled ? DEMO_AS_OF_ISO : new Date());
       setCurrentTradingDayKey((current) => (current === nextTradingDayKey ? current : nextTradingDayKey));
     }
 
     syncCurrentTradingDayKey();
+    if (demoModeEnabled) {
+      return undefined;
+    }
     const intervalId = window.setInterval(syncCurrentTradingDayKey, 60_000);
     return () => {
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [demoModeEnabled]);
 
-  const orderedAccounts = useMemo(() => sortAccountsForActiveSelection(accounts), [accounts]);
+  const orderedAccounts = useMemo(
+    () => sortAccountsForActiveSelection(usingShellAccounts ? shellContext.accounts : accounts),
+    [accounts, shellContext, usingShellAccounts],
+  );
 
   useEffect(() => {
     if (orderedAccounts.length === 0) {
@@ -806,6 +897,13 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const {
+    selectedDate: activeSelectedTradeDate,
+    setSelectedDate: handleSelectedTradeDateChange,
+  } = useAccountScopedDaySelection(selectedAccountId);
+  useEffect(() => {
+    setCompactJournalActionError(null);
+  }, [selectedAccountId]);
   const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
   const liveCsvAccounts = useMemo(
     () => orderedAccounts.filter((account) => account.trade_data_source === "csv_import"),
@@ -814,7 +912,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     const isCurrent = beginProviderAccountsRequest();
-    if (selectedAccount?.trade_data_source !== "projectx") {
+    if (usingShellAccounts || demoModeEnabled || selectedAccount?.trade_data_source !== "projectx") {
       return;
     }
 
@@ -830,36 +928,41 @@ export function DashboardPage() {
       });
   }, [
     beginProviderAccountsRequest,
+    demoModeEnabled,
     selectedAccount?.id,
     selectedAccount?.trade_data_source,
+    usingShellAccounts,
   ]);
 
-  const copyTradeModeActive = copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport;
+  const copyTradeModeConfigured =
+    copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport && !demoModeEnabled;
+  const copyTradeModeActive = copyTradeModeConfigured && !compactMode.enabled;
+  const compactCopyTradeModeActive = copyTradeModeConfigured && compactMode.enabled;
   const copyTradeRosterAccountIds = useMemo(
     () =>
-      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
+      computeCopyTradeWhenEnabled(copyTradeModeConfigured, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
         getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings),
       ),
-    [copyTradeModeActive, copyTradeSettings, orderedAccounts, selectedAccountId],
+    [copyTradeModeConfigured, copyTradeSettings, orderedAccounts, selectedAccountId],
   );
   const copyTradeFollowerAccountIds = useMemo(
     () =>
-      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
+      computeCopyTradeWhenEnabled(copyTradeModeConfigured, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
         copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId),
       ),
-    [copyTradeModeActive, copyTradeRosterAccountIds, selectedAccountId],
+    [copyTradeModeConfigured, copyTradeRosterAccountIds, selectedAccountId],
   );
   const metricsRangeQuery = useMemo(
     () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
     [customRange, currentTradingDayKey, metricsRange],
   );
   const selectedTradeDayRangeQuery = useMemo<MetricsRangeQuery | null>(() => {
-    if (!selectedTradeDate) {
+    if (!activeSelectedTradeDate) {
       return null;
     }
-    const selectedRange = getTradingDayRange(selectedTradeDate);
+    const selectedRange = getTradingDayRange(activeSelectedTradeDate);
     return selectedRange ? { ...selectedRange, allTime: false } : null;
-  }, [selectedTradeDate]);
+  }, [activeSelectedTradeDate]);
   const analyticsRangeQuery = selectedTradeDayRangeQuery ?? metricsRangeQuery;
   const selectedTradeDayRefresh = selectedTradeDayRangeQuery !== null;
   const customRangeInvalid = customStartDate !== "" && customEndDate !== "" && customStartDate > customEndDate;
@@ -875,10 +978,10 @@ export function DashboardPage() {
     setCustomRange(resolution.appliedRange);
     if (resolution.nextMode === "CUSTOM") {
       setMetricsRange("CUSTOM");
-      setSelectedTradeDate(null);
+      handleSelectedTradeDateChange(null);
     } else if (resolution.nextMode === "ALL") {
       setMetricsRange("ALL");
-      setSelectedTradeDate(null);
+      handleSelectedTradeDateChange(null);
     }
   }
   const dashboardLoadPerfRef = useRef<{
@@ -891,17 +994,28 @@ export function DashboardPage() {
   useEffect(() => {
     dashboardLoadPerfRef.current = null;
     dashboardWasLoadingRef.current = false;
-  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, selectedAccountId, selectedTradeDate]);
+  }, [activeSelectedTradeDate, analyticsRangeQuery.end, analyticsRangeQuery.start, selectedAccountId]);
 
   const selectedTradeDateLabel = useMemo(() => {
-    if (!selectedTradeDate) {
+    if (!activeSelectedTradeDate) {
       return null;
     }
-    return dateFormatter.format(parseIsoDay(selectedTradeDate));
-  }, [selectedTradeDate]);
+    return dateFormatter.format(parseIsoDay(activeSelectedTradeDate));
+  }, [activeSelectedTradeDate]);
 
   const loadSummaryAndCalendar = useCallback(async () => {
     const isCurrent = beginSummaryRequest();
+    if (compactMode.enabled) {
+      setSummaryLoading(false);
+      setPnlCalendarLoading(false);
+      setSummary(emptySummary);
+      setPointPayoffByBasis(createEmptyPointPayoffByBasis());
+      setSummaryError(null);
+      setPnlCalendarDays([]);
+      setCopyTradeAccountDataById({});
+      setPnlCalendarError(null);
+      return;
+    }
     if (!selectedAccountId) {
       setSummaryLoading(false);
       setPnlCalendarLoading(false);
@@ -1070,11 +1184,18 @@ export function DashboardPage() {
     selectedAccountId,
     selectedTradeDayRefresh,
     beginSummaryRequest,
+    compactMode.enabled,
   ]);
 
   const loadTrades = useCallback(async () => {
     const isCurrent = beginTradesRequest();
     setRecentTradesVisibleCount(RECENT_TRADES_RENDER_PAGE_SIZE);
+    if (compactMode.enabled) {
+      setTradesLoading(false);
+      setTrades([]);
+      setTradesError(null);
+      return;
+    }
     if (!selectedAccountId) {
       setTradesLoading(false);
       setTrades([]);
@@ -1086,7 +1207,7 @@ export function DashboardPage() {
     setTradesError(null);
 
     try {
-      const selectedRange = selectedTradeDate ? getTradingDayRange(selectedTradeDate) : null;
+      const selectedRange = activeSelectedTradeDate ? getTradingDayRange(activeSelectedTradeDate) : null;
       const query = selectedRange
         ? { limit: DAY_FILTER_TRADE_LIMIT, ...selectedRange, refresh: true }
         : { limit: TRADE_LIMIT };
@@ -1106,39 +1227,48 @@ export function DashboardPage() {
         setTradesLoading(false);
       }
     }
-  }, [beginTradesRequest, selectedAccountId, selectedTradeDate]);
+  }, [activeSelectedTradeDate, beginTradesRequest, compactMode.enabled, selectedAccountId]);
 
   const loadJournalDays = useCallback(async () => {
     const isCurrent = beginJournalDaysRequest();
-    if (!selectedAccountId || !calendarVisibleRange) {
+    if (compactMode.enabled) {
       setJournalDaysLoading(false);
       setJournalDays(new Set());
+      setJournalDaysError(null);
+      return;
+    }
+    if (!selectedAccountId || !standardCalendarVisibleRange) {
+      setJournalDaysLoading(false);
+      setJournalDays(new Set());
+      setJournalDaysError(null);
       return;
     }
 
     setJournalDaysLoading(true);
+    setJournalDaysError(null);
     try {
       const payload = await accountsApi.getJournalDays(selectedAccountId, {
-        start_date: calendarVisibleRange.startDate,
-        end_date: calendarVisibleRange.endDate,
+        start_date: standardCalendarVisibleRange.startDate,
+        end_date: standardCalendarVisibleRange.endDate,
       });
       if (isCurrent()) {
         setJournalDays(new Set(payload.days));
       }
-    } catch {
+    } catch (err) {
       if (isCurrent()) {
         setJournalDays(new Set());
+        setJournalDaysError(err instanceof Error ? err.message : "Failed to load journal markers");
       }
     } finally {
       if (isCurrent()) {
         setJournalDaysLoading(false);
       }
     }
-  }, [beginJournalDaysRequest, calendarVisibleRange, selectedAccountId]);
+  }, [beginJournalDaysRequest, compactMode.enabled, selectedAccountId, standardCalendarVisibleRange]);
 
   const loadMetricsTrades = useCallback(async () => {
     const isCurrent = beginMetricsTradesRequest();
-    if (!selectedAccountId) {
+    if (compactMode.enabled || !selectedAccountId) {
       setMetricsTrades([]);
       setMetricsTradesError(null);
       setMetricsTradesLoading(false);
@@ -1171,11 +1301,15 @@ export function DashboardPage() {
         setMetricsTradesLoading(false);
       }
     }
-  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, beginMetricsTradesRequest, selectedAccountId, selectedTradeDayRefresh]);
+  }, [analyticsRangeQuery.end, analyticsRangeQuery.start, beginMetricsTradesRequest, compactMode.enabled, selectedAccountId, selectedTradeDayRefresh]);
 
   const reloadDashboard = useCallback(async () => {
+    setCompactReloadNonce((current) => current + 1);
+    if (compactMode.enabled) {
+      return;
+    }
     await Promise.all([loadSummaryAndCalendar(), loadTrades(), loadMetricsTrades()]);
-  }, [loadMetricsTrades, loadSummaryAndCalendar, loadTrades]);
+  }, [compactMode.enabled, loadMetricsTrades, loadSummaryAndCalendar, loadTrades]);
 
   useEffect(() => {
     void loadSummaryAndCalendar();
@@ -1194,7 +1328,8 @@ export function DashboardPage() {
   }, [loadJournalDays]);
 
   useEffect(() => {
-    const isDashboardLoading = summaryLoading || pnlCalendarLoading || tradesLoading || metricsTradesLoading || journalDaysLoading;
+    const isDashboardLoading =
+      summaryLoading || pnlCalendarLoading || tradesLoading || (!compactMode.enabled && metricsTradesLoading) || journalDaysLoading;
     if (!selectedAccountId) {
       dashboardWasLoadingRef.current = false;
       dashboardLoadPerfRef.current = null;
@@ -1235,6 +1370,7 @@ export function DashboardPage() {
       pnl_calendar_error: pnlCalendarError,
       trades_error: tradesError,
       metrics_trades_error: metricsTradesError,
+      journal_days_error: journalDaysError,
       trades_count: trades.length,
       metrics_trades_count: metricsTrades.length,
       pnl_calendar_day_count: pnlCalendarDays.length,
@@ -1242,7 +1378,9 @@ export function DashboardPage() {
     });
     dashboardLoadPerfRef.current = null;
   }, [
+    compactMode.enabled,
     journalDays.size,
+    journalDaysError,
     journalDaysLoading,
     metricsTrades.length,
     metricsTradesError,
@@ -1259,13 +1397,16 @@ export function DashboardPage() {
   ]);
 
   useEffect(() => {
-    setSelectedTradeDate(null);
-  }, [metricsRange]);
+    handleSelectedTradeDateChange(null);
+  }, [handleSelectedTradeDateChange, metricsRange]);
 
   useEffect(() => {
     function handleAccountTradesSynced(event: Event) {
       const detail = (event as CustomEvent<AccountTradesSyncedDetail>).detail;
-      if (!selectedAccountId || detail.accountId !== selectedAccountId || detail.error) {
+      const matchesVisibleAccount =
+        detail.accountId === selectedAccountId ||
+        (compactCopyTradeModeActive && copyTradeRosterAccountIds.includes(detail.accountId));
+      if (!selectedAccountId || !matchesVisibleAccount || detail.error) {
         return;
       }
       void reloadDashboard();
@@ -1275,7 +1416,7 @@ export function DashboardPage() {
     return () => {
       window.removeEventListener(ACCOUNT_TRADES_SYNCED_EVENT, handleAccountTradesSynced as EventListener);
     };
-  }, [reloadDashboard, selectedAccountId]);
+  }, [compactCopyTradeModeActive, copyTradeRosterAccountIds, reloadDashboard, selectedAccountId]);
 
   const copyTradeSnapshotsByAccountId = useMemo<Record<number, CopyTradeMetricSnapshot | undefined>>(
     () =>
@@ -1364,6 +1505,564 @@ export function DashboardPage() {
     [copyTradeDriftResetAt, copyTradeModeActive, copyTradeRows, copyTradeTradesByAccountId],
   );
   const copyTradeStatsActive = copyTradeModeActive && copyTradeTotals.canCalculate;
+  const compactRequestedAccountIds = useMemo(() => {
+    if (!compactMode.enabled || selectedAccountId === null) {
+      return [];
+    }
+    return compactCopyTradeModeActive ? copyTradeRosterAccountIds : [selectedAccountId];
+  }, [compactCopyTradeModeActive, compactMode.enabled, copyTradeRosterAccountIds, selectedAccountId]);
+  const compactContextAsOfKey = [
+    compactMode.enabled ? "compact" : "standard",
+    selectedAccountId ?? "none",
+    metricsRange,
+    customRange?.startDate ?? "",
+    customRange?.endDate ?? "",
+    currentTradingDayKey,
+    compactReloadNonce,
+  ].join("|");
+  const compactContextAsOf = useMemo(() => {
+    void compactContextAsOfKey;
+    return new Date(demoModeEnabled ? DEMO_AS_OF_ISO : Date.now());
+  }, [compactContextAsOfKey, demoModeEnabled]);
+  const compactCalendarContextScope = useMemo(() => {
+    if (!compactMode.enabled || selectedAccountId === null) {
+      return null;
+    }
+    return buildCompactDashboardScopes({
+      range: metricsRange,
+      customRange,
+      currentTradingDay: currentTradingDayKey,
+      selectedDate: null,
+      asOf: compactContextAsOf,
+    }).calendarContextScope;
+  }, [
+    compactContextAsOf,
+    compactMode.enabled,
+    currentTradingDayKey,
+    customRange,
+    metricsRange,
+    selectedAccountId,
+  ]);
+  const compactAnalysisScope = useMemo(() => {
+    if (compactCalendarContextScope === null) {
+      return null;
+    }
+    if (activeSelectedTradeDate === null) {
+      return compactCalendarContextScope;
+    }
+    return buildCompactDashboardScopes({
+      range: metricsRange,
+      customRange,
+      currentTradingDay: currentTradingDayKey,
+      selectedDate: activeSelectedTradeDate,
+      asOf: compactContextAsOf,
+    }).analysisScope;
+  }, [
+    activeSelectedTradeDate,
+    compactCalendarContextScope,
+    compactContextAsOf,
+    currentTradingDayKey,
+    customRange,
+    metricsRange,
+  ]);
+  const compactScopes = useMemo<CompactDashboardScopes | null>(
+    () =>
+      compactAnalysisScope && compactCalendarContextScope
+        ? {
+            analysisScope: compactAnalysisScope,
+            calendarContextScope: compactCalendarContextScope,
+          }
+        : null,
+    [compactAnalysisScope, compactCalendarContextScope],
+  );
+
+  useEffect(() => {
+    if (!compactCopyTradeModeActive || compactCalendarContextScope === null) {
+      beginCompactCopyRefreshRequest();
+      compactCopyRefreshInFlightRef.current = null;
+      return;
+    }
+    const refreshKey = [
+      selectedAccountId ?? "none",
+      compactRequestedAccountIds.join(","),
+      compactCalendarContextScope.key,
+      compactReloadNonce,
+    ].join("|");
+    if (compactCopyRefreshInFlightRef.current?.key === refreshKey) {
+      return;
+    }
+    const isCurrent = beginCompactCopyRefreshRequest();
+    const promise = refreshCompactCopyThenInvalidate(
+      () =>
+        refreshCopyTradeRange(compactRequestedAccountIds, {
+          start: compactCalendarContextScope.start,
+          end: compactCalendarContextScope.end,
+        }),
+      () => {
+        if (isCurrent()) {
+          setCompactCopyRefreshVersion((current) => current + 1);
+        }
+      },
+    );
+    compactCopyRefreshInFlightRef.current = { key: refreshKey, promise };
+    void promise.finally(() => {
+      if (compactCopyRefreshInFlightRef.current?.promise === promise) {
+        compactCopyRefreshInFlightRef.current = null;
+      }
+    });
+  }, [
+    beginCompactCopyRefreshRequest,
+    compactCalendarContextScope,
+    compactCopyTradeModeActive,
+    compactReloadNonce,
+    compactRequestedAccountIds,
+    selectedAccountId,
+  ]);
+
+  const loadCompactAnalysisData = useCallback(async () => {
+    if (!compactMode.enabled || selectedAccountId === null || compactScopes === null) {
+      compactAnalysisStartedKeyRef.current = null;
+      beginCompactAnalysisRequest();
+      setCompactAccountDataById({});
+      return;
+    }
+    const loadKey = [
+      selectedAccountId,
+      compactRequestedAccountIds.join(","),
+      compactScopes.analysisScope.key,
+      compactReloadNonce,
+      compactCopyRefreshVersion,
+    ].join("|");
+    if (compactAnalysisStartedKeyRef.current === loadKey) {
+      return;
+    }
+    compactAnalysisStartedKeyRef.current = loadKey;
+    const isCurrent = beginCompactAnalysisRequest();
+
+    const forceRefresh =
+      compactReloadNonce > compactAnalysisReloadHandledRef.current ||
+      compactCopyRefreshVersion > compactAnalysisCopyRefreshHandledRef.current;
+    const requestPlan = buildCompactAccountRequestPlan(compactScopes, { forceRefresh });
+    setCompactAccountDataById((current) =>
+      Object.fromEntries(
+        compactRequestedAccountIds.map((accountId) => {
+          const state = current[accountId] ?? createCompactAccountLoadState();
+          return [
+            accountId,
+            {
+              ...state,
+              summary: null,
+              trades: null,
+              summaryLoading: true,
+              tradesLoading: true,
+              summaryError: null,
+              tradesError: null,
+            },
+          ];
+        }),
+      ),
+    );
+
+    const updateAccountState = (accountId: number, patch: Partial<CompactAccountLoadState>) => {
+      if (!isCurrent()) {
+        return;
+      }
+      setCompactAccountDataById((current) => ({
+        ...current,
+        [accountId]: {
+          ...(current[accountId] ?? createCompactAccountLoadState()),
+          ...patch,
+        },
+      }));
+    };
+    const errorMessage = (error: unknown, fallback: string) =>
+      error instanceof Error && error.message ? error.message : fallback;
+
+    await Promise.all(
+      compactRequestedAccountIds.flatMap((accountId) => [
+        accountsApi.getSummaryWithPointBases(accountId, requestPlan.summary).then(
+          (bundle) => updateAccountState(accountId, { summary: bundle.summary, summaryLoading: false }),
+          (error) =>
+            updateAccountState(accountId, {
+              summary: null,
+              summaryLoading: false,
+              summaryError: errorMessage(error, "Failed to load Compact summary"),
+            }),
+        ),
+        accountsApi.getTrades(accountId, requestPlan.trades).then(
+          (nextTrades) => updateAccountState(accountId, { trades: nextTrades, tradesLoading: false }),
+          (error) =>
+            updateAccountState(accountId, {
+              trades: null,
+              tradesLoading: false,
+              tradesError: errorMessage(error, "Failed to load Compact trades"),
+            }),
+        ),
+      ]),
+    );
+    if (isCurrent()) {
+      compactAnalysisReloadHandledRef.current = compactReloadNonce;
+      compactAnalysisCopyRefreshHandledRef.current = compactCopyRefreshVersion;
+    }
+  }, [
+    beginCompactAnalysisRequest,
+    compactMode.enabled,
+    compactCopyRefreshVersion,
+    compactReloadNonce,
+    compactRequestedAccountIds,
+    compactScopes,
+    selectedAccountId,
+  ]);
+
+  const loadCompactCalendarData = useCallback(async () => {
+    const calendarScope = compactCalendarContextScope;
+    if (!compactMode.enabled || selectedAccountId === null || calendarScope === null) {
+      compactCalendarStartedKeyRef.current = null;
+      beginCompactCalendarRequest();
+      setCompactAccountDataById({});
+      return;
+    }
+    const loadKey = [
+      selectedAccountId,
+      compactRequestedAccountIds.join(","),
+      calendarScope.key,
+      compactReloadNonce,
+      compactCopyRefreshVersion,
+    ].join("|");
+    if (compactCalendarStartedKeyRef.current === loadKey) {
+      return;
+    }
+    compactCalendarStartedKeyRef.current = loadKey;
+    const isCurrent = beginCompactCalendarRequest();
+
+    const forceRefresh =
+      compactReloadNonce > compactCalendarReloadHandledRef.current ||
+      compactCopyRefreshVersion > compactCalendarCopyRefreshHandledRef.current;
+    const contextScopes: CompactDashboardScopes = {
+      analysisScope: calendarScope,
+      calendarContextScope: calendarScope,
+    };
+    const requestPlan = buildCompactAccountRequestPlan(contextScopes, { forceRefresh });
+    setCompactAccountDataById((current) =>
+      Object.fromEntries(
+        compactRequestedAccountIds.map((accountId) => {
+          const state = current[accountId] ?? createCompactAccountLoadState();
+          return [
+            accountId,
+            {
+              ...state,
+              days: null,
+              daysLoading: true,
+              daysError: null,
+            },
+          ];
+        }),
+      ),
+    );
+
+    const updateAccountState = (accountId: number, patch: Partial<CompactAccountLoadState>) => {
+      if (!isCurrent()) {
+        return;
+      }
+      setCompactAccountDataById((current) => ({
+        ...current,
+        [accountId]: {
+          ...(current[accountId] ?? createCompactAccountLoadState()),
+          ...patch,
+        },
+      }));
+    };
+    const errorMessage = (error: unknown) =>
+      error instanceof Error && error.message ? error.message : "Failed to load Compact performance days";
+
+    await Promise.all(
+      compactRequestedAccountIds.map((accountId) =>
+        accountsApi.getPnlCalendar(accountId, requestPlan.calendar).then(
+          (days) => updateAccountState(accountId, { days, daysLoading: false }),
+          (error) =>
+            updateAccountState(accountId, {
+              days: null,
+              daysLoading: false,
+              daysError: errorMessage(error),
+            }),
+        ),
+      ),
+    );
+    if (isCurrent()) {
+      compactCalendarReloadHandledRef.current = compactReloadNonce;
+      compactCalendarCopyRefreshHandledRef.current = compactCopyRefreshVersion;
+    }
+  }, [
+    beginCompactCalendarRequest,
+    compactCopyRefreshVersion,
+    compactMode.enabled,
+    compactReloadNonce,
+    compactRequestedAccountIds,
+    compactCalendarContextScope,
+    selectedAccountId,
+  ]);
+
+  useEffect(() => {
+    void loadCompactAnalysisData();
+  }, [loadCompactAnalysisData]);
+
+  useEffect(() => {
+    void loadCompactCalendarData();
+  }, [loadCompactCalendarData]);
+
+  const loadCompactJournalDays = useCallback(async () => {
+    const isCurrent = beginCompactJournalDaysRequest();
+    if (!compactMode.enabled || !selectedAccountId || !compactCalendarVisibleRange) {
+      setCompactJournalDays(new Set());
+      setCompactJournalDaysLoading(false);
+      setCompactJournalDaysError(null);
+      return;
+    }
+
+    setCompactJournalDays(new Set());
+    setCompactJournalDaysLoading(true);
+    setCompactJournalDaysError(null);
+    try {
+      const payload = await accountsApi.getJournalDays(selectedAccountId, {
+        start_date: compactCalendarVisibleRange.startDate,
+        end_date: compactCalendarVisibleRange.endDate,
+      });
+      if (isCurrent()) {
+        setCompactJournalDays(new Set(payload.days));
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setCompactJournalDays(new Set());
+        setCompactJournalDaysError(
+          error instanceof Error && error.message ? error.message : "Failed to load Compact journal markers",
+        );
+      }
+    } finally {
+      if (isCurrent()) {
+        setCompactJournalDaysLoading(false);
+      }
+    }
+  }, [
+    beginCompactJournalDaysRequest,
+    compactCalendarVisibleRange,
+    compactMode.enabled,
+    selectedAccountId,
+  ]);
+
+  useEffect(() => {
+    void loadCompactJournalDays();
+  }, [loadCompactJournalDays]);
+
+  const compactPrimaryState = selectedAccountId === null ? undefined : compactAccountDataById[selectedAccountId];
+  const compactSummaryLoading =
+    selectedAccountId !== null &&
+    compactRequestedAccountIds.some((accountId) => compactAccountDataById[accountId]?.summaryLoading !== false);
+  const compactDaysLoading =
+    selectedAccountId !== null &&
+    compactRequestedAccountIds.some((accountId) => compactAccountDataById[accountId]?.daysLoading !== false);
+  const compactTradesLoading =
+    selectedAccountId !== null &&
+    compactRequestedAccountIds.some((accountId) => compactAccountDataById[accountId]?.tradesLoading !== false);
+  const compactSummaryError = compactPrimaryState?.summaryError ?? null;
+  const compactDaysError = compactPrimaryState?.daysError ?? null;
+  const compactTradesError = compactPrimaryState?.tradesError ?? null;
+  const compactSummary = useMemo(() => {
+    if (compactSummaryError) {
+      return emptySummary;
+    }
+    if (!compactCopyTradeModeActive) {
+      return compactPrimaryState?.summary ?? emptySummary;
+    }
+    return (
+      combineCompactSummaries(
+        compactRequestedAccountIds.flatMap((accountId) => {
+          const nextSummary = compactAccountDataById[accountId]?.summary;
+          return nextSummary ? [nextSummary] : [];
+        }),
+      ) ?? emptySummary
+    );
+  }, [
+    compactAccountDataById,
+    compactCopyTradeModeActive,
+    compactPrimaryState?.summary,
+    compactRequestedAccountIds,
+    compactSummaryError,
+  ]);
+  const compactCalendarDays = useMemo(() => {
+    if (compactDaysError) {
+      return [];
+    }
+    if (!compactCopyTradeModeActive) {
+      return [...(compactPrimaryState?.days ?? [])].sort((left, right) => left.date.localeCompare(right.date));
+    }
+    return combineCompactCalendarDays(
+      compactRequestedAccountIds.flatMap((accountId) => {
+        const days = compactAccountDataById[accountId]?.days;
+        return days ? [{ days }] : [];
+      }),
+    );
+  }, [
+    compactAccountDataById,
+    compactCopyTradeModeActive,
+    compactDaysError,
+    compactPrimaryState?.days,
+    compactRequestedAccountIds,
+  ]);
+  const compactDays = useMemo(
+    () =>
+      activeSelectedTradeDate
+        ? compactCalendarDays.filter((day) => day.date === activeSelectedTradeDate)
+        : compactCalendarDays,
+    [activeSelectedTradeDate, compactCalendarDays],
+  );
+  const compactTrades = useMemo(() => {
+    if (compactTradesError) {
+      return [];
+    }
+    const groups = compactCopyTradeModeActive
+      ? compactRequestedAccountIds.flatMap((accountId) => {
+          const nextTrades = compactAccountDataById[accountId]?.trades;
+          return nextTrades ? [nextTrades] : [];
+        })
+      : [compactPrimaryState?.trades ?? []];
+    return combineCompactTrades(groups, COMPACT_RECENT_TRADES_LIMIT);
+  }, [
+    compactAccountDataById,
+    compactCopyTradeModeActive,
+    compactPrimaryState?.trades,
+    compactRequestedAccountIds,
+    compactTradesError,
+  ]);
+  const compactAccountNameById = useMemo<Readonly<Record<number, string>> | undefined>(() => {
+    if (!compactCopyTradeModeActive || compactRequestedAccountIds.length < 2) {
+      return undefined;
+    }
+    const requested = new Set(compactRequestedAccountIds);
+    return Object.fromEntries(
+      orderedAccounts
+        .filter((account) => requested.has(account.id))
+        .map((account) => [account.id, account.name || account.provider_name || `Account ${account.id}`]),
+    );
+  }, [compactCopyTradeModeActive, compactRequestedAccountIds, orderedAccounts]);
+  const compactDataWarnings = useMemo(() => {
+    if (!compactCopyTradeModeActive || selectedAccountId === null) {
+      return [];
+    }
+    const accountById = new Map(orderedAccounts.map((account) => [account.id, account]));
+    return compactRequestedAccountIds.flatMap((accountId) => {
+      if (accountId === selectedAccountId) {
+        return [];
+      }
+      const state = compactAccountDataById[accountId];
+      if (!state || state.summaryLoading || state.daysLoading || state.tradesLoading) {
+        return [];
+      }
+      const unavailable: string[] = [];
+      if (state.summaryError) unavailable.push("KPIs");
+      if (state.daysError) unavailable.push("charts and calendar");
+      if (state.tradesError) unavailable.push("Recent Trades");
+      if (unavailable.length === 0) {
+        return [];
+      }
+      const account = accountById.get(accountId);
+      const name = account?.name || account?.provider_name || `Account ${accountId}`;
+      return [`${name} could not contribute to ${unavailable.join(", ")}; other Compact regions remain available.`];
+    });
+  }, [
+    compactAccountDataById,
+    compactCopyTradeModeActive,
+    compactRequestedAccountIds,
+    orderedAccounts,
+    selectedAccountId,
+  ]);
+  const compactViewWarnings = useMemo(
+    () =>
+      compactJournalActionError
+        ? [...compactDataWarnings, `Journal entry was not opened: ${compactJournalActionError}`]
+        : compactDataWarnings,
+    [compactDataWarnings, compactJournalActionError],
+  );
+  const compactAccountName = compactCopyTradeModeActive
+    ? `${selectedAccount?.name ?? "Active account"} copy group (${1 + copyTradeFollowerAccountIds.length} accounts)`
+    : selectedAccount?.name ?? "Active account";
+  const compactScoreAccountIds = useMemo(
+    () =>
+      compactRequestedAccountIds.filter((accountId) => {
+        const state = compactAccountDataById[accountId];
+        return state?.days !== null && state?.days !== undefined && !state.daysError;
+      }),
+    [compactAccountDataById, compactRequestedAccountIds],
+  );
+  const compactRiskBase = useMemo(() => {
+    if (!compactMode.enabled) {
+      return null;
+    }
+    if (!compactCopyTradeModeActive) {
+      if (!selectedAccount) {
+        return null;
+      }
+      const riskRule = getAccountRiskRuleForAccount(selectedAccount);
+      if (riskRule) {
+        return {
+          value: riskRule.maxLossLimit,
+          label: `${riskRule.provider} ${riskRule.planSize.toUpperCase()} max loss limit`,
+        };
+      }
+      const balance = getAvailableAccountBalance(selectedAccount.balance);
+      return balance !== null && balance > 0 ? { value: balance, label: "Current balance" } : null;
+    }
+
+    const scoreAccountSet = new Set(compactScoreAccountIds);
+    const scoreAccounts = orderedAccounts.filter((account) => scoreAccountSet.has(account.id));
+    const bases = scoreAccounts.map((account) => {
+      const riskRule = getAccountRiskRuleForAccount(account);
+      if (riskRule) {
+        return { value: riskRule.maxLossLimit, kind: "max-loss" as const };
+      }
+      const balance = getAvailableAccountBalance(account.balance);
+      return balance !== null && balance > 0 ? { value: balance, kind: "balance" as const } : null;
+    });
+    if (scoreAccounts.length === 0 || bases.some((base) => base === null)) {
+      return null;
+    }
+    const kinds = new Set(bases.map((base) => base?.kind));
+    return {
+      value: bases.reduce<number>((total, base) => total + (base?.value ?? 0), 0),
+      label:
+        kinds.size === 1 && kinds.has("max-loss")
+          ? `Combined max-loss risk bases (${scoreAccounts.length} accounts)`
+          : kinds.size === 1 && kinds.has("balance")
+            ? `Combined balances (${scoreAccounts.length} accounts)`
+            : `Combined max-loss and balance risk bases (${scoreAccounts.length} accounts)`,
+    };
+  }, [compactCopyTradeModeActive, compactMode.enabled, compactScoreAccountIds, orderedAccounts, selectedAccount]);
+  const compactMaxDrawdown = useMemo(() => computeCompactCalendarMaxDrawdown(compactDays), [compactDays]);
+  const compactSustainability = useMemo(
+    () =>
+      computeSustainability({
+        dailyNetPnl: compactDays.map((day) => day.net_pnl).filter((value) => Number.isFinite(value)),
+        maxDrawdown: compactMaxDrawdown,
+        equityBase: compactRiskBase?.value ?? null,
+      }),
+    [compactDays, compactMaxDrawdown, compactRiskBase?.value],
+  );
+  const compactCalendarScopeKey = useMemo(
+    () =>
+      [
+        selectedAccountId ?? "none",
+        compactCopyTradeModeActive ? compactRequestedAccountIds.join(",") : "single",
+        metricsRange,
+        metricsRange === "CUSTOM" ? `${customRange?.startDate ?? ""}:${customRange?.endDate ?? ""}` : "",
+      ].join("|"),
+    [
+      compactCopyTradeModeActive,
+      compactRequestedAccountIds,
+      customRange?.endDate,
+      customRange?.startDate,
+      metricsRange,
+      selectedAccountId,
+    ],
+  );
   const rawDashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
   const dashboardSummary = useMemo(
     () =>
@@ -1379,30 +2078,30 @@ export function DashboardPage() {
   const dashboardCurrentBalance = copyTradeStatsActive
     ? copyTradeTotals.combinedBalance
     : getAvailableAccountBalance(selectedAccount?.balance ?? null);
-  const selectedDayLoadedTradeCount = !copyTradeStatsActive && selectedTradeDate && !tradesLoading && !tradesError ? trades.length : null;
+  const selectedDayLoadedTradeCount = !copyTradeStatsActive && activeSelectedTradeDate && !tradesLoading && !tradesError ? trades.length : null;
   const displayTradeCount = selectedDayLoadedTradeCount ?? summary.trade_count;
   const displayActiveDays = selectedDayLoadedTradeCount !== null ? (selectedDayLoadedTradeCount > 0 ? 1 : 0) : summary.active_days;
   const displayAvgTradesPerDay = selectedDayLoadedTradeCount !== null ? selectedDayLoadedTradeCount : summary.avg_trades_per_day;
   const dashboardPnlCalendarDays = useMemo(
     () =>
-      selectedDayLoadedTradeCount === null || !selectedTradeDate
+      selectedDayLoadedTradeCount === null || !activeSelectedTradeDate
         ? rawDashboardPnlCalendarDays
         : rawDashboardPnlCalendarDays.map((day) =>
-            day.date === selectedTradeDate
+            day.date === activeSelectedTradeDate
               ? {
                   ...day,
                   trade_count: selectedDayLoadedTradeCount,
                 }
               : day,
           ),
-    [rawDashboardPnlCalendarDays, selectedDayLoadedTradeCount, selectedTradeDate],
+    [activeSelectedTradeDate, rawDashboardPnlCalendarDays, selectedDayLoadedTradeCount],
   );
   const analyticsPnlCalendarDays = useMemo(
     () =>
-      selectedTradeDate
-        ? dashboardPnlCalendarDays.filter((day) => day.date === selectedTradeDate)
+      activeSelectedTradeDate
+        ? dashboardPnlCalendarDays.filter((day) => day.date === activeSelectedTradeDate)
         : dashboardPnlCalendarDays,
-    [dashboardPnlCalendarDays, selectedTradeDate],
+    [activeSelectedTradeDate, dashboardPnlCalendarDays],
   );
   const analyticsSummary = useMemo(
     () =>
@@ -1746,9 +2445,9 @@ export function DashboardPage() {
       }),
     [analyticsPnlCalendarDays, analyticsRangeQuery.end, analyticsRangeQuery.start, displayActiveDays, displayTradeCount],
   );
-  const activityWeeklyPace = selectedTradeDate ? null : activityMetrics.tradesPerWeek;
+  const activityWeeklyPace = activeSelectedTradeDate ? null : activityMetrics.tradesPerWeek;
   const activitySignalVariant =
-    selectedTradeDate
+    activeSelectedTradeDate
       ? "accent"
       : activityWeeklyPace === null
       ? "neutral"
@@ -1758,7 +2457,7 @@ export function DashboardPage() {
           ? "accent"
           : "positive";
   const activitySignalLabel =
-    selectedTradeDate
+    activeSelectedTradeDate
       ? "Day Filter"
       : activityWeeklyPace === null
       ? "Awaiting Pace Data"
@@ -1792,10 +2491,35 @@ export function DashboardPage() {
 
     return "selected range";
   }, [analyticsPnlCalendarDays, analyticsRangeQuery.end, analyticsRangeQuery.start]);
+  const compactRangeBounds = useMemo(() => {
+    const calendarScope = compactScopes?.calendarContextScope;
+    if (calendarScope?.startDate && calendarScope.endDate) {
+      return {
+        startDate: calendarScope.startDate,
+        endDate: calendarScope.endDate,
+      };
+    }
+
+    if (compactCalendarDays.length > 0) {
+      const orderedDays = [...compactCalendarDays].sort((left, right) => left.date.localeCompare(right.date));
+      return {
+        startDate: orderedDays[0].date,
+        endDate: orderedDays[orderedDays.length - 1].date,
+      };
+    }
+
+    return { startDate: undefined, endDate: undefined };
+  }, [compactCalendarDays, compactScopes?.calendarContextScope]);
+  const compactRangeLabel =
+    activeSelectedTradeDate && selectedTradeDateLabel
+      ? selectedTradeDateLabel
+      : compactRangeBounds.startDate && compactRangeBounds.endDate
+      ? formatFullStatsRangeLabel(compactRangeBounds.startDate, compactRangeBounds.endDate)
+      : "All available history";
   const recentTrades = trades;
   const recentTradesLoading = tradesLoading;
   const recentTradesError = tradesError;
-  const clearSelectedTradeDate = useCallback(() => setSelectedTradeDate(null), []);
+  const clearSelectedTradeDate = useCallback(() => handleSelectedTradeDateChange(null), [handleSelectedTradeDateChange]);
   const showMoreRecentTrades = useCallback(
     () =>
       setRecentTradesVisibleCount((current) =>
@@ -1954,6 +2678,16 @@ export function DashboardPage() {
         return;
       }
 
+      setCompactJournalActionError(null);
+      const next = new URLSearchParams();
+      next.set(ACCOUNT_QUERY_PARAM, String(selectedAccountId));
+      next.set("date", date);
+
+      if (demoModeEnabled) {
+        navigate(`/journal?${next.toString()}`);
+        return;
+      }
+
       try {
         await accountsApi.createJournalEntry(selectedAccountId, {
           entry_date: date,
@@ -1967,20 +2701,36 @@ export function DashboardPage() {
           next.add(date);
           return next;
         });
+        setCompactJournalDays((current) => {
+          const next = new Set(current);
+          next.add(date);
+          return next;
+        });
 
-        const next = new URLSearchParams();
-        next.set(ACCOUNT_QUERY_PARAM, String(selectedAccountId));
-        next.set("date", date);
         navigate(`/journal?${next.toString()}`);
       } catch (err) {
-        setTradesError(err instanceof Error ? err.message : "Failed to open journal entry");
+        const message = err instanceof Error ? err.message : "Failed to open journal entry";
+        if (compactMode.enabled) {
+          setCompactJournalActionError(message);
+        } else {
+          setTradesError(message);
+        }
       }
     },
-    [navigate, selectedAccountId],
+    [compactMode.enabled, demoModeEnabled, navigate, selectedAccountId],
   );
 
-  const handleCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
-    setCalendarVisibleRange((current) => {
+  const handleStandardCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
+    setStandardCalendarVisibleRange((current) => {
+      if (current && current.startDate === startDate && current.endDate === endDate) {
+        return current;
+      }
+      return { startDate, endDate };
+    });
+  }, []);
+
+  const handleCompactCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
+    setCompactCalendarVisibleRange((current) => {
       if (current && current.startDate === startDate && current.endDate === endDate) {
         return current;
       }
@@ -2191,14 +2941,70 @@ export function DashboardPage() {
       : tradeDataSourceFeedback?.tone === "success"
         ? "text-app-accent"
         : "text-app-muted";
+  const compactCopyTradeModeStatusClassName =
+    copyTradeModeStatusTone === "error"
+      ? "text-app-negative-text"
+      : copyTradeModeStatusTone === "success"
+        ? "text-app-accent-text"
+        : "text-app-muted-text";
+  const compactCopyFollowerCandidates = useMemo(
+    () => compactMode.enabled
+      ? orderedAccounts.filter(
+          (account) =>
+            account.id !== selectedAccountId &&
+            account.trade_data_source === "projectx" &&
+            (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
+        )
+      : [],
+    [compactMode.enabled, orderedAccounts, selectedAccountId],
+  );
+  const activeAccountsLoading = usingShellAccounts ? shellContext.accountsLoading : accountsLoading;
 
-  if (accountsLoading) {
-    return <DashboardLoadingState />;
+  if (activeAccountsLoading || (compactMode.enabled && orderedAccounts.length > 0 && selectedAccountId === null)) {
+    return compactMode.enabled ? <CompactDashboardSkeleton /> : <DashboardLoadingState />;
+  }
+
+  if (compactMode.enabled && orderedAccounts.length === 0) {
+    const accountsUnavailableMessage = compactAccountsError ?? shellAccountsError;
+    return (
+      <section className="dashboard-surface pb-8" aria-label="Compact dashboard" data-dashboard-view="compact">
+        <Card className="mx-auto max-w-xl p-6 text-center">
+          <p className="text-base font-semibold text-app-text">
+            {accountsUnavailableMessage ? "Accounts unavailable" : "No accounts available"}
+          </p>
+          <p className="mt-2 text-sm text-app-muted-text" role={accountsUnavailableMessage ? "alert" : "status"}>
+            {accountsUnavailableMessage
+              ? `Compact Mode could not load an account: ${accountsUnavailableMessage}`
+              : "Add or connect an account before opening Compact Mode."}
+          </p>
+          {accountsUnavailableMessage && (!usingShellAccounts || reloadShellAccounts) ? (
+            <Button
+              className="mt-4 min-h-11"
+              variant="secondary"
+              onClick={() => {
+                if (usingShellAccounts) {
+                  reloadShellAccounts?.();
+                  return;
+                }
+                void loadAccounts();
+              }}
+            >
+              Retry accounts
+            </Button>
+          ) : null}
+        </Card>
+      </section>
+    );
   }
 
   return (
     <div className="dashboard-surface space-y-5 pb-8">
       <h1 className="sr-only">Trading Dashboard</h1>
+      <DemoModeNotice compact>
+        <p>
+          Dashboard filters, account selection, calendar drill-down, and copy-to-clipboard tools explore the fixed sample timeline. Live CSV imports, provider refresh, and copy-trade settings are unavailable.
+        </p>
+      </DemoModeNotice>
       <div className="space-y-2">
         <div className="space-y-1.5">
           <div className="max-w-full pb-1">
@@ -2213,7 +3019,10 @@ export function DashboardPage() {
                   setCustomStartDate(nextStartDate);
                   updateCustomRangeFromDraft(nextStartDate, customEndDate);
                 }}
-                className="h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:h-8 sm:w-[140px]"
+                className={cn(
+                  "h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 sm:w-[140px]",
+                  compactMode.enabled ? "text-xs sm:h-11" : "text-[11px] sm:h-8",
+                )}
                 aria-label="Custom start date"
               />
               <Input
@@ -2225,7 +3034,10 @@ export function DashboardPage() {
                   setCustomEndDate(nextEndDate);
                   updateCustomRangeFromDraft(customStartDate, nextEndDate);
                 }}
-                className="h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 text-[11px] sm:h-8 sm:w-[140px]"
+                className={cn(
+                  "h-11 w-full min-w-0 rounded-lg border-app-border/80 bg-app-surface/60 px-2 sm:w-[140px]",
+                  compactMode.enabled ? "text-xs sm:h-11" : "text-[11px] sm:h-8",
+                )}
                 aria-label="Custom end date"
               />
             </div>
@@ -2240,7 +3052,8 @@ export function DashboardPage() {
                     aria-pressed={active}
                     onClick={() => setMetricsRange(option.key)}
                     className={cn(
-                      "min-w-[44px] flex-1 rounded-lg border border-app-border/80 px-2.5 text-[11px] sm:flex-none",
+                      "min-w-[44px] flex-1 rounded-lg border border-app-border/80 px-2.5 sm:flex-none",
+                      compactMode.enabled ? "!h-11 text-xs" : "text-[11px]",
                       active ? "border-app-accent/40 ring-1 ring-app-accent/60" : undefined,
                     )}
                   >
@@ -2249,6 +3062,8 @@ export function DashboardPage() {
                 );
               })}
             </div>
+            {!compactMode.enabled && !demoModeEnabled ? (
+              <>
             <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
               <div className="flex items-center gap-1.5">
                 <Toggle
@@ -2284,7 +3099,7 @@ export function DashboardPage() {
             <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
               <div className="flex items-center gap-1.5">
                 <Toggle
-                  checked={copyTradeModeActive}
+                  checked={copyTradeModeConfigured}
                   onChange={handleCopyTradeModeChange}
                   label={
                     copyTradeTogglePending
@@ -2296,7 +3111,7 @@ export function DashboardPage() {
                   aria-label={
                     selectedAccountIsCsvImport
                       ? "Copy Trade Mode is unavailable for Live CSV accounts"
-                      : copyTradeModeActive
+                      : copyTradeModeConfigured
                       ? "Copy Trade Mode is on"
                       : copyTradeToggleDisabled
                         ? "Copy Trade Mode unavailable"
@@ -2306,11 +3121,11 @@ export function DashboardPage() {
                   disabled={copyTradeToggleDisabled}
                   className={cn(
                     "h-11 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:h-8 sm:flex-none",
-                    copyTradeModeActive ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
+                    copyTradeModeConfigured ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
                   )}
                 />
-                <Badge variant={copyTradeTogglePending ? "accent" : copyTradeModeActive ? "positive" : "neutral"} className="h-8 rounded-lg">
-                  {copyTradeTogglePending ? "Saving" : copyTradeModeActive ? "On" : "Off"}
+                <Badge variant={copyTradeTogglePending ? "accent" : copyTradeModeConfigured ? "positive" : "neutral"} className="h-8 rounded-lg">
+                  {copyTradeTogglePending ? "Saving" : copyTradeModeConfigured ? "On" : "Off"}
                 </Badge>
               </div>
               {copyTradeModeStatusMessage ? (
@@ -2324,6 +3139,9 @@ export function DashboardPage() {
                 </p>
               ) : null}
             </div>
+              </>
+            ) : null}
+            {!compactMode.enabled ? (
             <Suspense fallback={<Skeleton className="h-8 w-full rounded-lg sm:w-32" />}>
               <CopyFullStatsButton
                 metrics={copyFullStatsMetrics}
@@ -2333,12 +3151,17 @@ export function DashboardPage() {
                 className="h-11 w-full rounded-lg px-2.5 text-[11px] sm:h-8 sm:w-auto"
               />
             </Suspense>
+            ) : null}
             </div>
           </div>
-          {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
+          {customRangeInvalid ? (
+            <p className={cn("w-full text-xs", compactMode.enabled ? "text-app-negative-text" : "text-app-negative")}>
+              End date must be on or after start date.
+            </p>
+          ) : null}
         </div>
 
-        <TradeImportPanel
+        {!compactMode.enabled && !demoModeEnabled ? <TradeImportPanel
           accountId={selectedAccountId}
           tradeDataSource={selectedAccount?.trade_data_source ?? null}
           liveAccounts={liveCsvAccounts}
@@ -2347,16 +3170,98 @@ export function DashboardPage() {
           onImportComplete={reloadDashboard}
           onAccountCreated={handleLiveImportAccountCreated}
           onAccountSelected={handleLiveImportAccountCreated}
-        />
+        /> : null}
 
         {!selectedAccountIsCsvImport && selectedAccount?.account_state === "MISSING" ? (
           <Card className="border-app-warning/40 bg-app-warning/10 p-4">
-            <p className="text-sm text-app-warning">
+            <p className={cn("text-sm", compactMode.enabled ? "text-app-text" : "text-app-warning")}>
               This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
             </p>
           </Card>
         ) : null}
       </div>
+
+      {compactMode.enabled && !demoModeEnabled ? (
+        <Card className="border-app-border/80 p-3 sm:p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-semibold text-app-text">Copy Trade accounts</h2>
+                <Badge
+                  variant={copyTradeModeConfigured ? "accent" : "neutral"}
+                  className={cn(
+                    "!text-xs",
+                    copyTradeModeConfigured ? "!text-app-accent-text" : "!text-app-text",
+                  )}
+                >
+                  {copyTradeModeConfigured
+                    ? `${1 + copyTradeFollowerAccountIds.length} included`
+                    : "Leader only"}
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-app-muted-text">
+                Compact KPIs, charts, score, calendar, and Recent Trades use the same selected account roster.
+              </p>
+            </div>
+            <Toggle
+              checked={copyTradeModeConfigured}
+              onChange={handleCopyTradeModeChange}
+              label={copyTradeTogglePending ? "Updating..." : "Copy Trade Mode"}
+              aria-label={copyTradeModeConfigured ? "Copy Trade Mode is on" : "Copy Trade Mode is off"}
+              aria-describedby={copyTradeModeStatusMessage ? "compact-copy-trade-status" : undefined}
+              disabled={copyTradeToggleDisabled}
+              className={cn(
+                "h-11 shrink-0 justify-center rounded-lg px-3 text-xs",
+                copyTradeModeConfigured ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
+              )}
+            />
+          </div>
+          {copyTradeModeConfigured ? (
+            <div className="mt-3 border-t border-app-border/70 pt-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-app-muted-text">
+                Included followers
+              </p>
+              {compactCopyFollowerCandidates.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {compactCopyFollowerCandidates.map((account) => {
+                    const included = copyTradeFollowerAccountIds.includes(account.id);
+                    const atLimit = copyTradeFollowerAccountIds.length >= MAX_COPY_TRADE_FOLLOWERS;
+                    return (
+                      <Button
+                        key={account.id}
+                        type="button"
+                        variant={included ? "secondary" : "ghost"}
+                        size="sm"
+                        aria-pressed={included}
+                        disabled={copyTradeTogglePending || (!included && atLimit)}
+                        onClick={() => handleCopyTradeFollowerSelectionChange(account.id, !included)}
+                        className={cn(
+                          "min-h-11 rounded-xl border px-3 text-xs",
+                          included ? "border-app-accent/50 bg-app-accent/10" : "border-app-border/80",
+                        )}
+                      >
+                        {included ? "Included: " : "Add: "}{account.name || account.provider_name || `Account ${account.id}`}
+                      </Button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-app-muted-text">No eligible ProjectX follower accounts are available.</p>
+              )}
+            </div>
+          ) : null}
+          {copyTradeModeStatusMessage ? (
+            <p
+              id="compact-copy-trade-status"
+              role="status"
+              aria-live={copyTradeModeStatusTone === "error" ? "assertive" : "polite"}
+              className={cn("mt-2 text-xs", compactCopyTradeModeStatusClassName)}
+            >
+              {copyTradeModeStatusMessage}
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       {copyTradeModeActive ? (
         <CopyTradePanel
@@ -2376,8 +3281,10 @@ export function DashboardPage() {
 
       {!selectedAccountIsCsvImport && selectedAccount?.provider_data_stale ? (
         <Card className="border-app-warning/40 bg-app-warning/10 p-4">
-          <p className="text-sm font-medium text-app-warning">Provider account data is stale.</p>
-          <p className="mt-1 text-xs text-app-warning/90">
+          <p className={cn("text-sm font-medium", compactMode.enabled ? "text-app-text" : "text-app-warning")}>
+            Provider account data is stale.
+          </p>
+          <p className={cn("mt-1 text-xs", compactMode.enabled ? "text-app-muted-text" : "text-app-warning/90")}>
             {`${formatProviderLastSeen(selectedAccount.last_seen_at)}. ${
               getAvailableAccountBalance(selectedAccount.balance) === null
                 ? "The current balance is unavailable, so balance-based charts and risk metrics remain unanchored."
@@ -2387,6 +3294,52 @@ export function DashboardPage() {
         </Card>
       ) : null}
 
+      {compactMode.enabled ? (
+        <CompactDashboardView
+          accountName={compactAccountName}
+          rangeLabel={compactRangeLabel}
+          rangeStartDate={compactRangeBounds.startDate}
+          rangeEndDate={compactRangeBounds.endDate}
+          summary={compactSummary}
+          score={compactSustainability.score}
+          scoreBreakdown={{
+            label: compactSustainability.label,
+            riskScore: compactSustainability.riskScore,
+            consistencyScore: compactSustainability.consistencyScore,
+            edgeScore: compactSustainability.edgeScore,
+            sampleSize: compactSustainability.debug.nDays,
+            sampleConfidence: compactSustainability.debug.confidence,
+          }}
+          performanceContext={{
+            tradingDayCount: compactDays.length,
+            maxDrawdown: compactMaxDrawdown,
+            riskBase: compactRiskBase?.value ?? null,
+            riskBaseLabel: compactRiskBase?.label ?? "Risk base unavailable",
+          }}
+          days={compactDays}
+          calendarDays={compactCalendarDays}
+          trades={compactTrades}
+          summaryLoading={compactSummaryLoading}
+          summaryError={compactSummaryError}
+          daysLoading={compactDaysLoading}
+          daysError={compactDaysError}
+          tradesLoading={compactTradesLoading}
+          tradesError={compactTradesError}
+          journalDays={compactJournalDays}
+          journalDaysLoading={compactJournalDaysLoading}
+          journalDaysError={compactJournalDaysError}
+          selectedDate={activeSelectedTradeDate}
+          selectedDateLabel={selectedTradeDateLabel}
+          calendarScopeKey={compactCalendarScopeKey}
+          dataWarnings={compactViewWarnings}
+          accountNameById={compactAccountNameById}
+          onDaySelect={handleSelectedTradeDateChange}
+          onClearDayFilter={clearSelectedTradeDate}
+          onJournalDayOpen={openJournalForDate}
+          onCalendarVisibleRangeChange={handleCompactCalendarVisibleRangeChange}
+        />
+      ) : (
+        <>
       <MasonryGrid>
         {summaryLoading ? (
           Array.from({ length: 8 }).map((_, index) => (
@@ -3031,9 +3984,9 @@ export function DashboardPage() {
                 </div>
                 <div className="mt-2.5 space-y-1.5">
                   <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.12em] text-app-muted">
-                    <span>{selectedTradeDate ? "Selected Day Count" : "Weekly Pacing"}</span>
+                    <span>{activeSelectedTradeDate ? "Selected Day Count" : "Weekly Pacing"}</span>
                     <span className="font-semibold text-app-text-soft">
-                      {selectedTradeDate ? formatInteger(displayTradeCount) : activityWeeklyPace === null ? "N/A" : formatNumber(activityWeeklyPace, 1)}
+                      {activeSelectedTradeDate ? formatInteger(displayTradeCount) : activityWeeklyPace === null ? "N/A" : formatNumber(activityWeeklyPace, 1)}
                     </span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full border border-app-border/80 bg-app-surface/85">
@@ -3067,7 +4020,7 @@ export function DashboardPage() {
                   },
                   {
                     label: "Days/week",
-                    value: selectedTradeDate || activityMetrics.activeDaysPerWeek === null ? "N/A" : formatNumber(activityMetrics.activeDaysPerWeek, 1),
+                    value: activeSelectedTradeDate || activityMetrics.activeDaysPerWeek === null ? "N/A" : formatNumber(activityMetrics.activeDaysPerWeek, 1),
                   },
                   {
                     label: "Trades/active hr",
@@ -3232,11 +4185,11 @@ export function DashboardPage() {
           error={pnlCalendarError}
           journalDays={journalDays}
           journalDaysLoading={journalDaysLoading}
-          selectedDate={selectedTradeDate}
-          onDaySelect={setSelectedTradeDate}
+          selectedDate={activeSelectedTradeDate}
+          onDaySelect={handleSelectedTradeDateChange}
           onJournalDayOpen={openJournalForDate}
           onAddJournalForSelectedDay={openJournalForDate}
-          onVisibleRangeChange={handleCalendarVisibleRangeChange}
+          onVisibleRangeChange={handleStandardCalendarVisibleRangeChange}
         />
       </ViewportDeferredDashboardCard>
 
@@ -3244,7 +4197,7 @@ export function DashboardPage() {
         trades={recentTrades}
         loading={recentTradesLoading}
         error={recentTradesError}
-        selectedTradeDate={selectedTradeDate}
+        selectedTradeDate={activeSelectedTradeDate}
         selectedTradeDateLabel={selectedTradeDateLabel}
         visibleCount={recentTradesVisibleCount}
         recentTradeLimit={TRADE_LIMIT}
@@ -3252,6 +4205,8 @@ export function DashboardPage() {
         onClearDayFilter={clearSelectedTradeDate}
         onShowMore={showMoreRecentTrades}
       />
+        </>
+      )}
     </div>
   );
 }
