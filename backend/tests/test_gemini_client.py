@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from urllib import error
 
 import pytest
@@ -97,7 +98,7 @@ def test_http_error_message_is_actionable(monkeypatch):
             code=400,
             msg="Bad Request",
             hdrs=None,
-            fp=_BytesReader(b'{"error": {"message": "API key not valid."}}'),
+            fp=BytesIO(b'{"error": {"message": "API key not valid."}}'),
         )
 
     monkeypatch.setattr("app.services.gemini_client.request.urlopen", fake_urlopen)
@@ -133,7 +134,7 @@ def test_retryable_http_error_is_retried(monkeypatch):
                 code=503,
                 msg="Service Unavailable",
                 hdrs=None,
-                fp=_BytesReader(
+                fp=BytesIO(
                     b'{"error": {"message": "This model is currently experiencing high demand."}}'
                 ),
             )
@@ -145,11 +146,3 @@ def test_retryable_http_error_is_retried(monkeypatch):
 
     assert client.generate_text("Hello") == "ok"
     assert calls == 2
-
-
-class _BytesReader:
-    def __init__(self, body: bytes):
-        self.body = body
-
-    def read(self):
-        return self.body
