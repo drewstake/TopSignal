@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,7 @@ class ProjectXAccountOut(BaseModel):
     status: ProjectXAccountState
     account_state: ProjectXAccountState
     is_main: bool
+    is_archived: bool = False
     can_trade: bool | None = None
     is_visible: bool | None = None
     last_trade_at: datetime | None = None
@@ -36,6 +37,21 @@ class ProjectXAccountTradeDataSourceIn(BaseModel):
 class ProjectXAccountMainOut(BaseModel):
     account_id: int
     is_main: bool
+
+
+class ProjectXAccountArchiveIn(BaseModel):
+    replacement_account_id: int | None = Field(
+        default=None,
+        gt=0,
+        le=9_223_372_036_854_775_807,
+    )
+
+
+class ProjectXAccountArchiveOut(BaseModel):
+    account_id: int
+    is_archived: bool
+    is_main: bool
+    replacement_main_account_id: int | None = None
 
 
 class ProjectXAccountRenameIn(BaseModel):
@@ -173,6 +189,26 @@ class TopstepTradeImportSummaryOut(BaseModel):
     breakeven: int
 
 
+class TopstepTradeImportConflictDifferenceOut(BaseModel):
+    field: str
+    stored: Any = None
+    incoming: Any = None
+
+
+class TopstepTradeImportConflictOut(BaseModel):
+    identity_kind: Literal["source_trade_id", "order_exit"]
+    identity_value: str
+    reason: Literal[
+        "repeated_id_mismatch",
+        "stored_trade_mismatch",
+        "ambiguous_stored_identity",
+    ]
+    stored_event_id: int | None = None
+    stored_event_ids: list[int] | None = None
+    stored_row_number: int | None = None
+    differences: list[TopstepTradeImportConflictDifferenceOut]
+
+
 class TopstepTradeImportPreviewRowOut(BaseModel):
     row_number: int
     source_trade_id: str
@@ -190,15 +226,19 @@ class TopstepTradeImportPreviewRowOut(BaseModel):
     direction: Literal["Long", "Short"]
     trade_day: date
     duration: str | None = None
-    status: Literal["new", "duplicate"]
+    status: Literal["new", "duplicate", "conflict"]
+    conflict: TopstepTradeImportConflictOut | None = None
 
 
 class TopstepTradeImportPreviewOut(BaseModel):
+    preview_token: str
+    expires_at: datetime
     source_file_name: str
     file_sha256: str
     total_rows: int
     new_rows: int
     duplicate_rows: int
+    conflict_rows: int
     summary: TopstepTradeImportSummaryOut
     trades: list[TopstepTradeImportPreviewRowOut]
 
@@ -210,6 +250,25 @@ class TopstepTradeImportConfirmOut(BaseModel):
     total_rows: int
     inserted_rows: int
     duplicate_rows: int
+
+
+class TopstepTradeImportStatusIn(BaseModel):
+    preview_token: str = Field(min_length=32, max_length=200)
+
+
+class TopstepTradeImportStatusOut(BaseModel):
+    status: Literal["pending", "confirming", "committed", "expired", "stale", "conflict", "failed"]
+    confirmation_retryable: bool
+    outcome_code: str | None = None
+    source_file_name: str
+    created_at: datetime
+    expires_at: datetime
+    confirmed_at: datetime | None = None
+    total_rows: int
+    new_rows: int
+    duplicate_rows: int
+    conflict_rows: int
+    result: TopstepTradeImportConfirmOut | None = None
 
 
 class ProjectXCredentialsUpsertIn(BaseModel):

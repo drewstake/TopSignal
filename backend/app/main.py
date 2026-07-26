@@ -48,6 +48,7 @@ from .expense_schemas import (
     ExpenseRange,
     ExpenseTotalsOut,
     ExpenseUpdateIn,
+    FinancialSummaryOut,
     WeekStart,
 )
 from .journal_schemas import (
@@ -93,6 +94,8 @@ from .models import Account, Expense, Payout, ProjectXMarketCandle, ProjectXTrad
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
+    ProjectXAccountArchiveIn,
+    ProjectXAccountArchiveOut,
     ProjectXAccountMainOut,
     ProjectXAccountRenameIn,
     ProjectXAccountRenameOut,
@@ -110,6 +113,8 @@ from .projectx_schemas import (
     TopstepLiveAccountCreateIn,
     TopstepTradeImportConfirmOut,
     TopstepTradeImportPreviewOut,
+    TopstepTradeImportStatusIn,
+    TopstepTradeImportStatusOut,
 )
 from .schemas import TradeOut
 from .services.metrics import (
@@ -151,9 +156,12 @@ from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
     ACCOUNT_STATE_MISSING,
     AccountTradeDataSourceConflictError,
+    LiveAccountArchivedError,
+    MainAccountReplacementRequiredError,
     TRADE_DATA_SOURCE_CSV_IMPORT,
     TRADE_DATA_SOURCE_PROJECTX,
     account_id_from_external_id,
+    archive_projectx_import_account,
     create_projectx_import_account,
     get_projectx_account_row,
     get_projectx_account_rows,
@@ -163,8 +171,10 @@ from .services.projectx_accounts import (
     set_projectx_account_display_name,
     set_projectx_account_trade_data_source,
     set_main_projectx_account,
+    serialize_account_main_mutation,
     should_include_account,
     sync_projectx_accounts,
+    unarchive_projectx_import_account,
 )
 from .services.projectx_credentials import (
     delete_projectx_credentials,
@@ -190,7 +200,9 @@ from .services.projectx_trades import (
 from .services.trade_imports import (
     MAX_TRADE_IMPORT_BYTES,
     TradeImportValidationError,
+    cleanup_trade_import_previews,
     confirm_trade_import,
+    get_trade_import_status,
     preview_trade_import,
 )
 from .services.bot_service import (
@@ -242,8 +254,9 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260724_restore_express_trade_data_source.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260724-v2"
+_REQUIRED_SCHEMA_MIGRATION = "20260725_live_account_archiving.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260725-v4"
+_TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
 _backtest_capacity_lock = Lock()
@@ -320,6 +333,30 @@ def _acquire_backtest_capacity(user_id: str) -> _BacktestCapacityLease:
     return lease
 
 
+def _run_trade_import_preview_cleanup() -> None:
+    with SessionLocal() as db:
+        cleanup_trade_import_previews(db)
+
+
+def _log_trade_import_preview_cleanup_failure(exc: Exception) -> None:
+    # Never include exception text: database errors can contain query values.
+    logger.warning(
+        "trade_import_preview_cleanup_failed",
+        extra={"error_type": type(exc).__name__},
+    )
+
+
+async def _trade_import_preview_cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(_TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(_run_trade_import_preview_cleanup)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log_trade_import_preview_cleanup_failure(exc)
+
+
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
     _validate_runtime_security_configuration()
@@ -328,10 +365,20 @@ async def app_lifespan(_: FastAPI):
     guard_against_local_database_url()
     log_runtime_connection_targets()
     init_db()
-    _start_streaming_runtime_if_enabled()
     try:
+        _run_trade_import_preview_cleanup()
+    except Exception as exc:
+        _log_trade_import_preview_cleanup_failure(exc)
+    cleanup_task = asyncio.create_task(_trade_import_preview_cleanup_loop())
+    try:
+        _start_streaming_runtime_if_enabled()
         yield
     finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         await _order_book_registry.close()
         _stop_streaming_runtime()
 
@@ -455,6 +502,7 @@ def readiness(db: Session = Depends(get_db)):
             "bot_order_attempts",
             "projectx_trade_events",
             "trade_import_batches",
+            "trade_import_previews",
         }
         if not required_tables.issubset(table_names):
             raise RuntimeError("schema_outdated")
@@ -478,6 +526,8 @@ def readiness(db: Session = Depends(get_db)):
         if not {
             "user_id",
             "account_id",
+            "account_row_id",
+            "account_external_id",
             "source_file_name",
             "file_sha256",
             "total_rows",
@@ -497,7 +547,27 @@ def readiness(db: Session = Depends(get_db)):
             "entry_timestamp",
             "entry_price",
             "import_batch_id",
+            "account_row_id",
+            "account_external_id",
         }.issubset(trade_event_columns):
+            raise RuntimeError("schema_outdated")
+        trade_import_preview_columns = {
+            column["name"]
+            for column in schema.get_columns("trade_import_previews")
+        }
+        if not {
+            "token_hash",
+            "user_id",
+            "account_id",
+            "account_row_id",
+            "account_external_id",
+            "normalized_manifest",
+            "dedupe_snapshot",
+            "status",
+            "expires_at",
+            "retention_until",
+            "import_batch_id",
+        }.issubset(trade_import_preview_columns):
             raise RuntimeError("schema_outdated")
         trade_event_foreign_keys = schema.get_foreign_keys(
             "projectx_trade_events"
@@ -506,18 +576,18 @@ def readiness(db: Session = Depends(get_db)):
             (
                 foreign_key
                 for foreign_key in trade_event_foreign_keys
-                if foreign_key.get("constrained_columns") == ["import_batch_id"]
+                if "import_batch_id" in set(foreign_key.get("constrained_columns") or [])
+                and foreign_key.get("referred_table") == "trade_import_batches"
             ),
             None,
         )
-        import_batch_on_delete = str(
-            (import_batch_fk or {}).get("options", {}).get("ondelete") or ""
-        ).upper()
-        if (
-            import_batch_fk is None
-            or import_batch_fk.get("referred_table") != "trade_import_batches"
-            or import_batch_on_delete != "SET NULL"
-        ):
+        if import_batch_fk is None:
+            raise RuntimeError("schema_outdated")
+        trade_event_checks = " ".join(
+            str(check.get("sqltext") or "").lower()
+            for check in schema.get_check_constraints("projectx_trade_events")
+        )
+        if "10000" not in trade_event_checks or "import_batch_id is null" not in trade_event_checks:
             raise RuntimeError("schema_outdated")
         attempt_checks = schema.get_check_constraints("bot_order_attempts")
         if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
@@ -766,6 +836,109 @@ def get_expense_totals(
         "total_amount_cents": total_amount_cents,
         "by_category": by_category,
         "count": count,
+    }
+
+
+@app.get("/api/expenses/financial-summary", response_model=FinancialSummaryOut)
+def get_financial_summary(
+    as_of_date: date | None = None,
+    account_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return the complete Expenses dashboard summary from two daily aggregates.
+
+    ``as_of_date`` is supplied by the browser so trailing ranges retain the
+    user's local-calendar behavior. Direct API callers default to New York,
+    which is also the application's trading/financial timezone.
+    """
+
+    user_id = get_authenticated_user_id()
+    if account_id is not None:
+        _validate_account_id(account_id)
+    effective_as_of_date = as_of_date or datetime.now(_NEW_YORK_TZ).date()
+
+    expense_query = db.query(Expense).filter(Expense.user_id == user_id)
+    if account_id is not None:
+        expense_query = expense_query.filter(Expense.account_id == account_id)
+    expense_daily_rows = expense_query.with_entities(
+        Expense.expense_date,
+        Expense.category,
+        func.coalesce(func.sum(Expense.amount_cents), 0),
+        func.count(Expense.id),
+    ).group_by(Expense.expense_date, Expense.category).all()
+
+    payout_daily_rows = (
+        db.query(
+            Payout.payout_date,
+            func.coalesce(func.sum(Payout.amount_cents), 0),
+            func.count(Payout.id),
+        )
+        .filter(Payout.user_id == user_id)
+        .group_by(Payout.payout_date)
+        .all()
+    )
+
+    oldest_expense_date = min((row[0] for row in expense_daily_rows), default=None)
+    oldest_payout_date = min((row[0] for row in payout_daily_rows), default=None)
+    first_cash_flow_date = min(
+        (value for value in (oldest_expense_date, oldest_payout_date) if value is not None),
+        default=None,
+    )
+    last_payout_date = max((row[0] for row in payout_daily_rows), default=None)
+
+    expense_totals = _financial_expense_totals(
+        expense_daily_rows,
+        start_date=None,
+        end_date=effective_as_of_date,
+    )
+    # Existing all-time payout totals intentionally have no end-date filter.
+    payout_totals = _financial_payout_totals(
+        payout_daily_rows,
+        start_date=None,
+        end_date=None,
+    )
+    spend_expense_totals = _financial_expense_totals(
+        expense_daily_rows,
+        start_date=last_payout_date,
+        end_date=effective_as_of_date,
+    )
+
+    ranges = []
+    for range_key, label, range_start, range_end in _financial_summary_range_specs(
+        first_cash_flow_date=first_cash_flow_date,
+        as_of_date=effective_as_of_date,
+    ):
+        ranges.append(
+            {
+                "key": range_key,
+                "label": label,
+                "start_date": range_start,
+                "end_date": range_end,
+                "expense_totals": _financial_expense_totals(
+                    expense_daily_rows,
+                    start_date=range_start,
+                    end_date=effective_as_of_date if range_end is None else range_end,
+                ),
+                "payout_totals": _financial_payout_totals(
+                    payout_daily_rows,
+                    start_date=range_start,
+                    end_date=range_end,
+                ),
+            }
+        )
+
+    return {
+        "as_of_date": effective_as_of_date,
+        "first_cash_flow_date": first_cash_flow_date,
+        "expense_totals": expense_totals,
+        "payout_totals": payout_totals,
+        "spend_since_last_payout": {
+            "last_payout_date": last_payout_date,
+            "total_amount": spend_expense_totals["total_amount"],
+            "total_amount_cents": spend_expense_totals["total_amount_cents"],
+            "expense_count": spend_expense_totals["count"],
+        },
+        "ranges": ranges,
     }
 
 
@@ -1106,6 +1279,7 @@ def metrics_behavior(
 def list_projectx_accounts(
     show_inactive: bool = False,
     show_missing: bool = False,
+    include_archived: bool = False,
     only_active_accounts: bool | None = None,
     refresh_provider: bool = True,
     db: Session = Depends(get_db),
@@ -1166,6 +1340,7 @@ def list_projectx_accounts(
             row,
             show_inactive=show_inactive,
             show_missing=show_missing,
+            include_archived=include_archived,
         )
     ]
 
@@ -1213,6 +1388,23 @@ def _trade_data_source_conflict_detail(
     }
 
 
+def _live_account_archived_detail(account_id: int) -> dict[str, object]:
+    return {
+        "code": "live_account_archived",
+        "message": "Restore this Live CSV account in Accounts before using it.",
+        "account_id": account_id,
+    }
+
+
+def _retryable_main_account_conflict_detail(account_id: int) -> dict[str, object]:
+    return {
+        "code": "main_account_conflict_retryable",
+        "message": "Another account change completed at the same time. Reload accounts and retry.",
+        "account_id": account_id,
+        "retryable": True,
+    }
+
+
 @app.post(
     "/api/accounts/import-target",
     response_model=ProjectXAccountOut,
@@ -1226,14 +1418,15 @@ def create_topstep_live_import_target(
     _validate_account_id(payload.account_id)
 
     try:
-        row = create_projectx_import_account(
-            db,
-            user_id=user_id,
-            account_id=payload.account_id,
-            name=payload.name,
-        )
-        db.commit()
-        db.refresh(row)
+        with serialize_account_main_mutation(db, user_id=user_id):
+            row = create_projectx_import_account(
+                db,
+                user_id=user_id,
+                account_id=payload.account_id,
+                name=payload.name,
+            )
+            db.commit()
+            db.refresh(row)
     except AccountTradeDataSourceConflictError as exc:
         db.rollback()
         raise HTTPException(
@@ -1243,6 +1436,12 @@ def create_topstep_live_import_target(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LiveAccountArchivedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_live_account_archived_detail(exc.account_id),
+        ) from exc
     except IntegrityError as exc:
         db.rollback()
         row = get_projectx_account_row(
@@ -1253,11 +1452,7 @@ def create_topstep_live_import_target(
         if row is None:
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "code": "live_import_account_conflict",
-                    "message": "The Live CSV account could not be created because its account ID is already in use.",
-                    "account_id": payload.account_id,
-                },
+                detail=_retryable_main_account_conflict_detail(payload.account_id),
             ) from exc
         if row.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
             conflict = AccountTradeDataSourceConflictError(
@@ -1380,11 +1575,24 @@ def set_projectx_main_account(
     _validate_account_id(account_id)
 
     try:
-        set_main_projectx_account(db, account_id, user_id=user_id)
-        db.commit()
+        with serialize_account_main_mutation(db, user_id=user_id):
+            set_main_projectx_account(db, account_id, user_id=user_id)
+            db.commit()
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail="Account not found.") from exc
+    except LiveAccountArchivedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_live_account_archived_detail(exc.account_id),
+        ) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_retryable_main_account_conflict_detail(account_id),
+        ) from exc
     except Exception:
         db.rollback()
         raise
@@ -1392,6 +1600,110 @@ def set_projectx_main_account(
     return {
         "account_id": account_id,
         "is_main": True,
+    }
+
+
+@app.post(
+    "/api/accounts/{account_id}/archive",
+    response_model=ProjectXAccountArchiveOut,
+)
+def archive_topstep_live_account(
+    account_id: int,
+    payload: ProjectXAccountArchiveIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    replacement_account_id = payload.replacement_account_id if payload is not None else None
+    try:
+        with serialize_account_main_mutation(db, user_id=user_id):
+            row, replacement = archive_projectx_import_account(
+                db,
+                account_id,
+                user_id=user_id,
+                replacement_account_id=replacement_account_id,
+            )
+            db.commit()
+            db.refresh(row)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found.") from exc
+    except MainAccountReplacementRequiredError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "main_account_replacement_required",
+                "message": "Choose another active account as Main before archiving this account.",
+                "account_id": exc.account_id,
+            },
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": str(exc), "account_id": account_id},
+        ) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_retryable_main_account_conflict_detail(account_id),
+        ) from exc
+
+    replacement_id = (
+        account_id_from_external_id(replacement.external_id)
+        if replacement is not None
+        else None
+    )
+    return {
+        "account_id": account_id,
+        "is_archived": row.archived_at is not None,
+        "is_main": bool(row.is_main),
+        "replacement_main_account_id": replacement_id,
+    }
+
+
+@app.post(
+    "/api/accounts/{account_id}/unarchive",
+    response_model=ProjectXAccountArchiveOut,
+)
+def unarchive_topstep_live_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    try:
+        with serialize_account_main_mutation(db, user_id=user_id):
+            row = unarchive_projectx_import_account(
+                db,
+                account_id,
+                user_id=user_id,
+            )
+            db.commit()
+            db.refresh(row)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found.") from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": str(exc), "account_id": account_id},
+        ) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=_retryable_main_account_conflict_detail(account_id),
+        ) from exc
+
+    return {
+        "account_id": account_id,
+        "is_archived": row.archived_at is not None,
+        "is_main": bool(row.is_main),
+        "replacement_main_account_id": None,
     }
 
 
@@ -2968,11 +3280,12 @@ def preview_topstep_trade_import(
             db,
             user_id=user_id,
             account_id=account_id,
+            account_row_id=int(account.id),
             filename=file.filename or "trade-export",
             content=content,
         )
     except TradeImportValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
+        raise _trade_import_http_exception(exc) from exc
 
 
 @app.post(
@@ -2982,8 +3295,7 @@ def preview_topstep_trade_import(
 )
 def confirm_topstep_trade_import(
     account_id: int,
-    file: UploadFile = File(...),
-    preview_sha256: str = Form(...),
+    preview_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -2995,20 +3307,44 @@ def confirm_topstep_trade_import(
     )
     _require_csv_import_account(account)
     try:
-        content = file.file.read(MAX_TRADE_IMPORT_BYTES + 1)
-    finally:
-        file.file.close()
-    try:
         return confirm_trade_import(
             db,
             user_id=user_id,
             account_id=account_id,
-            filename=file.filename or "trade-export",
-            content=content,
-            expected_sha256=preview_sha256,
+            account_row_id=int(account.id),
+            preview_token=preview_token,
         )
     except TradeImportValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
+        raise _trade_import_http_exception(exc) from exc
+
+
+@app.post(
+    "/api/accounts/{account_id}/trade-imports/status",
+    response_model=TopstepTradeImportStatusOut,
+)
+def get_topstep_trade_import_status(
+    account_id: int,
+    payload: TopstepTradeImportStatusIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    _validate_account_id(account_id)
+    account = _require_owned_projectx_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+    )
+    _require_csv_import_account(account)
+    try:
+        return get_trade_import_status(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=int(account.id),
+            preview_token=payload.preview_token,
+        )
+    except TradeImportValidationError as exc:
+        raise _trade_import_http_exception(exc) from exc
 
 
 @app.get("/api/accounts/{account_id}/trades", response_model=list[ProjectXTradeOut])
@@ -3375,6 +3711,112 @@ def _resolve_expense_range_dates(*, range: ExpenseRange, week_start: WeekStart) 
     return start_date, end_date
 
 
+def _financial_expense_totals(
+    daily_rows,
+    *,
+    start_date: date | None,
+    end_date: date,
+) -> dict:
+    by_category_cents: dict[str, int] = {}
+    by_category_counts: dict[str, int] = {}
+    for expense_date, category, amount_cents, row_count in daily_rows:
+        if start_date is not None and expense_date < start_date:
+            continue
+        if expense_date > end_date:
+            continue
+        category_key = str(category)
+        by_category_cents[category_key] = by_category_cents.get(category_key, 0) + int(amount_cents)
+        by_category_counts[category_key] = by_category_counts.get(category_key, 0) + int(row_count)
+
+    total_amount_cents = sum(by_category_cents.values())
+    count = sum(by_category_counts.values())
+    return {
+        "range": "all_time",
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_amount": _cents_to_dollars(total_amount_cents),
+        "total_amount_cents": total_amount_cents,
+        "by_category": {
+            category: {
+                "amount": _cents_to_dollars(amount_cents),
+                "amount_cents": amount_cents,
+                "count": by_category_counts[category],
+            }
+            for category, amount_cents in by_category_cents.items()
+        },
+        "count": count,
+    }
+
+
+def _financial_payout_totals(
+    daily_rows,
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> dict:
+    total_amount_cents = 0
+    count = 0
+    for payout_date, amount_cents, row_count in daily_rows:
+        if start_date is not None and payout_date < start_date:
+            continue
+        if end_date is not None and payout_date > end_date:
+            continue
+        total_amount_cents += int(amount_cents)
+        count += int(row_count)
+    average_amount_cents = _calculate_average_amount_cents(total_amount_cents, count)
+    return {
+        "total_amount": _cents_to_dollars(total_amount_cents),
+        "total_amount_cents": total_amount_cents,
+        "average_amount": _cents_to_dollars(average_amount_cents),
+        "average_amount_cents": average_amount_cents,
+        "count": count,
+    }
+
+
+def _subtract_local_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 - months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    return date(year, month, min(value.day, calendar.monthrange(year, month)[1]))
+
+
+def _add_local_years(value: date, years: int) -> date:
+    year = value.year + years
+    return date(year, value.month, min(value.day, calendar.monthrange(year, value.month)[1]))
+
+
+def _financial_summary_range_specs(
+    *,
+    first_cash_flow_date: date | None,
+    as_of_date: date,
+) -> list[tuple[str, str, date | None, date | None]]:
+    specs: list[tuple[str, str, date | None, date | None]] = [
+        ("one_month", "1 Month", _subtract_local_months(as_of_date, 1), as_of_date),
+        ("three_months", "3 Months", _subtract_local_months(as_of_date, 3), as_of_date),
+        ("six_months", "6 Months", _subtract_local_months(as_of_date, 6), as_of_date),
+        ("year_to_date", "YTD", date(as_of_date.year, 1, 1), as_of_date),
+        ("one_year", "1 Year", _subtract_local_months(as_of_date, 12), as_of_date),
+    ]
+
+    if first_cash_flow_date is not None and first_cash_flow_date <= as_of_date:
+        for year_index in range(100):
+            start_date = _add_local_years(first_cash_flow_date, year_index)
+            if start_date > as_of_date:
+                break
+            full_year_end = _add_local_years(first_cash_flow_date, year_index + 1) - timedelta(days=1)
+            specs.append(
+                (
+                    f"anniversary_year_{year_index + 1}",
+                    f"Year {year_index + 1}",
+                    start_date,
+                    min(full_year_end, as_of_date),
+                )
+            )
+
+    specs.append(("all_time", "All Time", None, None))
+    return specs
+
+
 def _cents_to_dollars(amount_cents: int) -> float:
     return round(int(amount_cents) / 100, 2)
 
@@ -3524,6 +3966,7 @@ def _serialize_projectx_account(
         "status": account_state,
         "account_state": account_state,
         "is_main": bool(row.is_main),
+        "is_archived": row.archived_at is not None,
         "can_trade": None
         if is_csv_import
         else (
@@ -3565,6 +4008,24 @@ def _require_csv_import_account(account: Account) -> None:
             status_code=409,
             detail="trade_import_requires_csv_import_account",
         )
+
+
+def _trade_import_http_exception(exc: TradeImportValidationError) -> HTTPException:
+    if exc.code == "preview_not_found":
+        status_code = 404
+    elif exc.code == "preview_expired":
+        status_code = 410
+    elif exc.code in {
+        "confirmation_in_progress",
+        "import_conflicts_unresolved",
+        "preview_stale",
+        "trade_import_account_archived",
+        "trade_import_requires_csv_import_account",
+    }:
+        status_code = 409
+    else:
+        status_code = 422
+    return HTTPException(status_code=status_code, detail=exc.as_detail())
 
 
 def _should_fallback_to_local_metrics(
@@ -3695,16 +4156,15 @@ def _read_bool_env(name: str, default: bool) -> bool:
 
 
 def _start_streaming_runtime_if_enabled() -> None:
-    global _streaming_runtime
-    if not _read_bool_env("PROJECTX_STREAMING_ENABLED", False):
-        return
-    if _streaming_runtime is not None:
-        return
-
-    from .services.projectx_streaming_runtime import create_streaming_runtime
-
-    _streaming_runtime = create_streaming_runtime()
-    _streaming_runtime.start()
+    # The former process-global runtime used environment credentials and could
+    # persist lifecycle events without authenticated user/account ownership.
+    # Streaming now requires a request-owned tenant scope, so fail closed until
+    # a demand-driven registry is wired to the SSE endpoint.
+    if _read_bool_env("PROJECTX_STREAMING_ENABLED", False):
+        logger.warning(
+            "projectx_process_global_streaming_disabled; "
+            "use authenticated account-scoped streaming"
+        )
 
 
 def _stop_streaming_runtime() -> None:

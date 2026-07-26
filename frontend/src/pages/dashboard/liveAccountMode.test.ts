@@ -23,6 +23,7 @@ function account(
     status: "ACTIVE",
     account_state: "ACTIVE",
     is_main: isMain,
+    is_archived: false,
     can_trade: tradeDataSource === "projectx",
     is_visible: true,
     last_trade_at: null,

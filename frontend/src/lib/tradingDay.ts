@@ -80,6 +80,15 @@ function parseInstant(value: Date | string): Date {
   return parsed;
 }
 
+function inclusiveMicrosecondBefore(exclusiveBoundary: Date): string {
+  // JavaScript Dates stop at milliseconds, while PostgreSQL timestamps retain
+  // microseconds. Preserve the full final database microsecond of an inclusive
+  // range instead of dropping the last 999 microseconds of the session.
+  return new Date(exclusiveBoundary.getTime() - 1)
+    .toISOString()
+    .replace(/\.999Z$/, ".999999Z");
+}
+
 export function formatIsoDateUtc(value: Date): string {
   const year = value.getUTCFullYear();
   const month = String(value.getUTCMonth() + 1).padStart(2, "0");
@@ -123,10 +132,13 @@ export function getTradingDayRange(value: string): { start: string; end: string 
   }
 
   const start = easternLocalDateTimeToUtc(parsedPrior.year, parsedPrior.month, parsedPrior.day, 18, 0, 0, 0);
-  const nextBoundary = easternLocalDateTimeToUtc(parsed.year, parsed.month, parsed.day, 18, 0, 0, 0);
+  // CME equity-index futures trade from 6:00 PM ET on the prior calendar day
+  // through (but not including) 5:00 PM ET on the named trading day. The
+  // 5:00-6:00 PM maintenance break must not leak into a selected-day filter.
+  const sessionClose = easternLocalDateTimeToUtc(parsed.year, parsed.month, parsed.day, 17, 0, 0, 0);
   return {
     start: start.toISOString(),
-    end: new Date(nextBoundary.getTime() - 1).toISOString(),
+    end: inclusiveMicrosecondBefore(sessionClose),
   };
 }
 
@@ -142,7 +154,7 @@ export function getCalendarDayRange(value: string): { start: string; end: string
   const nextBoundary = easternLocalDateTimeToUtc(parsedNext.year, parsedNext.month, parsedNext.day, 0, 0, 0, 0);
   return {
     start: start.toISOString(),
-    end: new Date(nextBoundary.getTime() - 1).toISOString(),
+    end: inclusiveMicrosecondBefore(nextBoundary),
   };
 }
 

@@ -17,7 +17,7 @@ create table if not exists topsignal_schema_baselines (
 );
 
 insert into topsignal_schema_baselines (version)
-values ('schema-20260724-v2')
+values ('schema-20260725-v4')
 on conflict (version) do nothing;
 
 
@@ -68,6 +68,10 @@ create table if not exists accounts (
   last_seen_at timestamptz,
   last_missing_at timestamptz,
 
+  -- Local lifecycle for Live CSV accounts. Archived accounts retain history
+  -- but cannot remain the user's main account.
+  archived_at timestamptz,
+
   -- Exactly one account can be marked as user's MAIN account.
   is_main boolean not null default false,
 
@@ -76,7 +80,11 @@ create table if not exists accounts (
 
   -- Prevent duplicates:
   -- You cannot have two rows with the same provider + external_id
-  unique (user_id, provider, external_id)
+  unique (user_id, provider, external_id),
+  constraint accounts_archived_not_main_check
+    check (archived_at is null or not is_main),
+  constraint uq_accounts_id_user_external_id
+    unique (id, user_id, external_id)
 );
 
 create index if not exists idx_accounts_is_main
@@ -84,6 +92,9 @@ create index if not exists idx_accounts_is_main
 
 create index if not exists idx_accounts_account_state
   on accounts (user_id, account_state);
+
+create index if not exists idx_accounts_user_archived
+  on accounts (user_id, archived_at);
 
 create unique index if not exists uq_accounts_one_main_per_user_provider
   on accounts (user_id, provider)
@@ -236,18 +247,88 @@ create table if not exists trade_import_batches (
   user_id uuid not null default '00000000-0000-0000-0000-000000000000',
   -- Matches projectx_trade_events.account_id: the provider's external account ID.
   account_id bigint not null,
+  account_row_id bigint not null,
+  account_external_id text not null,
   source_file_name text not null,
   file_sha256 text not null check (length(file_sha256) = 64),
   total_rows integer not null default 0,
   inserted_rows integer not null default 0,
   duplicate_rows integer not null default 0,
   imported_at timestamptz not null default now(),
-  check (total_rows >= 0 and inserted_rows >= 0 and duplicate_rows >= 0),
-  unique (user_id, account_id, file_sha256)
+  constraint trade_import_batches_counts_nonnegative_check
+    check (total_rows >= 0 and inserted_rows >= 0 and duplicate_rows >= 0),
+  constraint trade_import_batches_counts_balance_check
+    check (total_rows = inserted_rows + duplicate_rows),
+  constraint trade_import_batches_external_id_check
+    check (account_external_id = cast(account_id as text)),
+  constraint fk_trade_import_batches_owned_account
+    foreign key (account_row_id, user_id, account_external_id)
+    references accounts (id, user_id, external_id) on delete restrict,
+  constraint uq_trade_import_batches_account_file
+    unique (user_id, account_id, file_sha256),
+  constraint uq_trade_import_batches_owned_identity
+    unique (id, user_id, account_id, account_row_id, account_external_id)
 );
 
 create index if not exists idx_trade_import_batches_user_account_imported
   on trade_import_batches (user_id, account_id, imported_at desc);
+
+
+-- ============================================
+-- TABLE: trade_import_previews
+-- Expiring normalized preview manifests. Only token hashes are persisted.
+-- ============================================
+create table if not exists trade_import_previews (
+  id bigserial primary key,
+  token_hash text not null unique,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  account_id bigint not null,
+  account_row_id bigint not null,
+  account_external_id text not null,
+  source_file_name text not null,
+  file_sha256 text not null,
+  manifest_version integer not null default 1,
+  normalized_manifest jsonb,
+  preview_rows jsonb,
+  dedupe_snapshot text,
+  total_rows integer not null default 0,
+  new_rows integer not null default 0,
+  duplicate_rows integer not null default 0,
+  conflict_rows integer not null default 0,
+  status text not null default 'pending',
+  outcome_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  retention_until timestamptz not null,
+  confirmed_at timestamptz,
+  import_batch_id bigint,
+  constraint trade_import_previews_hash_length_check
+    check (length(token_hash) = 64 and length(file_sha256) = 64),
+  constraint trade_import_previews_manifest_version_check
+    check (manifest_version > 0),
+  constraint trade_import_previews_counts_nonnegative_check
+    check (total_rows >= 0 and new_rows >= 0 and duplicate_rows >= 0 and conflict_rows >= 0),
+  constraint trade_import_previews_counts_balance_check
+    check (total_rows = new_rows + duplicate_rows + conflict_rows),
+  constraint trade_import_previews_status_check
+    check (status in ('pending','confirming','committed','expired','stale','conflict','failed')),
+  constraint trade_import_previews_external_id_check
+    check (account_external_id = cast(account_id as text)),
+  constraint fk_trade_import_previews_owned_account
+    foreign key (account_row_id, user_id, account_external_id)
+    references accounts (id, user_id, external_id) on delete restrict,
+  constraint fk_trade_import_previews_owned_batch
+    foreign key (import_batch_id, user_id, account_id, account_row_id, account_external_id)
+    references trade_import_batches (id, user_id, account_id, account_row_id, account_external_id)
+    on delete restrict
+);
+
+create index if not exists idx_trade_import_previews_user_account_created
+  on trade_import_previews (user_id, account_id, created_at desc);
+
+create index if not exists idx_trade_import_previews_expiry
+  on trade_import_previews (status, expires_at);
 
 
 -- ============================================
@@ -259,10 +340,14 @@ create table if not exists projectx_trade_events (
   id bigserial primary key,
   user_id uuid not null default '00000000-0000-0000-0000-000000000000',
   account_id bigint not null,
+  account_row_id bigint,
+  account_external_id text,
   contract_id text not null,
   symbol text,
   side text not null check (side in ('BUY','SELL','UNKNOWN')),
-  size numeric(18,6) not null,
+  size numeric(18,6) not null
+    constraint projectx_trade_events_whole_size_check
+    check (size > 0 and size <= 10000 and size = trunc(size)),
   price numeric(18,6) not null,
   trade_timestamp timestamptz not null,
   fees numeric(18,6) not null default 0,
@@ -277,8 +362,19 @@ create table if not exists projectx_trade_events (
   source_trade_id text,
   status text,
   raw_payload jsonb,
-  import_batch_id bigint references trade_import_batches(id) on delete set null,
+  import_batch_id bigint,
   created_at timestamptz not null default now(),
+  constraint projectx_trade_events_external_id_check
+    check (account_external_id is null or account_external_id = cast(account_id as text)),
+  constraint projectx_trade_events_import_account_check
+    check (import_batch_id is null or (account_row_id is not null and account_external_id is not null)),
+  constraint fk_projectx_trade_events_owned_account
+    foreign key (account_row_id, user_id, account_external_id)
+    references accounts (id, user_id, external_id) on delete restrict,
+  constraint fk_projectx_trade_events_owned_batch
+    foreign key (import_batch_id, user_id, account_id, account_row_id, account_external_id)
+    references trade_import_batches (id, user_id, account_id, account_row_id, account_external_id)
+    on delete restrict,
   unique (user_id, account_id, source_trade_id),
   unique (user_id, account_id, order_id, trade_timestamp)
 );

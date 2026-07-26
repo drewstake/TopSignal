@@ -7,11 +7,11 @@ from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
 
-from ..auth import get_authenticated_user_id
 from ..models import PositionLifecycle
 from .instruments import resolve_point_value
 
 _EPSILON = 1e-9
+PositionScopeKey = tuple[str, int, str]
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class PositionUpdate:
 
 @dataclass(frozen=True)
 class ClosedPositionLifecycle:
+    user_id: str
     open_key: str
     account_id: int
     contract_id: str
@@ -55,6 +56,7 @@ class ClosedPositionLifecycle:
 
 @dataclass
 class _PositionState:
+    user_id: str
     account_id: int
     contract_id: str
     symbol: str | None
@@ -65,6 +67,7 @@ class _PositionState:
 
 @dataclass
 class _LifecycleTracker:
+    user_id: str
     open_key: str
     account_id: int
     contract_id: str
@@ -90,14 +93,18 @@ class StreamingPnlTracker:
     def __init__(
         self,
         *,
+        owner_user_id: str | None = None,
+        owner_account_id: int | None = None,
         point_value_by_symbol: Mapping[str, float] | None = None,
         on_lifecycle_closed: Callable[[ClosedPositionLifecycle], None] | None = None,
     ):
         self._lock = RLock()
+        self._owner_user_id = _as_text(owner_user_id)
+        self._owner_account_id = int(owner_account_id) if owner_account_id is not None else None
         self.price_by_contract_id: dict[str, float] = {}
         self.market_update_by_contract_id: dict[str, MarketPriceUpdate] = {}
-        self.position_by_contract_id: dict[str, _PositionState] = {}
-        self.tracker_by_contract_id: dict[str, _LifecycleTracker] = {}
+        self.position_by_scope: dict[PositionScopeKey, _PositionState] = {}
+        self.tracker_by_scope: dict[PositionScopeKey, _LifecycleTracker] = {}
         self.symbol_by_contract_id: dict[str, str] = {}
         self._point_value_by_symbol = dict(point_value_by_symbol or {})
         self._on_lifecycle_closed = on_lifecycle_closed or (lambda _lifecycle: None)
@@ -116,17 +123,35 @@ class StreamingPnlTracker:
             self.market_update_by_contract_id[update.contract_id] = update
             if update.symbol:
                 self.symbol_by_contract_id[update.contract_id] = update.symbol
-            self._recompute_unrealized(update.contract_id, update.timestamp)
+            for scope_key in tuple(self.position_by_scope):
+                if scope_key[2] == update.contract_id:
+                    self._recompute_unrealized(scope_key, update.timestamp)
         return True
 
-    def ingest_position_event(self, payload: Mapping[str, Any]) -> bool:
+    def ingest_position_event(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        user_id: str | None = None,
+        account_id: int | None = None,
+    ) -> bool:
         update = parse_position_update(payload)
         if update is None:
             return False
 
+        resolved_user_id = _as_text(user_id) or self._owner_user_id
+        resolved_account_id = int(account_id) if account_id is not None else self._owner_account_id
+        if resolved_user_id is None or resolved_account_id is None:
+            raise ValueError("position events require an explicit user and account scope")
+        if resolved_account_id <= 0:
+            raise ValueError("position event account scope must be a positive integer")
+        if update.account_id != resolved_account_id:
+            return False
+
         with self._lock:
             contract_id = update.contract_id
-            previous_state = self.position_by_contract_id.get(contract_id)
+            scope_key = (resolved_user_id, resolved_account_id, contract_id)
+            previous_state = self.position_by_scope.get(scope_key)
             previous_qty = previous_state.net_qty if previous_state is not None else 0.0
             next_qty = update.net_qty
             previous_sign = _sign(previous_qty)
@@ -136,17 +161,18 @@ class StreamingPnlTracker:
                 self.symbol_by_contract_id[contract_id] = update.symbol
 
             if previous_sign != 0 and next_sign != 0 and previous_sign != next_sign:
-                self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
-                self._start_lifecycle(update)
+                self._close_lifecycle(scope_key, update.updated_at, update.realized_pnl_usd)
+                self._start_lifecycle(scope_key, update)
             elif previous_sign == 0 and next_sign != 0:
-                self._start_lifecycle(update)
+                self._start_lifecycle(scope_key, update)
             elif previous_sign != 0 and next_sign == 0:
-                self._close_lifecycle(contract_id, update.updated_at, update.realized_pnl_usd)
+                self._close_lifecycle(scope_key, update.updated_at, update.realized_pnl_usd)
 
             if next_sign == 0:
-                self.position_by_contract_id.pop(contract_id, None)
+                self.position_by_scope.pop(scope_key, None)
             else:
-                self.position_by_contract_id[contract_id] = _PositionState(
+                self.position_by_scope[scope_key] = _PositionState(
+                    user_id=resolved_user_id,
                     account_id=update.account_id,
                     contract_id=contract_id,
                     symbol=update.symbol or self.symbol_by_contract_id.get(contract_id),
@@ -154,11 +180,11 @@ class StreamingPnlTracker:
                     avg_price=update.avg_price,
                     updated_at=update.updated_at,
                 )
-                tracker = self.tracker_by_contract_id.get(contract_id)
+                tracker = self.tracker_by_scope.get(scope_key)
                 if tracker is not None:
                     tracker.max_abs_qty = max(tracker.max_abs_qty, abs(next_qty))
 
-            self._recompute_unrealized(contract_id, update.updated_at)
+            self._recompute_unrealized(scope_key, update.updated_at)
         return True
 
     def get_market_price_update(
@@ -186,13 +212,15 @@ class StreamingPnlTracker:
                     return update
             return None
 
-    def _start_lifecycle(self, update: PositionUpdate) -> None:
+    def _start_lifecycle(self, scope_key: PositionScopeKey, update: PositionUpdate) -> None:
+        user_id, account_id, _contract_id = scope_key
         direction = "LONG" if update.net_qty > 0 else "SHORT"
         symbol = update.symbol or self.symbol_by_contract_id.get(update.contract_id) or update.contract_id
-        open_key = f"{update.account_id}:{update.contract_id}:{update.updated_at.isoformat()}"
+        open_key = f"{user_id}:{account_id}:{update.contract_id}:{update.updated_at.isoformat()}"
         tracker = _LifecycleTracker(
+            user_id=user_id,
             open_key=open_key,
-            account_id=update.account_id,
+            account_id=account_id,
             contract_id=update.contract_id,
             symbol=symbol,
             side=direction,
@@ -204,14 +232,19 @@ class StreamingPnlTracker:
             mae_timestamp=update.updated_at,
             mfe_timestamp=update.updated_at,
         )
-        self.tracker_by_contract_id[update.contract_id] = tracker
+        self.tracker_by_scope[scope_key] = tracker
 
-    def _close_lifecycle(self, contract_id: str, closed_at: datetime, realized_pnl_usd: float | None) -> None:
-        tracker = self.tracker_by_contract_id.pop(contract_id, None)
+    def _close_lifecycle(
+        self,
+        scope_key: PositionScopeKey,
+        closed_at: datetime,
+        realized_pnl_usd: float | None,
+    ) -> None:
+        tracker = self.tracker_by_scope.pop(scope_key, None)
         if tracker is None:
             return
 
-        point_value = self._resolve_point_value(contract_id, tracker.symbol)
+        point_value = self._resolve_point_value(tracker.contract_id, tracker.symbol)
         mae_points: float | None = None
         mfe_points: float | None = None
         if point_value is not None and point_value > _EPSILON and tracker.max_abs_qty > _EPSILON:
@@ -220,6 +253,7 @@ class StreamingPnlTracker:
             mfe_points = tracker.mfe_usd / denominator
 
         lifecycle = ClosedPositionLifecycle(
+            user_id=tracker.user_id,
             open_key=tracker.open_key,
             account_id=tracker.account_id,
             contract_id=tracker.contract_id,
@@ -239,9 +273,10 @@ class StreamingPnlTracker:
         )
         self._on_lifecycle_closed(lifecycle)
 
-    def _recompute_unrealized(self, contract_id: str, timestamp: datetime) -> None:
-        position = self.position_by_contract_id.get(contract_id)
-        tracker = self.tracker_by_contract_id.get(contract_id)
+    def _recompute_unrealized(self, scope_key: PositionScopeKey, timestamp: datetime) -> None:
+        contract_id = scope_key[2]
+        position = self.position_by_scope.get(scope_key)
+        tracker = self.tracker_by_scope.get(scope_key)
         mark_price = self.price_by_contract_id.get(contract_id)
         if position is None or tracker is None or mark_price is None:
             return
@@ -409,7 +444,7 @@ def parse_quote_trade(payload: Mapping[str, Any]) -> MarketPriceUpdate | None:
 def save_position_lifecycle_mae_mfe(
     db: Session,
     *,
-    user_id: str | None = None,
+    user_id: str,
     account_id: int,
     contract_id: str,
     symbol: str | None = None,
@@ -426,7 +461,9 @@ def save_position_lifecycle_mae_mfe(
     mae_timestamp: datetime | None = None,
     mfe_timestamp: datetime | None = None,
 ) -> PositionLifecycle:
-    resolved_user_id = user_id or get_authenticated_user_id()
+    resolved_user_id = _as_text(user_id)
+    if resolved_user_id is None:
+        raise ValueError("position lifecycle persistence requires an explicit user_id")
     row = PositionLifecycle(
         user_id=resolved_user_id,
         account_id=account_id,

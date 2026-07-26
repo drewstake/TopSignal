@@ -351,7 +351,7 @@ Important implementation detail:
 | Databento DBN archives | Sole historical OHLCV and contract-definition source for backtesting |
 | Supabase Auth | Optional JWT-based user auth |
 | Supabase Storage | Optional journal image storage backend |
-| ProjectX market/user hubs | Optional streaming lifecycle tracking |
+| ProjectX market/user hubs | Tenant-scoped streaming adapters; process-global user lifecycle persistence is disabled |
 
 ## System Structure
 
@@ -788,11 +788,13 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
 | `SUPABASE_STORAGE_BUCKET` | Storage bucket for journal images |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-side key for Supabase Storage operations |
-| `PROJECTX_STREAMING_ENABLED` | Enables optional streaming runtime |
-| `PROJECTX_MARKET_HUB_URL` | Market SignalR/websocket hub URL |
-| `PROJECTX_USER_HUB_URL` | User SignalR/websocket hub URL |
+| `PROJECTX_STREAMING_ENABLED` | Reserved streaming gate; defaults to `false`, and process-global startup is deliberately refused because it cannot prove tenant ownership |
+| `PROJECTX_MARKET_HUB_URL` | Market SignalR/websocket hub URL used only by an explicitly scoped runtime |
+| `PROJECTX_USER_HUB_URL` | User SignalR/websocket hub URL used only by a runtime bound to one authenticated user and owned account |
 | `PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
 | `PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
+
+ProjectX user-hub lifecycle persistence is never started from server-wide environment credentials. The streaming service requires an explicit authenticated `user_id`, owned account ID, and per-user client factory; its position state is keyed by user, account, and contract. Until request-driven runtime lifecycle management is wired to deployment infrastructure, startup keeps this path hard-disabled and the UI uses its existing scoped polling/fallback behavior.
 
 #### Frontend variables
 

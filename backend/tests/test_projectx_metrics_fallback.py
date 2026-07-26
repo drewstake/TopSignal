@@ -18,7 +18,13 @@ from app.main import (
     list_projectx_account_trades,
     refresh_projectx_account_trades,
 )
-from app.models import Account, ProjectXTradeDaySync, ProjectXTradeEvent
+from app.models import (
+    DEFAULT_USER_ID,
+    Account,
+    ProjectXTradeDaySync,
+    ProjectXTradeEvent,
+    TradeImportBatch,
+)
 from app.services.projectx_client import ProjectXClientError
 from app.services.trading_day import trading_day_bounds_utc
 
@@ -42,7 +48,12 @@ def db_session():
     )
     Base.metadata.create_all(
         bind=engine,
-        tables=[Account.__table__, ProjectXTradeEvent.__table__, ProjectXTradeDaySync.__table__],
+        tables=[
+            Account.__table__,
+            TradeImportBatch.__table__,
+            ProjectXTradeEvent.__table__,
+            ProjectXTradeDaySync.__table__,
+        ],
     )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
@@ -52,7 +63,12 @@ def db_session():
         session.close()
         Base.metadata.drop_all(
             bind=engine,
-            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__, Account.__table__],
+            tables=[
+                ProjectXTradeDaySync.__table__,
+                ProjectXTradeEvent.__table__,
+                TradeImportBatch.__table__,
+                Account.__table__,
+            ],
         )
         engine.dispose()
 
@@ -94,10 +110,39 @@ def _add_trade_event(
     fees: float = 3.0,
     import_batch_id: int | None = None,
 ):
+    account_row_id = None
+    account_external_id = None
+    if import_batch_id is not None:
+        db_session.flush()
+        account = (
+            db_session.query(Account)
+            .filter(Account.user_id == DEFAULT_USER_ID)
+            .filter(Account.provider == "projectx")
+            .filter(Account.external_id == str(account_id))
+            .one()
+        )
+        account_row_id = int(account.id)
+        account_external_id = str(account.external_id)
+        db_session.add(
+            TradeImportBatch(
+                id=import_batch_id,
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                account_row_id=account_row_id,
+                account_external_id=account_external_id,
+                source_file_name=f"fixture-{import_batch_id}.csv",
+                file_sha256=f"{import_batch_id:064x}",
+                total_rows=1,
+                inserted_rows=1,
+                duplicate_rows=0,
+            )
+        )
     db_session.add(
         ProjectXTradeEvent(
             id=event_id,
             account_id=account_id,
+            account_row_id=account_row_id,
+            account_external_id=account_external_id,
             contract_id="CON.F.US.MNQ.H26",
             symbol="MNQ",
             side="BUY",

@@ -1,24 +1,17 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 
+import type { AppShellOutletContext } from "../../app/AppShell";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
-import {
-  ACCOUNT_QUERY_PARAM,
-  parseAccountId,
-  readStoredAccountId,
-  readStoredMainAccountId,
-  writeStoredAccountId,
-} from "../../lib/accountSelection";
 import { accountsApi } from "../../lib/api";
-import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { useAccountRequestGate, type AccountRequestToken } from "../../lib/accountRequestGate";
 import { getDemoAccountName } from "../../lib/demoMode";
 import { getTradingDayBoundaryIso } from "../../lib/tradingDay";
 import type {
-  AccountInfo,
   JournalEntry,
   JournalEntryImage,
   JournalEntryUpdateInput,
@@ -54,6 +47,7 @@ type JournalAutosavePatch = Omit<JournalEntryUpdateInput, "version">;
 interface QueuedJournalSave {
   accountId: number;
   entryId: number;
+  version: number;
   patch: JournalAutosavePatch;
 }
 
@@ -106,6 +100,7 @@ function toQueuedJournalSave(accountId: number, entryId: number, draft: JournalD
   return {
     accountId,
     entryId,
+    version: draft.version,
     patch: draftToAutosavePatch(draft),
   };
 }
@@ -114,6 +109,7 @@ function queuedJournalSaveEquals(left: QueuedJournalSave, right: QueuedJournalSa
   return (
     left.accountId === right.accountId &&
     left.entryId === right.entryId &&
+    left.version === right.version &&
     journalAutosavePatchEquals(left.patch, right.patch)
   );
 }
@@ -195,6 +191,28 @@ function JournalListSkeleton() {
   );
 }
 
+function JournalPageLoadingState() {
+  return (
+    <div className="space-y-5 pb-10" role="status" aria-live="polite" aria-busy="true">
+      <h1 className="sr-only">Trading Journal</h1>
+      <p className="sr-only">Loading the active account and journal entries.</p>
+      <div className="grid gap-5 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]">
+        <JournalListSkeleton />
+        <Card className="min-h-[420px]" aria-hidden="true">
+          <CardHeader>
+            <div className="h-4 w-40 rounded bg-slate-800/80" />
+            <div className="mt-2 h-3 w-64 max-w-full rounded bg-slate-800/70" />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="h-10 w-full rounded bg-slate-800/70" />
+            <div className="h-64 w-full rounded bg-slate-800/60" />
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function CopyToast({ toast }: { toast: JournalToastState }) {
   const classes =
     toast.tone === "error"
@@ -236,14 +254,18 @@ function getCopyFailureMessage(error: unknown) {
 }
 
 export function JournalPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
+  const [searchParams] = useSearchParams();
   const dateFromQuery = parseJournalDateParam(searchParams.get(JOURNAL_DATE_QUERY_PARAM));
-
-  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const {
+    accounts: orderedAccounts,
+    accountsLoading,
+    accountsError,
+    selectedAccountId: shellSelectedAccountId,
+  } = useOutletContext<AppShellOutletContext>();
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [totalEntries, setTotalEntries] = useState(0);
   const [loadingEntries, setLoadingEntries] = useState(false);
+  const [settledEntriesScope, setSettledEntriesScope] = useState<AccountRequestToken | null>(null);
   const [entriesError, setEntriesError] = useState<string | null>(null);
   const [entriesInfo, setEntriesInfo] = useState<string | null>(null);
 
@@ -278,76 +300,43 @@ export function JournalPage() {
   const imagesRef = useRef<JournalEntryImage[]>([]);
   const includeArchivedRef = useRef(includeArchived);
   const handledDateKeyRef = useRef<string | null>(null);
-  const entriesRequestVersionRef = useRef(0);
-  const imagesRequestVersionRef = useRef(0);
   const copyStatsByDateRef = useRef<Map<string, Promise<JournalCopyTradeStats | null>>>(new Map());
   const statsPullInFlightRef = useRef<Set<string>>(new Set());
 
   imagesRef.current = images;
   includeArchivedRef.current = includeArchived;
 
-  const setActiveAccount = useCallback(
-    (accountId: number) => {
-      const next = new URLSearchParams(searchParams);
-      next.set(ACCOUNT_QUERY_PARAM, String(accountId));
-      setSearchParams(next, { replace: true });
-      writeStoredAccountId(accountId);
-    },
-    [searchParams, setSearchParams],
-  );
-
-  const loadAccounts = useCallback(async () => {
-    try {
-      const payload = await accountsApi.getSelectableAccountsLocalFirst();
-      setAccounts(payload);
-    } catch {
-      setAccounts([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadAccounts();
-  }, [loadAccounts]);
-
-  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
-
-  useEffect(() => {
-    if (orderedAccounts.length === 0) {
-      return;
-    }
-
-    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
-      writeStoredAccountId(accountFromQuery);
-      return;
-    }
-
-    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
-    if (persistedMainAccountId) {
-      setActiveAccount(persistedMainAccountId);
-      return;
-    }
-
-    const storedMainAccountId = readStoredMainAccountId();
-    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
-      setActiveAccount(storedMainAccountId);
-      return;
-    }
-
-    const storedAccountId = readStoredAccountId();
-    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
-      setActiveAccount(storedAccountId);
-      return;
-    }
-
-    setActiveAccount(orderedAccounts[0].id);
-  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
-
   const selectedAccount = useMemo(
-    () => orderedAccounts.find((account) => account.id === accountFromQuery) ?? null,
-    [orderedAccounts, accountFromQuery],
+    () => orderedAccounts.find((account) => account.id === shellSelectedAccountId) ?? null,
+    [orderedAccounts, shellSelectedAccountId],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   selectedAccountIdRef.current = selectedAccountId;
+  const accountRequestGate = useAccountRequestGate(selectedAccountId);
+
+  useEffect(() => {
+    setEntries([]);
+    setTotalEntries(0);
+    setLoadingEntries(false);
+    setEntriesError(null);
+    setEntriesInfo(null);
+    setSelectedId(null);
+    setDraft(null);
+    draftRef.current = null;
+    draftEntryIdRef.current = null;
+    selectedEntryVersionRef.current = null;
+    setSaveState("saved");
+    setCreatingEntry(false);
+    setGeneratingAiRecap(false);
+    setDeletingEntry(false);
+    setImages([]);
+    setImagesLoading(false);
+    setImagesError(null);
+    setUploadingImage(false);
+    setConflictServerEntry(null);
+    setCopyAction(null);
+    setCopyToast(null);
+  }, [selectedAccountId]);
 
   const totalPages = Math.max(1, Math.ceil(totalEntries / JOURNAL_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -372,8 +361,11 @@ export function JournalPage() {
   }, [startDate, endDate, moodFilter, includeArchived]);
 
   const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.id === selectedId) ?? null,
-    [entries, selectedId],
+    () =>
+      entries.find(
+        (entry) => entry.id === selectedId && entry.account_id === selectedAccountId,
+      ) ?? null,
+    [entries, selectedAccountId, selectedId],
   );
   selectedEntryIdRef.current = selectedEntry?.id ?? null;
 
@@ -415,9 +407,8 @@ export function JournalPage() {
   }, []);
 
   const loadEntries = useCallback(async (signal?: AbortSignal) => {
-    const requestVersion = entriesRequestVersionRef.current + 1;
-    entriesRequestVersionRef.current = requestVersion;
     if (!selectedAccountId) {
+      setSettledEntriesScope(null);
       setEntries([]);
       setTotalEntries(0);
       setLoadingEntries(false);
@@ -426,16 +417,21 @@ export function JournalPage() {
       return;
     }
 
+    const request = accountRequestGate.begin(selectedAccountId, "entries");
+    if (!accountRequestGate.isCurrent(request)) {
+      return;
+    }
+
     setLoadingEntries(true);
     setEntriesError(null);
 
     try {
       await flushAutosave();
-      if (signal?.aborted || requestVersion !== entriesRequestVersionRef.current) {
+      if (signal?.aborted || !accountRequestGate.isCurrent(request)) {
         return;
       }
       const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery, { signal });
-      if (requestVersion !== entriesRequestVersionRef.current) {
+      if (!accountRequestGate.isCurrent(request)) {
         return;
       }
       setEntries(payload.items);
@@ -456,7 +452,7 @@ export function JournalPage() {
       if (isAbortError(err)) {
         return;
       }
-      if (requestVersion !== entriesRequestVersionRef.current) {
+      if (!accountRequestGate.isCurrent(request)) {
         return;
       }
       setEntries([]);
@@ -464,11 +460,12 @@ export function JournalPage() {
       setSelectedId(null);
       setEntriesError(err instanceof Error ? err.message : "Failed to load journal entries");
     } finally {
-      if (requestVersion === entriesRequestVersionRef.current) {
+      if (accountRequestGate.isCurrent(request)) {
         setLoadingEntries(false);
+        setSettledEntriesScope(request);
       }
     }
-  }, [dateFromQuery, flushAutosave, listQuery, selectedAccountId]);
+  }, [accountRequestGate, dateFromQuery, flushAutosave, listQuery, selectedAccountId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -486,20 +483,29 @@ export function JournalPage() {
   }, [page, totalPages]);
 
   useEffect(() => {
+    const accountScope = selectedAccountId === null ? null : accountRequestGate.capture(selectedAccountId);
+    const accountScopeIsCurrent = () =>
+      accountScope === null
+        ? selectedAccountIdRef.current === null
+        : accountRequestGate.isActive(accountScope);
     const queue = new DebouncedAutosaveQueue<QueuedJournalSave>({
       delayMs: JOURNAL_AUTOSAVE_DELAY_MS,
       equals: queuedJournalSaveEquals,
-      onStateChange: setSaveState,
-      save: async (payload) => {
-        const expectedVersion = selectedEntryVersionRef.current;
-        if (!expectedVersion) {
-          return;
+      onStateChange: (state) => {
+        if (accountScopeIsCurrent()) {
+          setSaveState(state);
         }
+      },
+      save: async (payload) => {
+        const request = accountRequestGate.begin(payload.accountId, `autosave:${payload.entryId}`);
 
         const updated = await accountsApi.updateJournalEntry(payload.accountId, payload.entryId, {
           ...payload.patch,
-          version: expectedVersion,
+          version: payload.version,
         });
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
 
         setConflictServerEntry(null);
         setEntries((currentEntries) => {
@@ -532,7 +538,7 @@ export function JournalPage() {
         }
 
         const currentDraft = draftRef.current;
-        if (!currentDraft) {
+        if (!currentDraft || selectedEntryIdRef.current !== payload.entryId) {
           return;
         }
 
@@ -548,7 +554,7 @@ export function JournalPage() {
           return;
         }
 
-        if (currentDraft.version === expectedVersion) {
+        if (currentDraft.version === payload.version) {
           const nextDraft = {
             ...currentDraft,
             version: updated.version,
@@ -558,8 +564,15 @@ export function JournalPage() {
         }
       },
       onError: (error) => {
+        if (!accountScopeIsCurrent()) {
+          return;
+        }
         const serverEntry = getVersionConflictServerEntry(error);
-        if (!serverEntry) {
+        if (
+          !serverEntry ||
+          serverEntry.account_id !== selectedAccountIdRef.current ||
+          serverEntry.id !== selectedEntryIdRef.current
+        ) {
           return;
         }
         setConflictServerEntry(serverEntry);
@@ -572,7 +585,7 @@ export function JournalPage() {
       queue.dispose();
       autosaveRef.current = null;
     };
-  }, []);
+  }, [accountRequestGate, selectedAccountId]);
 
   useEffect(() => {
     if (!selectedEntry) {
@@ -613,10 +626,17 @@ export function JournalPage() {
     }
 
     statsPullInFlightRef.current.add(requestKey);
+    const request = accountRequestGate.begin(
+      selectedAccountId,
+      `trade-stats:${selectedEntry.id}`,
+    );
 
     void accountsApi
       .pullJournalTradeStats(selectedAccountId, selectedEntry.id)
       .then((updatedEntry) => {
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         setEntries((currentEntries) =>
           currentEntries.some((entry) => entry.id === updatedEntry.id)
             ? currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry))
@@ -627,9 +647,11 @@ export function JournalPage() {
         // Keep the entry visible as-is when the snapshot request fails.
       })
       .finally(() => {
-        statsPullInFlightRef.current.delete(requestKey);
+        if (accountRequestGate.isCurrent(request)) {
+          statsPullInFlightRef.current.delete(requestKey);
+        }
       });
-  }, [selectedAccountId, selectedEntry]);
+  }, [accountRequestGate, selectedAccountId, selectedEntry]);
 
   useEffect(() => {
     return () => {
@@ -638,8 +660,6 @@ export function JournalPage() {
   }, [flushAutosave, selectedAccountId]);
 
   const loadEntryImages = useCallback(async (signal?: AbortSignal) => {
-    const requestVersion = imagesRequestVersionRef.current + 1;
-    imagesRequestVersionRef.current = requestVersion;
     if (!selectedAccountId || !selectedEntry?.id) {
       setImages([]);
       setImagesLoading(false);
@@ -647,12 +667,18 @@ export function JournalPage() {
       return;
     }
 
+    const entryId = selectedEntry.id;
+    const request = accountRequestGate.begin(selectedAccountId, `images:${entryId}`);
+    if (!accountRequestGate.isCurrent(request)) {
+      return;
+    }
+
     setImagesLoading(true);
     setImagesError(null);
 
     try {
-      const rows = await accountsApi.listJournalImages(selectedAccountId, selectedEntry.id, { signal });
-      if (requestVersion !== imagesRequestVersionRef.current) {
+      const rows = await accountsApi.listJournalImages(selectedAccountId, entryId, { signal });
+      if (!accountRequestGate.isCurrent(request)) {
         return;
       }
       setImages(rows);
@@ -660,17 +686,17 @@ export function JournalPage() {
       if (isAbortError(err)) {
         return;
       }
-      if (requestVersion !== imagesRequestVersionRef.current) {
+      if (!accountRequestGate.isCurrent(request)) {
         return;
       }
       setImages([]);
       setImagesError(err instanceof Error ? err.message : "Failed to load images");
     } finally {
-      if (requestVersion === imagesRequestVersionRef.current) {
+      if (accountRequestGate.isCurrent(request)) {
         setImagesLoading(false);
       }
     }
-  }, [selectedAccountId, selectedEntry?.id]);
+  }, [accountRequestGate, selectedAccountId, selectedEntry?.id]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -702,10 +728,17 @@ export function JournalPage() {
 
   const handleSelectEntry = useCallback(
     async (entryId: number) => {
+      const accountId = selectedAccountIdRef.current;
+      if (!accountId) {
+        return;
+      }
+      const accountScope = accountRequestGate.capture(accountId);
       await flushAutosave();
-      setSelectedId(entryId);
+      if (accountRequestGate.isActive(accountScope)) {
+        setSelectedId(entryId);
+      }
     },
-    [flushAutosave],
+    [accountRequestGate, flushAutosave],
   );
 
   const handleCreateEntry = useCallback(
@@ -714,11 +747,15 @@ export function JournalPage() {
         return;
       }
 
+      const request = accountRequestGate.begin(selectedAccountId, "create-entry");
       setCreatingEntry(true);
       setEntriesError(null);
       setEntriesInfo(null);
       try {
         await flushAutosave();
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         const created = await accountsApi.createJournalEntry(selectedAccountId, {
           entry_date: entryDate ?? getTodayTradingDateIso(),
           title: "New Entry",
@@ -726,8 +763,11 @@ export function JournalPage() {
           tags: [],
           body: "",
         });
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         // Invalidate any pending entry-list response started before this mutation.
-        entriesRequestVersionRef.current += 1;
+        accountRequestGate.invalidate(selectedAccountId, "entries");
         setLoadingEntries(false);
         setEntries((currentEntries) => upsertEntry(currentEntries, created));
         setTotalEntries((currentTotal) => (created.already_existed ? currentTotal : currentTotal + 1));
@@ -739,13 +779,17 @@ export function JournalPage() {
           void loadEntries();
         }
       } catch (err) {
-        setEntriesInfo(null);
-        setEntriesError(err instanceof Error ? err.message : "Failed to create journal entry");
+        if (accountRequestGate.isCurrent(request)) {
+          setEntriesInfo(null);
+          setEntriesError(err instanceof Error ? err.message : "Failed to create journal entry");
+        }
       } finally {
-        setCreatingEntry(false);
+        if (accountRequestGate.isCurrent(request)) {
+          setCreatingEntry(false);
+        }
       }
     },
-    [currentPage, flushAutosave, loadEntries, selectedAccountId],
+    [accountRequestGate, currentPage, flushAutosave, loadEntries, selectedAccountId],
   );
 
   const handleGenerateAiRecap = useCallback(async () => {
@@ -753,6 +797,7 @@ export function JournalPage() {
       return;
     }
 
+    const request = accountRequestGate.begin(selectedAccountId, "ai-recap");
     const entryDate = selectedEntry?.entry_date ?? dateFromQuery ?? getTodayTradingDateIso();
     setGeneratingAiRecap(true);
     setEntriesError(null);
@@ -760,11 +805,17 @@ export function JournalPage() {
 
     try {
       await flushAutosave();
+      if (!accountRequestGate.isCurrent(request)) {
+        return;
+      }
       const result = await accountsApi.generateAIJournalRecap(selectedAccountId, {
         entry_date: entryDate,
         mode: "append_or_create",
         include_existing_notes: true,
       });
+      if (!accountRequestGate.isCurrent(request)) {
+        return;
+      }
 
       if (result.skipped) {
         setEntriesInfo(
@@ -782,10 +833,13 @@ export function JournalPage() {
         limit: 1,
         offset: 0,
       });
+      if (!accountRequestGate.isCurrent(request)) {
+        return;
+      }
       const refreshedEntry =
         refreshed.items.find((entry) => entry.id === result.journal_entry_id) ?? refreshed.items[0] ?? null;
 
-      entriesRequestVersionRef.current += 1;
+      accountRequestGate.invalidate(selectedAccountId, "entries");
       setLoadingEntries(false);
       if (refreshedEntry) {
         setEntries((currentEntries) => upsertEntry(currentEntries, refreshedEntry));
@@ -801,12 +855,16 @@ export function JournalPage() {
         void loadEntries();
       }
     } catch (err) {
-      setEntriesInfo(null);
-      setEntriesError(err instanceof Error ? err.message : "Failed to generate AI recap");
+      if (accountRequestGate.isCurrent(request)) {
+        setEntriesInfo(null);
+        setEntriesError(err instanceof Error ? err.message : "Failed to generate AI recap");
+      }
     } finally {
-      setGeneratingAiRecap(false);
+      if (accountRequestGate.isCurrent(request)) {
+        setGeneratingAiRecap(false);
+      }
     }
-  }, [currentPage, dateFromQuery, flushAutosave, loadEntries, selectedAccountId, selectedEntry?.entry_date]);
+  }, [accountRequestGate, currentPage, dateFromQuery, flushAutosave, loadEntries, selectedAccountId, selectedEntry?.entry_date]);
 
   useEffect(() => {
     const dateKey = selectedAccountId && dateFromQuery ? `${selectedAccountId}:${dateFromQuery}` : null;
@@ -832,7 +890,8 @@ export function JournalPage() {
   }, [dateFromQuery, entries, handleCreateEntry, loadingEntries, selectedAccountId]);
 
   const handleArchiveToggle = useCallback(async () => {
-    if (!draftRef.current || !autosaveRef.current) {
+    const queue = autosaveRef.current;
+    if (!draftRef.current || !queue) {
       return;
     }
     const nextDraft = {
@@ -846,8 +905,15 @@ export function JournalPage() {
     if (!accountId || !entryId) {
       return;
     }
-    autosaveRef.current.queue(toQueuedJournalSave(accountId, entryId, nextDraft));
-    await autosaveRef.current.retryNow();
+    const accountScope = accountRequestGate.capture(accountId);
+    queue.queue(toQueuedJournalSave(accountId, entryId, nextDraft));
+    await queue.retryNow();
+    if (
+      !accountRequestGate.isActive(accountScope) ||
+      selectedEntryIdRef.current !== entryId
+    ) {
+      return;
+    }
     if (!includeArchivedRef.current && nextDraft.is_archived) {
       setSelectedId((currentSelectedId) => {
         if (currentSelectedId !== selectedEntryIdRef.current) {
@@ -856,14 +922,20 @@ export function JournalPage() {
         return entries.find((entry) => entry.id !== currentSelectedId)?.id ?? null;
       });
     }
-  }, [entries]);
+  }, [accountRequestGate, entries]);
 
   const handleRetrySave = useCallback(async () => {
-    if (!autosaveRef.current) {
+    const queue = autosaveRef.current;
+    const accountId = selectedAccountIdRef.current;
+    if (!queue || !accountId) {
       return;
     }
-    await autosaveRef.current.retryNow();
-  }, []);
+    const accountScope = accountRequestGate.capture(accountId);
+    await queue.retryNow();
+    if (!accountRequestGate.isActive(accountScope)) {
+      return;
+    }
+  }, [accountRequestGate]);
 
   const handleReloadServerVersion = useCallback(() => {
     if (!conflictServerEntry || !selectedAccountId) {
@@ -889,22 +961,30 @@ export function JournalPage() {
         return null;
       }
 
+      const request = accountRequestGate.begin(accountId, `image-upload:${entryId}`);
       setUploadingImage(true);
       setImagesError(null);
       try {
         const uploaded = await accountsApi.uploadJournalImage(accountId, entryId, file);
-        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
+        if (
+          accountRequestGate.isCurrent(request) &&
+          selectedEntryIdRef.current === entryId
+        ) {
           setImages((current) => [...current, uploaded]);
         }
-        return uploaded;
+        return accountRequestGate.isCurrent(request) ? uploaded : null;
       } catch (err) {
-        setImagesError(err instanceof Error ? err.message : "Failed to upload image");
+        if (accountRequestGate.isCurrent(request)) {
+          setImagesError(err instanceof Error ? err.message : "Failed to upload image");
+        }
         return null;
       } finally {
-        setUploadingImage(false);
+        if (accountRequestGate.isCurrent(request)) {
+          setUploadingImage(false);
+        }
       }
     },
-    [],
+    [accountRequestGate],
   );
 
   const handlePasteImage = useCallback(
@@ -938,19 +1018,23 @@ export function JournalPage() {
       }
 
       const imageToDelete = imagesRef.current[imageIndex];
+      const request = accountRequestGate.begin(accountId, `image-delete:${entryId}:${imageId}`);
       setImagesError(null);
       setImages((current) => current.filter((image) => image.id !== imageId));
 
       try {
         await accountsApi.deleteJournalImage(accountId, entryId, imageId);
       } catch (err) {
-        if (selectedAccountIdRef.current === accountId && selectedEntryIdRef.current === entryId) {
+        if (
+          accountRequestGate.isCurrent(request) &&
+          selectedEntryIdRef.current === entryId
+        ) {
           setImages((current) => restoreImageAtIndex(current, imageToDelete, imageIndex));
+          setImagesError(err instanceof Error ? err.message : "Failed to delete image");
         }
-        setImagesError(err instanceof Error ? err.message : "Failed to delete image");
       }
     },
-    [],
+    [accountRequestGate],
   );
 
   const handleDeleteEntry = useCallback(async () => {
@@ -963,31 +1047,44 @@ export function JournalPage() {
       return;
     }
 
+    const accountId = selectedAccountId;
+    const entryId = selectedEntry.id;
+    const request = accountRequestGate.begin(accountId, `delete-entry:${entryId}`);
     setDeletingEntry(true);
     setEntriesError(null);
 
     try {
       await flushAutosave();
-      await accountsApi.deleteJournalEntry(selectedAccountId, selectedEntry.id);
+      if (!accountRequestGate.isCurrent(request)) {
+        return;
+      }
+      await accountsApi.deleteJournalEntry(accountId, entryId);
+      if (!accountRequestGate.isCurrent(request)) {
+        return;
+      }
 
-      setEntries((currentEntries) => currentEntries.filter((entry) => entry.id !== selectedEntry.id));
+      setEntries((currentEntries) => currentEntries.filter((entry) => entry.id !== entryId));
       setTotalEntries((currentTotal) => Math.max(0, currentTotal - 1));
       setSelectedId((currentSelectedId) => {
-        if (currentSelectedId !== selectedEntry.id) {
+        if (currentSelectedId !== entryId) {
           return currentSelectedId;
         }
-        return entries.find((entry) => entry.id !== selectedEntry.id)?.id ?? null;
+        return entries.find((entry) => entry.id !== entryId)?.id ?? null;
       });
       setDraft(null);
       draftRef.current = null;
       setImages([]);
       setConflictServerEntry(null);
     } catch (err) {
-      setEntriesError(err instanceof Error ? err.message : "Failed to delete journal entry");
+      if (accountRequestGate.isCurrent(request)) {
+        setEntriesError(err instanceof Error ? err.message : "Failed to delete journal entry");
+      }
     } finally {
-      setDeletingEntry(false);
+      if (accountRequestGate.isCurrent(request)) {
+        setDeletingEntry(false);
+      }
     }
-  }, [entries, flushAutosave, selectedAccountId, selectedEntry]);
+  }, [accountRequestGate, entries, flushAutosave, selectedAccountId, selectedEntry]);
 
   const loadCopyTradeStatsForDay = useCallback(
     (entry: JournalEntry) => {
@@ -1057,9 +1154,14 @@ export function JournalPage() {
         return;
       }
 
+      const accountId = selectedAccountId;
+      const request = accountRequestGate.begin(accountId, `copy:${action}`);
       setCopyAction(action);
       try {
         const sourceEntries = await resolveEntries();
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         const entriesToCopy = sourceEntries.map((entry) => applyDraftToEntry(entry, selectedId, draft));
         if (entriesToCopy.length === 0) {
           showCopyToast("error", emptyMessage);
@@ -1067,20 +1169,30 @@ export function JournalPage() {
         }
 
         const tradeStatsByDate = await loadTradeStatsByDate(entriesToCopy);
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         const text = buildJournalCopyText(entriesToCopy, tradeStatsByDate);
         const copied = await copyTextToClipboard(text);
+        if (!accountRequestGate.isCurrent(request)) {
+          return;
+        }
         if (!copied) {
           throw new Error("Couldn't copy journal text. Check clipboard permissions and try again.");
         }
 
         showCopyToast("success", successMessage);
       } catch (error) {
-        showCopyToast("error", getCopyFailureMessage(error));
+        if (accountRequestGate.isCurrent(request)) {
+          showCopyToast("error", getCopyFailureMessage(error));
+        }
       } finally {
-        setCopyAction(null);
+        if (accountRequestGate.isCurrent(request)) {
+          setCopyAction(null);
+        }
       }
     },
-    [draft, loadTradeStatsByDate, selectedAccountId, selectedId, showCopyToast],
+    [accountRequestGate, draft, loadTradeStatsByDate, selectedAccountId, selectedId, showCopyToast],
   );
 
   const handleCopyEntry = useCallback(() => {
@@ -1124,7 +1236,25 @@ export function JournalPage() {
   const moodOptions: Array<JournalMoodFilter> = ["ALL", "Focused", "Neutral", "Frustrated", "Confident"];
   const hasFilterStatusMessage = entriesError !== null || entriesInfo !== null;
 
-  if (!selectedAccountId && !loadingEntries) {
+  if (accountsLoading) {
+    return <JournalPageLoadingState />;
+  }
+
+  if (accountsError) {
+    return (
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle>Trading Journal</CardTitle>
+          <CardDescription>The saved account list could not be loaded.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <InlineMessage tone="error">{accountsError}</InlineMessage>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!selectedAccountId) {
     return (
       <Card className="max-w-2xl">
         <CardHeader>
@@ -1141,6 +1271,13 @@ export function JournalPage() {
         </CardContent>
       </Card>
     );
+  }
+
+  if (
+    settledEntriesScope?.accountId !== selectedAccountId ||
+    !accountRequestGate.isActive(settledEntriesScope)
+  ) {
+    return <JournalPageLoadingState />;
   }
 
   return (

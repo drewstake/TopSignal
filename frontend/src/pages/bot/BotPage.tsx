@@ -9,9 +9,10 @@ import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
-import { ACCOUNT_QUERY_PARAM, parseAccountId } from "../../lib/accountSelection";
+import { ACCOUNT_QUERY_PARAM, parseAccountId, writeStoredAccountId } from "../../lib/accountSelection";
 import { botsApi } from "../../lib/api";
 import type {
+  AccountInfo,
   BotActivity,
   BotConfig,
   BotEvaluation,
@@ -27,6 +28,13 @@ import type {
 } from "../../lib/types";
 import { BotSignalChart } from "./BotSignalChart";
 import { OrderBookPanel } from "./OrderBookPanel";
+import { BotExpressAccountRequired, BotProviderWorkspaceBoundary } from "./BotAccountGate";
+import {
+  getBotProviderAccountId,
+  getProjectXBotAccounts,
+  loadBotConfigsForProviderAccount,
+  resolveActiveBotAccount,
+} from "./botAccountIsolation";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
 const BotAnalysisPanel = lazy(() =>
@@ -1174,9 +1182,15 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
 }
 
 export function BotPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-  const { accounts } = useOutletContext<AppShellOutletContext>();
+  const { accounts, accountsLoading } = useOutletContext<AppShellOutletContext>();
+  const activeAccount = useMemo(
+    () => resolveActiveBotAccount(accounts, accountFromQuery),
+    [accountFromQuery, accounts],
+  );
+  const activeProjectXAccountId = getBotProviderAccountId(activeAccount);
+  const projectXAccounts = useMemo(() => getProjectXBotAccounts(accounts), [accounts]);
   const [configs, setConfigs] = useState<BotConfig[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
   const [activity, setActivity] = useState<BotActivity | null>(null);
@@ -1200,10 +1214,13 @@ export function BotPage() {
   const activityRequestController = useRef<AbortController | null>(null);
   const selectedBotIdRef = useRef<number | null>(null);
 
-  const selectedBot = useMemo(
-    () => configs.find((config) => config.id === selectedBotId) ?? configs[0] ?? null,
-    [configs, selectedBotId],
-  );
+  const selectedBot = useMemo(() => {
+    if (activeProjectXAccountId === null) {
+      return null;
+    }
+    const activeConfigs = configs.filter((config) => config.account_id === activeProjectXAccountId);
+    return activeConfigs.find((config) => config.id === selectedBotId) ?? activeConfigs[0] ?? null;
+  }, [activeProjectXAccountId, configs, selectedBotId]);
   const selectedBotEvaluation = useMemo(
     () =>
       selectedBot &&
@@ -1232,15 +1249,30 @@ export function BotPage() {
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
     const sequence = configsRequestSequence.current + 1;
     configsRequestSequence.current = sequence;
+    if (activeProjectXAccountId === null) {
+      setAuthenticatedCacheScope(null);
+      setConfigs([]);
+      setConfigWarnings([]);
+      setSelectedBotId(null);
+      setLoading(false);
+      return;
+    }
     if (showLoading) {
       setLoading(true);
     }
     setError(null);
     try {
-      const { configs: botRows, cacheScope } = await botsApi.listConfigsWithCacheScope();
+      const result = await loadBotConfigsForProviderAccount(
+        activeProjectXAccountId,
+        botsApi.listConfigsWithCacheScope,
+      );
       if (configsRequestSequence.current !== sequence) {
         return;
       }
+      if (!result) {
+        return;
+      }
+      const { configs: botRows, cacheScope } = result;
       setAuthenticatedCacheScope(cacheScope);
       setConfigs(botRows.items);
       setConfigWarnings(botRows.warnings ?? []);
@@ -1260,7 +1292,7 @@ export function BotPage() {
         setLoading(false);
       }
     }
-  }, []);
+  }, [activeProjectXAccountId]);
 
   const loadActivity = useCallback(async (botId: number | null) => {
     const sequence = activityRequestSequence.current + 1;
@@ -1312,13 +1344,20 @@ export function BotPage() {
   }, []);
 
   useEffect(() => {
-    if (accounts.length === 0) {
+    if (activeProjectXAccountId === null) {
+      setForm((current) => (
+        current.accountId === ""
+          ? current
+          : { ...current, accountId: "" }
+      ));
       return;
     }
     setForm((current) =>
-      current.accountId ? current : { ...current, accountId: String(accountFromQuery ?? accounts[0].id) },
+      current.accountId === String(activeProjectXAccountId)
+        ? current
+        : { ...current, accountId: String(activeProjectXAccountId) },
     );
-  }, [accountFromQuery, accounts]);
+  }, [activeProjectXAccountId]);
 
   useEffect(() => {
     activityRequestSequence.current += 1;
@@ -1359,6 +1398,10 @@ export function BotPage() {
   }, [selectedBot]);
 
   async function handleSearchContracts() {
+    if (activeProjectXAccountId === null) {
+      setFormError("Select an Express account before searching ProjectX contracts.");
+      return;
+    }
     if (!form.contractSearch.trim()) {
       setFormError("Contract search is required.");
       return;
@@ -1784,7 +1827,7 @@ export function BotPage() {
 
   function handleCancelEdit() {
     setEditingBotId(null);
-    setForm(buildInitialForm(accountFromQuery ?? accounts[0]?.id ?? null));
+    setForm(buildInitialForm(activeProjectXAccountId));
     setContracts([]);
     setFormError(null);
   }
@@ -1929,6 +1972,12 @@ export function BotPage() {
     }
     if (
       accountId === null ||
+      !projectXAccounts.some((account: AccountInfo) => account.id === accountId)
+    ) {
+      setFormError("Select an Express account before saving a bot.");
+      return;
+    }
+    if (
       timeframeUnitNumber === null ||
       lookbackBars === null ||
       effectiveFastPeriod === null ||
@@ -2515,6 +2564,43 @@ export function BotPage() {
     }
   }
 
+  function handleSelectExpressAccount(accountId: number) {
+    if (!projectXAccounts.some((account) => account.id === accountId)) {
+      return;
+    }
+    writeStoredAccountId(accountId);
+    const next = new URLSearchParams(searchParams);
+    next.set(ACCOUNT_QUERY_PARAM, String(accountId));
+    setSearchParams(next, { replace: true });
+  }
+
+  if (accountsLoading) {
+    return (
+      <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+        <h1 className="sr-only">Trading Bot</h1>
+        <Skeleton className="h-[520px]" />
+        <Skeleton className="h-[520px]" />
+      </div>
+    );
+  }
+
+  if (activeProjectXAccountId === null) {
+    return (
+      <BotProviderWorkspaceBoundary
+        activeAccount={activeAccount}
+        fallback={
+          <BotExpressAccountRequired
+            activeAccount={activeAccount}
+            expressAccounts={projectXAccounts}
+            onSelectAccount={handleSelectExpressAccount}
+          />
+        }
+      >
+        {null}
+      </BotProviderWorkspaceBoundary>
+    );
+  }
+
   if (loading) {
     return (
       <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
@@ -2526,6 +2612,16 @@ export function BotPage() {
   }
 
   return (
+    <BotProviderWorkspaceBoundary
+      activeAccount={activeAccount}
+      fallback={
+        <BotExpressAccountRequired
+          activeAccount={activeAccount}
+          expressAccounts={projectXAccounts}
+          onSelectAccount={handleSelectExpressAccount}
+        />
+      }
+    >
     <div className="space-y-5 pb-8">
       <h1 className="sr-only">Trading Bot</h1>
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
@@ -2561,7 +2657,7 @@ export function BotPage() {
                 <span>Account</span>
                 <Select value={form.accountId} onChange={(event) => setForm({ ...form, accountId: event.target.value })}>
                   <option value="">Select account</option>
-                  {accounts.map((account) => (
+                  {projectXAccounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name} ({account.id})
                     </option>
@@ -4112,6 +4208,7 @@ export function BotPage() {
         <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} />
       </Suspense>
     </div>
+    </BotProviderWorkspaceBoundary>
   );
 }
 

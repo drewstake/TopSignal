@@ -129,6 +129,8 @@ Current migration list:
 20260723_add_topstep_trade_imports.sql
 20260724_add_account_trade_data_source.sql
 20260724_restore_express_trade_data_source.sql
+20260725_harden_topstep_trade_imports.sql
+20260725_live_account_archiving.sql
 ```
 
 `20260711_add_databento_historical_market_data.sql` remains in the checksummed
@@ -184,7 +186,9 @@ $migrations = @(
   "20260711_seed_nq_es_instrument_metadata.sql",
   "20260723_add_topstep_trade_imports.sql",
   "20260724_add_account_trade_data_source.sql",
-  "20260724_restore_express_trade_data_source.sql"
+  "20260724_restore_express_trade_data_source.sql",
+  "20260725_harden_topstep_trade_imports.sql",
+  "20260725_live_account_archiving.sql"
 )
 
 foreach ($name in $migrations) {

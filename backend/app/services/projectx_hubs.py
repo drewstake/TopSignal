@@ -110,7 +110,9 @@ class ProjectXHubRunner:
         self,
         *,
         tracker: StreamingPnlTracker,
-        client_factory: Callable[[], ProjectXClient] = ProjectXClient.from_env,
+        client_factory: Callable[[], ProjectXClient],
+        user_id: str | None = None,
+        account_id: int | None = None,
         market_hub_url: str | None = None,
         user_hub_url: str | None = None,
         reconnect_base_seconds: float = 1.0,
@@ -120,8 +122,16 @@ class ProjectXHubRunner:
     ):
         self._tracker = tracker
         self._client_factory = client_factory
-        self._market_hub_url = market_hub_url or os.getenv("PROJECTX_MARKET_HUB_URL")
-        self._user_hub_url = user_hub_url or os.getenv("PROJECTX_USER_HUB_URL")
+        self._user_id = user_id.strip() if user_id and user_id.strip() else None
+        self._account_id = int(account_id) if account_id is not None else None
+        self._market_hub_url = (
+            os.getenv("PROJECTX_MARKET_HUB_URL") if market_hub_url is None else market_hub_url
+        )
+        self._user_hub_url = os.getenv("PROJECTX_USER_HUB_URL") if user_hub_url is None else user_hub_url
+        if self._user_hub_url and (self._user_id is None or self._account_id is None):
+            raise ValueError("a user hub requires an explicit user_id and account_id scope")
+        if self._account_id is not None and self._account_id <= 0:
+            raise ValueError("account_id must be a positive integer")
         self._reconnect_base_seconds = max(0.5, float(reconnect_base_seconds))
         self._reconnect_max_seconds = max(self._reconnect_base_seconds, float(reconnect_max_seconds))
         self._dispatch_failure_threshold = max(1, int(dispatch_failure_threshold))
@@ -212,7 +222,11 @@ class ProjectXHubRunner:
             if stream_kind == "market":
                 self._tracker.ingest_market_event(payload)
             else:
-                self._tracker.ingest_position_event(payload)
+                self._tracker.ingest_position_event(
+                    payload,
+                    user_id=self._user_id,
+                    account_id=self._account_id,
+                )
         except Exception as exc:
             circuit.record_failure(exc)
             snapshot = circuit.snapshot()

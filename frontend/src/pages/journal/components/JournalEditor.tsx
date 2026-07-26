@@ -153,15 +153,20 @@ export function JournalEditor(props: JournalEditorProps) {
     entry,
     draft,
     saveState,
+    savingDisabled,
     conflictServerEntry,
     images,
     imagesLoading,
     imagesError,
     uploadingImage,
+    deletingEntry,
     onDraftChange,
+    onArchiveToggle,
+    onRetrySave,
     onReloadServerVersion,
     onPasteImage,
     onDeleteImage,
+    onDeleteEntry,
   } = props;
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const activeSelectedImageId = images.some((image) => image.id === selectedImageId) ? selectedImageId : null;
@@ -341,6 +346,36 @@ export function JournalEditor(props: JournalEditorProps) {
             </div>
           ) : null}
         </section>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-3">
+          <div>
+            {saveState === "error" ? (
+              <Button type="button" size="sm" variant="secondary" onClick={onRetrySave}>
+                Retry Save
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={savingDisabled || deletingEntry}
+              onClick={onArchiveToggle}
+            >
+              {draft.is_archived ? "Restore Entry" : "Archive Entry"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={deletingEntry}
+              onClick={onDeleteEntry}
+            >
+              {deletingEntry ? "Deleting..." : "Delete Entry"}
+            </Button>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

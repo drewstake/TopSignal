@@ -3,6 +3,7 @@ export const MAIN_ACCOUNT_STORAGE_KEY = "topsignal.mainAccountId";
 export const ACCOUNT_QUERY_PARAM = "account";
 export const MAIN_ACCOUNT_UPDATED_EVENT = "topsignal.main-account-updated";
 export const ACCOUNT_DISPLAY_NAME_UPDATED_EVENT = "topsignal.account-display-name-updated";
+export const ACCOUNT_LIST_CHANGED_EVENT = "topsignal.account-list-changed";
 
 export interface MainAccountUpdatedDetail {
   accountId: number;
@@ -10,6 +11,12 @@ export interface MainAccountUpdatedDetail {
 
 export interface AccountDisplayNameUpdatedDetail {
   accountId: number;
+}
+
+export interface AccountListChangedDetail {
+  accountId: number;
+  action: "archived" | "unarchived";
+  replacementAccountId: number | null;
 }
 
 export function parseAccountId(rawValue: string | null): number | null {
@@ -80,6 +87,17 @@ export function dispatchAccountDisplayNameUpdated(accountId: number): void {
   window.dispatchEvent(
     new CustomEvent<AccountDisplayNameUpdatedDetail>(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, {
       detail: { accountId },
+    }),
+  );
+}
+
+export function dispatchAccountListChanged(detail: AccountListChangedDetail): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<AccountListChangedDetail>(ACCOUNT_LIST_CHANGED_EVENT, {
+      detail,
     }),
   );
 }

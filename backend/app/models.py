@@ -49,6 +49,7 @@ class Account(Base):
     first_seen_at = Column(DateTime(timezone=True), nullable=True)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
     last_missing_at = Column(DateTime(timezone=True), nullable=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True)
     is_main = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -61,9 +62,24 @@ class Account(Base):
             "trade_data_source in ('projectx','csv_import')",
             name="accounts_trade_data_source_check",
         ),
+        CheckConstraint(
+            "archived_at is null or not is_main",
+            name="accounts_archived_not_main_check",
+        ),
         UniqueConstraint("user_id", "provider", "external_id", name="uq_accounts_provider_external_id"),
+        # Import records carry both the local account row id and the provider's
+        # external id.  This composite key lets the database prove that those
+        # ownership values describe the same account, rather than trusting the
+        # application to keep parallel identifiers aligned.
+        UniqueConstraint(
+            "id",
+            "user_id",
+            "external_id",
+            name="uq_accounts_id_user_external_id",
+        ),
         Index("idx_accounts_is_main", "user_id", "is_main"),
         Index("idx_accounts_account_state", "user_id", "account_state"),
+        Index("idx_accounts_user_archived", "user_id", "archived_at"),
         Index(
             "uq_accounts_one_main_per_user_provider",
             "user_id",
@@ -363,9 +379,12 @@ class TradeImportBatch(Base):
         nullable=False,
         server_default=text(f"'{DEFAULT_USER_ID}'"),
     )
-    # ProjectX routes and trade events use the provider's external account ID,
-    # not the local accounts.id primary key.
+    # ProjectX routes and trade events use the provider's external account ID.
+    # Keep that public identifier while also retaining the relational account
+    # key used to enforce ownership below.
     account_id = Column(BigInteger, nullable=False)
+    account_row_id = Column(BigInteger().with_variant(Integer, "sqlite"), nullable=False)
+    account_external_id = Column(Text, nullable=False)
     source_file_name = Column(Text, nullable=False)
     file_sha256 = Column(Text, nullable=False)
     total_rows = Column(Integer, nullable=False, server_default="0")
@@ -382,11 +401,33 @@ class TradeImportBatch(Base):
             "total_rows >= 0 and inserted_rows >= 0 and duplicate_rows >= 0",
             name="trade_import_batches_counts_nonnegative_check",
         ),
+        CheckConstraint(
+            "total_rows = inserted_rows + duplicate_rows",
+            name="trade_import_batches_counts_balance_check",
+        ),
+        CheckConstraint(
+            "account_external_id = CAST(account_id AS TEXT)",
+            name="trade_import_batches_external_id_check",
+        ),
+        ForeignKeyConstraint(
+            ["account_row_id", "user_id", "account_external_id"],
+            ["accounts.id", "accounts.user_id", "accounts.external_id"],
+            name="fk_trade_import_batches_owned_account",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "user_id",
             "account_id",
             "file_sha256",
             name="uq_trade_import_batches_account_file",
+        ),
+        UniqueConstraint(
+            "id",
+            "user_id",
+            "account_id",
+            "account_row_id",
+            "account_external_id",
+            name="uq_trade_import_batches_owned_identity",
         ),
         Index(
             "idx_trade_import_batches_user_account_imported",
@@ -394,6 +435,102 @@ class TradeImportBatch(Base):
             "account_id",
             "imported_at",
         ),
+    )
+
+
+class TradeImportPreview(Base):
+    __tablename__ = "trade_import_previews"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    token_hash = Column(Text, nullable=False, unique=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    account_id = Column(BigInteger, nullable=False)
+    account_row_id = Column(BigInteger().with_variant(Integer, "sqlite"), nullable=False)
+    account_external_id = Column(Text, nullable=False)
+    source_file_name = Column(Text, nullable=False)
+    file_sha256 = Column(Text, nullable=False)
+    manifest_version = Column(Integer, nullable=False, server_default="1")
+    normalized_manifest = Column(JSON, nullable=True)
+    preview_rows = Column(JSON, nullable=True)
+    dedupe_snapshot = Column(Text, nullable=True)
+    total_rows = Column(Integer, nullable=False, server_default="0")
+    new_rows = Column(Integer, nullable=False, server_default="0")
+    duplicate_rows = Column(Integer, nullable=False, server_default="0")
+    conflict_rows = Column(Integer, nullable=False, server_default="0")
+    status = Column(Text, nullable=False, server_default="pending")
+    outcome_code = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    retention_until = Column(DateTime(timezone=True), nullable=False)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    import_batch_id = Column(BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(token_hash) = 64 and length(file_sha256) = 64",
+            name="trade_import_previews_hash_length_check",
+        ),
+        CheckConstraint(
+            "manifest_version > 0",
+            name="trade_import_previews_manifest_version_check",
+        ),
+        CheckConstraint(
+            "total_rows >= 0 and new_rows >= 0 and duplicate_rows >= 0 and conflict_rows >= 0",
+            name="trade_import_previews_counts_nonnegative_check",
+        ),
+        CheckConstraint(
+            "total_rows = new_rows + duplicate_rows + conflict_rows",
+            name="trade_import_previews_counts_balance_check",
+        ),
+        CheckConstraint(
+            "status in ('pending','confirming','committed','expired','stale','conflict','failed')",
+            name="trade_import_previews_status_check",
+        ),
+        CheckConstraint(
+            "account_external_id = CAST(account_id AS TEXT)",
+            name="trade_import_previews_external_id_check",
+        ),
+        ForeignKeyConstraint(
+            ["account_row_id", "user_id", "account_external_id"],
+            ["accounts.id", "accounts.user_id", "accounts.external_id"],
+            name="fk_trade_import_previews_owned_account",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "import_batch_id",
+                "user_id",
+                "account_id",
+                "account_row_id",
+                "account_external_id",
+            ],
+            [
+                "trade_import_batches.id",
+                "trade_import_batches.user_id",
+                "trade_import_batches.account_id",
+                "trade_import_batches.account_row_id",
+                "trade_import_batches.account_external_id",
+            ],
+            name="fk_trade_import_previews_owned_batch",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "idx_trade_import_previews_user_account_created",
+            "user_id",
+            "account_id",
+            "created_at",
+        ),
+        Index("idx_trade_import_previews_expiry", "status", "expires_at"),
     )
 
 
@@ -407,6 +544,8 @@ class ProjectXTradeEvent(Base):
         server_default=text(f"'{DEFAULT_USER_ID}'"),
     )
     account_id = Column(BigInteger, nullable=False)
+    account_row_id = Column(BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+    account_external_id = Column(Text, nullable=True)
     contract_id = Column(Text, nullable=False)
     symbol = Column(Text, nullable=True)
     side = Column(Text, nullable=False)
@@ -426,7 +565,6 @@ class ProjectXTradeEvent(Base):
     raw_payload = Column(JSON, nullable=True)
     import_batch_id = Column(
         BigInteger().with_variant(Integer, "sqlite"),
-        ForeignKey("trade_import_batches.id", ondelete="SET NULL"),
         nullable=True,
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -436,6 +574,42 @@ class ProjectXTradeEvent(Base):
         CheckConstraint(
             "fee_scope in ('per_side','round_turn')",
             name="projectx_trade_events_fee_scope_check",
+        ),
+        CheckConstraint(
+            "size > 0 and size <= 10000 and size = CAST(size AS BIGINT)",
+            name="projectx_trade_events_whole_size_check",
+        ),
+        CheckConstraint(
+            "account_external_id is null or account_external_id = CAST(account_id AS TEXT)",
+            name="projectx_trade_events_external_id_check",
+        ),
+        CheckConstraint(
+            "import_batch_id is null or (account_row_id is not null and account_external_id is not null)",
+            name="projectx_trade_events_import_account_check",
+        ),
+        ForeignKeyConstraint(
+            ["account_row_id", "user_id", "account_external_id"],
+            ["accounts.id", "accounts.user_id", "accounts.external_id"],
+            name="fk_projectx_trade_events_owned_account",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "import_batch_id",
+                "user_id",
+                "account_id",
+                "account_row_id",
+                "account_external_id",
+            ],
+            [
+                "trade_import_batches.id",
+                "trade_import_batches.user_id",
+                "trade_import_batches.account_id",
+                "trade_import_batches.account_row_id",
+                "trade_import_batches.account_external_id",
+            ],
+            name="fk_projectx_trade_events_owned_batch",
+            ondelete="RESTRICT",
         ),
         UniqueConstraint(
             "user_id",

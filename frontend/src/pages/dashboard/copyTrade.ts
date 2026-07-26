@@ -92,7 +92,8 @@ interface BuildCopyTradeAccountRowsInput {
 
 export const MAX_COPY_TRADE_ACCOUNTS = 5;
 export const MAX_COPY_TRADE_FOLLOWERS = 4;
-const COPY_TRADE_MATCH_WINDOW_MS = 2 * 60 * 1000;
+export const COPY_TRADE_MATCH_WINDOW_MINUTES = 2;
+const COPY_TRADE_MATCH_WINDOW_MS = COPY_TRADE_MATCH_WINDOW_MINUTES * 60 * 1000;
 const MAX_LIVE_BALANCE_DAILY_PNL_FALLBACK_ABS = 10_000;
 
 const defaultSettings: CopyTradeSettings = {

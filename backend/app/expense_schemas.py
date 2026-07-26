@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from .payout_schemas import PayoutTotalsOut
+
 ExpenseCategory = Literal["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"]
 ExpenseAccountType = Literal["no_activation", "standard", "practice"]
 ExpensePlanSize = Literal["50k", "100k", "150k"]
@@ -102,3 +104,28 @@ class ExpenseTotalsOut(BaseModel):
     total_amount_cents: int
     by_category: dict[str, ExpenseCategoryTotalsOut]
     count: int
+
+
+class FinancialSummarySpendOut(BaseModel):
+    last_payout_date: date | None
+    total_amount: float
+    total_amount_cents: int
+    expense_count: int
+
+
+class FinancialSummaryRangeOut(BaseModel):
+    key: str
+    label: str
+    start_date: date | None
+    end_date: date | None
+    expense_totals: ExpenseTotalsOut
+    payout_totals: PayoutTotalsOut
+
+
+class FinancialSummaryOut(BaseModel):
+    as_of_date: date
+    first_cash_flow_date: date | None
+    expense_totals: ExpenseTotalsOut
+    payout_totals: PayoutTotalsOut
+    spend_since_last_payout: FinancialSummarySpendOut
+    ranges: list[FinancialSummaryRangeOut]

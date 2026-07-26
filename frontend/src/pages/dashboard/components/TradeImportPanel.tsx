@@ -1,9 +1,9 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
 
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Input } from "../../../components/ui/Input";
-import { accountsApi } from "../../../lib/api";
+import { accountsApi, isApiError } from "../../../lib/api";
 import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
 import type {
   AccountInfo,
@@ -13,10 +13,51 @@ import type {
   TradeImportPreviewTrade,
 } from "../../../lib/types";
 import { getTradeImportErrorMessage } from "./tradeImportErrors";
+import { openTradeImportFilePicker } from "./tradeImportPicker";
+import {
+  clearPendingTradeImport,
+  readPendingTradeImport,
+  rememberPendingTradeImport,
+} from "./tradeImportRecovery";
 
 const acceptedFileTypes = ".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const supportedFileNamePattern = /\.(csv|xlsx)$/i;
 const REVIEW_PAGE_SIZE = 100;
+const IMPORT_STATUS_POLL_ATTEMPTS = 4;
+const IMPORT_STATUS_POLL_DELAY_MS = 600;
+
+type ActiveImportRequestKind = "preview" | "confirm" | "status";
+
+interface ActiveImportRequest {
+  kind: ActiveImportRequestKind;
+  controller: AbortController;
+  generation: number;
+}
+
+function isUnknownConfirmationOutcome(error: unknown): boolean {
+  if (!isApiError(error)) {
+    return true;
+  }
+  const detail = error.detail;
+  const code = detail && typeof detail === "object" ? (detail as Record<string, unknown>).code : null;
+  return code === "confirmation_in_progress" || error.status === 408 || error.status >= 500;
+}
+
+function waitForImportStatusPoll(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(resolve, IMPORT_STATUS_POLL_DELAY_MS);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timeoutId);
+        const abortError = new Error("Import status check cancelled");
+        abortError.name = "AbortError";
+        reject(abortError);
+      },
+      { once: true },
+    );
+  });
+}
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -76,13 +117,27 @@ function ImportStat({
 }
 
 function tradeStatusVariant(status: TradeImportPreviewTrade["status"]) {
-  return status === "new" ? ("positive" as const) : ("neutral" as const);
+  if (status === "new") {
+    return "positive" as const;
+  }
+  return status === "conflict" ? ("negative" as const) : ("neutral" as const);
+}
+
+function formatConflictValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "Not set";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
 
 export interface TradeImportReviewProps {
   preview: TradeImportPreview;
   confirming: boolean;
   onConfirm: () => void;
+  onCheckOutcome?: () => void;
   onChooseAnother: () => void;
   onClose: () => void;
 }
@@ -91,11 +146,12 @@ export function TradeImportReview({
   preview,
   confirming,
   onConfirm,
+  onCheckOutcome,
   onChooseAnother,
   onClose,
 }: TradeImportReviewProps) {
   const { summary } = preview;
-  const canConfirm = preview.new_rows > 0 && !confirming;
+  const canConfirm = preview.new_rows > 0 && preview.conflict_rows === 0 && !confirming;
   const [pageIndex, setPageIndex] = useState(0);
   const pageCount = Math.max(1, Math.ceil(preview.trades.length / REVIEW_PAGE_SIZE));
   const safePageIndex = Math.min(pageIndex, pageCount - 1);
@@ -103,7 +159,7 @@ export function TradeImportReview({
   const lastVisibleRow = Math.min(firstVisibleRow + REVIEW_PAGE_SIZE, preview.trades.length);
   const visibleTrades = preview.trades.slice(firstVisibleRow, firstVisibleRow + REVIEW_PAGE_SIZE);
 
-  if (preview.new_rows === 0 && preview.duplicate_rows > 0) {
+  if (preview.new_rows === 0 && preview.duplicate_rows > 0 && preview.conflict_rows === 0) {
     const duplicateLabel = `${preview.duplicate_rows.toLocaleString("en-US")} duplicate${
       preview.duplicate_rows === 1 ? "" : "s"
     }`;
@@ -152,6 +208,7 @@ export function TradeImportReview({
         <div className="flex flex-wrap gap-1.5">
           <Badge variant="positive">{preview.new_rows} new</Badge>
           <Badge variant="neutral">{preview.duplicate_rows} duplicate</Badge>
+          {preview.conflict_rows > 0 ? <Badge variant="negative">{preview.conflict_rows} conflict</Badge> : null}
         </div>
       </div>
 
@@ -202,7 +259,9 @@ export function TradeImportReview({
                 className={trade.status === "duplicate" ? "bg-app-surface/25 text-app-muted" : "text-app-text-soft"}
               >
                 <td className="px-2 py-2">
-                  <Badge variant={tradeStatusVariant(trade.status)}>{trade.status === "new" ? "New" : "Duplicate"}</Badge>
+                  <Badge variant={tradeStatusVariant(trade.status)}>
+                    {trade.status === "new" ? "New" : trade.status === "conflict" ? "Conflict" : "Duplicate"}
+                  </Badge>
                 </td>
                 <td className="px-2 py-2 text-right font-mono">{trade.row_number}</td>
                 <td className="truncate px-2 py-2 font-mono" title={trade.source_trade_id}>
@@ -234,6 +293,44 @@ export function TradeImportReview({
         </table>
       </div>
 
+      {preview.conflict_rows > 0 ? (
+        <div className="space-y-2 rounded-xl border border-app-negative/40 bg-app-negative/10 p-3" role="alert">
+          <p className="text-sm font-semibold text-app-negative">
+            Resolve {preview.conflict_rows.toLocaleString("en-US")} conflicting trade
+            {preview.conflict_rows === 1 ? "" : "s"} before importing
+          </p>
+          <p className="text-xs text-app-text-soft">
+            A stored trade has the same identity but different financial details. Nothing will be overwritten.
+          </p>
+          <div className="space-y-2">
+            {preview.trades
+              .filter((trade) => trade.status === "conflict")
+              .map((trade) => (
+                <div key={`conflict-${trade.row_number}-${trade.source_trade_id}`} className="rounded-lg border border-app-negative/30 bg-app-bg/50 p-2">
+                  <p className="text-xs font-medium text-app-text">
+                    Row {trade.row_number} · {trade.source_trade_id || trade.contract_name}
+                  </p>
+                  {trade.conflict?.differences.length ? (
+                    <dl className="mt-2 grid gap-1 text-[11px] text-app-text-soft">
+                      {trade.conflict.differences.map((difference) => (
+                        <div key={difference.field} className="grid gap-1 sm:grid-cols-[minmax(100px,0.6fr)_1fr_1fr]">
+                          <dt className="font-medium text-app-muted">{difference.field.replaceAll("_", " ")}</dt>
+                          <dd>Stored: {formatConflictValue(difference.stored)}</dd>
+                          <dd>Incoming: {formatConflictValue(difference.incoming)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-app-muted">
+                      Multiple stored rows share this identity; review the source export before retrying.
+                    </p>
+                  )}
+                </div>
+              ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-app-muted-strong">
         <p>{`Rows ${preview.trades.length === 0 ? 0 : firstVisibleRow + 1}–${lastVisibleRow} of ${preview.trades.length}`}</p>
         {pageCount > 1 ? (
@@ -261,7 +358,11 @@ export function TradeImportReview({
         ) : null}
       </div>
 
-      {preview.new_rows === 0 ? (
+      {preview.conflict_rows > 0 ? (
+        <p className="rounded-xl border border-app-negative/40 bg-app-negative/10 px-3 py-2 text-xs text-app-negative" role="alert">
+          Confirmation is blocked while identity conflicts remain.
+        </p>
+      ) : preview.new_rows === 0 ? (
         <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-2 text-xs text-app-muted" role="status">
           Every parsed trade is already stored. There is nothing new to import.
         </p>
@@ -273,12 +374,22 @@ export function TradeImportReview({
       )}
 
       <div className="flex flex-wrap justify-end gap-2">
+        {confirming && onCheckOutcome ? (
+          <Button type="button" variant="secondary" size="sm" onClick={onCheckOutcome}>
+            Cancel &amp; Check Outcome
+          </Button>
+        ) : null}
+        <Button type="button" variant="ghost" size="sm" disabled={confirming} onClick={onClose}>
+          Close
+        </Button>
         <Button variant="ghost" size="sm" disabled={confirming} onClick={onChooseAnother}>
           Choose Another File
         </Button>
-        <Button size="sm" disabled={!canConfirm} onClick={onConfirm}>
-          {confirming ? "Importing..." : `Confirm Import (${preview.new_rows})`}
-        </Button>
+        {preview.conflict_rows === 0 ? (
+          <Button size="sm" disabled={!canConfirm} onClick={onConfirm}>
+            {confirming ? "Importing..." : `Confirm Import (${preview.new_rows})`}
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -288,6 +399,7 @@ export interface TradeImportPanelProps {
   accountId: number | null;
   tradeDataSource?: AccountTradeDataSource | null;
   liveAccounts?: readonly AccountInfo[];
+  accountsLoading?: boolean;
   accountSetupRequest?: number;
   onImportComplete?: (result: TradeImportConfirmResult) => void | Promise<void>;
   onAccountCreated?: (account: AccountInfo) => void | Promise<void>;
@@ -298,6 +410,7 @@ export function TradeImportPanel({
   accountId,
   tradeDataSource = null,
   liveAccounts = [],
+  accountsLoading = false,
   accountSetupRequest = 0,
   onImportComplete,
   onAccountCreated,
@@ -305,26 +418,39 @@ export function TradeImportPanel({
 }: TradeImportPanelProps) {
   const inputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const activeControllerRef = useRef<AbortController | null>(null);
+  const noticeFocusRef = useRef<HTMLDivElement | null>(null);
+  const activeRequestRef = useRef<ActiveImportRequest | null>(null);
+  const confirmInFlightRef = useRef(false);
   const requestGenerationRef = useRef(0);
   const lastAccountSetupRequestRef = useRef(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<TradeImportPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [checkingOutcome, setCheckingOutcome] = useState(false);
+  const [outcomeStatusMessage, setOutcomeStatusMessage] = useState<string | null>(null);
+  const [recoveryToken, setRecoveryToken] = useState<string | null>(null);
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [selectingAccountId, setSelectingAccountId] = useState<number | null>(null);
-  const [showAccountForm, setShowAccountForm] = useState(accountId === null);
+  const [showAccountForm, setShowAccountForm] = useState(!accountsLoading && accountId === null);
   const [liveAccountId, setLiveAccountId] = useState("");
   const [liveAccountName, setLiveAccountName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TradeImportConfirmResult | null>(null);
   const canImport = accountId !== null && tradeDataSource === "csv_import";
+  const hasLiveAccount = liveAccounts.length > 0;
 
   function cancelActiveRequest() {
     requestGenerationRef.current += 1;
-    activeControllerRef.current?.abort();
-    activeControllerRef.current = null;
+    const activeRequest = activeRequestRef.current;
+    // A confirmation can already be committed server-side. Do not abort that
+    // transport and pretend the import did not happen; make its UI generation
+    // stale and recover the durable outcome by token instead.
+    if (activeRequest && activeRequest.kind !== "confirm") {
+      activeRequest.controller.abort();
+    }
+    activeRequestRef.current = null;
+    confirmInFlightRef.current = false;
   }
 
   function resetSelection() {
@@ -333,11 +459,15 @@ export function TradeImportPanel({
     setPreview(null);
     setPreviewing(false);
     setConfirming(false);
+    setCheckingOutcome(false);
+    setOutcomeStatusMessage(null);
+    setRecoveryToken(null);
     setCreatingAccount(false);
-    setShowAccountForm(accountId === null);
+    setShowAccountForm(!accountsLoading && accountId === null);
     setLiveAccountId("");
     setLiveAccountName("");
     setError(null);
+    setResult(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -349,18 +479,33 @@ export function TradeImportPanel({
     setPreview(null);
     setPreviewing(false);
     setConfirming(false);
+    setCheckingOutcome(false);
+    setOutcomeStatusMessage(null);
+    setRecoveryToken(null);
     setError(null);
     setResult(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
 
-    if (accountId !== null && tradeDataSource === "csv_import") {
+    if (accountsLoading) {
+      setShowAccountForm(false);
+    } else if (accountId !== null && tradeDataSource === "csv_import") {
       setShowAccountForm(false);
       setLiveAccountId("");
       setLiveAccountName("");
+    } else if (accountId === null && !hasLiveAccount) {
+      setShowAccountForm(true);
     }
-  }, [accountId, tradeDataSource]);
+  }, [accountId, accountsLoading, hasLiveAccount, tradeDataSource]);
+
+  useEffect(() => {
+    if (!error && !result && !preview && !checkingOutcome) {
+      return;
+    }
+    const focusTimer = window.setTimeout(() => noticeFocusRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [checkingOutcome, error, preview, result]);
 
   useEffect(() => {
     return () => {
@@ -373,6 +518,10 @@ export function TradeImportPanel({
       accountSetupRequest <= 0 ||
       accountSetupRequest <= lastAccountSetupRequestRef.current
     ) {
+      return;
+    }
+
+    if (accountsLoading) {
       return;
     }
 
@@ -390,7 +539,7 @@ export function TradeImportPanel({
       });
     }, 0);
     return () => window.clearTimeout(scrollTimer);
-  }, [accountSetupRequest, canImport]);
+  }, [accountSetupRequest, accountsLoading, canImport]);
 
   async function previewFile(file: File) {
     if (!accountId) {
@@ -405,7 +554,7 @@ export function TradeImportPanel({
     cancelActiveRequest();
     const requestGeneration = requestGenerationRef.current;
     const controller = new AbortController();
-    activeControllerRef.current = controller;
+    activeRequestRef.current = { kind: "preview", controller, generation: requestGeneration };
     setSelectedFile(file);
     setPreview(null);
     setResult(null);
@@ -426,7 +575,7 @@ export function TradeImportPanel({
       }
     } finally {
       if (requestGeneration === requestGenerationRef.current) {
-        activeControllerRef.current = null;
+        activeRequestRef.current = null;
         setPreviewing(false);
       }
     }
@@ -463,64 +612,175 @@ export function TradeImportPanel({
       return;
     }
 
-    const fileInput = fileInputRef.current;
-    if (!fileInput) {
+    if (!openTradeImportFilePicker(fileInputRef.current)) {
       setError("The file picker is unavailable. Refresh the page and try again.");
-      return;
     }
-
-    // Clearing the native value lets selecting the same export fire onChange again.
-    fileInput.value = "";
-    fileInput.click();
   }
 
   function handleChooseAnotherFile() {
     resetSelection();
-    fileInputRef.current?.click();
+    openTradeImportFilePicker(fileInputRef.current);
+  }
+
+  async function applyCommittedImport(
+    requestAccountId: number,
+    previewToken: string,
+    importResult: TradeImportConfirmResult,
+    requestGeneration: number,
+  ) {
+    if (requestGeneration !== requestGenerationRef.current) {
+      return;
+    }
+    setResult(importResult);
+    setSelectedFile(null);
+    setPreview(null);
+    setRecoveryToken(null);
+    setOutcomeStatusMessage(null);
+    setError(null);
+    clearPendingTradeImport(requestAccountId, previewToken);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    try {
+      await onImportComplete?.(importResult);
+    } catch {
+      // The import is already committed. A later dashboard refresh can recover.
+    }
+  }
+
+  async function checkImportOutcome(requestAccountId: number, previewToken: string) {
+    cancelActiveRequest();
+    const requestGeneration = requestGenerationRef.current;
+    const controller = new AbortController();
+    activeRequestRef.current = { kind: "status", controller, generation: requestGeneration };
+    setRecoveryToken(previewToken);
+    setCheckingOutcome(true);
+    setOutcomeStatusMessage("Import outcome unknown—checking status...");
+    setError(null);
+
+    try {
+      let confirmationRetryAttempted = false;
+      for (let attempt = 0; attempt < IMPORT_STATUS_POLL_ATTEMPTS; attempt += 1) {
+        const status = await accountsApi.getTradeImportStatus(requestAccountId, previewToken, {
+          signal: controller.signal,
+        });
+        if (requestGeneration !== requestGenerationRef.current) {
+          return;
+        }
+
+        if (status.status === "committed" && status.result) {
+          await applyCommittedImport(requestAccountId, previewToken, status.result, requestGeneration);
+          return;
+        }
+        if (status.status === "pending" && status.confirmation_retryable && !confirmationRetryAttempted) {
+          confirmationRetryAttempted = true;
+          activeRequestRef.current = { kind: "confirm", controller, generation: requestGeneration };
+          try {
+            const retriedResult = await accountsApi.confirmTradeImport(requestAccountId, previewToken, {
+              signal: controller.signal,
+            });
+            if (requestGeneration !== requestGenerationRef.current) {
+              return;
+            }
+            await applyCommittedImport(requestAccountId, previewToken, retriedResult, requestGeneration);
+            return;
+          } catch (retryError) {
+            if (controller.signal.aborted || requestGeneration !== requestGenerationRef.current) {
+              return;
+            }
+            if (!isUnknownConfirmationOutcome(retryError)) {
+              clearPendingTradeImport(requestAccountId, previewToken);
+              setError(getTradeImportErrorMessage(retryError));
+              return;
+            }
+            activeRequestRef.current = { kind: "status", controller, generation: requestGeneration };
+          }
+        }
+        if (status.status === "pending" || status.status === "confirming") {
+          if (attempt < IMPORT_STATUS_POLL_ATTEMPTS - 1) {
+            await waitForImportStatusPoll(controller.signal);
+            continue;
+          }
+          setError("The import is still processing. Retry the status check in a moment.");
+          return;
+        }
+        if (status.status === "stale") {
+          setError("This preview is stale because account data changed. Choose the file again for a fresh review.");
+        } else if (status.status === "expired") {
+          setError("This preview expired. Choose the file again to create a fresh preview.");
+        } else if (status.status === "conflict") {
+          setError("This preview contains unresolved trade conflicts and was not imported.");
+        } else {
+          setError("The import did not complete. Review the file and try again.");
+        }
+        clearPendingTradeImport(requestAccountId, previewToken);
+        return;
+      }
+    } catch (statusError) {
+      if (!controller.signal.aborted && requestGeneration === requestGenerationRef.current) {
+        setError(
+          `Import outcome is still unknown. ${getTradeImportErrorMessage(statusError)} Retry the status check.`,
+        );
+      }
+    } finally {
+      if (requestGeneration === requestGenerationRef.current) {
+        activeRequestRef.current = null;
+        setCheckingOutcome(false);
+        setOutcomeStatusMessage(null);
+      }
+    }
   }
 
   async function handleConfirm() {
-    if (!accountId || !canImport || !selectedFile || !preview || preview.new_rows <= 0) {
+    if (
+      !accountId ||
+      !canImport ||
+      !preview ||
+      preview.new_rows <= 0 ||
+      preview.conflict_rows > 0 ||
+      confirmInFlightRef.current
+    ) {
       return;
     }
 
     cancelActiveRequest();
     const requestGeneration = requestGenerationRef.current;
     const controller = new AbortController();
-    activeControllerRef.current = controller;
+    activeRequestRef.current = { kind: "confirm", controller, generation: requestGeneration };
+    confirmInFlightRef.current = true;
+    rememberPendingTradeImport(accountId, preview.preview_token);
     setConfirming(true);
     setError(null);
 
     try {
       const importResult = await accountsApi.confirmTradeImport(
         accountId,
-        selectedFile,
-        preview.file_sha256,
+        preview.preview_token,
         { signal: controller.signal },
       );
       if (requestGeneration !== requestGenerationRef.current) {
         return;
       }
 
-      setResult(importResult);
-      setSelectedFile(null);
-      setPreview(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-
-      try {
-        await onImportComplete?.(importResult);
-      } catch {
-        // The import is already committed. A later dashboard refresh can recover.
-      }
+      await applyCommittedImport(accountId, preview.preview_token, importResult, requestGeneration);
     } catch (nextError) {
-      if (!controller.signal.aborted && requestGeneration === requestGenerationRef.current) {
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
+      if (isUnknownConfirmationOutcome(nextError)) {
+        activeRequestRef.current = null;
+        confirmInFlightRef.current = false;
+        setConfirming(false);
+        await checkImportOutcome(accountId, preview.preview_token);
+      } else {
+        clearPendingTradeImport(accountId, preview.preview_token);
         setError(getTradeImportErrorMessage(nextError));
       }
     } finally {
       if (requestGeneration === requestGenerationRef.current) {
-        activeControllerRef.current = null;
+        activeRequestRef.current = null;
+        confirmInFlightRef.current = false;
         setConfirming(false);
       }
     }
@@ -571,13 +831,64 @@ export function TradeImportPanel({
     }
   }
 
-  const busy = previewing || confirming || creatingAccount || selectingAccountId !== null;
+  function handleCheckConfirmationOutcome() {
+    if (!accountId || !preview) {
+      return;
+    }
+    setConfirming(false);
+    confirmInFlightRef.current = false;
+    void checkImportOutcome(accountId, preview.preview_token);
+  }
+
+  function handleCancelOutcomeCheck() {
+    if (!recoveryToken) {
+      return;
+    }
+    cancelActiveRequest();
+    setCheckingOutcome(false);
+    setOutcomeStatusMessage(null);
+    setError("Import outcome is still unknown. Retry the status check when you are ready.");
+  }
+
+  function handleCloseError() {
+    setError(null);
+    setRecoveryToken(null);
+    setOutcomeStatusMessage(null);
+  }
+
+  function handleRetryError() {
+    if (recoveryToken && accountId) {
+      void checkImportOutcome(accountId, recoveryToken);
+      return;
+    }
+    if (selectedFile && !preview) {
+      void previewFile(selectedFile);
+    }
+  }
+
+  const recoverPendingOutcome = useEffectEvent((requestAccountId: number, previewToken: string) => {
+    void checkImportOutcome(requestAccountId, previewToken);
+  });
+
+  useEffect(() => {
+    if (!canImport || accountId === null) {
+      return;
+    }
+    const pendingToken = readPendingTradeImport(accountId);
+    if (pendingToken) {
+      recoverPendingOutcome(accountId, pendingToken);
+    }
+  }, [accountId, canImport]);
+
+  const retryAvailable = Boolean((recoveryToken && accountId) || (selectedFile && !preview));
+  const busy = previewing || confirming || checkingOutcome || creatingAccount || selectingAccountId !== null;
 
   return (
     <section
       id="live-trade-import-panel"
       className="rounded-xl border border-app-border/80 bg-app-bg/45 p-3"
       aria-labelledby={`${inputId}-title`}
+      aria-busy={busy}
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-2xl">
@@ -587,19 +898,29 @@ export function TradeImportPanel({
           <p className="mt-1 text-xs text-app-muted">
             Upload a CSV or Excel trade export for the selected Live CSV account. You can review parsed rows and duplicates before anything is stored.
           </p>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="mt-2"
-            disabled={busy}
-            onClick={() => {
-              setShowAccountForm((current) => !current);
-              setError(null);
-            }}
-          >
-            {showAccountForm ? "Cancel Live Account Setup" : "Add Live Account"}
-          </Button>
+          {!accountsLoading && !canImport ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-2"
+              disabled={busy}
+              aria-expanded={showAccountForm}
+              aria-controls={`${inputId}-account-setup`}
+              onClick={() => {
+                setShowAccountForm((current) => !current);
+                setError(null);
+              }}
+            >
+              {showAccountForm
+                ? hasLiveAccount
+                  ? "Cancel Live Account Selection"
+                  : "Cancel Live Account Setup"
+                : hasLiveAccount
+                  ? "Select Live Account"
+                  : "Add Live Account"}
+            </Button>
+          ) : null}
         </div>
         <div className="block w-full max-w-md space-y-1">
           <span id={`${inputId}-label`} className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
@@ -632,15 +953,22 @@ export function TradeImportPanel({
             </span>
           </div>
           <span id={`${inputId}-help`} className="block text-[10px] text-app-muted-strong">
-            {canImport
-              ? "Accepted: .csv and .xlsx"
-              : "Choose this to add or select the Live CSV account required for imports."}
+            {accountsLoading
+              ? "Loading your saved Live account..."
+              : canImport
+                ? "Accepted: .csv and .xlsx"
+                : hasLiveAccount
+                  ? "Select your Live CSV account before choosing a trade file."
+                  : "Add the Live CSV account required for imports."}
           </span>
         </div>
       </div>
 
-      {showAccountForm ? (
-        <div className="mt-3 space-y-3 rounded-xl border border-app-border/80 bg-app-surface/35 p-3">
+      {!accountsLoading && showAccountForm ? (
+        <div
+          id={`${inputId}-account-setup`}
+          className="mt-3 space-y-3 rounded-xl border border-app-border/80 bg-app-surface/35 p-3"
+        >
           {liveAccounts.length > 0 ? (
             <div className="space-y-2">
               <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
@@ -670,91 +998,153 @@ export function TradeImportPanel({
             </div>
           ) : null}
 
-          <form
-            className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] md:items-end"
-            onSubmit={(event) => void handleCreateLiveAccount(event)}
-          >
-            <label className="space-y-1">
-              <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
-                Topstep Live account ID
-              </span>
-              <Input
-                value={liveAccountId}
-                inputMode="numeric"
-                autoComplete="off"
-                placeholder="e.g. 88001"
-                disabled={creatingAccount}
-                onChange={(event) => setLiveAccountId(event.target.value)}
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
-                Account name (optional)
-              </span>
-              <Input
-                value={liveAccountName}
-                maxLength={120}
-                autoComplete="off"
-                placeholder="Topstep Live Funded"
-                disabled={creatingAccount}
-                onChange={(event) => setLiveAccountName(event.target.value)}
-              />
-            </label>
-            <Button type="submit" size="sm" disabled={creatingAccount || !liveAccountId.trim()}>
-              {creatingAccount ? "Adding..." : "Add Import Account"}
-            </Button>
-            <p className="text-[10px] text-app-muted-strong md:col-span-3">
-              Topstep exports do not include an account ID. Enter the Live account number so imported trades stay separate
-              from your Express account.
-            </p>
-          </form>
-        </div>
-      ) : null}
-
-      {!accountId ? (
-        <p className="mt-3 rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning">
-          Add or select the Live account before choosing a trade file.
-        </p>
-      ) : !canImport ? (
-        <p className="mt-3 rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning">
-          Select or add a separate Live CSV account before choosing a trade file. Your Express account will remain unchanged.
-        </p>
-      ) : null}
-
-      {previewing ? (
-        <p className="mt-3 rounded-xl border border-app-accent/30 bg-app-accent/10 px-3 py-2 text-xs text-app-text" role="status">
-          Validating and parsing {selectedFile?.name ?? "trade file"}...
-        </p>
-      ) : null}
-
-      {error ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-app-negative/35 bg-app-negative/10 px-3 py-2">
-          <p className="text-xs text-app-negative" role="alert">
-            {error}
-          </p>
-          {selectedFile && !preview ? (
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void previewFile(selectedFile)}>
-              Retry
-            </Button>
+          {!hasLiveAccount ? (
+            <form
+              className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] md:items-end"
+              onSubmit={(event) => void handleCreateLiveAccount(event)}
+            >
+              <label className="space-y-1">
+                <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
+                  Topstep Live account ID
+                </span>
+                <Input
+                  value={liveAccountId}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="e.g. 88001"
+                  disabled={creatingAccount}
+                  onChange={(event) => setLiveAccountId(event.target.value)}
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
+                  Account name (optional)
+                </span>
+                <Input
+                  value={liveAccountName}
+                  maxLength={120}
+                  autoComplete="off"
+                  placeholder="Topstep Live Funded"
+                  disabled={creatingAccount}
+                  onChange={(event) => setLiveAccountName(event.target.value)}
+                />
+              </label>
+              <Button type="submit" size="sm" disabled={creatingAccount || !liveAccountId.trim()}>
+                {creatingAccount ? "Adding..." : "Add Import Account"}
+              </Button>
+              <p className="text-[10px] text-app-muted-strong md:col-span-3">
+                Topstep exports do not include an account ID. Enter the Live account number so imported trades stay separate
+                from your Express account.
+              </p>
+            </form>
           ) : null}
         </div>
       ) : null}
 
+      {!accountsLoading ? (
+        !accountId ? (
+          <p className="mt-3 rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning">
+            Add or select the Live account before choosing a trade file.
+          </p>
+        ) : !canImport ? (
+          <p className="mt-3 rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning">
+            Select or add a separate Live CSV account before choosing a trade file. Your Express account will remain unchanged.
+          </p>
+        ) : null
+      ) : null}
+
+      {previewing ? (
+        <div
+          ref={noticeFocusRef}
+          tabIndex={-1}
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-app-accent/30 bg-app-accent/10 px-3 py-2 text-xs text-app-text focus:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <p>Validating and parsing {selectedFile?.name ?? "trade file"}...</p>
+          <Button type="button" variant="ghost" size="sm" onClick={resetSelection}>
+            Cancel
+          </Button>
+        </div>
+      ) : null}
+
+      {checkingOutcome && outcomeStatusMessage ? (
+        <div
+          ref={noticeFocusRef}
+          tabIndex={-1}
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-warning focus:outline-none focus-visible:ring-2 focus-visible:ring-app-warning"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span>{outcomeStatusMessage}</span>
+          <Button type="button" variant="ghost" size="sm" onClick={handleCancelOutcomeCheck}>
+            Cancel
+          </Button>
+        </div>
+      ) : null}
+
+      {error ? (
+        <div
+          ref={noticeFocusRef}
+          tabIndex={-1}
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-app-negative/35 bg-app-negative/10 px-3 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-app-negative"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="true"
+        >
+          <p className="text-xs text-app-negative">{error}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={handleCloseError}>
+              Close
+            </Button>
+            {retryAvailable ? (
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={handleRetryError}>
+              Retry
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {result ? (
-        <p className="mt-3 rounded-xl border border-app-positive/35 bg-app-positive/10 px-3 py-2 text-xs text-app-positive" role="status">
-          Imported {result.inserted_rows.toLocaleString("en-US")} trade{result.inserted_rows === 1 ? "" : "s"} from{" "}
-          {result.source_file_name}; skipped {result.duplicate_rows.toLocaleString("en-US")} duplicate
-          {result.duplicate_rows === 1 ? "" : "s"}.
-        </p>
+        <div
+          ref={noticeFocusRef}
+          tabIndex={-1}
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-app-positive/35 bg-app-positive/10 px-3 py-2 text-xs text-app-positive focus:outline-none focus-visible:ring-2 focus-visible:ring-app-positive"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <p>
+            Imported {result.inserted_rows.toLocaleString("en-US")} trade{result.inserted_rows === 1 ? "" : "s"} from{" "}
+            {result.source_file_name}; skipped {result.duplicate_rows.toLocaleString("en-US")} duplicate
+            {result.duplicate_rows === 1 ? "" : "s"}.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={resetSelection}>
+              Close
+            </Button>
+            <Button type="button" size="sm" onClick={handleChooseAnotherFile}>
+              Import Another File
+            </Button>
+          </div>
+        </div>
       ) : null}
 
       {preview ? (
-        <div className="mt-4 border-t border-app-border/70 pt-4">
+        <div
+          ref={!error && !checkingOutcome ? noticeFocusRef : undefined}
+          tabIndex={-1}
+          className="mt-4 border-t border-app-border/70 pt-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-app-accent"
+        >
           <TradeImportReview
             key={preview.file_sha256}
             preview={preview}
-            confirming={confirming}
+            confirming={confirming || checkingOutcome}
             onConfirm={() => void handleConfirm()}
+            onCheckOutcome={confirming && !checkingOutcome ? handleCheckConfirmationOutcome : undefined}
             onChooseAnother={handleChooseAnotherFile}
             onClose={resetSelection}
           />

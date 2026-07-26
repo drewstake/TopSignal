@@ -89,6 +89,11 @@ def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
     monkeypatch.setattr(main_module, "init_db", lambda: lifecycle_calls.append("init"))
     monkeypatch.setattr(
         main_module,
+        "_run_trade_import_preview_cleanup",
+        lambda: lifecycle_calls.append("import_cleanup"),
+    )
+    monkeypatch.setattr(
+        main_module,
         "_start_streaming_runtime_if_enabled",
         lambda: lifecycle_calls.append("stream_start"),
     )
@@ -111,7 +116,15 @@ def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
 
     asyncio.run(run_lifespan())
 
-    assert lifecycle_calls == ["guard", "log", "init", "stream_start", "ready", "stream_stop"]
+    assert lifecycle_calls == [
+        "guard",
+        "log",
+        "init",
+        "import_cleanup",
+        "stream_start",
+        "ready",
+        "stream_stop",
+    ]
 
 
 def _make_candle(timestamp: datetime, close: float, **overrides) -> ProjectXMarketCandle:
@@ -3535,13 +3548,24 @@ def test_update_bot_config_rejects_duplicate_name_for_user():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    tables = [BotConfig.__table__]
+    tables = [Account.__table__, BotConfig.__table__]
     Base.metadata.create_all(bind=engine, tables=tables)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = SessionLocal()
 
     user_id = "00000000-0000-0000-0000-000000000000"
     try:
+        db.add(
+            Account(
+                user_id=user_id,
+                provider="projectx",
+                external_id="9001",
+                name="Practice 9001",
+                account_state="ACTIVE",
+                can_trade=True,
+                is_visible=True,
+            )
+        )
         first = BotConfig(
             user_id=user_id,
             account_id=9001,
@@ -3599,6 +3623,74 @@ def test_update_bot_config_rejects_duplicate_name_for_user():
                 user_id=user_id,
                 bot_config_id=second.id,
                 payload=BotConfigUpdateIn(name=" opening drive "),
+            )
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=tables)
+        engine.dispose()
+
+
+def test_bot_config_create_and_update_reject_csv_import_accounts():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    tables = [Account.__table__, BotConfig.__table__]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+
+    user_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        db.add(
+            Account(
+                user_id=user_id,
+                provider="projectx",
+                external_id="9001",
+                trade_data_source="csv_import",
+                name="Topstep Live Funded",
+                account_state="ACTIVE",
+                can_trade=False,
+                is_visible=True,
+            )
+        )
+        legacy_config = BotConfig(
+            user_id=user_id,
+            account_id=9001,
+            name="Legacy Live Bot",
+            enabled=False,
+            execution_mode="dry_run",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            timeframe_unit="minute",
+            timeframe_unit_number=5,
+            lookback_bars=25,
+            fast_period=2,
+            slow_period=3,
+            order_size=1,
+            max_contracts=1,
+            max_daily_loss=250,
+            max_trades_per_day=3,
+            max_open_position=1,
+            allowed_contracts=["CON.F.US.MNQ.M26"],
+            trading_start_time="00:00",
+            trading_end_time="23:59",
+            cooldown_seconds=0,
+            max_data_staleness_seconds=3600,
+        )
+        db.add(legacy_config)
+        db.flush()
+
+        with pytest.raises(ValueError, match="csv_import_accounts_cannot_run_bots"):
+            create_bot_config(db, user_id=user_id, payload=_make_bot_create_payload(name="Live Bot"))
+
+        with pytest.raises(ValueError, match="csv_import_accounts_cannot_run_bots"):
+            update_bot_config(
+                db,
+                user_id=user_id,
+                bot_config_id=int(legacy_config.id),
+                payload=BotConfigUpdateIn(name="Still Live"),
             )
     finally:
         db.close()

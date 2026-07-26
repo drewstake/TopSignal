@@ -69,9 +69,13 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "is_archived boolean not null default false",
         "balance numeric(18,6)",
         "trade_data_source text not null default 'projectx'",
+        "archived_at timestamptz",
+        "accounts_archived_not_main_check",
         "'submission_unknown'",
-        "schema-20260724-v2",
+        "schema-20260725-v4",
         "create table if not exists trade_import_batches",
+        "create table if not exists trade_import_previews",
+        "fk_projectx_trade_events_owned_batch",
         "commissions numeric(18,6)",
         "fee_scope text not null default 'per_side'",
         "order_size <= 10000 and order_size = trunc(order_size)",
@@ -93,11 +97,25 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_repairs_converted_express_accounts():
+def test_latest_migration_adds_live_account_archiving():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260724_restore_express_trade_data_source.sql"
+        == "20260725_live_account_archiving.sql"
     )
+
+
+def test_live_account_archiving_migration_preserves_history_and_main_integrity():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260725_live_account_archiving.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists archived_at timestamptz" in migration
+    assert "archived_at is null or not is_main" in migration
+    assert "drop table" not in migration
+    assert "delete from" not in migration
 
 
 def test_express_trade_data_source_repair_uses_narrow_provider_name_predicate():
@@ -176,14 +194,37 @@ def test_quantity_safety_migration_rejects_unsafe_legacy_rows_and_validates_cons
     assert "not valid" not in migration
 
 
+def test_trade_import_hardening_migration_fails_closed_and_enforces_ownership():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260725_harden_topstep_trade_imports.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "orphaned or mismatched trade import batches exist" in migration
+    assert "cross-owner imported trade events exist" in migration
+    assert "unsafe projectx trade quantities exist" in migration
+    assert "create table if not exists trade_import_previews" in migration
+    assert "fk_trade_import_batches_owned_account" in migration
+    assert "fk_projectx_trade_events_owned_batch" in migration
+    assert "size <> trunc(size)" in migration
+    assert "not valid" not in migration
+
+
 def test_adoption_manifest_covers_current_orm_safety_objects():
     columns, indexes = migrate_db._current_model_manifest()
 
-    assert {"balance", "last_seen_at", "trade_data_source"} <= columns["accounts"]
+    assert {"balance", "last_seen_at", "trade_data_source", "archived_at"} <= columns["accounts"]
     assert {"execution_mode", "idempotency_key", "bot_config_id"} <= columns["bot_order_attempts"]
+    assert {"account_row_id", "account_external_id"} <= columns["trade_import_batches"]
+    assert {"normalized_manifest", "dedupe_snapshot", "retention_until"} <= columns[
+        "trade_import_previews"
+    ]
     assert set(columns).isdisjoint(migrate_db.LEGACY_DATABENTO_TABLE_NAMES)
     assert "uq_bot_order_attempts_idempotency_key" in indexes
     assert "uq_bot_runs_one_running_per_config" in indexes
+    assert "idx_accounts_user_archived" in indexes
     assert not any("databento" in name for name in indexes)
 
 

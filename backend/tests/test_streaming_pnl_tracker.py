@@ -22,7 +22,10 @@ def _dt(hour: int, minute: int = 0) -> str:
 
 def test_streaming_tracker_tracks_mae_mfe_and_closes_once():
     closed: list[ClosedPositionLifecycle] = []
+    scope = ("user-99", 99, "CON.F.US.MNQ.H26")
     tracker = StreamingPnlTracker(
+        owner_user_id="user-99",
+        owner_account_id=99,
         point_value_by_symbol={"MNQ": 2.0},
         on_lifecycle_closed=closed.append,
     )
@@ -38,9 +41,9 @@ def test_streaming_tracker_tracks_mae_mfe_and_closes_once():
         }
     )
     assert opened is True
-    assert "CON.F.US.MNQ.H26" in tracker.tracker_by_contract_id
-    assert tracker.tracker_by_contract_id["CON.F.US.MNQ.H26"].mae_usd == 0.0
-    assert tracker.tracker_by_contract_id["CON.F.US.MNQ.H26"].mfe_usd == 0.0
+    assert scope in tracker.tracker_by_scope
+    assert tracker.tracker_by_scope[scope].mae_usd == 0.0
+    assert tracker.tracker_by_scope[scope].mfe_usd == 0.0
 
     tracker.ingest_market_event(
         {
@@ -83,8 +86,9 @@ def test_streaming_tracker_tracks_mae_mfe_and_closes_once():
         }
     )
 
-    assert "CON.F.US.MNQ.H26" not in tracker.tracker_by_contract_id
+    assert scope not in tracker.tracker_by_scope
     assert len(closed) == 1
+    assert closed[0].user_id == "user-99"
     assert closed[0].mae_usd == -2.0
     assert closed[0].mfe_usd == 4.0
     assert closed[0].side == "LONG"
@@ -93,7 +97,10 @@ def test_streaming_tracker_tracks_mae_mfe_and_closes_once():
 
 def test_streaming_tracker_handles_position_flip_as_close_then_open():
     closed: list[ClosedPositionLifecycle] = []
+    scope = ("user-77", 77, "CON.F.US.MNQ.H26")
     tracker = StreamingPnlTracker(
+        owner_user_id="user-77",
+        owner_account_id=77,
         point_value_by_symbol={"MNQ": 2.0},
         on_lifecycle_closed=closed.append,
     )
@@ -132,12 +139,17 @@ def test_streaming_tracker_handles_position_flip_as_close_then_open():
     assert len(closed) == 1
     assert closed[0].side == "LONG"
     assert closed[0].mae_usd == -4.0
-    assert "CON.F.US.MNQ.H26" in tracker.tracker_by_contract_id
-    assert tracker.tracker_by_contract_id["CON.F.US.MNQ.H26"].side == "SHORT"
+    assert scope in tracker.tracker_by_scope
+    assert tracker.tracker_by_scope[scope].side == "SHORT"
 
 
 def test_streaming_tracker_recomputes_unrealized_on_market_and_position_updates():
-    tracker = StreamingPnlTracker(point_value_by_symbol={"MES": 5.0})
+    scope = ("user-88", 88, "CON.F.US.MES.H26")
+    tracker = StreamingPnlTracker(
+        owner_user_id="user-88",
+        owner_account_id=88,
+        point_value_by_symbol={"MES": 5.0},
+    )
 
     tracker.ingest_position_event(
         {
@@ -176,7 +188,7 @@ def test_streaming_tracker_recomputes_unrealized_on_market_and_position_updates(
         }
     )
 
-    lifecycle = tracker.tracker_by_contract_id["CON.F.US.MES.H26"]
+    lifecycle = tracker.tracker_by_scope[scope]
     assert lifecycle.mfe_usd == 10.0
     assert lifecycle.mae_usd == -15.0
 
@@ -217,6 +229,7 @@ def test_save_position_lifecycle_mae_mfe_persists_row():
         closed_at = datetime(2026, 3, 1, 12, 5, tzinfo=timezone.utc)
         row = save_position_lifecycle_mae_mfe(
             db,
+            user_id="user-42",
             account_id=42,
             contract_id="CON.F.US.MGC.H26",
             symbol="MGC",
@@ -236,6 +249,7 @@ def test_save_position_lifecycle_mae_mfe_persists_row():
         db.commit()
 
         assert int(row.account_id) == 42
+        assert row.user_id == "user-42"
         persisted = db.query(PositionLifecycle).all()
         assert len(persisted) == 1
         assert float(persisted[0].mae_usd) == -25.0
@@ -244,3 +258,91 @@ def test_save_position_lifecycle_mae_mfe_persists_row():
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[PositionLifecycle.__table__])
         engine.dispose()
+
+
+def test_streaming_tracker_isolates_same_contract_for_two_users():
+    closed: list[ClosedPositionLifecycle] = []
+    contract_id = "CON.F.US.MNQ.H26"
+    tracker = StreamingPnlTracker(
+        point_value_by_symbol={"MNQ": 2.0},
+        on_lifecycle_closed=closed.append,
+    )
+
+    assert tracker.ingest_position_event(
+        {
+            "accountId": 101,
+            "contractId": contract_id,
+            "symbol": "MNQ",
+            "netQty": 1,
+            "avgPrice": 100.0,
+            "updatedAt": _dt(13, 0),
+        },
+        user_id="user-a",
+        account_id=101,
+    )
+    assert tracker.ingest_position_event(
+        {
+            "accountId": 202,
+            "contractId": contract_id,
+            "symbol": "MNQ",
+            "netQty": -2,
+            "avgPrice": 103.0,
+            "updatedAt": _dt(13, 0),
+        },
+        user_id="user-b",
+        account_id=202,
+    )
+
+    tracker.ingest_market_event(
+        {
+            "contractId": contract_id,
+            "symbol": "MNQ",
+            "lastPrice": 102.0,
+            "timestamp": _dt(13, 1),
+        }
+    )
+
+    scope_a = ("user-a", 101, contract_id)
+    scope_b = ("user-b", 202, contract_id)
+    assert tracker.tracker_by_scope[scope_a].mfe_usd == 4.0
+    assert tracker.tracker_by_scope[scope_b].mfe_usd == 4.0
+
+    tracker.ingest_position_event(
+        {
+            "accountId": 101,
+            "contractId": contract_id,
+            "symbol": "MNQ",
+            "netQty": 0,
+            "avgPrice": 100.0,
+            "updatedAt": _dt(13, 2),
+        },
+        user_id="user-a",
+        account_id=101,
+    )
+
+    assert scope_a not in tracker.tracker_by_scope
+    assert scope_b in tracker.tracker_by_scope
+    assert len(closed) == 1
+    assert closed[0].user_id == "user-a"
+    assert closed[0].account_id == 101
+
+
+def test_streaming_tracker_rejects_unscoped_and_mismatched_position_events():
+    payload = {
+        "accountId": 101,
+        "contractId": "CON.F.US.MNQ.H26",
+        "netQty": 1,
+        "avgPrice": 100.0,
+        "updatedAt": _dt(14, 0),
+    }
+
+    tracker = StreamingPnlTracker()
+    try:
+        tracker.ingest_position_event(payload)
+    except ValueError as exc:
+        assert "explicit user and account scope" in str(exc)
+    else:
+        raise AssertionError("unscoped position event was accepted")
+
+    assert tracker.ingest_position_event(payload, user_id="user-a", account_id=202) is False
+    assert tracker.position_by_scope == {}

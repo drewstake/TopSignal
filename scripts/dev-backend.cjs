@@ -24,7 +24,9 @@ let backendPort = 8000;
 
 if (!childEnv.TOPSIGNAL_DB_SCHEMA_INIT) {
   childEnv.TOPSIGNAL_DB_SCHEMA_INIT = "skip";
-  console.log("TOPSIGNAL_DB_SCHEMA_INIT=skip for fast dev startup. Run `npm run db:init` after schema changes.");
+  console.log(
+    "TOPSIGNAL_DB_SCHEMA_INIT=skip for fast dev startup. Run `npm run db:migrate` and `npm run db:check` after schema changes.",
+  );
 }
 
 function killProcessTree(pid) {

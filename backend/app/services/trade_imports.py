@@ -3,21 +3,28 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
+import logging
 import math
 import re
+import secrets
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable, Iterable, Sequence
 from zipfile import BadZipFile, ZipFile
-from zoneinfo import ZoneInfo
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models import ProjectXTradeEvent, TradeImportBatch
+from ..models import Account, ProjectXTradeEvent, TradeImportBatch, TradeImportPreview
 from .instruments import normalize_symbol_key
+from .projectx_accounts import ACCOUNT_PROVIDER, TRADE_DATA_SOURCE_CSV_IMPORT
+from .trading_day import TRADING_TZ, trading_day_date
 
 
 MAX_TRADE_IMPORT_BYTES = 10 * 1024 * 1024
@@ -26,13 +33,19 @@ MAX_REPORTED_ROW_ERRORS = 100
 MAX_SOURCE_TRADE_ID_CHARS = 255
 MAX_EXCEL_ARCHIVE_ENTRIES = 10_000
 MAX_EXCEL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_FUTURES_QUANTITY = 10_000
+TRADE_IMPORT_PREVIEW_TTL = timedelta(minutes=30)
+TRADE_IMPORT_PREVIEW_RETENTION = timedelta(days=7)
+TRADE_IMPORT_MANIFEST_VERSION = 1
 
-_TRADING_TZ = ZoneInfo("America/New_York")
+_TRADING_TZ = TRADING_TZ
 _MONEY_QUANT = Decimal("0.01")
 _STORAGE_QUANT = Decimal("0.000001")
 _STORAGE_MAX = Decimal("999999999999.999999")
 _CSV_EXTENSIONS = {".csv"}
-_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
+_EXCEL_EXTENSIONS = {".xlsx"}
+
+logger = logging.getLogger(__name__)
 
 _COLUMN_LABELS = {
     "source_trade_id": "Id",
@@ -219,6 +232,13 @@ class TradeImportValidationError(ValueError):
 class _SourceRow:
     row_number: int
     values: tuple[Any, ...]
+    date_only_indexes: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True)
+class _ExcelCellValue:
+    value: Any
+    date_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,8 +265,13 @@ class _ParsedTrade:
     def net_pnl(self) -> Decimal:
         return self.gross_pnl - self.fees - self.commissions
 
-    def preview_payload(self, *, duplicate: bool) -> dict[str, Any]:
-        return {
+    def preview_payload(
+        self,
+        *,
+        status: str,
+        conflict: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
             "row_number": self.row_number,
             "source_trade_id": self.source_trade_id,
             "contract_name": self.contract_name,
@@ -263,8 +288,11 @@ class _ParsedTrade:
             "direction": self.direction,
             "trade_day": self.trade_day,
             "duration": self.duration,
-            "status": "duplicate" if duplicate else "new",
+            "status": status,
         }
+        if conflict is not None:
+            payload["conflict"] = conflict
+        return payload
 
 
 @dataclass(frozen=True)
@@ -277,8 +305,19 @@ class _ParsedFile:
 @dataclass(frozen=True)
 class _PreparedImport:
     parsed: _ParsedFile
-    duplicate_flags: tuple[bool, ...]
+    decisions: tuple["_TradeDecision", ...]
     existing_batch: TradeImportBatch | None
+    dedupe_snapshot: str
+
+
+@dataclass(frozen=True)
+class _TradeDecision:
+    status: str
+    identity_kind: str
+    identity_value: str
+    existing_event_ids: tuple[int, ...] = ()
+    existing_fingerprints: tuple[str, ...] = ()
+    conflict: dict[str, Any] | None = None
 
 
 def preview_trade_import(
@@ -288,34 +327,139 @@ def preview_trade_import(
     account_id: int,
     filename: str,
     content: bytes,
+    account_row_id: int | None = None,
 ) -> dict[str, Any]:
-    prepared = _prepare_import(
-        db,
-        user_id=user_id,
-        account_id=account_id,
-        filename=filename,
-        content=content,
-    )
-    parsed = prepared.parsed
-    duplicate_rows = sum(1 for duplicate in prepared.duplicate_flags if duplicate)
-    new_trades = [
-        trade
-        for trade, duplicate in zip(parsed.trades, prepared.duplicate_flags)
-        if not duplicate
-    ]
+    overall_started = perf_counter()
+    phase_started = overall_started
+    failure_phase = "account_validation"
+    parse_ms = None
+    dedupe_ms = None
+    persist_ms = None
+    total_rows = None
+    new_rows = None
+    duplicate_rows = None
+    conflict_rows = None
+    try:
+        account = _resolve_import_account(
+            db,
+            user_id=str(user_id),
+            account_id=int(account_id),
+            account_row_id=account_row_id,
+        )
+        failure_phase = "parse"
+        phase_started = perf_counter()
+        parsed = _parse_file(filename=filename, content=content)
+        parse_ms = _elapsed_ms(phase_started)
+        total_rows = len(parsed.trades)
 
-    return {
-        "source_file_name": parsed.source_file_name,
-        "file_sha256": parsed.file_sha256,
-        "total_rows": len(parsed.trades),
-        "new_rows": len(parsed.trades) - duplicate_rows,
-        "duplicate_rows": duplicate_rows,
-        "summary": _summarize_trades(new_trades),
-        "trades": [
-            trade.preview_payload(duplicate=duplicate)
-            for trade, duplicate in zip(parsed.trades, prepared.duplicate_flags)
-        ],
-    }
+        failure_phase = "dedupe"
+        phase_started = perf_counter()
+        prepared = _prepare_parsed_import(
+            db,
+            user_id=str(user_id),
+            account_id=int(account_id),
+            parsed=parsed,
+        )
+        dedupe_ms = _elapsed_ms(phase_started)
+
+        decisions = prepared.decisions
+        duplicate_rows = sum(1 for decision in decisions if decision.status == "duplicate")
+        conflict_rows = sum(1 for decision in decisions if decision.status == "conflict")
+        new_trades = [
+            trade
+            for trade, decision in zip(parsed.trades, decisions)
+            if decision.status == "new"
+        ]
+        new_rows = len(new_trades)
+        preview_rows = [
+            trade.preview_payload(status=decision.status, conflict=decision.conflict)
+            for trade, decision in zip(parsed.trades, decisions)
+        ]
+
+        now = datetime.now(timezone.utc)
+        preview_token = secrets.token_urlsafe(32)
+        staged = TradeImportPreview(
+            token_hash=_token_hash(preview_token),
+            user_id=str(user_id),
+            account_id=int(account_id),
+            account_row_id=int(account.id),
+            account_external_id=str(account.external_id),
+            source_file_name=parsed.source_file_name,
+            file_sha256=parsed.file_sha256,
+            manifest_version=TRADE_IMPORT_MANIFEST_VERSION,
+            normalized_manifest=[_serialize_manifest_trade(trade) for trade in parsed.trades],
+            preview_rows=_json_compatible(preview_rows),
+            dedupe_snapshot=prepared.dedupe_snapshot,
+            total_rows=len(parsed.trades),
+            new_rows=len(new_trades),
+            duplicate_rows=duplicate_rows,
+            conflict_rows=conflict_rows,
+            status="conflict" if conflict_rows else "pending",
+            outcome_code="identity_conflict" if conflict_rows else None,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + TRADE_IMPORT_PREVIEW_TTL,
+            retention_until=now + TRADE_IMPORT_PREVIEW_RETENTION,
+        )
+        failure_phase = "persist"
+        phase_started = perf_counter()
+        _cleanup_expired_previews(db, now=now)
+        db.add(staged)
+        db.commit()
+        persist_ms = _elapsed_ms(phase_started)
+
+        payload = {
+            "preview_token": preview_token,
+            "expires_at": staged.expires_at,
+            "source_file_name": parsed.source_file_name,
+            "file_sha256": parsed.file_sha256,
+            "total_rows": len(parsed.trades),
+            "new_rows": len(new_trades),
+            "duplicate_rows": duplicate_rows,
+            "conflict_rows": conflict_rows,
+            "summary": _summarize_trades(new_trades),
+            "trades": preview_rows,
+        }
+        _log_import_outcome(
+            "preview",
+            outcome="conflict" if conflict_rows else "ready",
+            total_rows=len(parsed.trades),
+            new_rows=len(new_trades),
+            duplicate_rows=duplicate_rows,
+            conflict_rows=conflict_rows,
+            parse_ms=parse_ms,
+            dedupe_ms=dedupe_ms,
+            persist_ms=persist_ms,
+            total_ms=_elapsed_ms(overall_started),
+        )
+        return payload
+    except Exception as exc:
+        db.rollback()
+        if failure_phase == "parse" and parse_ms is None:
+            parse_ms = _elapsed_ms(phase_started)
+        elif failure_phase == "dedupe" and dedupe_ms is None:
+            dedupe_ms = _elapsed_ms(phase_started)
+        elif failure_phase == "persist" and persist_ms is None:
+            persist_ms = _elapsed_ms(phase_started)
+        _log_import_outcome(
+            "preview",
+            outcome=_safe_failure_category(exc),
+            failure_phase=failure_phase,
+            error_rows=(
+                len(exc.row_errors)
+                if isinstance(exc, TradeImportValidationError)
+                else None
+            ),
+            total_rows=total_rows,
+            new_rows=new_rows,
+            duplicate_rows=duplicate_rows,
+            conflict_rows=conflict_rows,
+            parse_ms=parse_ms,
+            dedupe_ms=dedupe_ms,
+            persist_ms=persist_ms,
+            total_ms=_elapsed_ms(overall_started),
+        )
+        raise
 
 
 def confirm_trade_import(
@@ -323,63 +467,428 @@ def confirm_trade_import(
     *,
     user_id: str,
     account_id: int,
-    filename: str,
-    content: bytes,
-    expected_sha256: str,
+    preview_token: str,
+    account_row_id: int | None = None,
 ) -> dict[str, Any]:
-    actual_sha256 = _content_sha256(content)
-    normalized_expected = str(expected_sha256 or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", normalized_expected):
-        raise TradeImportValidationError(
-            "invalid_preview_sha256",
-            "The reviewed file identity is invalid. Preview the file again before importing.",
+    overall_started = perf_counter()
+    resolved_user_id = str(user_id)
+    resolved_account_id = int(account_id)
+    phase_started = overall_started
+    failure_phase = "account_validation"
+    dedupe_ms = None
+    commit_ms = None
+    total_rows = None
+    new_rows = None
+    duplicate_rows = None
+    conflict_rows = None
+    try:
+        account = _resolve_import_account(
+            db,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            account_row_id=account_row_id,
         )
-    if actual_sha256 != normalized_expected:
-        raise TradeImportValidationError(
-            "file_changed_since_preview",
-            "The selected file changed after preview. Preview it again before importing.",
+        now = datetime.now(timezone.utc)
+        token_digest = _token_hash(_validated_preview_token(preview_token))
+        staged = _get_staged_preview(
+            db,
+            token_hash=token_digest,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            account_row_id=int(account.id),
         )
+        if staged is None:
+            raise TradeImportValidationError(
+                "preview_not_found",
+                "The import preview was not found for this account. Preview the file again.",
+            )
+        total_rows = int(staged.total_rows)
+        new_rows = int(staged.new_rows)
+        duplicate_rows = int(staged.duplicate_rows)
+        conflict_rows = int(staged.conflict_rows)
+        failure_phase = "preflight"
+        if staged.status == "committed" and staged.import_batch_id is not None:
+            batch = _owned_batch_for_preview(db, staged)
+            if batch is None:
+                raise TradeImportValidationError(
+                    "import_status_inconsistent",
+                    "The saved import outcome could not be verified.",
+                )
+            return _serialize_existing_batch(batch)
+        if _as_utc(staged.expires_at) <= now or staged.status == "expired":
+            expired = _expire_preview_conditionally(
+                db,
+                preview_id=int(staged.id),
+                now=now,
+            )
+            db.commit()
+            db.expire_all()
+            staged = _get_staged_preview(
+                db,
+                token_hash=token_digest,
+                user_id=resolved_user_id,
+                account_id=resolved_account_id,
+                account_row_id=int(account.id),
+            )
+            if staged is not None and staged.status == "committed" and staged.import_batch_id is not None:
+                batch = _owned_batch_for_preview(db, staged)
+                if batch is not None:
+                    return _serialize_existing_batch(batch)
+            if expired or (staged is not None and staged.status == "expired"):
+                raise TradeImportValidationError(
+                    "preview_expired",
+                    "The import preview expired. Preview the file again before importing.",
+                )
+            if staged is not None and staged.status == "confirming":
+                raise TradeImportValidationError(
+                    "confirmation_in_progress",
+                    "This import confirmation is already in progress. Check its status before retrying.",
+                )
+            if staged is None:
+                raise TradeImportValidationError(
+                    "preview_not_found",
+                    "The import preview was not found for this account. Preview the file again.",
+                )
+        if staged.status == "conflict" or int(staged.conflict_rows) > 0:
+            raise TradeImportValidationError(
+                "import_conflicts_unresolved",
+                "The preview contains conflicting trade identities and cannot be imported.",
+            )
+        if staged.status == "stale":
+            raise TradeImportValidationError(
+                "preview_stale",
+                "Account data changed after this preview. Preview the file again.",
+            )
+        if staged.status == "failed":
+            raise TradeImportValidationError(
+                "preview_failed",
+                "The previous confirmation failed. Preview the file again.",
+            )
 
-    prepared = _prepare_import(
-        db,
-        user_id=user_id,
-        account_id=account_id,
-        filename=filename,
-        content=content,
-    )
-    if prepared.parsed.file_sha256 != normalized_expected:
-        raise TradeImportValidationError(
-            "file_changed_since_preview",
-            "The selected file changed after preview. Preview it again before importing.",
+        # A conditional write is both the state transition and the concurrency
+        # gate. PostgreSQL locks the row until this transaction completes;
+        # SQLite serializes the write. A second confirmation observes either a
+        # committed outcome or a non-pending preview and cannot insert twice.
+        failure_phase = "claim"
+        phase_started = perf_counter()
+        claimed = (
+            db.query(TradeImportPreview)
+            .filter(TradeImportPreview.id == staged.id)
+            .filter(TradeImportPreview.status == "pending")
+            .update(
+                {
+                    TradeImportPreview.status: "confirming",
+                    TradeImportPreview.updated_at: now,
+                },
+                synchronize_session=False,
+            )
         )
+        if claimed != 1:
+            db.expire_all()
+            latest = _get_staged_preview(
+                db,
+                token_hash=token_digest,
+                user_id=resolved_user_id,
+                account_id=resolved_account_id,
+                account_row_id=int(account.id),
+            )
+            if latest is not None and latest.status == "committed" and latest.import_batch_id is not None:
+                batch = _owned_batch_for_preview(db, latest)
+                if batch is not None:
+                    return _serialize_existing_batch(batch)
+            raise TradeImportValidationError(
+                "confirmation_in_progress",
+                "This import confirmation is already in progress. Check its status before retrying.",
+            )
 
-    if prepared.existing_batch is not None:
-        return _serialize_existing_batch(prepared.existing_batch)
+        db.expire(staged)
+        staged = db.query(TradeImportPreview).filter(TradeImportPreview.id == staged.id).one()
+        parsed = _parsed_file_from_stage(staged)
+        failure_phase = "dedupe"
+        phase_started = perf_counter()
+        prepared = _prepare_parsed_import(
+            db,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            parsed=parsed,
+        )
+        dedupe_ms = _elapsed_ms(phase_started)
+        new_rows = sum(1 for decision in prepared.decisions if decision.status == "new")
+        duplicate_rows = sum(
+            1 for decision in prepared.decisions if decision.status == "duplicate"
+        )
+        conflict_rows = sum(
+            1 for decision in prepared.decisions if decision.status == "conflict"
+        )
+        if prepared.dedupe_snapshot != staged.dedupe_snapshot:
+            staged.status = "stale"
+            staged.outcome_code = "preview_stale"
+            staged.updated_at = now
+            _scrub_staged_manifest(staged)
+            db.commit()
+            raise TradeImportValidationError(
+                "preview_stale",
+                "Account data changed after this preview. Preview the file again.",
+            )
+        if any(decision.status == "conflict" for decision in prepared.decisions):
+            staged.status = "conflict"
+            staged.outcome_code = "identity_conflict"
+            staged.updated_at = now
+            db.commit()
+            raise TradeImportValidationError(
+                "import_conflicts_unresolved",
+                "The preview contains conflicting trade identities and cannot be imported.",
+            )
 
-    return _persist_import(
-        db,
-        user_id=str(user_id),
-        account_id=int(account_id),
-        prepared=prepared,
-        allow_retry=True,
-    )
+        if prepared.existing_batch is not None:
+            _mark_preview_committed(staged, prepared.existing_batch, now=now)
+            db.commit()
+            result = _serialize_existing_batch(prepared.existing_batch)
+            _log_import_outcome(
+                "confirm",
+                outcome="idempotent",
+                total_rows=result["total_rows"],
+                new_rows=0,
+                duplicate_rows=result["duplicate_rows"],
+                conflict_rows=0,
+                dedupe_ms=dedupe_ms,
+                commit_ms=0.0,
+                total_ms=_elapsed_ms(overall_started),
+            )
+            return result
+
+        failure_phase = "commit"
+        phase_started = perf_counter()
+        result = _persist_staged_import(
+            db,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            account=account,
+            prepared=prepared,
+            staged=staged,
+            now=now,
+        )
+        commit_ms = _elapsed_ms(phase_started)
+        _log_import_outcome(
+            "confirm",
+            outcome="committed",
+            total_rows=result["total_rows"],
+            new_rows=result["inserted_rows"],
+            duplicate_rows=result["duplicate_rows"],
+            conflict_rows=0,
+            dedupe_ms=dedupe_ms,
+            commit_ms=commit_ms,
+            total_ms=_elapsed_ms(overall_started),
+        )
+        return result
+    except IntegrityError as exc:
+        if failure_phase == "dedupe" and dedupe_ms is None:
+            dedupe_ms = _elapsed_ms(phase_started)
+        elif failure_phase == "commit" and commit_ms is None:
+            commit_ms = _elapsed_ms(phase_started)
+        db.rollback()
+        # A same-token or same-file concurrent request may have committed while
+        # this transaction was waiting. Recover that durable outcome rather
+        # than reporting a false failure.
+        recovered = _recover_concurrent_commit(
+            db,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            preview_token=preview_token,
+            account_row_id=account_row_id,
+        )
+        if recovered is not None:
+            _log_import_outcome(
+                "confirm",
+                outcome="concurrent_idempotent",
+                total_rows=recovered["total_rows"],
+                new_rows=0,
+                duplicate_rows=recovered["duplicate_rows"],
+                conflict_rows=0,
+                failure_phase=failure_phase,
+                dedupe_ms=dedupe_ms,
+                commit_ms=commit_ms,
+                total_ms=_elapsed_ms(overall_started),
+            )
+            return recovered
+        _mark_preview_stale_after_integrity_conflict(
+            db,
+            user_id=resolved_user_id,
+            account_id=resolved_account_id,
+            preview_token=preview_token,
+            account_row_id=account_row_id,
+        )
+        _log_import_outcome(
+            "confirm",
+            outcome="preview_stale",
+            failure_phase=failure_phase,
+            total_rows=total_rows,
+            new_rows=new_rows,
+            duplicate_rows=duplicate_rows,
+            conflict_rows=conflict_rows,
+            dedupe_ms=dedupe_ms,
+            commit_ms=commit_ms,
+            total_ms=_elapsed_ms(overall_started),
+        )
+        raise TradeImportValidationError(
+            "preview_stale",
+            "Account data changed while this import was being confirmed. Preview it again.",
+        ) from exc
+    except Exception as exc:
+        if failure_phase == "dedupe" and dedupe_ms is None:
+            dedupe_ms = _elapsed_ms(phase_started)
+        elif failure_phase == "commit" and commit_ms is None:
+            commit_ms = _elapsed_ms(phase_started)
+        if db.in_transaction():
+            db.rollback()
+        _log_import_outcome(
+            "confirm",
+            outcome=_safe_failure_category(exc),
+            failure_phase=failure_phase,
+            error_rows=(
+                len(exc.row_errors)
+                if isinstance(exc, TradeImportValidationError)
+                else None
+            ),
+            total_rows=total_rows,
+            new_rows=new_rows,
+            duplicate_rows=duplicate_rows,
+            conflict_rows=conflict_rows,
+            dedupe_ms=dedupe_ms,
+            commit_ms=commit_ms,
+            total_ms=_elapsed_ms(overall_started),
+        )
+        raise
 
 
-def _prepare_import(
+def get_trade_import_status(
     db: Session,
     *,
     user_id: str,
     account_id: int,
-    filename: str,
-    content: bytes,
-) -> _PreparedImport:
-    parsed = _parse_file(filename=filename, content=content)
-    return _prepare_parsed_import(
+    preview_token: str,
+    account_row_id: int | None = None,
+) -> dict[str, Any]:
+    account = _resolve_import_account(
         db,
         user_id=str(user_id),
         account_id=int(account_id),
-        parsed=parsed,
+        account_row_id=account_row_id,
+        allow_archived=True,
     )
+    token_digest = _token_hash(_validated_preview_token(preview_token))
+    staged = _get_staged_preview(
+        db,
+        token_hash=token_digest,
+        user_id=str(user_id),
+        account_id=int(account_id),
+        account_row_id=int(account.id),
+    )
+    if staged is None:
+        raise TradeImportValidationError(
+            "preview_not_found",
+            "The import preview was not found for this account.",
+        )
+    now = datetime.now(timezone.utc)
+    # ``confirming`` is only an in-transaction claim and is never committed on
+    # the successful path. If a legacy or interrupted deployment left that
+    # state durable, no live confirmation can still own it once this query can
+    # read the row, so returning it to pending is safe and makes recovery
+    # deterministic after a restart.
+    if staged.status == "confirming":
+        (
+            db.query(TradeImportPreview)
+            .filter(TradeImportPreview.id == staged.id)
+            .filter(TradeImportPreview.status == "confirming")
+            .update(
+                {
+                    TradeImportPreview.status: "pending",
+                    TradeImportPreview.outcome_code: "confirmation_retryable",
+                    TradeImportPreview.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        db.expire_all()
+        staged = _get_staged_preview(
+            db,
+            token_hash=token_digest,
+            user_id=str(user_id),
+            account_id=int(account_id),
+            account_row_id=int(account.id),
+        )
+        if staged is None:
+            raise TradeImportValidationError(
+                "preview_not_found",
+                "The import preview was not found for this account.",
+            )
+    if staged.status in {"pending", "conflict"} and _as_utc(staged.expires_at) <= now:
+        _expire_preview_conditionally(
+            db,
+            preview_id=int(staged.id),
+            now=now,
+        )
+        db.commit()
+        db.expire_all()
+        staged = _get_staged_preview(
+            db,
+            token_hash=token_digest,
+            user_id=str(user_id),
+            account_id=int(account_id),
+            account_row_id=int(account.id),
+        )
+        if staged is None:
+            raise TradeImportValidationError(
+                "preview_not_found",
+                "The import preview was not found for this account.",
+            )
+    result = None
+    if staged.status == "committed" and staged.import_batch_id is not None:
+        batch = _owned_batch_for_preview(db, staged)
+        result = _serialize_existing_batch(batch) if batch is not None else None
+    return {
+        "status": staged.status,
+        "confirmation_retryable": staged.status == "pending" and account.archived_at is None,
+        "outcome_code": staged.outcome_code,
+        "source_file_name": staged.source_file_name,
+        "created_at": staged.created_at,
+        "expires_at": staged.expires_at,
+        "confirmed_at": staged.confirmed_at,
+        "total_rows": int(staged.total_rows),
+        "new_rows": int(staged.new_rows),
+        "duplicate_rows": int(staged.duplicate_rows),
+        "conflict_rows": int(staged.conflict_rows),
+        "result": result,
+    }
+
+
+def cleanup_trade_import_previews(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Scrub expired manifests and delete preview metadata past retention."""
+    resolved_now = _as_utc(now or datetime.now(timezone.utc))
+    try:
+        expired_previews, deleted_previews = _cleanup_expired_previews(
+            db,
+            now=resolved_now,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _log_import_outcome(
+        "cleanup",
+        outcome="complete",
+        expired_previews=expired_previews,
+        deleted_previews=deleted_previews,
+    )
+    return {
+        "expired_previews": expired_previews,
+        "deleted_previews": deleted_previews,
+    }
 
 
 def _prepare_parsed_import(
@@ -389,32 +898,27 @@ def _prepare_parsed_import(
     account_id: int,
     parsed: _ParsedFile,
 ) -> _PreparedImport:
-    source_ids = [trade.source_trade_id for trade in parsed.trades]
-    existing_source_ids = _load_existing_source_ids(
-        db,
-        user_id=user_id,
-        account_id=account_id,
-        source_trade_ids=source_ids,
-    )
-    existing_fallback_keys = _load_existing_fallback_keys(
+    source_map, fallback_map = _load_existing_identity_candidates(
         db,
         user_id=user_id,
         account_id=account_id,
         trades=parsed.trades,
     )
 
-    duplicate_flags: list[bool] = []
-    seen_in_file: set[str] = set()
+    decisions: list[_TradeDecision] = []
+    seen_in_file: dict[str, _ParsedTrade] = {}
     for trade in parsed.trades:
-        source_trade_id = trade.source_trade_id
-        fallback_key = (source_trade_id, _as_utc(trade.exited_at))
-        duplicate = (
-            source_trade_id in existing_source_ids
-            or fallback_key in existing_fallback_keys
-            or source_trade_id in seen_in_file
+        decision = _classify_trade_identity(
+            trade,
+            prior_in_file=seen_in_file.get(trade.source_trade_id),
+            source_candidates=source_map.get(trade.source_trade_id, ()),
+            fallback_candidates=fallback_map.get(
+                (trade.source_trade_id, _timestamp_key(trade.exited_at)),
+                (),
+            ),
         )
-        duplicate_flags.append(duplicate)
-        seen_in_file.add(source_trade_id)
+        decisions.append(decision)
+        seen_in_file.setdefault(trade.source_trade_id, trade)
 
     existing_batch = (
         db.query(TradeImportBatch)
@@ -425,121 +929,92 @@ def _prepare_parsed_import(
     )
     return _PreparedImport(
         parsed=parsed,
-        duplicate_flags=tuple(duplicate_flags),
+        decisions=tuple(decisions),
         existing_batch=existing_batch,
+        dedupe_snapshot=_dedupe_snapshot(decisions),
     )
 
 
-def _persist_import(
+def _persist_staged_import(
     db: Session,
     *,
     user_id: str,
     account_id: int,
+    account: Account,
     prepared: _PreparedImport,
-    allow_retry: bool,
+    staged: TradeImportPreview,
+    now: datetime,
 ) -> dict[str, Any]:
     parsed = prepared.parsed
-    imported_at = datetime.now(timezone.utc)
+    imported_at = now
+    duplicate_rows = sum(1 for decision in prepared.decisions if decision.status == "duplicate")
+    inserted_rows = sum(1 for decision in prepared.decisions if decision.status == "new")
+    if any(decision.status == "conflict" for decision in prepared.decisions):
+        raise TradeImportValidationError(
+            "import_conflicts_unresolved",
+            "The preview contains conflicting trade identities and cannot be imported.",
+        )
     batch = TradeImportBatch(
         user_id=user_id,
         account_id=account_id,
+        account_row_id=int(account.id),
+        account_external_id=str(account.external_id),
         source_file_name=parsed.source_file_name,
         file_sha256=parsed.file_sha256,
         imported_at=imported_at,
         total_rows=len(parsed.trades),
-        inserted_rows=0,
-        duplicate_rows=0,
+        inserted_rows=inserted_rows,
+        duplicate_rows=duplicate_rows,
     )
 
-    try:
-        db.add(batch)
-        db.flush()
+    db.add(batch)
+    db.flush()
 
-        inserted_rows = 0
-        duplicate_rows = 0
-        for trade, duplicate in zip(parsed.trades, prepared.duplicate_flags):
-            if duplicate:
-                duplicate_rows += 1
-                continue
-
-            db.add(
-                ProjectXTradeEvent(
-                    user_id=user_id,
-                    account_id=account_id,
-                    contract_id=trade.contract_name,
-                    symbol=trade.symbol,
-                    side=trade.closing_side,
-                    size=trade.size,
-                    price=trade.exit_price,
-                    trade_timestamp=trade.exited_at,
-                    fees=trade.fees,
-                    commissions=trade.commissions,
-                    fee_scope="round_turn",
-                    pnl=trade.gross_pnl,
-                    trade_date=trade.trade_day,
-                    entry_timestamp=trade.entered_at,
-                    entry_price=trade.entry_price,
-                    order_id=trade.source_trade_id,
-                    source_trade_id=trade.source_trade_id,
-                    status="IMPORTED",
-                    raw_payload={
-                        "source": "topstep_trade_export",
-                        "source_file_name": parsed.source_file_name,
-                        "file_sha256": parsed.file_sha256,
-                        "row_number": trade.row_number,
-                        "columns": trade.raw_columns,
-                    },
-                    import_batch_id=int(batch.id),
-                )
-            )
-            inserted_rows += 1
-
-        batch.inserted_rows = inserted_rows
-        batch.duplicate_rows = duplicate_rows
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-
-        existing_batch = (
-            db.query(TradeImportBatch)
-            .filter(TradeImportBatch.user_id == user_id)
-            .filter(TradeImportBatch.account_id == account_id)
-            .filter(TradeImportBatch.file_sha256 == parsed.file_sha256)
-            .first()
+    events = [
+        ProjectXTradeEvent(
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=int(account.id),
+            account_external_id=str(account.external_id),
+            contract_id=trade.contract_name,
+            symbol=trade.symbol,
+            side=trade.closing_side,
+            size=trade.size,
+            price=trade.exit_price,
+            trade_timestamp=trade.exited_at,
+            fees=trade.fees,
+            commissions=trade.commissions,
+            fee_scope="round_turn",
+            pnl=trade.gross_pnl,
+            trade_date=trade.trade_day,
+            entry_timestamp=trade.entered_at,
+            entry_price=trade.entry_price,
+            order_id=trade.source_trade_id,
+            source_trade_id=trade.source_trade_id,
+            status="IMPORTED",
+            raw_payload={
+                "source": "topstep_trade_export",
+                "manifest_version": TRADE_IMPORT_MANIFEST_VERSION,
+                "row_number": trade.row_number,
+            },
+            import_batch_id=int(batch.id),
         )
-        if existing_batch is not None:
-            return _serialize_existing_batch(existing_batch)
+        for trade, decision in zip(parsed.trades, prepared.decisions)
+        if decision.status == "new"
+    ]
+    if events:
+        db.bulk_save_objects(events)
 
-        if allow_retry:
-            retried = _prepare_parsed_import(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                parsed=parsed,
-            )
-            return _persist_import(
-                db,
-                user_id=user_id,
-                account_id=account_id,
-                prepared=retried,
-                allow_retry=False,
-            )
-
-        raise TradeImportValidationError(
-            "import_conflict",
-            "The trade file conflicted with another import. Preview it again before retrying.",
-        ) from exc
-    except Exception:
-        db.rollback()
-        raise
+    _mark_preview_committed(staged, batch, now=now)
+    db.commit()
 
     return {
         "import_id": int(batch.id),
         "source_file_name": parsed.source_file_name,
         "imported_at": imported_at,
         "total_rows": len(parsed.trades),
-        "inserted_rows": int(batch.inserted_rows),
-        "duplicate_rows": int(batch.duplicate_rows),
+        "inserted_rows": inserted_rows,
+        "duplicate_rows": duplicate_rows,
     }
 
 
@@ -557,6 +1032,665 @@ def _serialize_existing_batch(batch: TradeImportBatch) -> dict[str, Any]:
         "inserted_rows": int(batch.inserted_rows),
         "duplicate_rows": int(batch.duplicate_rows),
     }
+
+
+def _resolve_import_account(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    account_row_id: int | None,
+    allow_archived: bool = False,
+) -> Account:
+    query = (
+        db.query(Account)
+        .filter(Account.user_id == str(user_id))
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+        .filter(Account.external_id == str(account_id))
+    )
+    if account_row_id is not None:
+        query = query.filter(Account.id == int(account_row_id))
+    account = query.one_or_none()
+    if account is None:
+        raise TradeImportValidationError(
+            "import_account_not_found",
+            "The Live account was not found.",
+        )
+    if account.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
+        raise TradeImportValidationError(
+            "trade_import_requires_csv_import_account",
+            "Trade imports require a Topstep Live CSV account.",
+        )
+    if not allow_archived and account.archived_at is not None:
+        raise TradeImportValidationError(
+            "trade_import_account_archived",
+            "Restore this Live account before importing trades.",
+        )
+    return account
+
+
+def _validated_preview_token(value: str) -> str:
+    token = str(value or "").strip()
+    if not 32 <= len(token) <= 200 or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise TradeImportValidationError(
+            "invalid_preview_token",
+            "The import preview token is invalid. Preview the file again.",
+        )
+    return token
+
+
+def _token_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _get_staged_preview(
+    db: Session,
+    *,
+    token_hash: str,
+    user_id: str,
+    account_id: int,
+    account_row_id: int,
+) -> TradeImportPreview | None:
+    return (
+        db.query(TradeImportPreview)
+        .filter(TradeImportPreview.token_hash == token_hash)
+        .filter(TradeImportPreview.user_id == user_id)
+        .filter(TradeImportPreview.account_id == account_id)
+        .filter(TradeImportPreview.account_row_id == account_row_id)
+        .one_or_none()
+    )
+
+
+def _owned_batch_for_preview(
+    db: Session,
+    preview: TradeImportPreview,
+) -> TradeImportBatch | None:
+    if preview.import_batch_id is None:
+        return None
+    return (
+        db.query(TradeImportBatch)
+        .filter(TradeImportBatch.id == preview.import_batch_id)
+        .filter(TradeImportBatch.user_id == preview.user_id)
+        .filter(TradeImportBatch.account_id == preview.account_id)
+        .filter(TradeImportBatch.account_row_id == preview.account_row_id)
+        .filter(TradeImportBatch.account_external_id == preview.account_external_id)
+        .one_or_none()
+    )
+
+
+def _mark_preview_committed(
+    preview: TradeImportPreview,
+    batch: TradeImportBatch,
+    *,
+    now: datetime,
+) -> None:
+    preview.status = "committed"
+    preview.outcome_code = "committed"
+    preview.import_batch_id = int(batch.id)
+    preview.confirmed_at = now
+    preview.updated_at = now
+    _scrub_staged_manifest(preview)
+
+
+def _expire_preview_conditionally(
+    db: Session,
+    *,
+    preview_id: int,
+    now: datetime,
+) -> bool:
+    updated = (
+        db.query(TradeImportPreview)
+        .filter(TradeImportPreview.id == preview_id)
+        .filter(
+            TradeImportPreview.status.in_(
+                ("pending", "confirming", "conflict", "stale", "failed")
+            )
+        )
+        .filter(TradeImportPreview.expires_at <= now)
+        .update(
+            {
+                TradeImportPreview.status: "expired",
+                TradeImportPreview.outcome_code: "preview_expired",
+                TradeImportPreview.updated_at: now,
+                TradeImportPreview.normalized_manifest: None,
+                TradeImportPreview.preview_rows: None,
+                TradeImportPreview.dedupe_snapshot: None,
+            },
+            synchronize_session=False,
+        )
+    )
+    return int(updated) == 1
+
+
+def _scrub_staged_manifest(preview: TradeImportPreview) -> None:
+    preview.normalized_manifest = None
+    preview.preview_rows = None
+    preview.dedupe_snapshot = None
+
+
+def _cleanup_expired_previews(db: Session, *, now: datetime) -> tuple[int, int]:
+    # Keep the status/expiry predicates in the UPDATE itself. PostgreSQL
+    # rechecks them after waiting on a concurrent confirmation's row lock, so
+    # cleanup cannot overwrite a preview that became committed while blocked.
+    expired = (
+        db.query(TradeImportPreview)
+        .filter(
+            TradeImportPreview.status.in_(
+                ("pending", "confirming", "conflict", "stale", "failed")
+            )
+        )
+        .filter(TradeImportPreview.expires_at <= now)
+        .update(
+            {
+                TradeImportPreview.status: "expired",
+                TradeImportPreview.outcome_code: "preview_expired",
+                TradeImportPreview.updated_at: now,
+                TradeImportPreview.normalized_manifest: None,
+                TradeImportPreview.preview_rows: None,
+                TradeImportPreview.dedupe_snapshot: None,
+            },
+            synchronize_session=False,
+        )
+    )
+    deleted = (
+        db.query(TradeImportPreview)
+        .filter(TradeImportPreview.retention_until <= now)
+        .delete(synchronize_session=False)
+    )
+    return int(expired), int(deleted)
+
+
+def _serialize_manifest_trade(trade: _ParsedTrade) -> dict[str, Any]:
+    return {
+        "row_number": trade.row_number,
+        "source_trade_id": trade.source_trade_id,
+        "contract_name": trade.contract_name,
+        "symbol": trade.symbol,
+        "entered_at": _as_utc(trade.entered_at).isoformat(),
+        "exited_at": _as_utc(trade.exited_at).isoformat(),
+        "entry_price": str(trade.entry_price),
+        "exit_price": str(trade.exit_price),
+        "fees": str(trade.fees),
+        "commissions": str(trade.commissions),
+        "gross_pnl": str(trade.gross_pnl),
+        "size": str(trade.size),
+        "direction": trade.direction,
+        "closing_side": trade.closing_side,
+        "trade_day": trade.trade_day.isoformat(),
+        "duration": trade.duration,
+    }
+
+
+def _parsed_file_from_stage(preview: TradeImportPreview) -> _ParsedFile:
+    if preview.manifest_version != TRADE_IMPORT_MANIFEST_VERSION:
+        raise TradeImportValidationError(
+            "preview_version_unsupported",
+            "The import preview format changed. Preview the file again.",
+        )
+    manifest = preview.normalized_manifest
+    if not isinstance(manifest, list) or not manifest:
+        raise TradeImportValidationError(
+            "preview_manifest_unavailable",
+            "The staged import data is unavailable. Preview the file again.",
+        )
+    trades: list[_ParsedTrade] = []
+    try:
+        for item in manifest:
+            if not isinstance(item, dict):
+                raise ValueError("invalid manifest row")
+            trades.append(
+                _ParsedTrade(
+                    row_number=int(item["row_number"]),
+                    source_trade_id=str(item["source_trade_id"]),
+                    contract_name=str(item["contract_name"]),
+                    symbol=str(item["symbol"]),
+                    entered_at=datetime.fromisoformat(str(item["entered_at"])),
+                    exited_at=datetime.fromisoformat(str(item["exited_at"])),
+                    entry_price=Decimal(str(item["entry_price"])),
+                    exit_price=Decimal(str(item["exit_price"])),
+                    fees=Decimal(str(item["fees"])),
+                    commissions=Decimal(str(item["commissions"])),
+                    gross_pnl=Decimal(str(item["gross_pnl"])),
+                    size=Decimal(str(item["size"])),
+                    direction=str(item["direction"]),
+                    closing_side=str(item["closing_side"]),
+                    trade_day=date.fromisoformat(str(item["trade_day"])),
+                    duration=(str(item["duration"]) if item.get("duration") is not None else None),
+                    raw_columns={},
+                )
+            )
+    except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
+        raise TradeImportValidationError(
+            "preview_manifest_invalid",
+            "The staged import data is invalid. Preview the file again.",
+        ) from exc
+    return _ParsedFile(
+        source_file_name=str(preview.source_file_name),
+        file_sha256=str(preview.file_sha256),
+        trades=tuple(trades),
+    )
+
+
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return _as_utc(value).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
+def _load_existing_identity_candidates(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    trades: Sequence[_ParsedTrade],
+) -> tuple[dict[str, tuple[ProjectXTradeEvent, ...]], dict[tuple[str, str], tuple[ProjectXTradeEvent, ...]]]:
+    source_ids = list(dict.fromkeys(trade.source_trade_id for trade in trades))
+    source_map: defaultdict[str, list[ProjectXTradeEvent]] = defaultdict(list)
+    fallback_map: defaultdict[tuple[str, str], list[ProjectXTradeEvent]] = defaultdict(list)
+    chunk_size = 400
+    seen_event_ids: set[int] = set()
+    for start in range(0, len(source_ids), chunk_size):
+        chunk = source_ids[start : start + chunk_size]
+        rows = (
+            db.query(ProjectXTradeEvent)
+            .filter(ProjectXTradeEvent.user_id == user_id)
+            .filter(ProjectXTradeEvent.account_id == account_id)
+            .filter(
+                or_(
+                    ProjectXTradeEvent.source_trade_id.in_(chunk),
+                    ProjectXTradeEvent.order_id.in_(chunk),
+                )
+            )
+            .all()
+        )
+        for row in rows:
+            row_id = int(row.id)
+            if row_id in seen_event_ids:
+                continue
+            seen_event_ids.add(row_id)
+            if row.source_trade_id is not None and str(row.source_trade_id) in source_ids:
+                source_map[str(row.source_trade_id)].append(row)
+            if row.order_id is not None and row.trade_timestamp is not None and str(row.order_id) in source_ids:
+                fallback_map[(str(row.order_id), _timestamp_key(row.trade_timestamp))].append(row)
+    return (
+        {key: tuple(sorted(rows, key=lambda row: int(row.id))) for key, rows in source_map.items()},
+        {key: tuple(sorted(rows, key=lambda row: int(row.id))) for key, rows in fallback_map.items()},
+    )
+
+
+def _classify_trade_identity(
+    trade: _ParsedTrade,
+    *,
+    prior_in_file: _ParsedTrade | None,
+    source_candidates: Sequence[ProjectXTradeEvent],
+    fallback_candidates: Sequence[ProjectXTradeEvent],
+) -> _TradeDecision:
+    identity_kind = "source_trade_id" if source_candidates or prior_in_file is not None else "order_exit"
+    identity_value = (
+        trade.source_trade_id
+        if identity_kind == "source_trade_id"
+        else f"{trade.source_trade_id}|{_timestamp_key(trade.exited_at)}"
+    )
+    incoming = _canonical_incoming_trade(
+        trade,
+        identity_kind=identity_kind,
+        identity_value=identity_value,
+    )
+
+    if prior_in_file is not None:
+        prior = _canonical_incoming_trade(
+            prior_in_file,
+            identity_kind="source_trade_id",
+            identity_value=trade.source_trade_id,
+        )
+        differences = _economic_differences(prior, incoming)
+        if differences:
+            conflict = {
+                "identity_kind": "source_trade_id",
+                "identity_value": trade.source_trade_id,
+                "reason": "repeated_id_mismatch",
+                "stored_row_number": prior_in_file.row_number,
+                "differences": differences,
+            }
+            return _TradeDecision(
+                status="conflict",
+                identity_kind="source_trade_id",
+                identity_value=trade.source_trade_id,
+                existing_fingerprints=(_canonical_fingerprint(prior),),
+                conflict=conflict,
+            )
+
+    candidates_by_id: dict[int, ProjectXTradeEvent] = {}
+    for candidate in (*source_candidates, *fallback_candidates):
+        candidates_by_id[int(candidate.id)] = candidate
+    candidates = [candidates_by_id[key] for key in sorted(candidates_by_id)]
+    if len(candidates) > 1:
+        conflict = {
+            "identity_kind": identity_kind,
+            "identity_value": identity_value,
+            "reason": "ambiguous_stored_identity",
+            "stored_event_ids": [int(candidate.id) for candidate in candidates],
+            "differences": [],
+        }
+        return _TradeDecision(
+            status="conflict",
+            identity_kind=identity_kind,
+            identity_value=identity_value,
+            existing_event_ids=tuple(int(candidate.id) for candidate in candidates),
+            existing_fingerprints=tuple(
+                _canonical_fingerprint(
+                    _canonical_stored_trade(
+                        candidate,
+                        identity_kind=identity_kind,
+                        identity_value=identity_value,
+                    )
+                )
+                for candidate in candidates
+            ),
+            conflict=conflict,
+        )
+    if candidates:
+        candidate = candidates[0]
+        stored = _canonical_stored_trade(
+            candidate,
+            identity_kind=identity_kind,
+            identity_value=identity_value,
+        )
+        differences = _economic_differences(stored, incoming)
+        fingerprint = _canonical_fingerprint(stored)
+        if differences:
+            conflict = {
+                "identity_kind": identity_kind,
+                "identity_value": identity_value,
+                "reason": "stored_trade_mismatch",
+                "stored_event_id": int(candidate.id),
+                "differences": differences,
+            }
+            return _TradeDecision(
+                status="conflict",
+                identity_kind=identity_kind,
+                identity_value=identity_value,
+                existing_event_ids=(int(candidate.id),),
+                existing_fingerprints=(fingerprint,),
+                conflict=conflict,
+            )
+        return _TradeDecision(
+            status="duplicate",
+            identity_kind=identity_kind,
+            identity_value=identity_value,
+            existing_event_ids=(int(candidate.id),),
+            existing_fingerprints=(fingerprint,),
+        )
+    if prior_in_file is not None:
+        prior = _canonical_incoming_trade(
+            prior_in_file,
+            identity_kind="source_trade_id",
+            identity_value=trade.source_trade_id,
+        )
+        return _TradeDecision(
+            status="duplicate",
+            identity_kind="source_trade_id",
+            identity_value=trade.source_trade_id,
+            existing_fingerprints=(_canonical_fingerprint(prior),),
+        )
+    return _TradeDecision(
+        status="new",
+        identity_kind=identity_kind,
+        identity_value=identity_value,
+    )
+
+
+_ECONOMIC_FIELDS = (
+    "entered_at",
+    "exited_at",
+    "contract",
+    "symbol",
+    "direction",
+    "quantity",
+    "entry_price",
+    "exit_price",
+    "gross_pnl",
+    "fees",
+    "commissions",
+    "net_pnl",
+    "trade_day",
+)
+
+
+def _canonical_incoming_trade(
+    trade: _ParsedTrade,
+    *,
+    identity_kind: str,
+    identity_value: str,
+) -> dict[str, Any]:
+    return {
+        "identity_kind": identity_kind,
+        "identity_value": identity_value,
+        "entered_at": _timestamp_key(trade.entered_at),
+        "exited_at": _timestamp_key(trade.exited_at),
+        "contract": trade.contract_name.upper(),
+        "symbol": trade.symbol.upper(),
+        "direction": trade.direction,
+        "quantity": _canonical_decimal(trade.size),
+        "entry_price": _canonical_decimal(trade.entry_price),
+        "exit_price": _canonical_decimal(trade.exit_price),
+        "gross_pnl": _canonical_decimal(trade.gross_pnl),
+        "fees": _canonical_decimal(trade.fees),
+        "commissions": _canonical_decimal(trade.commissions),
+        "net_pnl": _canonical_decimal(trade.net_pnl),
+        "trade_day": trade.trade_day.isoformat(),
+    }
+
+
+def _canonical_stored_trade(
+    event: ProjectXTradeEvent,
+    *,
+    identity_kind: str,
+    identity_value: str,
+) -> dict[str, Any]:
+    gross = _decimal_or_none(event.pnl)
+    fees = _decimal_or_none(event.fees)
+    commissions = _decimal_or_none(event.commissions)
+    net = None
+    if gross is not None and fees is not None and commissions is not None:
+        net = gross - fees - commissions
+    closing_side = str(event.side or "").upper()
+    direction = "Long" if closing_side == "SELL" else ("Short" if closing_side == "BUY" else None)
+    return {
+        "identity_kind": identity_kind,
+        "identity_value": identity_value,
+        "entered_at": _timestamp_key(event.entry_timestamp) if event.entry_timestamp is not None else None,
+        "exited_at": _timestamp_key(event.trade_timestamp),
+        "contract": str(event.contract_id or "").upper(),
+        "symbol": (normalize_symbol_key(str(event.symbol or event.contract_id or "")) or str(event.symbol or "").upper()),
+        "direction": direction,
+        "quantity": _canonical_decimal(event.size),
+        "entry_price": _canonical_decimal(event.entry_price) if event.entry_price is not None else None,
+        "exit_price": _canonical_decimal(event.price),
+        "gross_pnl": _canonical_decimal(gross) if gross is not None else None,
+        "fees": _canonical_decimal(fees) if fees is not None else None,
+        "commissions": _canonical_decimal(commissions) if commissions is not None else None,
+        "net_pnl": _canonical_decimal(net) if net is not None else None,
+        "trade_day": event.trade_date.isoformat() if event.trade_date is not None else None,
+    }
+
+
+def _economic_differences(stored: dict[str, Any], incoming: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "field": field,
+            "stored": stored.get(field),
+            "incoming": incoming.get(field),
+        }
+        for field in _ECONOMIC_FIELDS
+        if stored.get(field) != incoming.get(field)
+    ]
+
+
+def _canonical_fingerprint(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _dedupe_snapshot(decisions: Sequence[_TradeDecision]) -> str:
+    snapshot = [
+        {
+            "status": decision.status,
+            "identity_kind": decision.identity_kind,
+            "identity_value": decision.identity_value,
+            "existing_event_ids": list(decision.existing_event_ids),
+            "existing_fingerprints": list(decision.existing_fingerprints),
+            "conflict": decision.conflict,
+        }
+        for decision in decisions
+    ]
+    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_decimal(value: Any) -> str:
+    numeric = Decimal(str(value)).quantize(_STORAGE_QUANT, rounding=ROUND_HALF_UP)
+    return format(numeric, "f")
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        numeric = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return numeric if numeric.is_finite() else None
+
+
+def _timestamp_key(value: datetime) -> str:
+    return _as_utc(value).isoformat(timespec="microseconds")
+
+
+def _recover_concurrent_commit(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    preview_token: str,
+    account_row_id: int | None,
+) -> dict[str, Any] | None:
+    try:
+        account = _resolve_import_account(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=account_row_id,
+        )
+        staged = _get_staged_preview(
+            db,
+            token_hash=_token_hash(_validated_preview_token(preview_token)),
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=int(account.id),
+        )
+        if staged is None:
+            return None
+        if staged.status == "committed" and staged.import_batch_id is not None:
+            batch = _owned_batch_for_preview(db, staged)
+            return _serialize_existing_batch(batch) if batch is not None else None
+        existing_batch = (
+            db.query(TradeImportBatch)
+            .filter(TradeImportBatch.user_id == user_id)
+            .filter(TradeImportBatch.account_id == account_id)
+            .filter(TradeImportBatch.file_sha256 == staged.file_sha256)
+            .one_or_none()
+        )
+        if existing_batch is None:
+            return None
+        _mark_preview_committed(staged, existing_batch, now=datetime.now(timezone.utc))
+        db.commit()
+        return _serialize_existing_batch(existing_batch)
+    except Exception:
+        db.rollback()
+        return None
+
+
+def _mark_preview_stale_after_integrity_conflict(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    preview_token: str,
+    account_row_id: int | None,
+) -> None:
+    try:
+        account = _resolve_import_account(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=account_row_id,
+        )
+        staged = _get_staged_preview(
+            db,
+            token_hash=_token_hash(_validated_preview_token(preview_token)),
+            user_id=user_id,
+            account_id=account_id,
+            account_row_id=int(account.id),
+        )
+        if staged is not None and staged.status != "committed":
+            staged.status = "stale"
+            staged.outcome_code = "preview_stale"
+            staged.updated_at = datetime.now(timezone.utc)
+            _scrub_staged_manifest(staged)
+            db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _safe_failure_category(exc: Exception) -> str:
+    if isinstance(exc, TradeImportValidationError):
+        return f"validation:{exc.code}"
+    if isinstance(exc, IntegrityError):
+        return "integrity_error"
+    return "internal_error"
+
+
+def _elapsed_ms(started: float) -> float:
+    return round(max((perf_counter() - started) * 1000.0, 0.0), 3)
+
+
+def _log_import_outcome(event: str, **fields: Any) -> None:
+    # Only a fixed metrics allowlist is logged. In particular, do not add file
+    # names, hashes, tokens, trade ids, account/user ids, P&L, or row payloads.
+    allowed = {
+        "outcome",
+        "total_rows",
+        "new_rows",
+        "duplicate_rows",
+        "conflict_rows",
+        "parse_ms",
+        "dedupe_ms",
+        "persist_ms",
+        "commit_ms",
+        "total_ms",
+        "expired_previews",
+        "deleted_previews",
+        "failure_phase",
+        "error_rows",
+    }
+    payload = {"event": f"trade_import_{event}"}
+    payload.update(
+        {
+            key: fields[key]
+            for key in sorted(fields)
+            if key in allowed and fields[key] is not None
+        }
+    )
+    logger.info("trade_import %s", json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
 def _parse_file(*, filename: str, content: bytes) -> _ParsedFile:
@@ -667,6 +1801,7 @@ def _sniff_csv_dialect(text: str) -> type[csv.Dialect] | csv.Dialect:
 def _read_excel_rows(content: bytes) -> tuple[tuple[str, ...], tuple[_SourceRow, ...]]:
     try:
         from openpyxl import load_workbook
+        from openpyxl.styles.numbers import is_datetime
     except ImportError as exc:
         raise TradeImportValidationError(
             "excel_support_unavailable",
@@ -690,7 +1825,19 @@ def _read_excel_rows(content: bytes) -> tuple[tuple[str, ...], tuple[_SourceRow,
     try:
         worksheet = workbook.active
         return _collect_tabular_rows(
-            (tuple(cell for cell in row) for row in worksheet.iter_rows(values_only=True))
+            (
+                tuple(
+                    _ExcelCellValue(
+                        value=cell.value,
+                        date_only=(
+                            isinstance(cell.value, (date, datetime))
+                            and is_datetime(str(cell.number_format or "")) == "date"
+                        ),
+                    )
+                    for cell in row
+                )
+                for row in worksheet.iter_rows(values_only=False)
+            )
         )
     finally:
         workbook.close()
@@ -724,7 +1871,16 @@ def _collect_tabular_rows(
     output: list[_SourceRow] = []
 
     for row_number, raw_row in enumerate(rows, start=1):
-        values = tuple(raw_row)
+        wrapped_values = tuple(raw_row)
+        date_only_indexes = frozenset(
+            index
+            for index, value in enumerate(wrapped_values)
+            if isinstance(value, _ExcelCellValue) and value.date_only
+        )
+        values = tuple(
+            value.value if isinstance(value, _ExcelCellValue) else value
+            for value in wrapped_values
+        )
         if _row_is_blank(values):
             continue
 
@@ -732,7 +1888,13 @@ def _collect_tabular_rows(
             headers = tuple(_header_text(value) for value in values)
             continue
 
-        output.append(_SourceRow(row_number=row_number, values=values))
+        output.append(
+            _SourceRow(
+                row_number=row_number,
+                values=values,
+                date_only_indexes=date_only_indexes,
+            )
+        )
         if len(output) > MAX_TRADE_IMPORT_ROWS:
             raise TradeImportValidationError(
                 "too_many_rows",
@@ -826,6 +1988,20 @@ def _parse_trade_row(
         return None if index is None else source_row.values[index]
 
     def capture(field: str, parser: Callable[[Any], Any]) -> Any:
+        index = column_indexes.get(field)
+        if field in {"entered_at", "exited_at"} and index in source_row.date_only_indexes:
+            label = _COLUMN_LABELS[field]
+            errors.append(
+                {
+                    "row_number": source_row.row_number,
+                    "field": label,
+                    "message": (
+                        f"Row {source_row.row_number}, {label}: "
+                        "must include a time; date-only spreadsheet cells are not supported."
+                    ),
+                }
+            )
+            return None
         try:
             return parser(raw(field))
         except ValueError as exc:
@@ -847,7 +2023,7 @@ def _parse_trade_row(
     exit_price = capture("exit_price", lambda value: _parse_decimal(value, positive=True))
     fees = capture("fees", lambda value: _parse_decimal(value, nonnegative=True))
     gross_pnl = capture("pnl", _parse_decimal)
-    size = capture("size", lambda value: _parse_decimal(value, positive=True))
+    size = capture("size", _parse_quantity)
     direction_result = capture("direction", _parse_direction)
     commissions = capture(
         "commissions",
@@ -867,6 +2043,20 @@ def _parse_trade_row(
         )
 
     trade_day = capture("trade_day", _parse_trade_day)
+    if isinstance(exited_at, datetime) and isinstance(trade_day, date):
+        derived_trade_day = trading_day_date(exited_at)
+        if trade_day != derived_trade_day:
+            errors.append(
+                {
+                    "row_number": source_row.row_number,
+                    "field": _COLUMN_LABELS["trade_day"],
+                    "message": (
+                        f"Row {source_row.row_number}, {_COLUMN_LABELS['trade_day']}: "
+                        f"must match the {derived_trade_day.isoformat()} futures trading day "
+                        "derived from ExitedAt using the 6:00 PM ET boundary."
+                    ),
+                }
+            )
 
     duration = _optional_display_text(raw("duration")) if "duration" in column_indexes else None
     if duration is None and isinstance(entered_at, datetime) and isinstance(exited_at, datetime):
@@ -1008,13 +2198,27 @@ def _parse_decimal(
     return normalized
 
 
+def _parse_quantity(value: Any) -> Decimal:
+    quantity = _parse_decimal(value, positive=True)
+    if quantity != quantity.to_integral_value():
+        raise ValueError("must be a whole number of futures contracts.")
+    if quantity > MAX_FUTURES_QUANTITY:
+        raise ValueError(f"must be {MAX_FUTURES_QUANTITY:,} contracts or fewer.")
+    return quantity
+
+
 def _parse_datetime_value(value: Any) -> datetime:
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, date):
-        parsed = datetime.combine(value, time.min)
+        raise ValueError("must include a time; date-only values are not supported.")
     else:
         text = _required_text(value)
+        if re.fullmatch(
+            r"(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+            text,
+        ):
+            raise ValueError("must include a time; date-only values are not supported.")
         iso_text = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
         try:
             parsed = datetime.fromisoformat(iso_text)
@@ -1022,8 +2226,25 @@ def _parse_datetime_value(value: Any) -> datetime:
             parsed = _parse_datetime_with_formats(text)
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=_TRADING_TZ)
+        parsed = _localize_eastern_wall_time(parsed)
     return parsed.astimezone(timezone.utc)
+
+
+def _localize_eastern_wall_time(value: datetime) -> datetime:
+    naive = value.replace(tzinfo=None)
+    fold_zero = naive.replace(tzinfo=_TRADING_TZ, fold=0)
+    fold_one = naive.replace(tzinfo=_TRADING_TZ, fold=1)
+    roundtrip_zero = fold_zero.astimezone(timezone.utc).astimezone(_TRADING_TZ).replace(tzinfo=None)
+    roundtrip_one = fold_one.astimezone(timezone.utc).astimezone(_TRADING_TZ).replace(tzinfo=None)
+    zero_valid = roundtrip_zero == naive
+    one_valid = roundtrip_one == naive
+    if not zero_valid and not one_valid:
+        raise ValueError("is a nonexistent Eastern time during the spring DST transition.")
+    if zero_valid and one_valid and fold_zero.utcoffset() != fold_one.utcoffset():
+        raise ValueError(
+            "is an ambiguous Eastern time during the fall DST transition; include an explicit UTC offset."
+        )
+    return fold_zero if zero_valid else fold_one
 
 
 def _parse_datetime_with_formats(value: str) -> datetime:
@@ -1083,63 +2304,6 @@ def _summarize_trades(trades: Sequence[_ParsedTrade]) -> dict[str, Any]:
     }
 
 
-def _load_existing_source_ids(
-    db: Session,
-    *,
-    user_id: str,
-    account_id: int,
-    source_trade_ids: Sequence[str],
-) -> set[str]:
-    unique_ids = list(dict.fromkeys(source_trade_ids))
-    existing: set[str] = set()
-    chunk_size = 500
-    for start in range(0, len(unique_ids), chunk_size):
-        chunk = unique_ids[start : start + chunk_size]
-        rows = (
-            db.query(ProjectXTradeEvent.source_trade_id)
-            .filter(ProjectXTradeEvent.user_id == user_id)
-            .filter(ProjectXTradeEvent.account_id == account_id)
-            .filter(ProjectXTradeEvent.source_trade_id.in_(chunk))
-            .all()
-        )
-        existing.update(
-            str(row.source_trade_id)
-            for row in rows
-            if row.source_trade_id is not None
-        )
-    return existing
-
-
-def _load_existing_fallback_keys(
-    db: Session,
-    *,
-    user_id: str,
-    account_id: int,
-    trades: Sequence[_ParsedTrade],
-) -> set[tuple[str, datetime]]:
-    order_ids = list(dict.fromkeys(trade.source_trade_id for trade in trades))
-    existing: set[tuple[str, datetime]] = set()
-    chunk_size = 500
-    for start in range(0, len(order_ids), chunk_size):
-        chunk = order_ids[start : start + chunk_size]
-        rows = (
-            db.query(
-                ProjectXTradeEvent.order_id,
-                ProjectXTradeEvent.trade_timestamp,
-            )
-            .filter(ProjectXTradeEvent.user_id == user_id)
-            .filter(ProjectXTradeEvent.account_id == account_id)
-            .filter(ProjectXTradeEvent.order_id.in_(chunk))
-            .all()
-        )
-        existing.update(
-            (str(row.order_id), _as_utc(row.trade_timestamp))
-            for row in rows
-            if row.order_id is not None and row.trade_timestamp is not None
-        )
-    return existing
-
-
 def _normalize_source_file_name(filename: str) -> str:
     text = str(filename or "").strip()
     source_file_name = re.split(r"[\\/]", text)[-1].strip()
@@ -1179,10 +2343,6 @@ def _validate_content(content: bytes) -> bytes:
             f"The trade file exceeds the {MAX_TRADE_IMPORT_BYTES // (1024 * 1024)} MB limit.",
         )
     return content_bytes
-
-
-def _content_sha256(content: bytes) -> str:
-    return hashlib.sha256(_validate_content(content)).hexdigest()
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -117,21 +117,23 @@ describe("accountsApi", () => {
     installDemoModeStorage(false);
     vi.mocked(fetch).mockResolvedValueOnce(
       jsonResponse([
-        { id: 1, account_state: "ACTIVE", trade_data_source: "projectx" },
-        { id: 2, account_state: "MISSING", trade_data_source: "projectx" },
-        { id: 3, account_state: "HIDDEN", trade_data_source: "projectx" },
-        { id: 4, account_state: "MISSING", trade_data_source: "csv_import" },
+        { id: 1, account_state: "ACTIVE", trade_data_source: "projectx", is_archived: false },
+        { id: 2, account_state: "MISSING", trade_data_source: "projectx", is_archived: false },
+        { id: 3, account_state: "HIDDEN", trade_data_source: "projectx", is_archived: false },
+        { id: 4, account_state: "MISSING", trade_data_source: "csv_import", is_archived: false },
+        { id: 5, account_state: "ACTIVE", trade_data_source: "csv_import", is_archived: true },
       ]),
     );
 
     await expect(accountsApi.getSelectableAccounts()).resolves.toEqual([
-      { id: 1, account_state: "ACTIVE", trade_data_source: "projectx" },
-      { id: 4, account_state: "MISSING", trade_data_source: "csv_import" },
+      { id: 1, account_state: "ACTIVE", trade_data_source: "projectx", is_archived: false },
+      { id: 4, account_state: "MISSING", trade_data_source: "csv_import", is_archived: false },
     ]);
 
     const [url] = vi.mocked(fetch).mock.calls[0];
     expect(String(url)).toContain("show_inactive=true");
     expect(String(url)).toContain("show_missing=false");
+    expect(String(url)).toContain("include_archived=false");
   });
 
   it("loads saved accounts first and keeps local and provider cache lanes separate", async () => {
@@ -141,12 +143,14 @@ describe("accountsApi", () => {
       id: 88001,
       account_state: "ACTIVE",
       trade_data_source: "csv_import",
+      is_archived: false,
       is_main: true,
     };
     const expressAccount = {
       id: 77001,
       account_state: "ACTIVE",
       trade_data_source: "projectx",
+      is_archived: false,
       is_main: false,
     };
     vi.mocked(fetch)
@@ -172,22 +176,14 @@ describe("accountsApi", () => {
     expect(String(providerUrl)).toContain("refresh_provider=true");
   });
 
-  it("falls back to provider discovery when no saved selectable account exists", async () => {
+  it("does not start provider discovery when the saved selectable snapshot is empty", async () => {
     installDemoModeStorage(false);
     vi.mocked(getAccessToken).mockResolvedValue(jwt("empty-local-account-cache"));
-    const expressAccount = {
-      id: 77002,
-      account_state: "ACTIVE",
-      trade_data_source: "projectx",
-    };
-    vi.mocked(fetch)
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([expressAccount]));
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([]));
 
-    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([expressAccount]);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("refresh_provider=false");
-    expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain("refresh_provider=true");
   });
 
   it("creates a local Live import account when ProjectX cannot list it", async () => {
@@ -202,6 +198,7 @@ describe("accountsApi", () => {
       status: "ACTIVE",
       account_state: "ACTIVE",
       is_main: true,
+      is_archived: false,
       can_trade: null,
       is_visible: true,
       last_trade_at: null,
@@ -226,15 +223,18 @@ describe("accountsApi", () => {
     });
   });
 
-  it("previews and confirms a trade import with multipart file identity", async () => {
+  it("previews once, confirms by staged token, and checks the durable outcome", async () => {
     installDemoModeStorage(false);
     const file = new File(["Id,PnL\n1,100"], "trades_export.csv", { type: "text/csv" });
     const previewPayload = {
+      preview_token: "opaque-preview-token",
+      expires_at: "2026-07-23T15:30:00Z",
       source_file_name: file.name,
       file_sha256: "abc123",
       total_rows: 1,
       new_rows: 1,
       duplicate_rows: 0,
+      conflict_rows: 0,
       summary: {
         gross_pnl: 100,
         fees: 0.74,
@@ -254,12 +254,28 @@ describe("accountsApi", () => {
       inserted_rows: 1,
       duplicate_rows: 0,
     };
+    const statusPayload = {
+      status: "committed",
+      confirmation_retryable: false,
+      outcome_code: "committed",
+      source_file_name: file.name,
+      created_at: "2026-07-23T15:00:00Z",
+      expires_at: "2026-07-23T15:30:00Z",
+      confirmed_at: "2026-07-23T15:01:00Z",
+      total_rows: 1,
+      new_rows: 1,
+      duplicate_rows: 0,
+      conflict_rows: 0,
+      result: confirmPayload,
+    };
     vi.mocked(fetch)
       .mockResolvedValueOnce(jsonResponse(previewPayload))
-      .mockResolvedValueOnce(jsonResponse(confirmPayload));
+      .mockResolvedValueOnce(jsonResponse(confirmPayload))
+      .mockResolvedValueOnce(jsonResponse(statusPayload));
 
     await expect(accountsApi.previewTradeImport(7301, file)).resolves.toEqual(previewPayload);
-    await expect(accountsApi.confirmTradeImport(7301, file, previewPayload.file_sha256)).resolves.toEqual(confirmPayload);
+    await expect(accountsApi.confirmTradeImport(7301, previewPayload.preview_token)).resolves.toEqual(confirmPayload);
+    await expect(accountsApi.getTradeImportStatus(7301, previewPayload.preview_token)).resolves.toEqual(statusPayload);
 
     const previewCall = vi.mocked(fetch).mock.calls[0];
     expect(previewCall[0]).toBe("http://127.0.0.1:8000/api/accounts/7301/trade-imports/preview");
@@ -271,8 +287,51 @@ describe("accountsApi", () => {
     expect(confirmCall[0]).toBe("http://127.0.0.1:8000/api/accounts/7301/trade-imports/confirm");
     expect(confirmCall[1]?.method).toBe("POST");
     const confirmBody = confirmCall[1]?.body as FormData;
-    expect((confirmBody.get("file") as File).name).toBe(file.name);
-    expect(confirmBody.get("preview_sha256")).toBe(previewPayload.file_sha256);
+    expect(confirmBody.get("file")).toBeNull();
+    expect(confirmBody.get("preview_token")).toBe(previewPayload.preview_token);
+
+    const statusCall = vi.mocked(fetch).mock.calls[2];
+    expect(statusCall[0]).toBe("http://127.0.0.1:8000/api/accounts/7301/trade-imports/status");
+    expect(statusCall[1]?.method).toBe("POST");
+    expect(JSON.parse(String(statusCall[1]?.body))).toEqual({ preview_token: "opaque-preview-token" });
+    expect(String(statusCall[0])).not.toContain("opaque-preview-token");
+  });
+
+  it("archives and restores Live accounts through explicit lifecycle endpoints", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          account_id: 88001,
+          is_archived: true,
+          is_main: false,
+          replacement_main_account_id: 88002,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          account_id: 88001,
+          is_archived: false,
+          is_main: false,
+          replacement_main_account_id: null,
+        }),
+      );
+
+    await expect(accountsApi.archiveLiveAccount(88001, 88002)).resolves.toMatchObject({
+      is_archived: true,
+      replacement_main_account_id: 88002,
+    });
+    await expect(accountsApi.unarchiveLiveAccount(88001)).resolves.toMatchObject({
+      is_archived: false,
+    });
+
+    const [archiveUrl, archiveInit] = vi.mocked(fetch).mock.calls[0];
+    expect(archiveUrl).toBe("http://127.0.0.1:8000/api/accounts/88001/archive");
+    expect(archiveInit?.method).toBe("POST");
+    expect(JSON.parse(String(archiveInit?.body))).toEqual({ replacement_account_id: 88002 });
+    const [restoreUrl, restoreInit] = vi.mocked(fetch).mock.calls[1];
+    expect(restoreUrl).toBe("http://127.0.0.1:8000/api/accounts/88001/unarchive");
+    expect(restoreInit?.method).toBe("POST");
   });
 
   it("deduplicates within one user while isolating cache and in-flight work across auth switches", async () => {

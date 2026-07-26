@@ -1,16 +1,24 @@
 import os
 
+import pytest
+
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.services.projectx_hubs import ProjectXHubRunner, _append_query
 from app.services.streaming_pnl_tracker import StreamingPnlTracker
 
 
+def _unused_client_factory():
+    raise AssertionError("unit dispatch tests must not create a provider client")
+
+
 def test_market_gateway_quote_dispatch_preserves_contract_id_argument():
     tracker = StreamingPnlTracker()
     runner = ProjectXHubRunner(
         tracker=tracker,
+        client_factory=_unused_client_factory,
         market_hub_url="wss://example.test/hubs/market",
+        user_hub_url="",
     )
 
     runner._dispatch_frame(
@@ -56,7 +64,9 @@ def test_dispatch_circuit_isolates_repeated_tracker_failures():
     tracker = FailingTracker()
     runner = ProjectXHubRunner(
         tracker=tracker,
+        client_factory=_unused_client_factory,
         market_hub_url="wss://example.test/hubs/market",
+        user_hub_url="",
         dispatch_failure_threshold=2,
         dispatch_recovery_seconds=60,
     )
@@ -70,3 +80,46 @@ def test_dispatch_circuit_isolates_repeated_tracker_failures():
     assert health["state"] == "open"
     assert health["total_failures"] == 2
     assert health["skipped_dispatches"] == 1
+
+
+def test_user_hub_dispatch_is_scoped_to_explicit_owner():
+    contract_id = "CON.F.US.MNQ.H26"
+    tracker = StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101)
+    runner = ProjectXHubRunner(
+        tracker=tracker,
+        client_factory=_unused_client_factory,
+        user_id="user-a",
+        account_id=101,
+        user_hub_url="wss://example.test/hubs/user",
+    )
+
+    runner._dispatch_payload(
+        "user",
+        {
+            "accountId": 101,
+            "contractId": contract_id,
+            "netQty": 1,
+            "avgPrice": 100.0,
+            "updatedAt": "2026-03-01T12:01:00Z",
+        },
+    )
+
+    assert ("user-a", 101, contract_id) in tracker.position_by_scope
+
+
+def test_user_hub_refuses_process_global_unscoped_configuration():
+    with pytest.raises(ValueError, match="explicit user_id and account_id"):
+        ProjectXHubRunner(
+            tracker=StreamingPnlTracker(),
+            client_factory=_unused_client_factory,
+            user_hub_url="wss://example.test/hubs/user",
+        )
+
+
+def test_hub_runner_refuses_an_implicit_environment_credential_factory():
+    with pytest.raises(TypeError):
+        ProjectXHubRunner(  # type: ignore[call-arg]
+            tracker=StreamingPnlTracker(),
+            market_hub_url="wss://example.test/hubs/market",
+            user_hub_url="",
+        )

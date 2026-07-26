@@ -1,4 +1,5 @@
 import type {
+  AccountArchiveUpdateResult,
   AccountMainUpdateResult,
   AccountInfo,
   AccountLastTradeInfo,
@@ -34,6 +35,7 @@ import type {
   ExpenseRecord,
   ExpenseTotals,
   ExpenseUpdateInput,
+  FinancialSummary,
   PayoutCreateInput,
   PayoutListQuery,
   PayoutListResponse,
@@ -46,6 +48,7 @@ import type {
   TradeRecord,
   TradeImportConfirmResult,
   TradeImportPreview,
+  TradeImportStatus,
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
   BotActivity,
@@ -572,6 +575,7 @@ interface GetAccountsOptions {
   showMissing?: boolean;
   bypassCache?: boolean;
   refreshProvider?: boolean;
+  includeArchived?: boolean;
 }
 
 export interface SelectableAccountsOptions {
@@ -582,19 +586,20 @@ export interface SelectableAccountsOptions {
 function resolveGetAccountsOptions(optionsOrOnlyActive?: GetAccountsOptions | boolean): Required<GetAccountsOptions> {
   if (typeof optionsOrOnlyActive === "boolean") {
     return optionsOrOnlyActive
-      ? { showInactive: false, showMissing: false, bypassCache: false, refreshProvider: true }
-      : { showInactive: true, showMissing: true, bypassCache: false, refreshProvider: true };
+      ? { showInactive: false, showMissing: false, bypassCache: false, refreshProvider: true, includeArchived: false }
+      : { showInactive: true, showMissing: true, bypassCache: false, refreshProvider: true, includeArchived: false };
   }
   return {
     showInactive: optionsOrOnlyActive?.showInactive ?? false,
     showMissing: optionsOrOnlyActive?.showMissing ?? false,
     bypassCache: optionsOrOnlyActive?.bypassCache ?? false,
     refreshProvider: optionsOrOnlyActive?.refreshProvider ?? true,
+    includeArchived: optionsOrOnlyActive?.includeArchived ?? false,
   };
 }
 
 function accountsQueryCacheKey(options: Required<GetAccountsOptions>) {
-  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}:${options.refreshProvider ? 1 : 0}`;
+  return `${options.showInactive ? 1 : 0}:${options.showMissing ? 1 : 0}:${options.refreshProvider ? 1 : 0}:${options.includeArchived ? 1 : 0}`;
 }
 
 function getAccountCacheVersion(accountId: number) {
@@ -696,6 +701,7 @@ function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<Acco
           show_inactive: options.showInactive,
           show_missing: options.showMissing,
           refresh_provider: options.refreshProvider,
+          include_archived: options.includeArchived,
         },
         accessTokenOverride: accessToken,
       }),
@@ -707,11 +713,14 @@ function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): 
   return getAccountsFromApi(options);
 }
 
-function isSelectableAccount(account: Pick<AccountInfo, "account_state" | "trade_data_source">): boolean {
+function isSelectableAccount(
+  account: Pick<AccountInfo, "account_state" | "trade_data_source" | "is_archived">,
+): boolean {
   return (
-    account.trade_data_source === "csv_import" ||
-    account.account_state === "ACTIVE" ||
-    account.account_state === "LOCKED_OUT"
+    !account.is_archived &&
+    (account.trade_data_source === "csv_import" ||
+      account.account_state === "ACTIVE" ||
+      account.account_state === "LOCKED_OUT")
   );
 }
 
@@ -721,6 +730,7 @@ function getSelectableAccountsFromApi(options: SelectableAccountsOptions = {}): 
     showMissing: false,
     bypassCache: options.bypassCache ?? false,
     refreshProvider: options.refreshProvider ?? true,
+    includeArchived: false,
   }).then((accounts) => accounts.filter((account) => isSelectableAccount(account)));
 }
 
@@ -732,12 +742,11 @@ export function getSelectableAccounts(options: SelectableAccountsOptions = {}): 
   return getSelectableAccountsFromApi(options);
 }
 
-export async function getSelectableAccountsLocalFirst(): Promise<AccountInfo[]> {
-  const localAccounts = await getSelectableAccountsFromApi({ refreshProvider: false });
-  if (localAccounts.length > 0) {
-    return localAccounts;
-  }
-  return getSelectableAccountsFromApi({ refreshProvider: true });
+export function getSelectableAccountsLocalFirst(): Promise<AccountInfo[]> {
+  // Startup is strictly local. An empty snapshot is not permission to contact
+  // ProjectX; discovery happens only after an explicit Express selection or
+  // the Accounts page's explicit refresh action.
+  return getSelectableAccountsFromApi({ refreshProvider: false });
 }
 
 export function refreshTrades(accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) {
@@ -821,6 +830,23 @@ export const accountsApi = {
     }).then((payload) => {
       invalidateAccountsListCaches();
       invalidateAccountReadCaches();
+      return payload;
+    }),
+  archiveLiveAccount: (accountId: number, replacementAccountId?: number) =>
+    requestJson<AccountArchiveUpdateResult>(`/api/accounts/${accountId}/archive`, {
+      method: "POST",
+      body: replacementAccountId === undefined ? {} : { replacement_account_id: replacementAccountId },
+    }).then((payload) => {
+      invalidateAccountsListCaches();
+      invalidateAccountReadCaches(accountId);
+      return payload;
+    }),
+  unarchiveLiveAccount: (accountId: number) =>
+    requestJson<AccountArchiveUpdateResult>(`/api/accounts/${accountId}/unarchive`, {
+      method: "POST",
+    }).then((payload) => {
+      invalidateAccountsListCaches();
+      invalidateAccountReadCaches(accountId);
       return payload;
     }),
   renameAccountDisplayName: (accountId: number, displayName: string) =>
@@ -953,13 +979,11 @@ export const accountsApi = {
   },
   confirmTradeImport: (
     accountId: number,
-    file: File,
-    previewSha256: string,
+    previewToken: string,
     options: RequestSignalOptions = {},
   ) => {
     const formData = new FormData();
-    formData.append("file", file, file.name);
-    formData.append("preview_sha256", previewSha256);
+    formData.append("preview_token", previewToken);
     return requestMultipart<TradeImportConfirmResult>(`/api/accounts/${accountId}/trade-imports/confirm`, {
       formData,
       signal: options.signal,
@@ -969,6 +993,19 @@ export const accountsApi = {
       return result;
     });
   },
+  getTradeImportStatus: (
+    accountId: number,
+    previewToken: string,
+    options: RequestSignalOptions = {},
+  ) =>
+    requestJson<TradeImportStatus>(
+      `/api/accounts/${accountId}/trade-imports/status`,
+      {
+        method: "POST",
+        body: { preview_token: previewToken },
+        signal: options.signal,
+      },
+    ),
   getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: RequestSignalOptions = {}) =>
     requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
       query: {
@@ -2045,6 +2082,24 @@ export function getExpenseTotals(range: ExpenseRange, options: ExpenseTotalsQuer
       start_created_at: options.startCreatedAt,
       end_created_at: options.endCreatedAt,
     },
+  });
+}
+
+export interface FinancialSummaryQuery {
+  asOfDate?: string;
+  accountId?: number;
+}
+
+export function getFinancialSummary(
+  query: FinancialSummaryQuery = {},
+  options: RequestSignalOptions = {},
+) {
+  return requestJson<FinancialSummary>("/api/expenses/financial-summary", {
+    query: {
+      as_of_date: query.asOfDate,
+      account_id: query.accountId,
+    },
+    signal: options.signal,
   });
 }
 

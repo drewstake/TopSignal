@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { ActivityMetrics } from "../../utils/activityMetrics";
@@ -1536,7 +1536,7 @@ function CoachSummaryDialog({
   onClose: () => void;
   rangeLabel: string;
   metrics: CopyFullStatsMetrics;
-  coachSummary: StatsCoachSummary;
+  coachSummary: StatsCoachSummary | null;
 }) {
   useEffect(() => {
     if (!open) {
@@ -1559,7 +1559,7 @@ function CoachSummaryDialog({
     };
   }, [open, onClose]);
 
-  if (!open || typeof document === "undefined") {
+  if (!open || coachSummary === null || typeof document === "undefined") {
     return null;
   }
 
@@ -1653,7 +1653,10 @@ export function CopyFullStatsButton({
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [copiedFullStats, setCopiedFullStats] = useState(false);
   const timeoutRef = useRef<number | null>(null);
-  const coachSummary = buildStatsCoachSummary({ metrics, rangeLabel, calendarDays });
+  const coachSummary = useMemo(
+    () => (summaryOpen ? buildStatsCoachSummary({ metrics, rangeLabel, calendarDays }) : null),
+    [calendarDays, metrics, rangeLabel, summaryOpen],
+  );
 
   useEffect(() => {
     return () => {

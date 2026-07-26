@@ -577,7 +577,8 @@ def get_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> BotConfi
 
 
 def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
-    _require_owned_account(db, user_id=user_id, account_id=payload.account_id)
+    account = _require_owned_account(db, user_id=user_id, account_id=payload.account_id)
+    _require_projectx_trade_data_source(account)
     name = _validate_unique_bot_name(db, user_id=user_id, name=payload.name)
     strategy_type = _validate_strategy_type(payload.strategy_type)
     strategy_params = _normalize_strategy_params(strategy_type, payload.strategy_params)
@@ -633,9 +634,17 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
     if row is None:
         raise LookupError("bot_config_not_found")
 
+    current_account = _require_owned_account(db, user_id=user_id, account_id=int(row.account_id))
+    _require_projectx_trade_data_source(current_account)
+
     update_data = payload.model_dump(exclude_unset=True)
     if "account_id" in update_data:
-        _require_owned_account(db, user_id=user_id, account_id=int(update_data["account_id"]))
+        target_account = _require_owned_account(
+            db,
+            user_id=user_id,
+            account_id=int(update_data["account_id"]),
+        )
+        _require_projectx_trade_data_source(target_account)
     if "name" in update_data and update_data["name"] is not None:
         update_data["name"] = _validate_unique_bot_name(
             db,

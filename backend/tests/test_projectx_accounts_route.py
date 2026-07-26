@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -14,17 +15,24 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 import app.main as main_module
 from app.db import Base
 from app.main import (
+    archive_topstep_live_account,
     confirm_topstep_trade_import,
     create_topstep_live_import_target,
     get_projectx_account_last_trade,
+    get_projectx_account_pnl_calendar,
+    get_projectx_account_summary,
+    list_projectx_account_trades,
     list_projectx_accounts,
     preview_topstep_trade_import,
+    refresh_projectx_account_trades,
     rename_projectx_account,
     set_projectx_main_account,
+    unarchive_topstep_live_account,
     update_projectx_account_trade_data_source,
 )
 from app.models import Account, ProjectXTradeEvent, ProviderCredential
 from app.projectx_schemas import (
+    ProjectXAccountArchiveIn,
     ProjectXAccountRenameIn,
     ProjectXAccountTradeDataSourceIn,
     TopstepLiveAccountCreateIn,
@@ -172,6 +180,7 @@ def test_accounts_route_returns_provider_and_custom_display_names(db_session, mo
             "status": "ACTIVE",
             "account_state": "ACTIVE",
             "is_main": False,
+            "is_archived": False,
             "can_trade": True,
                 "is_visible": True,
                 "last_trade_at": None,
@@ -211,6 +220,7 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
             "status": "ACTIVE",
             "account_state": "ACTIVE",
             "is_main": False,
+            "is_archived": False,
             "can_trade": True,
                 "is_visible": True,
                 "last_trade_at": None,
@@ -370,6 +380,79 @@ def test_accounts_route_skips_projectx_when_every_account_uses_csv_import(
     assert [row["id"] for row in payload] == [88010]
     assert payload[0]["trade_data_source"] == "csv_import"
     assert payload[0]["provider_data_stale"] is False
+
+
+def test_mixed_accounts_keep_normal_live_routes_entirely_local(db_session, monkeypatch):
+    provider_calls: list[str] = []
+
+    def fail_if_provider_is_requested(*_args, **_kwargs):
+        provider_calls.append("projectx_client")
+        raise AssertionError("Live-active routes must not create a ProjectX client")
+
+    monkeypatch.setattr(main_module, "_projectx_client_for_user", fail_if_provider_is_requested)
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88061",
+                trade_data_source="csv_import",
+                name="Topstep Live Funded",
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="71061",
+                trade_data_source="projectx",
+                name="Express 50K",
+                account_state="ACTIVE",
+                is_main=False,
+            ),
+            ProjectXTradeEvent(
+                account_id=88061,
+                contract_id="MNQU6",
+                symbol="MNQ",
+                side="SELL",
+                size=1,
+                price=20100,
+                entry_price=20090,
+                entry_timestamp=datetime(2026, 7, 2, 14, 58, tzinfo=timezone.utc),
+                trade_timestamp=datetime(2026, 7, 2, 15, 0, tzinfo=timezone.utc),
+                trade_date=datetime(2026, 7, 2, tzinfo=timezone.utc).date(),
+                pnl=20,
+                fees=1.25,
+                commissions=0.5,
+                order_id="LOCAL-LIVE-1",
+                source_trade_id="LOCAL-LIVE-1",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    accounts = list_projectx_accounts(refresh_provider=False, db=db_session)
+    trades = list_projectx_account_trades(
+        account_id=88061,
+        refresh=False,
+        include_lifecycle=False,
+        db=db_session,
+    )
+    summary = get_projectx_account_summary(account_id=88061, refresh=False, db=db_session)
+    calendar_rows = get_projectx_account_pnl_calendar(
+        account_id=88061,
+        all_time=True,
+        refresh=False,
+        db=db_session,
+    )
+
+    assert {row["id"] for row in accounts} == {71061, 88061}
+    assert len(trades) == 1
+    assert summary["trade_count"] == 1
+    assert len(calendar_rows) == 1
+    with pytest.raises(HTTPException) as refresh_exc:
+        refresh_projectx_account_trades(account_id=88061, db=db_session)
+    assert refresh_exc.value.status_code == 409
+    assert refresh_exc.value.detail == "csv_import_accounts_cannot_refresh_from_projectx"
+    assert provider_calls == []
 
 
 def test_accounts_route_local_snapshot_skips_projectx_for_mixed_accounts(
@@ -547,21 +630,14 @@ def test_trade_import_routes_reject_projectx_accounts_before_reading_files(
     assert preview_file.file.tell() == 0
     preview_file.file.close()
 
-    confirm_file = UploadFile(
-        filename="trades.csv",
-        file=io.BytesIO(b"must not be parsed"),
-    )
     with pytest.raises(HTTPException) as confirm_exc:
         confirm_topstep_trade_import(
             account_id=88017,
-            file=confirm_file,
-            preview_sha256="0" * 64,
+            preview_token="not-used-because-account-is-not-live",
             db=db_session,
         )
     assert confirm_exc.value.status_code == 409
     assert confirm_exc.value.detail == "trade_import_requires_csv_import_account"
-    assert confirm_file.file.tell() == 0
-    confirm_file.file.close()
 
 
 def test_mixed_account_provider_outage_marks_only_projectx_rows_stale(
@@ -771,6 +847,230 @@ def test_set_main_account_endpoint_rejects_unknown_accounts(db_session):
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Account not found."
     assert db_session.query(Account).count() == 0
+
+
+def test_set_main_account_returns_precise_retryable_concurrency_conflict(db_session, monkeypatch):
+    def fail_with_unique_conflict(*_args, **_kwargs):
+        raise IntegrityError(
+            "update accounts set is_main = true",
+            {},
+            RuntimeError("uq_accounts_one_main_per_user_provider"),
+        )
+
+    monkeypatch.setattr(main_module, "set_main_projectx_account", fail_with_unique_conflict)
+
+    with pytest.raises(HTTPException) as exc_info:
+        set_projectx_main_account(account_id=7201, db=db_session)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "main_account_conflict_retryable",
+        "message": "Another account change completed at the same time. Reload accounts and retry.",
+        "account_id": 7201,
+        "retryable": True,
+    }
+
+
+def test_archive_live_account_hides_it_but_retains_trade_history(db_session):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88001",
+                name="Live Primary",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88002",
+                name="Live Archive Me",
+                trade_data_source="csv_import",
+                account_state="ACTIVE",
+                is_main=False,
+            ),
+            ProjectXTradeEvent(
+                account_id=88002,
+                contract_id="MNQU6",
+                symbol="MNQ",
+                side="SELL",
+                size=1,
+                price=20100,
+                trade_timestamp=datetime(2026, 7, 2, 15, 0, tzinfo=timezone.utc),
+                fees=1.25,
+                commissions=0.5,
+                order_id="ARCHIVE-HISTORY-1",
+                source_trade_id="ARCHIVE-HISTORY-1",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = archive_topstep_live_account(
+        account_id=88002,
+        payload=ProjectXAccountArchiveIn(),
+        db=db_session,
+    )
+
+    assert result == {
+        "account_id": 88002,
+        "is_archived": True,
+        "is_main": False,
+        "replacement_main_account_id": None,
+    }
+    normal_rows = list_projectx_accounts(refresh_provider=False, db=db_session)
+    assert all(row["id"] != 88002 for row in normal_rows)
+    archived_rows = list_projectx_accounts(
+        refresh_provider=False,
+        include_archived=True,
+        db=db_session,
+    )
+    archived = next(row for row in archived_rows if row["id"] == 88002)
+    assert archived["is_archived"] is True
+    assert db_session.query(ProjectXTradeEvent).filter_by(account_id=88002).count() == 1
+
+
+def test_archiving_main_live_account_atomically_prefers_live_replacement(db_session):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88011",
+                trade_data_source="csv_import",
+                name="Live Main",
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88012",
+                trade_data_source="csv_import",
+                name="Live Replacement",
+                account_state="ACTIVE",
+                is_main=False,
+            ),
+            Account(
+                provider="projectx",
+                external_id="7101",
+                trade_data_source="projectx",
+                name="Express",
+                account_state="ACTIVE",
+                is_main=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = archive_topstep_live_account(
+        account_id=88011,
+        payload=ProjectXAccountArchiveIn(),
+        db=db_session,
+    )
+
+    assert result["replacement_main_account_id"] == 88012
+    rows = {row.external_id: row for row in db_session.query(Account).all()}
+    assert rows["88011"].archived_at is not None
+    assert rows["88011"].is_main is False
+    assert rows["88012"].is_main is True
+    assert rows["7101"].is_main is False
+
+
+def test_archiving_only_main_requires_replacement(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88021",
+            trade_data_source="csv_import",
+            name="Only Live",
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        archive_topstep_live_account(
+            account_id=88021,
+            payload=ProjectXAccountArchiveIn(),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "main_account_replacement_required"
+    row = db_session.query(Account).filter_by(external_id="88021").one()
+    assert row.archived_at is None
+    assert row.is_main is True
+
+
+def test_unarchive_live_account_restores_it_and_reselects_main_when_needed(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88031",
+            trade_data_source="csv_import",
+            name="Archived Live",
+            account_state="ACTIVE",
+            archived_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            is_main=False,
+        )
+    )
+    db_session.commit()
+
+    result = unarchive_topstep_live_account(account_id=88031, db=db_session)
+
+    assert result["is_archived"] is False
+    assert result["is_main"] is True
+    row = db_session.query(Account).filter_by(external_id="88031").one()
+    assert row.archived_at is None
+    assert row.is_main is True
+
+
+def test_archived_live_account_cannot_be_set_main_or_recreated(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88041",
+            trade_data_source="csv_import",
+            name="Archived Live",
+            account_state="ACTIVE",
+            archived_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            is_main=False,
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as main_exc:
+        set_projectx_main_account(account_id=88041, db=db_session)
+    assert main_exc.value.status_code == 409
+    assert main_exc.value.detail["code"] == "live_account_archived"
+
+    with pytest.raises(HTTPException) as create_exc:
+        create_topstep_live_import_target(
+            TopstepLiveAccountCreateIn(account_id=88041, name="Same"),
+            db=db_session,
+        )
+    assert create_exc.value.status_code == 409
+    assert create_exc.value.detail["code"] == "live_account_archived"
+
+
+def test_database_rejects_an_archived_main_account(db_session):
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88051",
+            trade_data_source="csv_import",
+            name="Invalid Archived Main",
+            account_state="ACTIVE",
+            archived_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            is_main=True,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+    assert db_session.query(Account).filter_by(external_id="88051").count() == 0
 
 
 def test_rename_account_endpoint_trims_and_persists_custom_display_name(db_session):

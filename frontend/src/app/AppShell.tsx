@@ -10,12 +10,14 @@ import { cn } from "../components/ui/cn";
 import {
   ACCOUNT_QUERY_PARAM,
   ACCOUNT_DISPLAY_NAME_UPDATED_EVENT,
+  ACCOUNT_LIST_CHANGED_EVENT,
   MAIN_ACCOUNT_UPDATED_EVENT,
   buildAccountAwarePath,
   parseAccountId,
   readStoredAccountId,
   readStoredMainAccountId,
   writeStoredAccountId,
+  type AccountListChangedDetail,
 } from "../lib/accountSelection";
 import {
   getSelectableAccounts,
@@ -34,6 +36,8 @@ import { useLatestRequestGuard } from "../lib/latestRequest";
 export interface AppShellOutletContext {
   accounts: AccountInfo[];
   accountsLoading: boolean;
+  accountsError: string | null;
+  selectedAccountId: number | null;
 }
 
 function AppShellRouteFallback() {
@@ -65,6 +69,9 @@ export function AppShell() {
   const beginProviderAccountsRequest = useLatestRequestGuard();
   const beginSyncRequest = useLatestRequestGuard();
   const activeSyncAccountIdRef = useRef<number | null>(null);
+  const activeLifecycleAccountIdRef = useRef<number | null>(null);
+  const locationRef = useRef(location);
+  locationRef.current = location;
 
   useEffect(() => {
     let isMounted = true;
@@ -100,18 +107,41 @@ export function AppShell() {
     function handleAccountDisplayNameUpdated() {
       void loadAccounts();
     }
+    function handleAccountListChanged(event: Event) {
+      const detail = (event as CustomEvent<AccountListChangedDetail>).detail;
+      if (
+        detail?.action === "archived" &&
+        detail.accountId === activeLifecycleAccountIdRef.current &&
+        detail.replacementAccountId !== null
+      ) {
+        writeStoredAccountId(detail.replacementAccountId);
+        const currentLocation = locationRef.current;
+        const next = new URLSearchParams(currentLocation.search);
+        next.set(ACCOUNT_QUERY_PARAM, String(detail.replacementAccountId));
+        navigate(
+          {
+            pathname: currentLocation.pathname,
+            search: `?${next.toString()}`,
+          },
+          { replace: true },
+        );
+      }
+      void loadAccounts();
+    }
     if (typeof window !== "undefined") {
       window.addEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
       window.addEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
+      window.addEventListener(ACCOUNT_LIST_CHANGED_EVENT, handleAccountListChanged);
     }
     return () => {
       isMounted = false;
       if (typeof window !== "undefined") {
         window.removeEventListener(MAIN_ACCOUNT_UPDATED_EVENT, handleMainAccountUpdated);
         window.removeEventListener(ACCOUNT_DISPLAY_NAME_UPDATED_EVENT, handleAccountDisplayNameUpdated);
+        window.removeEventListener(ACCOUNT_LIST_CHANGED_EVENT, handleAccountListChanged);
       }
     };
-  }, [beginAccountsRequest]);
+  }, [beginAccountsRequest, navigate]);
 
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
   const orderedAccounts = useMemo(() => sortAccountsForActiveSelection(accounts), [accounts]);
@@ -137,6 +167,7 @@ export function AppShell() {
     return "";
   }, [mainAccountId, orderedAccounts, persistedMainAccountId, queryAccountId, storedActiveAccountId]);
   const selectedAccountId = parseAccountId(selectedAccountValue);
+  activeLifecycleAccountIdRef.current = selectedAccountId;
   const selectedAccount = orderedAccounts.find((account) => account.id === selectedAccountId) ?? null;
   const selectedAccountIsLocalOnly = selectedAccount?.trade_data_source === "csv_import";
 
@@ -174,8 +205,13 @@ export function AppShell() {
   const currentUserEmailDisplay = getDemoUserEmail(currentUserEmail);
   const isTradesRoute = location.pathname.startsWith("/trades");
   const outletContext = useMemo<AppShellOutletContext>(
-    () => ({ accounts: orderedAccounts, accountsLoading }),
-    [accountsLoading, orderedAccounts],
+    () => ({
+      accounts: orderedAccounts,
+      accountsLoading,
+      accountsError,
+      selectedAccountId,
+    }),
+    [accountsError, accountsLoading, orderedAccounts, selectedAccountId],
   );
 
   function handleAccountChange(rawValue: string) {
@@ -261,8 +297,8 @@ export function AppShell() {
         <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-2 px-3 py-2 sm:gap-4 sm:px-4 sm:py-4 lg:px-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-[220px]">
+              <div className="flex flex-wrap items-end gap-2 sm:gap-3 xl:flex-nowrap">
+                <div className="w-full min-w-0 sm:w-[300px] sm:flex-none xl:w-[320px]">
                   <label
                     htmlFor="app-active-account"
                     className="mb-1 block text-[11px] uppercase tracking-wide text-app-muted-strong"
@@ -271,7 +307,7 @@ export function AppShell() {
                   </label>
                   <Select
                     id="app-active-account"
-                    className="h-11 min-w-[220px] sm:h-9"
+                    className="h-11 min-w-0 sm:h-9"
                     value={selectedAccountValue}
                     onChange={(event) => handleAccountChange(event.target.value)}
                     disabled={accountsLoading || orderedAccounts.length === 0}
@@ -292,7 +328,7 @@ export function AppShell() {
                   </Select>
                 </div>
                 <Button
-                  className="h-11 whitespace-nowrap sm:h-9"
+                  className="h-11 shrink-0 whitespace-nowrap sm:h-9"
                   onClick={handleSyncNow}
                   disabled={syncing || !selectedAccountId || selectedAccountIsLocalOnly}
                   title={selectedAccountIsLocalOnly ? "This account uses manually imported trade history." : undefined}
@@ -300,15 +336,15 @@ export function AppShell() {
                   {selectedAccountIsLocalOnly ? "Import-only Account" : syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 <Toggle
-                  className="h-11 self-end sm:h-9"
+                  className="h-11 shrink-0 self-end sm:h-9"
                   checked={demoMode.enabled}
                   onChange={handleDemoModeChange}
                   label="Demo Mode"
                   aria-label="Demo mode"
                 />
                 {hasSupabaseConfig ? (
-                  <div className="flex min-h-11 min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:max-w-[340px]">
-                    <span className="min-w-0 truncate" title={currentUserEmailDisplay}>
+                  <div className="flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
+                    <span className="min-w-0 flex-1 truncate" title={currentUserEmailDisplay}>
                       {currentUserEmailDisplay}
                     </span>
                     <Button

@@ -9,6 +9,7 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
   ACCOUNT_QUERY_PARAM,
+  dispatchAccountListChanged,
   parseAccountId,
   readStoredAccountId,
   readStoredMainAccountId,
@@ -18,10 +19,15 @@ import {
 import { logPerfInfo } from "../../lib/perf";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { accountsApi } from "../../lib/api";
-import { sortAccountsForSelection } from "../../lib/accountOrdering";
+import { sortAccountsForActiveSelection, sortAccountsForSelection } from "../../lib/accountOrdering";
 import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { getDemoAccountId, getDemoAccountName } from "../../lib/demoMode";
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
+import {
+  AccountSelectionButton,
+  AccountTableScrollArea,
+} from "./accountManagement";
+import { filterAccountManagementRows, loadAccountManagementRows } from "./accountManagementData";
 import { MergeJournalCard } from "./components/MergeJournalCard";
 import {
   type MergeJournalFormState,
@@ -115,10 +121,13 @@ export function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [mergeAccounts, setMergeAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+  const [refreshingExpressAccounts, setRefreshingExpressAccounts] = useState(false);
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [showHiddenAccounts, setShowHiddenAccounts] = useState(false);
   const [showMissingAccounts, setShowMissingAccounts] = useState(false);
+  const [showArchivedAccounts, setShowArchivedAccounts] = useState(false);
   const [settingMainAccountId, setSettingMainAccountId] = useState<number | null>(null);
+  const [lifecycleAccountId, setLifecycleAccountId] = useState<number | null>(null);
   const [lastTradeOverridesById, setLastTradeOverridesById] = useState<Record<number, string | null>>({});
   const [lastTradeLoadingById, setLastTradeLoadingById] = useState<Record<number, boolean>>({});
   const [lastTradeResolvedById, setLastTradeResolvedById] = useState<Record<number, boolean>>({});
@@ -141,6 +150,8 @@ export function AccountsPage() {
   const editInputRef = useRef<HTMLInputElement | null>(null);
   const accountsVersionRef = useRef(0);
   const lastTradeRequestVersionByIdRef = useRef<Record<number, number>>({});
+  const refreshExpressRequestRef = useRef(false);
+  const pendingLifecycleActiveAccountIdRef = useRef<number | null>(null);
   const beginAccountsRequest = useLatestRequestGuard();
 
   const setActiveAccount = useCallback(
@@ -153,36 +164,37 @@ export function AccountsPage() {
     [searchParams, setSearchParams],
   );
 
-  const loadAccounts = useCallback(async () => {
+  const loadAccounts = useCallback(async ({
+    refreshProvider = false,
+    preserveRowsOnError = false,
+  }: {
+    refreshProvider?: boolean;
+    preserveRowsOnError?: boolean;
+  } = {}) => {
     const isCurrent = beginAccountsRequest();
     accountsVersionRef.current += 1;
     const startedAtIso = new Date().toISOString();
     const startedAtMs = performance.now();
     logPerfInfo("[perf][accounts] load-start", {
       started_at: startedAtIso,
-      show_hidden: showHiddenAccounts,
-      show_missing: showMissingAccounts,
+      refresh_provider: refreshProvider,
     });
-    setAccountsLoading(true);
+    if (!refreshProvider) {
+      setAccountsLoading(true);
+    }
     setAccountsError(null);
     setLastTradeError(null);
 
     try {
-      const [visibleAccounts, mergeableAccounts] = await Promise.all([
-        accountsApi.getAccounts({
-          showInactive: true,
-          showMissing: showMissingAccounts,
-        }),
-        accountsApi.getAccounts({
-          showInactive: true,
-          showMissing: true,
-        }),
-      ]);
+      const savedAccounts = await loadAccountManagementRows(
+        accountsApi.getAccounts,
+        refreshProvider,
+      );
       if (!isCurrent()) {
         return;
       }
-      setAccounts(visibleAccounts.filter((account) => showHiddenAccounts || account.account_state !== "HIDDEN"));
-      setMergeAccounts(mergeableAccounts);
+      setAccounts(savedAccounts);
+      setMergeAccounts(savedAccounts.filter((account) => !account.is_archived));
       setEditingAccountId(null);
       setEditingName("");
       setRenameErrorById({});
@@ -193,26 +205,51 @@ export function AccountsPage() {
       if (!isCurrent()) {
         return;
       }
-      setAccountsError(err instanceof Error ? err.message : "Failed to load accounts");
-      setAccounts([]);
-      setMergeAccounts([]);
-      setLastTradeOverridesById({});
-      setLastTradeLoadingById({});
-      setLastTradeResolvedById({});
+      const message = err instanceof Error ? err.message : "Failed to load accounts";
+      setAccountsError(
+        preserveRowsOnError
+          ? `Express refresh failed. Saved account data is still available. ${message}`
+          : message,
+      );
+      if (!preserveRowsOnError) {
+        setAccounts([]);
+        setMergeAccounts([]);
+        setLastTradeOverridesById({});
+        setLastTradeLoadingById({});
+        setLastTradeResolvedById({});
+      }
     } finally {
       const totalMs = Math.max(performance.now() - startedAtMs, 0);
       logPerfInfo("[perf][accounts] load-end", {
         started_at: startedAtIso,
         finished_at: new Date().toISOString(),
         total_ms: Number(totalMs.toFixed(2)),
-        show_hidden: showHiddenAccounts,
-        show_missing: showMissingAccounts,
+        refresh_provider: refreshProvider,
       });
       if (isCurrent()) {
-        setAccountsLoading(false);
+        if (!refreshProvider) {
+          setAccountsLoading(false);
+        }
       }
     }
-  }, [beginAccountsRequest, showHiddenAccounts, showMissingAccounts]);
+  }, [beginAccountsRequest]);
+
+  const refreshExpressAccounts = useCallback(async () => {
+    if (refreshExpressRequestRef.current) {
+      return;
+    }
+    refreshExpressRequestRef.current = true;
+    setRefreshingExpressAccounts(true);
+    try {
+      await loadAccounts({
+        refreshProvider: true,
+        preserveRowsOnError: true,
+      });
+    } finally {
+      refreshExpressRequestRef.current = false;
+      setRefreshingExpressAccounts(false);
+    }
+  }, [loadAccounts]);
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
     if (lastTradeLoadingById[accountId]) {
@@ -247,6 +284,10 @@ export function AccountsPage() {
 
   const setMainAccount = useCallback(
     async (accountId: number) => {
+      if (accounts.some((account) => account.id === accountId && account.is_archived)) {
+        setAccountsError("Restore this Live account before setting it as Main.");
+        return;
+      }
       setSettingMainAccountId(accountId);
       setAccountsError(null);
       try {
@@ -260,7 +301,7 @@ export function AccountsPage() {
         setSettingMainAccountId(null);
       }
     },
-    [loadAccounts, setActiveAccount],
+    [accounts, loadAccounts, setActiveAccount],
   );
 
   const startEditingAccountName = useCallback((account: AccountInfo) => {
@@ -274,6 +315,99 @@ export function AccountsPage() {
     setEditingAccountId(null);
     setEditingName("");
   }, []);
+
+  const changeLiveAccountArchiveState = useCallback(
+    async (account: AccountInfo) => {
+      if (account.trade_data_source !== "csv_import" || lifecycleAccountId !== null) {
+        return;
+      }
+
+      const replacementCandidates = sortAccountsForActiveSelection(
+        accounts.filter(
+          (candidate) =>
+            candidate.id !== account.id &&
+            !candidate.is_archived &&
+            (candidate.trade_data_source === "csv_import" ||
+              candidate.account_state === "ACTIVE" ||
+              candidate.account_state === "LOCKED_OUT"),
+        ),
+      );
+      const replacementAccountId = account.is_main
+        ? replacementCandidates[0]?.id ?? null
+        : null;
+      const activeReplacement = accountFromQuery === account.id
+        ? replacementCandidates[0] ?? null
+        : null;
+
+      if (!account.is_archived) {
+        if (account.is_main && replacementAccountId === null) {
+          setAccountsError("Choose or restore another account before archiving the only Main account.");
+          return;
+        }
+        if (accountFromQuery === account.id && activeReplacement === null) {
+          setAccountsError("Choose or restore another account before archiving the only active account.");
+          return;
+        }
+        const mainReplacement = replacementCandidates.find(
+          (candidate) => candidate.id === replacementAccountId,
+        ) ?? null;
+        const mainReplacementMessage = mainReplacement
+          ? ` ${getDemoAccountName(mainReplacement)} will become Main.`
+          : "";
+        const activeReplacementMessage = activeReplacement
+          ? activeReplacement.trade_data_source === "projectx"
+            ? ` This will switch the active account to Express account ${getDemoAccountName(activeReplacement)} and refresh ProjectX.`
+            : ` ${getDemoAccountName(activeReplacement)} will become active.`
+          : "";
+        if (!window.confirm(`Archive ${getDemoAccountName(account)}? Imported history is retained.${mainReplacementMessage}${activeReplacementMessage}`)) {
+          return;
+        }
+      }
+
+      setLifecycleAccountId(account.id);
+      setAccountsError(null);
+      try {
+        const result = account.is_archived
+          ? await accountsApi.unarchiveLiveAccount(account.id)
+          : await accountsApi.archiveLiveAccount(
+              account.id,
+              replacementAccountId ?? undefined,
+            );
+
+        let nextActiveAccountId: number | null = null;
+        if (!account.is_archived && accountFromQuery === account.id) {
+          nextActiveAccountId = activeReplacement?.id ?? result.replacement_main_account_id;
+          if (nextActiveAccountId !== null) {
+            pendingLifecycleActiveAccountIdRef.current = nextActiveAccountId;
+            setActiveAccount(nextActiveAccountId);
+          }
+        }
+
+        if (account.is_archived) {
+          nextActiveAccountId = account.id;
+          pendingLifecycleActiveAccountIdRef.current = account.id;
+          setActiveAccount(account.id);
+        }
+
+        await loadAccounts();
+
+        dispatchAccountListChanged({
+          accountId: account.id,
+          action: account.is_archived ? "unarchived" : "archived",
+          replacementAccountId: nextActiveAccountId,
+        });
+      } catch (err) {
+        setAccountsError(
+          err instanceof Error
+            ? err.message
+            : `Failed to ${account.is_archived ? "restore" : "archive"} Live account.`,
+        );
+      } finally {
+        setLifecycleAccountId(null);
+      }
+    },
+    [accountFromQuery, accounts, lifecycleAccountId, loadAccounts, setActiveAccount],
+  );
 
   const saveAccountName = useCallback(
     async (account: AccountInfo) => {
@@ -331,7 +465,19 @@ export function AccountsPage() {
     editInputRef.current?.select();
   }, [editingAccountId]);
 
-  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+  const visibleAccounts = useMemo(
+    () => filterAccountManagementRows(accounts, {
+      showHidden: showHiddenAccounts,
+      showMissing: showMissingAccounts,
+      showArchived: showArchivedAccounts,
+    }),
+    [accounts, showArchivedAccounts, showHiddenAccounts, showMissingAccounts],
+  );
+  const orderedAccounts = useMemo(() => sortAccountsForSelection(visibleAccounts), [visibleAccounts]);
+  const selectableAccounts = useMemo(
+    () => orderedAccounts.filter((account) => !account.is_archived),
+    [orderedAccounts],
+  );
   const orderedMergeAccounts = useMemo(() => sortAccountsForSelection(mergeAccounts), [mergeAccounts]);
   const orderedMergeDestinationAccounts = useMemo(
     () => sortAccountsForSelection(getMergeDestinationAccounts(mergeAccounts)),
@@ -343,16 +489,30 @@ export function AccountsPage() {
   );
 
   useEffect(() => {
-    if (orderedAccounts.length === 0) {
+    if (selectableAccounts.length === 0) {
       return;
     }
 
-    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
+    const pendingLifecycleActiveAccountId = pendingLifecycleActiveAccountIdRef.current;
+    if (pendingLifecycleActiveAccountId !== null) {
+      if (!selectableAccounts.some((account) => account.id === pendingLifecycleActiveAccountId)) {
+        return;
+      }
+      if (accountFromQuery !== pendingLifecycleActiveAccountId) {
+        setActiveAccount(pendingLifecycleActiveAccountId);
+        return;
+      }
+      writeStoredAccountId(pendingLifecycleActiveAccountId);
+      pendingLifecycleActiveAccountIdRef.current = null;
+      return;
+    }
+
+    if (accountFromQuery && selectableAccounts.some((account) => account.id === accountFromQuery)) {
       writeStoredAccountId(accountFromQuery);
       return;
     }
 
-    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
+    const persistedMainAccountId = selectableAccounts.find((account) => account.is_main)?.id ?? null;
     if (persistedMainAccountId) {
       writeStoredMainAccountId(persistedMainAccountId);
       setActiveAccount(persistedMainAccountId);
@@ -361,21 +521,21 @@ export function AccountsPage() {
 
     const storedAccountId = readStoredAccountId();
     const storedMainAccountId = readStoredMainAccountId();
-    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
+    if (storedMainAccountId && selectableAccounts.some((account) => account.id === storedMainAccountId)) {
       setActiveAccount(storedMainAccountId);
       return;
     }
 
-    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
+    if (storedAccountId && selectableAccounts.some((account) => account.id === storedAccountId)) {
       setActiveAccount(storedAccountId);
       return;
     }
 
-    setActiveAccount(orderedAccounts[0].id);
-  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
+    setActiveAccount(selectableAccounts[0].id);
+  }, [selectableAccounts, accountFromQuery, setActiveAccount]);
 
   const selectedAccount = useMemo(
-    () => accounts.find((account) => account.id === accountFromQuery) ?? null,
+    () => accounts.find((account) => account.id === accountFromQuery && !account.is_archived) ?? null,
     [accounts, accountFromQuery],
   );
   const mergeAccountNamesById = useMemo(
@@ -443,7 +603,21 @@ export function AccountsPage() {
             <CardDescription>Manage ProjectX accounts and Live accounts that use CSV trade imports.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex items-center justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={accountsLoading || refreshingExpressAccounts}
+                  onClick={() => void refreshExpressAccounts()}
+                >
+                  {refreshingExpressAccounts ? "Refreshing Express Accounts..." : "Refresh Express Accounts"}
+                </Button>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Saved Live and Express rows load locally. Refresh contacts ProjectX only when requested.
+                </p>
+              </div>
               <div className="flex flex-wrap items-center gap-3">
                 <Toggle
                   checked={showHiddenAccounts}
@@ -457,10 +631,21 @@ export function AccountsPage() {
                   label="Show missing"
                   aria-label="Show missing accounts"
                 />
+                <Toggle
+                  checked={showArchivedAccounts}
+                  onChange={setShowArchivedAccounts}
+                  label="Show archived"
+                  aria-label="Show archived accounts"
+                />
               </div>
             </div>
+            {accountsError ? (
+              <p className="rounded-lg border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200" role="alert">
+                {accountsError}
+              </p>
+            ) : null}
             {lastTradeError ? <p className="text-xs text-amber-300">{lastTradeError}</p> : null}
-            <div className="overflow-hidden rounded-xl border border-slate-800/80">
+            <AccountTableScrollArea>
               <table className="w-full min-w-[680px] border-collapse text-sm">
                 <thead className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400">
                   <tr>
@@ -470,26 +655,21 @@ export function AccountsPage() {
                     <th className="px-3 py-3 text-right font-medium">Last Trade</th>
                     <th className="px-3 py-3 text-right font-medium">Status</th>
                     <th className="px-3 py-3 text-right font-medium">Main</th>
+                    <th className="px-3 py-3 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/70">
                   {accountsLoading ? (
                     Array.from({ length: 5 }).map((_, index) => (
                       <tr key={`accounts-loading-${index}`}>
-                        <td colSpan={6} className="px-3 py-3">
+                        <td colSpan={7} className="px-3 py-3">
                           <Skeleton className="h-6 w-full" />
                         </td>
                       </tr>
                     ))
-                  ) : accountsError ? (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-rose-300">
-                        {accountsError}
-                      </td>
-                    </tr>
                   ) : orderedAccounts.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
+                      <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
                         No accounts found.
                       </td>
                     </tr>
@@ -512,15 +692,9 @@ export function AccountsPage() {
                       return (
                         <tr
                           key={account.id}
-                          className={`cursor-pointer transition ${
+                          className={`transition ${
                             isActive ? "bg-cyan-500/10" : "hover:bg-slate-900/65"
                           }`}
-                          onClick={() => {
-                            setActiveAccount(account.id);
-                            if (!resolvedLastTradeAt && !resolvedLastTrade && !loadingLastTrade) {
-                              void resolveLastTrade(account.id);
-                            }
-                          }}
                         >
                           <td className="px-3 py-3 text-left font-medium text-slate-100">
                             {isEditingName ? (
@@ -593,7 +767,17 @@ export function AccountsPage() {
                                 >
                                   <PencilIcon />
                                 </Button>
-                                <span className="truncate">{accountDisplayName}</span>
+                                <AccountSelectionButton
+                                  accountName={accountDisplayName}
+                                  active={isActive}
+                                  disabled={account.is_archived}
+                                  onSelect={() => {
+                                    setActiveAccount(account.id);
+                                    if (!resolvedLastTradeAt && !resolvedLastTrade && !loadingLastTrade) {
+                                      void resolveLastTrade(account.id);
+                                    }
+                                  }}
+                                />
                               </div>
                             )}
                             {savingName ? <p className="mt-1 text-[11px] font-normal text-slate-500">Saving...</p> : null}
@@ -634,7 +818,10 @@ export function AccountsPage() {
                           </td>
                           <td className="px-3 py-3 text-right">
                             {account.trade_data_source === "csv_import" ? (
+                              <>
                               <Badge variant="accent">Live · CSV</Badge>
+                                {account.is_archived ? <Badge className="ml-1" variant="warning">Archived</Badge> : null}
+                              </>
                             ) : (
                               <>
                                 <Badge variant={accountStateBadgeVariant(account.account_state)}>
@@ -645,7 +832,9 @@ export function AccountsPage() {
                             )}
                           </td>
                           <td className="px-3 py-3 text-right">
-                            {isMainAccount ? (
+                            {account.is_archived ? (
+                              <span className="text-xs text-slate-500">Unavailable</span>
+                            ) : isMainAccount ? (
                               <Badge variant="accent">Main</Badge>
                             ) : (
                               <Button
@@ -661,13 +850,34 @@ export function AccountsPage() {
                               </Button>
                             )}
                           </td>
+                          <td className="px-3 py-3 text-right">
+                            {account.trade_data_source === "csv_import" ? (
+                              <Button
+                                size="sm"
+                                variant={account.is_archived ? "secondary" : "ghost"}
+                                disabled={lifecycleAccountId !== null}
+                                aria-label={`${account.is_archived ? "Restore" : "Archive"} ${accountDisplayName}`}
+                                onClick={() => void changeLiveAccountArchiveState(account)}
+                              >
+                                {lifecycleAccountId === account.id
+                                  ? account.is_archived
+                                    ? "Restoring..."
+                                    : "Archiving..."
+                                  : account.is_archived
+                                    ? "Restore"
+                                    : "Archive"}
+                              </Button>
+                            ) : (
+                              <span className="text-xs text-slate-600">—</span>
+                            )}
+                          </td>
                         </tr>
                       );
                     })
                   )}
                 </tbody>
               </table>
-            </div>
+            </AccountTableScrollArea>
           </CardContent>
         </Card>
       </section>

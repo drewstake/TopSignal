@@ -1,17 +1,25 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
-import { ApiError } from "../../../lib/api";
-import type { AccountInfo, TradeImportPreview } from "../../../lib/types";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { accountsApi, ApiError } from "../../../lib/api";
+import type { AccountInfo, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus } from "../../../lib/types";
 import { TradeImportPanel, TradeImportReview } from "./TradeImportPanel";
 import { getTradeImportErrorMessage } from "./tradeImportErrors";
+import { openTradeImportFilePicker } from "./tradeImportPicker";
 
 const preview: TradeImportPreview = {
+  preview_token: "opaque-preview-token",
+  expires_at: "2026-07-02T15:00:00Z",
   source_file_name: "trades_export.csv",
   file_sha256: "preview-sha",
   total_rows: 3,
   new_rows: 2,
   duplicate_rows: 1,
+  conflict_rows: 0,
   summary: {
     gross_pnl: 334.5,
     fees: 2.96,
@@ -63,6 +71,44 @@ const preview: TradeImportPreview = {
   ],
 };
 
+const confirmResult: TradeImportConfirmResult = {
+  import_id: 17,
+  source_file_name: "trades_export.csv",
+  imported_at: "2026-07-02T15:02:00Z",
+  total_rows: 3,
+  inserted_rows: 2,
+  duplicate_rows: 1,
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function getNativeFileInput(): HTMLInputElement {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (!input) {
+    throw new Error("native file input not rendered");
+  }
+  return input;
+}
+
+function chooseFile(input: HTMLInputElement, file = new File(["Id,PnL\n1,100"], "trades_export.csv", { type: "text/csv" })) {
+  fireEvent.change(input, { target: { files: [file] } });
+  return file;
+}
+
+afterEach(() => {
+  cleanup();
+  window.sessionStorage.clear();
+  vi.restoreAllMocks();
+});
+
 function liveAccount(id: number, name: string): AccountInfo {
   return {
     id,
@@ -76,6 +122,7 @@ function liveAccount(id: number, name: string): AccountInfo {
     status: "ACTIVE",
     account_state: "ACTIVE",
     is_main: false,
+    is_archived: false,
     can_trade: null,
     is_visible: true,
     last_trade_at: null,
@@ -100,8 +147,53 @@ describe("TradeImportReview", () => {
     expect(markup).toContain("2815118967");
     expect(markup).toContain("2815266522");
     expect(markup).toContain("Confirm Import (2)");
+    expect(markup).toContain("Choose Another File");
+    expect(markup).toContain("Close");
     expect(markup).toContain("Commissions");
     expect(markup).toContain("+$329.54");
+  });
+
+  it("blocks confirmation and shows stored/incoming differences for identity conflicts", () => {
+    const conflictPreview: TradeImportPreview = {
+      ...preview,
+      new_rows: 1,
+      duplicate_rows: 1,
+      conflict_rows: 1,
+      total_rows: 3,
+      trades: [
+        ...preview.trades,
+        {
+          ...preview.trades[0],
+          row_number: 4,
+          status: "conflict",
+          conflict: {
+            identity_kind: "source_trade_id",
+            identity_value: "2815118967",
+            reason: "stored_trade_mismatch",
+            stored_event_id: 99,
+            differences: [
+              { field: "net_pnl", stored: "198.78", incoming: "201.25" },
+            ],
+          },
+        },
+      ],
+    };
+
+    const markup = renderToStaticMarkup(
+      <TradeImportReview
+        preview={conflictPreview}
+        confirming={false}
+        onConfirm={() => undefined}
+        onChooseAnother={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Resolve 1 conflicting trade before importing");
+    expect(markup).toContain("Stored: 198.78");
+    expect(markup).toContain("Incoming: 201.25");
+    expect(markup).toContain("Nothing will be overwritten");
+    expect(markup).not.toContain("Confirm Import");
   });
 
   it("disables confirmation when every row is already stored", () => {
@@ -160,6 +252,19 @@ describe("TradeImportReview", () => {
 });
 
 describe("TradeImportPanel", () => {
+  it("does not flash Live-account onboarding while saved accounts are loading", () => {
+    const markup = renderToStaticMarkup(
+      <TradeImportPanel accountId={null} accountsLoading liveAccounts={[]} />,
+    );
+
+    expect(markup).toContain("Loading your saved Live account...");
+    expect(markup).not.toContain("Topstep Live account ID");
+    expect(markup).not.toContain("Account name (optional)");
+    expect(markup).not.toContain("Add Import Account");
+    expect(markup).not.toContain("Add or select the Live account before choosing a trade file.");
+    expect(markup).not.toContain("Add Live Account");
+  });
+
   it("offers manual Live-account onboarding when ProjectX has no account to select", () => {
     const markup = renderToStaticMarkup(<TradeImportPanel accountId={null} />);
 
@@ -167,6 +272,8 @@ describe("TradeImportPanel", () => {
     expect(markup).toContain("Add Import Account");
     expect(markup).toContain("stay separate from your Express account");
     expect(markup).toContain("Add or select the Live account");
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toMatch(/aria-controls="[^"]+-account-setup"/);
   });
 
   it("requires a separate Live CSV account before accepting a trade export", () => {
@@ -176,7 +283,7 @@ describe("TradeImportPanel", () => {
 
     expect(markup).toContain("Select or add a separate Live CSV account");
     expect(markup).toMatch(/<input[^>]*type="file"[^>]*disabled=""/);
-    expect(markup).toContain("Choose this to add or select the Live CSV account required for imports.");
+    expect(markup).toContain("Add the Live CSV account required for imports.");
     expect(markup).toMatch(/<button[^>]*>Choose file<\/button>/);
   });
 
@@ -190,6 +297,8 @@ describe("TradeImportPanel", () => {
     expect(markup).toContain("Accepted: .csv and .xlsx");
     expect(markup).toContain("No file selected");
     expect(markup).not.toContain("Topstep Live account ID");
+    expect(markup).not.toContain("Add Live Account");
+    expect(markup).not.toContain('aria-expanded="false"');
   });
 
   it("offers existing Live CSV accounts in the separate account setup flow", () => {
@@ -205,6 +314,8 @@ describe("TradeImportPanel", () => {
     );
 
     expect(markup).not.toContain("Existing Live CSV accounts");
+    expect(markup).toContain("Select Live Account");
+    expect(markup).not.toContain("Add Live Account");
 
     const openMarkup = renderToStaticMarkup(
       <TradeImportPanel
@@ -218,6 +329,319 @@ describe("TradeImportPanel", () => {
     expect(openMarkup).toContain("Existing Live CSV accounts");
     expect(openMarkup).toContain("Live Funded A");
     expect(openMarkup).toContain("Live Funded B");
+    expect(openMarkup).not.toContain("Topstep Live account ID");
+    expect(openMarkup).not.toContain("Add Import Account");
+  });
+
+  it("offers keyboard-accessible Live-account creation only before an account exists", async () => {
+    const user = userEvent.setup();
+    render(<TradeImportPanel accountId={7301} tradeDataSource="projectx" />);
+
+    const disclosure = screen.getByRole("button", { name: "Add Live Account" });
+    disclosure.focus();
+    await user.keyboard("{Enter}");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Topstep Live account ID")).not.toBeNull();
+    await user.keyboard(" ");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("delegates to the native picker and clears its value for same-file reselection", () => {
+    const click = vi.fn();
+    const input = { value: "C:\\fakepath\\trades_export.csv", click };
+
+    expect(openTradeImportFilePicker(input)).toBe(true);
+    expect(input.value).toBe("");
+    expect(click).toHaveBeenCalledTimes(1);
+
+    input.value = "C:\\fakepath\\trades_export.csv";
+    expect(openTradeImportFilePicker(input)).toBe(true);
+    expect(input.value).toBe("");
+    expect(click).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports an unavailable native picker without throwing", () => {
+    expect(openTradeImportFilePicker(null)).toBe(false);
+  });
+
+  it("mounts a keyboard-operable custom picker and delegates same-file reselection", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+    const input = getNativeFileInput();
+    const nativeClick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+    const chooseButton = screen.getByRole("button", { name: "Choose file" });
+
+    chooseButton.focus();
+    await user.keyboard("{Enter}");
+    await user.keyboard(" ");
+    expect(nativeClick).toHaveBeenCalledTimes(2);
+
+    const file = chooseFile(input);
+    await screen.findByText("Review parsed trades");
+    await user.click(screen.getByRole("button", { name: "Choose Another File" }));
+    expect(nativeClick).toHaveBeenCalledTimes(3);
+
+    chooseFile(input, file);
+    await waitFor(() => expect(accountsApi.previewTradeImport).toHaveBeenCalledTimes(2));
+  });
+
+  it("cancels an in-flight preview without leaving a stale loading notice", async () => {
+    const user = userEvent.setup();
+    const pendingPreview = deferred<TradeImportPreview>();
+    let requestSignal: AbortSignal | undefined;
+    vi.spyOn(accountsApi, "previewTradeImport").mockImplementation((_accountId, _file, options) => {
+      requestSignal = options?.signal;
+      return pendingPreview.promise;
+    });
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await screen.findByRole("button", { name: "Cancel" });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(screen.queryByText(/Validating and parsing/)).toBeNull();
+    expect(screen.getByText("No file selected")).not.toBeNull();
+  });
+
+  it("offers Close and a valid Retry after a preview error", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(accountsApi, "previewTradeImport")
+      .mockRejectedValueOnce(new Error("Malformed export"))
+      .mockRejectedValueOnce(new Error("Malformed export"))
+      .mockResolvedValueOnce(preview);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+    const input = getNativeFileInput();
+
+    chooseFile(input);
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    chooseFile(input);
+    await screen.findByRole("button", { name: "Retry" });
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("Review parsed trades");
+    expect(accountsApi.previewTradeImport).toHaveBeenCalledTimes(3);
+  });
+
+  it("dismisses success and can immediately import another file", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport").mockResolvedValue(confirmResult);
+    const firstRender = render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await screen.findByRole("button", { name: "Confirm Import (2)" });
+    await user.click(screen.getByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByText(/Imported 2 trades/);
+    expect(accountsApi.confirmTradeImport).toHaveBeenCalledWith(
+      88001,
+      preview.preview_token,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText(/Imported 2 trades/)).toBeNull();
+
+    firstRender.unmount();
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+    const input = getNativeFileInput();
+    const nativeClick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+    chooseFile(input);
+    await screen.findByRole("button", { name: "Confirm Import (2)" });
+    await user.click(screen.getByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByRole("button", { name: "Import Another File" });
+    await user.click(screen.getByRole("button", { name: "Import Another File" }));
+    expect(nativeClick).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Imported 2 trades/)).toBeNull();
+  });
+
+  it("recovers a committed result when the confirmation transport outcome is unknown", async () => {
+    const user = userEvent.setup();
+    const pendingStatus = deferred<TradeImportStatus>();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport").mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.spyOn(accountsApi, "getTradeImportStatus").mockReturnValue(pendingStatus.promise);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await screen.findByRole("button", { name: "Confirm Import (2)" });
+    await user.click(screen.getByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByText("Import outcome unknown—checking status...");
+
+    pendingStatus.resolve({
+      status: "committed",
+      confirmation_retryable: false,
+      outcome_code: "committed",
+      source_file_name: confirmResult.source_file_name,
+      created_at: "2026-07-02T15:00:00Z",
+      expires_at: "2026-07-02T15:30:00Z",
+      confirmed_at: confirmResult.imported_at,
+      total_rows: confirmResult.total_rows,
+      new_rows: confirmResult.inserted_rows,
+      duplicate_rows: confirmResult.duplicate_rows,
+      conflict_rows: 0,
+      result: confirmResult,
+    });
+
+    await screen.findByText(/Imported 2 trades/);
+    expect(accountsApi.getTradeImportStatus).toHaveBeenCalledWith(
+      88001,
+      preview.preview_token,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("coalesces repeated confirmation clicks into one request", async () => {
+    const user = userEvent.setup();
+    const pendingConfirmation = deferred<TradeImportConfirmResult>();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport").mockReturnValue(pendingConfirmation.promise);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    const confirmButton = await screen.findByRole("button", { name: "Confirm Import (2)" });
+    await user.dblClick(confirmButton);
+    expect(accountsApi.confirmTradeImport).toHaveBeenCalledTimes(1);
+
+    pendingConfirmation.resolve(confirmResult);
+    await screen.findByText(/Imported 2 trades/);
+  });
+
+  it("recovers a pending confirmation after the panel is remounted", async () => {
+    const user = userEvent.setup();
+    const pendingConfirmation = deferred<TradeImportConfirmResult>();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport").mockReturnValue(pendingConfirmation.promise);
+    const firstMount = render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+    await waitFor(() => expect(accountsApi.confirmTradeImport).toHaveBeenCalledTimes(1));
+    firstMount.unmount();
+    pendingConfirmation.resolve(confirmResult);
+    await Promise.resolve();
+
+    vi.spyOn(accountsApi, "getTradeImportStatus").mockResolvedValue({
+      status: "committed",
+      confirmation_retryable: false,
+      outcome_code: "committed",
+      source_file_name: confirmResult.source_file_name,
+      created_at: "2026-07-02T15:00:00Z",
+      expires_at: "2026-07-02T15:30:00Z",
+      confirmed_at: confirmResult.imported_at,
+      total_rows: confirmResult.total_rows,
+      new_rows: confirmResult.inserted_rows,
+      duplicate_rows: confirmResult.duplicate_rows,
+      conflict_rows: 0,
+      result: confirmResult,
+    });
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    await screen.findByText(/Imported 2 trades/);
+    expect(accountsApi.getTradeImportStatus).toHaveBeenCalledWith(
+      88001,
+      preview.preview_token,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("retries confirmation once when durable status says the prior attempt rolled back", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport")
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(confirmResult);
+    vi.spyOn(accountsApi, "getTradeImportStatus").mockResolvedValue({
+      status: "pending",
+      confirmation_retryable: true,
+      outcome_code: "confirmation_retryable",
+      source_file_name: confirmResult.source_file_name,
+      created_at: "2026-07-02T15:00:00Z",
+      expires_at: "2026-07-02T15:30:00Z",
+      confirmed_at: null,
+      total_rows: confirmResult.total_rows,
+      new_rows: confirmResult.inserted_rows,
+      duplicate_rows: confirmResult.duplicate_rows,
+      conflict_rows: 0,
+      result: null,
+    });
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+
+    await screen.findByText(/Imported 2 trades/);
+    expect(accountsApi.getTradeImportStatus).toHaveBeenCalledTimes(1);
+    expect(accountsApi.confirmTradeImport).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets the user leave a pending confirmation safely and checks the durable outcome", async () => {
+    const user = userEvent.setup();
+    const confirmation = deferred<TradeImportConfirmResult>();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    vi.spyOn(accountsApi, "confirmTradeImport").mockReturnValue(confirmation.promise);
+    vi.spyOn(accountsApi, "getTradeImportStatus").mockResolvedValue({
+      status: "committed",
+      confirmation_retryable: false,
+      outcome_code: "committed",
+      source_file_name: confirmResult.source_file_name,
+      created_at: "2026-07-02T15:00:00Z",
+      expires_at: "2026-07-02T15:30:00Z",
+      confirmed_at: confirmResult.imported_at,
+      total_rows: confirmResult.total_rows,
+      new_rows: confirmResult.inserted_rows,
+      duplicate_rows: confirmResult.duplicate_rows,
+      conflict_rows: 0,
+      result: confirmResult,
+    });
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+    const firstSignal = vi.mocked(accountsApi.confirmTradeImport).mock.calls[0][2]?.signal;
+    await user.click(await screen.findByRole("button", { name: "Cancel & Check Outcome" }));
+
+    await screen.findByText(/Imported 2 trades/);
+    expect(firstSignal?.aborted).toBe(false);
+    expect(accountsApi.getTradeImportStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports Close and Choose Another on a partial-duplicate preview", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    chooseFile(getNativeFileInput());
+    await screen.findByText("Review parsed trades");
+    expect(screen.getByText("1 duplicate")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Choose Another File" })).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Review parsed trades")).toBeNull();
+  });
+
+  it("keeps the fully duplicate state compact without offering another Live account", async () => {
+    const user = userEvent.setup();
+    const duplicateOnly: TradeImportPreview = {
+      ...preview,
+      new_rows: 0,
+      duplicate_rows: preview.total_rows,
+      conflict_rows: 0,
+      trades: preview.trades.map((trade) => ({ ...trade, status: "duplicate" })),
+    };
+    vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(duplicateOnly);
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+
+    expect(screen.queryByRole("button", { name: "Add Live Account" })).toBeNull();
+
+    chooseFile(getNativeFileInput());
+    await screen.findByText("Duplicate file");
+    expect(screen.queryByText("Review parsed trades")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Confirm Import/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Choose Another File" })).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Duplicate file")).toBeNull();
   });
 });
 

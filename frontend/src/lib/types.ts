@@ -89,6 +89,7 @@ export interface AccountInfo {
   status: string;
   account_state: "ACTIVE" | "LOCKED_OUT" | "HIDDEN" | "MISSING";
   is_main: boolean;
+  is_archived: boolean;
   can_trade: boolean | null;
   is_visible: boolean | null;
   last_trade_at: string | null;
@@ -217,7 +218,30 @@ export interface LiveImportAccountInput {
   name?: string;
 }
 
-export type TradeImportRowStatus = "new" | "duplicate";
+export type TradeImportRowStatus = "new" | "duplicate" | "conflict";
+
+export interface TradeImportConflictDifference {
+  field: string;
+  stored: unknown;
+  incoming: unknown;
+}
+
+export interface AccountArchiveUpdateResult {
+  account_id: number;
+  is_archived: boolean;
+  is_main: boolean;
+  replacement_main_account_id: number | null;
+}
+
+export interface TradeImportConflict {
+  identity_kind: "source_trade_id" | "order_exit";
+  identity_value: string;
+  reason: "repeated_id_mismatch" | "stored_trade_mismatch" | "ambiguous_stored_identity";
+  stored_event_id?: number | null;
+  stored_event_ids?: number[] | null;
+  stored_row_number?: number | null;
+  differences: TradeImportConflictDifference[];
+}
 
 export interface TradeImportPreviewSummary {
   gross_pnl: number;
@@ -247,14 +271,18 @@ export interface TradeImportPreviewTrade {
   trade_day: string;
   duration: string | null;
   status: TradeImportRowStatus;
+  conflict?: TradeImportConflict | null;
 }
 
 export interface TradeImportPreview {
+  preview_token: string;
+  expires_at: string;
   source_file_name: string;
   file_sha256: string;
   total_rows: number;
   new_rows: number;
   duplicate_rows: number;
+  conflict_rows: number;
   summary: TradeImportPreviewSummary;
   trades: TradeImportPreviewTrade[];
 }
@@ -266,6 +294,30 @@ export interface TradeImportConfirmResult {
   total_rows: number;
   inserted_rows: number;
   duplicate_rows: number;
+}
+
+export type TradeImportOutcomeStatus =
+  | "pending"
+  | "confirming"
+  | "committed"
+  | "expired"
+  | "stale"
+  | "conflict"
+  | "failed";
+
+export interface TradeImportStatus {
+  status: TradeImportOutcomeStatus;
+  confirmation_retryable: boolean;
+  outcome_code: string | null;
+  source_file_name: string;
+  created_at: string;
+  expires_at: string;
+  confirmed_at: string | null;
+  total_rows: number;
+  new_rows: number;
+  duplicate_rows: number;
+  conflict_rows: number;
+  result: TradeImportConfirmResult | null;
 }
 
 export interface AccountPnlCalendarDay {
@@ -397,6 +449,31 @@ export interface PayoutTotals {
   average_amount: number;
   average_amount_cents: number;
   count: number;
+}
+
+export interface FinancialSummarySpend {
+  last_payout_date: string | null;
+  total_amount: number;
+  total_amount_cents: number;
+  expense_count: number;
+}
+
+export interface FinancialSummaryRange {
+  key: string;
+  label: string;
+  start_date: string | null;
+  end_date: string | null;
+  expense_totals: ExpenseTotals;
+  payout_totals: PayoutTotals;
+}
+
+export interface FinancialSummary {
+  as_of_date: string;
+  first_cash_flow_date: string | null;
+  expense_totals: ExpenseTotals;
+  payout_totals: PayoutTotals;
+  spend_since_last_payout: FinancialSummarySpend;
+  ranges: FinancialSummaryRange[];
 }
 
 export type JournalMood = "Focused" | "Neutral" | "Frustrated" | "Confident";

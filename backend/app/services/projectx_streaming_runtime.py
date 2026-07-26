@@ -4,10 +4,12 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass
+from typing import Callable
 
 from ..db import SessionLocal
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_hubs import ProjectXHubRunner
+from .projectx_client import ProjectXClient
 from .streaming_pnl_tracker import (
     ClosedPositionLifecycle,
     StreamingPnlTracker,
@@ -70,16 +72,34 @@ class StreamingRuntime:
             await asyncio.gather(runner_task, return_exceptions=True)
 
 
-def create_streaming_runtime() -> StreamingRuntime:
+def create_streaming_runtime(
+    *,
+    user_id: str,
+    account_id: int,
+    client_factory: Callable[[], ProjectXClient],
+) -> StreamingRuntime:
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("streaming runtime requires an explicit user_id")
+    if account_id <= 0:
+        raise ValueError("streaming runtime requires a positive account_id")
+
     with SessionLocal() as db:
         specs = load_instrument_specs(db)
     point_value_lookup = build_point_value_lookup(specs)
 
     tracker = StreamingPnlTracker(
+        owner_user_id=normalized_user_id,
+        owner_account_id=account_id,
         point_value_by_symbol=point_value_lookup,
         on_lifecycle_closed=_persist_closed_lifecycle,
     )
-    runner = ProjectXHubRunner(tracker=tracker)
+    runner = ProjectXHubRunner(
+        tracker=tracker,
+        client_factory=client_factory,
+        user_id=normalized_user_id,
+        account_id=account_id,
+    )
     return StreamingRuntime(tracker=tracker, runner=runner)
 
 
@@ -88,6 +108,7 @@ def _persist_closed_lifecycle(lifecycle: ClosedPositionLifecycle) -> None:
     try:
         save_position_lifecycle_mae_mfe(
             db,
+            user_id=lifecycle.user_id,
             account_id=lifecycle.account_id,
             contract_id=lifecycle.contract_id,
             symbol=lifecycle.symbol,

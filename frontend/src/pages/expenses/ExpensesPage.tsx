@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -13,8 +13,7 @@ import {
   createExpense,
   deletePayout,
   deleteExpense,
-  getExpenseTotals,
-  getPayoutTotals,
+  getFinancialSummary,
   isApiError,
   listPayouts,
   listExpenses,
@@ -42,10 +41,10 @@ import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, Payou
 import { isDemoModeEnabled } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatCurrency } from "../../utils/formatters";
-import { buildNetRangeOptions, formatLocalIsoDate, getEarliestIsoDate, type NetRangeOption } from "./expenseNetRanges";
+import { loadLocalAccountsForExpenseReconciliation } from "./expenseAccountLoading";
+import { buildNetRangeOptions, formatLocalIsoDate, type NetRangeOption } from "./expenseNetRanges";
 import { decideExpenseReconciliation } from "./expenseReconciliation";
 
-const TOTAL_RANGE = "all_time";
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
 const PAYOUT_PAGE_SIZE = 50;
@@ -226,29 +225,6 @@ interface SpendSinceLastPayoutSummary {
   expenseCount: number;
 }
 
-async function getOldestExpenseDate() {
-  const firstPage = await listExpenses({ limit: 1, offset: 0 });
-  if (firstPage.total === 0) {
-    return null;
-  }
-  const oldestPage = firstPage.total === 1 ? firstPage : await listExpenses({ limit: 1, offset: firstPage.total - 1 });
-  return oldestPage.items[0]?.expense_date ?? null;
-}
-
-async function getOldestPayoutDate() {
-  const firstPage = await listPayouts({ limit: 1, offset: 0 });
-  if (firstPage.total === 0) {
-    return null;
-  }
-  const oldestPage = firstPage.total === 1 ? firstPage : await listPayouts({ limit: 1, offset: firstPage.total - 1 });
-  return oldestPage.items[0]?.payout_date ?? null;
-}
-
-async function getFirstCashFlowDate() {
-  const [oldestExpenseDate, oldestPayoutDate] = await Promise.all([getOldestExpenseDate(), getOldestPayoutDate()]);
-  return getEarliestIsoDate([oldestExpenseDate, oldestPayoutDate]);
-}
-
 function buildInitialAddPayoutState(): AddPayoutState {
   return {
     payoutDate: getTodayLocalIsoDate(),
@@ -267,11 +243,11 @@ export function ExpensesPage() {
 
   const [items, setItems] = useState<ExpenseRecord[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [totals, setTotals] = useState<ExpenseTotals | null>(null);
-  const [totalsLoading, setTotalsLoading] = useState(false);
+  const [totalsLoading, setTotalsLoading] = useState(true);
   const [totalsError, setTotalsError] = useState<string | null>(null);
   const [combineSpendSnapshot, setCombineSpendSnapshot] = useState(readCombineSpendSnapshot);
   const [combineTrackerLoading, setCombineTrackerLoading] = useState(false);
@@ -284,68 +260,31 @@ export function ExpensesPage() {
   const [payoutItems, setPayoutItems] = useState<PayoutRecord[]>([]);
   const [payoutTotal, setPayoutTotal] = useState(0);
   const [payoutOffset, setPayoutOffset] = useState(0);
-  const [payoutLoading, setPayoutLoading] = useState(false);
+  const [payoutLoading, setPayoutLoading] = useState(true);
   const [payoutError, setPayoutError] = useState<string | null>(null);
   const [payoutTotals, setPayoutTotals] = useState<PayoutTotals | null>(null);
-  const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(false);
+  const [payoutTotalsLoading, setPayoutTotalsLoading] = useState(true);
   const [payoutTotalsError, setPayoutTotalsError] = useState<string | null>(null);
   const [spendSinceLastPayout, setSpendSinceLastPayout] = useState<SpendSinceLastPayoutSummary | null>(null);
-  const [spendSinceLastPayoutLoading, setSpendSinceLastPayoutLoading] = useState(false);
+  const [spendSinceLastPayoutLoading, setSpendSinceLastPayoutLoading] = useState(true);
   const [spendSinceLastPayoutError, setSpendSinceLastPayoutError] = useState<string | null>(null);
   const [netRangeOptions, setNetRangeOptions] = useState<NetRangeOption[]>(() => buildNetRangeOptions(null));
   const [netRanges, setNetRanges] = useState<NetRangeSummary[]>([]);
-  const [netRangesLoading, setNetRangesLoading] = useState(false);
+  const [netRangesLoading, setNetRangesLoading] = useState(true);
   const [netRangesError, setNetRangesError] = useState<string | null>(null);
   const [addPayoutOpen, setAddPayoutOpen] = useState(false);
   const [addPayoutState, setAddPayoutState] = useState<AddPayoutState>(buildInitialAddPayoutState());
   const [addPayoutError, setAddPayoutError] = useState<string | null>(null);
   const [addingPayout, setAddingPayout] = useState(false);
   const [dataRevision, setDataRevision] = useState(0);
-  const allTimeExpenseTotalsRequestRef = useRef<Promise<ExpenseTotals> | null>(null);
-  const allTimePayoutTotalsRequestRef = useRef<Promise<PayoutTotals> | null>(null);
   const beginExpensesRequest = useLatestRequestGuard();
-  const beginTotalsRequest = useLatestRequestGuard();
   const beginPayoutsRequest = useLatestRequestGuard();
-  const beginPayoutTotalsRequest = useLatestRequestGuard();
-  const beginSpendRequest = useLatestRequestGuard();
-  const beginNetRangesRequest = useLatestRequestGuard();
+  const beginFinancialSummaryRequest = useLatestRequestGuard();
   const demoModeEnabled = isDemoModeEnabled();
 
-  const getAllTimeExpenseTotals = useCallback(() => {
-    if (!allTimeExpenseTotalsRequestRef.current) {
-      const request = getExpenseTotals(TOTAL_RANGE);
-      allTimeExpenseTotalsRequestRef.current = request;
-      void request.catch(() => {
-        if (allTimeExpenseTotalsRequestRef.current === request) {
-          allTimeExpenseTotalsRequestRef.current = null;
-        }
-      });
-    }
-    return allTimeExpenseTotalsRequestRef.current;
-  }, []);
-
-  const getAllTimePayoutTotals = useCallback(() => {
-    if (!allTimePayoutTotalsRequestRef.current) {
-      const request = getPayoutTotals();
-      allTimePayoutTotalsRequestRef.current = request;
-      void request.catch(() => {
-        if (allTimePayoutTotalsRequestRef.current === request) {
-          allTimePayoutTotalsRequestRef.current = null;
-        }
-      });
-    }
-    return allTimePayoutTotalsRequestRef.current;
-  }, []);
-
-  const invalidateFinancialSummaryRequests = useCallback(() => {
-    allTimeExpenseTotalsRequestRef.current = null;
-    allTimePayoutTotalsRequestRef.current = null;
-  }, []);
-
   const refreshFinancialData = useCallback(() => {
-    invalidateFinancialSummaryRequests();
     setDataRevision((current) => current + 1);
-  }, [invalidateFinancialSummaryRequests]);
+  }, []);
 
   const loadExpenses = useCallback(async () => {
     const isCurrent = beginExpensesRequest();
@@ -377,28 +316,6 @@ export function ExpensesPage() {
     }
   }, [beginExpensesRequest, category, endDate, limit, offset, startDate]);
 
-  const loadTotals = useCallback(async () => {
-    const isCurrent = beginTotalsRequest();
-    setTotalsLoading(true);
-    setTotalsError(null);
-    try {
-      const response = await getAllTimeExpenseTotals();
-      if (isCurrent()) {
-        setTotals(response);
-      }
-    } catch (err) {
-      if (!isCurrent()) {
-        return;
-      }
-      setTotals(null);
-      setTotalsError(err instanceof Error ? err.message : "Failed to load totals");
-    } finally {
-      if (isCurrent()) {
-        setTotalsLoading(false);
-      }
-    }
-  }, [beginTotalsRequest, getAllTimeExpenseTotals]);
-
   const loadPayouts = useCallback(async () => {
     const isCurrent = beginPayoutsRequest();
     setPayoutLoading(true);
@@ -426,106 +343,73 @@ export function ExpensesPage() {
     }
   }, [beginPayoutsRequest, payoutOffset]);
 
-  const loadPayoutTotals = useCallback(async () => {
-    const isCurrent = beginPayoutTotalsRequest();
+  const loadFinancialSummary = useCallback(async (signal?: AbortSignal) => {
+    const isCurrent = beginFinancialSummaryRequest();
+    setTotalsLoading(true);
     setPayoutTotalsLoading(true);
-    setPayoutTotalsError(null);
-    try {
-      const response = await getAllTimePayoutTotals();
-      if (isCurrent()) {
-        setPayoutTotals(response);
-      }
-    } catch (err) {
-      if (!isCurrent()) {
-        return;
-      }
-      setPayoutTotals(null);
-      setPayoutTotalsError(err instanceof Error ? err.message : "Failed to load payout totals");
-    } finally {
-      if (isCurrent()) {
-        setPayoutTotalsLoading(false);
-      }
-    }
-  }, [beginPayoutTotalsRequest, getAllTimePayoutTotals]);
-
-  const loadSpendSinceLastPayout = useCallback(async () => {
-    const isCurrent = beginSpendRequest();
     setSpendSinceLastPayoutLoading(true);
-    setSpendSinceLastPayoutError(null);
-    try {
-      const latestPayoutPage = await listPayouts({ limit: 1, offset: 0 });
-      const lastPayoutDate = latestPayoutPage.items[0]?.payout_date ?? null;
-      const expenseTotals = lastPayoutDate === null
-        ? await getAllTimeExpenseTotals()
-        : await getExpenseTotals(TOTAL_RANGE, { startDate: lastPayoutDate });
-
-      if (isCurrent()) {
-        setSpendSinceLastPayout({
-          lastPayoutDate,
-          totalAmount: expenseTotals.total_amount,
-          totalAmountCents: expenseTotals.total_amount_cents,
-          expenseCount: expenseTotals.count,
-        });
-      }
-    } catch (err) {
-      if (!isCurrent()) {
-        return;
-      }
-      setSpendSinceLastPayout(null);
-      setSpendSinceLastPayoutError(err instanceof Error ? err.message : "Failed to load spend since last payout");
-    } finally {
-      if (isCurrent()) {
-        setSpendSinceLastPayoutLoading(false);
-      }
-    }
-  }, [beginSpendRequest, getAllTimeExpenseTotals]);
-
-  const loadNetRanges = useCallback(async () => {
-    const isCurrent = beginNetRangesRequest();
     setNetRangesLoading(true);
+    setTotalsError(null);
+    setPayoutTotalsError(null);
+    setSpendSinceLastPayoutError(null);
     setNetRangesError(null);
+
     try {
-      const firstCashFlowDate = await getFirstCashFlowDate();
-      const nextNetRangeOptions = buildNetRangeOptions(firstCashFlowDate);
-      if (!isCurrent()) {
-        return;
-      }
-      setNetRangeOptions(nextNetRangeOptions);
-
-      const summaries = await Promise.all(
-        nextNetRangeOptions.map(async (option) => {
-          const allTime = option.key === "all_time";
-          const [expenseTotal, payoutTotal] = await Promise.all([
-            allTime ? getAllTimeExpenseTotals() : getExpenseTotals(TOTAL_RANGE, option.dateRange),
-            allTime ? getAllTimePayoutTotals() : getPayoutTotals(option.dateRange),
-          ]);
-
-          return {
-            key: option.key,
-            label: option.label,
-            netAmount: payoutTotal.total_amount - expenseTotal.total_amount,
-            expenseAmount: expenseTotal.total_amount,
-            payoutAmount: payoutTotal.total_amount,
-            expenseCount: expenseTotal.count,
-            payoutCount: payoutTotal.count,
-          };
-        }),
+      const response = await getFinancialSummary(
+        { asOfDate: getTodayLocalIsoDate() },
+        { signal },
       );
-      if (isCurrent()) {
-        setNetRanges(summaries);
-      }
-    } catch (err) {
-      if (!isCurrent()) {
+      if (signal?.aborted || !isCurrent()) {
         return;
       }
+
+      setTotals(response.expense_totals);
+      setPayoutTotals(response.payout_totals);
+      setSpendSinceLastPayout({
+        lastPayoutDate: response.spend_since_last_payout.last_payout_date,
+        totalAmount: response.spend_since_last_payout.total_amount,
+        totalAmountCents: response.spend_since_last_payout.total_amount_cents,
+        expenseCount: response.spend_since_last_payout.expense_count,
+      });
+      setNetRangeOptions(response.ranges.map((range) => ({
+        key: range.key,
+        label: range.label,
+        dateRange: {
+          ...(range.start_date ? { startDate: range.start_date } : {}),
+          ...(range.end_date ? { endDate: range.end_date } : {}),
+        },
+      })));
+      setNetRanges(response.ranges.map((range) => ({
+        key: range.key,
+        label: range.label,
+        netAmount: range.payout_totals.total_amount - range.expense_totals.total_amount,
+        expenseAmount: range.expense_totals.total_amount,
+        payoutAmount: range.payout_totals.total_amount,
+        expenseCount: range.expense_totals.count,
+        payoutCount: range.payout_totals.count,
+      })));
+    } catch (err) {
+      if (signal?.aborted || !isCurrent()) {
+        return;
+      }
+      const message = err instanceof Error ? err.message : "Failed to load financial summary";
+      setTotals(null);
+      setPayoutTotals(null);
+      setSpendSinceLastPayout(null);
       setNetRanges([]);
-      setNetRangesError(err instanceof Error ? err.message : "Failed to load net ranges");
+      setTotalsError(message);
+      setPayoutTotalsError(message);
+      setSpendSinceLastPayoutError(message);
+      setNetRangesError(message);
     } finally {
-      if (isCurrent()) {
+      if (!signal?.aborted && isCurrent()) {
+        setTotalsLoading(false);
+        setPayoutTotalsLoading(false);
+        setSpendSinceLastPayoutLoading(false);
         setNetRangesLoading(false);
       }
     }
-  }, [beginNetRangesRequest, getAllTimeExpenseTotals, getAllTimePayoutTotals]);
+  }, [beginFinancialSummaryRequest]);
 
   const listAllExpensesByCategory = useCallback(async (expenseCategory: Extract<ExpenseCategory, "evaluation_fee" | "activation_fee">) => {
     const rows: ExpenseRecord[] = [];
@@ -618,7 +502,7 @@ export function ExpensesPage() {
       }
 
       try {
-        const payload = await accountsApi.getAccounts({ showInactive: true, showMissing: false, bypassCache: true });
+        const payload = await loadLocalAccountsForExpenseReconciliation(accountsApi.getAccounts);
         const activeCombineAccounts = collectActiveCombineAccounts(payload);
         const activeCombineByAccountId = new Map<number, ActiveCombineAccount>();
         for (const account of activeCombineAccounts) {
@@ -749,11 +633,10 @@ export function ExpensesPage() {
 
   useEffect(() => {
     void dataRevision;
-    void loadTotals();
-    void loadPayoutTotals();
-    void loadSpendSinceLastPayout();
-    void loadNetRanges();
-  }, [dataRevision, loadNetRanges, loadPayoutTotals, loadSpendSinceLastPayout, loadTotals]);
+    const controller = new AbortController();
+    void loadFinancialSummary(controller.signal);
+    return () => controller.abort();
+  }, [dataRevision, loadFinancialSummary]);
 
   useEffect(() => {
     setOffset(0);
@@ -941,7 +824,11 @@ export function ExpensesPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <p className="text-xs text-slate-400">
-                    {totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}
+                    {totalsLoading
+                      ? "Loading recorded spend..."
+                      : totals
+                        ? `${totals.count} expense${totals.count === 1 ? "" : "s"}`
+                        : "No data"}
                   </p>
                   <Button
                     variant="ghost"
@@ -1144,7 +1031,9 @@ export function ExpensesPage() {
 
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
-              Page {Math.min(currentPage, totalPages)} of {totalPages} ({total} total)
+              {loading
+                ? "Loading expense total..."
+                : `Page ${Math.min(currentPage, totalPages)} of ${totalPages} (${total} total)`}
             </p>
             <div className="flex items-center gap-2">
               <Button
@@ -1254,7 +1143,9 @@ export function ExpensesPage() {
 
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
-              Page {Math.min(payoutCurrentPage, payoutTotalPages)} of {payoutTotalPages} ({payoutTotal} total)
+              {payoutLoading
+                ? "Loading payout total..."
+                : `Page ${Math.min(payoutCurrentPage, payoutTotalPages)} of ${payoutTotalPages} (${payoutTotal} total)`}
             </p>
             <div className="flex items-center gap-2">
               <Button

@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useOutletContext } from "react-router-dom";
 
+import type { AppShellOutletContext } from "../../app/AppShell";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
@@ -8,24 +9,18 @@ import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
-import {
-  ACCOUNT_QUERY_PARAM,
-  parseAccountId,
-  readStoredAccountId,
-  readStoredMainAccountId,
-  writeStoredAccountId,
-} from "../../lib/accountSelection";
-import { sortAccountsForSelection } from "../../lib/accountOrdering";
 import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
+import { useAccountRequestGate, type AccountRequestToken } from "../../lib/accountRequestGate";
 import { getDemoAccountId, getDemoAccountName, getDemoTradeId } from "../../lib/demoMode";
-import { useLatestRequestGuard } from "../../lib/latestRequest";
+import { getTradingDayRange } from "../../lib/tradingDay";
 import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
 import { getTradeNetPnl } from "../../lib/tradePnl";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import { buildTradeSymbolSearchText, getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import type { AccountInfo, AccountSummary, AccountTrade } from "../../lib/types";
 import { formatCurrency, formatInteger, formatNumber, formatPercent, formatPnl } from "../../utils/formatters";
+import { runAccountScopedTradeSync } from "./tradesAccountRequests";
 
 const PAGE_SIZE = 50;
 const DEFAULT_LIMIT = 200;
@@ -247,19 +242,56 @@ function clampPercent(value: number) {
   return Math.max(0, Math.min(100, value));
 }
 
-function toStartIso(date: string) {
-  return `${date}T00:00:00Z`;
+function TradesPageLoadingState() {
+  return (
+    <div className="space-y-4 pb-8" role="status" aria-live="polite" aria-busy="true">
+      <h1 className="sr-only">Trades</h1>
+      <p className="sr-only">Loading the active account and trade history.</p>
+      <Skeleton className="h-48 w-full" />
+      <div className="grid gap-3 xl:grid-cols-3" aria-hidden="true">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <Skeleton key={`trades-page-loading-summary-${index}`} className="h-[220px]" />
+        ))}
+      </div>
+      <Skeleton className="h-72 w-full" aria-hidden="true" />
+    </div>
+  );
 }
 
-function toEndIso(date: string) {
-  return `${date}T23:59:59.999Z`;
+function TradesAccountState({ error }: { error?: string }) {
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <CardTitle>Trades</CardTitle>
+        <CardDescription>
+          {error ? "The saved account list could not be loaded." : "Select an active account to review trade history."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div
+          className={cn(
+            "rounded-2xl border px-4 py-8 text-center",
+            error
+              ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
+              : "border-dashed border-slate-700/80 bg-slate-950/35 text-slate-300",
+          )}
+          role={error ? "alert" : "status"}
+        >
+          <p className="text-sm font-medium">{error ?? "No active account selected."}</p>
+          {!error ? <p className="mt-2 text-sm text-slate-400">Choose an account from the header to load trades.</p> : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function TradesPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
-
-  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const {
+    accounts: orderedAccounts,
+    accountsLoading,
+    accountsError,
+    selectedAccountId: shellSelectedAccountId,
+  } = useOutletContext<AppShellOutletContext>();
 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -269,6 +301,7 @@ export function TradesPage() {
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [settledDataScope, setSettledDataScope] = useState<AccountRequestToken | null>(null);
 
   const [trades, setTrades] = useState<AccountTrade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
@@ -278,91 +311,39 @@ export function TradesPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const deferredSymbolQuery = useDeferredValue(symbolQuery);
-  const beginAccountsRequest = useLatestRequestGuard();
-  const beginTradeDataRequest = useLatestRequestGuard();
-  const beginSyncRequest = useLatestRequestGuard();
 
-  const startIso = startDate ? toStartIso(startDate) : undefined;
-  const endIso = endDate ? toEndIso(endDate) : undefined;
-  const dateRangeInvalid = startDate !== "" && endDate !== "" && startDate > endDate;
-
-  const setActiveAccount = useCallback(
-    (accountId: number) => {
-      const next = new URLSearchParams(searchParams);
-      next.set(ACCOUNT_QUERY_PARAM, String(accountId));
-      setSearchParams(next, { replace: true });
-      writeStoredAccountId(accountId);
-    },
-    [searchParams, setSearchParams],
-  );
-
-  const loadAccounts = useCallback(async () => {
-    const isCurrent = beginAccountsRequest();
-    try {
-      const payload = await accountsApi.getSelectableAccountsLocalFirst();
-      if (isCurrent()) {
-        setAccounts(payload);
-      }
-    } catch {
-      if (isCurrent()) {
-        setAccounts([]);
-      }
-    }
-  }, [beginAccountsRequest]);
-
-  useEffect(() => {
-    void loadAccounts();
-  }, [loadAccounts]);
-
-  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
-
-  useEffect(() => {
-    if (orderedAccounts.length === 0) {
-      return;
-    }
-
-    if (accountFromQuery && orderedAccounts.some((account) => account.id === accountFromQuery)) {
-      writeStoredAccountId(accountFromQuery);
-      return;
-    }
-
-    const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
-    if (persistedMainAccountId) {
-      setActiveAccount(persistedMainAccountId);
-      return;
-    }
-
-    const storedMainAccountId = readStoredMainAccountId();
-    if (storedMainAccountId && orderedAccounts.some((account) => account.id === storedMainAccountId)) {
-      setActiveAccount(storedMainAccountId);
-      return;
-    }
-
-    const storedAccountId = readStoredAccountId();
-    if (storedAccountId && orderedAccounts.some((account) => account.id === storedAccountId)) {
-      setActiveAccount(storedAccountId);
-      return;
-    }
-
-    setActiveAccount(orderedAccounts[0].id);
-  }, [orderedAccounts, accountFromQuery, setActiveAccount]);
+  const startRange = startDate ? getTradingDayRange(startDate) : null;
+  const endRange = endDate ? getTradingDayRange(endDate) : null;
+  const startIso = startRange?.start;
+  const endIso = endRange?.end;
+  const dateRangeInvalid =
+    (startDate !== "" && startRange === null) ||
+    (endDate !== "" && endRange === null) ||
+    (startDate !== "" && endDate !== "" && startDate > endDate);
 
   const selectedAccount = useMemo(
-    () => orderedAccounts.find((account) => account.id === accountFromQuery) ?? null,
-    [orderedAccounts, accountFromQuery],
+    () => orderedAccounts.find((account) => account.id === shellSelectedAccountId) ?? null,
+    [orderedAccounts, shellSelectedAccountId],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
   const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
+  const tradeDataGate = useAccountRequestGate(selectedAccountId);
+  const syncGate = useAccountRequestGate(selectedAccountId);
 
-  const loadTradesAndSummary = useCallback(async () => {
-    const isCurrent = beginTradeDataRequest();
-    if (!selectedAccountId) {
+  const loadTradesAndSummary = useCallback(async (requestedAccountId = selectedAccountId) => {
+    if (!requestedAccountId) {
+      setSettledDataScope(null);
       setSummaryLoading(false);
       setTradesLoading(false);
       setSummary(emptySummary);
       setTrades([]);
       setSummaryError(null);
       setTradesError(null);
+      return;
+    }
+
+    const request = tradeDataGate.begin(requestedAccountId, "trade-data");
+    if (!tradeDataGate.isCurrent(request)) {
       return;
     }
 
@@ -374,6 +355,7 @@ export function TradesPage() {
       setTrades([]);
       setSummaryError(message);
       setTradesError(message);
+      setSettledDataScope(request);
       return;
     }
 
@@ -382,11 +364,11 @@ export function TradesPage() {
     setSummaryError(null);
     setTradesError(null);
 
-    const summaryPromise = accountsApi.getSummary(selectedAccountId, {
+    const summaryPromise = accountsApi.getSummary(requestedAccountId, {
       start: startIso,
       end: endIso,
     });
-    const tradesPromise = accountsApi.getTrades(selectedAccountId, {
+    const tradesPromise = accountsApi.getTrades(requestedAccountId, {
       limit,
       start: startIso,
       end: endIso,
@@ -394,12 +376,12 @@ export function TradesPage() {
 
     try {
       const [nextSummary, nextTrades] = await Promise.all([summaryPromise, tradesPromise]);
-      if (isCurrent()) {
+      if (tradeDataGate.isCurrent(request)) {
         setSummary(nextSummary);
         setTrades(nextTrades);
       }
     } catch (err) {
-      if (!isCurrent()) {
+      if (!tradeDataGate.isCurrent(request)) {
         return;
       }
       const message = err instanceof Error ? err.message : "Failed to load trade data";
@@ -408,12 +390,13 @@ export function TradesPage() {
       setSummary(emptySummary);
       setTrades([]);
     } finally {
-      if (isCurrent()) {
+      if (tradeDataGate.isCurrent(request)) {
         setSummaryLoading(false);
         setTradesLoading(false);
+        setSettledDataScope(request);
       }
     }
-  }, [beginTradeDataRequest, dateRangeInvalid, endIso, limit, selectedAccountId, startIso]);
+  }, [dateRangeInvalid, endIso, limit, selectedAccountId, startIso, tradeDataGate]);
 
   useEffect(() => {
     void loadTradesAndSummary();
@@ -424,10 +407,9 @@ export function TradesPage() {
   }, [symbolQuery, selectedAccountId, startDate, endDate, limit]);
 
   useEffect(() => {
-    beginSyncRequest();
     setSyncing(false);
     setSyncMessage(null);
-  }, [beginSyncRequest, selectedAccountId]);
+  }, [selectedAccountId]);
 
   useEffect(() => {
     function handleAccountTradesSynced(event: Event) {
@@ -552,28 +534,28 @@ export function TradesPage() {
       return;
     }
 
-    const isCurrent = beginSyncRequest();
+    const requestedAccountId = selectedAccountId;
     setSyncing(true);
     setSyncMessage(null);
-
-    try {
-      const result = await accountsApi.refreshTrades(selectedAccountId, {
-        start: startIso,
-        end: endIso,
-      });
-      await loadTradesAndSummary();
-      if (isCurrent()) {
+    await runAccountScopedTradeSync({
+      accountId: requestedAccountId,
+      gate: syncGate,
+      refresh: () =>
+        accountsApi.refreshTrades(requestedAccountId, {
+          start: startIso,
+          end: endIso,
+        }),
+      reload: loadTradesAndSummary,
+      onSuccess: (result) => {
         setSyncMessage(`Fetched ${result.fetched_count}, stored ${result.inserted_count} new events.`);
-      }
-    } catch (err) {
-      if (isCurrent()) {
-        setSyncMessage(err instanceof Error ? err.message : "Failed to sync trades");
-      }
-    } finally {
-      if (isCurrent()) {
+      },
+      onError: (error) => {
+        setSyncMessage(error instanceof Error ? error.message : "Failed to sync trades");
+      },
+      onSettled: () => {
         setSyncing(false);
-      }
-    }
+      },
+    });
   }
 
   function handleClearFilters() {
@@ -582,6 +564,25 @@ export function TradesPage() {
     setSymbolQuery("");
     setLimit(DEFAULT_LIMIT);
     setSyncMessage(null);
+  }
+
+  if (accountsLoading) {
+    return <TradesPageLoadingState />;
+  }
+
+  if (accountsError) {
+    return <TradesAccountState error={accountsError} />;
+  }
+
+  if (!selectedAccountId) {
+    return <TradesAccountState />;
+  }
+
+  if (
+    settledDataScope?.accountId !== selectedAccountId ||
+    !tradeDataGate.isActive(settledDataScope)
+  ) {
+    return <TradesPageLoadingState />;
   }
 
   return (

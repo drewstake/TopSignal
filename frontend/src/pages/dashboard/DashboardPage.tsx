@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
@@ -27,12 +27,8 @@ import {
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
 import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
-import { sortAccountsForSelection } from "../../lib/accountOrdering";
-import { getDemoTradeId } from "../../lib/demoMode";
+import { sortAccountsForActiveSelection } from "../../lib/accountOrdering";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
-import { formatTradeDirection, tradeDirectionBadgeVariant } from "../../lib/tradeDirection";
-import { getTradeNetPnl } from "../../lib/tradePnl";
-import { getDisplayTradeSymbol } from "../../lib/tradeSymbol";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../../lib/tradeSyncEvents";
 import type { AccountInfo, AccountPnlCalendarDay, AccountSizingBenchmark, AccountSummary, AccountTrade } from "../../lib/types";
 import { logPerfInfo } from "../../lib/perf";
@@ -47,9 +43,12 @@ import {
 } from "../../utils/metrics";
 import { computeSustainability, type SustainabilityLabel } from "../../utils/sustainability";
 import { CopyTradePanel } from "./components/CopyTradePanel";
+import { RecentTradesCard } from "./components/RecentTradesCard";
 import { TradeImportPanel } from "./components/TradeImportPanel";
+import { ViewportDeferredSection } from "./components/ViewportDeferredSection";
 import {
   COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
+  COPY_TRADE_MATCH_WINDOW_MINUTES,
   MAX_COPY_TRADE_FOLLOWERS,
   buildCopyTradeAccountRows,
   combineCopyTradePnlCalendarDays,
@@ -64,11 +63,19 @@ import {
   updateCopyTradeModeSetting,
   updateCopyTradeUncopyEventsResetAt,
   writeStoredCopyTradeSettings,
+  type CopyTradeAccountRow,
+  type CopyTradeDriftSummary,
   type CopyTradeMetricSnapshot,
   type CopyTradeSettings,
+  type CopyTradeTotals,
 } from "./copyTrade";
+import { computeCopyTradeWhenEnabled } from "./copyTradePerformance";
 import { computeDashboardDerivedMetrics } from "./metrics/calculations";
 import type { MetricValue } from "./metrics/types";
+import {
+  RECENT_TRADES_RENDER_PAGE_SIZE,
+  getNextRecentTradesVisibleCount,
+} from "./recentTradesPagination";
 import { resolveCustomDateRangeDraft } from "./customDateRange";
 import {
   resolveLiveAccountEnableDecision,
@@ -94,6 +101,33 @@ type ConcretePointsBasis = Exclude<PointsBasis, "auto">;
 const PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES", "NQ", "ES", "MGC", "SIL"];
 const DISPLAY_PAYOFF_POINTS_BASES: ConcretePointsBasis[] = ["MNQ", "MES"];
 const RISK_PRESSURE_FULL_SCALE_PERCENT = 25;
+const EMPTY_COPY_TRADE_ACCOUNT_IDS: number[] = [];
+const EMPTY_COPY_TRADE_SNAPSHOTS: Record<number, CopyTradeMetricSnapshot | undefined> = {};
+const EMPTY_COPY_TRADE_ROWS: CopyTradeAccountRow[] = [];
+const EMPTY_COPY_TRADE_CALENDAR_DAYS: AccountPnlCalendarDay[] = [];
+const EMPTY_COPY_TRADE_TRADES_BY_ACCOUNT_ID: Record<number, AccountTrade[] | undefined> = {};
+const EMPTY_COPY_TRADE_TOTALS: CopyTradeTotals = {
+  hasLeader: false,
+  canCalculate: false,
+  combinedNetPnl: 0,
+  combinedDailyPnl: 0,
+  combinedBalance: null,
+  leaderNetPnl: 0,
+  leaderDailyPnl: 0,
+  followerContributionNetPnl: 0,
+  followerContributionDailyPnl: 0,
+  activeCopiedAccountCount: 0,
+  followersCopyingCount: 0,
+  warnings: [],
+};
+const EMPTY_COPY_TRADE_DRIFT_SUMMARY: CopyTradeDriftSummary = {
+  likelyUncopyEventCount: 0,
+  followerOnlyTradeCount: 0,
+  followerOnlyNetPnl: 0,
+  affectedAccountCount: 0,
+  matchWindowMinutes: COPY_TRADE_MATCH_WINDOW_MINUTES,
+  accounts: [],
+};
 
 const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> = [
   { key: "1D", label: "1D" },
@@ -102,15 +136,6 @@ const METRICS_RANGE_OPTIONS: Array<{ key: MetricsRangePreset; label: string }> =
   { key: "6M", label: "6M" },
   { key: "ALL", label: "All" },
 ];
-
-const timestampFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: true,
-  timeZone: "America/New_York",
-});
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -250,13 +275,6 @@ function formatDurationCompact(minutes: number) {
     return `${hours}h ${minutesRemainder}m`;
   }
   return `${minutesRemainder}m ${seconds}s`;
-}
-
-function formatTradeDuration(minutes: number | null | undefined) {
-  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
-    return "-";
-  }
-  return formatDurationCompact(minutes);
 }
 
 function formatMicroPositionSize(size: number, tradeCountUsed: number) {
@@ -408,7 +426,7 @@ function DeferredDashboardCardSkeleton({
   bodyHeightClassName: string;
 }) {
   return (
-    <Card>
+    <Card role="status" aria-live="polite" aria-busy="true">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
@@ -417,6 +435,32 @@ function DeferredDashboardCardSkeleton({
         <Skeleton className={cn("w-full", bodyHeightClassName)} />
       </CardContent>
     </Card>
+  );
+}
+
+function ViewportDeferredDashboardCard({
+  title,
+  description,
+  bodyHeightClassName,
+  children,
+}: {
+  title: string;
+  description: string;
+  bodyHeightClassName: string;
+  children: ReactNode;
+}) {
+  const fallback = (
+    <DeferredDashboardCardSkeleton
+      title={title}
+      description={description}
+      bodyHeightClassName={bodyHeightClassName}
+    />
+  );
+
+  return (
+    <ViewportDeferredSection fallback={fallback}>
+      <Suspense fallback={fallback}>{children}</Suspense>
+    </ViewportDeferredSection>
   );
 }
 
@@ -566,12 +610,49 @@ async function refreshCopyTradeRange(accountIds: readonly number[], range: Pick<
   );
 }
 
+function DashboardLoadingState() {
+  return (
+    <div
+      className="dashboard-surface space-y-5 pb-8"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <h1 className="sr-only">Trading Dashboard</h1>
+      <div className="rounded-xl border border-app-border/80 bg-app-bg/45 p-5">
+        <div className="flex items-center gap-3">
+          <span className="relative flex h-3 w-3 shrink-0" aria-hidden="true">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-app-accent opacity-50" />
+            <span className="relative inline-flex h-3 w-3 rounded-full bg-app-accent" />
+          </span>
+          <div>
+            <p className="text-sm font-medium text-app-text">Loading dashboard...</p>
+            <p className="mt-0.5 text-xs text-app-muted">Restoring your active account and saved trade data.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-5" aria-hidden="true">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-28 w-full" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, index) => (
+            <Skeleton key={`dashboard-loading-card-${index}`} className="h-44 w-full" />
+          ))}
+        </div>
+        <Skeleton className="h-72 w-full" />
+      </div>
+    </div>
+  );
+}
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
@@ -602,6 +683,7 @@ export function DashboardPage() {
   const [trades, setTrades] = useState<AccountTrade[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [tradesError, setTradesError] = useState<string | null>(null);
+  const [recentTradesVisibleCount, setRecentTradesVisibleCount] = useState(RECENT_TRADES_RENDER_PAGE_SIZE);
   const [metricsTrades, setMetricsTrades] = useState<AccountTrade[]>([]);
   const [metricsTradesLoading, setMetricsTradesLoading] = useState(false);
   const [metricsTradesError, setMetricsTradesError] = useState<string | null>(null);
@@ -628,6 +710,7 @@ export function DashboardPage() {
 
   const loadAccounts = useCallback(async () => {
     const isCurrent = beginAccountsRequest();
+    setAccountsLoading(true);
     try {
       const payload = await accountsApi.getSelectableAccountsLocalFirst();
       if (isCurrent()) {
@@ -636,6 +719,10 @@ export function DashboardPage() {
     } catch {
       if (isCurrent()) {
         setAccounts([]);
+      }
+    } finally {
+      if (isCurrent()) {
+        setAccountsLoading(false);
       }
     }
   }, [beginAccountsRequest]);
@@ -647,10 +734,7 @@ export function DashboardPage() {
         ...current.filter((candidate) => candidate.id !== account.id),
       ]);
       setActiveAccount(account.id);
-      setTradeDataSourceFeedback({
-        tone: "success",
-        message: "Switched to the separate Live CSV account. Your Express accounts were not changed.",
-      });
+      setTradeDataSourceFeedback(null);
     },
     [setActiveAccount],
   );
@@ -684,7 +768,7 @@ export function DashboardPage() {
     };
   }, []);
 
-  const orderedAccounts = useMemo(() => sortAccountsForSelection(accounts), [accounts]);
+  const orderedAccounts = useMemo(() => sortAccountsForActiveSelection(accounts), [accounts]);
 
   useEffect(() => {
     if (orderedAccounts.length === 0) {
@@ -752,12 +836,18 @@ export function DashboardPage() {
 
   const copyTradeModeActive = copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport;
   const copyTradeRosterAccountIds = useMemo(
-    () => (copyTradeModeActive ? getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings) : []),
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
+        getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings),
+      ),
     [copyTradeModeActive, copyTradeSettings, orderedAccounts, selectedAccountId],
   );
   const copyTradeFollowerAccountIds = useMemo(
-    () => getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings).filter((accountId) => accountId !== selectedAccountId),
-    [copyTradeSettings, orderedAccounts, selectedAccountId],
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
+        copyTradeRosterAccountIds.filter((accountId) => accountId !== selectedAccountId),
+      ),
+    [copyTradeModeActive, copyTradeRosterAccountIds, selectedAccountId],
   );
   const metricsRangeQuery = useMemo(
     () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
@@ -934,21 +1024,25 @@ export function DashboardPage() {
       setPointPayoffByBasis(nextPointPayoffByBasis);
       setPnlCalendarDays(nextPnlCalendar);
 
-      const nextCopyTradeAccountDataById: Record<number, CopyTradeLoadedAccountData> = {
-        [selectedAccountId]: {
-          summary: nextSummaryBundle.summary,
-          calendarDays: nextPnlCalendar,
-          trades: [],
-          tradesError: null,
-          error: null,
-        },
-      };
+      if (copyTradeModeActive) {
+        const nextCopyTradeAccountDataById: Record<number, CopyTradeLoadedAccountData> = {
+          [selectedAccountId]: {
+            summary: nextSummaryBundle.summary,
+            calendarDays: nextPnlCalendar,
+            trades: [],
+            tradesError: null,
+            error: null,
+          },
+        };
 
-      followerResults.forEach(({ accountId, data }) => {
-        nextCopyTradeAccountDataById[accountId] = data;
-      });
+        followerResults.forEach(({ accountId, data }) => {
+          nextCopyTradeAccountDataById[accountId] = data;
+        });
 
-      setCopyTradeAccountDataById(nextCopyTradeAccountDataById);
+        setCopyTradeAccountDataById(nextCopyTradeAccountDataById);
+      } else {
+        setCopyTradeAccountDataById({});
+      }
     } catch (err) {
       if (!isCurrent()) {
         return;
@@ -980,6 +1074,7 @@ export function DashboardPage() {
 
   const loadTrades = useCallback(async () => {
     const isCurrent = beginTradesRequest();
+    setRecentTradesVisibleCount(RECENT_TRADES_RENDER_PAGE_SIZE);
     if (!selectedAccountId) {
       setTradesLoading(false);
       setTrades([]);
@@ -1182,65 +1277,91 @@ export function DashboardPage() {
     };
   }, [reloadDashboard, selectedAccountId]);
 
-  const copyTradeSnapshotsByAccountId = useMemo<Record<number, CopyTradeMetricSnapshot | undefined>>(() => {
-    const snapshots: Record<number, CopyTradeMetricSnapshot | undefined> = {};
-    const accountById = new Map(orderedAccounts.map((account) => [account.id, account]));
+  const copyTradeSnapshotsByAccountId = useMemo<Record<number, CopyTradeMetricSnapshot | undefined>>(
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_SNAPSHOTS, () => {
+        const snapshots: Record<number, CopyTradeMetricSnapshot | undefined> = {};
+        const accountById = new Map(orderedAccounts.map((account) => [account.id, account]));
 
-    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
-      const account = accountById.get(Number(accountId));
-      snapshots[Number(accountId)] = {
-        netPnl: data.summary?.net_pnl ?? 0,
-        dailyPnl: getCopyTradeDailyNetPnlForTradingDay(
-          data.calendarDays,
-          currentTradingDayKey,
-          data.summary,
-          account?.last_trade_at,
-          account?.balance,
-        ),
-        openPositions: 0,
-        loadError: data.error,
-      };
-    });
+        Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+          const account = accountById.get(Number(accountId));
+          snapshots[Number(accountId)] = {
+            netPnl: data.summary?.net_pnl ?? 0,
+            dailyPnl: getCopyTradeDailyNetPnlForTradingDay(
+              data.calendarDays,
+              currentTradingDayKey,
+              data.summary,
+              account?.last_trade_at,
+              account?.balance,
+            ),
+            openPositions: 0,
+            loadError: data.error,
+          };
+        });
 
-    return snapshots;
-  }, [copyTradeAccountDataById, currentTradingDayKey, orderedAccounts]);
+        return snapshots;
+      }),
+    [copyTradeAccountDataById, copyTradeModeActive, currentTradingDayKey, orderedAccounts],
+  );
 
   const copyTradeRows = useMemo(
     () =>
-      buildCopyTradeAccountRows({
-        accounts: orderedAccounts,
-        leaderAccountId: selectedAccountId,
-        followerAccountIds: copyTradeFollowerAccountIds,
-        snapshotsByAccountId: copyTradeSnapshotsByAccountId,
-      }),
-    [copyTradeFollowerAccountIds, copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_ROWS, () =>
+        buildCopyTradeAccountRows({
+          accounts: orderedAccounts,
+          leaderAccountId: selectedAccountId,
+          followerAccountIds: copyTradeFollowerAccountIds,
+          snapshotsByAccountId: copyTradeSnapshotsByAccountId,
+        }),
+      ),
+    [copyTradeFollowerAccountIds, copyTradeModeActive, copyTradeSnapshotsByAccountId, orderedAccounts, selectedAccountId],
   );
 
-  const copyTradeTotals = useMemo(() => computeCopyTradeTotals(copyTradeRows), [copyTradeRows]);
-  const copyTradeCalendarDays = useMemo(() => {
-    const calendarDaysByAccountId: Record<number, AccountPnlCalendarDay[] | undefined> = {};
-    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
-      calendarDaysByAccountId[Number(accountId)] = data.calendarDays;
-    });
-    return combineCopyTradePnlCalendarDays(copyTradeRows, calendarDaysByAccountId);
-  }, [copyTradeAccountDataById, copyTradeRows]);
-  const copyTradeTradesByAccountId = useMemo(() => {
-    const tradesByAccountId: Record<number, AccountTrade[] | undefined> = {};
-    Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
-      tradesByAccountId[Number(accountId)] = data.trades;
-    });
-    if (selectedAccountId !== null) {
-      tradesByAccountId[selectedAccountId] = metricsTrades;
-    }
-    return tradesByAccountId;
-  }, [copyTradeAccountDataById, metricsTrades, selectedAccountId]);
+  const copyTradeTotals = useMemo(
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_TOTALS, () =>
+        computeCopyTradeTotals(copyTradeRows),
+      ),
+    [copyTradeModeActive, copyTradeRows],
+  );
+  const copyTradeCalendarDays = useMemo(
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_CALENDAR_DAYS, () => {
+        const calendarDaysByAccountId: Record<number, AccountPnlCalendarDay[] | undefined> = {};
+        Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+          calendarDaysByAccountId[Number(accountId)] = data.calendarDays;
+        });
+        return combineCopyTradePnlCalendarDays(copyTradeRows, calendarDaysByAccountId);
+      }),
+    [copyTradeAccountDataById, copyTradeModeActive, copyTradeRows],
+  );
+  const copyTradeTradesByAccountId = useMemo(
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_TRADES_BY_ACCOUNT_ID, () => {
+        const tradesByAccountId: Record<number, AccountTrade[] | undefined> = {};
+        Object.entries(copyTradeAccountDataById).forEach(([accountId, data]) => {
+          tradesByAccountId[Number(accountId)] = data.trades;
+        });
+        if (selectedAccountId !== null) {
+          tradesByAccountId[selectedAccountId] = metricsTrades;
+        }
+        return tradesByAccountId;
+      }),
+    [copyTradeAccountDataById, copyTradeModeActive, metricsTrades, selectedAccountId],
+  );
   const copyTradeDriftResetAt = useMemo(
-    () => getCopyTradeUncopyEventsResetAt(copyTradeSettings, selectedAccountId),
-    [copyTradeSettings, selectedAccountId],
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, null, () =>
+        getCopyTradeUncopyEventsResetAt(copyTradeSettings, selectedAccountId),
+      ),
+    [copyTradeModeActive, copyTradeSettings, selectedAccountId],
   );
   const copyTradeDriftSummary = useMemo(
-    () => computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId, { resetAt: copyTradeDriftResetAt }),
-    [copyTradeDriftResetAt, copyTradeRows, copyTradeTradesByAccountId],
+    () =>
+      computeCopyTradeWhenEnabled(copyTradeModeActive, EMPTY_COPY_TRADE_DRIFT_SUMMARY, () =>
+        computeCopyTradeDriftSummary(copyTradeRows, copyTradeTradesByAccountId, { resetAt: copyTradeDriftResetAt }),
+      ),
+    [copyTradeDriftResetAt, copyTradeModeActive, copyTradeRows, copyTradeTradesByAccountId],
   );
   const copyTradeStatsActive = copyTradeModeActive && copyTradeTotals.canCalculate;
   const rawDashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
@@ -1674,6 +1795,14 @@ export function DashboardPage() {
   const recentTrades = trades;
   const recentTradesLoading = tradesLoading;
   const recentTradesError = tradesError;
+  const clearSelectedTradeDate = useCallback(() => setSelectedTradeDate(null), []);
+  const showMoreRecentTrades = useCallback(
+    () =>
+      setRecentTradesVisibleCount((current) =>
+        getNextRecentTradesVisibleCount(current, recentTrades.length),
+      ),
+    [recentTrades.length],
+  );
   const copyFullStatsMetrics = useMemo<CopyFullStatsMetrics>(
     () => ({
       summary: analyticsSummary,
@@ -1898,10 +2027,7 @@ export function DashboardPage() {
         const decision = resolveLiveAccountEnableDecision(orderedAccounts);
         if (decision.kind === "select") {
           setActiveAccount(decision.accountId);
-          setTradeDataSourceFeedback({
-            tone: "success",
-            message: "Switched to the separate Live CSV account. Your Express accounts were not changed.",
-          });
+          setTradeDataSourceFeedback(null);
           return;
         }
 
@@ -2066,6 +2192,10 @@ export function DashboardPage() {
         ? "text-app-accent"
         : "text-app-muted";
 
+  if (accountsLoading) {
+    return <DashboardLoadingState />;
+  }
+
   return (
     <div className="dashboard-surface space-y-5 pb-8">
       <h1 className="sr-only">Trading Dashboard</h1>
@@ -2211,6 +2341,7 @@ export function DashboardPage() {
         accountId={selectedAccountId}
         tradeDataSource={selectedAccount?.trade_data_source ?? null}
         liveAccounts={liveCsvAccounts}
+        accountsLoading={accountsLoading}
         accountSetupRequest={liveAccountSetupRequest}
         onImportComplete={reloadDashboard}
         onAccountCreated={handleLiveImportAccountCreated}
@@ -3085,14 +3216,10 @@ export function DashboardPage() {
         )}
       </MasonryGrid>
 
-      <Suspense
-        fallback={
-          <DeferredDashboardCardSkeleton
-            title="Account Balance"
-            description="Loading the daily balance view."
-            bodyHeightClassName="h-[360px]"
-          />
-        }
+      <ViewportDeferredDashboardCard
+        title="Account Balance"
+        description="Loading the daily balance view."
+        bodyHeightClassName="h-[360px]"
       >
         <DailyAccountBalanceCard
           days={dashboardPnlCalendarDays}
@@ -3100,16 +3227,12 @@ export function DashboardPage() {
           error={pnlCalendarError}
           currentBalance={dashboardCurrentBalance}
         />
-      </Suspense>
+      </ViewportDeferredDashboardCard>
 
-      <Suspense
-        fallback={
-          <DeferredDashboardCardSkeleton
-            title="PnL Calendar"
-            description="Loading calendar performance and journal markers."
-            bodyHeightClassName="h-[520px]"
-          />
-        }
+      <ViewportDeferredDashboardCard
+        title="PnL Calendar"
+        description="Loading calendar performance and journal markers."
+        bodyHeightClassName="h-[520px]"
       >
         <PnlCalendarCard
           days={dashboardPnlCalendarDays}
@@ -3123,105 +3246,20 @@ export function DashboardPage() {
           onAddJournalForSelectedDay={openJournalForDate}
           onVisibleRangeChange={handleCalendarVisibleRangeChange}
         />
-      </Suspense>
+      </ViewportDeferredDashboardCard>
 
-      <Card>
-        <CardHeader className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle>{selectedTradeDate ? "Trade Events" : "Recent Trade Events"}</CardTitle>
-            <CardDescription>
-              {selectedTradeDate
-                ? `Showing trades for ${selectedTradeDateLabel ?? selectedTradeDate}, up to ${DAY_FILTER_TRADE_LIMIT} events.`
-                : `Showing up to ${TRADE_LIMIT} most recent events for the active account.`}
-            </CardDescription>
-          </div>
-          {selectedTradeDate ? (
-            <Button variant="ghost" size="sm" onClick={() => setSelectedTradeDate(null)}>
-              Clear Day Filter
-            </Button>
-          ) : null}
-        </CardHeader>
-        <CardContent className="space-y-0">
-          <div className="max-h-[320px] overflow-auto rounded-xl border border-app-border/80">
-            <table className="w-full min-w-[1100px] table-fixed border-collapse text-sm whitespace-nowrap">
-              <thead className="sticky top-0 z-10 bg-app-surface/95 text-xs uppercase tracking-wide text-app-muted">
-                <tr>
-                  <th className="w-[10%] px-2 py-2 text-left font-medium">Entry Time (ET)</th>
-                  <th className="w-[10%] px-2 py-2 text-left font-medium">Exit Time (ET)</th>
-                  <th className="w-[10%] px-2 py-2 text-center font-medium">Duration</th>
-                  <th className="w-[10%] px-2 py-2 text-center font-medium">Symbol</th>
-                  <th className="w-[10%] px-2 py-2 text-center font-medium">Direction</th>
-                  <th className="w-[10%] px-2 py-2 text-center font-medium">Size</th>
-                  <th className="w-[10%] px-2 py-2 text-right font-medium">Entry Price</th>
-                  <th className="w-[10%] px-2 py-2 text-right font-medium">Exit Price</th>
-                  <th className="w-[10%] px-2 py-2 text-right font-medium">PnL</th>
-                  <th className="w-[10%] px-2 py-2 text-right font-medium">Trade ID</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-app-border/70">
-                {recentTradesLoading ? (
-                  <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-app-muted">
-                      Loading trades...
-                    </td>
-                  </tr>
-                ) : recentTradesError ? (
-                  <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-app-negative">
-                      {recentTradesError}
-                    </td>
-                  </tr>
-                ) : recentTrades.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="px-2 py-4 text-center text-app-muted">
-                      No trades available.
-                    </td>
-                  </tr>
-                ) : (
-                  recentTrades.map((trade) => {
-                    const pnlValue = getTradeNetPnl(trade) ?? 0;
-                    const direction = formatTradeDirection(trade.side);
-                    const entryTime = trade.entry_time;
-                    const exitTime = trade.exit_time ?? trade.timestamp;
-                    const entryPrice = trade.entry_price;
-                    const exitPrice = trade.exit_price ?? trade.price;
-                    return (
-                      <tr key={trade.id} className="transition hover:bg-app-surface/70">
-                        <td className="px-2 py-2 text-left text-app-muted">
-                          {entryTime ? timestampFormatter.format(new Date(entryTime)) : "-"}
-                        </td>
-                        <td className="px-2 py-2 text-left text-app-muted">
-                          {timestampFormatter.format(new Date(exitTime))}
-                        </td>
-                        <td className="px-2 py-2 text-center text-app-muted">
-                          {formatTradeDuration(trade.duration_minutes)}
-                        </td>
-                        <td className="px-2 py-2 text-center font-medium text-app-text">
-                          {getDisplayTradeSymbol(trade.symbol, trade.contract_id)}
-                        </td>
-                        <td className="px-2 py-2 text-center">
-                          <Badge variant={tradeDirectionBadgeVariant(trade.side)}>{direction}</Badge>
-                        </td>
-                        <td className="px-2 py-2 text-center text-app-text-soft">{formatInteger(trade.size)}</td>
-                        <td className="px-2 py-2 text-right font-mono text-app-text-soft">
-                          {entryPrice == null ? "-" : entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-app-text-soft">
-                          {exitPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 5 })}
-                        </td>
-                        <td className={`px-2 py-2 text-right font-semibold ${pnlClass(pnlValue)}`}>{formatPnl(pnlValue)}</td>
-                        <td className="px-2 py-2 text-right font-mono text-app-muted">
-                          {getDemoTradeId(trade.source_trade_id ?? trade.order_id)}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <RecentTradesCard
+        trades={recentTrades}
+        loading={recentTradesLoading}
+        error={recentTradesError}
+        selectedTradeDate={selectedTradeDate}
+        selectedTradeDateLabel={selectedTradeDateLabel}
+        visibleCount={recentTradesVisibleCount}
+        recentTradeLimit={TRADE_LIMIT}
+        dayFilterTradeLimit={DAY_FILTER_TRADE_LIMIT}
+        onClearDayFilter={clearSelectedTradeDate}
+        onShowMore={showMoreRecentTrades}
+      />
     </div>
   );
 }

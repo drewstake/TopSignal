@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 LEDGER_TABLE = "topsignal_schema_migrations"
 LOCK_NAME = "topsignal-schema-migrations-v1"
-CURRENT_SCHEMA_BASELINE = "schema-20260724-v2"
+CURRENT_SCHEMA_BASELINE = "schema-20260725-v4"
 LEGACY_DATABENTO_TABLE_NAMES = frozenset(
     {
         "databento_import_batches",
@@ -49,12 +49,27 @@ BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
     "trade_import_batches": {
         "user_id",
         "account_id",
+        "account_row_id",
+        "account_external_id",
         "source_file_name",
         "file_sha256",
         "total_rows",
         "inserted_rows",
         "duplicate_rows",
         "imported_at",
+    },
+    "trade_import_previews": {
+        "token_hash",
+        "user_id",
+        "account_id",
+        "account_row_id",
+        "account_external_id",
+        "normalized_manifest",
+        "dedupe_snapshot",
+        "status",
+        "expires_at",
+        "retention_until",
+        "import_batch_id",
     },
     "projectx_trade_events": {
         "user_id",
@@ -67,6 +82,8 @@ BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
         "entry_timestamp",
         "entry_price",
         "import_batch_id",
+        "account_row_id",
+        "account_external_id",
     },
     "bot_backtests": {"user_id", "input_fingerprint", "result_snapshot"},
     "bot_runs": {"last_evaluated_at", "last_error"},

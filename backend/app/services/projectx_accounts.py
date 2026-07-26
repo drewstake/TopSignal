@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import hashlib
 import math
+from threading import RLock
 from typing import Any
 
+from sqlalchemy import case, or_, text
 from sqlalchemy.orm import Session
 
 from ..auth import get_authenticated_user_id
@@ -24,6 +28,7 @@ TRADE_DATA_SOURCES = {
 }
 ACCOUNT_DISPLAY_NAME_MAX_LENGTH = 120
 MAX_PROJECTX_ACCOUNT_ID = 9_223_372_036_854_775_807
+_ACCOUNT_MAIN_LOCK_STRIPES = tuple(RLock() for _ in range(256))
 
 
 class AccountTradeDataSourceConflictError(Exception):
@@ -40,10 +45,59 @@ class AccountTradeDataSourceConflictError(Exception):
         self.requested_trade_data_source = requested_trade_data_source
 
 
+class LiveAccountArchivedError(Exception):
+    def __init__(self, *, account_id: int) -> None:
+        super().__init__("live_account_archived")
+        self.account_id = account_id
+
+
+class MainAccountReplacementRequiredError(Exception):
+    def __init__(self, *, account_id: int) -> None:
+        super().__init__("main_account_replacement_required")
+        self.account_id = account_id
+
+
 def _resolve_user_id(user_id: str | None) -> str:
     if user_id:
         return user_id
     return get_authenticated_user_id()
+
+
+@contextmanager
+def serialize_account_main_mutation(
+    db: Session,
+    *,
+    user_id: str | None = None,
+    provider: str = ACCOUNT_PROVIDER,
+):
+    """Serialize main-account decisions until the caller commits or rolls back.
+
+    PostgreSQL uses a transaction-scoped advisory lock, which also coordinates
+    separate API processes. SQLite uses a deterministic in-process lock stripe
+    for local development and concurrency tests. Callers must end the database
+    transaction inside this context so the lock covers the full mutation.
+    """
+
+    resolved_user_id = _resolve_user_id(user_id)
+    lock_key_bytes = hashlib.blake2b(
+        f"topsignal:account-main:{resolved_user_id}:{provider}".encode("utf-8"),
+        digest_size=8,
+    ).digest()
+    signed_lock_key = int.from_bytes(lock_key_bytes, byteorder="big", signed=True)
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+
+    if dialect_name == "postgresql":
+        db.execute(
+            text("select pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": signed_lock_key},
+        )
+        yield
+        return
+
+    stripe = _ACCOUNT_MAIN_LOCK_STRIPES[signed_lock_key % len(_ACCOUNT_MAIN_LOCK_STRIPES)]
+    with stripe:
+        yield
 
 
 def account_state_from_flags(*, can_trade: bool | None, is_visible: bool | None) -> str:
@@ -181,6 +235,8 @@ def create_projectx_import_account(
     )
     if existing is not None:
         if existing.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+            if existing.archived_at is not None:
+                raise LiveAccountArchivedError(account_id=int(external_id))
             return existing
         raise AccountTradeDataSourceConflictError(
             account_id=int(external_id),
@@ -255,11 +311,14 @@ def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | No
         .filter(Account.user_id == resolved_user_id)
         .filter(Account.provider == ACCOUNT_PROVIDER)
         .filter(Account.external_id == external_id)
+        .with_for_update()
         .first()
     )
 
     if target is None:
         raise LookupError("projectx_account_not_found")
+    if target.archived_at is not None:
+        raise LiveAccountArchivedError(account_id=account_id)
 
     (
         db.query(Account)
@@ -271,6 +330,111 @@ def set_main_projectx_account(db: Session, account_id: int, *, user_id: str | No
     )
 
     target.is_main = True
+
+
+def archive_projectx_import_account(
+    db: Session,
+    account_id: int,
+    *,
+    user_id: str | None = None,
+    replacement_account_id: int | None = None,
+    now_utc: datetime | None = None,
+) -> tuple[Account, Account | None]:
+    resolved_user_id = _resolve_user_id(user_id)
+    target = get_projectx_account_row(
+        db,
+        account_id,
+        user_id=resolved_user_id,
+        lock_for_update=True,
+    )
+    if target is None:
+        raise LookupError("projectx_account_not_found")
+    if target.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
+        raise ValueError("only_live_csv_accounts_can_be_archived")
+    if target.archived_at is not None:
+        return target, None
+
+    replacement: Account | None = None
+    if target.is_main:
+        if replacement_account_id is not None:
+            if replacement_account_id == account_id:
+                raise ValueError("main_account_replacement_must_be_different")
+            replacement = get_projectx_account_row(
+                db,
+                replacement_account_id,
+                user_id=resolved_user_id,
+                lock_for_update=True,
+            )
+            if replacement is None:
+                raise ValueError("main_account_replacement_not_found")
+            if replacement.archived_at is not None:
+                raise ValueError("main_account_replacement_is_archived")
+            if not _is_normal_account_candidate(replacement):
+                raise ValueError("main_account_replacement_is_not_selectable")
+        else:
+            replacement = (
+                db.query(Account)
+                .filter(Account.user_id == resolved_user_id)
+                .filter(Account.provider == ACCOUNT_PROVIDER)
+                .filter(Account.external_id != str(account_id))
+                .filter(Account.archived_at.is_(None))
+                .filter(
+                    or_(
+                        Account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT,
+                        Account.account_state.in_([ACCOUNT_STATE_ACTIVE, ACCOUNT_STATE_LOCKED_OUT]),
+                    )
+                )
+                .order_by(
+                    case((Account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT, 0), else_=1),
+                    case((Account.account_state == ACCOUNT_STATE_ACTIVE, 0), else_=1),
+                    Account.created_at.asc(),
+                    Account.id.asc(),
+                )
+                .with_for_update()
+                .first()
+            )
+        if replacement is None:
+            raise MainAccountReplacementRequiredError(account_id=account_id)
+        target.is_main = False
+        replacement.is_main = True
+
+    target.archived_at = _as_utc(now_utc or datetime.now(timezone.utc))
+    return target, replacement
+
+
+def unarchive_projectx_import_account(
+    db: Session,
+    account_id: int,
+    *,
+    user_id: str | None = None,
+) -> Account:
+    resolved_user_id = _resolve_user_id(user_id)
+    target = get_projectx_account_row(
+        db,
+        account_id,
+        user_id=resolved_user_id,
+        lock_for_update=True,
+    )
+    if target is None:
+        raise LookupError("projectx_account_not_found")
+    if target.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
+        raise ValueError("only_live_csv_accounts_can_be_unarchived")
+    if target.archived_at is None:
+        return target
+
+    target.archived_at = None
+    has_main_account = (
+        db.query(Account.id)
+        .filter(Account.user_id == resolved_user_id)
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+        .filter(Account.is_main.is_(True))
+        .with_for_update()
+        .first()
+        is not None
+    )
+    if not has_main_account:
+        target.is_main = True
+    return target
 
 
 def set_projectx_account_display_name(
@@ -302,7 +466,10 @@ def should_include_account(
     *,
     show_inactive: bool,
     show_missing: bool,
+    include_archived: bool = False,
 ) -> bool:
+    if row.archived_at is not None:
+        return include_archived
     if row.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
         return True
     if row.is_main:
@@ -314,6 +481,14 @@ def should_include_account(
     if row.account_state == ACCOUNT_STATE_MISSING:
         return show_missing
     return False
+
+
+def _is_normal_account_candidate(row: Account) -> bool:
+    if row.archived_at is not None:
+        return False
+    if row.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+        return True
+    return row.account_state in {ACCOUNT_STATE_ACTIVE, ACCOUNT_STATE_LOCKED_OUT}
 
 
 def account_id_from_external_id(external_id: str) -> int | None:

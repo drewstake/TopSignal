@@ -58,6 +58,7 @@ class _Inspector:
             "bot_order_attempts",
             "projectx_trade_events",
             "trade_import_batches",
+            "trade_import_previews",
         ]
         if self.include_databento:
             tables.extend(
@@ -87,12 +88,31 @@ class _Inspector:
                 for column_name in {
                     "user_id",
                     "account_id",
+                    "account_row_id",
+                    "account_external_id",
                     "source_file_name",
                     "file_sha256",
                     "total_rows",
                     "inserted_rows",
                     "duplicate_rows",
                     "imported_at",
+                }
+            ]
+        if table_name == "trade_import_previews":
+            return [
+                {"name": column_name, "nullable": False}
+                for column_name in {
+                    "token_hash",
+                    "user_id",
+                    "account_id",
+                    "account_row_id",
+                    "account_external_id",
+                    "normalized_manifest",
+                    "dedupe_snapshot",
+                    "status",
+                    "expires_at",
+                    "retention_until",
+                    "import_batch_id",
                 }
             ]
         if table_name == "projectx_trade_events":
@@ -105,6 +125,8 @@ class _Inspector:
                     "entry_timestamp",
                     "entry_price",
                     "import_batch_id",
+                    "account_row_id",
+                    "account_external_id",
                 }
             ]
         databento_columns = {
@@ -154,15 +176,26 @@ class _Inspector:
     def get_check_constraints(self, table_name):
         if table_name == "bot_configs":
             return [{"sqltext": "order_size <= 10000 and order_size = trunc(order_size)"}]
+        if table_name == "projectx_trade_events":
+            return [
+                {"sqltext": "size <= 10000 and size = trunc(size)"},
+                {"sqltext": "import_batch_id is null or account_row_id is not null"},
+            ]
         return [{"sqltext": "status in ('pending', 'submission_unknown')"}]
 
     def get_foreign_keys(self, table_name):
         if table_name == "projectx_trade_events":
             return [
                 {
-                    "constrained_columns": ["import_batch_id"],
+                    "constrained_columns": [
+                        "import_batch_id",
+                        "user_id",
+                        "account_id",
+                        "account_row_id",
+                        "account_external_id",
+                    ],
                     "referred_table": "trade_import_batches",
-                    "options": {"ondelete": "SET NULL"},
+                    "options": {"ondelete": "RESTRICT"},
                 }
             ]
         return [
@@ -179,7 +212,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260724_restore_express_trade_data_source.sql"} in db.params
+    assert {"version": "20260725_live_account_archiving.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -252,4 +285,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260724-v2"} in db.params
+    assert {"version": "schema-20260725-v4"} in db.params
