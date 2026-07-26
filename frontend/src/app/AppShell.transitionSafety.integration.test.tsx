@@ -172,7 +172,7 @@ describe("AppShell transition safety integration", () => {
     writeStoredAccountId(secondaryAccount.id);
     const router = renderShell();
     const accountSelect = await screen.findByRole("combobox", { name: /active account/i });
-    expect((accountSelect as HTMLSelectElement).value).toBe(String(secondaryAccount.id));
+    await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe(String(secondaryAccount.id)));
 
     const themesLink = screen.getByRole("link", { name: "Themes" });
     expect(themesLink.getAttribute("href")).toBe(`/themes?account=${secondaryAccount.id}`);
