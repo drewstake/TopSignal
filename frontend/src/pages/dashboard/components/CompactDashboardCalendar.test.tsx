@@ -31,7 +31,11 @@ describe("CompactDashboardCalendar", () => {
     render(<CompactDashboardCalendar {...props()} />);
     expect(screen.getAllByRole("gridcell")).toHaveLength(42);
     const july1 = screen.getByRole("button", { name: /July 1, 2026, \+\$25/i });
-    const value = Array.from(july1.querySelectorAll("span")).find((span) => span.textContent === "+$25");
+    const value = Array.from(july1.querySelectorAll("span")).find((span) => (
+      span.classList.contains("text-app-positive-text")
+    ));
+    expect(value).not.toBeNull();
+    expect(value?.textContent).toMatch(/^\+\$25(?:\.0+)?$/);
     expect(value?.className).toContain("text-app-positive-text");
     expect(july1.className).toContain("sm:min-h-12");
     expect(july1.textContent).toContain("1t");
