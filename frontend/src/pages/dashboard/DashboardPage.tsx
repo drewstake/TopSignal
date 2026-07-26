@@ -2199,9 +2199,10 @@ export function DashboardPage() {
   return (
     <div className="dashboard-surface space-y-5 pb-8">
       <h1 className="sr-only">Trading Dashboard</h1>
-      <div className="space-y-1.5">
-        <div className="max-w-full pb-1">
-          <div className="flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
+      <div className="space-y-2">
+        <div className="space-y-1.5">
+          <div className="max-w-full pb-1">
+            <div className="flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
             <div className="flex flex-col gap-1 sm:flex-row">
               <Input
                 type="date"
@@ -2332,39 +2333,30 @@ export function DashboardPage() {
                 className="h-11 w-full rounded-lg px-2.5 text-[11px] sm:h-8 sm:w-auto"
               />
             </Suspense>
+            </div>
           </div>
+          {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
         </div>
-        {customRangeInvalid ? <p className="w-full text-xs text-app-negative">End date must be on or after start date.</p> : null}
+
+        <TradeImportPanel
+          accountId={selectedAccountId}
+          tradeDataSource={selectedAccount?.trade_data_source ?? null}
+          liveAccounts={liveCsvAccounts}
+          accountsLoading={accountsLoading}
+          accountSetupRequest={liveAccountSetupRequest}
+          onImportComplete={reloadDashboard}
+          onAccountCreated={handleLiveImportAccountCreated}
+          onAccountSelected={handleLiveImportAccountCreated}
+        />
+
+        {!selectedAccountIsCsvImport && selectedAccount?.account_state === "MISSING" ? (
+          <Card className="border-app-warning/40 bg-app-warning/10 p-4">
+            <p className="text-sm text-app-warning">
+              This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
+            </p>
+          </Card>
+        ) : null}
       </div>
-
-      <TradeImportPanel
-        accountId={selectedAccountId}
-        tradeDataSource={selectedAccount?.trade_data_source ?? null}
-        liveAccounts={liveCsvAccounts}
-        accountsLoading={accountsLoading}
-        accountSetupRequest={liveAccountSetupRequest}
-        onImportComplete={reloadDashboard}
-        onAccountCreated={handleLiveImportAccountCreated}
-        onAccountSelected={handleLiveImportAccountCreated}
-      />
-
-      {selectedAccountIsCsvImport ? (
-        <Card className="border-app-accent/35 bg-app-accent/10 p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="accent">Live · CSV</Badge>
-            <p className="text-sm font-medium text-app-text">This account uses imported Topstep trade history.</p>
-          </div>
-          <p className="mt-1 text-xs text-app-muted">
-            ProjectX sync and Copy Trade Mode are disabled. Current provider balance and trading status are not included in trade exports.
-          </p>
-        </Card>
-      ) : selectedAccount?.account_state === "MISSING" ? (
-        <Card className="border-app-warning/40 bg-app-warning/10 p-4">
-          <p className="text-sm text-app-warning">
-            This account is missing from ProjectX. Metrics and trade history are being served from locally stored data.
-          </p>
-        </Card>
-      ) : null}
 
       {copyTradeModeActive ? (
         <CopyTradePanel

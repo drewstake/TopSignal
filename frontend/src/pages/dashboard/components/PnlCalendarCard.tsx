@@ -89,24 +89,16 @@ function formatPnl(value: number) {
   });
 }
 
-function formatCostCompact(value: number) {
-  return compactCurrencyFormatter.format(Math.abs(Number.isFinite(value) ? value : 0));
-}
-
 function formatCopyDay(value: string) {
   return copyDayFormatter.format(parseIsoDate(value));
 }
 
 function calendarDayDetails(point: AccountPnlCalendarDay) {
-  const commissions = point.commissions ?? 0;
-  const nonCommissionFees = point.non_commission_fees ?? Math.max(point.fees - commissions, 0);
   const wins = point.win_count ?? 0;
   const losses = point.loss_count ?? 0;
   const breakeven = point.breakeven_count ?? 0;
 
   return {
-    commissions,
-    nonCommissionFees,
     wins,
     losses,
     breakeven,
@@ -115,9 +107,6 @@ function calendarDayDetails(point: AccountPnlCalendarDay) {
       `Net P&L ${formatPnl(point.net_pnl)}.`,
       `${wins} wins, ${losses} losses, ${breakeven} breakeven, ${point.trade_count} total trades.`,
       `Gross P&L ${formatPnl(point.gross_pnl)}.`,
-      `Non-commission fees ${formatCostCompact(nonCommissionFees)}.`,
-      `Commissions ${formatCostCompact(commissions)}.`,
-      `Total fees ${formatCostCompact(point.fees)}.`,
     ].join(" "),
   };
 }
@@ -425,7 +414,7 @@ export function PnlCalendarCard({
         {loading ? (
           <div className="grid grid-cols-7 gap-2">
             {Array.from({ length: 35 }).map((_, index) => (
-              <Skeleton key={`calendar-skeleton-${index}`} className="h-28" />
+              <Skeleton key={`calendar-skeleton-${index}`} className="h-24" />
             ))}
           </div>
         ) : error ? (
@@ -455,7 +444,7 @@ export function PnlCalendarCard({
                       <div key={`calendar-row-${rowStart}`} className="grid grid-cols-[repeat(7,minmax(0,1fr))_96px] gap-2">
                         {weekCells.map((cell) => {
                           if (cell.dayNumber === null) {
-                            return <div key={cell.key} className="h-28 rounded-lg border border-transparent" />;
+                            return <div key={cell.key} className="h-24 rounded-lg border border-transparent" />;
                           }
 
                           const point = cell.point;
@@ -475,7 +464,7 @@ export function PnlCalendarCard({
                               aria-label={pointDetails?.accessibleLabel ?? `${formatCopyDay(cell.key)}. No trades.`}
                               title={pointDetails?.accessibleLabel ?? "No trades"}
                               onClick={() => onDaySelect?.(isSelected ? null : cell.key)}
-                              className={`h-28 rounded-lg border p-2 text-left transition ${
+                              className={`h-24 rounded-lg border p-2 text-left transition ${
                                 isSelected
                                   ? "border-app-accent/90 ring-1 ring-app-accent/70"
                                   : "border-app-border/80 hover:border-app-border/80"
@@ -513,12 +502,6 @@ export function PnlCalendarCard({
                                   <p className="mt-0.5 text-[10px] font-medium text-app-text-soft">
                                     W {pointDetails?.wins ?? 0} · L {pointDetails?.losses ?? 0} · T {point.trade_count}
                                   </p>
-                                  <p className="mt-1 truncate text-[9px] text-app-muted">
-                                    Fees {formatCostCompact(pointDetails?.nonCommissionFees ?? 0)}
-                                  </p>
-                                  <p className="truncate text-[9px] text-app-muted">
-                                    Comm {formatCostCompact(pointDetails?.commissions ?? 0)}
-                                  </p>
                                 </>
                               ) : (
                                 <p className="mt-2 text-[11px] text-app-muted-strong">No trades</p>
@@ -527,7 +510,7 @@ export function PnlCalendarCard({
                           );
                         })}
                         <div
-                          className="flex h-28 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
+                          className="flex h-24 flex-col items-center justify-center rounded-lg border border-app-border/80 p-2 text-center"
                           style={{ backgroundColor: tileBackground(summary.netPnl, maxAbsWeekPnl) }}
                         >
                           <p className="text-xs font-medium uppercase tracking-wide text-app-muted">Week {rowIndex + 1}</p>

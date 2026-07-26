@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { accountsApi, ApiError } from "../../../lib/api";
+import { requestTradeImportFilePicker } from "../../../lib/tradeImportEvents";
 import type { AccountInfo, TradeImportConfirmResult, TradeImportPreview, TradeImportStatus } from "../../../lib/types";
 import { TradeImportPanel, TradeImportReview } from "./TradeImportPanel";
 import { getTradeImportErrorMessage } from "./tradeImportErrors";
@@ -257,7 +258,7 @@ describe("TradeImportPanel", () => {
       <TradeImportPanel accountId={null} accountsLoading liveAccounts={[]} />,
     );
 
-    expect(markup).toContain("Loading your saved Live account...");
+    expect(markup).toContain("Loading account...");
     expect(markup).not.toContain("Topstep Live account ID");
     expect(markup).not.toContain("Account name (optional)");
     expect(markup).not.toContain("Add Import Account");
@@ -283,8 +284,7 @@ describe("TradeImportPanel", () => {
 
     expect(markup).toContain("Select or add a separate Live CSV account");
     expect(markup).toMatch(/<input[^>]*type="file"[^>]*disabled=""/);
-    expect(markup).toContain("Add the Live CSV account required for imports.");
-    expect(markup).toMatch(/<button[^>]*>Choose file<\/button>/);
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Upload trade file<\/button>/);
   });
 
   it("accepts a trade export for a Live CSV account", () => {
@@ -294,8 +294,10 @@ describe("TradeImportPanel", () => {
 
     expect(markup).not.toContain("Select or add a separate Live CSV account");
     expect(markup).not.toMatch(/<input[^>]*type="file"[^>]*disabled=""/);
-    expect(markup).toContain("Accepted: .csv and .xlsx");
-    expect(markup).toContain("No file selected");
+    expect(markup).not.toContain("Import trades");
+    expect(markup).not.toContain("Upload trade file");
+    expect(markup).not.toContain("Accepted: .csv and .xlsx");
+    expect(markup).not.toContain("No file selected");
     expect(markup).not.toContain("Topstep Live account ID");
     expect(markup).not.toContain("Add Live Account");
     expect(markup).not.toContain('aria-expanded="false"');
@@ -364,17 +366,14 @@ describe("TradeImportPanel", () => {
     expect(openTradeImportFilePicker(null)).toBe(false);
   });
 
-  it("mounts a keyboard-operable custom picker and delegates same-file reselection", async () => {
+  it("delegates header and review requests with same-file reselection", async () => {
     const user = userEvent.setup();
     vi.spyOn(accountsApi, "previewTradeImport").mockResolvedValue(preview);
     render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
     const input = getNativeFileInput();
     const nativeClick = vi.spyOn(input, "click").mockImplementation(() => undefined);
-    const chooseButton = screen.getByRole("button", { name: "Choose file" });
-
-    chooseButton.focus();
-    await user.keyboard("{Enter}");
-    await user.keyboard(" ");
+    act(() => requestTradeImportFilePicker());
+    act(() => requestTradeImportFilePicker());
     expect(nativeClick).toHaveBeenCalledTimes(2);
 
     const file = chooseFile(input);
@@ -384,6 +383,16 @@ describe("TradeImportPanel", () => {
 
     chooseFile(input, file);
     await waitFor(() => expect(accountsApi.previewTradeImport).toHaveBeenCalledTimes(2));
+  });
+
+  it("opens the same native picker from the Live account header action", () => {
+    render(<TradeImportPanel accountId={88001} tradeDataSource="csv_import" />);
+    const input = getNativeFileInput();
+    const nativeClick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+
+    act(() => requestTradeImportFilePicker());
+
+    expect(nativeClick).toHaveBeenCalledTimes(1);
   });
 
   it("cancels an in-flight preview without leaving a stale loading notice", async () => {
@@ -402,7 +411,8 @@ describe("TradeImportPanel", () => {
 
     expect(requestSignal?.aborted).toBe(true);
     expect(screen.queryByText(/Validating and parsing/)).toBeNull();
-    expect(screen.getByText("No file selected")).not.toBeNull();
+    expect(screen.queryByText("Import trades")).toBeNull();
+    expect(getNativeFileInput().disabled).toBe(false);
   });
 
   it("offers Close and a valid Retry after a preview error", async () => {

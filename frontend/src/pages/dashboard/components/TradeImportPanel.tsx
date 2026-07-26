@@ -5,6 +5,7 @@ import { Button } from "../../../components/ui/Button";
 import { Input } from "../../../components/ui/Input";
 import { accountsApi, isApiError } from "../../../lib/api";
 import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
+import { TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT } from "../../../lib/tradeImportEvents";
 import type {
   AccountInfo,
   AccountTradeDataSource,
@@ -622,6 +623,16 @@ export function TradeImportPanel({
     openTradeImportFilePicker(fileInputRef.current);
   }
 
+  const chooseFileFromHeader = useEffectEvent(() => {
+    handleChooseFile();
+  });
+
+  useEffect(() => {
+    const handleFilePickerRequest = () => chooseFileFromHeader();
+    window.addEventListener(TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT, handleFilePickerRequest);
+    return () => window.removeEventListener(TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT, handleFilePickerRequest);
+  }, []);
+
   async function applyCommittedImport(
     requestAccountId: number,
     previewToken: string,
@@ -886,83 +897,62 @@ export function TradeImportPanel({
   return (
     <section
       id="live-trade-import-panel"
-      className="rounded-xl border border-app-border/80 bg-app-bg/45 p-3"
-      aria-labelledby={`${inputId}-title`}
+      className={canImport ? "contents" : "rounded-xl border border-app-border/80 bg-app-bg/45 p-3"}
+      aria-label={canImport ? "Trade import" : undefined}
+      aria-labelledby={canImport ? undefined : `${inputId}-title`}
       aria-busy={busy}
     >
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div className="max-w-2xl">
+      {!canImport ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <p id={`${inputId}-title`} className="text-sm font-semibold text-app-text">
-            Import Topstep Live Trades
+            Import trades
           </p>
-          <p className="mt-1 text-xs text-app-muted">
-            Upload a CSV or Excel trade export for the selected Live CSV account. You can review parsed rows and duplicates before anything is stored.
-          </p>
-          {!accountsLoading && !canImport ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="mt-2"
-              disabled={busy}
-              aria-expanded={showAccountForm}
-              aria-controls={`${inputId}-account-setup`}
-              onClick={() => {
-                setShowAccountForm((current) => !current);
-                setError(null);
-              }}
-            >
-              {showAccountForm
-                ? hasLiveAccount
-                  ? "Cancel Live Account Selection"
-                  : "Cancel Live Account Setup"
-                : hasLiveAccount
-                  ? "Select Live Account"
-                  : "Add Live Account"}
-            </Button>
-          ) : null}
-        </div>
-        <div className="block w-full max-w-md space-y-1">
-          <span id={`${inputId}-label`} className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
-            Trade export file
-          </span>
-          <input
-            ref={fileInputRef}
-            id={inputId}
-            type="file"
-            accept={acceptedFileTypes}
-            disabled={!canImport || busy}
-            tabIndex={-1}
-            className="sr-only"
-            aria-labelledby={`${inputId}-label`}
-            aria-describedby={`${inputId}-help`}
-            onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-          />
-          <div className="flex min-h-10 items-center gap-3 rounded-xl border border-app-border bg-app-surface/70 px-2 py-1.5">
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy}
-              aria-describedby={`${inputId}-help`}
-              onClick={handleChooseFile}
-            >
-              {previewing ? "Reading file..." : "Choose file"}
-            </Button>
-            <span className="min-w-0 flex-1 truncate text-xs text-app-muted" title={selectedFile?.name}>
-              {selectedFile?.name ?? "No file selected"}
-            </span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {!accountsLoading ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                aria-expanded={showAccountForm}
+                aria-controls={`${inputId}-account-setup`}
+                onClick={() => {
+                  setShowAccountForm((current) => !current);
+                  setError(null);
+                }}
+              >
+                {showAccountForm
+                  ? hasLiveAccount
+                    ? "Cancel Live Account Selection"
+                    : "Cancel Live Account Setup"
+                  : hasLiveAccount
+                    ? "Select Live Account"
+                    : "Add Live Account"}
+              </Button>
+            ) : null}
+            {accountsLoading ? (
+              <span className="text-xs text-app-muted" role="status">
+                Loading account...
+              </span>
+            ) : (
+              <Button type="button" size="sm" disabled>
+                Upload trade file
+              </Button>
+            )}
           </div>
-          <span id={`${inputId}-help`} className="block text-[10px] text-app-muted-strong">
-            {accountsLoading
-              ? "Loading your saved Live account..."
-              : canImport
-                ? "Accepted: .csv and .xlsx"
-                : hasLiveAccount
-                  ? "Select your Live CSV account before choosing a trade file."
-                  : "Add the Live CSV account required for imports."}
-          </span>
         </div>
-      </div>
+      ) : null}
+      <input
+        ref={fileInputRef}
+        id={inputId}
+        type="file"
+        accept={acceptedFileTypes}
+        disabled={!canImport || busy}
+        tabIndex={-1}
+        className="sr-only"
+        aria-label="Trade export file (.csv or .xlsx)"
+        onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
+      />
 
       {!accountsLoading && showAccountForm ? (
         <div

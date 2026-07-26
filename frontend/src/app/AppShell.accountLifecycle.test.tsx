@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT } from "../lib/tradeImportEvents";
 import type { AccountInfo } from "../lib/types";
 
 const {
@@ -59,6 +60,33 @@ afterEach(() => {
 });
 
 describe("AppShell account lifecycle reconciliation", () => {
+  it("turns the Live account action into an enabled upload request", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const live = account(88001, "Live Active", "csv_import", true);
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([live]);
+    const uploadRequested = vi.fn();
+    window.addEventListener(TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT, uploadRequested, { once: true });
+    const router = createMemoryRouter(
+      [
+        {
+          path: "/",
+          element: <AppShell />,
+          children: [{ index: true, element: <div>Account-aware content</div> }],
+        },
+      ],
+      { initialEntries: ["/?account=88001"] },
+    );
+
+    render(<RouterProvider router={router} />);
+    const uploadButton = await screen.findByRole("button", { name: "Upload Trade File" });
+    expect((uploadButton as HTMLButtonElement).disabled).toBe(false);
+
+    uploadButton.click();
+
+    expect(uploadRequested).toHaveBeenCalledTimes(1);
+    expect(refreshTradesMock).not.toHaveBeenCalled();
+  });
+
   it("applies a Live replacement before reloading so no transient Express refresh starts", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     const live = account(88001, "Live Active", "csv_import", false);

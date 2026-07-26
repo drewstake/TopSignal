@@ -29,6 +29,7 @@ import { sortAccountsForActiveSelection } from "../lib/accountOrdering";
 import { formatProviderLastSeen } from "../lib/accountProviderState";
 import { getDemoAccountLabel, getDemoUserEmail, useDemoMode } from "../lib/demoMode";
 import { ACCOUNT_TRADES_SYNCED_EVENT, type AccountTradesSyncedDetail } from "../lib/tradeSyncEvents";
+import { requestTradeImportFilePicker } from "../lib/tradeImportEvents";
 import type { AccountInfo } from "../lib/types";
 import { getCurrentUserEmailSync, hasSupabaseConfig, signOutSupabase } from "../lib/supabase";
 import { useLatestRequestGuard } from "../lib/latestRequest";
@@ -284,6 +285,21 @@ export function AppShell() {
     }
   }
 
+  function handleAccountAction() {
+    if (!selectedAccountId) {
+      return;
+    }
+    if (selectedAccountIsLocalOnly) {
+      if (location.pathname === "/") {
+        requestTradeImportFilePicker();
+      } else {
+        navigate(buildAccountAwarePath("/", selectedAccountId));
+      }
+      return;
+    }
+    void handleSyncNow();
+  }
+
   function handleDemoModeChange(enabled: boolean) {
     demoMode.setEnabled(enabled);
     if (typeof window !== "undefined") {
@@ -329,11 +345,11 @@ export function AppShell() {
                 </div>
                 <Button
                   className="h-11 shrink-0 whitespace-nowrap sm:h-9"
-                  onClick={handleSyncNow}
-                  disabled={syncing || !selectedAccountId || selectedAccountIsLocalOnly}
-                  title={selectedAccountIsLocalOnly ? "This account uses manually imported trade history." : undefined}
+                  onClick={handleAccountAction}
+                  disabled={syncing || !selectedAccountId}
+                  title={selectedAccountIsLocalOnly ? "Upload a CSV or Excel trade export." : undefined}
                 >
-                  {selectedAccountIsLocalOnly ? "Import-only Account" : syncing ? "Syncing..." : "Sync Latest Trades"}
+                  {selectedAccountIsLocalOnly ? "Upload Trade File" : syncing ? "Syncing..." : "Sync Latest Trades"}
                 </Button>
                 <Toggle
                   className="h-11 shrink-0 self-end sm:h-9"

@@ -510,7 +510,7 @@ describe("Live CSV daily-flow production page bridge", () => {
     const loadingView = screen.getByRole("status");
     expect(loadingView.getAttribute("aria-busy")).toBe("true");
     expect(screen.getByText("Loading dashboard...")).not.toBeNull();
-    expect(screen.queryByText("Import Topstep Live Trades")).toBeNull();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
     expect(screen.queryByText("Performance")).toBeNull();
     expect(screen.queryByText("No trades available.")).toBeNull();
 
@@ -519,7 +519,7 @@ describe("Live CSV daily-flow production page bridge", () => {
       await pendingAccounts.promise;
     });
 
-    expect(await screen.findByText("Import Topstep Live Trades")).not.toBeNull();
+    await waitForImportReady();
     expect(screen.queryByText("Loading dashboard...")).toBeNull();
   });
 
@@ -536,7 +536,7 @@ describe("Live CSV daily-flow production page bridge", () => {
       pullJournalTradeStats,
     } = mountDailyFlow();
 
-    await screen.findByText("Import Topstep Live Trades");
+    await waitForImportReady();
     await waitFor(() => expect(summaryReadTradeCounts).toContain(0));
     const initialSummaryReads = getSummaryWithPointBases.mock.calls.length;
     const initialTradeReads = getTrades.mock.calls.length;
@@ -590,7 +590,6 @@ describe("Live CSV daily-flow production page bridge", () => {
     const user = userEvent.setup();
     const { state, confirmTradeImport } = mountDailyFlow();
 
-    await screen.findByText("Import Topstep Live Trades");
     await waitForImportReady();
     importFile("fresh.csv");
     await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));

@@ -5,7 +5,7 @@ import { formatIsoDateUtc } from "../../../lib/tradingDay";
 import { PnlCalendarCard } from "./PnlCalendarCard";
 
 describe("PnlCalendarCard", () => {
-  it("shows daily outcomes and separates fees from commissions", () => {
+  it("shows daily outcomes without fee or commission details", () => {
     const now = new Date();
     const date = formatIsoDateUtc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 2)));
     const markup = renderToStaticMarkup(
@@ -30,9 +30,9 @@ describe("PnlCalendarCard", () => {
     );
 
     expect(markup).toContain("W 3 · L 1 · T 5");
-    expect(markup).toContain("Fees $2.22");
-    expect(markup).toContain("Comm $1.50");
     expect(markup).toContain("3 wins, 1 losses, 1 breakeven, 5 total trades");
-    expect(markup).toContain("Total fees $3.72");
+    expect(markup).not.toContain("Fees $2.22");
+    expect(markup).not.toContain("Comm $1.50");
+    expect(markup).not.toContain("Total fees $3.72");
   });
 });
