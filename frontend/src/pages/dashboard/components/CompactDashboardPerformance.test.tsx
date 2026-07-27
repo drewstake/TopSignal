@@ -66,6 +66,8 @@ describe("Compact dashboard performance components", () => {
         error={null}
       />,
     );
-    expect(screen.getByRole("img", { name: /Risk 84, consistency 72, edge 78/i })).toBeTruthy();
+    const scoreChart = screen.getByRole("img", { name: /Risk 84, consistency 72, edge 78/i });
+    expect(scoreChart).toBeTruthy();
+    expect(scoreChart.getAttribute("class")).toContain("max-w-[460px]");
   });
 });
