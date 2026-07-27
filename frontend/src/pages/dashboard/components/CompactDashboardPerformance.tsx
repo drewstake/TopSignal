@@ -490,7 +490,7 @@ export const CompactScoreCard = memo(function CompactScoreCard({
     <CompactPanel
       title="TopSignal Score"
       info="A sustainability score built from actual risk, consistency, and edge components. Sample confidence increases with more trading days."
-      className="h-full"
+      className="flex h-full flex-col"
     >
       {loading ? (
         <CompactState kind="loading" title="Calculating score" detail="Evaluating risk, consistency, and edge." minHeightClassName="min-h-[292px]" />
@@ -499,10 +499,10 @@ export const CompactScoreCard = memo(function CompactScoreCard({
       ) : !breakdown || breakdown.sampleSize === 0 ? (
         <CompactState kind="insufficient" title="Not enough data" detail="The TopSignal Score requires at least one closed-trade day." minHeightClassName="min-h-[292px]" />
       ) : (
-        <div className="flex min-h-[292px] flex-col items-center justify-center px-3 pb-4 pt-2">
+        <div className="flex min-h-[292px] flex-1 flex-col items-center justify-center px-3 pb-4 pt-2">
           <svg
             viewBox="0 0 320 244"
-            className="h-auto max-h-[230px] w-full max-w-[330px]"
+            className="h-auto w-full max-w-[460px]"
             role="img"
             aria-labelledby={`${chartId}-title ${chartId}-description`}
           >
