@@ -345,6 +345,7 @@ def _ensure_multi_tenant_schema_compatibility() -> None:
         "journal_entries",
         "journal_entry_images",
         "expenses",
+        "expense_suppressions",
         "payouts",
     ]
 

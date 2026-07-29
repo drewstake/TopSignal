@@ -731,6 +731,13 @@ That starts:
 
 `npm run dev:backend` loads `backend/.env` before starting Uvicorn and defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` for faster startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
 
+Development reload boundaries are intentional:
+
+- A browser reload only reloads the current frontend bundle. It cannot change the backend process environment.
+- Vite HMR reloads frontend source modules. Restart the Vite process after changing frontend `VITE_*` environment values.
+- Uvicorn reloads changed Python code in a child process, but that child inherits the environment snapshot captured when the Node dev wrapper started. It does not re-read changed values from `backend/.env`.
+- After changing `backend/.env`—especially `CREDENTIALS_ENCRYPTION_KEY`, ProjectX settings, auth settings, or database settings—stop and restart the full `npm run dev` supervisor (or the standalone `npm run dev:backend` wrapper). The dev wrapper prints this same instruction when it detects a `backend/.env` change. A successful direct provider login in a separate shell does not prove that the running app has the same environment or can decrypt the signed-in user's stored credential.
+
 ### Environment Variables
 
 The repo-level `.env.example` is the source of truth for starter env profiles. Important variables include:
@@ -759,6 +766,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `PROJECTX_DAY_SYNC_LIMIT` | Per-page trade-day fetch limit |
 | `PROJECTX_YESTERDAY_REFRESH_MINUTES` | Staleness threshold for yesterday refresh |
 | `PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS` | Delay before absent accounts become `MISSING` |
+| `PROJECTX_ACCOUNT_STALE_AFTER_SECONDS` | Age after which a cache-only account response is labeled stale; defaults to 900 seconds |
 | `PROJECTX_LAST_TRADE_LOOKBACK_DAYS` | Provider lookback for last-trade resolution |
 | `GEMINI_API_KEY` | Server-side Gemini API key used by AI journal recap generation |
 | `GEMINI_MODEL` | Gemini model for AI journal recap generation; defaults to `gemini-3.1-flash-lite` |

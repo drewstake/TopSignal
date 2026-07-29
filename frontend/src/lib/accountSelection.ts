@@ -18,8 +18,8 @@ export interface AccountDisplayNameUpdatedDetail {
 }
 
 export interface AccountListChangedDetail {
-  accountId: number;
-  action: "archived" | "unarchived";
+  accountId: number | null;
+  action: "archived" | "unarchived" | "provider_refreshed";
   replacementAccountId: number | null;
 }
 

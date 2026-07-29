@@ -16,15 +16,12 @@ import {
   deletePayout,
   deleteExpense,
   getFinancialSummary,
+  getCombineTrackerExpenseSuppressions,
   isApiError,
   listPayouts,
   listExpenses,
 } from "../../lib/api";
 import {
-  getCombinePriceCentsFromAccountName,
-  getCombinePlanSizeFromAccountName,
-  isDailyLossLimitCombineAccountName,
-  isTrackedCombinePurchaseExpense,
   markEvaluationExpensesSynced,
   readCombineSpendSnapshot,
   suppressEvaluationExpenseSync,
@@ -43,9 +40,12 @@ import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, Payou
 import { isDemoModeEnabled } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatCurrency } from "../../utils/formatters";
-import { loadLocalAccountsForExpenseReconciliation } from "./expenseAccountLoading";
+import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildNetRangeOptions, formatLocalIsoDate, type NetRangeOption } from "./expenseNetRanges";
-import { decideExpenseReconciliation } from "./expenseReconciliation";
+import {
+  decideExpenseReconciliation,
+  reconcileCombineExpenses as runCombineExpenseReconciliation,
+} from "./expenseReconciliation";
 
 const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
@@ -129,55 +129,22 @@ function getNetProfitPositionLabel(amount: number) {
 }
 
 function isAutoTrackedCombineExpense(expense: ExpenseRecord): boolean {
-  return expense.tags.includes("combine_tracker");
+  return expense.category === "evaluation_fee" && expense.tags.includes("combine_tracker");
 }
 
-function isSpreadsheetImportedTopstepExpense(expense: ExpenseRecord): boolean {
-  return expense.tags.includes("topstep_import");
-}
-
-function getLatestSpreadsheetImportedTopstepExpenseDate(expenses: ExpenseRecord[]): string | null {
-  let latestDate: string | null = null;
-  for (const expense of expenses) {
-    if (!isSpreadsheetImportedTopstepExpense(expense)) {
-      continue;
-    }
-    if (latestDate === null || expense.expense_date > latestDate) {
-      latestDate = expense.expense_date;
+function formatCombineReconciliationError(error: unknown): string {
+  if (isApiError(error) && error.detail && typeof error.detail === "object") {
+    const detail = error.detail as { code?: unknown; message?: unknown };
+    if (
+      typeof detail.code === "string" &&
+      detail.code.startsWith("projectx_") &&
+      typeof detail.message === "string" &&
+      detail.message.trim().length > 0
+    ) {
+      return `${detail.message.trim()} No expenses or local combine-tracker data were changed.`;
     }
   }
-  return latestDate;
-}
-
-interface ActiveCombineAccount {
-  accountId: number;
-  planSize: "50k" | "100k" | "150k";
-  amountCents: number;
-  isDailyLossLimit: boolean;
-}
-
-function collectActiveCombineAccounts(
-  accounts: Array<{ id: number; name: string; provider_name?: string; status?: string; account_state?: string }>,
-): ActiveCombineAccount[] {
-  const output: ActiveCombineAccount[] = [];
-  for (const account of accounts) {
-    const rawState = (account.account_state ?? account.status ?? "").trim().toUpperCase();
-    if (rawState !== "ACTIVE" && rawState !== "LOCKED_OUT") {
-      continue;
-    }
-    const providerBackedName = account.provider_name ?? account.name;
-    const planSize = getCombinePlanSizeFromAccountName(providerBackedName);
-    if (planSize === null) {
-      continue;
-    }
-    output.push({
-      accountId: account.id,
-      planSize,
-      amountCents: getCombinePriceCentsFromAccountName(providerBackedName) ?? 0,
-      isDailyLossLimit: isDailyLossLimitCombineAccountName(providerBackedName),
-    });
-  }
-  return output;
+  return error instanceof Error ? error.message : "Failed to sync combine spend tracker";
 }
 
 interface AddExpenseState {
@@ -255,6 +222,7 @@ export function ExpensesPage() {
   const [combineSpendSnapshot, setCombineSpendSnapshot] = useState(readCombineSpendSnapshot);
   const [combineTrackerLoading, setCombineTrackerLoading] = useState(false);
   const [combineTrackerError, setCombineTrackerError] = useState<string | null>(null);
+  const [combineTrackerNotice, setCombineTrackerNotice] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [addState, setAddState] = useState<AddExpenseState>(buildInitialAddExpenseState(""));
@@ -450,159 +418,57 @@ export function ExpensesPage() {
 
     setCombineTrackerLoading(true);
     setCombineTrackerError(null);
-
-    let nextSnapshot = readCombineSpendSnapshot();
+    setCombineTrackerNotice(null);
     try {
-      const combineRelevantExpenses = await listAllCombineRelevantExpenses();
-      nextSnapshot = syncCombineSpendTrackerFromExpenses(combineRelevantExpenses);
-      const latestSpreadsheetImportExpenseDate = getLatestSpreadsheetImportedTopstepExpenseDate(combineRelevantExpenses);
-      const combinePurchaseExpenses = combineRelevantExpenses.filter(isTrackedCombinePurchaseExpense);
-      const trackedCombineExpensesByAccountId = new Map<number, ExpenseRecord[]>();
-      const expenseIdsToDelete = new Set<number>();
+      const result = await runCombineExpenseReconciliation({
+        loadAccounts: () => loadFreshAccountsForExpenseReconciliation(accountsApi.getAccounts),
+        loadExpenses: listAllCombineRelevantExpenses,
+        loadSuppressedAccountIds: async () =>
+          (await getCombineTrackerExpenseSuppressions()).account_ids,
+        createExpense,
+        deleteExpense: (expenseId) =>
+          deleteExpense(expenseId, { suppressAutoRecreation: false }),
+        isDuplicateCreateError: (error) =>
+          isApiError(error) && error.status === 409 && error.detail === "duplicate_expense",
+        syncTrackerFromExpenses: syncCombineSpendTrackerFromExpenses,
+        syncTrackerFromAccounts: syncCombineSpendTracker,
+        markEvaluationExpensesSynced,
+        suppressEvaluationExpenseSync,
+      });
 
-      for (const expense of combinePurchaseExpenses) {
-        const accountId = expense.account_id;
-        if (accountId === null) {
-          if (isAutoTrackedCombineExpense(expense)) {
-            expenseIdsToDelete.add(expense.id);
-          }
-          continue;
-        }
-        const rows = trackedCombineExpensesByAccountId.get(accountId);
-        if (rows) {
-          rows.push(expense);
-        } else {
-          trackedCombineExpensesByAccountId.set(accountId, [expense]);
-        }
+      setCombineSpendSnapshot(result.snapshot);
+      if (result.didMutateExpenses) {
+        refreshFinancialData();
       }
 
-      // Prefer a manually logged combine expense over any generated row for the same account.
-      for (const rows of trackedCombineExpensesByAccountId.values()) {
-        const manualRows = rows.filter((row) => !isAutoTrackedCombineExpense(row));
-        const autoRows = rows.filter(isAutoTrackedCombineExpense);
-        if (manualRows.length > 0) {
-          for (const autoTrackedRow of autoRows) {
-            expenseIdsToDelete.add(autoTrackedRow.id);
-          }
-          continue;
-        }
-
-        if (autoRows.length <= 1) {
-          continue;
-        }
-
-        const sorted = [...autoRows].sort((left, right) => {
-          const createdAtDiff = Date.parse(right.created_at) - Date.parse(left.created_at);
-          if (createdAtDiff !== 0) {
-            return createdAtDiff;
-          }
-          return right.id - left.id;
-        });
-        for (const duplicate of sorted.slice(1)) {
-          expenseIdsToDelete.add(duplicate.id);
-        }
-      }
-
-      try {
-        const payload = await loadLocalAccountsForExpenseReconciliation(accountsApi.getAccounts);
-        const activeCombineAccounts = collectActiveCombineAccounts(payload);
-        const activeCombineByAccountId = new Map<number, ActiveCombineAccount>();
-        for (const account of activeCombineAccounts) {
-          activeCombineByAccountId.set(account.accountId, account);
-        }
-
-        const syncResult = syncCombineSpendTracker(payload);
-        nextSnapshot = syncResult.snapshot;
-        const syncedAccountIds: number[] = [];
-        const unsyncedByAccountId = new Map(
-          syncResult.unsyncedEvaluationPurchases.map((purchase) => [purchase.accountId, purchase]),
+      const failedCount = result.failedCreateCount + result.failedDeleteCount;
+      if (failedCount > 0) {
+        setCombineTrackerError(
+          `Failed to update ${failedCount} combine expense record${failedCount === 1 ? "" : "s"}. Retry reconciliation to finish safely.`,
         );
-        let failedCreateCount = 0;
-        let failedDeleteCount = 0;
-        let didMutateExpenses = false;
+      }
 
-        for (const expenseId of expenseIdsToDelete) {
-          try {
-            await deleteExpense(expenseId);
-            didMutateExpenses = true;
-          } catch {
-            failedDeleteCount += 1;
-          }
-        }
-
-        const existingActiveAccountIds = new Set<number>();
-        for (const [accountId, rows] of trackedCombineExpensesByAccountId.entries()) {
-          if (!activeCombineByAccountId.has(accountId)) {
-            continue;
-          }
-          const rowsNotDeleted = rows.filter((row) => !expenseIdsToDelete.has(row.id));
-          if (rowsNotDeleted.length > 0) {
-            existingActiveAccountIds.add(accountId);
-            syncedAccountIds.push(accountId);
-          }
-        }
-
-        for (const activeCombine of activeCombineAccounts) {
-          if (existingActiveAccountIds.has(activeCombine.accountId)) {
-            continue;
-          }
-          const unsyncedPurchase = unsyncedByAccountId.get(activeCombine.accountId);
-          if (
-            latestSpreadsheetImportExpenseDate !== null &&
-            (unsyncedPurchase === undefined || unsyncedPurchase.purchasedOn <= latestSpreadsheetImportExpenseDate)
-          ) {
-            if (unsyncedPurchase !== undefined) {
-              syncedAccountIds.push(activeCombine.accountId);
-            }
-            continue;
-          }
-          const amountCents = unsyncedPurchase?.amountCents ?? activeCombine.amountCents;
-          const purchasedOn = unsyncedPurchase?.purchasedOn ?? getTodayLocalIsoDate();
-          try {
-            await createExpense({
-              expense_date: purchasedOn,
-              amount_cents: amountCents,
-              category: "evaluation_fee",
-              plan_size: activeCombine.planSize,
-              account_id: activeCombine.accountId,
-              account_type: activeCombine.isDailyLossLimit ? "no_activation" : "standard",
-              description: `Auto tracked combine purchase (${activeCombine.planSize.toUpperCase()}${
-                activeCombine.isDailyLossLimit ? " DLL" : ""
-              })`,
-              tags: activeCombine.isDailyLossLimit ? ["combine_tracker", "auto", "dll"] : ["combine_tracker", "auto"],
-            });
-            syncedAccountIds.push(activeCombine.accountId);
-            didMutateExpenses = true;
-          } catch (err) {
-            if (isApiError(err) && err.status === 409 && err.detail === "duplicate_expense") {
-              syncedAccountIds.push(activeCombine.accountId);
-            } else {
-              failedCreateCount += 1;
-            }
-          }
-        }
-
-        if (syncedAccountIds.length > 0) {
-          nextSnapshot = markEvaluationExpensesSynced(syncedAccountIds);
-        }
-
-        if (didMutateExpenses) {
-          refreshFinancialData();
-        }
-
-        const failedCount = failedCreateCount + failedDeleteCount;
-        if (failedCount > 0) {
-          setCombineTrackerError(
-            `Failed to update ${failedCount} combine expense record${failedCount === 1 ? "" : "s"}.`,
+      if (failedCount === 0) {
+        if (result.eligibleCombineCount === 0 && result.createdCount === 0 && result.deletedCount === 0) {
+          setCombineTrackerNotice(
+            "ProjectX refreshed successfully, but no ACTIVE or LOCKED_OUT 50KTC, 100KTC, or 150KTC combine accounts were found. No changes were made.",
           );
+        } else if (result.createdCount === 0 && result.deletedCount === 0) {
+          setCombineTrackerNotice("Combine expenses are already reconciled. No changes were needed.");
+        } else {
+          const changes: string[] = [];
+          if (result.createdCount > 0) {
+            changes.push(`created ${result.createdCount} missing row${result.createdCount === 1 ? "" : "s"}`);
+          }
+          if (result.deletedCount > 0) {
+            changes.push(`removed ${result.deletedCount} duplicate auto row${result.deletedCount === 1 ? "" : "s"}`);
+          }
+          setCombineTrackerNotice(`Reconciled combine expenses: ${changes.join(" and ")}.`);
         }
-      } catch (err) {
-        setCombineTrackerError(err instanceof Error ? err.message : "Failed to sync combine spend tracker");
       }
     } catch (err) {
-      setCombineTrackerError(err instanceof Error ? err.message : "Failed to sync combine spend tracker");
+      setCombineTrackerError(formatCombineReconciliationError(err));
     } finally {
-      setCombineSpendSnapshot(nextSnapshot);
       setCombineTrackerLoading(false);
     }
   }, [listAllCombineRelevantExpenses, refreshFinancialData]);
@@ -611,7 +477,7 @@ export function ExpensesPage() {
     const confirmed = demoModeEnabled
       ? false
       : window.confirm(
-          "Reconcile combine expenses now? This may create missing auto-tracked evaluation fees and remove duplicate auto-tracked rows.",
+          "Reconcile combine expenses now? This refreshes ProjectX, creates missing auto-tracked evaluation fees, and removes duplicate auto-tracked rows.",
         );
     const decision = decideExpenseReconciliation(demoModeEnabled, confirmed);
     if (!decision.allowed && decision.reason === "demo_mode") {
@@ -875,6 +741,7 @@ export function ExpensesPage() {
                   )}
                 </div>
                 {combineTrackerError ? <p className="text-xs text-rose-300" role="alert">{combineTrackerError}</p> : null}
+                {combineTrackerNotice ? <p className="text-xs text-emerald-300" role="status">{combineTrackerNotice}</p> : null}
               </div>
 
               <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">

@@ -90,6 +90,10 @@ class ExpenseListOut(BaseModel):
     total: int
 
 
+class CombineTrackerSuppressionsOut(BaseModel):
+    account_ids: list[int]
+
+
 class ExpenseCategoryTotalsOut(BaseModel):
     amount: float
     amount_cents: int

@@ -5,6 +5,9 @@ from urllib import error
 import pytest
 
 from app.services.projectx_client import (
+    PROJECTX_ERROR_AUTH_FAILED,
+    PROJECTX_ERROR_NETWORK,
+    PROJECTX_ERROR_PROVIDER_RESPONSE,
     ProjectXClient,
     ProjectXClientError,
     _clear_token_cache,
@@ -89,6 +92,7 @@ def test_request_once_marks_success_false_payloads_as_gateway_errors(monkeypatch
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 502
+    assert exc_info.value.reason_code == PROJECTX_ERROR_AUTH_FAILED
     assert str(exc_info.value) == "ProjectX authentication failed: Session invalid"
 
 
@@ -111,6 +115,7 @@ def test_request_once_maps_login_key_error_code_3_to_actionable_message(monkeypa
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 502
+    assert exc_info.value.reason_code == PROJECTX_ERROR_AUTH_FAILED
     assert str(exc_info.value) == (
         "ProjectX authentication failed. Verify your TopstepX username and API key, "
         "and confirm ProjectX API access is active and your account is linked. "
@@ -130,6 +135,7 @@ def test_request_once_maps_timeout_to_gateway_timeout(monkeypatch):
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 504
+    assert exc_info.value.reason_code == PROJECTX_ERROR_NETWORK
     assert exc_info.value.submission_outcome_unknown is False
     assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
 
@@ -146,15 +152,16 @@ def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
 
     assert exc_info.value.status_code == 504
+    assert exc_info.value.reason_code == PROJECTX_ERROR_NETWORK
     assert str(exc_info.value) == "ProjectX request timed out. Check the ProjectX connection and try again."
 
 
 @pytest.mark.parametrize(
-    ("path", "status_code", "outcome_unknown"),
+    ("path", "status_code", "outcome_unknown", "reason_code"),
     [
-        ("/api/Order/place", 503, True),
-        ("/api/Order/place", 400, False),
-        ("/api/Trade/search", 503, False),
+        ("/api/Order/place", 503, True, PROJECTX_ERROR_NETWORK),
+        ("/api/Order/place", 400, False, PROJECTX_ERROR_PROVIDER_RESPONSE),
+        ("/api/Trade/search", 503, False, PROJECTX_ERROR_NETWORK),
     ],
 )
 def test_request_once_only_marks_order_submission_5xx_as_ambiguous(
@@ -162,6 +169,7 @@ def test_request_once_only_marks_order_submission_5xx_as_ambiguous(
     path,
     status_code,
     outcome_unknown,
+    reason_code,
 ):
     client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
 
@@ -180,6 +188,7 @@ def test_request_once_only_marks_order_submission_5xx_as_ambiguous(
         client._request_once("POST", path, payload={}, with_auth=False)
 
     assert exc_info.value.submission_outcome_unknown is outcome_unknown
+    assert exc_info.value.reason_code == reason_code
 
 
 def test_fetch_trade_history_retains_voided_rows_for_local_tombstones():

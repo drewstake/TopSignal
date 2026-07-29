@@ -72,9 +72,10 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "archived_at timestamptz",
         "accounts_archived_not_main_check",
         "'submission_unknown'",
-        "schema-20260725-v4",
+        "schema-20260729-v5",
         "create table if not exists trade_import_batches",
         "create table if not exists trade_import_previews",
+        "create table if not exists expense_suppressions",
         "fk_projectx_trade_events_owned_batch",
         "commissions numeric(18,6)",
         "fee_scope text not null default 'per_side'",
@@ -97,11 +98,25 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_adds_live_account_archiving():
+def test_latest_migration_adds_expense_suppressions():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260725_live_account_archiving.sql"
+        == "20260729_add_expense_suppressions.sql"
     )
+
+
+def test_expense_suppressions_migration_is_user_scoped_and_non_destructive():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260729_add_expense_suppressions.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "primary key (user_id, source, account_id)" in migration
+    assert "account_id > 0" in migration
+    assert "drop table" not in migration
+    assert "delete from" not in migration
 
 
 def test_live_account_archiving_migration_preserves_history_and_main_integrity():
@@ -216,6 +231,7 @@ def test_adoption_manifest_covers_current_orm_safety_objects():
     columns, indexes = migrate_db._current_model_manifest()
 
     assert {"balance", "last_seen_at", "trade_data_source", "archived_at"} <= columns["accounts"]
+    assert {"user_id", "source", "account_id", "created_at"} <= columns["expense_suppressions"]
     assert {"execution_mode", "idempotency_key", "bot_config_id"} <= columns["bot_order_attempts"]
     assert {"account_row_id", "account_external_id"} <= columns["trade_import_batches"]
     assert {"normalized_manifest", "dedupe_snapshot", "retention_until"} <= columns[

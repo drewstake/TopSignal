@@ -27,7 +27,15 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
-import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
+import {
+  describeAccountProviderSync,
+  describeProviderRefreshException,
+  formatAccountBalance,
+  formatProviderLastSeen,
+  getAvailableAccountBalance,
+  summarizeAccountProviderSync,
+  useAccountProviderFreshness,
+} from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForActiveSelection } from "../../lib/accountOrdering";
 import { isCompactModeEnabled, setCompactModeEnabled } from "../../lib/compactMode";
@@ -708,6 +716,8 @@ export function DashboardPage() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [compactAccountsError, setCompactAccountsError] = useState<string | null>(null);
+  const [providerAccountsRefreshing, setProviderAccountsRefreshing] = useState(false);
+  const [providerRefreshError, setProviderRefreshError] = useState<string | null>(null);
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
@@ -856,9 +866,12 @@ export function DashboardPage() {
     };
   }, [demoModeEnabled]);
 
+  const freshnessAwareAccounts = useAccountProviderFreshness(
+    usingShellAccounts ? shellContext.accounts : accounts,
+  );
   const orderedAccounts = useMemo(
-    () => sortAccountsForActiveSelection(usingShellAccounts ? shellContext.accounts : accounts),
-    [accounts, shellContext, usingShellAccounts],
+    () => sortAccountsForActiveSelection(freshnessAwareAccounts),
+    [freshnessAwareAccounts],
   );
 
   useEffect(() => {
@@ -911,10 +924,13 @@ export function DashboardPage() {
   );
 
   useEffect(() => {
-    const isCurrent = beginProviderAccountsRequest();
     if (usingShellAccounts || demoModeEnabled || selectedAccount?.trade_data_source !== "projectx") {
       return;
     }
+
+    const isCurrent = beginProviderAccountsRequest();
+    setProviderAccountsRefreshing(true);
+    setProviderRefreshError(null);
 
     void accountsApi
       .getSelectableAccounts({ refreshProvider: true })
@@ -923,8 +939,15 @@ export function DashboardPage() {
           setAccounts(payload);
         }
       })
-      .catch(() => {
-        // Keep rendering the saved account snapshot if ProjectX is unavailable.
+      .catch((error) => {
+        if (isCurrent()) {
+          setProviderRefreshError(describeProviderRefreshException(error));
+        }
+      })
+      .finally(() => {
+        if (isCurrent()) {
+          setProviderAccountsRefreshing(false);
+        }
       });
   }, [
     beginProviderAccountsRequest,
@@ -938,6 +961,10 @@ export function DashboardPage() {
     copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport && !demoModeEnabled;
   const copyTradeModeActive = copyTradeModeConfigured && !compactMode.enabled;
   const compactCopyTradeModeActive = copyTradeModeConfigured && compactMode.enabled;
+  const providerSyncNotice = useMemo(
+    () => describeAccountProviderSync(summarizeAccountProviderSync(orderedAccounts)),
+    [orderedAccounts],
+  );
   const copyTradeRosterAccountIds = useMemo(
     () =>
       computeCopyTradeWhenEnabled(copyTradeModeConfigured, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
@@ -3005,6 +3032,26 @@ export function DashboardPage() {
           Dashboard filters, account selection, calendar drill-down, and copy-to-clipboard tools explore the fixed sample timeline. Live CSV imports, provider refresh, and copy-trade settings are unavailable.
         </p>
       </DemoModeNotice>
+      {providerRefreshError || (shellContext === null && (providerAccountsRefreshing || providerSyncNotice)) ? (
+        <Card
+          className={cn(
+            "p-3 text-xs",
+            providerRefreshError || providerSyncNotice?.tone === "error"
+              ? "border-app-negative/40 bg-app-negative/10 text-app-negative"
+              : providerSyncNotice?.tone === "warning"
+                ? "border-app-warning/40 bg-app-warning/10 text-app-warning"
+                : "border-app-border bg-app-surface/60 text-app-muted",
+          )}
+          role={providerRefreshError || providerSyncNotice?.tone === "error" ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {providerRefreshError
+            ? `${providerRefreshError} Saved account data remains available.`
+            : providerAccountsRefreshing
+              ? "Refreshing ProjectX accounts… Saved accounts remain available while this finishes."
+              : providerSyncNotice?.message}
+        </Card>
+      ) : null}
       <div className="space-y-2">
         <div className="space-y-1.5">
           <div className="max-w-full pb-1">

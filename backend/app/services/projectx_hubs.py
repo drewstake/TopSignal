@@ -81,7 +81,9 @@ class _DispatchCircuit:
     def record_failure(self, exc: Exception) -> None:
         self._total_failures += 1
         self._consecutive_failures += 1
-        self._last_error = str(exc)
+        # The exception may embed an entire provider payload or a websocket URL
+        # containing the bearer token. Retain only its stable type for health.
+        self._last_error = type(exc).__name__
         if self._state == "half_open" or self._consecutive_failures >= self._failure_threshold:
             self._state = "open"
             self._opened_at = self._now()
@@ -181,10 +183,10 @@ class ProjectXHubRunner:
                 raise
             except Exception as exc:
                 logger.warning(
-                    "[hubs] disconnected kind=%s retry_in=%.1fs error=%s",
+                    "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s",
                     stream_kind,
                     backoff_seconds,
-                    exc,
+                    type(exc).__name__,
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(self._reconnect_max_seconds, backoff_seconds * 2.0)
@@ -230,11 +232,15 @@ class ProjectXHubRunner:
         except Exception as exc:
             circuit.record_failure(exc)
             snapshot = circuit.snapshot()
-            logger.exception(
-                "[hubs] dispatch failed kind=%s state=%s consecutive_failures=%s",
-                stream_kind,
-                snapshot.state,
-                snapshot.consecutive_failures,
+            logger.error(
+                "projectx_hub_dispatch_failed",
+                extra={
+                    "reason_code": "projectx_hub_dispatch_error",
+                    "error_type": type(exc).__name__,
+                    "stream_kind": stream_kind,
+                    "circuit_state": snapshot.state,
+                    "consecutive_failures": snapshot.consecutive_failures,
+                },
             )
             return
 

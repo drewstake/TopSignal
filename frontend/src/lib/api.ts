@@ -27,6 +27,7 @@ import type {
   AccountTrade,
   AccountTradeRefreshResult,
   BehaviorMetrics,
+  CombineTrackerSuppressionsResponse,
   DayPnlPoint,
   ExpenseCreateInput,
   ExpenseListQuery,
@@ -71,6 +72,7 @@ import type {
   TradePlanEvaluationInput,
 } from "./types";
 import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
+import { reclassifyAccountListProviderFreshness } from "./accountProviderState";
 import { isDemoModeEnabled, sanitizeDemoApiResponse, subscribeToDemoModeChanges } from "./demoMode";
 import { beginLiveMutationRequest } from "./liveMutationState";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
@@ -198,6 +200,8 @@ interface TimedCachedRequestOptions<T> {
   ttlMs: number;
   load: () => Promise<T>;
   bypassCache?: boolean;
+  shouldCache?: (value: T) => boolean;
+  onCurrentResult?: (value: T) => void;
 }
 
 interface UserScopedTimedCachedRequestOptions<T> extends Omit<TimedCachedRequestOptions<T>, "cacheKey" | "load"> {
@@ -211,7 +215,16 @@ interface RequestAuthContext {
 }
 
 function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promise<T> {
-  const { cache, inFlight, cacheKey, ttlMs, load, bypassCache = false } = options;
+  const {
+    cache,
+    inFlight,
+    cacheKey,
+    ttlMs,
+    load,
+    bypassCache = false,
+    shouldCache = () => true,
+    onCurrentResult,
+  } = options;
   if (!bypassCache) {
     const now = Date.now();
     const cached = cache.get(cacheKey);
@@ -226,10 +239,13 @@ function getTimedCachedRequest<T>(options: TimedCachedRequestOptions<T>): Promis
 
   const request = load().then((value) => {
     if (inFlight.get(cacheKey) === request) {
-      cache.set(cacheKey, {
-        value,
-        expiresAtMs: Date.now() + ttlMs,
-      });
+      onCurrentResult?.(value);
+      if (shouldCache(value)) {
+        cache.set(cacheKey, {
+          value,
+          expiresAtMs: Date.now() + ttlMs,
+        });
+      }
     }
     return value;
   });
@@ -819,16 +835,68 @@ function invalidateAccountsListCaches() {
   inFlightAccountsByQuery.clear();
 }
 
-function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
-  const cacheKey = accountsQueryCacheKey(options);
-  return getUserScopedTimedCachedRequest({
+function accountResponseUsedCachedFallback(accounts: readonly AccountInfo[]): boolean {
+  return accounts.some(
+    (account) =>
+      account.trade_data_source === "projectx" &&
+      account.provider_sync_status === "cached_fallback",
+  );
+}
+
+function replaceAccountListCachesAfterProviderSuccess(
+  cacheScope: string,
+  currentCacheKey: string,
+  localCacheKey: string,
+  accounts: AccountInfo[],
+) {
+  const scopeSuffix = `|scope:${cacheScope}`;
+  for (const key of accountsCacheByQuery.keys()) {
+    if (key.endsWith(scopeSuffix) && key !== currentCacheKey && key !== localCacheKey) {
+      accountsCacheByQuery.delete(key);
+    }
+  }
+  for (const key of inFlightAccountsByQuery.keys()) {
+    if (key.endsWith(scopeSuffix) && key !== currentCacheKey) {
+      inFlightAccountsByQuery.delete(key);
+    }
+  }
+  accountsCacheByQuery.set(localCacheKey, {
+    value: accounts,
+    expiresAtMs: Date.now() + ACCOUNTS_CACHE_TTL_MS,
+  });
+}
+
+async function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
+  const auth = await getRequestAuthContext();
+  const unscopedCacheKey = accountsQueryCacheKey(options);
+  const cacheKey = `${unscopedCacheKey}|scope:${auth.cacheScope}`;
+  const localCacheKey = `${accountsQueryCacheKey({ ...options, refreshProvider: false })}|scope:${auth.cacheScope}`;
+  return getTimedCachedRequest({
     cache: accountsCacheByQuery,
     inFlight: inFlightAccountsByQuery,
     cacheKey,
     ttlMs: ACCOUNTS_CACHE_TTL_MS,
     bypassCache: options.bypassCache,
-    load: (accessToken) =>
-      requestJson<AccountInfo[]>("/api/accounts", {
+    shouldCache: (accounts) => !accountResponseUsedCachedFallback(accounts),
+    onCurrentResult: (accounts) => {
+      if (!options.refreshProvider) {
+        return;
+      }
+      if (accountResponseUsedCachedFallback(accounts)) {
+        // A provider failure is an observation, not a reusable provider
+        // result. Keep the local snapshot lane, but let the next refresh
+        // actually retry instead of replaying this HTTP-200 fallback.
+        accountsCacheByQuery.delete(cacheKey);
+        return;
+      }
+      replaceAccountListCachesAfterProviderSuccess(
+        auth.cacheScope,
+        cacheKey,
+        localCacheKey,
+        accounts,
+      );
+    },
+    load: () => requestJson<AccountInfo[]>("/api/accounts", {
         query: {
           show_inactive: options.showInactive,
           show_missing: options.showMissing,
@@ -836,9 +904,9 @@ function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<Acco
           include_archived: options.includeArchived,
         },
         tracksLiveMutation: options.refreshProvider,
-        accessTokenOverride: accessToken,
+        accessTokenOverride: auth.accessToken,
       }),
-  });
+  }).then((accounts) => reclassifyAccountListProviderFreshness(accounts));
 }
 
 function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
@@ -2309,8 +2377,22 @@ export function createExpense(payload: ExpenseCreateInput) {
   });
 }
 
-export function deleteExpense(id: number) {
-  return requestJson<void>(`/api/expenses/${id}`, { method: "DELETE" });
+export function getCombineTrackerExpenseSuppressions() {
+  return requestJson<CombineTrackerSuppressionsResponse>(
+    "/api/expenses/combine-tracker-suppressions",
+  );
+}
+
+export function deleteExpense(
+  id: number,
+  options: { suppressAutoRecreation?: boolean } = {},
+) {
+  return requestJson<void>(`/api/expenses/${id}`, {
+    method: "DELETE",
+    query: {
+      suppress_auto_recreation: options.suppressAutoRecreation ?? true,
+    },
+  });
 }
 
 export function updateExpense(id: number, payload: ExpenseUpdateInput) {

@@ -131,6 +131,7 @@ Current migration list:
 20260724_restore_express_trade_data_source.sql
 20260725_harden_topstep_trade_imports.sql
 20260725_live_account_archiving.sql
+20260729_add_expense_suppressions.sql
 ```
 
 `20260711_add_databento_historical_market_data.sql` remains in the checksummed
@@ -188,7 +189,8 @@ $migrations = @(
   "20260724_add_account_trade_data_source.sql",
   "20260724_restore_express_trade_data_source.sql",
   "20260725_harden_topstep_trade_imports.sql",
-  "20260725_live_account_archiving.sql"
+  "20260725_live_account_archiving.sql",
+  "20260729_add_expense_suppressions.sql"
 )
 
 foreach ($name in $migrations) {

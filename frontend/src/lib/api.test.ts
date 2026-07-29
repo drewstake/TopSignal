@@ -4,7 +4,14 @@ vi.mock("./supabase", () => ({
   getAccessToken: vi.fn(async () => null),
 }));
 
-import { accountsApi, botsApi, buildProjectXCandleRequestKey, buildUserScopedProjectXCandleRequestKey } from "./api";
+import {
+  accountsApi,
+  botsApi,
+  buildProjectXCandleRequestKey,
+  buildUserScopedProjectXCandleRequestKey,
+  deleteExpense,
+  getCombineTrackerExpenseSuppressions,
+} from "./api";
 import { DEMO_AS_OF_DATE } from "./demoScenario";
 import { getAccessToken } from "./supabase";
 
@@ -46,6 +53,7 @@ describe("accountsApi", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -68,6 +76,35 @@ describe("accountsApi", () => {
       mode: "append_or_create",
       include_existing_notes: true,
     });
+  });
+
+  it("reads persisted combine suppressions and distinguishes user deletion from duplicate cleanup", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ account_ids: [101, 202] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await expect(getCombineTrackerExpenseSuppressions()).resolves.toEqual({
+      account_ids: [101, 202],
+    });
+    await deleteExpense(7);
+    await deleteExpense(8, { suppressAutoRecreation: false });
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/expenses/combine-tracker-suppressions",
+    );
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/expenses/7?suppress_auto_recreation=true",
+    );
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/expenses/8?suppress_auto_recreation=false",
+    );
   });
 
   it("blocks write requests while demo mode is enabled", async () => {
@@ -121,14 +158,28 @@ describe("accountsApi", () => {
         { id: 1, account_state: "ACTIVE", trade_data_source: "projectx", is_archived: false },
         { id: 2, account_state: "MISSING", trade_data_source: "projectx", is_archived: false },
         { id: 3, account_state: "HIDDEN", trade_data_source: "projectx", is_archived: false },
-        { id: 4, account_state: "MISSING", trade_data_source: "csv_import", is_archived: false },
+        {
+          id: 4,
+          account_state: "MISSING",
+          trade_data_source: "csv_import",
+          is_archived: false,
+          provider_data_stale: false,
+          provider_sync_status: "not_applicable",
+        },
         { id: 5, account_state: "ACTIVE", trade_data_source: "csv_import", is_archived: true },
       ]),
     );
 
     await expect(accountsApi.getSelectableAccounts()).resolves.toEqual([
       { id: 1, account_state: "ACTIVE", trade_data_source: "projectx", is_archived: false },
-      { id: 4, account_state: "MISSING", trade_data_source: "csv_import", is_archived: false },
+      {
+        id: 4,
+        account_state: "MISSING",
+        trade_data_source: "csv_import",
+        is_archived: false,
+        provider_data_stale: false,
+        provider_sync_status: "not_applicable",
+      },
     ]);
 
     const [url] = vi.mocked(fetch).mock.calls[0];
@@ -137,7 +188,7 @@ describe("accountsApi", () => {
     expect(String(url)).toContain("include_archived=false");
   });
 
-  it("loads saved accounts first and keeps local and provider cache lanes separate", async () => {
+  it("replaces the local-first cache lane after a successful provider refresh", async () => {
     installDemoModeStorage(false);
     vi.mocked(getAccessToken).mockResolvedValue(jwt("local-first-account-cache"));
     const liveAccount = {
@@ -146,28 +197,46 @@ describe("accountsApi", () => {
       trade_data_source: "csv_import",
       is_archived: false,
       is_main: true,
+      provider_data_stale: false,
+      provider_sync_status: "not_applicable",
     };
-    const expressAccount = {
+    const savedExpressAccount = {
       id: 77001,
+      name: "Saved Express",
       account_state: "ACTIVE",
       trade_data_source: "projectx",
       is_archived: false,
       is_main: false,
+      provider_data_stale: true,
+      provider_sync_status: "cache_stale",
+    };
+    const refreshedExpressAccount = {
+      ...savedExpressAccount,
+      name: "Refreshed Express",
+      provider_data_stale: false,
+      provider_sync_status: "provider_fresh",
+      provider_last_successful_refresh_at: "2026-07-29T15:00:00Z",
     };
     vi.mocked(fetch)
-      .mockResolvedValueOnce(jsonResponse([liveAccount, expressAccount]))
-      .mockResolvedValueOnce(jsonResponse([liveAccount, expressAccount]));
+      .mockResolvedValueOnce(jsonResponse([liveAccount, savedExpressAccount]))
+      .mockResolvedValueOnce(jsonResponse([liveAccount, refreshedExpressAccount]));
 
-    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([liveAccount, expressAccount]);
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([liveAccount, savedExpressAccount]);
     await expect(accountsApi.getSelectableAccounts({ refreshProvider: false })).resolves.toEqual([
       liveAccount,
-      expressAccount,
+      savedExpressAccount,
     ]);
     expect(fetch).toHaveBeenCalledTimes(1);
 
     await expect(accountsApi.getSelectableAccounts({ refreshProvider: true })).resolves.toEqual([
       liveAccount,
-      expressAccount,
+      refreshedExpressAccount,
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([
+      liveAccount,
+      refreshedExpressAccount,
     ]);
     expect(fetch).toHaveBeenCalledTimes(2);
 
@@ -175,6 +244,114 @@ describe("accountsApi", () => {
     const [providerUrl] = vi.mocked(fetch).mock.calls[1];
     expect(String(localUrl)).toContain("refresh_provider=false");
     expect(String(providerUrl)).toContain("refresh_provider=true");
+  });
+
+  it("reclassifies a cached account after its deadline without another request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T15:00:00.000Z"));
+    installDemoModeStorage(false);
+    vi.mocked(getAccessToken).mockResolvedValue(jwt("account-cache-deadline"));
+    const refreshedAccount = {
+      id: 77004,
+      name: "Express",
+      account_state: "ACTIVE",
+      trade_data_source: "projectx",
+      is_archived: false,
+      is_main: true,
+      provider_data_stale: false,
+      provider_data_stale_at: "2026-07-29T15:00:01.000Z",
+      provider_sync_status: "provider_fresh",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([refreshedAccount]));
+
+    await expect(
+      accountsApi.getSelectableAccounts({ refreshProvider: true }),
+    ).resolves.toEqual([refreshedAccount]);
+
+    vi.setSystemTime(new Date("2026-07-29T15:00:01.000Z"));
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([
+      {
+        ...refreshedAccount,
+        provider_data_stale: true,
+        provider_sync_status: "cache_stale",
+      },
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache an HTTP-200 cached fallback as a successful provider refresh", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(getAccessToken).mockResolvedValue(jwt("provider-fallback-retry"));
+    const fallbackAccount = {
+      id: 77002,
+      name: "Cached Express",
+      account_state: "ACTIVE",
+      trade_data_source: "projectx",
+      is_archived: false,
+      provider_data_stale: false,
+      provider_sync_status: "cached_fallback",
+      provider_sync_error_code: "projectx_network_error",
+      provider_sync_error_message: "ProjectX could not be reached.",
+    };
+    const refreshedAccount = {
+      ...fallbackAccount,
+      name: "Provider Express",
+      provider_sync_status: "provider_fresh",
+      provider_sync_error_code: null,
+      provider_sync_error_message: null,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse([fallbackAccount]))
+      .mockResolvedValueOnce(jsonResponse([refreshedAccount]));
+
+    await expect(accountsApi.getSelectableAccounts({ refreshProvider: true })).resolves.toEqual([fallbackAccount]);
+    await expect(accountsApi.getSelectableAccounts({ refreshProvider: true })).resolves.toEqual([refreshedAccount]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an older provider refresh overwrite the local cache lane", async () => {
+    installDemoModeStorage(false);
+    vi.mocked(getAccessToken).mockResolvedValue(jwt("provider-refresh-race"));
+    const pendingResponses: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(
+      () => new Promise<Response>((resolve) => pendingResponses.push(resolve)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const olderAccount = {
+      id: 77003,
+      name: "Older Express Snapshot",
+      account_state: "ACTIVE",
+      trade_data_source: "projectx",
+      is_archived: false,
+      provider_data_stale: false,
+      provider_sync_status: "provider_fresh",
+      provider_last_successful_refresh_at: "2026-07-29T14:00:00Z",
+    };
+    const newerAccount = {
+      ...olderAccount,
+      name: "Newer Express Snapshot",
+      provider_last_successful_refresh_at: "2026-07-29T15:00:00Z",
+    };
+
+    const olderRequest = accountsApi.getSelectableAccounts({
+      refreshProvider: true,
+      bypassCache: true,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const newerRequest = accountsApi.getSelectableAccounts({
+      refreshProvider: true,
+      bypassCache: true,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    pendingResponses[1](jsonResponse([newerAccount]));
+    await expect(newerRequest).resolves.toEqual([newerAccount]);
+    pendingResponses[0](jsonResponse([olderAccount]));
+    await expect(olderRequest).resolves.toEqual([olderAccount]);
+
+    await expect(accountsApi.getSelectableAccountsLocalFirst()).resolves.toEqual([newerAccount]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not start provider discovery when the saved selectable snapshot is empty", async () => {

@@ -5,8 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../../lib/api";
-import type { FinancialSummary, PayoutRecord } from "../../lib/types";
-import { loadLocalAccountsForExpenseReconciliation } from "./expenseAccountLoading";
+import type { AccountInfo, FinancialSummary, PayoutRecord } from "../../lib/types";
+import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildAnniversaryYearRangeOptions, formatLocalIsoDate } from "./expenseNetRanges";
 import { ExpensesPage } from "./ExpensesPage";
 
@@ -67,9 +67,35 @@ function financialSummary(spendAmount: number): FinancialSummary {
   };
 }
 
+function projectXAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
+  return {
+    id: 101,
+    name: "50KTC-101",
+    provider_name: "50KTC-101",
+    custom_display_name: null,
+    trade_data_source: "projectx",
+    balance: 50_000,
+    provider_data_stale: false,
+    provider_sync_status: "provider_fresh",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: "2026-07-29T12:00:00.000Z",
+    last_seen_at: "2026-07-29T12:00:00.000Z",
+    status: "ACTIVE",
+    account_state: "ACTIVE",
+    is_main: false,
+    is_archived: false,
+    can_trade: true,
+    is_visible: true,
+    last_trade_at: null,
+    ...overrides,
+  };
+}
+
 function mockExpenseStartup(summary: FinancialSummary | Promise<FinancialSummary>) {
   vi.spyOn(api, "listExpenses").mockResolvedValue({ items: [], total: 0 });
   vi.spyOn(api, "listPayouts").mockResolvedValue({ items: [], total: 0 });
+  vi.spyOn(api, "getCombineTrackerExpenseSuppressions").mockResolvedValue({ account_ids: [] });
   return vi.spyOn(api, "getFinancialSummary").mockImplementation(() => Promise.resolve(summary));
 }
 
@@ -79,18 +105,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("loadLocalAccountsForExpenseReconciliation", () => {
-  it("uses saved account data without refreshing ProjectX", async () => {
+describe("loadFreshAccountsForExpenseReconciliation", () => {
+  it("bypasses the frontend cache and forces the normal ProjectX refresh path", async () => {
     const getAccounts = vi.fn(async () => []);
 
-    await loadLocalAccountsForExpenseReconciliation(getAccounts);
+    await loadFreshAccountsForExpenseReconciliation(getAccounts);
 
     expect(getAccounts).toHaveBeenCalledOnce();
     expect(getAccounts).toHaveBeenCalledWith({
       showInactive: true,
       showMissing: false,
-      bypassCache: false,
-      refreshProvider: false,
+      bypassCache: true,
+      refreshProvider: true,
     });
   });
 });
@@ -216,5 +242,78 @@ describe("ExpensesPage consolidated startup", () => {
     });
     expect(screen.queryByText("$111.00")).toBeNull();
     expect(screen.getByText("$222.00")).not.toBeNull();
+  });
+});
+
+describe("ExpensesPage combine reconciliation", () => {
+  it("renders a provider account-load failure as a safe actionable message", async () => {
+    const user = userEvent.setup();
+    mockExpenseStartup(financialSummary(0));
+    const detail = {
+      code: "projectx_credentials_not_configured",
+      message: "Configure ProjectX credentials for this user, then refresh accounts.",
+    };
+    vi.spyOn(api.accountsApi, "getAccounts").mockRejectedValue(
+      new api.ApiError(JSON.stringify(detail), 400, { detail }, detail),
+    );
+    const createExpense = vi.spyOn(api, "createExpense");
+    const deleteExpense = vi.spyOn(api, "deleteExpense");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Reconcile Combine Expenses" }));
+
+    expect(await screen.findByText(
+      /Configure ProjectX credentials for this user.*No expenses or local combine-tracker data were changed/i,
+    )).not.toBeNull();
+    expect(createExpense).not.toHaveBeenCalled();
+    expect(deleteExpense).not.toHaveBeenCalled();
+  });
+
+  it("shows an actionable stale-provider error without creating, deleting, or changing the local ledger", async () => {
+    const user = userEvent.setup();
+    mockExpenseStartup(financialSummary(0));
+    const getAccounts = vi.spyOn(api.accountsApi, "getAccounts").mockResolvedValue([
+      projectXAccount({ provider_data_stale: true, provider_sync_status: "cache_stale" }),
+    ]);
+    const createExpense = vi.spyOn(api, "createExpense");
+    const deleteExpense = vi.spyOn(api, "deleteExpense");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Reconcile Combine Expenses" }));
+
+    const staleError = await screen.findByText(/ProjectX account data is stale/i);
+    expect(staleError.getAttribute("role")).toBe("alert");
+    expect(getAccounts).toHaveBeenCalledWith({
+      showInactive: true,
+      showMissing: false,
+      bypassCache: true,
+      refreshProvider: true,
+    });
+    expect(createExpense).not.toHaveBeenCalled();
+    expect(deleteExpense).not.toHaveBeenCalled();
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it("reports a successful refresh with zero recognized combines explicitly", async () => {
+    const user = userEvent.setup();
+    mockExpenseStartup(financialSummary(0));
+    vi.spyOn(api.accountsApi, "getAccounts").mockResolvedValue([
+      projectXAccount({ name: "XFA-101", provider_name: "XFA-101" }),
+    ]);
+    const createExpense = vi.spyOn(api, "createExpense");
+    const deleteExpense = vi.spyOn(api, "deleteExpense");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Reconcile Combine Expenses" }));
+
+    const zeroCombineNotice = await screen.findByText(
+      /no ACTIVE or LOCKED_OUT 50KTC, 100KTC, or 150KTC combine accounts were found/i,
+    );
+    expect(zeroCombineNotice.getAttribute("role")).toBe("status");
+    expect(createExpense).not.toHaveBeenCalled();
+    expect(deleteExpense).not.toHaveBeenCalled();
   });
 });

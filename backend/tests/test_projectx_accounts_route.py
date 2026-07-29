@@ -186,6 +186,11 @@ def test_accounts_route_returns_provider_and_custom_display_names(db_session, mo
                 "last_trade_at": None,
                 "last_seen_at": payload[0]["last_seen_at"],
                 "provider_data_stale": False,
+                "provider_data_stale_at": payload[0]["provider_data_stale_at"],
+                "provider_sync_status": "provider_fresh",
+                "provider_sync_error_code": None,
+                "provider_sync_error_message": None,
+                "provider_last_successful_refresh_at": payload[0]["last_seen_at"],
                 "trade_data_source": "projectx",
             }
         ]
@@ -226,6 +231,11 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
                 "last_trade_at": None,
                 "last_seen_at": payload[0]["last_seen_at"],
                 "provider_data_stale": False,
+                "provider_data_stale_at": payload[0]["provider_data_stale_at"],
+                "provider_sync_status": "provider_fresh",
+                "provider_sync_error_code": None,
+                "provider_sync_error_message": None,
+                "provider_last_successful_refresh_at": payload[0]["last_seen_at"],
                 "trade_data_source": "projectx",
             }
         ]
@@ -256,6 +266,7 @@ def test_create_live_import_target_is_local_missing_and_idempotent(db_session):
     assert first["can_trade"] is None
     assert first["is_main"] is True
     assert first["provider_data_stale"] is False
+    assert first["provider_data_stale_at"] is None
     assert first["trade_data_source"] == "csv_import"
     assert db_session.query(Account).count() == 1
 
@@ -348,7 +359,7 @@ def test_create_live_import_target_rejects_unsafe_name(db_session):
     assert db_session.query(Account).count() == 0
 
 
-def test_accounts_route_skips_projectx_when_every_account_uses_csv_import(
+def test_accounts_route_local_snapshot_skips_projectx_when_every_account_uses_csv_import(
     db_session,
     monkeypatch,
 ):
@@ -374,12 +385,53 @@ def test_accounts_route_skips_projectx_when_every_account_uses_csv_import(
     payload = list_projectx_accounts(
         show_inactive=False,
         show_missing=False,
+        refresh_provider=False,
         db=db_session,
     )
 
     assert [row["id"] for row in payload] == [88010]
     assert payload[0]["trade_data_source"] == "csv_import"
     assert payload[0]["provider_data_stale"] is False
+
+
+def test_accounts_route_explicit_refresh_contacts_projectx_with_only_csv_rows(
+    db_session,
+    monkeypatch,
+):
+    provider_calls: list[bool] = []
+
+    class StubClient:
+        def list_accounts(self, *, only_active_accounts=True):
+            provider_calls.append(only_active_accounts)
+            return []
+
+    db_session.add(
+        Account(
+            provider="projectx",
+            external_id="88011",
+            name="Topstep Live",
+            trade_data_source="csv_import",
+            account_state="ACTIVE",
+            is_main=True,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: StubClient(),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=True,
+        refresh_provider=True,
+        db=db_session,
+    )
+
+    assert provider_calls == [False]
+    assert [row["id"] for row in payload] == [88011]
+    assert payload[0]["trade_data_source"] == "csv_import"
+    assert payload[0]["provider_sync_status"] == "not_applicable"
 
 
 def test_mixed_accounts_keep_normal_live_routes_entirely_local(db_session, monkeypatch):
@@ -506,6 +558,55 @@ def test_accounts_route_local_snapshot_skips_projectx_for_mixed_accounts(
     assert by_id[88021]["trade_data_source"] == "projectx"
     assert by_id[88021]["provider_data_stale"] is True
     assert by_id[88021]["balance"] == 50000
+
+
+def test_accounts_route_local_snapshot_uses_last_seen_age_for_provider_staleness(
+    db_session,
+    monkeypatch,
+):
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88022",
+                name="Recently Refreshed Express Account",
+                trade_data_source="projectx",
+                account_state="ACTIVE",
+                last_seen_at=now - timedelta(seconds=30),
+                is_main=True,
+            ),
+            Account(
+                provider="projectx",
+                external_id="88023",
+                name="Old Express Account",
+                trade_data_source="projectx",
+                account_state="ACTIVE",
+                last_seen_at=now - timedelta(minutes=20),
+                is_main=False,
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setenv("PROJECTX_ACCOUNT_STALE_AFTER_SECONDS", "900")
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A local account snapshot must not contact ProjectX")
+        ),
+    )
+
+    payload = list_projectx_accounts(
+        show_inactive=True,
+        show_missing=False,
+        refresh_provider=False,
+        db=db_session,
+    )
+    by_id = {row["id"]: row for row in payload}
+
+    assert by_id[88022]["provider_data_stale"] is False
+    assert by_id[88023]["provider_data_stale"] is True
 
 
 def test_provider_sync_skips_csv_id_collision_and_missing_transition(
@@ -1301,6 +1402,9 @@ def test_csv_import_last_trade_refresh_stays_local(db_session, monkeypatch):
 
 def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_session, monkeypatch):
     Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
+    monkeypatch.setenv("PROJECTX_API_BASE_URL", "https://example.test")
+    monkeypatch.setenv("PROJECTX_USERNAME", "env-only-fixture")
+    monkeypatch.setenv("PROJECTX_API_KEY", "env-only-fixture")
     monkeypatch.delenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", raising=False)
     monkeypatch.delenv("AUTH_REQUIRED", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "https://project-ref.supabase.co")
@@ -1316,7 +1420,7 @@ def test_authenticated_mode_does_not_fall_back_to_shared_env_credentials(db_sess
         list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "projectx_credentials_not_configured"
+    assert exc_info.value.detail["code"] == "projectx_credentials_not_configured"
 
 
 def test_local_only_origins_do_not_enable_shared_credentials_in_cloud_runtime(db_session, monkeypatch):
@@ -1334,7 +1438,7 @@ def test_local_only_origins_do_not_enable_shared_credentials_in_cloud_runtime(db
         list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "projectx_credentials_not_configured"
+    assert exc_info.value.detail["code"] == "projectx_credentials_not_configured"
 
 
 def test_accounts_route_serves_last_known_local_balance_during_provider_outage(db_session, monkeypatch):
@@ -1424,13 +1528,13 @@ def test_account_sync_does_not_erase_last_known_balance_when_provider_omits_it(d
     assert float(stored_balance) == pytest.approx(45678.9)
 
 
-def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_are_unavailable_in_local_dev(
+def test_accounts_route_never_masks_unavailable_stored_credentials_with_local_env_fallback(
     db_session, monkeypatch, caplog
 ):
     Base.metadata.create_all(bind=db_session.bind, tables=[ProviderCredential.__table__])
     monkeypatch.delenv("CREDENTIALS_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@db.example.com:5432/postgres")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
     db_session.add(
         ProviderCredential(
@@ -1442,18 +1546,22 @@ def test_accounts_route_falls_back_to_env_credentials_when_stored_credentials_ar
     )
     db_session.commit()
 
-    class StubClient:
-        def list_accounts(self, *, only_active_accounts=True):
-            assert only_active_accounts is False
-            return [{"id": 7101, "name": "Active", "balance": 10000.0, "can_trade": True, "is_visible": True}]
+    env_fallback_calls: list[bool] = []
 
-    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+    def fail_if_env_fallback_is_used():
+        env_fallback_calls.append(True)
+        raise AssertionError("unavailable stored credentials must not use shared env credentials")
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", fail_if_env_fallback_is_used)
     caplog.set_level(logging.WARNING, logger=main_module.logger.name)
 
-    payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+    with pytest.raises(HTTPException) as exc_info:
+        list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
-    assert [int(row["id"]) for row in payload] == [7101]
-    assert "falling back to env credentials" not in caplog.text
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["code"] == "projectx_credentials_unavailable"
+    assert env_fallback_calls == []
+    assert "projectx_credentials_unavailable" in caplog.text
 
 
 def test_authenticated_mode_returns_500_when_stored_credentials_are_unavailable_without_env_fallback(
@@ -1488,4 +1596,4 @@ def test_authenticated_mode_returns_500_when_stored_credentials_are_unavailable_
         list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "projectx_credentials_unavailable"
+    assert exc_info.value.detail["code"] == "projectx_credentials_unavailable"

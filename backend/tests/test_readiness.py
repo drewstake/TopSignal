@@ -56,6 +56,7 @@ class _Inspector:
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
+            "expense_suppressions",
             "projectx_trade_events",
             "trade_import_batches",
             "trade_import_previews",
@@ -97,6 +98,11 @@ class _Inspector:
                     "duplicate_rows",
                     "imported_at",
                 }
+            ]
+        if table_name == "expense_suppressions":
+            return [
+                {"name": column_name, "nullable": False}
+                for column_name in {"user_id", "source", "account_id", "created_at"}
             ]
         if table_name == "trade_import_previews":
             return [
@@ -212,7 +218,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260725_live_account_archiving.sql"} in db.params
+    assert {"version": "20260729_add_expense_suppressions.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -254,6 +260,17 @@ def test_readiness_still_requires_projectx_bot_persistence(monkeypatch):
     assert response.status_code == 503
 
 
+def test_readiness_requires_expense_suppressions(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "inspect",
+        lambda _bind: _Inspector(missing_table="expense_suppressions"),
+    )
+
+    response = main_module.readiness(db=_Session())
+    assert response.status_code == 503
+
+
 def test_readiness_requires_trade_import_schema(monkeypatch):
     class MissingTradeImportColumnInspector(_Inspector):
         def get_columns(self, table_name):
@@ -285,4 +302,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260725-v4"} in db.params
+    assert {"version": "schema-20260729-v5"} in db.params

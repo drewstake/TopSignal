@@ -5,6 +5,13 @@ from pydantic import BaseModel, Field
 
 ProjectXAccountState = Literal["ACTIVE", "LOCKED_OUT", "HIDDEN", "MISSING"]
 ProjectXTradeDataSource = Literal["projectx", "csv_import"]
+ProjectXProviderSyncStatus = Literal[
+    "provider_fresh",
+    "cache_fresh",
+    "cache_stale",
+    "cached_fallback",
+    "not_applicable",
+]
 
 
 class ProjectXAccountOut(BaseModel):
@@ -22,6 +29,11 @@ class ProjectXAccountOut(BaseModel):
     last_trade_at: datetime | None = None
     last_seen_at: datetime | None = None
     provider_data_stale: bool = False
+    provider_data_stale_at: datetime | None = None
+    provider_sync_status: ProjectXProviderSyncStatus
+    provider_sync_error_code: str | None = None
+    provider_sync_error_message: str | None = None
+    provider_last_successful_refresh_at: datetime | None = None
     trade_data_source: ProjectXTradeDataSource
 
 
@@ -278,6 +290,9 @@ class ProjectXCredentialsUpsertIn(BaseModel):
 
 class ProjectXCredentialsStatusOut(BaseModel):
     configured: bool
+    decryptable: bool
+    status: Literal["not_configured", "ready", "unavailable"]
+    error_code: str | None = None
 
 
 class AuthMeOut(BaseModel):

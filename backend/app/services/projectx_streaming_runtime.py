@@ -53,8 +53,14 @@ class StreamingRuntime:
         asyncio.set_event_loop(self.loop)
         try:
             self.loop.run_until_complete(self._run_until_stopped())
-        except Exception:
-            logger.exception("[streaming] runtime crashed")
+        except Exception as exc:
+            logger.error(
+                "projectx_streaming_runtime_crashed",
+                extra={
+                    "reason_code": "projectx_streaming_runtime_error",
+                    "error_type": type(exc).__name__,
+                },
+            )
         finally:
             self.loop.close()
 
@@ -126,12 +132,14 @@ def _persist_closed_lifecycle(lifecycle: ClosedPositionLifecycle) -> None:
             mfe_timestamp=lifecycle.mfe_timestamp,
         )
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        logger.exception(
-            "[streaming] failed to persist lifecycle account_id=%s contract_id=%s",
-            lifecycle.account_id,
-            lifecycle.contract_id,
+        logger.error(
+            "projectx_streaming_lifecycle_persist_failed",
+            extra={
+                "reason_code": "projectx_streaming_persist_error",
+                "error_type": type(exc).__name__,
+            },
         )
     finally:
         db.close()

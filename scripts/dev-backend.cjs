@@ -1,7 +1,14 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { findAvailablePort, isPortAvailable, parseDotEnvFile, parsePort } = require("./dev-utils.cjs");
+const {
+  classifyBackendDevChange,
+  createEnvironmentSnapshot,
+  findAvailablePort,
+  isPortAvailable,
+  parseDotEnvFile,
+  parsePort,
+} = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const backendDir = path.join(repoRoot, "backend");
@@ -16,10 +23,7 @@ if (!fs.existsSync(pythonPath)) {
 }
 
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
-const childEnv = {
-  ...process.env,
-  ...backendEnv,
-};
+const childEnv = createEnvironmentSnapshot(process.env, backendEnv);
 let backendPort = 8000;
 
 if (!childEnv.TOPSIGNAL_DB_SCHEMA_INIT) {
@@ -62,6 +66,7 @@ let shuttingDown = false;
 let restarting = false;
 let restartTimer = null;
 let watcher = null;
+let environmentRestartNoticeTimer = null;
 
 function startBackend() {
   const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(backendPort)];
@@ -102,20 +107,7 @@ function startBackend() {
 }
 
 function shouldRestartForChange(fileName) {
-  if (!fileName) {
-    return true;
-  }
-
-  const normalized = String(fileName).replaceAll("\\", "/");
-  if (normalized.includes("__pycache__/")) {
-    return false;
-  }
-
-  return (
-    normalized.endsWith(".py") ||
-    normalized === ".env" ||
-    normalized.endsWith("/.env")
-  );
+  return classifyBackendDevChange(fileName) === "code_reload";
 }
 
 function scheduleRestart(fileName) {
@@ -144,13 +136,36 @@ function scheduleRestart(fileName) {
   }, 250);
 }
 
-function startWrapperReloadWatcher() {
-  if (!useWrapperReload) {
-    return;
+function notifyEnvironmentRequiresSupervisorRestart() {
+  if (environmentRestartNoticeTimer) {
+    clearTimeout(environmentRestartNoticeTimer);
   }
 
-  watcher = fs.watch(backendDir, { recursive: true }, (_eventType, fileName) => {
+  environmentRestartNoticeTimer = setTimeout(() => {
+    environmentRestartNoticeTimer = null;
+    console.warn(
+      "backend/.env changed. The running Node/Uvicorn process still has its startup environment; " +
+        "stop and restart `npm run dev` (or `npm run dev:backend`) before testing credentials or other env changes.",
+    );
+  }, 100);
+}
+
+function handleBackendChange(fileName) {
+  const change = classifyBackendDevChange(fileName);
+  if (change === "supervisor_restart") {
+    notifyEnvironmentRequiresSupervisorRestart();
+    return;
+  }
+  if (useWrapperReload && change === "code_reload") {
     scheduleRestart(fileName);
+  }
+}
+
+function startBackendWatcher() {
+  const options = useWrapperReload ? { recursive: true } : undefined;
+
+  watcher = fs.watch(backendDir, options, (_eventType, fileName) => {
+    handleBackendChange(fileName);
   });
 }
 
@@ -162,6 +177,10 @@ function shutdown() {
 
   if (restartTimer) {
     clearTimeout(restartTimer);
+  }
+
+  if (environmentRestartNoticeTimer) {
+    clearTimeout(environmentRestartNoticeTimer);
   }
 
   if (watcher) {
@@ -211,7 +230,7 @@ async function main() {
   backendPort = await resolveBackendPort();
   console.log(`Backend API target: http://127.0.0.1:${backendPort}`);
   startBackend();
-  startWrapperReloadWatcher();
+  startBackendWatcher();
 }
 
 main().catch((error) => {

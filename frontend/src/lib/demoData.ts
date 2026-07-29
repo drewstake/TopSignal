@@ -332,6 +332,10 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     trade_data_source: "projectx",
     balance: currentBalance(50_000, PRIMARY_ACCOUNT_ID),
     provider_data_stale: false,
+    provider_sync_status: "cache_fresh",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: getLastTradeAt(PRIMARY_ACCOUNT_ID),
     last_seen_at: getLastTradeAt(PRIMARY_ACCOUNT_ID),
     status: "active",
     account_state: "ACTIVE",
@@ -349,6 +353,10 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     trade_data_source: "projectx",
     balance: currentBalance(50_000, FOLLOWER_ACCOUNT_ID),
     provider_data_stale: false,
+    provider_sync_status: "cache_fresh",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: getLastTradeAt(FOLLOWER_ACCOUNT_ID),
     last_seen_at: getLastTradeAt(FOLLOWER_ACCOUNT_ID),
     status: "active",
     account_state: "ACTIVE",
@@ -366,6 +374,10 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     trade_data_source: "projectx",
     balance: currentBalance(100_000, SWING_ACCOUNT_ID),
     provider_data_stale: false,
+    provider_sync_status: "cache_fresh",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: getLastTradeAt(SWING_ACCOUNT_ID),
     last_seen_at: getLastTradeAt(SWING_ACCOUNT_ID),
     status: "locked_out",
     account_state: "LOCKED_OUT",
@@ -383,6 +395,10 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     trade_data_source: "projectx",
     balance: currentBalance(50_000, PRACTICE_ACCOUNT_ID),
     provider_data_stale: false,
+    provider_sync_status: "cache_fresh",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: getLastTradeAt(PRACTICE_ACCOUNT_ID),
     last_seen_at: getLastTradeAt(PRACTICE_ACCOUNT_ID),
     status: "active",
     account_state: "ACTIVE",
@@ -399,7 +415,11 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     custom_display_name: "Demo Archive — Empty Import",
     trade_data_source: "csv_import",
     balance: 50_000,
-    provider_data_stale: true,
+    provider_data_stale: false,
+    provider_sync_status: "not_applicable",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: null,
     last_seen_at: "2026-06-30T20:00:00.000Z",
     status: "hidden",
     account_state: "HIDDEN",
@@ -417,6 +437,10 @@ const DEMO_ACCOUNTS: AccountInfo[] = [
     trade_data_source: "projectx",
     balance: null,
     provider_data_stale: true,
+    provider_sync_status: "cache_stale",
+    provider_sync_error_code: null,
+    provider_sync_error_message: null,
+    provider_last_successful_refresh_at: "2026-07-20T13:30:00.000Z",
     last_seen_at: "2026-07-20T13:30:00.000Z",
     status: "missing",
     account_state: "MISSING",
@@ -1737,7 +1761,12 @@ export function getDemoApiResponse<T>(
   }
 
   if (path === "/api/me/providers/projectx/credentials/status") {
-    return handled<ProjectXCredentialsStatus>({ configured: true }) as DemoApiResponse<T>;
+    return handled<ProjectXCredentialsStatus>({
+      configured: true,
+      decryptable: true,
+      status: "ready",
+      error_code: null,
+    }) as DemoApiResponse<T>;
   }
 
   if (path === "/api/accounts") {

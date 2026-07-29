@@ -28,6 +28,16 @@ _PROJECTX_POSITION_SHORT = 2
 _MAX_PROJECTX_ORDER_SIZE = 10_000
 _PROJECTX_INTRADAY_UNIT_SECONDS = {1: 1, 2: 60, 3: 60 * 60}
 _PARTIAL_BAR_KEYS = ("isPartial", "is_partial", "partial")
+PROJECTX_ERROR_AUTH_FAILED = "projectx_auth_failed"
+PROJECTX_ERROR_CONFIGURATION = "projectx_configuration_error"
+PROJECTX_ERROR_NETWORK = "projectx_network_error"
+PROJECTX_ERROR_PROVIDER_RESPONSE = "projectx_provider_error"
+_PROJECTX_ERROR_REASON_CODES = {
+    PROJECTX_ERROR_AUTH_FAILED,
+    PROJECTX_ERROR_CONFIGURATION,
+    PROJECTX_ERROR_NETWORK,
+    PROJECTX_ERROR_PROVIDER_RESPONSE,
+}
 
 
 class ProjectXClientError(RuntimeError):
@@ -37,10 +47,12 @@ class ProjectXClientError(RuntimeError):
         *,
         status_code: int | None = None,
         submission_outcome_unknown: bool = False,
+        reason_code: str | None = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.submission_outcome_unknown = bool(submission_outcome_unknown)
+        self.reason_code = reason_code
 
 
 class ProjectXClient:
@@ -93,6 +105,7 @@ class ProjectXClient:
             joined = ", ".join(missing)
             raise ProjectXClientError(
                 f"Missing ProjectX configuration in environment: {joined}.",
+                reason_code=PROJECTX_ERROR_CONFIGURATION,
             )
 
         return cls(base_url=base_url, username=username, api_key=api_key)
@@ -620,12 +633,14 @@ class ProjectXClient:
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
                 submission_outcome_unknown=(_is_order_submission_path(path) and 500 <= int(exc.code) <= 599),
+                reason_code=_http_error_reason_code(path=path, status_code=int(exc.code)),
             ) from exc
         except TimeoutError as exc:
             raise ProjectXClientError(
                 "ProjectX request timed out. Check the ProjectX connection and try again.",
                 status_code=504,
                 submission_outcome_unknown=_is_order_submission_path(path),
+                reason_code=PROJECTX_ERROR_NETWORK,
             ) from exc
         except error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
@@ -633,11 +648,13 @@ class ProjectXClient:
                     "ProjectX request timed out. Check the ProjectX connection and try again.",
                     status_code=504,
                     submission_outcome_unknown=_is_order_submission_path(path),
+                    reason_code=PROJECTX_ERROR_NETWORK,
                 ) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
                 submission_outcome_unknown=_is_order_submission_path(path),
+                reason_code=PROJECTX_ERROR_NETWORK,
             ) from exc
 
         if raw.strip() == "":
@@ -650,12 +667,18 @@ class ProjectXClient:
                 "ProjectX returned a non-JSON response.",
                 status_code=502,
                 submission_outcome_unknown=_is_order_submission_path(path),
+                reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
             ) from exc
 
         if isinstance(parsed, dict) and parsed.get("success") is False:
             raise ProjectXClientError(
                 _format_provider_error(path=path, payload=parsed),
                 status_code=502,
+                reason_code=(
+                    PROJECTX_ERROR_AUTH_FAILED
+                    if _is_authentication_path(path)
+                    else PROJECTX_ERROR_PROVIDER_RESPONSE
+                ),
             )
 
         return parsed
@@ -680,6 +703,7 @@ class ProjectXClient:
             raise ProjectXClientError(
                 "ProjectX auth response format was invalid.",
                 status_code=502,
+                reason_code=PROJECTX_ERROR_AUTH_FAILED,
             )
 
         token = _string_or_none(_first_value(data, ["token", "accessToken", "jwt", "jwtToken"]))
@@ -687,6 +711,7 @@ class ProjectXClient:
             raise ProjectXClientError(
                 "ProjectX auth succeeded but no token was returned.",
                 status_code=502,
+                reason_code=PROJECTX_ERROR_AUTH_FAILED,
             )
 
         expires_at = _parse_token_expiry(data)
@@ -697,8 +722,26 @@ class ProjectXClient:
         return token
 
     def _token_cache_key(self) -> str:
-        api_key_fingerprint = hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()[:16]
-        return f"{self.base_url}|{self.username}|{api_key_fingerprint}"
+        # Do not retain a username or API key in the process-global cache index.
+        # The framed digest still gives each credential tuple an isolated token.
+        material = json.dumps(
+            [self.base_url, self.username, self.api_key],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+
+def projectx_error_reason_code(exc: ProjectXClientError) -> str:
+    """Return a stable, non-secret error category for logs and API metadata."""
+
+    if exc.reason_code in _PROJECTX_ERROR_REASON_CODES:
+        return exc.reason_code
+    if exc.status_code in {401, 403}:
+        return PROJECTX_ERROR_AUTH_FAILED
+    if exc.status_code is not None and int(exc.status_code) >= 500:
+        return PROJECTX_ERROR_NETWORK
+    return PROJECTX_ERROR_PROVIDER_RESPONSE
 
 
 def _clear_token_cache(cache_key: str | None = None) -> None:
@@ -743,6 +786,20 @@ def _require_list(payload: Any, *, key: str, endpoint: str) -> list[Any]:
 
 def _is_order_submission_path(path: str) -> bool:
     return path.rstrip("/").lower() == "/api/order/place"
+
+
+def _is_authentication_path(path: str) -> bool:
+    return path.rstrip("/").lower() == "/api/auth/loginkey"
+
+
+def _http_error_reason_code(*, path: str, status_code: int) -> str:
+    if status_code in {401, 403}:
+        return PROJECTX_ERROR_AUTH_FAILED
+    if _is_authentication_path(path) and 400 <= status_code < 500:
+        return PROJECTX_ERROR_AUTH_FAILED
+    if status_code >= 500:
+        return PROJECTX_ERROR_NETWORK
+    return PROJECTX_ERROR_PROVIDER_RESPONSE
 
 
 def _normalize_contract_rows(payload: Any) -> list[dict[str, Any]]:

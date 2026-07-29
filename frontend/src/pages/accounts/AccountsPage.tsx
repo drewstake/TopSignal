@@ -22,7 +22,15 @@ import { logPerfInfo } from "../../lib/perf";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { accountsApi } from "../../lib/api";
 import { sortAccountsForActiveSelection, sortAccountsForSelection } from "../../lib/accountOrdering";
-import { formatAccountBalance, formatProviderLastSeen, getAvailableAccountBalance } from "../../lib/accountProviderState";
+import {
+  describeAccountProviderSync,
+  describeProviderRefreshException,
+  formatAccountBalance,
+  formatProviderLastSeen,
+  getAvailableAccountBalance,
+  summarizeAccountProviderSync,
+  useAccountProviderFreshness,
+} from "../../lib/accountProviderState";
 import { getDemoAccountId, getDemoAccountName } from "../../lib/demoMode";
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
 import {
@@ -194,7 +202,7 @@ export function AccountsPage() {
         refreshProvider,
       );
       if (!isCurrent()) {
-        return;
+        return null;
       }
       setAccounts(savedAccounts);
       setMergeAccounts(savedAccounts.filter((account) => !account.is_archived));
@@ -204,14 +212,15 @@ export function AccountsPage() {
       setLastTradeOverridesById({});
       setLastTradeLoadingById({});
       setLastTradeResolvedById({});
+      return savedAccounts;
     } catch (err) {
       if (!isCurrent()) {
-        return;
+        return null;
       }
       const message = err instanceof Error ? err.message : "Failed to load accounts";
       setAccountsError(
         preserveRowsOnError
-          ? `Express refresh failed. Saved account data is still available. ${message}`
+          ? `${describeProviderRefreshException(err)} Saved account data is still available.`
           : message,
       );
       if (!preserveRowsOnError) {
@@ -221,6 +230,7 @@ export function AccountsPage() {
         setLastTradeLoadingById({});
         setLastTradeResolvedById({});
       }
+      return null;
     } finally {
       const totalMs = Math.max(performance.now() - startedAtMs, 0);
       logPerfInfo("[perf][accounts] load-end", {
@@ -244,15 +254,43 @@ export function AccountsPage() {
     refreshExpressRequestRef.current = true;
     setRefreshingExpressAccounts(true);
     try {
-      await loadAccounts({
+      const refreshedAccounts = await loadAccounts({
         refreshProvider: true,
         preserveRowsOnError: true,
       });
+      const providerSummary = refreshedAccounts
+        ? summarizeAccountProviderSync(refreshedAccounts)
+        : null;
+      const activeAccountId =
+        accountFromQuery ??
+        readStoredAccountId() ??
+        refreshedAccounts?.find((account) => account.is_main)?.id ??
+        readStoredMainAccountId() ??
+        refreshedAccounts?.[0]?.id ??
+        null;
+      const activeAccount = refreshedAccounts?.find((account) => account.id === activeAccountId);
+      if (
+        activeAccount?.trade_data_source === "csv_import" &&
+        providerSummary &&
+        providerSummary.status !== "cached_fallback"
+      ) {
+        dispatchAccountListChanged({
+          accountId: null,
+          action: "provider_refreshed",
+          replacementAccountId: null,
+        });
+      }
     } finally {
       refreshExpressRequestRef.current = false;
       setRefreshingExpressAccounts(false);
     }
-  }, [loadAccounts]);
+  }, [accountFromQuery, loadAccounts]);
+
+  const freshnessAwareAccounts = useAccountProviderFreshness(accounts);
+  const providerSyncNotice = useMemo(
+    () => describeAccountProviderSync(summarizeAccountProviderSync(freshnessAwareAccounts)),
+    [freshnessAwareAccounts],
+  );
 
   const resolveLastTrade = useCallback(async (accountId: number, refresh = false) => {
     if (lastTradeLoadingById[accountId]) {
@@ -469,12 +507,12 @@ export function AccountsPage() {
   }, [editingAccountId]);
 
   const visibleAccounts = useMemo(
-    () => filterAccountManagementRows(accounts, {
+    () => filterAccountManagementRows(freshnessAwareAccounts, {
       showHidden: showHiddenAccounts,
       showMissing: showMissingAccounts,
       showArchived: showArchivedAccounts,
     }),
-    [accounts, showArchivedAccounts, showHiddenAccounts, showMissingAccounts],
+    [freshnessAwareAccounts, showArchivedAccounts, showHiddenAccounts, showMissingAccounts],
   );
   const orderedAccounts = useMemo(() => sortAccountsForSelection(visibleAccounts), [visibleAccounts]);
   const selectableAccounts = useMemo(
@@ -652,6 +690,24 @@ export function AccountsPage() {
             {accountsError ? (
               <p className="rounded-lg border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-200" role="alert">
                 {accountsError}
+              </p>
+            ) : refreshingExpressAccounts ? (
+              <p className="rounded-lg border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100" role="status" aria-live="polite">
+                Refreshing ProjectX accounts… Saved rows remain available while the provider request is in progress.
+              </p>
+            ) : providerSyncNotice ? (
+              <p
+                className={`rounded-lg border px-3 py-2 text-xs ${
+                  providerSyncNotice.tone === "error"
+                    ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
+                    : providerSyncNotice.tone === "warning"
+                      ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
+                      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+                }`}
+                role={providerSyncNotice.tone === "error" ? "alert" : "status"}
+                aria-live="polite"
+              >
+                {providerSyncNotice.message}
               </p>
             ) : null}
             {lastTradeError ? <p className="text-xs text-amber-300">{lastTradeError}</p> : null}
@@ -838,7 +894,11 @@ export function AccountsPage() {
                                 <Badge variant={accountStateBadgeVariant(account.account_state)}>
                                   {formatAccountStateLabel(account.account_state)}
                                 </Badge>
-                                {account.provider_data_stale ? <Badge className="ml-1" variant="warning">Stale data</Badge> : null}
+                                {account.provider_sync_status === "cached_fallback" ? (
+                                  <Badge className="ml-1" variant="negative">Refresh failed · cached</Badge>
+                                ) : account.provider_data_stale ? (
+                                  <Badge className="ml-1" variant="warning">Aged cache</Badge>
+                                ) : null}
                               </>
                             )}
                           </td>
