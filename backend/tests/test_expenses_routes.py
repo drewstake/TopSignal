@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -14,8 +14,15 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 import app.main as main_module
 from app.db import Base
 from app.expense_schemas import ExpenseCreateIn, ExpenseUpdateIn
-from app.main import create_expense, delete_expense, get_expense_totals, list_expenses, update_expense
-from app.models import Expense
+from app.main import (
+    create_expense,
+    delete_expense,
+    get_combine_tracker_expense_suppressions,
+    get_expense_totals,
+    list_expenses,
+    update_expense,
+)
+from app.models import Expense, ExpenseSuppression
 
 
 @pytest.fixture()
@@ -25,14 +32,20 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[Expense.__table__])
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[Expense.__table__, ExpenseSuppression.__table__],
+    )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine, tables=[Expense.__table__])
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ExpenseSuppression.__table__, Expense.__table__],
+        )
         engine.dispose()
 
 
@@ -46,6 +59,27 @@ def _create_standard_50k_evaluation(db_session, *, expense_date: date, amount: f
             plan_size="50k",
             account_id=123,
             tags=["topstep"],
+        ),
+        db=db_session,
+    )
+
+
+def _create_auto_combine_expense(
+    db_session,
+    *,
+    expense_date: date,
+    account_id: int,
+    amount_cents: int = 4900,
+):
+    return create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=expense_date,
+            amount_cents=amount_cents,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="50k",
+            account_id=account_id,
+            tags=["combine_tracker", "auto"],
         ),
         db=db_session,
     )
@@ -178,6 +212,222 @@ def test_expense_routes_are_scoped_to_authenticated_user(db_session, monkeypatch
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "expense not found"
+
+
+def test_delete_auto_combine_expense_persists_suppression(db_session):
+    created = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=901,
+    )
+
+    response = delete_expense(
+        expense_id=created.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+
+    assert response.status_code == 204
+    assert db_session.query(Expense).filter(Expense.id == created.id).first() is None
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [901],
+    }
+
+
+def test_combine_suppressions_are_tenant_scoped(db_session, monkeypatch):
+    user_a = "10000000-0000-0000-0000-000000000001"
+    user_b = "20000000-0000-0000-0000-000000000002"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_a)
+    expense_a = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 28),
+        account_id=111,
+    )
+    delete_expense(
+        expense_id=expense_a.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_b)
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [],
+    }
+    expense_b = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=222,
+    )
+    delete_expense(
+        expense_id=expense_b.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [222],
+    }
+
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_a)
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [111],
+    }
+
+
+def test_delete_manual_expense_does_not_create_suppression(db_session):
+    created = _create_standard_50k_evaluation(
+        db_session,
+        expense_date=date(2026, 7, 29),
+    )
+
+    delete_expense(expense_id=created.id, db=db_session)
+
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [],
+    }
+
+
+def test_duplicate_cleanup_can_skip_auto_recreation_suppression(db_session):
+    created = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=902,
+    )
+
+    delete_expense(
+        expense_id=created.id,
+        suppress_auto_recreation=False,
+        db=db_session,
+    )
+
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [],
+    }
+
+
+def test_legacy_delete_call_defaults_to_no_suppression(db_session):
+    created = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=905,
+    )
+
+    delete_expense(expense_id=created.id, db=db_session)
+
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [],
+    }
+
+
+def test_suppression_upsert_is_idempotent_for_duplicate_auto_expenses(db_session):
+    older = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 28),
+        account_id=903,
+    )
+    newer = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=903,
+    )
+
+    delete_expense(
+        expense_id=older.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+    delete_expense(
+        expense_id=newer.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+
+    suppressions = (
+        db_session.query(ExpenseSuppression)
+        .filter(ExpenseSuppression.account_id == 903)
+        .all()
+    )
+    assert len(suppressions) == 1
+    assert get_combine_tracker_expense_suppressions(db=db_session) == {
+        "account_ids": [903],
+    }
+
+
+def test_suppression_blocks_auto_recreation_for_owner_only(db_session, monkeypatch):
+    user_a = "30000000-0000-0000-0000-000000000003"
+    user_b = "40000000-0000-0000-0000-000000000004"
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_a)
+    created = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 28),
+        account_id=906,
+    )
+    delete_expense(
+        expense_id=created.id,
+        suppress_auto_recreation=True,
+        db=db_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _create_auto_combine_expense(
+            db_session,
+            expense_date=date(2026, 7, 29),
+            account_id=906,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "expense_sync_suppressed"
+
+    manual_expense = create_expense(
+        payload=ExpenseCreateIn(
+            expense_date=date(2026, 7, 29),
+            amount_cents=5100,
+            category="evaluation_fee",
+            account_type="standard",
+            plan_size="50k",
+            account_id=906,
+            tags=["manual"],
+        ),
+        db=db_session,
+    )
+    assert manual_expense.account_id == 906
+
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: user_b)
+    other_tenant_expense = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=906,
+    )
+    assert other_tenant_expense.account_id == 906
+
+
+def test_delete_and_suppression_are_committed_atomically(db_session):
+    created = _create_auto_combine_expense(
+        db_session,
+        expense_date=date(2026, 7, 29),
+        account_id=904,
+    )
+
+    def fail_commit(_session):
+        raise RuntimeError("simulated commit failure")
+
+    event.listen(db_session, "before_commit", fail_commit)
+    try:
+        with pytest.raises(RuntimeError, match="simulated commit failure"):
+            delete_expense(
+                expense_id=created.id,
+                suppress_auto_recreation=True,
+                db=db_session,
+            )
+    finally:
+        event.remove(db_session, "before_commit", fail_commit)
+        db_session.rollback()
+
+    assert db_session.query(Expense).filter(Expense.id == created.id).one()
+    assert (
+        db_session.query(ExpenseSuppression)
+        .filter(ExpenseSuppression.account_id == 904)
+        .first()
+        is None
+    )
 
 
 def test_list_expenses_rejects_invalid_pagination(db_session):

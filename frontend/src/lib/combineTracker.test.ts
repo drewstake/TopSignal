@@ -44,6 +44,9 @@ describe("getCombinePriceCentsFromAccountName", () => {
 
   it("uses responsible trading discount prices for DLL account names", () => {
     expect(isDailyLossLimitCombineAccountName("50KTC-V2-DLL-192577")).toBe(true);
+    expect(isDailyLossLimitCombineAccountName("100KTC_V2_DLL_192577")).toBe(true);
+    expect(isDailyLossLimitCombineAccountName("150KTC (DLL)-192577")).toBe(true);
+    expect(isDailyLossLimitCombineAccountName("50KTC (Daily Loss Limit)-192577")).toBe(true);
     expect(getCombinePriceCentsFromAccountName("50KTC-V2-DLL-192577")).toBe(8_500);
     expect(getCombinePriceCentsFromAccountName("100KTC-V2-DLL-192577")).toBe(12_900);
     expect(getCombinePriceCentsFromAccountName("150KTC-V2-DLL-192577")).toBe(19_900);
@@ -438,6 +441,27 @@ describe("storage-backed helpers", () => {
 
     expect(sync.snapshot.totalTrackedCombines).toBe(1);
     expect(sync.unsyncedEvaluationPurchases).toEqual([]);
+  });
+
+  it("lets a manually priced standard combine expense take precedence for its account", () => {
+    syncCombineSpendTrackerFromExpenses([
+      {
+        id: 11,
+        account_id: 9002,
+        expense_date: "2026-02-25",
+        created_at: "2026-02-25T12:00:00.000Z",
+        amount_cents: 3_750,
+        category: "evaluation_fee",
+        account_type: "standard",
+        plan_size: "50k",
+        tags: [],
+      },
+    ]);
+
+    const sync = syncCombineSpendTracker([{ id: 9002, name: "50KTC-9002", status: "ACTIVE" }]);
+
+    expect(sync.unsyncedEvaluationPurchases).toEqual([]);
+    expect(sync.snapshot.baseCombineCostCents).toBe(3_750);
   });
 
   it("adds logged activation expenses on top of manual activation button counts", () => {

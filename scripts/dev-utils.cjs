@@ -54,6 +54,31 @@ function parsePort(value, defaultPort, envName) {
   return port;
 }
 
+function createEnvironmentSnapshot(parentEnvironment, fileEnvironment) {
+  return {
+    ...parentEnvironment,
+    ...fileEnvironment,
+  };
+}
+
+function classifyBackendDevChange(fileName) {
+  if (!fileName) {
+    return "code_reload";
+  }
+
+  const normalized = String(fileName).replaceAll("\\", "/");
+  if (normalized.includes("__pycache__/") || normalized.endsWith(".pyc")) {
+    return "ignore";
+  }
+  if (normalized === ".env" || normalized.endsWith("/.env")) {
+    return "supervisor_restart";
+  }
+  if (normalized.endsWith(".py")) {
+    return "code_reload";
+  }
+  return "ignore";
+}
+
 function isPortAvailable(port, host = "127.0.0.1") {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -87,6 +112,8 @@ async function findAvailablePort(preferredPort, options = {}) {
 }
 
 module.exports = {
+  classifyBackendDevChange,
+  createEnvironmentSnapshot,
   findAvailablePort,
   isPortAvailable,
   parseDotEnvFile,

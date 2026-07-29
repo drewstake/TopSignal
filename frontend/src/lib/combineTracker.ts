@@ -113,7 +113,8 @@ function isTrackableCombineTrackerAccount(account: CombineTrackerAccount): boole
 }
 
 function getProviderBackedAccountName(account: Pick<CombineTrackerAccount, "name" | "provider_name">): string {
-  return account.provider_name ?? account.name;
+  const providerName = account.provider_name?.trim();
+  return providerName ? providerName : account.name;
 }
 
 export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize | null {
@@ -132,7 +133,7 @@ export function getCombinePlanSizeFromAccountName(name: string): CombinePlanSize
 
 export function isDailyLossLimitCombineAccountName(name: string): boolean {
   const normalized = name.trim().toUpperCase();
-  return /(?:^|[-_\s])DLL(?:$|[-_\s])/.test(normalized) || normalized.includes("DAILY LOSS LIMIT");
+  return /(?:^|[^A-Z0-9])DLL(?:$|[^A-Z0-9])/.test(normalized) || normalized.includes("DAILY LOSS LIMIT");
 }
 
 export function getCombinePriceCentsFromAccountName(name: string): number | null {
@@ -324,15 +325,6 @@ function isCombinePlanSize(value: ExpensePlanSize | null | undefined): value is 
   return value === "50k" || value === "100k" || value === "150k";
 }
 
-function isKnownCombinePriceCents(planSize: CombinePlanSize, amountCents: number): boolean {
-  return (
-    amountCents === COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
-    amountCents === NO_ACTIVATION_COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
-    amountCents === DLL_COMBINE_PRICE_CENTS_BY_PLAN[planSize] ||
-    amountCents === LEGACY_COMBINE_PRICE_CENTS_BY_PLAN[planSize]
-  );
-}
-
 function normalizeAmountCents(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
@@ -352,13 +344,11 @@ export function isTrackedCombinePurchaseExpense(expense: CombineTrackerExpense):
   if (!isCombinePlanSize(expense.plan_size)) {
     return false;
   }
-  if (expense.tags.includes("combine_tracker")) {
-    return true;
-  }
-  if (expense.account_type === "no_activation") {
-    return true;
-  }
-  return isKnownCombinePriceCents(expense.plan_size, expense.amount_cents);
+  // A manually entered/imported evaluation with a combine plan size is the
+  // user's authoritative paid amount, including discounts not represented by
+  // today's presets. Practice expenses are rejected elsewhere and must never
+  // seed paid combine spend if encountered in legacy data.
+  return expense.account_type !== "practice";
 }
 
 export function isTrackedStandardActivationExpense(expense: CombineTrackerExpense): boolean {

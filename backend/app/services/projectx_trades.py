@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, load_only
 from ..auth import get_authenticated_user_id
 from ..models import ProjectXTradeDaySync, ProjectXTradeEvent
 from .instruments import build_point_value_lookup, load_instrument_specs
-from .projectx_client import ProjectXClient, ProjectXClientError
+from .projectx_client import ProjectXClient, ProjectXClientError, projectx_error_reason_code
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
 from .trade_event_ranges import trade_event_range_filters
 from .topstep_fees import effective_topstep_trade_fee
@@ -805,7 +805,7 @@ def _sync_trade_day_from_provider(
             end=fetch_end,
             limit=page_limit,
         )
-    except Exception:
+    except Exception as exc:
         _mark_trade_day_partial(
             db,
             user_id=user_id,
@@ -815,7 +815,7 @@ def _sync_trade_day_from_provider(
             window_end=fetch_end,
             last_synced_at=last_synced_at,
         )
-        logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())
+        _log_trade_day_sync_failure(exc, phase="provider_fetch")
         raise
 
     sync_status = _SYNC_STATUS_COMPLETE
@@ -845,7 +845,7 @@ def _sync_trade_day_from_provider(
             row_count=row_count,
         )
         db.commit()
-    except Exception:
+    except Exception as exc:
         db.rollback()
         _mark_trade_day_partial(
             db,
@@ -856,8 +856,25 @@ def _sync_trade_day_from_provider(
             window_end=fetch_end,
             last_synced_at=last_synced_at,
         )
-        logger.exception("[trades] partial sync / sync failed account=%s day=%s", account_id, trade_day.isoformat())
+        _log_trade_day_sync_failure(exc, phase="local_persist")
         raise
+
+
+def _log_trade_day_sync_failure(exc: Exception, *, phase: str) -> None:
+    reason_code = (
+        projectx_error_reason_code(exc)
+        if isinstance(exc, ProjectXClientError)
+        else "projectx_trade_sync_internal_error"
+    )
+    logger.error(
+        "projectx_trade_day_sync_failed",
+        extra={
+            "reason_code": reason_code,
+            "error_type": type(exc).__name__,
+            "phase": phase,
+            "status_code": getattr(exc, "status_code", None),
+        },
+    )
 
 
 def _fetch_trade_day_all_pages(

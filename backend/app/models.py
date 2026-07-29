@@ -1175,6 +1175,31 @@ class Expense(Base):
     )
 
 
+class ExpenseSuppression(Base):
+    __tablename__ = "expense_suppressions"
+
+    user_id = Column(
+        USER_ID_TYPE,
+        primary_key=True,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    source = Column(Text, primary_key=True, nullable=False)
+    account_id = Column(BigInteger, primary_key=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(source)) > 0",
+            name="expense_suppressions_source_nonempty_check",
+        ),
+        CheckConstraint(
+            "account_id > 0",
+            name="expense_suppressions_account_id_positive_check",
+        ),
+    )
+
+
 class Payout(Base):
     __tablename__ = "payouts"
 

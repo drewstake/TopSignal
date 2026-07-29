@@ -1,9 +1,12 @@
+import asyncio
+import logging
 import os
 
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
+import app.services.projectx_hubs as projectx_hubs_module
 from app.services.projectx_hubs import ProjectXHubRunner, _append_query
 from app.services.streaming_pnl_tracker import StreamingPnlTracker
 
@@ -49,6 +52,41 @@ def test_append_query_normalizes_documented_https_hub_url_to_wss():
         _append_query("https://rtc.topstepx.com/hubs/market", {"access_token": "token"})
         == "wss://rtc.topstepx.com/hubs/market?access_token=token"
     )
+
+
+def test_hub_disconnect_log_does_not_expose_bearer_token(monkeypatch, caplog):
+    fixture_token = "sensitive-fixture-bearer-token"
+
+    class StubClient:
+        def get_access_token(self):
+            return fixture_token
+
+    def fail_connect(url, **_kwargs):
+        raise RuntimeError(f"failed to connect to {url}")
+
+    async def stop_after_first_failure(_delay):
+        raise asyncio.CancelledError()
+
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(),
+        client_factory=StubClient,
+        market_hub_url="wss://example.test/hubs/market",
+        user_hub_url="",
+    )
+    monkeypatch.setattr(projectx_hubs_module.websockets, "connect", fail_connect)
+    monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", stop_after_first_failure)
+    caplog.set_level(logging.WARNING, logger=projectx_hubs_module.logger.name)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            runner._consume_hub(
+                "market",
+                "wss://example.test/hubs/market",
+            )
+        )
+
+    assert fixture_token not in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
 
 
 def test_dispatch_circuit_isolates_repeated_tracker_failures():

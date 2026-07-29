@@ -77,6 +77,13 @@ export interface BehaviorMetrics {
 
 export type AccountTradeDataSource = "projectx" | "csv_import";
 
+export type AccountProviderSyncStatus =
+  | "provider_fresh"
+  | "cache_fresh"
+  | "cache_stale"
+  | "cached_fallback"
+  | "not_applicable";
+
 export interface AccountInfo {
   id: number;
   name: string;
@@ -85,6 +92,13 @@ export interface AccountInfo {
   trade_data_source: AccountTradeDataSource;
   balance: number | null;
   provider_data_stale: boolean;
+  /** Optional only for rolling upgrades from account APIs older than the sync-status contract. */
+  provider_sync_status?: AccountProviderSyncStatus;
+  provider_sync_error_code?: string | null;
+  provider_sync_error_message?: string | null;
+  provider_last_successful_refresh_at?: string | null;
+  /** Exact server-defined instant when the saved provider snapshot becomes stale. */
+  provider_data_stale_at?: string | null;
   last_seen_at: string | null;
   status: string;
   account_state: "ACTIVE" | "LOCKED_OUT" | "HIDDEN" | "MISSING";
@@ -353,6 +367,10 @@ export interface ExpenseRecord {
   tags: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface CombineTrackerSuppressionsResponse {
+  account_ids: number[];
 }
 
 export interface ExpenseCreateInput {
@@ -642,6 +660,10 @@ export interface ProjectXCredentialsInput {
 
 export interface ProjectXCredentialsStatus {
   configured: boolean;
+  /** Optional during a rolling backend upgrade; `configured` alone does not prove readability or authentication. */
+  decryptable?: boolean;
+  status?: "not_configured" | "ready" | "unavailable";
+  error_code?: string | null;
 }
 
 export type BotExecutionMode = "dry_run" | "live";

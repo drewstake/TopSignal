@@ -57,3 +57,4 @@ def test_init_db_never_creates_legacy_databento_market_tables(monkeypatch):
     created = {table.name for table in captured["tables"]}
     assert created.isdisjoint(db.LEGACY_DATABENTO_TABLE_NAMES)
     assert "bot_backtests" in created
+    assert "expense_suppressions" in created

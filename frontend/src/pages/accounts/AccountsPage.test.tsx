@@ -89,7 +89,7 @@ describe("AccountsPage local-first management", () => {
       includeArchived: true,
     });
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(screen.getByText("Stale data")).not.toBeNull();
+    expect(screen.getByText("Aged cache")).not.toBeNull();
   });
 
   it("coalesces repeated explicit Express refresh clicks into one provider request", async () => {
@@ -133,11 +133,42 @@ describe("AccountsPage local-first management", () => {
     await user.click(await screen.findByRole("button", { name: "Refresh Express Accounts" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "Express refresh failed. Saved account data is still available. ProjectX unavailable",
+      "ProjectX account refresh failed. Retry the refresh or check the signed-in user's provider configuration. Saved account data is still available.",
     );
     expect(screen.getByRole("button", { name: "Select Live Funded account" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Select Express Cached account" })).not.toBeNull();
-    expect(screen.getByText("Stale data")).not.toBeNull();
+    expect(screen.getByText("Aged cache")).not.toBeNull();
+  });
+
+  it("surfaces an HTTP-200 cached fallback returned by an explicit Express refresh", async () => {
+    const user = userEvent.setup();
+    const live = {
+      ...account({ id: 88001, name: "Live Funded", source: "csv_import", main: true }),
+      provider_sync_status: "not_applicable" as const,
+    };
+    const savedExpress = {
+      ...account({ id: 7101, name: "Express Cached", source: "projectx" }),
+      provider_data_stale: false,
+      provider_sync_status: "cache_fresh" as const,
+    };
+    const fallbackExpress = {
+      ...savedExpress,
+      provider_sync_status: "cached_fallback" as const,
+      provider_sync_error_code: "projectx_network_error",
+      provider_sync_error_message: "ProjectX could not be reached. Check the network connection and retry.",
+    };
+    vi.spyOn(accountsApi, "getAccounts")
+      .mockResolvedValueOnce([live, savedExpress])
+      .mockResolvedValueOnce([live, fallbackExpress]);
+
+    renderAccountsPage("/accounts?account=88001");
+    await user.click(await screen.findByRole("button", { name: "Refresh Express Accounts" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "ProjectX could not be reached. Check the network connection and retry. Saved ProjectX account data is still shown.",
+    );
+    expect(screen.getByText("Refresh failed · cached")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Select Live Funded account" })).not.toBeNull();
   });
 });
 

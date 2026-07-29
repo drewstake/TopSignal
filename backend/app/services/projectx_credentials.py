@@ -22,6 +22,10 @@ class ProjectXCredentialsEncryptionKeyMissing(ProjectXCredentialsUnavailable):
     """Stored credentials need CREDENTIALS_ENCRYPTION_KEY, but this runtime does not have one."""
 
 
+class ProjectXCredentialsEncryptionKeyInvalid(ProjectXCredentialsUnavailable):
+    """The configured credentials key is not a valid Fernet key."""
+
+
 @dataclass(frozen=True)
 class ProjectXCredentials:
     username: str
@@ -116,7 +120,7 @@ def _encrypt(value: str) -> str:
 def _decrypt(value: str) -> str:
     try:
         return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
-    except InvalidToken as exc:
+    except (InvalidToken, UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ProjectXCredentialsUnavailable(
             "Stored ProjectX credentials could not be decrypted with the configured encryption key"
         ) from exc
@@ -126,7 +130,12 @@ def _fernet() -> Fernet:
     key = os.getenv("CREDENTIALS_ENCRYPTION_KEY")
     if key:
         normalized_key = key.strip().encode("utf-8")
-        return Fernet(normalized_key)
+        try:
+            return Fernet(normalized_key)
+        except (ValueError, TypeError) as exc:
+            raise ProjectXCredentialsEncryptionKeyInvalid(
+                "CREDENTIALS_ENCRYPTION_KEY is not a valid Fernet key"
+            ) from exc
 
     if not _allow_insecure_local_credentials_key():
         raise ProjectXCredentialsEncryptionKeyMissing(

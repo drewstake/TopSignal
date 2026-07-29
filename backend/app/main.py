@@ -10,6 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from threading import Event, Lock
 from time import perf_counter
+from typing import NamedTuple
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, inspect, text
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -41,6 +44,7 @@ from .db import (
     resolve_supabase_mode,
 )
 from .expense_schemas import (
+    CombineTrackerSuppressionsOut,
     ExpenseCategory,
     ExpenseCreateIn,
     ExpenseListOut,
@@ -90,7 +94,7 @@ from .metrics_schemas import (
     SummaryMetricsOut,
     SymbolPnlOut,
 )
-from .models import Account, Expense, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
+from .models import Account, Expense, ExpenseSuppression, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
 from .projectx_schemas import (
     AuthMeOut,
@@ -179,12 +183,19 @@ from .services.projectx_accounts import (
 from .services.projectx_credentials import (
     delete_projectx_credentials,
     get_projectx_credentials,
-    has_projectx_credentials,
     ProjectXCredentialsEncryptionKeyMissing,
     ProjectXCredentialsUnavailable,
     upsert_projectx_credentials,
 )
-from .services.projectx_client import ProjectXClient, ProjectXClientError
+from .services.projectx_client import (
+    PROJECTX_ERROR_AUTH_FAILED,
+    PROJECTX_ERROR_CONFIGURATION,
+    PROJECTX_ERROR_NETWORK,
+    PROJECTX_ERROR_PROVIDER_RESPONSE,
+    ProjectXClient,
+    ProjectXClientError,
+    projectx_error_reason_code,
+)
 from .services.projectx_order_book import ProjectXOrderBookRegistry
 from .services.instruments import POINTS_BASIS_SYMBOLS, normalize_points_basis
 from .services.projectx_trades import (
@@ -254,8 +265,8 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260725_live_account_archiving.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260725-v4"
+_REQUIRED_SCHEMA_MIGRATION = "20260729_add_expense_suppressions.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260729-v5"
 _TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
@@ -500,6 +511,7 @@ def readiness(db: Session = Depends(get_db)):
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
+            "expense_suppressions",
             "projectx_trade_events",
             "trade_import_batches",
             "trade_import_previews",
@@ -518,6 +530,13 @@ def readiness(db: Session = Depends(get_db)):
             raise RuntimeError("schema_outdated")
         account_columns = {column["name"] for column in schema.get_columns("accounts")}
         if not {"balance", "trade_data_source"}.issubset(account_columns):
+            raise RuntimeError("schema_outdated")
+        expense_suppression_columns = {
+            column["name"] for column in schema.get_columns("expense_suppressions")
+        }
+        if not {"user_id", "source", "account_id", "created_at"}.issubset(
+            expense_suppression_columns
+        ):
             raise RuntimeError("schema_outdated")
         trade_import_batch_columns = {
             column["name"]
@@ -650,7 +669,44 @@ def get_auth_me():
 @app.get("/api/me/providers/projectx/credentials/status", response_model=ProjectXCredentialsStatusOut)
 def get_projectx_credentials_status(db: Session = Depends(get_db)):
     user_id = get_authenticated_user_id()
-    return {"configured": has_projectx_credentials(db, user_id=user_id)}
+    try:
+        credentials = get_projectx_credentials(db, user_id=user_id)
+    except OperationalError:
+        db.rollback()
+        return {
+            "configured": False,
+            "decryptable": False,
+            "status": "unavailable",
+            "error_code": "provider_credentials_table_missing",
+        }
+    except ProjectXCredentialsUnavailable:
+        db.rollback()
+        logger.warning(
+            "projectx_credentials_unavailable",
+            extra={"reason_code": "projectx_credentials_unavailable"},
+        )
+        return {
+            "configured": True,
+            "decryptable": False,
+            "status": "unavailable",
+            "error_code": "projectx_credentials_unavailable",
+        }
+
+    if credentials is None:
+        return {
+            "configured": False,
+            "decryptable": False,
+            "status": "not_configured",
+            "error_code": "projectx_credentials_not_configured",
+        }
+    return {
+        "configured": True,
+        "decryptable": True,
+        # "ready" means only that the stored row can be decrypted. The normal
+        # account refresh path is what verifies authentication and connectivity.
+        "status": "ready",
+        "error_code": None,
+    }
 
 
 @app.put("/api/me/providers/projectx/credentials", status_code=204)
@@ -665,6 +721,35 @@ def put_projectx_credentials(payload: ProjectXCredentialsUpsertIn, db: Session =
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProjectXCredentialsUnavailable as exc:
+        db.rollback()
+        logger.warning(
+            "projectx_credentials_unavailable",
+            extra={"reason_code": "projectx_credentials_unavailable"},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "projectx_credentials_unavailable",
+                "message": (
+                    "ProjectX credentials could not be stored because the credentials "
+                    "encryption key is unavailable or invalid."
+                ),
+            },
+        ) from exc
+    except OperationalError as exc:
+        db.rollback()
+        logger.warning(
+            "provider_credentials_table_missing",
+            extra={"reason_code": "provider_credentials_table_missing"},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "provider_credentials_table_missing",
+                "message": "Credential storage is unavailable. Apply the database migrations and retry.",
+            },
+        ) from exc
     return Response(status_code=204)
 
 
@@ -712,6 +797,18 @@ def create_expense(
         plan_size=payload.plan_size,
     )
     _validate_expense_amount(amount_cents=amount_cents, category=payload.category)
+
+    if (
+        payload.account_id is not None
+        and _expense_has_tag(tags, "combine_tracker")
+        and _expense_suppression_exists(
+            db,
+            user_id=user_id,
+            source="combine_tracker",
+            account_id=payload.account_id,
+        )
+    ):
+        raise HTTPException(status_code=409, detail="expense_sync_suppressed")
 
     row = Expense(
         user_id=user_id,
@@ -769,6 +866,24 @@ def list_expenses(
         "items": [ExpenseOut.model_validate(row) for row in rows],
         "total": total,
     }
+
+
+@app.get(
+    "/api/expenses/combine-tracker-suppressions",
+    response_model=CombineTrackerSuppressionsOut,
+)
+def get_combine_tracker_expense_suppressions(
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    rows = (
+        db.query(ExpenseSuppression.account_id)
+        .filter(ExpenseSuppression.user_id == user_id)
+        .filter(ExpenseSuppression.source == "combine_tracker")
+        .order_by(ExpenseSuppression.account_id.asc())
+        .all()
+    )
+    return {"account_ids": [int(account_id) for (account_id,) in rows]}
 
 
 @app.get("/api/expenses/totals", response_model=ExpenseTotalsOut)
@@ -1027,6 +1142,7 @@ def update_expense(
 @app.delete("/api/expenses/{expense_id}", status_code=204)
 def delete_expense(
     expense_id: int,
+    suppress_auto_recreation: bool = False,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
@@ -1041,6 +1157,18 @@ def delete_expense(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="expense not found")
+
+    if (
+        suppress_auto_recreation
+        and row.account_id is not None
+        and _expense_has_tag(row.tags, "combine_tracker")
+    ):
+        _upsert_expense_suppression(
+            db,
+            user_id=user_id,
+            source="combine_tracker",
+            account_id=int(row.account_id),
+        )
 
     db.delete(row)
     db.commit()
@@ -1290,49 +1418,90 @@ def list_projectx_accounts(
         show_missing = not only_active_accounts
 
     rows = get_projectx_account_rows(db, user_id=user_id)
-    provider_sync_required = refresh_provider and (
-        not rows
-        or any(
-            row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
-            for row in rows
-        )
-    )
+    # `refresh_provider=True` is an explicit request to contact ProjectX even
+    # when the local snapshot currently contains only Live CSV rows. Skipping
+    # that request would make first-time ProjectX discovery impossible and
+    # could let callers mistake a cache-only response for a successful refresh.
+    provider_sync_required = refresh_provider
     provider_accounts: list[dict[str, object]] = []
     provider_error: ProjectXClientError | HTTPException | None = None
     if provider_sync_required:
         try:
             client = _projectx_client_for_user(db, user_id=user_id)
             provider_accounts = client.list_accounts(only_active_accounts=False)
+            provider_refreshed_at = datetime.now(timezone.utc)
             sync_projectx_accounts(
                 db,
                 provider_accounts,
                 user_id=user_id,
+                now_utc=provider_refreshed_at,
                 missing_buffer=timedelta(
                     seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
                 ),
             )
             db.commit()
+            logger.info(
+                "projectx_account_sync_succeeded",
+                extra={
+                    "provider_sync_status": "provider_fresh",
+                    "provider_account_count": len(provider_accounts),
+                    "last_successful_refresh_at": provider_refreshed_at.isoformat(),
+                },
+            )
         except ProjectXClientError as exc:
             db.rollback()
             provider_error = exc
-            logger.warning(
-                "projectx_account_sync_failed_using_local",
-                extra={"user_id": user_id, "status_code": exc.status_code},
-            )
         except HTTPException as exc:
             db.rollback()
             provider_error = exc
-            logger.warning(
-                "projectx_account_sync_unavailable_using_local",
-                extra={"user_id": user_id, "status_code": exc.status_code},
-            )
 
     provider_by_external_id = _provider_account_payloads_by_external_id(provider_accounts)
     rows = get_projectx_account_rows(db, user_id=user_id)
-    if provider_error is not None and not rows:
-        if isinstance(provider_error, ProjectXClientError):
-            raise _to_http_exception(provider_error) from provider_error
-        raise provider_error
+    provider_error_code: str | None = None
+    provider_error_message: str | None = None
+    if provider_error is not None:
+        has_returnable_projectx_cache = any(
+            row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+            and account_id_from_external_id(row.external_id) is not None
+            and should_include_account(
+                row,
+                show_inactive=show_inactive,
+                show_missing=show_missing,
+                include_archived=include_archived,
+            )
+            for row in rows
+        )
+        provider_error_code, provider_error_message = _projectx_sync_failure_metadata(
+            provider_error,
+        )
+        status_code = provider_error.status_code
+        logger.warning(
+            provider_error_code,
+            extra={
+                "reason_code": provider_error_code,
+                "provider_sync_status": (
+                    "cached_fallback" if has_returnable_projectx_cache else "failed"
+                ),
+                "status_code": status_code,
+            },
+        )
+        if not has_returnable_projectx_cache:
+            raise _projectx_account_sync_http_exception(provider_error) from provider_error
+
+        last_successful_refresh_at = _latest_projectx_refresh_at(rows)
+        logger.warning(
+            "projectx_cached_fallback_used",
+            extra={
+                "reason_code": "projectx_cached_fallback_used",
+                "provider_error_code": provider_error_code,
+                "provider_sync_status": "cached_fallback",
+                "last_successful_refresh_at": (
+                    last_successful_refresh_at.isoformat()
+                    if last_successful_refresh_at is not None
+                    else None
+                ),
+            },
+        )
     visible_rows = [
         row
         for row in rows
@@ -1357,13 +1526,26 @@ def list_projectx_accounts(
         if account_id is None:
             continue
 
+        provider_payload = provider_by_external_id.get(row.external_id)
+        provider_snapshot_freshness = _projectx_account_snapshot_freshness(
+            row.last_seen_at,
+        )
+        provider_sync_status = _projectx_account_sync_status(
+            row,
+            provider_payload=provider_payload,
+            provider_error=provider_error,
+            provider_snapshot_freshness=provider_snapshot_freshness,
+        )
         payload.append(
             _serialize_projectx_account(
                 row,
                 account_id=account_id,
                 last_trade_at=last_trade_by_account_id.get(account_id),
-                provider_payload=provider_by_external_id.get(row.external_id),
-                provider_data_stale=provider_error is not None or not refresh_provider,
+                provider_payload=provider_payload,
+                provider_snapshot_freshness=provider_snapshot_freshness,
+                provider_sync_status=provider_sync_status,
+                provider_sync_error_code=provider_error_code,
+                provider_sync_error_message=provider_error_message,
             )
         )
 
@@ -1472,6 +1654,9 @@ def create_topstep_live_import_target(
         row,
         account_id=account_id,
         last_trade_at=None,
+        provider_snapshot_freshness=_projectx_account_snapshot_freshness(
+            row.last_seen_at,
+        ),
     )
 
 
@@ -1518,10 +1703,10 @@ def update_projectx_account_trade_data_source(
         row,
         account_id=account_id,
         last_trade_at=last_trade_at,
-        # This mutation does not contact ProjectX. A later successful account
-        # list sync is the first point that can establish fresh provider data.
-        provider_data_stale=(
-            row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+        # This mutation does not contact ProjectX, so preserve the cache age
+        # established by the most recent successful account refresh.
+        provider_snapshot_freshness=_projectx_account_snapshot_freshness(
+            row.last_seen_at,
         ),
     )
 
@@ -2595,7 +2780,13 @@ def _backtest_stream_error(exc: Exception) -> dict[str, object]:
         return {"status": 422, "detail": str(exc)}
     if isinstance(exc, BacktestError):
         return {"status": 400, "detail": str(exc)}
-    logger.exception("Streamed backtest failed: %s", exc)
+    logger.error(
+        "backtest_stream_failed",
+        extra={
+            "reason_code": "backtest_internal_error",
+            "error_type": type(exc).__name__,
+        },
+    )
     return {"status": 500, "detail": "Backtest failed."}
 
 
@@ -2643,15 +2834,22 @@ def start_trading_bot(
         except Exception:
             db.rollback()
             raise
+        if isinstance(exc.cause, ProjectXClientError):
+            http_error = _to_http_exception(exc.cause)
+            safe_provider_detail = dict(http_error.detail)
+            safe_provider_detail.update(
+                {
+                    "status": "error",
+                    "correlation_id": exc.correlation_id,
+                }
+            )
+            http_error.detail = safe_provider_detail
+            raise http_error from exc
         detail = {
             "status": "error",
             "correlation_id": exc.correlation_id,
             "message": str(exc),
         }
-        if isinstance(exc.cause, ProjectXClientError):
-            http_error = _to_http_exception(exc.cause)
-            http_error.detail = detail
-            raise http_error from exc
         if isinstance(exc.cause, LookupError):
             raise HTTPException(status_code=404, detail=detail) from exc
         if isinstance(exc.cause, ValueError):
@@ -3547,24 +3745,34 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
     except OperationalError:
         db.rollback()
         if allow_legacy_env:
+            logger.warning(
+                "projectx_provider_credentials_table_missing_using_legacy_env",
+                extra={"reason_code": "provider_credentials_table_missing"},
+            )
             return ProjectXClient.from_env()
         raise HTTPException(status_code=500, detail="provider_credentials_table_missing")
     except ProjectXCredentialsUnavailable as exc:
         db.rollback()
-        if allow_legacy_env:
-            log_method = (
-                logger.debug if isinstance(exc, ProjectXCredentialsEncryptionKeyMissing) else logger.warning
-            )
-            log_method(
-                "ProjectX stored credentials unavailable for user %s; falling back to env credentials: %s",
-                user_id,
-                exc,
-            )
-            return ProjectXClient.from_env()
+        # A row exists for this user, so an env fallback would hide a changed or
+        # missing encryption key and test a different credential than the app owns.
+        logger.warning(
+            "projectx_credentials_unavailable",
+            extra={
+                "reason_code": "projectx_credentials_unavailable",
+                "encryption_key_missing": isinstance(
+                    exc,
+                    ProjectXCredentialsEncryptionKeyMissing,
+                ),
+            },
+        )
         raise HTTPException(status_code=500, detail="projectx_credentials_unavailable") from exc
 
     if credentials is None:
         if allow_legacy_env:
+            logger.info(
+                "projectx_legacy_env_credentials_used",
+                extra={"reason_code": "projectx_credentials_not_configured"},
+            )
             return ProjectXClient.from_env()
         raise HTTPException(status_code=400, detail="projectx_credentials_not_configured")
 
@@ -3645,6 +3853,70 @@ def _normalize_expense_tags(values: list[str] | None) -> list[str]:
         seen.add(key)
         normalized.append(value)
     return normalized
+
+
+def _expense_has_tag(values: list[str] | None, expected: str) -> bool:
+    normalized_expected = expected.strip().lower()
+    return any(
+        isinstance(raw, str) and raw.strip().lower() == normalized_expected
+        for raw in values or []
+    )
+
+
+def _upsert_expense_suppression(
+    db: Session,
+    *,
+    user_id: str,
+    source: str,
+    account_id: int,
+) -> None:
+    values = {
+        "user_id": user_id,
+        "source": source,
+        "account_id": account_id,
+    }
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        statement = postgresql_insert(ExpenseSuppression).values(**values)
+        statement = statement.on_conflict_do_nothing(
+            index_elements=["user_id", "source", "account_id"],
+        )
+        db.execute(statement)
+        return
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(ExpenseSuppression).values(**values)
+        statement = statement.on_conflict_do_nothing(
+            index_elements=["user_id", "source", "account_id"],
+        )
+        db.execute(statement)
+        return
+
+    existing = (
+        db.query(ExpenseSuppression)
+        .filter(ExpenseSuppression.user_id == user_id)
+        .filter(ExpenseSuppression.source == source)
+        .filter(ExpenseSuppression.account_id == account_id)
+        .first()
+    )
+    if existing is None:
+        db.add(ExpenseSuppression(**values))
+
+
+def _expense_suppression_exists(
+    db: Session,
+    *,
+    user_id: str,
+    source: str,
+    account_id: int,
+) -> bool:
+    return (
+        db.query(ExpenseSuppression.user_id)
+        .filter(ExpenseSuppression.user_id == user_id)
+        .filter(ExpenseSuppression.source == source)
+        .filter(ExpenseSuppression.account_id == account_id)
+        .first()
+        is not None
+    )
 
 
 def _contains_practice(value: str | None) -> bool:
@@ -3913,13 +4185,131 @@ def _provider_account_payloads_by_external_id(
     return output
 
 
+def _projectx_sync_failure_metadata(
+    error: ProjectXClientError | HTTPException,
+) -> tuple[str, str]:
+    if isinstance(error, ProjectXClientError):
+        code = projectx_error_reason_code(error)
+    else:
+        detail = error.detail
+        detail_code = detail.get("code") if isinstance(detail, dict) else detail
+        if detail_code == "projectx_credentials_not_configured":
+            code = "projectx_credentials_not_configured"
+        elif detail_code == "projectx_credentials_unavailable":
+            code = "projectx_credentials_unavailable"
+        else:
+            code = PROJECTX_ERROR_CONFIGURATION
+
+    messages = {
+        "projectx_credentials_not_configured": (
+            "Configure ProjectX credentials for this user, then refresh accounts."
+        ),
+        "projectx_credentials_unavailable": (
+            "Stored ProjectX credentials cannot be read. Restore the credentials "
+            "encryption key or reconnect ProjectX."
+        ),
+        PROJECTX_ERROR_AUTH_FAILED: (
+            "ProjectX rejected the stored credential. Reconnect ProjectX and try again."
+        ),
+        PROJECTX_ERROR_NETWORK: (
+            "ProjectX is temporarily unreachable. Try refreshing accounts again."
+        ),
+        PROJECTX_ERROR_CONFIGURATION: (
+            "ProjectX service configuration is incomplete. Contact the administrator."
+        ),
+        PROJECTX_ERROR_PROVIDER_RESPONSE: (
+            "ProjectX returned an unexpected response. Try again or contact support."
+        ),
+    }
+    return code, messages.get(code, messages[PROJECTX_ERROR_PROVIDER_RESPONSE])
+
+
+def _projectx_account_sync_http_exception(
+    error: ProjectXClientError | HTTPException,
+) -> HTTPException:
+    code, message = _projectx_sync_failure_metadata(error)
+    if isinstance(error, HTTPException):
+        status_code = error.status_code
+    elif error.status_code == 504:
+        status_code = 504
+    else:
+        status_code = 502
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+    )
+
+
+def _latest_projectx_refresh_at(rows: list[Account]) -> datetime | None:
+    timestamps = [
+        _as_utc(row.last_seen_at)
+        for row in rows
+        if row.trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+        and row.last_seen_at is not None
+    ]
+    return max(timestamps, default=None)
+
+
+def _projectx_account_sync_status(
+    row: Account,
+    *,
+    provider_payload: dict[str, object] | None,
+    provider_error: ProjectXClientError | HTTPException | None,
+    provider_snapshot_freshness: "_ProjectXAccountSnapshotFreshness",
+) -> str:
+    if row.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+        return "not_applicable"
+    if provider_error is not None:
+        return "cached_fallback"
+    if isinstance(provider_payload, dict):
+        return "provider_fresh"
+    if provider_snapshot_freshness.is_stale:
+        return "cache_stale"
+    return "cache_fresh"
+
+
+def _projectx_account_stale_after() -> timedelta:
+    return timedelta(
+        seconds=max(
+            1,
+            _read_int_env("PROJECTX_ACCOUNT_STALE_AFTER_SECONDS", 900),
+        )
+    )
+
+
+class _ProjectXAccountSnapshotFreshness(NamedTuple):
+    is_stale: bool
+    stale_at: datetime | None
+
+
+def _projectx_account_snapshot_freshness(
+    last_seen_at: datetime | None,
+    *,
+    now_utc: datetime | None = None,
+) -> _ProjectXAccountSnapshotFreshness:
+    if last_seen_at is None:
+        return _ProjectXAccountSnapshotFreshness(is_stale=True, stale_at=None)
+
+    stale_at = _as_utc(last_seen_at) + _projectx_account_stale_after()
+    checked_at = (
+        _as_utc(now_utc) if now_utc is not None else datetime.now(timezone.utc)
+    )
+    return _ProjectXAccountSnapshotFreshness(
+        is_stale=checked_at >= stale_at,
+        stale_at=stale_at,
+    )
+
+
 def _serialize_projectx_account(
     row: Account,
     *,
     account_id: int,
     last_trade_at: datetime | None,
+    provider_snapshot_freshness: _ProjectXAccountSnapshotFreshness,
     provider_payload: dict[str, object] | None = None,
-    provider_data_stale: bool = False,
+    provider_sync_status: str | None = None,
+    provider_sync_error_code: str | None = None,
+    provider_sync_error_message: str | None = None,
 ) -> dict[str, object]:
     trade_data_source = (
         row.trade_data_source
@@ -3948,6 +4338,20 @@ def _serialize_projectx_account(
     )
     account_state = row.account_state or ACCOUNT_STATE_ACTIVE
     is_csv_import = trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT
+    if is_csv_import:
+        effective_provider_sync_status = "not_applicable"
+    elif provider_sync_status is not None:
+        effective_provider_sync_status = provider_sync_status
+    else:
+        effective_provider_sync_status = (
+            "cache_stale"
+            if provider_snapshot_freshness.is_stale
+            else "cache_fresh"
+        )
+    has_provider_sync_error = (
+        not is_csv_import
+        and effective_provider_sync_status == "cached_fallback"
+    )
     return {
         "id": account_id,
         "name": effective_name,
@@ -3983,8 +4387,23 @@ def _serialize_projectx_account(
         ),
         "last_trade_at": last_trade_at,
         "last_seen_at": None if is_csv_import else row.last_seen_at,
-        "provider_data_stale": bool(provider_data_stale)
+        "provider_data_stale": provider_snapshot_freshness.is_stale
         and trade_data_source == TRADE_DATA_SOURCE_PROJECTX,
+        "provider_data_stale_at": (
+            provider_snapshot_freshness.stale_at
+            if trade_data_source == TRADE_DATA_SOURCE_PROJECTX
+            else None
+        ),
+        "provider_sync_status": effective_provider_sync_status,
+        "provider_sync_error_code": (
+            provider_sync_error_code if has_provider_sync_error else None
+        ),
+        "provider_sync_error_message": (
+            provider_sync_error_message if has_provider_sync_error else None
+        ),
+        "provider_last_successful_refresh_at": (
+            None if is_csv_import else row.last_seen_at
+        ),
         "trade_data_source": trade_data_source,
     }
 
@@ -4103,15 +4522,21 @@ def _ensure_trade_cache_or_fallback(
             raise
         logger.warning(
             "projectx_trade_cache_sync_failed_using_local",
-            extra={"account_id": account_id, "user_id": user_id, "status_code": exc.status_code},
+            extra={
+                "reason_code": projectx_error_reason_code(exc),
+                "status_code": exc.status_code,
+            },
         )
-    except Exception:
+    except Exception as exc:
         db.rollback()
         if refresh:
             raise
-        logger.exception(
+        logger.error(
             "projectx_trade_cache_sync_failed_using_local",
-            extra={"account_id": account_id, "user_id": user_id},
+            extra={
+                "reason_code": "projectx_trade_cache_sync_internal_error",
+                "error_type": type(exc).__name__,
+            },
         )
 
 
@@ -4228,15 +4653,21 @@ def _journal_image_url(*, image_id: int, account_id: int) -> str:
 
 
 def _to_http_exception(exc: ProjectXClientError) -> HTTPException:
+    code, message = _projectx_sync_failure_metadata(exc)
+    detail = {
+        "code": code,
+        "message": message,
+        "submission_outcome_unknown": bool(exc.submission_outcome_unknown),
+    }
     # Missing env or local configuration errors are server configuration issues.
     if exc.status_code is None:
-        return HTTPException(status_code=500, detail=str(exc))
+        return HTTPException(status_code=500, detail=detail)
 
     if exc.status_code == 504:
-        return HTTPException(status_code=504, detail=str(exc))
+        return HTTPException(status_code=504, detail=detail)
 
     # Upstream API errors should be surfaced as a gateway error to the frontend.
-    return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=502, detail=detail)
 
 
 def _to_gemini_http_exception(exc: GeminiClientError) -> HTTPException:

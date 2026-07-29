@@ -17,7 +17,7 @@ create table if not exists topsignal_schema_baselines (
 );
 
 insert into topsignal_schema_baselines (version)
-values ('schema-20260725-v4')
+values ('schema-20260729-v5')
 on conflict (version) do nothing;
 
 
@@ -859,6 +859,21 @@ create unique index if not exists uq_expenses_dedupe
     coalesce(account_id, 0),
     amount_cents
   );
+
+
+-- ============================================
+-- TABLE: expense_suppressions
+-- User-scoped tombstones for auto-generated expenses.
+-- ============================================
+create table if not exists expense_suppressions (
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  source text not null,
+  account_id bigint not null,
+  created_at timestamptz not null default now(),
+  constraint expense_suppressions_pkey primary key (user_id, source, account_id),
+  constraint expense_suppressions_source_nonempty_check check (length(trim(source)) > 0),
+  constraint expense_suppressions_account_id_positive_check check (account_id > 0)
+);
 
 
 -- ============================================

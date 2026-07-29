@@ -29,7 +29,13 @@ import {
 } from "../lib/appShellApi";
 import { canApplyAccountScopedResult } from "../lib/appShellRequests";
 import { sortAccountsForActiveSelection } from "../lib/accountOrdering";
-import { formatProviderLastSeen } from "../lib/accountProviderState";
+import {
+  describeAccountProviderSync,
+  describeProviderRefreshException,
+  formatProviderLastSeen,
+  summarizeAccountProviderSync,
+  useAccountProviderFreshness,
+} from "../lib/accountProviderState";
 import { useCompactMode, type CompactModeController } from "../lib/compactMode";
 import { getDemoAccountLabel, getDemoUserEmail, subscribeToDemoModeChanges, useDemoMode } from "../lib/demoMode";
 import { DEMO_AS_OF_LABEL } from "../lib/demoScenario";
@@ -72,6 +78,8 @@ export function AppShell() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [providerAccountsRefreshing, setProviderAccountsRefreshing] = useState(false);
+  const [providerRefreshError, setProviderRefreshError] = useState<string | null>(null);
   const [accountsReloadVersion, setAccountsReloadVersion] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -125,6 +133,7 @@ export function AppShell() {
       const isCurrent = beginAccountsRequest();
       setAccountsLoading(true);
       setAccountsError(null);
+      setProviderRefreshError(null);
 
       try {
         const payload = await getSelectableAccountsLocalFirst();
@@ -189,7 +198,11 @@ export function AppShell() {
   }, [accountsReloadVersion, beginAccountsRequest, navigate]);
 
   const queryAccountId = parseAccountId(new URLSearchParams(location.search).get(ACCOUNT_QUERY_PARAM));
-  const orderedAccounts = useMemo(() => sortAccountsForActiveSelection(accounts), [accounts]);
+  const freshnessAwareAccounts = useAccountProviderFreshness(accounts);
+  const orderedAccounts = useMemo(
+    () => sortAccountsForActiveSelection(freshnessAwareAccounts),
+    [freshnessAwareAccounts],
+  );
   const persistedMainAccountId = orderedAccounts.find((account) => account.is_main)?.id ?? null;
   const mainAccountId = readStoredMainAccountId();
   const storedActiveAccountId = readStoredAccountId();
@@ -227,10 +240,13 @@ export function AppShell() {
   }, [demoMode.enabled, location, selectedAccountId]);
 
   useEffect(() => {
-    const isCurrent = beginProviderAccountsRequest();
     if (demoMode.enabled || accountsLoading || selectedAccount?.trade_data_source !== "projectx") {
       return;
     }
+
+    const isCurrent = beginProviderAccountsRequest();
+    setProviderAccountsRefreshing(true);
+    setProviderRefreshError(null);
 
     void getSelectableAccounts({ refreshProvider: true })
       .then((payload) => {
@@ -238,8 +254,15 @@ export function AppShell() {
           setAccounts(payload);
         }
       })
-      .catch(() => {
-        // The saved account snapshot remains usable when ProjectX is unavailable.
+      .catch((error) => {
+        if (isCurrent()) {
+          setProviderRefreshError(describeProviderRefreshException(error));
+        }
+      })
+      .finally(() => {
+        if (isCurrent()) {
+          setProviderAccountsRefreshing(false);
+        }
       });
   }, [
     accountsLoading,
@@ -264,6 +287,14 @@ export function AppShell() {
     : currentUserEmailDisplay;
   const isTradesRoute = location.pathname.startsWith("/trades");
   const isDashboardRoute = location.pathname === "/";
+  const providerSyncSummary = useMemo(
+    () => summarizeAccountProviderSync(orderedAccounts),
+    [orderedAccounts],
+  );
+  const providerSyncNotice = useMemo(
+    () => describeAccountProviderSync(providerSyncSummary),
+    [providerSyncSummary],
+  );
   const outletContext = useMemo<AppShellOutletContext>(
     () => ({
       accounts: orderedAccounts,
@@ -449,9 +480,11 @@ export function AppShell() {
                         {`${getDemoAccountLabel(account)}${
                           account.trade_data_source === "csv_import"
                             ? " — Live CSV"
-                            : account.provider_data_stale
-                              ? ` — stale provider data (${formatProviderLastSeen(account.last_seen_at)})`
-                              : ""
+                            : account.provider_sync_status === "cached_fallback"
+                              ? ` — cached after refresh failure (${formatProviderLastSeen(account.last_seen_at)})`
+                              : account.provider_data_stale
+                                ? ` — aged saved data (${formatProviderLastSeen(account.last_seen_at)})`
+                                : ""
                         }`}
                       </option>
                     ))}
@@ -525,6 +558,30 @@ export function AppShell() {
                 ) : null}
               </div>
               {accountsError ? <p className="text-xs text-app-negative">{accountsError}</p> : null}
+              {providerAccountsRefreshing ? (
+                <p className="text-xs text-app-muted" role="status" aria-live="polite">
+                  Refreshing ProjectX accounts… Saved accounts remain available while this finishes.
+                </p>
+              ) : providerRefreshError ? (
+                <p className="text-xs text-app-negative" role="alert">
+                  {providerRefreshError} Saved account data remains available.
+                </p>
+              ) : providerSyncNotice ? (
+                <p
+                  className={cn(
+                    "text-xs",
+                    providerSyncNotice.tone === "error"
+                      ? "text-app-negative"
+                      : providerSyncNotice.tone === "warning"
+                        ? "text-app-warning"
+                        : "text-app-muted",
+                  )}
+                  role={providerSyncNotice.tone === "error" ? "alert" : "status"}
+                  aria-live="polite"
+                >
+                  {providerSyncNotice.message}
+                </p>
+              ) : null}
               {syncMessage ? <p className="text-xs text-app-muted">{syncMessage}</p> : null}
               {demoModeMessage ? (
                 <p className="text-xs text-app-muted" role="status" aria-live="polite">
