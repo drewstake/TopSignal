@@ -4,7 +4,7 @@ import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
 import { Input } from "../../../components/ui/Input";
 import { accountsApi, isApiError } from "../../../lib/api";
-import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
+import { getDemoAccountName } from "../../../lib/demoMode";
 import { TRADE_IMPORT_FILE_PICKER_REQUESTED_EVENT } from "../../../lib/tradeImportEvents";
 import type {
   AccountInfo,
@@ -434,8 +434,8 @@ export function TradeImportPanel({
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [selectingAccountId, setSelectingAccountId] = useState<number | null>(null);
   const [showAccountForm, setShowAccountForm] = useState(!accountsLoading && accountId === null);
-  const [liveAccountId, setLiveAccountId] = useState("");
   const [liveAccountName, setLiveAccountName] = useState("");
+  const [liveStartingBalance, setLiveStartingBalance] = useState("10000");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TradeImportConfirmResult | null>(null);
   const canImport = accountId !== null && tradeDataSource === "csv_import";
@@ -465,7 +465,6 @@ export function TradeImportPanel({
     setRecoveryToken(null);
     setCreatingAccount(false);
     setShowAccountForm(!accountsLoading && accountId === null);
-    setLiveAccountId("");
     setLiveAccountName("");
     setError(null);
     setResult(null);
@@ -493,7 +492,6 @@ export function TradeImportPanel({
       setShowAccountForm(false);
     } else if (accountId !== null && tradeDataSource === "csv_import") {
       setShowAccountForm(false);
-      setLiveAccountId("");
       setLiveAccountName("");
     } else if (accountId === null && !hasLiveAccount) {
       setShowAccountForm(true);
@@ -799,15 +797,18 @@ export function TradeImportPanel({
 
   async function handleCreateLiveAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalizedId = liveAccountId.trim();
-    const accountIdValue = Number(normalizedId);
-    if (!/^\d+$/.test(normalizedId) || !Number.isSafeInteger(accountIdValue) || accountIdValue <= 0) {
-      setError("Enter the positive numeric account ID shown by Topstep.");
+    const normalizedName = liveAccountName.trim();
+    if (!normalizedName) {
+      setError("Enter the Live account name.");
       return;
     }
-    const normalizedName = liveAccountName.trim();
     if (normalizedName.length > 120) {
       setError("Live account name must be 120 characters or fewer.");
+      return;
+    }
+    const startingBalance = Number(liveStartingBalance);
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0 || startingBalance > 1_000_000_000) {
+      setError("Enter a starting balance between $0.01 and $1,000,000,000.");
       return;
     }
 
@@ -815,12 +816,12 @@ export function TradeImportPanel({
     setError(null);
     try {
       const account = await accountsApi.createLiveImportAccount({
-        account_id: accountIdValue,
-        ...(normalizedName ? { name: normalizedName } : {}),
+        name: normalizedName,
+        starting_balance: startingBalance,
       });
       await onAccountCreated?.(account);
-      setLiveAccountId("");
       setLiveAccountName("");
+      setLiveStartingBalance("10000");
       setShowAccountForm(false);
     } catch (nextError) {
       setError(getTradeImportErrorMessage(nextError));
@@ -980,7 +981,7 @@ export function TradeImportPanel({
                         ? "Selecting..."
                         : selected
                           ? `${getDemoAccountName(account)} · Selected`
-                          : `${getDemoAccountName(account)} · ID ${getDemoAccountId(account.id)}`}
+                          : getDemoAccountName(account)}
                     </Button>
                   );
                 })}
@@ -990,41 +991,42 @@ export function TradeImportPanel({
 
           {!hasLiveAccount ? (
             <form
-              className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] md:items-end"
+              className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,0.65fr)_auto] md:items-end"
               onSubmit={(event) => void handleCreateLiveAccount(event)}
             >
               <label className="space-y-1">
                 <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
-                  Topstep Live account ID
-                </span>
-                <Input
-                  value={liveAccountId}
-                  inputMode="numeric"
-                  autoComplete="off"
-                  placeholder="e.g. 88001"
-                  disabled={creatingAccount}
-                  onChange={(event) => setLiveAccountId(event.target.value)}
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
-                  Account name (optional)
+                  Account name
                 </span>
                 <Input
                   value={liveAccountName}
                   maxLength={120}
                   autoComplete="off"
-                  placeholder="Topstep Live Funded"
+                  placeholder="TOPX8141"
                   disabled={creatingAccount}
                   onChange={(event) => setLiveAccountName(event.target.value)}
                 />
               </label>
-              <Button type="submit" size="sm" disabled={creatingAccount || !liveAccountId.trim()}>
+              <label className="space-y-1">
+                <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-app-muted">
+                  Starting balance
+                </span>
+                <Input
+                  type="number"
+                  min="0.01"
+                  max="1000000000"
+                  step="0.01"
+                  value={liveStartingBalance}
+                  inputMode="decimal"
+                  disabled={creatingAccount}
+                  onChange={(event) => setLiveStartingBalance(event.target.value)}
+                />
+              </label>
+              <Button type="submit" size="sm" disabled={creatingAccount || !liveAccountName.trim()}>
                 {creatingAccount ? "Adding..." : "Add Import Account"}
               </Button>
               <p className="text-[10px] text-app-muted-strong md:col-span-3">
-                Topstep exports do not include an account ID. Enter the Live account number so imported trades stay separate
-                from your Express account.
+                Enter the account name and opening balance shown by Topstep. TopSignal adds imported net P&amp;L to that balance automatically.
               </p>
             </form>
           ) : null}

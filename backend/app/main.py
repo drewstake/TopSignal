@@ -1519,6 +1519,11 @@ def list_projectx_accounts(
         if account_id is not None
     ]
     last_trade_by_account_id = _load_last_trade_timestamps(db, user_id=user_id, account_ids=account_ids)
+    csv_import_current_balances = _load_csv_import_current_balances(
+        db,
+        user_id=user_id,
+        rows=visible_rows,
+    )
 
     payload: list[dict[str, object]] = []
     for row in visible_rows:
@@ -1546,6 +1551,7 @@ def list_projectx_accounts(
                 provider_sync_status=provider_sync_status,
                 provider_sync_error_code=provider_error_code,
                 provider_sync_error_message=provider_error_message,
+                csv_import_current_balance=csv_import_current_balances.get(account_id),
             )
         )
 
@@ -1597,24 +1603,17 @@ def create_topstep_live_import_target(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    _validate_account_id(payload.account_id)
 
     try:
         with serialize_account_main_mutation(db, user_id=user_id):
             row = create_projectx_import_account(
                 db,
                 user_id=user_id,
-                account_id=payload.account_id,
                 name=payload.name,
+                starting_balance=payload.starting_balance,
             )
             db.commit()
             db.refresh(row)
-    except AccountTradeDataSourceConflictError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=_trade_data_source_conflict_detail(exc),
-        ) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1626,30 +1625,26 @@ def create_topstep_live_import_target(
         ) from exc
     except IntegrityError as exc:
         db.rollback()
-        row = get_projectx_account_row(
-            db,
-            payload.account_id,
-            user_id=user_id,
-        )
-        if row is None:
-            raise HTTPException(
-                status_code=409,
-                detail=_retryable_main_account_conflict_detail(payload.account_id),
-            ) from exc
-        if row.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT:
-            conflict = AccountTradeDataSourceConflictError(
-                account_id=payload.account_id,
-                current_trade_data_source=row.trade_data_source,
-                requested_trade_data_source=TRADE_DATA_SOURCE_CSV_IMPORT,
-            )
-            raise HTTPException(
-                status_code=409,
-                detail=_trade_data_source_conflict_detail(conflict),
-            ) from exc
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "live_account_create_conflict_retryable",
+                "message": (
+                    "Another Live account change completed at the same time. "
+                    "Reload accounts and retry."
+                ),
+                "retryable": True,
+            },
+        ) from exc
 
     account_id = account_id_from_external_id(row.external_id)
     if account_id is None:
         raise HTTPException(status_code=500, detail="invalid_stored_account_id")
+    csv_import_current_balances = _load_csv_import_current_balances(
+        db,
+        user_id=user_id,
+        rows=[row],
+    )
     return _serialize_projectx_account(
         row,
         account_id=account_id,
@@ -1657,6 +1652,7 @@ def create_topstep_live_import_target(
         provider_snapshot_freshness=_projectx_account_snapshot_freshness(
             row.last_seen_at,
         ),
+        csv_import_current_balance=csv_import_current_balances.get(account_id),
     )
 
 
@@ -1703,6 +1699,11 @@ def update_projectx_account_trade_data_source(
         row,
         account_id=account_id,
         last_trade_at=last_trade_at,
+        csv_import_current_balance=_load_csv_import_current_balances(
+            db,
+            user_id=user_id,
+            rows=[row],
+        ).get(account_id),
         # This mutation does not contact ProjectX, so preserve the cache age
         # established by the most recent successful account refresh.
         provider_snapshot_freshness=_projectx_account_snapshot_freshness(
@@ -4171,6 +4172,28 @@ def _load_last_trade_timestamps(db: Session, *, user_id: str, account_ids: list[
     return output
 
 
+def _load_csv_import_current_balances(
+    db: Session,
+    *,
+    user_id: str,
+    rows: list[Account],
+) -> dict[int, float]:
+    output: dict[int, float] = {}
+    for row in rows:
+        if row.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT or row.balance is None:
+            continue
+        account_id = account_id_from_external_id(row.external_id)
+        if account_id is None:
+            continue
+        summary = summarize_trade_events(db, account_id, user_id=user_id)
+        net_pnl = Decimal(str(summary.get("net_pnl") or 0))
+        current_balance = Decimal(str(row.balance)) + net_pnl
+        output[account_id] = float(
+            current_balance.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+    return output
+
+
 def _provider_account_payloads_by_external_id(
     provider_accounts: list[dict[str, object]],
 ) -> dict[str, dict[str, object]]:
@@ -4310,6 +4333,7 @@ def _serialize_projectx_account(
     provider_sync_status: str | None = None,
     provider_sync_error_code: str | None = None,
     provider_sync_error_message: str | None = None,
+    csv_import_current_balance: float | None = None,
 ) -> dict[str, object]:
     trade_data_source = (
         row.trade_data_source
@@ -4357,10 +4381,10 @@ def _serialize_projectx_account(
         "name": effective_name,
         "provider_name": provider_name,
         "custom_display_name": row.display_name,
-        # CSV exports do not carry a current balance or provider capability
-        # state. Preserve cached values in the database for a later switch back
-        # to ProjectX, but never present them as current in CSV mode.
-        "balance": None
+        # Local Live accounts use their stored opening balance plus all-time
+        # imported net P&L. Provider-backed accounts continue to prefer the
+        # provider's current balance.
+        "balance": csv_import_current_balance
         if is_csv_import
         else (
             float(provider_balance)

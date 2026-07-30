@@ -479,7 +479,7 @@ export function AppShell() {
                       <option key={account.id} value={account.id}>
                         {`${getDemoAccountLabel(account)}${
                           account.trade_data_source === "csv_import"
-                            ? " — Live CSV"
+                            ? ""
                             : account.provider_sync_status === "cached_fallback"
                               ? ` — cached after refresh failure (${formatProviderLastSeen(account.last_seen_at)})`
                               : account.provider_data_stale

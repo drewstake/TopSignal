@@ -38,8 +38,12 @@ class ProjectXAccountOut(BaseModel):
 
 
 class TopstepLiveAccountCreateIn(BaseModel):
-    account_id: int = Field(gt=0, le=9_223_372_036_854_775_807)
-    name: str | None = None
+    name: str
+    starting_balance: float | None = Field(
+        default=None,
+        gt=0,
+        le=1_000_000_000,
+    )
 
 
 class ProjectXAccountTradeDataSourceIn(BaseModel):

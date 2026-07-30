@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
 import { Toggle } from "../../../components/ui/Toggle";
-import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
+import { getDemoAccountId, getDemoAccountLabel, getDemoAccountName } from "../../../lib/demoMode";
 import type {
   AccountInfo,
   JournalMergeConflictStrategy,
@@ -48,7 +48,9 @@ function formatAccountStateLabel(state: AccountInfo["account_state"]) {
 
 function formatMergeAccountLabel(account: AccountInfo) {
   const stateLabel = formatAccountStateLabel(account.account_state);
-  const accountLabel = `${getDemoAccountName(account)} (#${getDemoAccountId(account.id)})`;
+  const accountLabel = account.trade_data_source === "csv_import"
+    ? getDemoAccountLabel(account)
+    : `${getDemoAccountName(account)} (#${getDemoAccountId(account.id)})`;
   return account.account_state === "ACTIVE"
     ? accountLabel
     : `${accountLabel} - ${stateLabel}`;

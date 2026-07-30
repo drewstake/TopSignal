@@ -387,8 +387,8 @@ describe("accountsApi", () => {
 
     await expect(
       accountsApi.createLiveImportAccount({
-        account_id: 88001,
         name: "Topstep Live Funded",
+        starting_balance: 10000,
       }),
     ).resolves.toEqual(account);
 
@@ -396,8 +396,8 @@ describe("accountsApi", () => {
     expect(url).toBe("http://127.0.0.1:8000/api/accounts/import-target");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({
-      account_id: 88001,
       name: "Topstep Live Funded",
+      starting_balance: 10000,
     });
   });
 

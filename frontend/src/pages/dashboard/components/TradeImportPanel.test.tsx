@@ -260,7 +260,7 @@ describe("TradeImportPanel", () => {
 
     expect(markup).toContain("Loading account...");
     expect(markup).not.toContain("Topstep Live account ID");
-    expect(markup).not.toContain("Account name (optional)");
+    expect(markup).not.toContain("Account name");
     expect(markup).not.toContain("Add Import Account");
     expect(markup).not.toContain("Add or select the Live account before choosing a trade file.");
     expect(markup).not.toContain("Add Live Account");
@@ -269,9 +269,12 @@ describe("TradeImportPanel", () => {
   it("offers manual Live-account onboarding when ProjectX has no account to select", () => {
     const markup = renderToStaticMarkup(<TradeImportPanel accountId={null} />);
 
-    expect(markup).toContain("Topstep Live account ID");
+    expect(markup).not.toContain("Topstep Live account ID");
+    expect(markup).toContain("Account name");
+    expect(markup).toContain("Starting balance");
+    expect(markup).toContain("TOPX8141");
     expect(markup).toContain("Add Import Account");
-    expect(markup).toContain("stay separate from your Express account");
+    expect(markup).toContain("adds imported net P&amp;L to that balance automatically");
     expect(markup).toContain("Add or select the Live account");
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toMatch(/aria-controls="[^"]+-account-setup"/);
@@ -331,6 +334,8 @@ describe("TradeImportPanel", () => {
     expect(openMarkup).toContain("Existing Live CSV accounts");
     expect(openMarkup).toContain("Live Funded A");
     expect(openMarkup).toContain("Live Funded B");
+    expect(openMarkup).not.toContain("ID 88001");
+    expect(openMarkup).not.toContain("ID 88002");
     expect(openMarkup).not.toContain("Topstep Live account ID");
     expect(openMarkup).not.toContain("Add Import Account");
   });
@@ -343,9 +348,27 @@ describe("TradeImportPanel", () => {
     disclosure.focus();
     await user.keyboard("{Enter}");
     expect(disclosure.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Topstep Live account ID")).not.toBeNull();
+    expect(screen.getByText("Account name")).not.toBeNull();
+    expect(screen.queryByText("Topstep Live account ID")).toBeNull();
     await user.keyboard(" ");
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("creates a Live account from its name without asking for or sending an account ID", async () => {
+    const user = userEvent.setup();
+    const created = liveAccount(8_000_000_000_000_000, "TOPX8141");
+    const create = vi.spyOn(accountsApi, "createLiveImportAccount").mockResolvedValue(created);
+    const onAccountCreated = vi.fn();
+    render(<TradeImportPanel accountId={null} onAccountCreated={onAccountCreated} />);
+
+    await user.type(screen.getByLabelText("Account name"), "TOPX8141");
+    await user.click(screen.getByRole("button", { name: "Add Import Account" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith({ name: "TOPX8141", starting_balance: 10000 }),
+    );
+    expect(onAccountCreated).toHaveBeenCalledWith(created);
+    expect(screen.queryByText("Topstep Live account ID")).toBeNull();
   });
 
   it("delegates to the native picker and clears its value for same-file reselection", () => {
@@ -669,20 +692,18 @@ describe("getTradeImportErrorMessage", () => {
     );
   });
 
-  it("explains that a ProjectX account ID cannot be reused for Live CSV", () => {
+  it("explains a retryable name-only Live account creation conflict", () => {
     const error = new ApiError(
       "conflict",
       409,
       null,
       {
-        code: "account_trade_data_source_conflict",
-        current_trade_data_source: "projectx",
-        requested_trade_data_source: "csv_import",
+        code: "live_account_create_conflict_retryable",
       },
     );
 
     expect(getTradeImportErrorMessage(error)).toBe(
-      "That account ID already belongs to an Express/ProjectX account. Enter the separate Topstep Live account ID.",
+      "Another Live account change completed at the same time. Reload accounts and retry.",
     );
   });
 

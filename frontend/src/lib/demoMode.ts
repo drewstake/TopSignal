@@ -224,8 +224,16 @@ export function getDemoAccountId(accountId: string | number | null | undefined) 
   return `ACCT-${demoOrdinal(accountId)}${stableHash(String(accountId ?? "demo")) % 100}`;
 }
 
-export function getDemoAccountLabel(account: { id: number; name: string; custom_display_name?: string | null }) {
-  return `${getDemoAccountName(account)} (${getDemoAccountId(account.id)})`;
+export function getDemoAccountLabel(account: {
+  id: number;
+  name: string;
+  custom_display_name?: string | null;
+  trade_data_source?: "projectx" | "csv_import";
+}) {
+  const accountName = getDemoAccountName(account);
+  return account.trade_data_source === "csv_import"
+    ? accountName
+    : `${accountName} (${getDemoAccountId(account.id)})`;
 }
 
 export function getDemoUserEmail(email: string | null | undefined) {

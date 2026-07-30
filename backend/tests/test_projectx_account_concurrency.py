@@ -11,6 +11,7 @@ from app.db import Base
 from app.main import create_topstep_live_import_target, set_projectx_main_account
 from app.models import Account
 from app.projectx_schemas import TopstepLiveAccountCreateIn
+from app.services.projectx_accounts import LOCAL_LIVE_ACCOUNT_ID_MIN
 
 
 USER_ID = "00000000-0000-0000-0000-000000000000"
@@ -30,27 +31,31 @@ def test_parallel_live_creation_serializes_first_main_assignment(tmp_path):
     engine, SessionLocal = _session_factory(tmp_path)
     start = Barrier(2)
 
-    def create(account_id: int) -> None:
+    def create(name: str) -> None:
         with SessionLocal() as db:
             start.wait(timeout=5)
             result = create_topstep_live_import_target(
-                TopstepLiveAccountCreateIn(
-                    account_id=account_id,
-                    name=f"Live {account_id}",
-                ),
+                TopstepLiveAccountCreateIn(name=name),
                 db=db,
             )
-            assert result["id"] == account_id
+            assert result["id"] in {
+                LOCAL_LIVE_ACCOUNT_ID_MIN,
+                LOCAL_LIVE_ACCOUNT_ID_MIN + 1,
+            }
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(create, account_id) for account_id in (88001, 88002)]
+            futures = [executor.submit(create, name) for name in ("Live Alpha", "Live Bravo")]
             for future in futures:
                 future.result(timeout=10)
 
         with SessionLocal() as db:
             rows = db.query(Account).order_by(Account.external_id.asc()).all()
-            assert [row.external_id for row in rows] == ["88001", "88002"]
+            assert [int(row.external_id) for row in rows] == [
+                LOCAL_LIVE_ACCOUNT_ID_MIN,
+                LOCAL_LIVE_ACCOUNT_ID_MIN + 1,
+            ]
+            assert {row.name for row in rows} == {"Live Alpha", "Live Bravo"}
             assert sum(bool(row.is_main) for row in rows) == 1
     finally:
         Base.metadata.drop_all(bind=engine, tables=[Account.__table__])
