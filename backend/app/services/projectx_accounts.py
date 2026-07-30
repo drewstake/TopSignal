@@ -27,7 +27,12 @@ TRADE_DATA_SOURCES = {
     TRADE_DATA_SOURCE_CSV_IMPORT,
 }
 ACCOUNT_DISPLAY_NAME_MAX_LENGTH = 120
-MAX_PROJECTX_ACCOUNT_ID = 9_223_372_036_854_775_807
+# Live CSV accounts still need a numeric key for authenticated API routes and
+# relational ownership, but that key is an application detail rather than a
+# provider identifier. Keep generated values inside JavaScript's safe integer
+# range so clients can route requests without ever asking the user for an ID.
+LOCAL_LIVE_ACCOUNT_ID_MIN = 8_000_000_000_000_000
+LOCAL_LIVE_ACCOUNT_ID_MAX = 9_007_199_254_740_991
 _ACCOUNT_MAIN_LOCK_STRIPES = tuple(RLock() for _ in range(256))
 
 
@@ -217,42 +222,54 @@ def get_projectx_account_row(
 def create_projectx_import_account(
     db: Session,
     *,
-    account_id: int,
-    name: str | None = None,
+    name: str,
+    starting_balance: float | None = None,
     user_id: str | None = None,
 ) -> Account:
     resolved_user_id = _resolve_user_id(user_id)
-    external_id = normalize_projectx_account_external_id(account_id)
-    if external_id is None:
-        raise ValueError("Account ID must be a positive integer.")
-    if int(external_id) > MAX_PROJECTX_ACCOUNT_ID:
-        raise ValueError("Account ID is outside the supported range.")
-
-    existing = get_projectx_account_row(
-        db,
-        int(external_id),
-        user_id=resolved_user_id,
-    )
-    if existing is not None:
-        if existing.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
-            if existing.archived_at is not None:
-                raise LiveAccountArchivedError(account_id=int(external_id))
-            return existing
-        raise AccountTradeDataSourceConflictError(
-            account_id=int(external_id),
-            current_trade_data_source=existing.trade_data_source,
-            requested_trade_data_source=TRADE_DATA_SOURCE_CSV_IMPORT,
-        )
-
     normalized_name = _normalize_optional_text(name)
     if normalized_name is None:
-        normalized_name = f"Topstep Live {external_id}"
+        raise ValueError("Account name cannot be empty.")
     if len(normalized_name) > ACCOUNT_DISPLAY_NAME_MAX_LENGTH:
         raise ValueError(
             f"Account name must be {ACCOUNT_DISPLAY_NAME_MAX_LENGTH} characters or fewer."
         )
     if _has_control_character(normalized_name):
         raise ValueError("Account name cannot contain control characters.")
+    if starting_balance is not None and (
+        not math.isfinite(starting_balance)
+        or starting_balance <= 0
+        or starting_balance > 1_000_000_000
+    ):
+        raise ValueError("Starting balance must be between 0 and 1,000,000,000.")
+
+    # Treat a repeated name-only request as idempotent. The route serializes
+    # this lookup and creation per user, including across PostgreSQL workers.
+    existing_live_rows = (
+        db.query(Account)
+        .filter(Account.user_id == resolved_user_id)
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+        .filter(Account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT)
+        .order_by(Account.created_at.asc(), Account.id.asc())
+        .all()
+    )
+    normalized_name_key = normalized_name.casefold()
+    for existing in existing_live_rows:
+        effective_name = _normalize_optional_text(existing.display_name) or _normalize_optional_text(
+            existing.name
+        )
+        if effective_name is None or effective_name.casefold() != normalized_name_key:
+            continue
+        existing_account_id = account_id_from_external_id(existing.external_id)
+        if existing_account_id is None:
+            continue
+        if existing.archived_at is not None:
+            raise LiveAccountArchivedError(account_id=existing_account_id)
+        if existing.balance is None and starting_balance is not None:
+            existing.balance = starting_balance
+        return existing
+
+    external_id = str(_next_local_live_account_id(db, user_id=resolved_user_id))
 
     has_main_account = (
         db.query(Account.id)
@@ -271,11 +288,35 @@ def create_projectx_import_account(
         account_state=ACCOUNT_STATE_ACTIVE,
         can_trade=None,
         is_visible=True,
+        # For a local Live account, balance is the user-supplied opening
+        # balance. The API adds the account's all-time net P&L when returning
+        # the current balance.
+        balance=starting_balance,
         is_main=not has_main_account,
     )
     db.add(row)
     db.flush()
     return row
+
+
+def _next_local_live_account_id(db: Session, *, user_id: str) -> int:
+    used_ids: set[int] = set()
+    for (external_id,) in (
+        db.query(Account.external_id)
+        .filter(Account.user_id == user_id)
+        .filter(Account.provider == ACCOUNT_PROVIDER)
+        .all()
+    ):
+        normalized = normalize_projectx_account_external_id(external_id)
+        if normalized is not None:
+            used_ids.add(int(normalized))
+
+    candidate = LOCAL_LIVE_ACCOUNT_ID_MIN
+    while candidate in used_ids and candidate <= LOCAL_LIVE_ACCOUNT_ID_MAX:
+        candidate += 1
+    if candidate > LOCAL_LIVE_ACCOUNT_ID_MAX:
+        raise ValueError("No internal Live account keys are available.")
+    return candidate
 
 
 def set_projectx_account_trade_data_source(

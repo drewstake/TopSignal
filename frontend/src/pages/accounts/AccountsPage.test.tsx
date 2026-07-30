@@ -79,7 +79,9 @@ describe("AccountsPage local-first management", () => {
 
     renderAccountsPage("/accounts?account=88001");
 
-    expect(await screen.findByRole("button", { name: "Select Live Funded account" })).not.toBeNull();
+    const liveSelection = await screen.findByRole("button", { name: "Select Live Funded account" });
+    expect(liveSelection).not.toBeNull();
+    expect(liveSelection.closest("tr")?.textContent).not.toContain("88001");
     expect(getAccounts).toHaveBeenCalledTimes(1);
     expect(getAccounts).toHaveBeenCalledWith({
       showInactive: true,

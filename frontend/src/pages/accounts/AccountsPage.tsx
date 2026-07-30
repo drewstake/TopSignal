@@ -852,7 +852,9 @@ export function AccountsPage() {
                               <p className="mt-1 text-[11px] font-normal text-rose-300">{renameErrorMessage}</p>
                             ) : null}
                           </td>
-                          <td className="px-3 py-3 text-right text-slate-300">{getDemoAccountId(account.id)}</td>
+                          <td className="px-3 py-3 text-right text-slate-300">
+                            {account.trade_data_source === "csv_import" ? "—" : getDemoAccountId(account.id)}
+                          </td>
                           <td className="px-3 py-3 text-right font-mono text-slate-200">
                             <span className={availableBalance === null ? "font-sans text-amber-300" : undefined}>
                               {formatAccountBalance(account.balance)}

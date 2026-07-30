@@ -70,6 +70,8 @@ describe("AppShell compact mode", () => {
   it("places a persisted live-updating dashboard switch immediately after Demo Mode", async () => {
     renderAppShell("/?account=10");
     const demoSwitch = await screen.findByRole("switch", { name: "Demo mode" });
+    expect(screen.getByRole("option", { name: "Test Account" })).not.toBeNull();
+    expect(screen.queryByRole("option", { name: /\b10\b/ })).toBeNull();
     const compactSwitch = screen.getByRole("switch", { name: "Compact Dashboard" });
     const headerContainer = screen.getByRole("banner").firstElementChild as HTMLElement;
     const main = screen.getByRole("main");

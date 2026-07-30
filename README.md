@@ -116,6 +116,8 @@ A user can:
 - override the provider account name with a local display name
 - use the dashboard's `Live Account (CSV)` control to switch to a separate
   local Live account backed by manually imported Topstep trades
+- create Live accounts with a name and opening balance; TopSignal generates and
+  hides the internal routing key and derives current balance from imported net P&L
 - merge journal history from an older account into a replacement account
 - resolve the last trade timestamp from the provider when local data is stale or absent
 
@@ -438,10 +440,13 @@ Repeated or truncated provider pages keep the day marked `partial` rather than `
 #### Topstep Live file import
 
 The dashboard accepts Topstep `.csv` and `.xlsx` trade exports in two phases.
-Use `Add Live Account` to create a local, read-only account from the Topstep
-Live account number. The `Live Account (CSV)` control then selects that
-separate account; it never repurposes the selected Express account. Selecting a
-Live account turns off Copy Trade Mode and prevents paused Express accounts
+Use `Add Live Account` to create a local, read-only account from the account
+name and opening balance shown by Topstep. TopSignal adds imported all-time net
+P&L to that opening balance and generates a hidden internal routing key, so no
+account ID is requested or displayed for Live accounts. The `Live Account
+(CSV)` control then selects that separate account; it never repurposes the
+selected Express account. Selecting a Live account turns off Copy Trade Mode
+and prevents paused Express accounts
 from being auto-selected as copy followers.
 
 1. preview parses and validates the file, calculates new-row gross P&L,

@@ -37,6 +37,7 @@ from app.projectx_schemas import (
     ProjectXAccountTradeDataSourceIn,
     TopstepLiveAccountCreateIn,
 )
+from app.services.projectx_accounts import LOCAL_LIVE_ACCOUNT_ID_MIN
 
 
 @pytest.fixture()
@@ -252,16 +253,17 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
 
 def test_create_live_import_target_is_local_missing_and_idempotent(db_session):
     payload = TopstepLiveAccountCreateIn(
-        account_id=88001,
         name="Topstep Live Funded",
+        starting_balance=10_000,
     )
 
     first = create_topstep_live_import_target(payload=payload, db=db_session)
     second = create_topstep_live_import_target(payload=payload, db=db_session)
 
     assert first == second
-    assert first["id"] == 88001
+    assert first["id"] == LOCAL_LIVE_ACCOUNT_ID_MIN
     assert first["name"] == "Topstep Live Funded"
+    assert first["balance"] == pytest.approx(10_000)
     assert first["account_state"] == "ACTIVE"
     assert first["can_trade"] is None
     assert first["is_main"] is True
@@ -271,7 +273,8 @@ def test_create_live_import_target_is_local_missing_and_idempotent(db_session):
     assert db_session.query(Account).count() == 1
 
     row = db_session.query(Account).one()
-    assert row.external_id == "88001"
+    assert row.external_id == str(LOCAL_LIVE_ACCOUNT_ID_MIN)
+    assert float(row.balance) == pytest.approx(10_000)
     assert row.last_seen_at is None
     assert row.last_missing_at is None
 
@@ -292,10 +295,7 @@ def test_create_live_import_target_keeps_existing_csv_account_unchanged(db_sessi
     db_session.commit()
 
     payload = create_topstep_live_import_target(
-        payload=TopstepLiveAccountCreateIn(
-            account_id=88003,
-            name="Replacement Name Must Not Win",
-        ),
+        payload=TopstepLiveAccountCreateIn(name="Topstep Live Existing"),
         db=db_session,
     )
 
@@ -307,11 +307,11 @@ def test_create_live_import_target_keeps_existing_csv_account_unchanged(db_sessi
     assert row.last_missing_at == last_missing_at.replace(tzinfo=None)
 
 
-def test_create_live_import_target_rejects_existing_projectx_account(db_session):
+def test_create_live_import_target_skips_internal_key_used_by_projectx_account(db_session):
     db_session.add(
         Account(
             provider="projectx",
-            external_id="88004",
+            external_id=str(LOCAL_LIVE_ACCOUNT_ID_MIN),
             name="EXPRESS-V2-DLL-192577-19008334",
             trade_data_source="projectx",
             account_state="ACTIVE",
@@ -320,38 +320,22 @@ def test_create_live_import_target_rejects_existing_projectx_account(db_session)
     )
     db_session.commit()
 
-    with pytest.raises(HTTPException) as exc_info:
-        create_topstep_live_import_target(
-            payload=TopstepLiveAccountCreateIn(
-                account_id=88004,
-                name="Topstep Live Funded",
-            ),
-            db=db_session,
-        )
+    payload = create_topstep_live_import_target(
+        payload=TopstepLiveAccountCreateIn(name="Topstep Live Funded"),
+        db=db_session,
+    )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == {
-        "code": "account_trade_data_source_conflict",
-        "message": (
-            "Account 88004 already uses projectx; cross-source conversion to "
-            "csv_import is not allowed. ProjectX and Live CSV accounts must remain separate."
-        ),
-        "account_id": 88004,
-        "current_trade_data_source": "projectx",
-        "requested_trade_data_source": "csv_import",
-    }
-    row = db_session.query(Account).one()
-    assert row.name == "EXPRESS-V2-DLL-192577-19008334"
-    assert row.trade_data_source == "projectx"
+    assert payload["id"] == LOCAL_LIVE_ACCOUNT_ID_MIN + 1
+    assert payload["name"] == "Topstep Live Funded"
+    assert db_session.query(Account).count() == 2
+    live_row = db_session.query(Account).filter_by(trade_data_source="csv_import").one()
+    assert live_row.external_id == str(LOCAL_LIVE_ACCOUNT_ID_MIN + 1)
 
 
 def test_create_live_import_target_rejects_unsafe_name(db_session):
     with pytest.raises(HTTPException) as exc_info:
         create_topstep_live_import_target(
-            payload=TopstepLiveAccountCreateIn(
-                account_id=88002,
-                name="Unsafe\x00Name",
-            ),
+            payload=TopstepLiveAccountCreateIn(name="Unsafe\x00Name"),
             db=db_session,
         )
 
@@ -432,6 +416,53 @@ def test_accounts_route_explicit_refresh_contacts_projectx_with_only_csv_rows(
     assert [row["id"] for row in payload] == [88011]
     assert payload[0]["trade_data_source"] == "csv_import"
     assert payload[0]["provider_sync_status"] == "not_applicable"
+
+
+def test_live_account_balance_adds_all_time_net_pnl_to_starting_balance(
+    db_session,
+    monkeypatch,
+):
+    db_session.add_all(
+        [
+            Account(
+                provider="projectx",
+                external_id="88062",
+                name="Topstep Live Funded",
+                trade_data_source="csv_import",
+                balance=10_000,
+                account_state="ACTIVE",
+                is_main=True,
+            ),
+            ProjectXTradeEvent(
+                account_id=88062,
+                contract_id="NQU6",
+                symbol="NQU6",
+                side="SELL",
+                size=2,
+                price=27720.25,
+                trade_timestamp=datetime(2026, 7, 28, 13, 45, 17, tzinfo=timezone.utc),
+                trade_date=datetime(2026, 7, 28, tzinfo=timezone.utc).date(),
+                pnl=-3160,
+                fees=3.80,
+                commissions=0,
+                fee_scope="per_side",
+                order_id="2916446935",
+                source_trade_id="2916446935",
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        main_module,
+        "_projectx_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Local account snapshots must not load ProjectX credentials")
+        ),
+    )
+
+    payload = list_projectx_accounts(refresh_provider=False, db=db_session)
+
+    assert payload[0]["balance"] == pytest.approx(6832.40)
 
 
 def test_mixed_accounts_keep_normal_live_routes_entirely_local(db_session, monkeypatch):
@@ -683,7 +714,7 @@ def test_provider_sync_skips_csv_id_collision_and_missing_transition(
 
     assert db_session.query(Account).count() == 3
     assert by_id[88011]["name"] == "Local Live Name"
-    assert by_id[88011]["balance"] is None
+    assert by_id[88011]["balance"] == pytest.approx(43210)
     assert by_id[88011]["can_trade"] is None
     assert by_id[88011]["last_seen_at"] is None
     assert by_id[88011]["account_state"] == "ACTIVE"
@@ -1148,7 +1179,7 @@ def test_archived_live_account_cannot_be_set_main_or_recreated(db_session):
 
     with pytest.raises(HTTPException) as create_exc:
         create_topstep_live_import_target(
-            TopstepLiveAccountCreateIn(account_id=88041, name="Same"),
+            TopstepLiveAccountCreateIn(name="Archived Live"),
             db=db_session,
         )
     assert create_exc.value.status_code == 409

@@ -32,8 +32,8 @@ function getDetailMessage(detail: unknown): string | null {
   }
 
   const record = detail as Record<string, unknown>;
-  if (record.code === "account_trade_data_source_conflict") {
-    return "That account ID already belongs to an Express/ProjectX account. Enter the separate Topstep Live account ID.";
+  if (record.code === "live_account_create_conflict_retryable") {
+    return "Another Live account change completed at the same time. Reload accounts and retry.";
   }
   const missingColumns = record.missing_columns;
   if (Array.isArray(missingColumns)) {

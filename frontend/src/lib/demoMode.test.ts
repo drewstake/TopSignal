@@ -64,6 +64,18 @@ describe("demoMode", () => {
     expect(getDemoAccountLabel(account)).toBe("Demo Copy — Conservative (910002)");
   });
 
+  it("keeps internal routing ids out of Live account labels", () => {
+    setDemoModeEnabled(false);
+
+    expect(
+      getDemoAccountLabel({
+        id: 8_141,
+        name: "TOPX8141",
+        trade_data_source: "csv_import",
+      }),
+    ).toBe("TOPX8141");
+  });
+
   it("formats dummy money values instead of placeholders when enabled", () => {
     setDemoModeEnabled(true);
     const formatSignedCurrency = (value: number) => `${value > 0 ? "+" : value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;

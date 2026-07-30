@@ -109,6 +109,11 @@ interface CalendarCell {
   point: AccountPnlCalendarDay | null;
 }
 
+interface WeeklySummary {
+  tradeCount: number;
+  netPnl: number;
+}
+
 export interface CompactCalendarProps {
   days: readonly AccountPnlCalendarDay[];
   rangeStartDate?: string;
@@ -242,6 +247,48 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
     }
     return rows;
   }, [cells]);
+  const weeklySummaries = useMemo<WeeklySummary[]>(() => (
+    weeks.map((week) => week.reduce<WeeklySummary>((summary, cell) => {
+      if (
+        !cell.date
+        || !cell.point
+        || (rangeStartDate && cell.date < rangeStartDate)
+        || (rangeEndDate && cell.date > rangeEndDate)
+      ) {
+        return summary;
+      }
+      return {
+        tradeCount: summary.tradeCount + cell.point.trade_count,
+        netPnl: summary.netPnl + cell.point.net_pnl,
+      };
+    }, { tradeCount: 0, netPnl: 0 }))
+  ), [rangeEndDate, rangeStartDate, weeks]);
+  const weeklySummaryBySaturday = useMemo(() => {
+    const summaries = new Map<string, WeeklySummary>();
+    weeks.forEach((week, weekIndex) => {
+      const saturday = week[6];
+      const summary = weeklySummaries[weekIndex];
+      if (saturday?.date && summary.tradeCount > 0) {
+        summaries.set(saturday.date, summary);
+      }
+    });
+    return summaries;
+  }, [weeklySummaries, weeks]);
+  const visibleSummary = useMemo(() => cells.reduce((summary, cell) => {
+    if (
+      !cell.date
+      || !cell.point
+      || (rangeStartDate && cell.date < rangeStartDate)
+      || (rangeEndDate && cell.date > rangeEndDate)
+    ) {
+      return summary;
+    }
+    return {
+      tradingDays: summary.tradingDays + 1,
+      tradeCount: summary.tradeCount + cell.point.trade_count,
+      netPnl: summary.netPnl + cell.point.net_pnl,
+    };
+  }, { tradingDays: 0, tradeCount: 0, netPnl: 0 }), [cells, rangeEndDate, rangeStartDate]);
   const visibleDates = useMemo(
     () => cells.flatMap((cell) => cell.date ? [cell.date] : []),
     [cells],
@@ -335,7 +382,12 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
   const agendaCells = cells.filter((cell) => (
     cell.date
     && isWithinSelectedRange(cell.date)
-    && (cell.point || journalDays.has(cell.date) || selectedDate === cell.date)
+    && (
+      cell.point
+      || weeklySummaryBySaturday.has(cell.date)
+      || journalDays.has(cell.date)
+      || selectedDate === cell.date
+    )
   ));
   const agendaDates = agendaCells.flatMap((cell) => cell.date ? [cell.date] : []);
   const agendaRovingDate = agendaDates.includes(rovingDate) ? rovingDate : (agendaDates[0] ?? "");
@@ -360,6 +412,11 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
   const selectedJournalDate = selectedDate && isSameUtcMonth(selectedDate, visibleMonth) && journalDays.has(selectedDate)
     ? selectedDate
     : null;
+  const showCalendarFooter = Boolean(
+    journalDaysError
+    || selectedJournalDate
+    || (visibleTradeDays === 0 && !journalDaysError),
+  );
   const today = formatIsoDay(new Date());
 
   return (
@@ -393,16 +450,21 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
         >
           ›
         </button>
-        <h2 id={titleId} className="ml-1 text-sm font-semibold text-app-text" aria-live="polite">
+        <h2 id={titleId} className="ml-1 text-sm font-semibold text-app-text sm:text-base" aria-live="polite">
           {monthFormatter.format(visibleMonth)}
         </h2>
-        <div className="ml-auto">
+        <p className="ml-auto hidden min-w-0 truncate text-xs text-app-muted-text sm:block">
+          <span className={cn("font-semibold", pnlTextClass(visibleSummary.netPnl))}>{formatPnl(visibleSummary.netPnl)}</span>
+          {" · "}{visibleSummary.tradeCount} trade{visibleSummary.tradeCount === 1 ? "" : "s"}
+          {" · "}{visibleSummary.tradingDays} day{visibleSummary.tradingDays === 1 ? "" : "s"}
+        </p>
+        <div className="ml-auto sm:ml-0">
           <InfoPopover
             triggerLabel="P&L calendar"
             align="end"
             label={journalDaysLoading
               ? "Journal markers are still loading."
-              : "Each cell shows net P&L and trade count. A dot marks a linked journal entry. Use arrow keys to move between days."}
+              : "Each cell shows daily net P&L. Saturdays also show the weekly total. A dot marks a linked journal entry. Use arrow keys to move between days."}
           />
         </div>
       </div>
@@ -419,12 +481,12 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
         ) : (
         <div className="min-h-[360px] p-2 sm:min-h-[416px] sm:p-4" role="status" aria-live="polite">
           <span className="sr-only">Loading P&amp;L calendar</span>
-          <div className="mb-1 grid grid-cols-7 gap-px sm:gap-1">
+          <div className="mb-1 grid grid-cols-7 gap-px sm:gap-1.5">
             {weekdayLabels.map((label) => <div key={label} className="py-2 text-center text-xs text-app-muted-text">{label.slice(0, 1)}</div>)}
           </div>
-          <div className="grid grid-cols-7 gap-px sm:gap-1">
+          <div className="grid grid-cols-7 gap-px sm:gap-1.5">
             {Array.from({ length: 42 }, (_, index) => (
-              <div key={index} className="min-h-14 animate-pulse rounded-md bg-app-border/35 motion-reduce:animate-none sm:min-h-12" />
+              <div key={index} className="min-h-16 animate-pulse rounded-md bg-app-border/35 motion-reduce:animate-none sm:min-h-[72px] lg:min-h-20" />
             ))}
           </div>
         </div>
@@ -442,12 +504,16 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
                   }
                   const cellDate = cell.date;
                   const point = cell.point;
+                  const weeklySummary = weeklySummaryBySaturday.get(cellDate) ?? null;
                   const hasJournal = journalDays.has(cellDate);
                   const isSelected = selectedDate === cellDate;
                   const tradeLabel = point
                     ? `${point.trade_count} trade${point.trade_count === 1 ? "" : "s"}`
                     : "no trades";
-                  const accessibleLabel = `${formatLongDate(cellDate)}, ${point ? formatPnl(point.net_pnl) : "no P&L"}, ${tradeLabel}${hasJournal ? ", journal entry" : ""}`;
+                  const weeklyLabel = weeklySummary
+                    ? `, weekly P&L ${formatPnl(weeklySummary.netPnl)} across ${weeklySummary.tradeCount} trade${weeklySummary.tradeCount === 1 ? "" : "s"}`
+                    : "";
+                  const accessibleLabel = `${formatLongDate(cellDate)}, ${point ? formatPnl(point.net_pnl) : "no daily P&L"}, ${tradeLabel}${weeklyLabel}${hasJournal ? ", journal entry" : ""}`;
                   return (
                     <li key={cellDate} className="py-1">
                       <button
@@ -484,11 +550,17 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
                           )}>
                             {point
                               ? formatCompactCurrency(point.net_pnl)
+                              : weeklySummary
+                                ? `Week ${formatCompactCurrency(weeklySummary.netPnl)}`
                               : hasJournal
                                 ? "Journal entry"
                                 : "No trading activity"}
                           </span>
-                          <span className="block truncate text-xs text-app-muted-text">{tradeLabel}</span>
+                          {point && weeklySummary ? (
+                            <span className="block truncate text-xs text-app-muted-text">
+                              Week {formatCompactCurrency(weeklySummary.netPnl)}
+                            </span>
+                          ) : null}
                         </span>
                         {hasJournal ? <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-app-accent" aria-hidden="true" /> : null}
                       </button>
@@ -513,13 +585,13 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
             aria-hidden={useAgendaLayout || undefined}
             className={cn("min-w-0", useAgendaLayout && "hidden")}
           >
-            <div role="row" className="mb-1 grid grid-cols-7 gap-px sm:gap-1">
+            <div role="row" className="mb-1 grid grid-cols-7 gap-px sm:gap-1.5">
               {weekdayLabels.map((label) => (
                 <div
                   key={label}
                   role="columnheader"
                   aria-label={label}
-                  className="py-1.5 text-center text-xs font-semibold uppercase text-app-muted-text"
+                  className="py-1.5 text-center text-xs font-semibold uppercase text-app-muted-text sm:text-sm"
                 >
                   <span className="sm:hidden" aria-hidden="true">{label.slice(0, 1)}</span>
                   <span className="hidden sm:inline" aria-hidden="true">{label}</span>
@@ -527,7 +599,7 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
               ))}
             </div>
             {weeks.map((week, weekIndex) => (
-              <div key={weekIndex} role="row" className="mb-px grid grid-cols-7 gap-px sm:mb-1 sm:gap-1">
+              <div key={weekIndex} role="row" className="mb-px grid grid-cols-7 gap-px sm:mb-1.5 sm:gap-1.5">
                 {week.map((cell, dayIndex) => {
                   if (!cell.date || cell.dayNumber === null) {
                     return (
@@ -535,28 +607,50 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
                         key={`empty-${weekIndex}-${dayIndex}`}
                         role="gridcell"
                         aria-label="Outside current month"
-                        className="min-h-14 rounded-md border border-app-border/25 bg-app-bg/10 sm:min-h-12"
+                        className="min-h-16 rounded-md border border-app-border/25 bg-app-bg/10 sm:min-h-[72px] lg:min-h-20"
                       />
                     );
                   }
                   const cellDate = cell.date;
                   const point = cell.point;
+                  const weeklySummary = dayIndex === 6 ? weeklySummaries[weekIndex] : null;
+                  const showWeeklySummary = weeklySummary !== null && weeklySummary.tradeCount > 0;
                   const isSelected = selectedDate === cellDate;
                   const hasJournal = journalDays.has(cellDate);
                   const tradeLabel = point
                     ? `${point.trade_count} trade${point.trade_count === 1 ? "" : "s"}`
                     : "no trades";
-                  const accessibleLabel = `${formatLongDate(cellDate)}, ${point ? formatPnl(point.net_pnl) : "no P&L"}, ${tradeLabel}${hasJournal ? ", journal entry" : ""}`;
+                  const weeklyLabel = showWeeklySummary
+                    ? `, weekly P&L ${formatPnl(weeklySummary.netPnl)} across ${weeklySummary.tradeCount} trade${weeklySummary.tradeCount === 1 ? "" : "s"}`
+                    : "";
+                  const accessibleLabel = `${formatLongDate(cellDate)}, ${point ? formatPnl(point.net_pnl) : "no daily P&L"}, ${tradeLabel}${weeklyLabel}${hasJournal ? ", journal entry" : ""}`;
                   if (!isWithinSelectedRange(cellDate)) {
                     return (
                       <div
                         key={cellDate}
                         role="gridcell"
                         aria-disabled="true"
-                        aria-label={`${formatLongDate(cellDate)}, outside selected range`}
-                        className="min-h-14 rounded-md border border-app-border/25 bg-app-bg/10 p-1 text-xs text-app-muted-text opacity-45 sm:min-h-12 sm:p-1.5"
+                        aria-label={`${formatLongDate(cellDate)}, outside selected range${weeklyLabel}`}
+                        className={cn(
+                          "flex h-full min-h-16 flex-col rounded-md border border-app-border/25 bg-app-bg/10 p-1.5 text-sm text-app-muted-text sm:min-h-[72px] sm:p-2 lg:min-h-20",
+                          !showWeeklySummary && "opacity-45",
+                        )}
                       >
-                        {cell.dayNumber}
+                        <span className={cn("font-medium", showWeeklySummary && "opacity-45")}>{cell.dayNumber}</span>
+                        {showWeeklySummary ? (
+                          <span className="mt-auto block w-full min-w-0 border-t border-app-border/45 pt-1">
+                            <span className="flex min-w-0 items-baseline gap-1">
+                              <span className="shrink-0 text-[9px] font-semibold uppercase text-app-muted-text sm:text-[10px]" aria-hidden="true">
+                                <span className="lg:hidden">W</span>
+                                <span className="hidden lg:inline">Week</span>
+                              </span>
+                              <span className={cn("min-w-0 truncate text-[11px] font-semibold lg:text-sm", pnlTextClass(weeklySummary.netPnl))}>
+                                <span className="lg:hidden">{formatCompactCurrency(weeklySummary.netPnl)}</span>
+                                <span className="hidden lg:inline">{formatPnl(weeklySummary.netPnl)}</span>
+                              </span>
+                            </span>
+                          </span>
+                        ) : null}
                       </div>
                     );
                   }
@@ -583,7 +677,7 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
                           onDaySelect(isSelected ? null : cellDate);
                         }}
                         className={cn(
-                          "relative flex min-h-14 w-full min-w-0 flex-col overflow-hidden rounded-md border p-1 text-left transition sm:min-h-12 sm:rounded-lg sm:p-1.5",
+                          "relative flex h-full min-h-16 w-full min-w-0 flex-col overflow-hidden rounded-md border p-1.5 text-left transition sm:min-h-[72px] sm:rounded-lg sm:p-2 lg:min-h-20",
                           dayTone(point),
                           isSelected
                             ? "border-app-focus ring-2 ring-app-focus/70"
@@ -591,23 +685,36 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
                           compactFocusRing,
                         )}
                       >
-                        <span className="flex w-full items-start justify-between gap-0.5 text-xs text-app-muted-text">
-                          <span>{cell.dayNumber}</span>
+                        <span className="flex w-full items-start justify-between gap-0.5 text-xs text-app-muted-text sm:text-sm">
+                          <span className="font-medium">{cell.dayNumber}</span>
                           {hasJournal ? (
                             <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-app-accent ring-1 ring-app-surface" aria-hidden="true" />
                           ) : null}
                         </span>
                         {point ? (
-                          <>
-                            <span className="mt-auto flex w-full min-w-0 items-center justify-between gap-1">
-                              <span className={cn("min-w-0 truncate text-xs font-semibold", pnlTextClass(point.net_pnl))}>
-                                {formatCompactCurrency(point.net_pnl)}
+                          <span className="mt-auto block w-full min-w-0">
+                            <span className={cn("min-w-0 truncate text-xs font-semibold lg:text-sm", pnlTextClass(point.net_pnl))}>
+                              <span className="lg:hidden">{formatCompactCurrency(point.net_pnl)}</span>
+                              <span className="hidden lg:inline">{formatPnl(point.net_pnl)}</span>
+                            </span>
+                          </span>
+                        ) : null}
+                        {showWeeklySummary ? (
+                          <span className={cn(
+                            "block w-full min-w-0 border-t border-app-border/45 pt-1",
+                            point ? "mt-1" : "mt-auto",
+                          )}>
+                            <span className="flex min-w-0 items-baseline gap-1">
+                              <span className="shrink-0 text-[9px] font-semibold uppercase text-app-muted-text sm:text-[10px]" aria-hidden="true">
+                                <span className="lg:hidden">W</span>
+                                <span className="hidden lg:inline">Week</span>
                               </span>
-                              <span className="hidden shrink-0 text-xs text-app-muted-text sm:inline" aria-hidden="true">
-                                {point.trade_count}t
+                              <span className={cn("min-w-0 truncate text-[11px] font-semibold lg:text-sm", pnlTextClass(weeklySummary.netPnl))}>
+                                <span className="lg:hidden">{formatCompactCurrency(weeklySummary.netPnl)}</span>
+                                <span className="hidden lg:inline">{formatPnl(weeklySummary.netPnl)}</span>
                               </span>
                             </span>
-                          </>
+                          </span>
                         ) : null}
                       </button>
                     </div>
@@ -617,33 +724,35 @@ export const CompactDashboardCalendar = memo(function CompactDashboardCalendar({
             ))}
           </div>
 
-          <div className="mt-3 flex min-h-11 items-center justify-center gap-2">
-            {journalDaysError ? (
-              <p
-                role="status"
-                aria-live="polite"
-                title={`Journal markers unavailable: ${journalDaysError}`}
-                className="inline-flex min-h-11 min-w-0 flex-1 items-center truncate rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-text"
-              >
-                Journal markers unavailable: {journalDaysError}
-              </p>
-            ) : null}
-            {selectedJournalDate ? (
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex min-h-11 min-w-0 flex-1 items-center justify-center rounded-xl border border-app-accent/40 bg-app-accent/10 px-2 text-center text-sm font-semibold text-app-text transition hover:bg-app-accent/15",
-                  compactFocusRing,
-                )}
-                aria-label={`Open journal for ${formatShortDate(selectedJournalDate)}`}
-                onClick={() => onJournalDayOpen(selectedJournalDate)}
-              >
-                Open {formatShortDate(selectedJournalDate)} journal
-              </button>
-            ) : visibleTradeDays === 0 && !journalDaysError ? (
-              <p role="status" className="text-center text-xs text-app-muted-text">No closed trades in this month.</p>
-            ) : null}
-          </div>
+          {showCalendarFooter ? (
+            <div className="mt-3 flex min-h-11 items-center justify-center gap-2">
+              {journalDaysError ? (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  title={`Journal markers unavailable: ${journalDaysError}`}
+                  className="inline-flex min-h-11 min-w-0 flex-1 items-center truncate rounded-xl border border-app-warning/35 bg-app-warning/10 px-3 py-2 text-xs text-app-text"
+                >
+                  Journal markers unavailable: {journalDaysError}
+                </p>
+              ) : null}
+              {selectedJournalDate ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex min-h-11 min-w-0 flex-1 items-center justify-center rounded-xl border border-app-accent/40 bg-app-accent/10 px-2 text-center text-sm font-semibold text-app-text transition hover:bg-app-accent/15",
+                    compactFocusRing,
+                  )}
+                  aria-label={`Open journal for ${formatShortDate(selectedJournalDate)}`}
+                  onClick={() => onJournalDayOpen(selectedJournalDate)}
+                >
+                  Open {formatShortDate(selectedJournalDate)} journal
+                </button>
+              ) : visibleTradeDays === 0 && !journalDaysError ? (
+                <p role="status" className="text-center text-xs text-app-muted-text">No closed trades in this month.</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       )}
     </Card>

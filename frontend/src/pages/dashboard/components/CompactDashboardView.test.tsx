@@ -140,7 +140,7 @@ describe("CompactDashboardView", () => {
     expect(screen.getAllByText("Primary").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Follower").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: /daily/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Daily" }));
     expect(screen.getByRole("img", { name: /Daily P&L chart/i })).toBeTruthy();
     expect(screen.getByText("Daily P&L data")).toBeTruthy();
 
@@ -368,8 +368,11 @@ describe("CompactDashboardView", () => {
     expect(screen.queryByRole("grid")).toBeNull();
     const agenda = screen.getByRole("list", { name: "July 2026 P&L agenda" });
     const agendaButtons = agenda.querySelectorAll("button");
-    expect(agendaButtons).toHaveLength(2);
+    expect(agendaButtons).toHaveLength(3);
     agendaButtons.forEach((button) => expect(button.className).toContain("min-h-11"));
+    expect(within(agenda).getByRole("button", {
+      name: /July 4, 2026.*weekly P&L \+\$70 across 3 trades/i,
+    })).toBeTruthy();
   });
 
   it("marks a single-point cumulative series and provides its value as table data", () => {

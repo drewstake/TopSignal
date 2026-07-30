@@ -228,8 +228,8 @@ export interface AccountTradeRefreshResult {
 }
 
 export interface LiveImportAccountInput {
-  account_id: number;
-  name?: string;
+  name: string;
+  starting_balance: number;
 }
 
 export type TradeImportRowStatus = "new" | "duplicate" | "conflict";
