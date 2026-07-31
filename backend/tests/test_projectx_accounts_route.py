@@ -426,7 +426,7 @@ def test_live_account_balance_adds_all_time_net_pnl_to_starting_balance(
         [
             Account(
                 provider="projectx",
-                external_id="88062",
+                external_id=str(LOCAL_LIVE_ACCOUNT_ID_MIN),
                 name="Topstep Live Funded",
                 trade_data_source="csv_import",
                 balance=10_000,
@@ -434,7 +434,7 @@ def test_live_account_balance_adds_all_time_net_pnl_to_starting_balance(
                 is_main=True,
             ),
             ProjectXTradeEvent(
-                account_id=88062,
+                account_id=LOCAL_LIVE_ACCOUNT_ID_MIN,
                 contract_id="NQU6",
                 symbol="NQU6",
                 side="SELL",
@@ -714,7 +714,7 @@ def test_provider_sync_skips_csv_id_collision_and_missing_transition(
 
     assert db_session.query(Account).count() == 3
     assert by_id[88011]["name"] == "Local Live Name"
-    assert by_id[88011]["balance"] == pytest.approx(43210)
+    assert by_id[88011]["balance"] is None
     assert by_id[88011]["can_trade"] is None
     assert by_id[88011]["last_seen_at"] is None
     assert by_id[88011]["account_state"] == "ACTIVE"

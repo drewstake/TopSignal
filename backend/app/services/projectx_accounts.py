@@ -36,6 +36,10 @@ LOCAL_LIVE_ACCOUNT_ID_MAX = 9_007_199_254_740_991
 _ACCOUNT_MAIN_LOCK_STRIPES = tuple(RLock() for _ in range(256))
 
 
+def is_generated_live_account_id(account_id: int) -> bool:
+    return LOCAL_LIVE_ACCOUNT_ID_MIN <= account_id <= LOCAL_LIVE_ACCOUNT_ID_MAX
+
+
 class AccountTradeDataSourceConflictError(Exception):
     def __init__(
         self,

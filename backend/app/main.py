@@ -169,6 +169,7 @@ from .services.projectx_accounts import (
     create_projectx_import_account,
     get_projectx_account_row,
     get_projectx_account_rows,
+    is_generated_live_account_id,
     normalize_projectx_account_external_id,
     resolve_projectx_account_effective_name,
     resolve_projectx_account_provider_name,
@@ -4183,7 +4184,11 @@ def _load_csv_import_current_balances(
         if row.trade_data_source != TRADE_DATA_SOURCE_CSV_IMPORT or row.balance is None:
             continue
         account_id = account_id_from_external_id(row.external_id)
-        if account_id is None:
+        # Generated IDs are the provenance marker that `balance` was supplied
+        # as a Live opening balance. Legacy CSV rows can still retain an old
+        # ProjectX cache value in this column, which must never be presented as
+        # a current Live balance.
+        if account_id is None or not is_generated_live_account_id(account_id):
             continue
         summary = summarize_trade_events(db, account_id, user_id=user_id)
         net_pnl = Decimal(str(summary.get("net_pnl") or 0))
