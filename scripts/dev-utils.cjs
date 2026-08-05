@@ -1,5 +1,7 @@
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
+const path = require("node:path");
 
 function parseDotEnvFile(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -111,6 +113,30 @@ async function findAvailablePort(preferredPort, options = {}) {
   throw new Error(`No available TCP port found on ${host} at or above ${preferredPort}.`);
 }
 
+function runDatabaseMigrations({
+  repoRoot,
+  environment,
+  spawnSyncImpl = spawnSync,
+}) {
+  const migrationScript = path.join(repoRoot, "scripts", "db-migrate.cjs");
+  const result = spawnSyncImpl(process.execPath, [migrationScript], {
+    cwd: repoRoot,
+    env: environment,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw new Error(`Could not run database migrations: ${result.error.message}`);
+  }
+  if (result.signal) {
+    throw new Error(`Database migration process stopped by signal ${result.signal}.`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`Database migration process failed with code ${result.status ?? "unknown"}.`);
+  }
+}
+
 module.exports = {
   classifyBackendDevChange,
   createEnvironmentSnapshot,
@@ -118,4 +144,5 @@ module.exports = {
   isPortAvailable,
   parseDotEnvFile,
   parsePort,
+  runDatabaseMigrations,
 };

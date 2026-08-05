@@ -8,6 +8,7 @@ const {
   isPortAvailable,
   parseDotEnvFile,
   parsePort,
+  runDatabaseMigrations,
 } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -24,12 +25,14 @@ if (!fs.existsSync(pythonPath)) {
 
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
 const childEnv = createEnvironmentSnapshot(process.env, backendEnv);
+const supervisorAppliedMigrations = process.env.TOPSIGNAL_DEV_MIGRATIONS_APPLIED === "1";
+delete childEnv.TOPSIGNAL_DEV_MIGRATIONS_APPLIED;
 let backendPort = 8000;
 
 if (!childEnv.TOPSIGNAL_DB_SCHEMA_INIT) {
   childEnv.TOPSIGNAL_DB_SCHEMA_INIT = "skip";
   console.log(
-    "TOPSIGNAL_DB_SCHEMA_INIT=skip for fast dev startup. Run `npm run db:migrate` and `npm run db:check` after schema changes.",
+    "TOPSIGNAL_DB_SCHEMA_INIT=skip for fast dev startup; the dev wrapper applies pending migrations before Uvicorn starts.",
   );
 }
 
@@ -227,6 +230,13 @@ async function resolveBackendPort() {
 }
 
 async function main() {
+  if (!supervisorAppliedMigrations) {
+    console.log("Applying pending database migrations before backend startup...");
+    runDatabaseMigrations({
+      repoRoot,
+      environment: childEnv,
+    });
+  }
   backendPort = await resolveBackendPort();
   console.log(`Backend API target: http://127.0.0.1:${backendPort}`);
   startBackend();

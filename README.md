@@ -732,9 +732,9 @@ That starts:
 - backend on `http://localhost:8000` when available, otherwise the next open port
 - frontend on `http://localhost:5173` when available, otherwise Vite's next open port
 
-`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently. It also selects the first open backend port at or above `TOPSIGNAL_DEV_BACKEND_PORT` (default `8000`) and passes the matching `VITE_API_BASE_URL` to the frontend process.
+`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently. Before Uvicorn starts accepting requests, the backend wrapper transactionally applies any pending database migrations using the same environment snapshot as the backend. It also selects the first open backend port at or above `TOPSIGNAL_DEV_BACKEND_PORT` (default `8000`) and passes the matching `VITE_API_BASE_URL` to the frontend process.
 
-`npm run dev:backend` loads `backend/.env` before starting Uvicorn and defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` for faster startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
+`npm run dev:backend` loads `backend/.env`, applies pending transactional migrations, and only then starts Uvicorn. It defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` because the migration runner establishes the required schema before application startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
 
 Development reload boundaries are intentional:
 

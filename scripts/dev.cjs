@@ -1,7 +1,13 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
-const { findAvailablePort, parseDotEnvFile, parsePort } = require("./dev-utils.cjs");
+const {
+  createEnvironmentSnapshot,
+  findAvailablePort,
+  parseDotEnvFile,
+  parsePort,
+  runDatabaseMigrations,
+} = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const backendDir = path.join(repoRoot, "backend");
@@ -166,6 +172,13 @@ async function resolveBackendPort() {
 }
 
 async function main() {
+  const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
+  console.log("Applying pending database migrations before dev server startup...");
+  runDatabaseMigrations({
+    repoRoot,
+    environment: createEnvironmentSnapshot(process.env, backendEnv),
+  });
+
   const backendPort = await resolveBackendPort();
   const apiBaseUrl = process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
   const commands = [
@@ -174,6 +187,7 @@ async function main() {
       script: path.join(__dirname, "dev-backend.cjs"),
       env: {
         ...process.env,
+        TOPSIGNAL_DEV_MIGRATIONS_APPLIED: "1",
         TOPSIGNAL_DEV_BACKEND_PORT: String(backendPort),
         TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "1",
       },
