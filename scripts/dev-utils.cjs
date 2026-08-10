@@ -69,6 +69,10 @@ function classifyBackendDevChange(fileName) {
   }
 
   const normalized = String(fileName).replaceAll("\\", "/");
+  const pathSegments = normalized.split("/");
+  if (pathSegments.includes(".venv")) {
+    return "ignore";
+  }
   if (normalized.includes("__pycache__/") || normalized.endsWith(".pyc")) {
     return "ignore";
   }

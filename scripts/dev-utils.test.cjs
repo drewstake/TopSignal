@@ -14,6 +14,9 @@ test("backend code reload and environment restart are intentionally different", 
   assert.equal(classifyBackendDevChange("app\\main.py"), "code_reload");
   assert.equal(classifyBackendDevChange(".env"), "supervisor_restart");
   assert.equal(classifyBackendDevChange("backend/.env"), "supervisor_restart");
+  assert.equal(classifyBackendDevChange(".venv/Lib/site-packages/numpy/exceptions.py"), "ignore");
+  assert.equal(classifyBackendDevChange(".venv\\Lib\\site-packages\\openpyxl\\_constants.py"), "ignore");
+  assert.equal(classifyBackendDevChange("backend/.venv/Lib/site-packages/pyarrow/__init__.py"), "ignore");
   assert.equal(classifyBackendDevChange("app/__pycache__/main.pyc"), "ignore");
   assert.equal(classifyBackendDevChange("README.md"), "ignore");
 });
