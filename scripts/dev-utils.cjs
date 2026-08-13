@@ -1,5 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const http = require("node:http");
+const https = require("node:https");
 const net = require("node:net");
 const path = require("node:path");
 
@@ -104,6 +106,49 @@ function isPortAvailable(port, host = "127.0.0.1") {
   });
 }
 
+function requestHttpStatus(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    const request = client.get(parsedUrl, (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+    });
+    request.once("error", reject);
+  });
+}
+
+async function waitForHttpReady(url, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 60000;
+  const intervalMs = options.intervalMs ?? 100;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15000;
+  const requestStatus = options.requestStatus ?? requestHttpStatus;
+  const startedAt = Date.now();
+  let lastResult = "no response";
+
+  while (true) {
+    try {
+      const status = await requestStatus(url, requestTimeoutMs);
+      if (status >= 200 && status < 300) {
+        return;
+      }
+      lastResult = `HTTP ${status}`;
+    } catch (error) {
+      lastResult = error instanceof Error ? error.message : String(error);
+    }
+
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`Timed out waiting for ${url} (${lastResult}).`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 async function findAvailablePort(preferredPort, options = {}) {
   const host = options.host ?? "127.0.0.1";
   const maxPort = options.maxPort ?? 65535;
@@ -149,4 +194,5 @@ module.exports = {
   parseDotEnvFile,
   parsePort,
   runDatabaseMigrations,
+  waitForHttpReady,
 };

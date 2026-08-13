@@ -7,6 +7,7 @@ const {
   createEnvironmentSnapshot,
   parseDotEnvFile,
   runDatabaseMigrations,
+  waitForHttpReady,
 } = require("./dev-utils.cjs");
 
 test("backend code reload and environment restart are intentionally different", () => {
@@ -62,5 +63,37 @@ test("backend startup stops when migrations fail", () => {
       spawnSyncImpl: () => ({ status: 1, signal: null }),
     }),
     /Database migration process failed with code 1/,
+  );
+});
+
+test("backend readiness polling waits for a successful response", async () => {
+  const statuses = [503, 503, 200];
+  let attempts = 0;
+  const requestTimeouts = [];
+
+  await waitForHttpReady("http://127.0.0.1:8000/ready", {
+    intervalMs: 1,
+    timeoutMs: 1000,
+    requestStatus: async (_url, requestTimeoutMs) => {
+      requestTimeouts.push(requestTimeoutMs);
+      const status = statuses[attempts] ?? 200;
+      attempts += 1;
+      return status;
+    },
+  });
+
+  assert.equal(attempts, 3);
+  assert.deepEqual(requestTimeouts, [15000, 15000, 15000]);
+});
+
+test("backend readiness polling reports the last connection failure", async () => {
+  await assert.rejects(
+    waitForHttpReady("http://127.0.0.1:8000/ready", {
+      timeoutMs: 0,
+      requestStatus: async () => {
+        throw new Error("connection refused");
+      },
+    }),
+    /Timed out waiting for http:\/\/127\.0\.0\.1:8000\/ready \(connection refused\)\./,
   );
 });
