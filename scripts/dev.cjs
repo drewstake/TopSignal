@@ -7,6 +7,7 @@ const {
   parseDotEnvFile,
   parsePort,
   runDatabaseMigrations,
+  waitForHttpReady,
 } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -214,12 +215,30 @@ async function main() {
       restartCount: 0,
       startedAt: 0,
     });
-    startCommand(command);
   }
+
+  const backendCommand = commands.find((command) => command.name === "BACKEND");
+  const frontendCommand = commands.find((command) => command.name === "FRONTEND");
+  startCommand(backendCommand);
+
+  const readinessUrl = `http://127.0.0.1:${backendPort}/ready`;
+  process.stdout.write(`[DEV] Waiting for backend readiness at ${readinessUrl}...\n`);
+  await waitForHttpReady(readinessUrl);
+
+  if (shuttingDown) {
+    return;
+  }
+
+  process.stdout.write("[DEV] Backend is ready; starting frontend.\n");
+  startCommand(frontendCommand);
 }
 
 main().catch((error) => {
-  clearInterval(keepAlive);
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+  shuttingDown = true;
+  exitCode = 1;
+  for (const state of states.values()) {
+    stopChild(state.child);
+  }
+  maybeExit();
 });
