@@ -13,7 +13,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 from app.db import Base
 from app.journal_schemas import JournalMood
 from app.models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
+from app.services import journal as journal_module
 from app.services.journal import (
+    VersionConflictError,
     _compute_trade_stats_snapshot,
     create_journal_entry,
     create_journal_entry_image,
@@ -485,6 +487,141 @@ def test_merge_journal_entries_overwrite_conflict_replaces_entry_and_copies_imag
     assert not old_image_path.exists()
     assert (journal_storage_dir / source_image_one.filename).exists()
     assert (journal_storage_dir / source_image_two.filename).exists()
+
+
+def test_merge_detects_concurrent_destination_edit_without_overwriting_it(
+    tmp_path,
+    monkeypatch,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'journal-merge-edit.db'}")
+    Base.metadata.create_all(bind=engine, tables=[JournalEntry.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    primary = SessionLocal()
+    try:
+        source, _ = create_journal_entry(
+            primary,
+            account_id=4601,
+            entry_date=date(2026, 2, 14),
+            title="Source",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="merge body",
+        )
+        destination, _ = create_journal_entry(
+            primary,
+            account_id=4602,
+            entry_date=date(2026, 2, 14),
+            title="Destination",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="original destination",
+        )
+        destination_id = int(destination.id)
+        original_lock = journal_module._lock_journal_merge_rows
+        injected = False
+
+        def lock_after_concurrent_edit(db, **kwargs):
+            nonlocal injected
+            if not injected:
+                injected = True
+                # Release SQLite's read snapshot; PostgreSQL READ COMMITTED
+                # naturally refreshes when the lock statement runs.
+                db.rollback()
+                with SessionLocal() as concurrent:
+                    update_journal_entry(
+                        concurrent,
+                        account_id=4602,
+                        entry_id=destination_id,
+                        version=1,
+                        body="concurrent autosave",
+                    )
+            return original_lock(db, **kwargs)
+
+        monkeypatch.setattr(
+            journal_module,
+            "_lock_journal_merge_rows",
+            lock_after_concurrent_edit,
+        )
+
+        with pytest.raises(VersionConflictError):
+            merge_journal_entries(
+                primary,
+                from_account_id=4601,
+                to_account_id=4602,
+                on_conflict="overwrite",
+                include_images=False,
+            )
+
+        with SessionLocal() as verifier:
+            row = verifier.query(JournalEntry).filter(JournalEntry.id == destination_id).one()
+            assert row.body == "concurrent autosave"
+            assert int(row.version) == 2
+            assert verifier.query(JournalEntry).filter(JournalEntry.id == source.id).one().body == "merge body"
+    finally:
+        primary.close()
+        Base.metadata.drop_all(bind=engine, tables=[JournalEntry.__table__])
+        engine.dispose()
+
+
+def test_merge_detects_concurrent_destination_insert(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'journal-merge-insert.db'}")
+    Base.metadata.create_all(bind=engine, tables=[JournalEntry.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    primary = SessionLocal()
+    try:
+        source, _ = create_journal_entry(
+            primary,
+            account_id=4701,
+            entry_date=date(2026, 2, 15),
+            title="Source",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="source body",
+        )
+        source_id = int(source.id)
+        original_lock = journal_module._lock_journal_merge_rows
+        inserted_id = None
+
+        def lock_after_concurrent_insert(db, **kwargs):
+            nonlocal inserted_id
+            if inserted_id is None:
+                db.rollback()
+                with SessionLocal() as concurrent:
+                    inserted, _ = create_journal_entry(
+                        concurrent,
+                        account_id=4702,
+                        entry_date=date(2026, 2, 15),
+                        title="Concurrent destination",
+                        mood=JournalMood.FOCUSED,
+                        tags=[],
+                        body="must survive",
+                    )
+                    inserted_id = int(inserted.id)
+            return original_lock(db, **kwargs)
+
+        monkeypatch.setattr(
+            journal_module,
+            "_lock_journal_merge_rows",
+            lock_after_concurrent_insert,
+        )
+
+        with pytest.raises(VersionConflictError):
+            merge_journal_entries(
+                primary,
+                from_account_id=4701,
+                to_account_id=4702,
+                on_conflict="overwrite",
+                include_images=False,
+            )
+
+        with SessionLocal() as verifier:
+            inserted = verifier.query(JournalEntry).filter(JournalEntry.id == inserted_id).one()
+            assert inserted.body == "must survive"
+            assert verifier.query(JournalEntry).filter(JournalEntry.id == source_id).one().body == "source body"
+    finally:
+        primary.close()
+        Base.metadata.drop_all(bind=engine, tables=[JournalEntry.__table__])
+        engine.dispose()
 
 
 def test_create_journal_entry_image_validates_content_and_records_dimensions(
@@ -1059,6 +1196,78 @@ def test_pull_journal_entry_trade_stats_invokes_sync_callback_with_effective_bou
     assert len(calls) == 1
     assert calls[0][0] == datetime(2026, 2, 26, 23, 0, tzinfo=timezone.utc)
     assert calls[0][1] == datetime(2026, 2, 27, 22, 59, 59, 999999, tzinfo=timezone.utc)
+
+
+def test_pull_journal_entry_trade_stats_rejects_concurrent_autosave_and_date_change(
+    tmp_path,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'journal-stats-race.db'}")
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[JournalEntry.__table__, ProjectXTradeEvent.__table__],
+    )
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    primary = SessionLocal()
+    try:
+        user_id = "test-user-stats-race"
+        original_date = date(2026, 2, 27)
+        concurrent_date = date(2026, 2, 28)
+        entry, _ = create_journal_entry(
+            primary,
+            user_id=user_id,
+            account_id=1004,
+            entry_date=original_date,
+            title="Stats race",
+            mood=JournalMood.NEUTRAL,
+            tags=[],
+            body="original body",
+        )
+        entry_id = int(entry.id)
+        callback_calls = 0
+
+        def concurrent_autosave(_start, _end):
+            nonlocal callback_calls
+            callback_calls += 1
+            # Release SQLite's read snapshot; PostgreSQL READ COMMITTED
+            # naturally sees the committed writer at the later lock query.
+            primary.rollback()
+            with SessionLocal() as concurrent:
+                update_journal_entry(
+                    concurrent,
+                    user_id=user_id,
+                    account_id=1004,
+                    entry_id=entry_id,
+                    version=1,
+                    entry_date=concurrent_date,
+                    body="concurrent autosave",
+                )
+
+        with pytest.raises(VersionConflictError) as exc_info:
+            pull_journal_entry_trade_stats(
+                primary,
+                user_id=user_id,
+                account_id=1004,
+                entry_id=entry_id,
+                before_query_sync=concurrent_autosave,
+            )
+
+        assert callback_calls == 1
+        assert int(exc_info.value.server_row.version) == 2
+        with SessionLocal() as verifier:
+            saved = verifier.query(JournalEntry).filter(JournalEntry.id == entry_id).one()
+            assert saved.entry_date == concurrent_date
+            assert saved.body == "concurrent autosave"
+            assert int(saved.version) == 2
+            assert saved.stats_source is None
+            assert saved.stats_json is None
+            assert saved.stats_pulled_at is None
+    finally:
+        primary.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeEvent.__table__, JournalEntry.__table__],
+        )
+        engine.dispose()
 
 
 def test_pull_journal_entry_trade_stats_keeps_version_when_snapshot_is_unchanged(db_session):

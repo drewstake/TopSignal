@@ -218,6 +218,29 @@ describe("ExpensesPage consolidated startup", () => {
     expect(await screen.findByText("$25.00")).not.toBeNull();
   });
 
+  it("uses constrained numeric controls for financial amounts and account IDs", async () => {
+    const user = userEvent.setup();
+    mockExpenseStartup(financialSummary(0));
+    render(<ExpensesPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Add Payout" }));
+    const payoutAmount = screen.getByLabelText("Amount (USD)") as HTMLInputElement;
+    expect(payoutAmount.type).toBe("number");
+    expect(payoutAmount.min).toBe("0.01");
+    expect(payoutAmount.step).toBe("0.01");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(screen.getByRole("button", { name: "Add Expense" }));
+    const expenseAmount = screen.getByLabelText("Amount (USD)") as HTMLInputElement;
+    const accountId = screen.getByLabelText("Account ID (Optional)") as HTMLInputElement;
+    expect(expenseAmount.type).toBe("number");
+    expect(expenseAmount.min).toBe("0");
+    expect(expenseAmount.step).toBe("0.01");
+    expect(accountId.type).toBe("number");
+    expect(accountId.min).toBe("1");
+    expect(accountId.step).toBe("1");
+  });
+
   it("uses a selected calendar month as the inclusive expense and payout ledger range", async () => {
     const user = userEvent.setup();
     const summary = financialSummary(25);

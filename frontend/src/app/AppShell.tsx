@@ -84,6 +84,8 @@ export function AppShell() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [demoModeMessage, setDemoModeMessage] = useState<string | null>(null);
+  const [signOutPending, setSignOutPending] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   const demoMode = useDemoMode();
   const compactMode = useCompactMode();
   const beginAccountsRequest = useLatestRequestGuard();
@@ -423,6 +425,9 @@ export function AppShell() {
   }
 
   async function handleSignOut() {
+    if (signOutPending) {
+      return;
+    }
     if (
       demoMode.enabled &&
       typeof window !== "undefined" &&
@@ -430,8 +435,17 @@ export function AppShell() {
     ) {
       return;
     }
-    await signOutSupabase();
-    clearLiveModeReturnSnapshot();
+    setSignOutPending(true);
+    setSignOutError(null);
+    try {
+      await signOutSupabase();
+      clearLiveModeReturnSnapshot();
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+      setSignOutError(`Sign out failed.${detail} Your session is still active.`);
+    } finally {
+      setSignOutPending(false);
+    }
   }
 
   return (
@@ -551,8 +565,9 @@ export function AppShell() {
                       size="sm"
                       variant="ghost"
                       onClick={() => void handleSignOut()}
+                      disabled={signOutPending}
                     >
-                      {demoMode.enabled ? "Sign out live session" : "Sign out"}
+                      {signOutPending ? "Signing out…" : demoMode.enabled ? "Sign out live session" : "Sign out"}
                     </Button>
                   </div>
                 ) : null}
@@ -583,6 +598,11 @@ export function AppShell() {
                 </p>
               ) : null}
               {syncMessage ? <p className="text-xs text-app-muted">{syncMessage}</p> : null}
+              {signOutError ? (
+                <p className="text-xs text-app-negative" role="alert" aria-live="assertive">
+                  {signOutError}
+                </p>
+              ) : null}
               {demoModeMessage ? (
                 <p className="text-xs text-app-muted" role="status" aria-live="polite">
                   {demoModeMessage}

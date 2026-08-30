@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
@@ -14,7 +15,7 @@ import numpy as np
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -24,11 +25,12 @@ from ..models import (
     BotOrderAttempt,
     BotRiskEvent,
     BotRun,
+    InstrumentMetadata,
     PositionLifecycle,
     ProjectXMarketCandle,
     ProjectXTradeEvent,
 )
-from .instruments import load_instrument_specs, normalize_symbol_key
+from .instruments import InstrumentSpec, load_instrument_specs, normalize_symbol_key
 from .bot_market_analysis import build_market_analysis as build_canonical_market_analysis
 from .bot_execution_safety import (
     EvaluationStatus,
@@ -48,6 +50,7 @@ from .projectx_accounts import (
     get_projectx_account_row,
 )
 from .projectx_client import ProjectXClient, ProjectXClientError
+from .projectx_trades import fetch_trade_history_all_pages
 from .bot_strategy_registry import (
     SUPPORTED_STRATEGY_IDENTIFIERS,
     dispatch_strategy_evaluator,
@@ -56,6 +59,7 @@ from .bot_strategy_registry import (
 from .bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
 from . import bot_serialization as _bot_serialization
 from .trade_plan_evaluator import TradePlan, TradePlanEvaluator, build_market_context_from_ohlcv
+from .topstep_fees import effective_topstep_trade_fee
 from .trading_day import (
     TRADING_TZ,
     futures_session_is_open,
@@ -66,7 +70,11 @@ from .trading_day import (
 
 logger = logging.getLogger(__name__)
 _LIVE_SUBMISSION_SETTLEMENT_WINDOW = timedelta(seconds=60)
+_LIVE_PREFLIGHT_TRADE_PAGE_SIZE = 1_000
+_LIVE_PREFLIGHT_TRADE_MAX_PAGES = 200
 _TRANSIENT_LIVE_RISK_CODES = {
+    "authoritative_target_already_reached",
+    "order_reconciliation_settling",
     "recent_live_submission_settling",
     "working_order_direction_conflict",
     "working_order_exposure",
@@ -531,6 +539,68 @@ class LiveExecutionPreflight:
 
 
 @dataclass(frozen=True)
+class ReconciliationOutcome:
+    unresolved_count: int
+    error: Exception | None
+    resolved_count: int = 0
+
+    def __iter__(self):
+        """Preserve the legacy two-value unpacking contract for callers/tests."""
+
+        yield self.unresolved_count
+        yield self.error
+
+
+def _canonical_snapshot_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return _as_utc(value).isoformat()
+    if isinstance(value, dict):
+        return tuple(sorted((str(key), _canonical_snapshot_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonical_snapshot_value(item) for item in value)
+    if isinstance(value, Number) and not isinstance(value, bool):
+        return float(value)
+    return value
+
+
+def _bot_config_evaluation_snapshot(config: BotConfig) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        (column.name, _canonical_snapshot_value(getattr(config, column.name)))
+        for column in BotConfig.__table__.columns
+    )
+
+
+def _account_execution_snapshot(account: Account) -> tuple[tuple[str, Any], ...]:
+    fields = (
+        "id",
+        "user_id",
+        "provider",
+        "external_id",
+        "trade_data_source",
+        "name",
+        "display_name",
+        "account_state",
+        "can_trade",
+        "archived_at",
+    )
+    return tuple((field, _canonical_snapshot_value(getattr(account, field))) for field in fields)
+
+
+def _bot_run_execution_snapshot(run: BotRun) -> tuple[tuple[str, Any], ...]:
+    fields = ("id", "user_id", "bot_config_id", "account_id", "status", "dry_run", "started_at")
+    return tuple((field, _canonical_snapshot_value(getattr(run, field))) for field in fields)
+
+
+def _detached_bot_config_copy(config: BotConfig) -> BotConfig:
+    return BotConfig(
+        **{
+            column.name: deepcopy(getattr(config, column.name))
+            for column in BotConfig.__table__.columns
+        }
+    )
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     status: EvaluationStatus
     correlation_id: str
@@ -630,19 +700,34 @@ def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
 
 
 def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload: Any) -> BotConfig:
-    row = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
-    if row is None:
-        raise LookupError("bot_config_not_found")
+    row = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
 
     current_account = _require_owned_account(db, user_id=user_id, account_id=int(row.account_id))
     _require_projectx_trade_data_source(current_account)
 
     update_data = payload.model_dump(exclude_unset=True)
     if "account_id" in update_data:
+        target_account_id = int(update_data["account_id"])
+        if target_account_id != int(row.account_id):
+            running_run = (
+                db.query(BotRun.id)
+                .filter(BotRun.user_id == user_id)
+                .filter(BotRun.bot_config_id == int(row.id))
+                .filter(BotRun.status == "running")
+                .with_for_update()
+                .first()
+            )
+            if bool(row.enabled) or bool(update_data.get("enabled")) or running_run is not None:
+                raise ValueError("bot_account_change_requires_disabled_stopped_bot")
         target_account = _require_owned_account(
             db,
             user_id=user_id,
-            account_id=int(update_data["account_id"]),
+            account_id=target_account_id,
         )
         _require_projectx_trade_data_source(target_account)
     if "name" in update_data and update_data["name"] is not None:
@@ -708,6 +793,48 @@ def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
     db.flush()
 
 
+def _fail_active_bot_run_after_evaluation_error(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    error: Exception,
+) -> BotRun | None:
+    """Fail only the run that is still active; a superseded run is a no-op."""
+
+    if not db.is_active:
+        db.rollback()
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
+    current_run = _find_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        bot_run_id=bot_run_id,
+        lock_for_update=True,
+    )
+    if current_run is None or str(current_run.status) != "running":
+        return current_run
+
+    transition_bot_run(
+        current_run,
+        "error",
+        reason="evaluation_failed",
+        error=error,
+    )
+    config.enabled = False
+    state = dict(current_run.raw_state) if isinstance(current_run.raw_state, dict) else {}
+    state["phase"] = "error"
+    current_run.raw_state = state
+    db.flush()
+    return current_run
+
+
 def start_bot_run(
     db: Session,
     *,
@@ -764,61 +891,47 @@ def start_bot_run(
         if active_run is None:
             raise
         raise ValueError("bot_run_start_conflict: another request already started this bot") from exc
+    # The enabled config and running audit row must be durable before evaluation
+    # releases its database connection for market-provider I/O.
+    db.commit()
     try:
-        if resolved_dry_run:
-            # Provider/data failures roll back evaluation writes while preserving the
-            # outer run row so it can be transitioned to a durable error audit.
-            with db.begin_nested():
-                result = evaluate_bot_config(
-                    db,
-                    user_id=user_id,
-                    config=config,
-                    account=account,
-                    client=client,
-                    run=run,
-                    dry_run=True,
-                    confirm_live_order_routing=confirm_live_order_routing,
-                    correlation_id=correlation_id,
-                )
-        else:
-            result = evaluate_bot_config(
-                db,
-                user_id=user_id,
-                config=config,
-                account=account,
-                client=client,
-                run=run,
-                dry_run=False,
-                confirm_live_order_routing=confirm_live_order_routing,
-                correlation_id=correlation_id,
-            )
+        result = evaluate_bot_config(
+            db,
+            user_id=user_id,
+            config=config,
+            account=account,
+            client=client,
+            run=run,
+            dry_run=resolved_dry_run,
+            confirm_live_order_routing=confirm_live_order_routing,
+            correlation_id=correlation_id,
+        )
         return result
     except Exception as exc:
-        if str(run.status) == "running":
-            transition_bot_run(
-                run,
-                "error",
-                reason="evaluation_failed",
-                error=exc,
-            )
-        config.enabled = False
-        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
-        state["phase"] = "error"
-        run.raw_state = state
-        db.flush()
+        current_run = _fail_active_bot_run_after_evaluation_error(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            bot_run_id=int(run.id),
+            error=exc,
+        )
         log_bot_event(
             logger,
             "bot_evaluation_failed",
             user_id=user_id,
-            bot_config_id=int(config.id),
+            bot_config_id=bot_config_id,
             bot_run_id=int(run.id),
-            account_id=int(config.account_id),
+            account_id=int(run.account_id),
             correlation_id=correlation_id,
             execution_mode="dry_run" if resolved_dry_run else "live",
             evaluation_status="error",
             error_type=type(exc).__name__,
         )
-        raise BotRunEvaluationError(cause=exc, run=run, correlation_id=correlation_id) from exc
+        raise BotRunEvaluationError(
+            cause=exc,
+            run=current_run or run,
+            correlation_id=correlation_id,
+        ) from exc
 
 
 def evaluate_bot_config(
@@ -833,6 +946,8 @@ def evaluate_bot_config(
     confirm_live_order_routing: bool = False,
     correlation_id: str | None = None,
 ) -> EvaluationResult:
+    bot_config_id = int(config.id)
+    bot_run_id = int(run.id) if run is not None else None
     try:
         return _evaluate_bot_config_impl(
             db,
@@ -846,10 +961,14 @@ def evaluate_bot_config(
             correlation_id=correlation_id,
         )
     except Exception as exc:
-        if run is not None and db.is_active and str(run.status) == "running":
-            transition_bot_run(run, "error", reason="evaluation_failed", error=exc)
-            config.enabled = False
-            db.flush()
+        if bot_run_id is not None and db.is_active:
+            _fail_active_bot_run_after_evaluation_error(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                bot_run_id=bot_run_id,
+                error=exc,
+            )
         raise
 
 
@@ -867,38 +986,89 @@ def _evaluate_bot_config_impl(
 ) -> EvaluationResult:
     del account  # Ownership is always re-read under the caller's user scope.
     correlation_id = correlation_id or new_correlation_id()
+    bot_config_id = int(config.id)
+    bot_run_id = int(run.id) if run is not None else None
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
+    execution_mode = "dry_run" if resolved_dry_run else "live"
+
     config = _require_bot_config(
         db,
         user_id=user_id,
-        bot_config_id=int(config.id),
+        bot_config_id=bot_config_id,
         lock_for_update=True,
     )
-    resolved_account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    resolved_account = _require_owned_account(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+        lock_for_update=True,
+    )
     _require_projectx_trade_data_source(resolved_account)
-    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
-    execution_mode = "dry_run" if resolved_dry_run else "live"
-    if run is not None:
+    if bot_run_id is not None:
         run = _require_running_bot_run(
             db,
             user_id=user_id,
-            bot_config_id=int(config.id),
-            bot_run_id=int(run.id),
+            bot_config_id=bot_config_id,
+            bot_run_id=bot_run_id,
             lock_for_update=True,
         )
 
-    candles, signal = fetch_candles_and_evaluate_strategy(db, user_id=user_id, config=config, client=client)
-    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    config_snapshot = _bot_config_evaluation_snapshot(config)
+    account_snapshot = _account_execution_snapshot(resolved_account)
+    run_snapshot = _bot_run_execution_snapshot(run) if run is not None else None
+    market_config = _detached_bot_config_copy(config)
+
+    # Evaluation is an explicit transaction boundary. The initial ownership and
+    # run checks are durable, then their short-lived locks/connections are
+    # released before any market-provider network request.
+    db.commit()
+    candles, signal = fetch_candles_and_evaluate_strategy(
+        db,
+        user_id=user_id,
+        config=market_config,
+        client=client,
+    )
+    _commit_evaluation_market_cache(db, candles)
+    latest_candle = candles[-1] if candles else None
+    execution_contract_id = _execution_contract_id(market_config, latest_candle)
+    execution_symbol = _execution_symbol(market_config, latest_candle)
     instrument_spec = None
     if signal.action in {"BUY", "SELL"}:
-        instrument_specs = load_instrument_specs(db)
-        instrument_spec = next(
-            (
-                instrument_specs[key]
-                for key in [normalize_symbol_key(config.symbol), normalize_symbol_key(config.contract_id)]
-                if key is not None and key in instrument_specs
-            ),
-            None,
+        instrument_spec = _load_or_resolve_instrument_spec(
+            db,
+            client=client,
+            contract_id=execution_contract_id,
+            symbol=execution_symbol,
         )
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
+    if _bot_config_evaluation_snapshot(config) != config_snapshot:
+        raise ValueError("bot_config_changed_during_market_fetch")
+    resolved_account = _require_owned_account(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+        lock_for_update=True,
+    )
+    _require_projectx_trade_data_source(resolved_account)
+    if _account_execution_snapshot(resolved_account) != account_snapshot:
+        raise ValueError("bot_account_changed_during_market_fetch")
+    if bot_run_id is not None:
+        run = _require_running_bot_run(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            bot_run_id=bot_run_id,
+            lock_for_update=True,
+        )
+        if run_snapshot is None or _bot_run_execution_snapshot(run) != run_snapshot:
+            raise ValueError("bot_run_changed_during_market_fetch")
+
+    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
     evaluation_day_pnl = (
         _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
         if signal.action in {"BUY", "SELL"}
@@ -919,9 +1089,6 @@ def _evaluate_bot_config_impl(
     signal_order_size = _signal_order_size(config=config, signal=signal)
     current_position_qty = _signal_current_position_qty(signal)
     target_position_qty = _signal_target_position_qty(signal)
-    latest_candle = candles[-1] if candles else None
-    execution_contract_id = _execution_contract_id(config, latest_candle)
-    execution_symbol = _execution_symbol(config, latest_candle)
     actionable_candle_timestamp = _actionable_candle_timestamp(
         signal=signal,
         candles=candles,
@@ -997,7 +1164,24 @@ def _evaluate_bot_config_impl(
                 dry_run=resolved_dry_run,
                 confirm_live_order_routing=confirm_live_order_routing,
                 client=client,
+                decision=decision,
+                # Only the final account-locked pass may consult authoritative
+                # provider state. An earlier remote pass would be stale before
+                # routing and would double every live preflight request.
+                perform_live_preflight=False,
+                reconcile_live_submissions=False,
             )
+            if not resolved_dry_run:
+                protection_block = _strategy_protection_block(
+                    db,
+                    config=config,
+                    signal=signal,
+                    contract_id=execution_contract_id,
+                    symbol=execution_symbol,
+                    instrument_spec=instrument_spec,
+                )
+                if protection_block is not None:
+                    blocks.append(protection_block)
             if idempotency_key is None:
                 blocks.append(
                     RiskBlock(
@@ -1016,6 +1200,7 @@ def _evaluate_bot_config_impl(
                     run=run,
                     block=block,
                     correlation_id=correlation_id,
+                    decision=decision,
                 )
                 for block in blocks
             ]
@@ -1032,10 +1217,18 @@ def _evaluate_bot_config_impl(
                     reason="; ".join(block.message for block in blocks),
                     candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
                     price=signal.price,
-                    quantity=_finite_optional_float(signal_order_size),
+                    quantity=_finite_optional_float(decision.quantity),
                     correlation_id=correlation_id,
                     idempotency_key=idempotency_key,
-                    raw_payload={"risk_blocks": [block.__dict__ for block in blocks]},
+                    raw_payload={
+                        "risk_blocks": [block.__dict__ for block in blocks],
+                        "signal_decision_id": int(decision.id),
+                        "signal_order_plan": (
+                            dict(decision.raw_payload)
+                            if isinstance(decision.raw_payload, dict)
+                            else decision.raw_payload
+                        ),
+                    },
                 )
             )
             evaluation_status = "risk_blocked"
@@ -1106,12 +1299,24 @@ def _evaluate_bot_config_impl(
                     if run_id is not None
                     else None
                 )
-                if not bool(config.enabled) or (run_id is not None and (run is None or run.status != "running")):
+                execution_snapshot_changed = (
+                    _bot_config_evaluation_snapshot(config) != config_snapshot
+                    or _account_execution_snapshot(resolved_account) != account_snapshot
+                )
+                if (
+                    execution_snapshot_changed
+                    or not bool(config.enabled)
+                    or (run_id is not None and (run is None or run.status != "running"))
+                ):
                     order_attempt.status = "blocked"
-                    order_attempt.rejection_reason = "Bot execution state changed before provider routing."
+                    order_attempt.rejection_reason = (
+                        "Bot configuration or account changed before provider routing."
+                        if execution_snapshot_changed
+                        else "Bot execution state changed before provider routing."
+                    )
                     state_block = RiskBlock(
                         code="execution_state_changed",
-                        message="Bot was stopped or disabled before provider routing.",
+                        message=order_attempt.rejection_reason,
                         severity="critical",
                     )
                     risk_events = [
@@ -1142,6 +1347,8 @@ def _evaluate_bot_config_impl(
                         confirm_live_order_routing=confirm_live_order_routing,
                         client=client,
                         ignore_order_attempt_id=order_attempt_id,
+                        order_attempt=order_attempt,
+                        decision=decision,
                     )
                     if final_blocks:
                         order_attempt.status = "blocked"
@@ -1154,6 +1361,8 @@ def _evaluate_bot_config_impl(
                                 run=run,
                                 block=block,
                                 correlation_id=correlation_id,
+                                decision=decision,
+                                order_attempt=order_attempt,
                             )
                             for block in final_blocks
                         ]
@@ -1437,6 +1646,7 @@ def fetch_and_store_fvg_sweep_mss_candles(
     client: ProjectXClient,
     strategy_params: dict[str, Any] | None = None,
 ) -> dict[str, list[ProjectXMarketCandle]]:
+    transaction_owned = not db.in_transaction()
     _normalize_strategy_params(_STRATEGY_FVG_SWEEP_MSS, strategy_params)
     now = datetime.now(timezone.utc)
     base_unit = str(config.timeframe_unit)
@@ -1472,15 +1682,19 @@ def fetch_and_store_fvg_sweep_mss_candles(
             limit=limit,
             include_partial_bar=False,
         )
-        candle_sets[key] = store_market_candles(
+        candle_sets[key] = _commit_candle_rows_if_owned(
             db,
-            user_id=user_id,
-            contract_id=contract_id,
-            symbol=symbol,
-            live=False,
-            unit=unit,
-            unit_number=unit_number,
-            bars=bars,
+            store_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=contract_id,
+                symbol=symbol,
+                live=False,
+                unit=unit,
+                unit_number=unit_number,
+                bars=bars,
+            ),
+            transaction_owned=transaction_owned,
         )
 
     return candle_sets
@@ -1640,6 +1854,7 @@ def fetch_and_store_support_resistance_candles(
     strategy_type: str = _STRATEGY_SUPPORT_RESISTANCE,
     strategy_params: dict[str, Any] | None = None,
 ) -> dict[str, list[ProjectXMarketCandle]]:
+    transaction_owned = not db.in_transaction()
     params = _normalize_strategy_params(strategy_type, strategy_params)
     bars_per_timeframe = int(params["bars_per_timeframe"])
     now = datetime.now(timezone.utc)
@@ -1665,15 +1880,19 @@ def fetch_and_store_support_resistance_candles(
             limit=bars_per_timeframe,
             include_partial_bar=False,
         )
-        candle_sets[label] = store_market_candles(
+        candle_sets[label] = _commit_candle_rows_if_owned(
             db,
-            user_id=user_id,
-            contract_id=contract_id,
-            symbol=symbol,
-            live=False,
-            unit=unit,
-            unit_number=unit_number,
-            bars=bars,
+            store_market_candles(
+                db,
+                user_id=user_id,
+                contract_id=contract_id,
+                symbol=symbol,
+                live=False,
+                unit=unit,
+                unit_number=unit_number,
+                bars=bars,
+            ),
+            transaction_owned=transaction_owned,
         )
 
     return candle_sets
@@ -1887,6 +2106,34 @@ def _retrieve_market_bars_singleflight(
                 _CANDLE_PROVIDER_FLIGHTS.pop(key, None)
 
 
+def _commit_candle_rows_if_owned(
+    db: Session,
+    rows: Sequence[ProjectXMarketCandle],
+    *,
+    transaction_owned: bool,
+) -> list[ProjectXMarketCandle]:
+    output = list(rows)
+    if not transaction_owned or not db.in_transaction():
+        return output
+    for row in output:
+        if row in db:
+            db.expunge(row)
+    db.commit()
+    return output
+
+
+def _commit_evaluation_market_cache(
+    db: Session,
+    candles: Sequence[ProjectXMarketCandle],
+) -> None:
+    if not db.in_transaction():
+        return
+    for candle in candles:
+        if candle in db:
+            db.expunge(candle)
+    db.commit()
+
+
 def fetch_and_store_market_candles(
     db: Session,
     *,
@@ -1917,6 +2164,7 @@ def fetch_and_store_market_candles(
         symbol=symbol,
         live=live,
     )
+    cache_read_joined_existing_transaction = db.in_transaction()
     cached = (
         list_market_candles(
             db,
@@ -1933,6 +2181,18 @@ def fetch_and_store_market_candles(
         if preserve_cached_history
         else []
     )
+    if (
+        preserve_cached_history
+        and not cache_read_joined_existing_transaction
+        and db.in_transaction()
+    ):
+        # Keep the cached rows usable while releasing the read-only transaction
+        # before potentially slow provider I/O.  Never roll back a transaction
+        # owned by the caller (for example, an active bot-run evaluation).
+        for row in cached:
+            if row in db:
+                db.expunge(row)
+        db.rollback()
     try:
         request_key = (
             str(user_id),
@@ -1998,7 +2258,11 @@ def fetch_and_store_market_candles(
             )
         ]
     if not preserve_cached_history:
-        return stored
+        return _commit_candle_rows_if_owned(
+            db,
+            stored,
+            transaction_owned=not cache_read_joined_existing_transaction,
+        )
 
     combined = list_market_candles(
         db,
@@ -2018,7 +2282,11 @@ def fetch_and_store_market_candles(
         if include_partial_bar or not bool(row.is_partial)
     }
     ordered = [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
-    return ordered[-max(1, int(limit)):]
+    return _commit_candle_rows_if_owned(
+        db,
+        ordered[-max(1, int(limit)):],
+        transaction_owned=not cache_read_joined_existing_transaction,
+    )
 
 
 def list_market_candles(
@@ -9459,6 +9727,24 @@ def _series_is_strictly_falling(values: list[float]) -> bool:
     return len(values) >= 2 and all(current < previous for previous, current in zip(values, values[1:]))
 
 
+def _requires_live_execution_preflight(
+    *,
+    config: BotConfig,
+    account: Account,
+    dry_run: bool,
+    confirm_live_order_routing: bool,
+) -> bool:
+    return (
+        not dry_run
+        and str(config.execution_mode) == "live"
+        and confirm_live_order_routing
+        and not running_under_tests()
+        and live_execution_environment_enabled()
+        and bool(config.enabled)
+        and not _looks_like_live_funded_account(account)
+    )
+
+
 def evaluate_risk_gates(
     db: Session,
     *,
@@ -9476,6 +9762,10 @@ def evaluate_risk_gates(
     confirm_live_order_routing: bool,
     client: ProjectXClient | None = None,
     ignore_order_attempt_id: int | None = None,
+    order_attempt: BotOrderAttempt | None = None,
+    decision: BotDecision | None = None,
+    perform_live_preflight: bool = True,
+    reconcile_live_submissions: bool = True,
 ) -> list[RiskBlock]:
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
@@ -9488,24 +9778,23 @@ def evaluate_risk_gates(
     account_state = str(account.account_state)
     account_can_trade = account.can_trade
     additional_blocks: list[RiskBlock] = []
+    if order_attempt is not None:
+        protection_block = _order_attempt_protection_block(config=config, order_attempt=order_attempt)
+        if protection_block is not None:
+            additional_blocks.append(protection_block)
 
-    live_preflight_required = (
-        not dry_run
-        and str(config.execution_mode) == "live"
-        and confirm_live_order_routing
-        and not running_under_tests()
-        and live_execution_environment_enabled()
-        and bool(config.enabled)
-        and not _looks_like_live_funded_account(account)
+    live_preflight_required = _requires_live_execution_preflight(
+        config=config,
+        account=account,
+        dry_run=dry_run,
+        confirm_live_order_routing=confirm_live_order_routing,
     )
-    if live_preflight_required:
+    if live_preflight_required and perform_live_preflight:
+        preflight: LiveExecutionPreflight | None = None
+        preflight_error: Exception | None = None
         if client is None:
-            additional_blocks.append(
-                RiskBlock(
-                    code="live_preflight_unavailable",
-                    message="Authoritative provider risk data is unavailable for live routing.",
-                    severity="critical",
-                )
+            preflight_error = ProjectXClientError(
+                "Authoritative provider risk data is unavailable for live routing."
             )
         else:
             try:
@@ -9515,80 +9804,127 @@ def evaluate_risk_gates(
                     contract_id=contract_id,
                 )
             except Exception as exc:
-                additional_blocks.append(
-                    RiskBlock(
-                        code="live_preflight_unavailable",
-                        message=(
-                            "Authoritative provider position, tradability, and daily P&L checks failed: "
-                            f"{sanitize_error(exc, max_length=240)}"
-                        ),
-                        severity="critical",
+                preflight_error = exc
+
+        if preflight_error is not None:
+            additional_blocks.append(
+                RiskBlock(
+                    code="live_preflight_unavailable",
+                    message=(
+                        "Authoritative provider position, tradability, and daily P&L checks failed: "
+                        f"{sanitize_error(preflight_error, max_length=240)}"
+                    ),
+                    severity="critical",
+                )
+            )
+        if preflight is not None:
+            account_state = preflight.account_state
+            account_can_trade = preflight.account_can_trade
+            adjustment_block: RiskBlock | None = None
+            if target_position_qty is not None:
+                adjustment_block = _apply_authoritative_target_to_order_attempt(
+                    order_attempt,
+                    decision=decision,
+                    signal_action=action,
+                    target_position_qty=float(target_position_qty),
+                    provider_position_qty=preflight.current_position_qty,
+                )
+                if adjustment_block is not None:
+                    additional_blocks.append(adjustment_block)
+                    signed_change = 0.0
+                else:
+                    adjusted_size = (
+                        order_attempt.size
+                        if order_attempt is not None
+                        else decision.quantity if decision is not None else None
+                    )
+                    if adjusted_size is None:
+                        additional_blocks.append(
+                            RiskBlock(
+                                code="authoritative_target_audit_unavailable",
+                                message="The authoritative target size could not be attached to the order audit.",
+                                severity="critical",
+                            )
+                        )
+                        signed_change = 0.0
+                        adjustment_block = additional_blocks[-1]
+                    else:
+                        order_size = float(adjusted_size)
+                        signed_change = order_size if action == "BUY" else -order_size
+            # Non-target-aware signals remain deltas. Target-aware signals are
+            # rewritten above from the authoritative provider position.
+            resulting_position_qty = preflight.current_position_qty + signed_change
+            daily_pnl = preflight.daily_pnl
+            if preflight.working_order_signed_sizes and adjustment_block is None:
+                current_provider_position = preflight.current_position_qty
+                safe_combined_reduction = (
+                    abs(current_provider_position) > 1e-9
+                    and signed_change * current_provider_position < 0
+                    and all(
+                        size * current_provider_position < 0
+                        for size in preflight.working_order_signed_sizes
+                    )
+                    and (
+                        abs(signed_change)
+                        + sum(abs(size) for size in preflight.working_order_signed_sizes)
+                        <= abs(current_provider_position) + 1e-9
                     )
                 )
-            else:
-                account_state = preflight.account_state
-                account_can_trade = preflight.account_can_trade
-                # Live routing always applies the proposed order to the provider's
-                # current position. Strategy payload position hints are advisory.
-                resulting_position_qty = preflight.current_position_qty + signed_change
-                daily_pnl = preflight.daily_pnl
-                if preflight.working_order_signed_sizes:
-                    current_provider_position = preflight.current_position_qty
-                    safe_combined_reduction = (
-                        abs(current_provider_position) > 1e-9
-                        and signed_change * current_provider_position < 0
-                        and all(
-                            size * current_provider_position < 0
-                            for size in preflight.working_order_signed_sizes
-                        )
-                        and (
-                            abs(signed_change)
-                            + sum(abs(size) for size in preflight.working_order_signed_sizes)
-                            <= abs(current_provider_position) + 1e-9
+                positive_working = sum(
+                    max(0.0, size) for size in preflight.working_order_signed_sizes
+                )
+                negative_working = sum(
+                    min(0.0, size) for size in preflight.working_order_signed_sizes
+                )
+                worst_case_position = max(
+                    abs(resulting_position_qty),
+                    abs(resulting_position_qty + positive_working),
+                    abs(resulting_position_qty + negative_working),
+                )
+                position_limit = min(float(config.max_contracts), float(config.max_open_position))
+                if not safe_combined_reduction:
+                    additional_blocks.append(
+                        RiskBlock(
+                            code="working_order_direction_conflict",
+                            message=(
+                                "A working provider order already has the proposed side; routing another order "
+                                "could duplicate or reverse the intended trade."
+                            ),
+                            severity="critical",
                         )
                     )
-                    positive_working = sum(
-                        max(0.0, size) for size in preflight.working_order_signed_sizes
-                    )
-                    negative_working = sum(
-                        min(0.0, size) for size in preflight.working_order_signed_sizes
-                    )
-                    worst_case_position = max(
-                        abs(resulting_position_qty),
-                        abs(resulting_position_qty + positive_working),
-                        abs(resulting_position_qty + negative_working),
-                    )
-                    position_limit = min(float(config.max_contracts), float(config.max_open_position))
-                    if not safe_combined_reduction:
-                        additional_blocks.append(
-                            RiskBlock(
-                                code="working_order_direction_conflict",
-                                message=(
-                                    "A working provider order already has the proposed side; routing another order "
-                                    "could duplicate or reverse the intended trade."
-                                ),
-                                severity="critical",
-                            )
+                elif worst_case_position > position_limit:
+                    additional_blocks.append(
+                        RiskBlock(
+                            code="working_order_exposure",
+                            message=(
+                                "Working provider orders plus the proposed order could exceed the configured "
+                                "position limit."
+                            ),
+                            severity="critical",
                         )
-                    elif worst_case_position > position_limit:
-                        additional_blocks.append(
-                            RiskBlock(
-                                code="working_order_exposure",
-                                message=(
-                                    "Working provider orders plus the proposed order could exceed the configured "
-                                    "position limit."
-                                ),
-                                severity="critical",
-                            )
-                        )
+                    )
 
-            unresolved_count, reconciliation_error = reconcile_unresolved_order_attempts(
+        if client is not None and reconcile_live_submissions:
+            reconciliation = reconcile_unresolved_order_attempts(
                 db,
                 user_id=user_id,
                 account_id=int(config.account_id),
                 client=client,
                 ignore_order_attempt_id=ignore_order_attempt_id,
             )
+            unresolved_count, reconciliation_error = reconciliation
+            if reconciliation.resolved_count:
+                additional_blocks.append(
+                    RiskBlock(
+                        code="order_reconciliation_settling",
+                        message=(
+                            f"{reconciliation.resolved_count} prior order submission(s) were reconciled during "
+                            "this preflight; provider positions must be refreshed before routing."
+                        ),
+                        severity="critical",
+                    )
+                )
             if unresolved_count:
                 suffix = (
                     f" Provider reconciliation failed: {sanitize_error(reconciliation_error, max_length=180)}"
@@ -9716,12 +10052,20 @@ def _fetch_live_execution_preflight(
         working_order_signed_sizes.append(signed_size)
 
     pnl_start, pnl_end = trading_day_bounds_utc(trading_day_date(observed_at))
-    trade_events = client.fetch_trade_history(
+    trade_fetch = fetch_trade_history_all_pages(
+        client,
         account_id=int(account_id),
         start=pnl_start,
         end=min(pnl_end, observed_at),
+        limit=_LIVE_PREFLIGHT_TRADE_PAGE_SIZE,
+        max_pages=_LIVE_PREFLIGHT_TRADE_MAX_PAGES,
         require_valid_collection=True,
     )
+    if trade_fetch.is_truncated:
+        raise ProjectXClientError(
+            "ProjectX Trade/search pagination was incomplete during live preflight."
+        )
+    trade_events = trade_fetch.events
     daily_pnl = 0.0
     for event in trade_events:
         if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
@@ -9734,11 +10078,31 @@ def _fetch_live_execution_preflight(
         event_timestamp = _as_utc(event_timestamp)
         if event_timestamp < pnl_start or event_timestamp > min(pnl_end, observed_at):
             continue
+        # Canonical realized P&L is represented by the closing execution. Its
+        # stored/provider fee is per-side, so the closed row is normalized to a
+        # round turn and receives the same Topstep commission used by metrics.
+        if event.get("pnl") is None:
+            continue
         fees = _finite_optional_float(event.get("fees"))
-        pnl = _finite_optional_float(event.get("pnl")) if event.get("pnl") is not None else 0.0
-        if fees is None or pnl is None:
+        pnl = _finite_optional_float(event.get("pnl"))
+        commissions = (
+            _finite_optional_float(event.get("commissions"))
+            if event.get("commissions") is not None
+            else None
+        )
+        if fees is None or pnl is None or (event.get("commissions") is not None and commissions is None):
             raise ProjectXClientError("ProjectX returned non-finite daily P&L data.")
-        daily_pnl += pnl - fees
+        effective_fee = effective_topstep_trade_fee(
+            trade_timestamp=event_timestamp,
+            pnl=pnl,
+            fees=fees,
+            symbol=_normalized_optional_text(event.get("symbol")),
+            contract_id=_normalized_optional_text(event.get("contract_id")),
+            size=_finite_optional_float(event.get("size")),
+            raw_fee_is_per_side=str(event.get("fee_scope") or "per_side") != "round_turn",
+            commissions=commissions,
+        )
+        daily_pnl += pnl - effective_fee
     if not math.isfinite(daily_pnl):
         raise ProjectXClientError("ProjectX daily P&L total is not finite.")
 
@@ -9760,7 +10124,7 @@ def reconcile_unresolved_order_attempts(
     client: ProjectXClient,
     now: datetime | None = None,
     ignore_order_attempt_id: int | None = None,
-) -> tuple[int, Exception | None]:
+) -> ReconciliationOutcome:
     """Reconcile ambiguous/crash-window submissions by deterministic provider tag.
 
     A provider miss is intentionally not treated as proof that no order was
@@ -9779,7 +10143,7 @@ def reconcile_unresolved_order_attempts(
         query = query.filter(BotOrderAttempt.id != int(ignore_order_attempt_id))
     rows = query.order_by(BotOrderAttempt.created_at.asc(), BotOrderAttempt.id.asc()).all()
     if not rows:
-        return 0, None
+        return ReconciliationOutcome(unresolved_count=0, error=None)
 
     observed_at = _as_utc(now or datetime.now(timezone.utc))
     created_values = [_as_utc(row.created_at) for row in rows if row.created_at is not None]
@@ -9791,7 +10155,7 @@ def reconcile_unresolved_order_attempts(
             end=observed_at,
         )
     except Exception as exc:
-        return len(rows), exc
+        return ReconciliationOutcome(unresolved_count=len(rows), error=exc)
 
     orders_by_tag: dict[str, list[dict[str, Any]]] = {}
     for provider_order in provider_orders:
@@ -9801,6 +10165,7 @@ def reconcile_unresolved_order_attempts(
         if custom_tag:
             orders_by_tag.setdefault(custom_tag, []).append(provider_order)
 
+    resolved_count = 0
     for row in rows:
         request_payload = row.raw_request if isinstance(row.raw_request, dict) else {}
         custom_tag = _normalized_optional_text(request_payload.get("customTag"))
@@ -9824,12 +10189,20 @@ def reconcile_unresolved_order_attempts(
         elif provider_status == 5:
             row.status = "rejected"
             row.rejection_reason = "Provider order was found by custom tag with rejected status."
+            row.updated_at = observed_at
+            resolved_count += 1
         elif provider_status in {2, 3, 4}:
             row.status = "submitted"
             row.rejection_reason = None
+            row.updated_at = observed_at
+            resolved_count += 1
 
     unresolved_count = sum(str(row.status) in {"pending", "submission_unknown"} for row in rows)
-    return int(unresolved_count), None
+    return ReconciliationOutcome(
+        unresolved_count=int(unresolved_count),
+        error=None,
+        resolved_count=resolved_count,
+    )
 
 
 def _recent_live_submission_count(
@@ -9847,7 +10220,12 @@ def _recent_live_submission_count(
         .filter(BotOrderAttempt.account_id == int(account_id))
         .filter(BotOrderAttempt.execution_mode == "live")
         .filter(BotOrderAttempt.status == "submitted")
-        .filter(BotOrderAttempt.created_at >= cutoff)
+        .filter(
+            or_(
+                BotOrderAttempt.created_at >= cutoff,
+                BotOrderAttempt.updated_at >= cutoff,
+            )
+        )
     )
     if ignore_order_attempt_id is not None:
         query = query.filter(BotOrderAttempt.id != int(ignore_order_attempt_id))
@@ -10112,7 +10490,9 @@ def _require_bot_config(
         .filter(BotConfig.id == bot_config_id)
     )
     if lock_for_update and _session_dialect_name(db) == "postgresql":
-        query = query.with_for_update()
+        query = query.populate_existing().with_for_update()
+    elif lock_for_update:
+        query = query.populate_existing()
     row = query.one_or_none()
     if row is None:
         raise LookupError("bot_config_not_found")
@@ -10134,7 +10514,9 @@ def _find_bot_run(
         .filter(BotRun.id == bot_run_id)
     )
     if lock_for_update and _session_dialect_name(db) == "postgresql":
-        query = query.with_for_update()
+        query = query.populate_existing().with_for_update()
+    elif lock_for_update:
+        query = query.populate_existing()
     return query.one_or_none()
 
 
@@ -10316,7 +10698,26 @@ def _create_risk_event(
     run: BotRun | None,
     block: RiskBlock,
     correlation_id: str | None = None,
+    decision: BotDecision | None = None,
+    order_attempt: BotOrderAttempt | None = None,
 ) -> BotRiskEvent:
+    raw_payload: dict[str, Any] = {**block.__dict__, "correlation_id": correlation_id}
+    if decision is not None:
+        raw_payload["signal_decision_id"] = int(decision.id)
+        raw_payload["effective_quantity"] = _finite_optional_float(decision.quantity)
+        if isinstance(decision.raw_payload, dict):
+            for key in (
+                "planned_order_size",
+                "authoritative_provider_position_qty",
+                "authoritative_target_delta",
+                "authoritative_required_side",
+                "target_position_qty",
+            ):
+                if key in decision.raw_payload:
+                    raw_payload[key] = decision.raw_payload[key]
+    if order_attempt is not None:
+        raw_payload["order_attempt_id"] = int(order_attempt.id)
+        raw_payload["order_attempt_side"] = str(order_attempt.side)
     row = BotRiskEvent(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -10325,7 +10726,7 @@ def _create_risk_event(
         severity=block.severity,
         code=block.code,
         message=block.message,
-        raw_payload={**block.__dict__, "correlation_id": correlation_id},
+        raw_payload=raw_payload,
     )
     db.add(row)
     return row
@@ -10465,6 +10866,306 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
 
 
+def _load_or_resolve_instrument_spec(
+    db: Session,
+    *,
+    client: ProjectXClient,
+    contract_id: str,
+    symbol: str | None,
+) -> InstrumentSpec | None:
+    joined_existing_transaction = db.in_transaction()
+    specs = load_instrument_specs(db)
+    for candidate in _unique_text_values(
+        [normalize_symbol_key(symbol), normalize_symbol_key(contract_id), symbol, contract_id]
+    ):
+        spec = specs.get(candidate)
+        if spec is not None:
+            if not joined_existing_transaction and db.in_transaction():
+                db.rollback()
+            return spec
+
+    if not joined_existing_transaction and db.in_transaction():
+        db.rollback()
+
+    search_contracts = getattr(client, "search_contracts", None)
+    if not callable(search_contracts):
+        return None
+
+    resolved: dict[str, Any] | None = None
+    try:
+        for candidate in _unique_text_values([contract_id, symbol]):
+            rows = search_contracts(search_text=candidate, live=False)
+            exact = next(
+                (
+                    row
+                    for row in rows
+                    if isinstance(row, dict) and str(row.get("id") or "") == str(contract_id)
+                ),
+                None,
+            )
+            resolved = exact or _pick_market_contract(rows)
+            if resolved is not None:
+                break
+    except (ProjectXClientError, AttributeError, TypeError):
+        return None
+    if resolved is None:
+        return None
+
+    tick_size = _finite_optional_float(resolved.get("tick_size"))
+    tick_value = _finite_optional_float(resolved.get("tick_value"))
+    symbol_key = normalize_symbol_key(symbol) or normalize_symbol_key(
+        _normalized_optional_text(resolved.get("symbol_id"))
+    ) or normalize_symbol_key(contract_id)
+    if symbol_key is None or tick_size is None or tick_size <= 0 or tick_value is None or tick_value <= 0:
+        return None
+
+    spec = InstrumentSpec(symbol=symbol_key, tick_size=tick_size, tick_value=tick_value)
+    try:
+        with db.begin_nested():
+            row = db.query(InstrumentMetadata).filter(InstrumentMetadata.symbol == symbol_key).one_or_none()
+            if row is None:
+                db.add(
+                    InstrumentMetadata(
+                        symbol=symbol_key,
+                        tick_size=tick_size,
+                        tick_value=tick_value,
+                    )
+                )
+            else:
+                row.tick_size = tick_size
+                row.tick_value = tick_value
+            db.flush()
+    except (IntegrityError, SQLAlchemyError):
+        # Metadata persistence is an optimization. The resolved in-memory spec
+        # remains authoritative for this evaluation; live submission still
+        # independently verifies that its bracket payload was constructed.
+        if not joined_existing_transaction and db.in_transaction():
+            db.rollback()
+    else:
+        if not joined_existing_transaction and db.in_transaction():
+            db.commit()
+    return spec
+
+
+def _planned_take_profit(decision_payload: dict[str, Any]) -> tuple[bool, float | None]:
+    for key in ("take_profit", "final_take_profit", "partial_take_profit"):
+        if key in decision_payload and decision_payload.get(key) is not None:
+            return True, _finite_optional_float(decision_payload.get(key))
+    return False, None
+
+
+def _strategy_protection_block(
+    db: Session,
+    *,
+    config: BotConfig,
+    signal: SignalResult,
+    contract_id: str,
+    symbol: str | None,
+    instrument_spec: InstrumentSpec | None = None,
+) -> RiskBlock | None:
+    payload = signal.raw_payload if isinstance(signal.raw_payload, dict) else {}
+    if payload.get("signal_category") == "exit":
+        return None
+
+    strategy_type = str(payload.get("strategy_type") or config.strategy_type)
+    raw_stop = payload.get("stop_loss")
+    stop_loss = _finite_optional_float(raw_stop)
+    target_present, take_profit = _planned_take_profit(payload)
+    protection_required = strategy_type != _STRATEGY_SMA_CROSS
+    if protection_required and stop_loss is None:
+        return RiskBlock(
+            code="strategy_stop_loss_missing",
+            message="This strategy requires a finite protective stop before an entry can be routed.",
+            severity="critical",
+        )
+    if raw_stop is not None and stop_loss is None:
+        return RiskBlock(
+            code="strategy_stop_loss_invalid",
+            message="The strategy supplied an invalid protective stop.",
+            severity="critical",
+        )
+    if target_present and take_profit is None:
+        return RiskBlock(
+            code="strategy_take_profit_invalid",
+            message="The strategy supplied an invalid take-profit target.",
+            severity="critical",
+        )
+    if stop_loss is None:
+        return None
+
+    entry_price = _finite_optional_float(signal.price)
+    if entry_price is None:
+        return RiskBlock(
+            code="strategy_entry_price_invalid",
+            message="A finite signal price is required to construct protective brackets.",
+            severity="critical",
+        )
+    stop_is_valid = stop_loss < entry_price if signal.action == "BUY" else stop_loss > entry_price
+    if not stop_is_valid:
+        return RiskBlock(
+            code="strategy_stop_geometry_invalid",
+            message="The protective stop is on the wrong side of the signal price.",
+            severity="critical",
+        )
+    if take_profit is not None:
+        target_is_valid = take_profit > entry_price if signal.action == "BUY" else take_profit < entry_price
+        if not target_is_valid:
+            return RiskBlock(
+                code="strategy_take_profit_geometry_invalid",
+                message="The take-profit target is on the wrong side of the signal price.",
+                severity="critical",
+            )
+    tick_size = (
+        float(instrument_spec.tick_size)
+        if instrument_spec is not None
+        else _instrument_tick_size(db, symbol=symbol, contract_id=contract_id)
+    )
+    if tick_size is None or tick_size <= 0:
+        return RiskBlock(
+            code="instrument_tick_metadata_missing",
+            message="Valid instrument tick metadata is required to construct protective brackets.",
+            severity="critical",
+        )
+    return None
+
+
+def _order_attempt_protection_block(
+    *,
+    config: BotConfig,
+    order_attempt: BotOrderAttempt,
+) -> RiskBlock | None:
+    request = order_attempt.raw_request if isinstance(order_attempt.raw_request, dict) else {}
+    plan = request.get("strategyOrderPlan") if isinstance(request.get("strategyOrderPlan"), dict) else {}
+    if plan.get("signal_category") == "exit":
+        return None
+    strategy_type = str(plan.get("strategy_type") or config.strategy_type)
+    stop_required = strategy_type != _STRATEGY_SMA_CROSS or plan.get("stop_loss") is not None
+    stop_bracket = request.get("stopLossBracket")
+    if stop_required and not _valid_bracket_payload(stop_bracket, expected_type=4):
+        return RiskBlock(
+            code="protective_stop_bracket_missing",
+            message="The live order is missing a valid protective stop bracket.",
+            severity="critical",
+        )
+    target_present, _ = _planned_take_profit(plan)
+    if target_present and not _valid_bracket_payload(request.get("takeProfitBracket"), expected_type=1):
+        return RiskBlock(
+            code="take_profit_bracket_missing",
+            message="The live order is missing its planned take-profit bracket.",
+            severity="critical",
+        )
+    return None
+
+
+def _valid_bracket_payload(value: Any, *, expected_type: int) -> bool:
+    if not isinstance(value, dict) or value.get("type") != expected_type:
+        return False
+    ticks = value.get("ticks")
+    return isinstance(ticks, int) and not isinstance(ticks, bool) and ticks > 0
+
+
+def _apply_authoritative_target_to_order_attempt(
+    order_attempt: BotOrderAttempt | None,
+    *,
+    decision: BotDecision | None,
+    signal_action: str,
+    target_position_qty: float,
+    provider_position_qty: float,
+) -> RiskBlock | None:
+    if not math.isfinite(target_position_qty) or not math.isfinite(provider_position_qty):
+        return RiskBlock(
+            code="authoritative_target_invalid",
+            message="The target or authoritative provider position is not finite.",
+            severity="critical",
+        )
+    epsilon = 1e-9
+    delta = target_position_qty - provider_position_qty
+    action = "BUY" if delta > 0 else "SELL"
+
+    decision_payload = (
+        dict(decision.raw_payload)
+        if decision is not None and isinstance(decision.raw_payload, dict)
+        else {}
+    )
+    planned_order_size = _finite_optional_float(decision_payload.get("planned_order_size"))
+    if planned_order_size is None:
+        planned_order_size = _finite_optional_float(
+            decision.quantity
+            if decision is not None
+            else order_attempt.size if order_attempt is not None else None
+        )
+
+    def record_audit(*, effective_order_size: float) -> None:
+        audit_fields = {
+            "planned_order_size": planned_order_size,
+            "authoritative_provider_position_qty": provider_position_qty,
+            "authoritative_target_delta": delta,
+            "authoritative_required_side": action,
+            "effective_order_size": effective_order_size,
+            "target_position_qty": target_position_qty,
+        }
+        if decision is not None:
+            payload = dict(decision_payload)
+            payload.update(audit_fields)
+            decision.raw_payload = payload
+            decision.quantity = effective_order_size
+        if order_attempt is not None:
+            request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
+            plan = request.get("strategyOrderPlan")
+            plan = dict(plan) if isinstance(plan, dict) else {}
+            plan.update(audit_fields)
+            request["strategyOrderPlan"] = plan
+            order_attempt.raw_request = request
+
+    if target_position_qty * provider_position_qty < -(epsilon**2):
+        record_audit(effective_order_size=0.0)
+        return RiskBlock(
+            code="atomic_reversal_not_supported",
+            message=(
+                "A position reversal cannot be routed atomically because provider bracket-child "
+                "quantity semantics are not authoritative; flatten first and enter on a later evaluation."
+            ),
+            severity="critical",
+        )
+
+    if abs(delta) <= epsilon:
+        record_audit(effective_order_size=0.0)
+        return RiskBlock(
+            code="authoritative_target_already_reached",
+            message="The authoritative provider position already matches the strategy target; no order was sent.",
+            severity="critical",
+        )
+    if action != str(signal_action).strip().upper():
+        record_audit(effective_order_size=0.0)
+        return RiskBlock(
+            code="authoritative_target_direction_conflict",
+            message=(
+                "Reaching the strategy target from the authoritative provider position would require the "
+                "opposite side; routing was blocked."
+            ),
+            severity="critical",
+        )
+    size = abs(delta)
+    if size > 10_000 or abs(size - round(size)) > epsilon:
+        record_audit(effective_order_size=0.0)
+        return RiskBlock(
+            code="authoritative_target_size_invalid",
+            message="The authoritative target delta is not a supported whole-contract quantity.",
+            severity="critical",
+        )
+
+    record_audit(effective_order_size=size)
+    if order_attempt is None:
+        return None
+    request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
+    request["side"] = _SIDE_BY_ACTION[action]
+    request["size"] = int(round(size))
+    order_attempt.side = action
+    order_attempt.size = size
+    order_attempt.raw_request = request
+    return None
+
+
 def _strategy_bracket_payloads(
     db: Session,
     *,
@@ -10476,19 +11177,19 @@ def _strategy_bracket_payloads(
 ) -> dict[str, Any]:
     if decision_payload.get("signal_category") == "exit":
         return {}
-    stop_loss = decision_payload.get("stop_loss")
-    take_profit = decision_payload.get("take_profit")
-    if entry_price is None or not isinstance(stop_loss, (int, float)):
+    stop_loss = _finite_optional_float(decision_payload.get("stop_loss"))
+    _, take_profit = _planned_take_profit(decision_payload)
+    if entry_price is None or stop_loss is None:
         return {}
 
     tick_size = _instrument_tick_size(db, symbol=symbol, contract_id=contract_id)
     if tick_size is None or tick_size <= 0:
         return {}
 
-    stop_ticks = max(1, int(round(abs(float(entry_price) - float(stop_loss)) / tick_size)))
+    stop_ticks = max(1, int(round(abs(float(entry_price) - stop_loss) / tick_size)))
     payload: dict[str, Any] = {"stopLossBracket": {"ticks": stop_ticks, "type": 4}}
-    if isinstance(take_profit, (int, float)):
-        take_profit_ticks = max(1, int(round(abs(float(take_profit) - float(entry_price)) / tick_size)))
+    if take_profit is not None:
+        take_profit_ticks = max(1, int(round(abs(take_profit - float(entry_price)) / tick_size)))
         payload["takeProfitBracket"] = {"ticks": take_profit_ticks, "type": 1}
     return payload
 
@@ -10523,6 +11224,10 @@ def load_open_position_state(
     contract_id: str,
     symbol: str | None,
 ) -> OpenPositionState:
+    # Futures positions are delivery-contract specific. A same-root fallback can
+    # misattribute an open M26 lot to U26 and cause an exit to open the opposite
+    # side in the new delivery. Keep `symbol` for API compatibility/audit only.
+    del symbol
     rows = (
         db.query(ProjectXTradeEvent)
         .filter(ProjectXTradeEvent.user_id == user_id)
@@ -10532,21 +11237,6 @@ def load_open_position_state(
         .order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc())
         .all()
     )
-    if not rows and symbol:
-        rows = (
-            db.query(ProjectXTradeEvent)
-            .filter(ProjectXTradeEvent.user_id == user_id)
-            .filter(ProjectXTradeEvent.account_id == account_id)
-            .filter(_non_voided_trade_event_expr())
-            .filter(
-                or_(
-                    ProjectXTradeEvent.contract_id == contract_id,
-                    ProjectXTradeEvent.symbol == symbol,
-                )
-            )
-            .order_by(ProjectXTradeEvent.trade_timestamp.asc(), ProjectXTradeEvent.id.asc())
-            .all()
-        )
     return _open_position_state_from_trade_rows(rows)
 
 
@@ -10713,17 +11403,31 @@ def _todays_bot_trade_count(db: Session, *, user_id: str, config: BotConfig) -> 
 
 def _todays_account_net_pnl(db: Session, *, user_id: str, account_id: int) -> float:
     start, end = trading_day_bounds_utc(trading_day_date(datetime.now(timezone.utc)))
-    total = (
-        db.query(func.coalesce(func.sum(ProjectXTradeEvent.pnl - func.coalesce(ProjectXTradeEvent.fees, 0)), 0))
+    rows = (
+        db.query(ProjectXTradeEvent)
         .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id == account_id)
         .filter(ProjectXTradeEvent.trade_timestamp >= start)
         .filter(ProjectXTradeEvent.trade_timestamp <= end)
         .filter(ProjectXTradeEvent.pnl.isnot(None))
         .filter(_non_voided_trade_event_expr())
-        .scalar()
+        .all()
     )
-    return float(total or 0.0)
+    totals: list[float] = []
+    for row in rows:
+        pnl = float(row.pnl)
+        effective_fee = effective_topstep_trade_fee(
+            trade_timestamp=_as_utc(row.trade_timestamp),
+            pnl=pnl,
+            fees=float(row.fees) if row.fees is not None else 0.0,
+            symbol=row.symbol,
+            contract_id=row.contract_id,
+            size=float(row.size) if row.size is not None else None,
+            raw_fee_is_per_side=str(row.fee_scope or "per_side") != "round_turn",
+            commissions=float(row.commissions) if row.commissions is not None else None,
+        )
+        totals.append(pnl - effective_fee)
+    return float(math.fsum(totals))
 
 
 def _delayed_orb_session_loss_block(db: Session, *, user_id: str, config: BotConfig) -> RiskBlock | None:

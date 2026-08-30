@@ -112,7 +112,7 @@ class Trade(Base):
     exit_price = Column(Numeric(18, 6), nullable=True)
 
     pnl = Column(Numeric(18, 2), nullable=True)
-    fees = Column(Numeric(18, 2), nullable=True)
+    fees = Column(Numeric(18, 2), nullable=True, server_default="0")
     notes = Column(Text, nullable=True)
     is_rule_break = Column(Boolean, nullable=False, server_default="false")
     rule_break_type = Column(Text, nullable=True)

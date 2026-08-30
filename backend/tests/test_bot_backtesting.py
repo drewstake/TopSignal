@@ -1508,9 +1508,13 @@ def test_topbot_cache_preparation_refetches_a_truncated_primary_stream(
         ]
     )
     db_session.commit()
+    config.name = "Pending backtest preparation write"
     fetches: list[dict[str, Any]] = []
 
-    def record_fetch(*_args, **kwargs):
+    def record_fetch(provider_db, **kwargs):
+        assert db_session.in_transaction() is False
+        assert provider_db is not db_session
+        assert provider_db.in_transaction() is False
         fetches.append(kwargs)
         return []
 
@@ -1534,6 +1538,8 @@ def test_topbot_cache_preparation_refetches_a_truncated_primary_stream(
     assert prepared == 1
     assert len(fetches) == 1
     assert fetches[0]["contract_id"] == CONTRACT_ID
+    db_session.expire_all()
+    assert db_session.get(BotConfig, int(config.id)).name == "Pending backtest preparation write"
 
 
 @pytest.mark.parametrize(

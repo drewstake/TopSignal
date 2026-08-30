@@ -90,6 +90,36 @@ export function validateMergeJournalForm(form: MergeJournalFormState): string | 
   return null;
 }
 
+export function buildMergeJournalOverwriteConfirmation(
+  form: MergeJournalFormState,
+  accountNamesById: ReadonlyMap<number, string>,
+): string | null {
+  if (form.onConflict !== "overwrite") {
+    return null;
+  }
+
+  const fromAccountId = Number(form.fromAccountId);
+  const toAccountId = Number(form.toAccountId);
+  const fromName = accountNamesById.get(fromAccountId) ?? "Account";
+  const toName = accountNamesById.get(toAccountId) ?? "Account";
+  const fromLabel = `${fromName} (#${form.fromAccountId})`;
+  const toLabel = `${toName} (#${form.toAccountId})`;
+  const imageWarning = form.includeImages
+    ? " Existing linked images on those destination entries will also be replaced."
+    : "";
+
+  return `Overwrite matching journal dates from ${fromLabel} into ${toLabel}? Every existing destination entry on a matching date will be replaced.${imageWarning} This cannot be undone.`;
+}
+
+export function approveMergeJournalSubmission(
+  form: MergeJournalFormState,
+  accountNamesById: ReadonlyMap<number, string>,
+  confirmOverwrite: (message: string) => boolean,
+): boolean {
+  const confirmation = buildMergeJournalOverwriteConfirmation(form, accountNamesById);
+  return confirmation === null || confirmOverwrite(confirmation);
+}
+
 export function buildMergeJournalSuccessMessage(
   result: JournalMergeResult,
   accountNamesById?: ReadonlyMap<number, string>,

@@ -302,6 +302,14 @@ def _acquire_and_evaluate_topbot(
     source_results: list[dict[str, Any]] = []
 
     for source_strategy in strategy_params["source_strategies"]:
+        # A source evaluator may finish with a read-only transaction open (for
+        # example Donchian's position/entry-plan lookups).  The next source can
+        # perform provider candle I/O, so make every source boundary explicit.
+        # Commit rather than roll back because prior sources may also have
+        # populated the market-candle cache.
+        in_transaction = getattr(db, "in_transaction", None)
+        if callable(in_transaction) and in_transaction():
+            db.commit()
         try:
             source_params = service._normalize_strategy_params(
                 source_strategy,

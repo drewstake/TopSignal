@@ -147,6 +147,21 @@ describe("AppShell Demo Mode policy", () => {
     await waitFor(() => expect(signOutSupabaseMock).toHaveBeenCalledTimes(1));
   });
 
+  it("keeps the session visibly active and reports a sign-out failure", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    signOutSupabaseMock.mockRejectedValueOnce(new Error("Auth service unavailable"));
+    renderDemoShell();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out live session" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Sign out failed. Auth service unavailable Your session is still active.",
+    );
+    const retryButton = screen.getByRole("button", { name: "Sign out live session" });
+    expect((retryButton as HTMLButtonElement).disabled).toBe(false);
+    expect(signOutSupabaseMock).toHaveBeenCalledTimes(1);
+  });
+
   it("composes Demo Mode with the dashboard-only compact shell", async () => {
     window.localStorage.setItem("topsignal.compactMode", "true");
     renderDemoShell();

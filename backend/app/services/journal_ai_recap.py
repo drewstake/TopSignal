@@ -95,6 +95,11 @@ def generate_ai_journal_recap(
         existing_notes=existing_notes,
     )
 
+    # Release the read transaction and its checked-out connection before the
+    # potentially slow external inference call. Rollback also expires ORM
+    # identities so the post-inference query cannot reuse stale journal data.
+    db.rollback()
+
     client_factory = gemini_client_factory or GeminiClient.from_env
     recap_markdown = _normalize_recap_markdown(
         client_factory().generate_text(

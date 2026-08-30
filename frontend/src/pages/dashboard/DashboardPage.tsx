@@ -27,6 +27,7 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
+import { useAccountRequestGate } from "../../lib/accountRequestGate";
 import {
   describeAccountProviderSync,
   describeProviderRefreshException,
@@ -910,6 +911,7 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const journalOpenRequestGate = useAccountRequestGate(selectedAccountId);
   const {
     selectedDate: activeSelectedTradeDate,
     setSelectedDate: handleSelectedTradeDateChange,
@@ -2705,9 +2707,11 @@ export function DashboardPage() {
         return;
       }
 
+      const requestAccountId = selectedAccountId;
+
       setCompactJournalActionError(null);
       const next = new URLSearchParams();
-      next.set(ACCOUNT_QUERY_PARAM, String(selectedAccountId));
+      next.set(ACCOUNT_QUERY_PARAM, String(requestAccountId));
       next.set("date", date);
 
       if (demoModeEnabled) {
@@ -2715,14 +2719,18 @@ export function DashboardPage() {
         return;
       }
 
+      const requestToken = journalOpenRequestGate.begin(requestAccountId, "open-journal");
       try {
-        await accountsApi.createJournalEntry(selectedAccountId, {
+        await accountsApi.createJournalEntry(requestAccountId, {
           entry_date: date,
           title: "New Entry",
           mood: "Neutral",
           tags: [],
           body: "",
         });
+        if (!journalOpenRequestGate.isCurrent(requestToken)) {
+          return;
+        }
         setJournalDays((current) => {
           const next = new Set(current);
           next.add(date);
@@ -2736,6 +2744,9 @@ export function DashboardPage() {
 
         navigate(`/journal?${next.toString()}`);
       } catch (err) {
+        if (!journalOpenRequestGate.isCurrent(requestToken)) {
+          return;
+        }
         const message = err instanceof Error ? err.message : "Failed to open journal entry";
         if (compactMode.enabled) {
           setCompactJournalActionError(message);
@@ -2744,7 +2755,7 @@ export function DashboardPage() {
         }
       }
     },
-    [compactMode.enabled, demoModeEnabled, navigate, selectedAccountId],
+    [compactMode.enabled, demoModeEnabled, journalOpenRequestGate, navigate, selectedAccountId],
   );
 
   const handleStandardCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {

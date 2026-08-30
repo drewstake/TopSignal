@@ -218,7 +218,7 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260729_add_expense_suppressions.sql"} in db.params
+    assert {"version": "20260830_harden_supabase_data_api.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -302,4 +302,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260729-v5"} in db.params
+    assert {"version": "schema-20260830-v6"} in db.params

@@ -92,7 +92,7 @@ function computeDirectionMetrics(input: DashboardMetricsInput): DirectionMetrics
   };
 }
 
-function computeStabilityMetrics(
+export function computeStabilityMetrics(
   dailyPnlDays: DashboardMetricsInput["dailyPnlDays"],
   netPnl: number,
   profitPerDay: number,
@@ -145,10 +145,10 @@ function computeStabilityMetrics(
     };
   }
 
-  // Best Day % of Net PnL = Best Day / Net PnL.
-  const bestDayPercentOfNet = (bestDay / netPnl) * 100;
-  // Worst Day % of Net PnL = abs(Worst Day) / Net PnL.
-  const worstDayPercentOfNet = (Math.abs(worstDay) / netPnl) * 100;
+  const netPnlMagnitude = Math.abs(netPnl);
+  // Consistency percentages are magnitudes, including for a net-losing range.
+  const bestDayPercentOfNet = (Math.abs(bestDay) / netPnlMagnitude) * 100;
+  const worstDayPercentOfNet = (Math.abs(worstDay) / netPnlMagnitude) * 100;
 
   return {
     bestDay: metric(bestDay),

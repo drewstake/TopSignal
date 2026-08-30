@@ -33,6 +33,12 @@ MAX_REPORTED_ROW_ERRORS = 100
 MAX_SOURCE_TRADE_ID_CHARS = 255
 MAX_EXCEL_ARCHIVE_ENTRIES = 10_000
 MAX_EXCEL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+# A valid import contains one header row plus at most MAX_TRADE_IMPORT_ROWS.
+# Topstep currently exports 13 columns; 64 leaves ample room for compatible
+# column additions without permitting an XLSX dimension to synthesize millions
+# of empty cells before the row-count guard can run.
+MAX_EXCEL_WORKSHEET_ROWS = MAX_TRADE_IMPORT_ROWS + 1
+MAX_EXCEL_WORKSHEET_COLUMNS = 64
 MAX_FUTURES_QUANTITY = 10_000
 TRADE_IMPORT_PREVIEW_TTL = timedelta(minutes=30)
 TRADE_IMPORT_PREVIEW_RETENTION = timedelta(days=7)
@@ -1824,6 +1830,10 @@ def _read_excel_rows(content: bytes) -> tuple[tuple[str, ...], tuple[_SourceRow,
 
     try:
         worksheet = workbook.active
+        worksheet_rows, worksheet_columns = _bounded_excel_worksheet_dimensions(
+            worksheet.max_row,
+            worksheet.max_column,
+        )
         return _collect_tabular_rows(
             (
                 tuple(
@@ -1836,11 +1846,40 @@ def _read_excel_rows(content: bytes) -> tuple[tuple[str, ...], tuple[_SourceRow,
                     )
                     for cell in row
                 )
-                for row in worksheet.iter_rows(values_only=False)
+                for row in worksheet.iter_rows(
+                    min_row=1,
+                    max_row=worksheet_rows,
+                    min_col=1,
+                    max_col=worksheet_columns,
+                    values_only=False,
+                )
             )
         )
     finally:
         workbook.close()
+
+
+def _bounded_excel_worksheet_dimensions(
+    declared_rows: int | None,
+    declared_columns: int | None,
+) -> tuple[int, int]:
+    if (
+        declared_rows is not None
+        and declared_rows > MAX_EXCEL_WORKSHEET_ROWS
+    ) or (
+        declared_columns is not None
+        and declared_columns > MAX_EXCEL_WORKSHEET_COLUMNS
+    ):
+        raise TradeImportValidationError(
+            "excel_worksheet_too_large",
+            "The XLSX worksheet exceeds the safe import dimensions.",
+        )
+
+    # Some standards-compliant producers omit the optional <dimension> tag.
+    # Explicit fallbacks keep iteration bounded in that case as well.
+    rows = declared_rows or MAX_EXCEL_WORKSHEET_ROWS
+    columns = declared_columns or MAX_EXCEL_WORKSHEET_COLUMNS
+    return rows, columns
 
 
 def _validate_excel_archive(content: bytes) -> None:

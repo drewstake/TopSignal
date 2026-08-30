@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -146,6 +146,9 @@ def refresh_account_trades(
                 window_end,
                 chunk_days=chunk_days,
             ):
+                # Window planning is read-only. Release its transaction before
+                # a potentially slow ProjectX request.
+                db.rollback()
                 fetch_result = _fetch_trade_day_all_pages(
                     client,
                     account_id=account_id,
@@ -156,17 +159,27 @@ def refresh_account_trades(
                 events = fetch_result.events
                 fetched_count += len(events)
                 try:
-                    inserted_count += store_trade_events(db, events, user_id=resolved_user_id)
+                    chunk_inserted_count = store_trade_events(db, events, user_id=resolved_user_id)
                     db.commit()
-                except IntegrityError:
+                except IntegrityError as exc:
                     db.rollback()
+                    if not _is_expected_trade_event_unique_conflict(exc):
+                        raise
                     logger.warning(
-                        "[trades] duplicate event ingest skipped account=%s start=%s end=%s",
+                        "[trades] duplicate race detected; retrying chunk account=%s start=%s end=%s",
                         account_id,
                         chunk_start.isoformat(),
                         chunk_end.isoformat(),
                     )
-                    continue
+                    # The winner's rows are now visible. Rebuild the merge from
+                    # fresh state so valid events in this chunk are not lost.
+                    chunk_inserted_count = store_trade_events(
+                        db,
+                        events,
+                        user_id=resolved_user_id,
+                    )
+                    db.commit()
+                inserted_count += chunk_inserted_count
     except Exception:
         db.rollback()
         raise
@@ -174,6 +187,62 @@ def refresh_account_trades(
     return {
         "fetched_count": fetched_count,
         "inserted_count": inserted_count,
+    }
+
+
+_TRADE_EVENT_UNIQUE_CONSTRAINTS = frozenset(
+    {
+        "uq_projectx_trade_events_account_source_trade",
+        "uq_projectx_trade_events_account_order_ts",
+    }
+)
+_LEGACY_TRADE_EVENT_UNIQUE_CONSTRAINTS = frozenset(
+    {
+        "projectx_trade_events_user_id_account_id_source_trade_id_key",
+        # PostgreSQL preserves the relation/column prefix and truncates this
+        # generated identifier to NAMEDATALEN - 1, dropping the `_key` suffix.
+        "projectx_trade_events_user_id_account_id_order_id_trade_timesta",
+    }
+)
+_TRADE_DAY_SYNC_UNIQUE_CONSTRAINTS = frozenset(
+    {
+        "uq_projectx_trade_day_syncs_account_date",
+        "projectx_trade_day_syncs_user_id_account_id_trade_date_key",
+    }
+)
+
+
+def _is_expected_trade_event_unique_conflict(exc: IntegrityError) -> bool:
+    original = exc.orig
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    if constraint_name in _TRADE_EVENT_UNIQUE_CONSTRAINTS:
+        return True
+    if isinstance(constraint_name, str):
+        legacy_name = constraint_name.lower()
+        legacy_table = str(getattr(diagnostic, "table_name", "") or "").lower()
+        # Older fresh schemas used unnamed UNIQUE clauses. Match only their
+        # exact generated identifiers (including PostgreSQL's exact 63-byte
+        # truncation) and reject a diagnostic naming another table.
+        if legacy_name in _LEGACY_TRADE_EVENT_UNIQUE_CONSTRAINTS and legacy_table in {
+            "",
+            "projectx_trade_events",
+        }:
+            return True
+
+    message = str(original or exc).lower()
+    return any(constraint_name in message for constraint_name in _TRADE_EVENT_UNIQUE_CONSTRAINTS)
+
+
+def _is_expected_trade_day_sync_conflict(exc: IntegrityError) -> bool:
+    if _is_expected_trade_event_unique_conflict(exc):
+        return True
+    diagnostic = getattr(exc.orig, "diag", None)
+    constraint_name = str(getattr(diagnostic, "constraint_name", "") or "").lower()
+    table_name = str(getattr(diagnostic, "table_name", "") or "").lower()
+    return constraint_name in _TRADE_DAY_SYNC_UNIQUE_CONSTRAINTS and table_name in {
+        "",
+        "projectx_trade_day_syncs",
     }
 
 
@@ -271,34 +340,36 @@ def _store_trade_events_orm(
         }
     )
 
-    existing_by_source: dict[tuple[int, str], ProjectXTradeEvent] = {}
-    if source_ids:
-        source_rows = (
-            db.query(ProjectXTradeEvent)
-            .filter(ProjectXTradeEvent.user_id == user_id)
-            .filter(ProjectXTradeEvent.account_id.in_(account_ids))
-            .filter(ProjectXTradeEvent.source_trade_id.in_(source_ids))
-            .all()
-        )
-        existing_by_source = {
-            (int(row.account_id), str(row.source_trade_id)): row
-            for row in source_rows
-            if row.source_trade_id is not None
-        }
-
     min_ts = min(timestamps)
     max_ts = max(timestamps)
-    fallback_rows = (
+    candidate_filters = [
+        ProjectXTradeEvent.trade_timestamp.between(min_ts, max_ts),
+    ]
+    if source_ids:
+        candidate_filters.append(ProjectXTradeEvent.source_trade_id.in_(source_ids))
+
+    # Lock every possible source-id/fallback candidate in deterministic order
+    # and force a refresh of identities already present in this Session. This
+    # makes the import provenance check below observe a concurrent committed
+    # audit row and prevents two writers from applying stale provider state.
+    candidate_rows = (
         db.query(ProjectXTradeEvent)
+        .populate_existing()
         .filter(ProjectXTradeEvent.user_id == user_id)
         .filter(ProjectXTradeEvent.account_id.in_(account_ids))
-        .filter(ProjectXTradeEvent.trade_timestamp >= min_ts)
-        .filter(ProjectXTradeEvent.trade_timestamp <= max_ts)
+        .filter(or_(*candidate_filters))
+        .order_by(ProjectXTradeEvent.id.asc())
+        .with_for_update()
         .all()
     )
+    existing_by_source = {
+        (int(row.account_id), str(row.source_trade_id)): row
+        for row in candidate_rows
+        if row.source_trade_id is not None
+    }
     existing_by_fallback = {
         (int(row.account_id), str(row.order_id), _as_utc(row.trade_timestamp)): row
-        for row in fallback_rows
+        for row in candidate_rows
     }
 
     inserted_count = 0
@@ -822,42 +893,97 @@ def _sync_trade_day_from_provider(
     if fetch_result.is_truncated or not allow_complete:
         sync_status = _SYNC_STATUS_PARTIAL
 
+    marker_kwargs = {
+        "user_id": user_id,
+        "account_id": account_id,
+        "trade_day": trade_day,
+        "window_start": fetch_start,
+        "window_end": fetch_end,
+        "last_synced_at": last_synced_at,
+    }
+    persist_kwargs = {**marker_kwargs, "sync_status": sync_status}
     try:
-        store_trade_events(db, fetch_result.events, user_id=user_id)
-        db.flush()
-        row_count = _count_trade_events_for_day(
+        _persist_trade_day_fetch(
             db,
-            user_id=user_id,
-            account_id=account_id,
-            trade_day=trade_day,
-            window_start=fetch_start,
-            window_end=fetch_end,
+            events=fetch_result.events,
+            **persist_kwargs,
         )
-        _upsert_trade_day_sync(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            trade_day=trade_day,
-            window_start=fetch_start,
-            window_end=fetch_end,
-            sync_status=sync_status,
-            last_synced_at=last_synced_at,
-            row_count=row_count,
-        )
-        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if not _is_expected_trade_day_sync_conflict(exc):
+            _mark_trade_day_partial(db, **marker_kwargs)
+            _log_trade_day_sync_failure(exc, phase="local_persist")
+            raise
+
+        # A concurrent cache miss may have committed the same events or day
+        # marker after this transaction read the empty state. Rebuild from the
+        # now-committed state instead of discarding the entire fetched day.
+        try:
+            _persist_trade_day_fetch(
+                db,
+                events=fetch_result.events,
+                **persist_kwargs,
+            )
+        except Exception as retry_exc:
+            db.rollback()
+            if (
+                isinstance(retry_exc, IntegrityError)
+                and _is_expected_trade_day_sync_conflict(retry_exc)
+                and _trade_day_has_covering_complete_marker(
+                    db,
+                    user_id=user_id,
+                    account_id=account_id,
+                    trade_day=trade_day,
+                    window_start=fetch_start,
+                    window_end=fetch_end,
+                )
+            ):
+                db.rollback()
+                return
+            _mark_trade_day_partial(db, **marker_kwargs)
+            _log_trade_day_sync_failure(retry_exc, phase="local_persist_retry")
+            raise
     except Exception as exc:
         db.rollback()
-        _mark_trade_day_partial(
-            db,
-            user_id=user_id,
-            account_id=account_id,
-            trade_day=trade_day,
-            window_start=fetch_start,
-            window_end=fetch_end,
-            last_synced_at=last_synced_at,
-        )
+        _mark_trade_day_partial(db, **marker_kwargs)
         _log_trade_day_sync_failure(exc, phase="local_persist")
         raise
+
+
+def _persist_trade_day_fetch(
+    db: Session,
+    *,
+    events: list[dict[str, Any]],
+    user_id: str,
+    account_id: int,
+    trade_day: date,
+    window_start: datetime,
+    window_end: datetime,
+    sync_status: str,
+    last_synced_at: datetime,
+) -> None:
+    store_trade_events(db, events, user_id=user_id)
+    db.flush()
+    row_count = _count_trade_events_for_day(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        trade_day=trade_day,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    _upsert_trade_day_sync(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        trade_day=trade_day,
+        window_start=window_start,
+        window_end=window_end,
+        sync_status=sync_status,
+        last_synced_at=last_synced_at,
+        row_count=row_count,
+    )
+    db.commit()
 
 
 def _log_trade_day_sync_failure(exc: Exception, *, phase: str) -> None:
@@ -885,25 +1011,61 @@ def _fetch_trade_day_all_pages(
     end: datetime,
     limit: int,
 ) -> _DayFetchResult:
+    return fetch_trade_history_all_pages(
+        client,
+        account_id=account_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+
+
+def fetch_trade_history_all_pages(
+    client: ProjectXClient,
+    *,
+    account_id: int,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    max_pages: int = _MAX_DAY_SYNC_PAGES,
+    require_valid_collection: bool = False,
+) -> _DayFetchResult:
+    """Fetch a bounded, unambiguous Trade/search result across every page."""
+
     page_limit = max(1, int(limit))
+    page_cap = max(1, int(max_pages))
     offset = 0
     page_count = 0
     events: list[dict[str, Any]] = []
     seen_signatures: set[tuple[str, ...]] = set()
+    seen_event_keys: set[str] = set()
 
     while True:
+        fetch_kwargs: dict[str, Any] = {
+            "account_id": account_id,
+            "start": start,
+            "end": end,
+            "limit": page_limit,
+            "offset": offset,
+        }
+        if require_valid_collection:
+            fetch_kwargs["require_valid_collection"] = True
         page_rows = client.fetch_trade_history(
-            account_id=account_id,
-            start=start,
-            end=end,
-            limit=page_limit,
-            offset=offset,
+            **fetch_kwargs,
         )
         page_count += 1
         page_size = len(page_rows)
         signature = _trade_page_signature(page_rows)
+        page_keys = set(signature or ())
+        page_has_duplicate_keys = signature is not None and len(page_keys) != len(signature)
+        page_overlaps_prior_results = offset > 0 and bool(page_keys & seen_event_keys)
 
-        if page_size == page_limit and offset > 0 and signature is not None and signature in seen_signatures:
+        if (
+            page_size > page_limit
+            or page_has_duplicate_keys
+            or page_overlaps_prior_results
+            or (offset > 0 and signature is not None and signature in seen_signatures)
+        ):
             logger.warning(
                 "[trades] warning truncation account=%s day=%s count=%s limit=%s, not marking complete",
                 account_id,
@@ -921,6 +1083,7 @@ def _fetch_trade_day_all_pages(
 
         if signature is not None:
             seen_signatures.add(signature)
+            seen_event_keys.update(signature)
 
         events.extend(page_rows)
 
@@ -928,7 +1091,7 @@ def _fetch_trade_day_all_pages(
             break
 
         offset += page_limit
-        if page_count >= _MAX_DAY_SYNC_PAGES:
+        if page_count >= page_cap:
             logger.warning(
                 "[trades] warning truncation account=%s day=%s count=%s limit=%s, not marking complete",
                 account_id,
@@ -1005,14 +1168,18 @@ def _get_trade_day_sync(
     user_id: str,
     account_id: int,
     trade_day: date,
+    for_update: bool = False,
 ) -> ProjectXTradeDaySync | None:
-    return (
+    query = (
         db.query(ProjectXTradeDaySync)
+        .populate_existing()
         .filter(ProjectXTradeDaySync.user_id == user_id)
         .filter(ProjectXTradeDaySync.account_id == account_id)
         .filter(ProjectXTradeDaySync.trade_date == trade_day)
-        .one_or_none()
     )
+    if for_update:
+        query = query.with_for_update()
+    return query.one_or_none()
 
 
 def _upsert_trade_day_sync(
@@ -1027,7 +1194,16 @@ def _upsert_trade_day_sync(
     last_synced_at: datetime,
     row_count: int | None = None,
 ) -> None:
-    sync_row = _get_trade_day_sync(db, user_id=user_id, account_id=account_id, trade_day=trade_day)
+    # Serialize completeness decisions for an existing day marker. The fresh
+    # read after lock acquisition prevents a blocked PARTIAL writer from
+    # overwriting a COMPLETE writer that committed while it waited.
+    sync_row = _get_trade_day_sync(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        trade_day=trade_day,
+        for_update=True,
+    )
     if sync_row is None:
         sync_row = ProjectXTradeDaySync(
             user_id=user_id,
@@ -1041,6 +1217,45 @@ def _upsert_trade_day_sync(
             updated_at=last_synced_at,
         )
         db.add(sync_row)
+        return
+
+    # Completeness is monotonic for a covered window. A narrower/partial
+    # refresh or a losing concurrent request must not downgrade a marker that
+    # already proves the requested range is complete. An equal successful
+    # COMPLETE refresh is different: advance its freshness and observed count
+    # so yesterday does not refetch forever.
+    existing_covers_incoming = _sync_row_is_complete_for_window(
+        sync_row,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    if existing_covers_incoming:
+        incoming_covers_existing = (
+            sync_status == _SYNC_STATUS_COMPLETE
+            and sync_row.window_start is not None
+            and sync_row.window_end is not None
+            and _as_utc(window_start) <= _as_utc(sync_row.window_start)
+            and _as_utc(window_end) >= _as_utc(sync_row.window_end)
+        )
+        if not incoming_covers_existing:
+            return
+
+        current_last_synced_at = (
+            _as_utc(sync_row.last_synced_at)
+            if sync_row.last_synced_at is not None
+            else None
+        )
+        incoming_last_synced_at = _as_utc(last_synced_at)
+        if current_last_synced_at is None or incoming_last_synced_at > current_last_synced_at:
+            sync_row.last_synced_at = last_synced_at
+        sync_row.row_count = row_count
+        current_updated_at = (
+            _as_utc(sync_row.updated_at)
+            if sync_row.updated_at is not None
+            else None
+        )
+        if current_updated_at is None or incoming_last_synced_at > current_updated_at:
+            sync_row.updated_at = last_synced_at
         return
 
     sync_row.sync_status = sync_status
@@ -1062,6 +1277,16 @@ def _mark_trade_day_partial(
     last_synced_at: datetime,
 ) -> None:
     try:
+        if _trade_day_has_covering_complete_marker(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
+        ):
+            db.rollback()
+            return
         row_count = _count_trade_events_for_day(
             db,
             user_id=user_id,
@@ -1084,6 +1309,28 @@ def _mark_trade_day_partial(
         db.commit()
     except Exception:
         db.rollback()
+
+
+def _trade_day_has_covering_complete_marker(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    trade_day: date,
+    window_start: datetime,
+    window_end: datetime,
+) -> bool:
+    sync_row = _get_trade_day_sync(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        trade_day=trade_day,
+    )
+    return _sync_row_is_complete_for_window(
+        sync_row,
+        window_start=window_start,
+        window_end=window_end,
+    )
 
 
 def _single_trading_day_request_date(*, start: datetime | None, end: datetime | None) -> date | None:
@@ -1162,34 +1409,54 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
     if row.import_batch_id is not None and event.get("import_batch_id") is None:
         return
 
+    incoming_is_voided = _event_is_voided(event)
+    incoming_is_correction = _event_is_explicit_correction(event)
+    incoming_pnl = event.get("pnl")
+    is_provider_update = event.get("import_batch_id") is None
+    if (
+        is_provider_update
+        and not incoming_is_voided
+        and not incoming_is_correction
+        and row.pnl is not None
+        and incoming_pnl is None
+    ):
+        # Trade/search can temporarily replay an older execution shape without
+        # its later realized P&L/status. Completeness is monotonic unless the
+        # provider explicitly voids or corrects the execution.
+        return
+
     if "user_id" in event and event["user_id"] is not None:
         row.user_id = str(event["user_id"])
     row.account_id = int(event["account_id"])
     row.contract_id = str(event["contract_id"])
-    row.symbol = event.get("symbol")
+    if event.get("symbol") is not None or incoming_is_correction or incoming_is_voided:
+        row.symbol = event.get("symbol")
     row.side = str(event.get("side") or "UNKNOWN")
     row.size = float(event.get("size") or 0.0)
     row.price = float(event.get("price") or 0.0)
     row.trade_timestamp = _as_utc(event["timestamp"])
     row.fees = float(event.get("fees") or 0.0)
-    row.commissions = (
-        float(event["commissions"])
-        if event.get("commissions") is not None
-        else None
-    )
+    if event.get("commissions") is not None:
+        row.commissions = float(event["commissions"])
+    elif incoming_is_correction or incoming_is_voided:
+        row.commissions = None
     row.fee_scope = str(event.get("fee_scope") or "per_side")
-    row.pnl = float(event["pnl"]) if event.get("pnl") is not None else None
-    row.trade_date = event.get("trade_date")
-    row.entry_timestamp = (
-        _as_utc(event["entry_timestamp"])
-        if event.get("entry_timestamp") is not None
-        else None
-    )
-    row.entry_price = (
-        float(event["entry_price"])
-        if event.get("entry_price") is not None
-        else None
-    )
+    if incoming_pnl is not None:
+        row.pnl = float(incoming_pnl)
+    elif incoming_is_correction or incoming_is_voided:
+        row.pnl = None
+    if event.get("trade_date") is not None:
+        row.trade_date = event["trade_date"]
+    elif incoming_is_correction or incoming_is_voided:
+        row.trade_date = None
+    if event.get("entry_timestamp") is not None:
+        row.entry_timestamp = _as_utc(event["entry_timestamp"])
+    elif incoming_is_correction or incoming_is_voided:
+        row.entry_timestamp = None
+    if event.get("entry_price") is not None:
+        row.entry_price = float(event["entry_price"])
+    elif incoming_is_correction or incoming_is_voided:
+        row.entry_price = None
     if event.get("import_batch_id") is not None:
         row.import_batch_id = int(event["import_batch_id"])
     row.order_id = str(event["order_id"])
@@ -1198,15 +1465,46 @@ def _apply_event_to_trade_row(row: ProjectXTradeEvent, event: dict[str, Any]) ->
         row.source_trade_id = source_trade_id
     status = _normalized_optional_text(event.get("status"))
     if status:
-        row.status = status
+        existing_status = _normalized_optional_text(row.status)
+        if (
+            incoming_is_correction
+            or incoming_is_voided
+            or not _trade_status_is_final(existing_status)
+            or _trade_status_is_final(status)
+        ):
+            row.status = status
     raw_payload = event.get("raw_payload")
     if isinstance(raw_payload, dict):
         raw_payload = dict(raw_payload)
     else:
         raw_payload = {}
-    if _event_is_voided(event):
+    if incoming_is_voided:
         raw_payload["voided"] = True
     row.raw_payload = raw_payload
+
+
+def _trade_status_is_final(value: str | None) -> bool:
+    return (value or "").strip().upper() in {
+        "CLOSED",
+        "COMPLETE",
+        "COMPLETED",
+        "FILLED",
+        "FINAL",
+        "IMPORTED",
+        "SETTLED",
+    }
+
+
+def _event_is_explicit_correction(event: dict[str, Any]) -> bool:
+    if _is_truthy(event.get("correction")) or _is_truthy(event.get("is_correction")):
+        return True
+    raw_payload = event.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        return False
+    return any(
+        _is_truthy(raw_payload.get(key))
+        for key in ("correction", "isCorrection", "is_correction")
+    )
 
 
 def _event_to_insert_values(event: dict[str, Any], *, user_id: str) -> dict[str, Any]:

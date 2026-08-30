@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -232,6 +233,213 @@ def test_refresh_account_trades_pages_through_provider_results(monkeypatch):
         engine.dispose()
 
 
+def test_stale_provider_event_cannot_downgrade_completed_trade():
+    engine, db = _make_session()
+    try:
+        account_id = 13032509
+        timestamp = _dt(3, 14, 10)
+        completed = _event(account_id, timestamp, "SRC-COMPLETE")
+        completed.update(
+            {
+                "pnl": 125.0,
+                "fees": 2.5,
+                "status": "FILLED",
+                "raw_payload": {"state": "completed"},
+            }
+        )
+        projectx_trades_module.store_trade_events(
+            db,
+            [completed],
+            user_id=DEFAULT_USER_ID,
+        )
+        db.commit()
+
+        stale = dict(completed)
+        stale.update(
+            {
+                "contract_id": "STALE-CONTRACT",
+                "pnl": None,
+                "fees": 0.0,
+                "status": "PENDING",
+                "raw_payload": {"state": "older-page"},
+            }
+        )
+        inserted = projectx_trades_module.store_trade_events(
+            db,
+            [stale],
+            user_id=DEFAULT_USER_ID,
+        )
+        db.commit()
+
+        stored = db.query(ProjectXTradeEvent).one()
+        assert inserted == 0
+        assert stored.contract_id == completed["contract_id"]
+        assert float(stored.pnl) == 125.0
+        assert float(stored.fees) == 2.5
+        assert stored.status == "FILLED"
+        assert stored.raw_payload == {"state": "completed"}
+    finally:
+        db.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__],
+        )
+        engine.dispose()
+
+
+def test_explicit_provider_correction_can_clear_completed_pnl():
+    engine, db = _make_session()
+    try:
+        account_id = 13032510
+        timestamp = _dt(3, 14, 10)
+        completed = _event(account_id, timestamp, "SRC-CORRECTION")
+        projectx_trades_module.store_trade_events(
+            db,
+            [completed],
+            user_id=DEFAULT_USER_ID,
+        )
+        db.commit()
+
+        correction = dict(completed)
+        correction.update(
+            {
+                "pnl": None,
+                "status": "PENDING",
+                "correction": True,
+                "raw_payload": {"isCorrection": True},
+            }
+        )
+        projectx_trades_module.store_trade_events(
+            db,
+            [correction],
+            user_id=DEFAULT_USER_ID,
+        )
+        db.commit()
+
+        stored = db.query(ProjectXTradeEvent).one()
+        assert stored.pnl is None
+        assert stored.status == "PENDING"
+    finally:
+        db.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__],
+        )
+        engine.dispose()
+
+
+def test_refresh_retries_expected_unique_race_without_losing_or_overreporting_chunk():
+    engine, db = _make_session()
+    try:
+        account_id = 13032507
+        start = _dt(3, 14, 0)
+        end = _dt(3, 16, 0)
+        client = _RecordingClient([_event(account_id, start + timedelta(minutes=10), "SRC-RACE")])
+        real_commit = db.commit
+        commit_calls = 0
+
+        class Diagnostic:
+            constraint_name = "uq_projectx_trade_events_account_source_trade"
+
+        class UniqueRace(Exception):
+            diag = Diagnostic()
+
+        def commit_with_one_unique_race():
+            nonlocal commit_calls
+            commit_calls += 1
+            if commit_calls == 1:
+                raise IntegrityError("insert", {}, UniqueRace("duplicate"))
+            real_commit()
+
+        db.commit = commit_with_one_unique_race
+
+        result = refresh_account_trades(
+            db,
+            client,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            start=start,
+            end=end,
+        )
+
+        assert result == {"fetched_count": 1, "inserted_count": 1}
+        assert commit_calls == 2
+        assert db.query(ProjectXTradeEvent).filter(ProjectXTradeEvent.account_id == account_id).count() == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_refresh_propagates_non_unique_integrity_failure():
+    engine, db = _make_session()
+    try:
+        account_id = 13032508
+        start = _dt(3, 14, 0)
+        client = _RecordingClient([_event(account_id, start + timedelta(minutes=10), "SRC-BAD")])
+
+        class Diagnostic:
+            constraint_name = "projectx_trade_events_whole_size_check"
+
+        class CheckFailure(Exception):
+            diag = Diagnostic()
+
+        db.commit = lambda: (_ for _ in ()).throw(IntegrityError("insert", {}, CheckFailure("bad size")))
+
+        with pytest.raises(IntegrityError):
+            refresh_account_trades(
+                db,
+                client,
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                start=start,
+                end=_dt(3, 16, 0),
+            )
+
+        assert db.query(ProjectXTradeEvent).count() == 0
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "constraint_name",
+    [
+        "projectx_trade_events_user_id_account_id_source_trade_id_key",
+        "projectx_trade_events_user_id_account_id_order_id_trade_timesta",
+    ],
+)
+def test_legacy_autogenerated_trade_event_unique_constraints_are_recognized(constraint_name):
+    class Diagnostic:
+        table_name = "projectx_trade_events"
+
+        def __init__(self, name):
+            self.constraint_name = name
+
+    class LegacyUnique(Exception):
+        def __init__(self, name):
+            super().__init__("duplicate")
+            self.diag = Diagnostic(name)
+
+    exc = IntegrityError("insert", {}, LegacyUnique(constraint_name))
+
+    assert projectx_trades_module._is_expected_trade_event_unique_conflict(exc) is True
+
+
+def test_legacy_trade_constraint_name_on_another_table_is_not_treated_as_duplicate():
+    class Diagnostic:
+        table_name = "unrelated_events"
+        constraint_name = "projectx_trade_events_user_id_account_id_order_id_trade_timesta"
+
+    class UnrelatedFailure(Exception):
+        diag = Diagnostic()
+
+    exc = IntegrityError("insert", {}, UnrelatedFailure("unrelated constraint"))
+
+    assert projectx_trades_module._is_expected_trade_event_unique_conflict(exc) is False
+
+
 def test_single_trading_day_request_date_returns_day_when_start_end_match():
     day = _single_trading_day_request_date(
         start=_dt(3, 14, 0),
@@ -327,6 +535,60 @@ def test_should_refresh_yesterday_when_sync_is_stale(monkeypatch):
     should_refresh = _should_refresh_yesterday(row, now_utc=_dt(20, 12, 0))
 
     assert should_refresh is True
+
+
+def test_equal_complete_refresh_advances_stale_marker_and_row_count(monkeypatch):
+    monkeypatch.setenv("PROJECTX_YESTERDAY_REFRESH_MINUTES", "30")
+    engine, db = _make_session()
+    try:
+        account_id = 13032452
+        trade_day = date(2026, 2, 19)
+        window_start, window_end = trading_day_bounds_utc(trade_day)
+        db.add(
+            ProjectXTradeDaySync(
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                trade_date=trade_day,
+                window_start=window_start,
+                window_end=window_end,
+                sync_status="complete",
+                last_synced_at=_dt(20, 10, 0),
+                row_count=99,
+                updated_at=_dt(20, 10, 0),
+            )
+        )
+        db.commit()
+
+        projectx_trades_module._upsert_trade_day_sync(
+            db,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
+            sync_status="complete",
+            last_synced_at=_dt(20, 12, 0),
+            row_count=3,
+        )
+        db.commit()
+
+        marker = db.query(ProjectXTradeDaySync).one()
+        assert _as_utc(marker.last_synced_at) == _dt(20, 12, 0)
+        assert _as_utc(marker.updated_at) == _dt(20, 12, 0)
+        assert marker.row_count == 3
+        assert _should_refresh_yesterday(
+            marker,
+            now_utc=_dt(20, 12, 1),
+            window_start=window_start,
+            window_end=window_end,
+        ) is False
+    finally:
+        db.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__],
+        )
+        engine.dispose()
 
 
 def test_ensure_trade_cache_records_trading_day_window_and_reuses_complete_cache(monkeypatch):
@@ -532,4 +794,204 @@ def test_ensure_trade_cache_refetches_complete_rows_without_window_bounds(monkey
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
+def test_trade_day_unique_race_retries_from_winner_state_without_downgrading_complete(
+    tmp_path,
+):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trade-day-race.db'}")
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[ProjectXTradeEvent.__table__, ProjectXTradeDaySync.__table__],
+    )
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    loser = SessionLocal()
+    try:
+        account_id = 13032550
+        trade_day = date(2026, 3, 2)
+        window_start, window_end = trading_day_bounds_utc(trade_day)
+        event = _event(account_id, window_start + timedelta(minutes=30), "SRC-CONCURRENT")
+
+        class ConcurrentWinnerClient(_RecordingClient):
+            def fetch_trade_history(self, *args, **kwargs):
+                with SessionLocal() as winner:
+                    projectx_trades_module.store_trade_events(
+                        winner,
+                        [event],
+                        user_id=DEFAULT_USER_ID,
+                    )
+                    projectx_trades_module._upsert_trade_day_sync(
+                        winner,
+                        user_id=DEFAULT_USER_ID,
+                        account_id=account_id,
+                        trade_day=trade_day,
+                        window_start=window_start,
+                        window_end=window_end,
+                        sync_status="complete",
+                        last_synced_at=_dt(20, 12, 0),
+                        row_count=1,
+                    )
+                    winner.commit()
+                return super().fetch_trade_history(*args, **kwargs)
+
+        class Diagnostic:
+            table_name = "projectx_trade_events"
+            constraint_name = "uq_projectx_trade_events_account_source_trade"
+
+        class UniqueRace(Exception):
+            diag = Diagnostic()
+
+        real_flush = loser.flush
+        flush_calls = 0
+
+        def flush_with_one_race(*args, **kwargs):
+            nonlocal flush_calls
+            flush_calls += 1
+            if flush_calls == 1:
+                raise IntegrityError("insert", {}, UniqueRace("concurrent duplicate"))
+            return real_flush(*args, **kwargs)
+
+        loser.flush = flush_with_one_race
+        client = ConcurrentWinnerClient([event])
+
+        projectx_trades_module._sync_trade_day_from_provider(
+            loser,
+            client_factory=lambda: client,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
+            allow_complete=False,
+        )
+
+        with SessionLocal() as verifier:
+            marker = verifier.query(ProjectXTradeDaySync).one()
+            assert marker.sync_status == "complete"
+            assert marker.row_count == 1
+            assert verifier.query(ProjectXTradeEvent).count() == 1
+        assert flush_calls == 2
+    finally:
+        loser.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__],
+        )
+        engine.dispose()
+
+
+def test_partial_writer_reloads_complete_marker_before_update(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trade-marker-lock.db'}")
+    Base.metadata.create_all(bind=engine, tables=[ProjectXTradeDaySync.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    loser = SessionLocal()
+    try:
+        account_id = 13032551
+        trade_day = date(2026, 3, 2)
+        window_start, window_end = trading_day_bounds_utc(trade_day)
+        loser.add(
+            ProjectXTradeDaySync(
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                trade_date=trade_day,
+                window_start=window_start,
+                window_end=window_end,
+                sync_status="partial",
+                last_synced_at=_dt(20, 10, 0),
+            )
+        )
+        loser.commit()
+        original_get = projectx_trades_module._get_trade_day_sync
+        winner_committed = False
+
+        def get_after_winner(db, **kwargs):
+            nonlocal winner_committed
+            if db is loser and kwargs.get("for_update") and not winner_committed:
+                winner_committed = True
+                db.rollback()
+                with SessionLocal() as winner:
+                    marker = winner.query(ProjectXTradeDaySync).one()
+                    marker.sync_status = "complete"
+                    marker.last_synced_at = _dt(20, 11, 0)
+                    winner.commit()
+            return original_get(db, **kwargs)
+
+        monkeypatch.setattr(
+            projectx_trades_module,
+            "_get_trade_day_sync",
+            get_after_winner,
+        )
+
+        projectx_trades_module._upsert_trade_day_sync(
+            loser,
+            user_id=DEFAULT_USER_ID,
+            account_id=account_id,
+            trade_day=trade_day,
+            window_start=window_start,
+            window_end=window_end,
+            sync_status="partial",
+            last_synced_at=_dt(20, 12, 0),
+            row_count=0,
+        )
+        loser.commit()
+
+        with SessionLocal() as verifier:
+            marker = verifier.query(ProjectXTradeDaySync).one()
+            assert marker.sync_status == "complete"
+            assert _as_utc(marker.last_synced_at) == _dt(20, 11, 0)
+    finally:
+        loser.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__])
+        engine.dispose()
+
+
+def test_provider_failure_does_not_downgrade_covering_complete_marker(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'trade-provider-failure.db'}")
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[ProjectXTradeEvent.__table__, ProjectXTradeDaySync.__table__],
+    )
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+    try:
+        account_id = 13032552
+        trade_day = date(2026, 3, 2)
+        window_start, window_end = trading_day_bounds_utc(trade_day)
+        db.add(
+            ProjectXTradeDaySync(
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                trade_date=trade_day,
+                window_start=window_start,
+                window_end=window_end,
+                sync_status="complete",
+                last_synced_at=_dt(20, 11, 0),
+                row_count=1,
+            )
+        )
+        db.commit()
+
+        with pytest.raises(ProjectXClientError):
+            projectx_trades_module._sync_trade_day_from_provider(
+                db,
+                client_factory=lambda: _FailingClient(),
+                user_id=DEFAULT_USER_ID,
+                account_id=account_id,
+                trade_day=trade_day,
+                window_start=window_start,
+                window_end=window_end,
+                allow_complete=True,
+            )
+
+        db.expire_all()
+        marker = db.query(ProjectXTradeDaySync).one()
+        assert marker.sync_status == "complete"
+        assert marker.row_count == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__],
+        )
         engine.dispose()

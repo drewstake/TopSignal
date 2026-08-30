@@ -132,6 +132,7 @@ Current migration list:
 20260725_harden_topstep_trade_imports.sql
 20260725_live_account_archiving.sql
 20260729_add_expense_suppressions.sql
+20260830_harden_supabase_data_api.sql
 ```
 
 `20260711_add_databento_historical_market_data.sql` remains in the checksummed
@@ -190,7 +191,8 @@ $migrations = @(
   "20260724_restore_express_trade_data_source.sql",
   "20260725_harden_topstep_trade_imports.sql",
   "20260725_live_account_archiving.sql",
-  "20260729_add_expense_suppressions.sql"
+  "20260729_add_expense_suppressions.sql",
+  "20260830_harden_supabase_data_api.sql"
 )
 
 foreach ($name in $migrations) {
@@ -222,6 +224,37 @@ migrations explicitly when schema-related code changes:
 npm run db:migrate
 npm run db:check
 ```
+
+## Supabase Data API Security
+
+TopSignal's browser client uses Supabase for authentication only. Application
+tables are read and written through FastAPI, so the Supabase Data API should be
+disabled for the project in **Dashboard > Integrations > Data API**.
+
+`20260830_harden_supabase_data_api.sql` provides defense in depth for projects
+that keep the Data API enabled: it revokes `anon` and `authenticated` access to
+existing tables, sequences, and functions in `public`, and removes the legacy
+automatic default grants for future objects. It also removes equivalent
+`PUBLIC` grants, which browser roles inherit. It does not alter the `auth` or
+`storage` schemas, so Supabase Auth and journal-image Storage remain available.
+PostgreSQL's built-in `PUBLIC` execute default for new functions is global, so
+the migration also removes that default for functions created later by the
+migration/object-owner roles. Existing functions outside `public` are unchanged;
+future non-public functions must receive their intended execute grants explicitly.
+
+After applying migrations, verify the live project has no application-table
+grants for browser roles:
+
+```sql
+select grantee, table_name, privilege_type
+from information_schema.role_table_grants
+where table_schema = 'public'
+  and grantee in ('anon', 'authenticated')
+order by grantee, table_name, privilege_type;
+```
+
+The query must return no rows. Also keep the Data API disabled unless a future
+feature deliberately exposes a narrowly scoped table with tested RLS policies.
 
 ## Verifying The Schema
 

@@ -74,6 +74,11 @@ _ARRAY_DTYPES: Mapping[str, np.dtype[Any]] = {
 }
 _UINT64_MAX = (1 << 64) - 1
 _SERIES_VALIDATION_CHUNK_ROWS = 1_000_000
+# Keep the on-disk cache layout below legacy Windows MAX_PATH even when pytest,
+# a workspace manager, or TOPSIGNAL_DATABENTO_CACHE_DIR adds a deep prefix. The
+# complete SHA-256 remains in both manifests and is always used for validation;
+# only the directory token is shortened.
+_SERIES_PATH_FINGERPRINT_LENGTH = 20
 # The hot LRU is a hard working-set guard, so charge conservatively above the
 # measured ~535-byte Python expansion rather than letting container overhead
 # put the process beyond the configured byte ceiling.
@@ -2951,7 +2956,6 @@ def _ensure_series(
     key = f"{root_symbol}:{timeframe_key(unit, unit_number)}"
     series = manifest.setdefault("series", {})
     existing = series.get(key)
-    existing_is_invalid = False
     if isinstance(existing, dict):
         series_dir = version_dir / str(existing.get("path") or "")
         if _series_files_complete(
@@ -2960,7 +2964,6 @@ def _ensure_series(
             expected_source_fingerprint=str(manifest.get("source_fingerprint") or ""),
         ):
             return existing
-        existing_is_invalid = True
     if (unit, int(unit_number)) != ("minute", 1):
         _ensure_series(version_dir, manifest, root_symbol, "minute", 1)
     fingerprint = _series_fingerprint(
@@ -2970,12 +2973,14 @@ def _ensure_series(
         Path("arrays")
         / f"root={root_symbol}"
         / f"timeframe={timeframe_key(unit, unit_number)}"
-        / f"fingerprint={fingerprint}"
+        / f"fingerprint={fingerprint[:_SERIES_PATH_FINGERPRINT_LENGTH]}"
     )
     target = version_dir / relative
-    if target.exists() and (
-        existing_is_invalid or not _series_files_complete(target)
-    ):
+    # A valid manifest entry returned above. Anything already occupying this
+    # shortened path is therefore stale, incomplete, or an extraordinarily
+    # unlikely prefix collision; rebuild it and validate the full fingerprint
+    # from metadata instead of reusing it by path alone.
+    if target.exists():
         shutil.rmtree(target)
     if not target.exists():
         temporary = (

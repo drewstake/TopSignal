@@ -1,8 +1,9 @@
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -10,7 +11,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 from app.db import Base
 from app.models import BotConfig, ProjectXMarketCandle
-from app.services.bot_service import _is_contract_allowed, fetch_and_store_candles
+from app.services import bot_candle_acquisition, bot_service
+from app.services.bot_service import SignalResult, _is_contract_allowed, fetch_and_store_candles
 
 
 USER_ID = "00000000-0000-0000-0000-000000000000"
@@ -154,3 +156,72 @@ def test_rollover_contract_must_match_actual_execution_allowlist():
 
     config.allowed_contracts = ["F.US.MNQ"]
     assert _is_contract_allowed(config, contract_id=ACTIVE_CONTRACT, symbol="F.US.MNQ") is True
+
+
+def test_topbot_commits_source_read_transaction_before_next_provider_capable_source(
+    db_session,
+    monkeypatch,
+):
+    config = SimpleNamespace(
+        id=1,
+        account_id=9001,
+        strategy_type="topbot_adaptive",
+        strategy_params={},
+        fast_period=9,
+        slow_period=21,
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        order_size=1,
+    )
+    strategy_params = {
+        "source_strategies": ["donchian_breakout", "support_resistance"],
+        "source_strategy_params": {},
+    }
+    provider_entry_transaction_states: list[bool] = []
+
+    monkeypatch.setattr(bot_service, "fetch_and_store_candles", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(bot_service, "_normalize_strategy_params", lambda _name, params: dict(params or {}))
+    monkeypatch.setattr(
+        bot_service,
+        "_normalized_strategy_period_values",
+        lambda _name, *, fast_period, slow_period: (fast_period, slow_period),
+    )
+    monkeypatch.setattr(bot_service, "_validate_strategy_configuration", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        bot_service,
+        "dispatch_strategy_evaluator",
+        lambda *_args, **_kwargs: SignalResult(
+            action="HOLD",
+            reason="ensemble hold",
+            candle_timestamp=None,
+            price=None,
+            raw_payload={},
+        ),
+    )
+
+    def fake_source_acquisition(db, *, user_id, config, client):
+        del user_id, client
+        if config.strategy_type == "donchian_breakout":
+            db.execute(text("select 1"))
+            assert db.in_transaction() is True
+        else:
+            provider_entry_transaction_states.append(db.in_transaction())
+        return [], SignalResult(
+            action="HOLD",
+            reason="source hold",
+            candle_timestamp=None,
+            price=None,
+            raw_payload={},
+        )
+
+    monkeypatch.setattr(bot_candle_acquisition, "acquire_and_evaluate_strategy", fake_source_acquisition)
+
+    bot_candle_acquisition._acquire_and_evaluate_topbot(
+        db_session,
+        user_id=USER_ID,
+        config=config,
+        client=object(),
+        strategy_params=strategy_params,
+    )
+
+    assert provider_entry_transaction_states == [False]

@@ -13,12 +13,25 @@ ExpenseAccountType = Literal["no_activation", "standard", "practice"]
 ExpensePlanSize = Literal["50k", "100k", "150k"]
 ExpenseRange = Literal["week", "month", "ytd", "all_time"]
 WeekStart = Literal["monday", "sunday"]
+MIN_POSTGRES_INTEGER = -(2**31)
+MAX_POSTGRES_INTEGER = 2**31 - 1
+MIN_POSTGRES_MONEY = Decimal("-21474836.48")
+MAX_POSTGRES_MONEY = Decimal("21474836.47")
 
 
 class ExpenseCreateIn(BaseModel):
     expense_date: date
-    amount: Decimal | None = None
-    amount_cents: int | None = None
+    amount: Decimal | None = Field(
+        default=None,
+        ge=MIN_POSTGRES_MONEY,
+        le=MAX_POSTGRES_MONEY,
+        allow_inf_nan=False,
+    )
+    amount_cents: int | None = Field(
+        default=None,
+        ge=MIN_POSTGRES_INTEGER,
+        le=MAX_POSTGRES_INTEGER,
+    )
     category: ExpenseCategory
     provider: str = "topstep"
     account_id: int | None = None
@@ -47,7 +60,11 @@ class ExpenseCreateIn(BaseModel):
 
 class ExpenseUpdateIn(BaseModel):
     expense_date: date | None = None
-    amount_cents: int | None = None
+    amount_cents: int | None = Field(
+        default=None,
+        ge=MIN_POSTGRES_INTEGER,
+        le=MAX_POSTGRES_INTEGER,
+    )
     category: ExpenseCategory | None = None
     account_id: int | None = None
     account_type: ExpenseAccountType | None = None

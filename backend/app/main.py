@@ -4,11 +4,12 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from threading import Event, Lock
+from threading import BoundedSemaphore, Event, Lock
 from time import perf_counter
 from typing import NamedTuple
 from uuid import uuid4
@@ -21,11 +22,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, inspect, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from .auth import (
     AuthError,
+    AuthUnavailable,
     auth_required,
     authenticate_request_token,
     bind_authenticated_user,
@@ -96,6 +98,7 @@ from .metrics_schemas import (
 )
 from .models import Account, Expense, ExpenseSuppression, Payout, ProjectXMarketCandle, ProjectXTradeEvent, Trade
 from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTotalsOut, PayoutUpdateIn
+from .request_limits import RequestBodyLimitMiddleware
 from .projectx_schemas import (
     AuthMeOut,
     ProjectXAccountArchiveIn,
@@ -266,8 +269,14 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260729_add_expense_suppressions.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260729-v5"
+_REQUIRED_SCHEMA_MIGRATION = "20260830_harden_supabase_data_api.sql"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260830-v6"
+_AUTH_VERIFICATION_CAPACITY = 64
+_AUTH_VERIFICATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_AUTH_VERIFICATION_CAPACITY,
+    thread_name_prefix="topsignal-auth",
+)
+_AUTH_VERIFICATION_SLOTS = BoundedSemaphore(_AUTH_VERIFICATION_CAPACITY)
 _TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
 _order_book_registry = ProjectXOrderBookRegistry()
@@ -398,6 +407,12 @@ async def app_lifespan(_: FastAPI):
 app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
 
 app.add_middleware(
+    RequestBodyLimitMiddleware,
+    # Multipart framing is permitted up to 1 MiB beyond the per-file limit;
+    # handlers retain their existing 10 MiB validation of the file itself.
+    max_body_bytes=max(MAX_JOURNAL_IMAGE_BYTES, MAX_TRADE_IMPORT_BYTES) + 1024 * 1024,
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
     allow_origin_regex=_ALLOW_ORIGIN_REGEX,
@@ -443,6 +458,32 @@ def _is_authenticated_route(path: str) -> bool:
     return path.startswith("/api/") or path.startswith("/metrics/") or path.startswith("/projectx/") or path == "/trades"
 
 
+async def _authenticate_token_off_event_loop(token: str):
+    # Admission happens before executor submission, so the dedicated pool has
+    # no unbounded queue and a cold-key refresh owner can never sit behind its
+    # same-flight waiters. Keeping these bounded waits out of asyncio's shared
+    # executor prevents JWKS outages from starving unrelated to_thread work.
+    admission_slots = _AUTH_VERIFICATION_SLOTS
+    if not admission_slots.acquire(blocking=False):
+        raise AuthUnavailable("auth_verification_busy")
+    try:
+        loop = asyncio.get_running_loop()
+        auth_future = loop.run_in_executor(
+            _AUTH_VERIFICATION_EXECUTOR,
+            authenticate_request_token,
+            token,
+        )
+    except BaseException:
+        admission_slots.release()
+        raise
+
+    # Cancelling an HTTP task cannot stop the verifier thread. Shield the
+    # actual executor future and keep its admission lease until that worker
+    # really exits, otherwise disconnect churn can create an unbounded queue.
+    auth_future.add_done_callback(lambda _future: admission_slots.release())
+    return await asyncio.shield(auth_future)
+
+
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
@@ -479,7 +520,14 @@ async def api_auth_middleware(request: Request, call_next):
 
     if token:
         try:
-            user = authenticate_request_token(token)
+            user = await _authenticate_token_off_event_loop(token)
+        except AuthUnavailable as exc:
+            response = JSONResponse(
+                status_code=503,
+                content={"detail": str(exc)},
+                headers={"Retry-After": "5"},
+            )
+            return _with_timing_headers(_apply_cors_headers(request, response))
         except AuthError as exc:
             response = JSONResponse(status_code=401, content={"detail": str(exc)})
             return _with_timing_headers(_apply_cors_headers(request, response))
@@ -827,6 +875,9 @@ def create_expense(
     db.add(row)
     try:
         db.commit()
+    except DataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
     except IntegrityError as exc:
         db.rollback()
         raise _to_expense_integrity_http_exception(exc) from exc
@@ -1142,6 +1193,9 @@ def update_expense(
 
     try:
         db.commit()
+    except DataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
     except IntegrityError as exc:
         db.rollback()
         raise _to_expense_integrity_http_exception(exc) from exc
@@ -1207,6 +1261,9 @@ def create_payout(
     db.add(row)
     try:
         db.commit()
+    except DataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
     except IntegrityError as exc:
         db.rollback()
         raise _to_payout_integrity_http_exception(exc) from exc
@@ -1317,6 +1374,9 @@ def update_payout(
 
     try:
         db.commit()
+    except DataError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="amount_cents_out_of_range") from exc
     except IntegrityError as exc:
         db.rollback()
         raise _to_payout_integrity_http_exception(exc) from exc
@@ -1438,7 +1498,7 @@ def list_projectx_accounts(
     provider_error: ProjectXClientError | HTTPException | None = None
     if provider_sync_required:
         try:
-            client = _projectx_client_for_user(db, user_id=user_id)
+            client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
             provider_accounts = client.list_accounts(only_active_accounts=False)
             provider_refreshed_at = datetime.now(timezone.utc)
             sync_projectx_accounts(
@@ -1932,7 +1992,7 @@ def get_projectx_account_last_trade(
         }
 
     try:
-        client = _projectx_client_for_user(db, user_id=user_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
         provider_timestamp = client.fetch_last_trade_timestamp(
             account_id,
             lookback_days=_read_int_env("PROJECTX_LAST_TRADE_LOOKBACK_DAYS", 3650),
@@ -1975,7 +2035,7 @@ def search_projectx_contracts(
 ):
     user_id = get_authenticated_user_id()
     try:
-        client = _projectx_client_for_user(db, user_id=user_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
         rows = client.search_contracts(search_text=search_text, live=live)
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
@@ -2060,7 +2120,7 @@ def get_projectx_market_candles(
         ):
             return [serialize_market_candle(row) for row in cached_candles]
 
-        client = _projectx_client_for_user(db, user_id=user_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
         resolved_contract_id, resolved_symbol = resolve_market_contract(
             client,
             contract_id=contract_id,
@@ -2156,6 +2216,7 @@ def get_projectx_market_candles(
 
         if not candles:
             try:
+                db.rollback()
                 candles = fetch_and_store_market_candles(
                     db,
                     user_id=user_id,
@@ -2301,6 +2362,10 @@ def _fetch_active_symbol_market_candles(
     normalized_symbol = str(lookup_symbol or "").strip()
     if not normalized_symbol or not _looks_like_projectx_contract_id(current_contract_id):
         return []
+
+    # Cached-row inspection is read-only; do not reserve that connection while
+    # resolving the active contract and fetching provider history.
+    db.rollback()
 
     symbol_contract_id: str | None = None
     symbol_resolved_symbol: str | None = None
@@ -3112,6 +3177,20 @@ def merge_projectx_account_journal_entries(
             on_conflict=payload.on_conflict,
             include_images=payload.include_images,
         )
+    except VersionConflictError as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(
+                {
+                    "detail": "version_conflict",
+                    "server": serialize_journal_entry(exc.server_row),
+                }
+            ),
+        )
+    except JournalEntryDateConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=409, detail="journal image file not found") from exc
     except RuntimeError as exc:
@@ -3376,7 +3455,7 @@ def pull_projectx_account_journal_trade_stats(
     )
 
     def sync_window(start: datetime | None, end: datetime | None) -> None:
-        client = _projectx_client_for_user(db, user_id=user_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
         refresh_account_trades(
             db,
             client,
@@ -3421,6 +3500,17 @@ def pull_projectx_account_journal_trade_stats(
         return serialize_journal_entry(row)
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
+    except VersionConflictError as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(
+                {
+                    "detail": "version_conflict",
+                    "server": serialize_journal_entry(exc.server_row),
+                }
+            ),
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -3449,7 +3539,7 @@ def refresh_projectx_account_trades(
         )
 
     try:
-        client = _projectx_client_for_user(db, user_id=user_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
         return refresh_account_trades(
             db,
             client,
@@ -3803,6 +3893,18 @@ def _projectx_client_for_user(db: Session, *, user_id: str) -> ProjectXClient:
         username=credentials.username,
         api_key=credentials.api_key,
     )
+
+
+def _projectx_client_for_user_without_open_transaction(
+    db: Session,
+    *,
+    user_id: str,
+) -> ProjectXClient:
+    """Resolve copied credentials, then release the read-only DB transaction."""
+
+    client = _projectx_client_for_user(db, user_id=user_id)
+    db.rollback()
+    return client
 
 
 def _allow_legacy_projectx_env_credentials() -> bool:
@@ -4607,7 +4709,10 @@ def _ensure_trade_cache_or_fallback(
             start=start,
             end=end,
             refresh=refresh,
-            client_factory=lambda: _projectx_client_for_user(db, user_id=user_id),
+            client_factory=lambda: _projectx_client_for_user_without_open_transaction(
+                db,
+                user_id=user_id,
+            ),
         )
     except ProjectXClientError as exc:
         db.rollback()

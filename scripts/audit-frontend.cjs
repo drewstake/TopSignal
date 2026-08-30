@@ -1,18 +1,36 @@
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const repoRoot = path.resolve(__dirname, "..");
-const allowedAdvisories = new Map([
-  [
-    "GHSA-qwww-vcr4-c8h2",
-    "TopSignal is a client-side Vite SPA and does not use React Router's unstable RSC APIs.",
-  ],
-]);
+const allowedAdvisories = new Map();
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const auditArgs = ["--prefix", "frontend", "audit", "--omit=dev", "--json"];
+let npmCommand = "npm";
+let npmArgs = auditArgs;
+
+if (process.platform === "win32") {
+  // Node 24 no longer launches .cmd shims directly with spawnSync. Prefer the
+  // npm JavaScript entry point so arguments remain structured and do not pass
+  // through a command shell. npm_execpath is populated inside npm scripts;
+  // the sibling path covers direct `node scripts/audit-frontend.cjs` usage.
+  const npmCliCandidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter(Boolean);
+  const npmCli = npmCliCandidates.find((candidate) => fs.existsSync(candidate));
+  if (npmCli) {
+    npmCommand = process.execPath;
+    npmArgs = [npmCli, ...auditArgs];
+  } else {
+    npmCommand = process.env.ComSpec || "cmd.exe";
+    npmArgs = ["/d", "/s", "/c", "npm.cmd", ...auditArgs];
+  }
+}
+
 const result = spawnSync(
   npmCommand,
-  ["--prefix", "frontend", "audit", "--omit=dev", "--json"],
+  npmArgs,
   {
     cwd: repoRoot,
     encoding: "utf8",

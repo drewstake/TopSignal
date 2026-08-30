@@ -727,6 +727,29 @@ def test_mmap_series_integrity_is_validated_before_replay(
         store.clear()
 
 
+def test_series_directory_shortens_only_the_on_disk_fingerprint(tmp_path: Path):
+    archives, _ = _tiny_mnq_archives(tmp_path / "archives")
+    cache_root = tmp_path / "cache"
+
+    result = build_databento_cache(
+        archives,
+        cache_root=cache_root,
+        timeframes=("1m",),
+    )
+
+    manifest = json.loads((cache_root / "current.json").read_text())
+    entry = manifest["series"]["MNQ:1m"]
+    series_fingerprint = str(entry["series_fingerprint"])
+    fingerprint_segment = Path(str(entry["path"])).parts[-1]
+    metadata = json.loads(
+        (Path(result.version_dir) / str(entry["path"]) / "metadata.json").read_text()
+    )
+
+    assert len(series_fingerprint) == 64
+    assert fingerprint_segment == f"fingerprint={series_fingerprint[:20]}"
+    assert metadata["series_fingerprint"] == series_fingerprint
+
+
 def test_source_mtime_change_invalidates_slices_and_open_mappings(tmp_path: Path):
     archives, start = _tiny_mnq_archives(tmp_path / "archives")
     cache_root = tmp_path / "cache"

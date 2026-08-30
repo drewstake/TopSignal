@@ -1,11 +1,13 @@
 import os
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import DataError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -83,6 +85,43 @@ def _create_auto_combine_expense(
         ),
         db=db_session,
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"amount_cents": 2**31},
+        {"amount_cents": -(2**31) - 1},
+        {"amount": Decimal("1e1000000")},
+    ],
+)
+def test_expense_schema_rejects_values_outside_postgres_integer_range(payload):
+    with pytest.raises(ValidationError):
+        ExpenseCreateIn(
+            expense_date=date(2026, 3, 1),
+            category="other",
+            **payload,
+        )
+
+
+def test_expense_database_range_error_is_mapped_to_422(db_session):
+    db_session.commit = lambda: (_ for _ in ()).throw(
+        DataError("insert", {}, ValueError("integer out of range"))
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_expense(
+            payload=ExpenseCreateIn(
+                expense_date=date(2026, 3, 1),
+                amount_cents=100,
+                category="other",
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "amount_cents_out_of_range"
+    assert db_session.query(Expense).count() == 0
 
 
 def test_create_expense_success_standard_50k_evaluation(db_session):

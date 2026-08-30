@@ -41,6 +41,14 @@ const liveAccount: AccountInfo = {
   last_trade_at: null,
 };
 
+const secondLiveAccount: AccountInfo = {
+  ...liveAccount,
+  id: LIVE_ACCOUNT_ID + 1,
+  name: "Live Funded 88-002",
+  provider_name: "Live Funded 88-002",
+  is_main: false,
+};
+
 const emptySummary: AccountSummary = {
   realized_pnl: 0,
   gross_pnl: 0,
@@ -304,7 +312,7 @@ function makePreview(
   };
 }
 
-function installStatefulAccountsApi() {
+function installStatefulAccountsApi(accounts: AccountInfo[] = [liveAccount]) {
   const state: LocalReadState = {
     trades: [],
     summary: { ...emptySummary },
@@ -315,7 +323,7 @@ function installStatefulAccountsApi() {
   const summaryReadTradeCounts: number[] = [];
   let previewSequence = 0;
 
-  vi.spyOn(accountsApi, "getSelectableAccountsLocalFirst").mockResolvedValue([liveAccount]);
+  vi.spyOn(accountsApi, "getSelectableAccountsLocalFirst").mockResolvedValue(accounts);
   const getSummaryWithPointBases = vi.spyOn(accountsApi, "getSummaryWithPointBases").mockImplementation(async () => {
     summaryReadTradeCounts.push(state.summary.trade_count);
     return {
@@ -441,8 +449,8 @@ function installStatefulAccountsApi() {
   };
 }
 
-function mountDailyFlow() {
-  const api = installStatefulAccountsApi();
+function mountDailyFlow(accounts: AccountInfo[] = [liveAccount]) {
+  const api = installStatefulAccountsApi(accounts);
   const router = createMemoryRouter(
     [
       {
@@ -450,7 +458,7 @@ function mountDailyFlow() {
         element: (
           <Outlet
             context={{
-              accounts: [liveAccount],
+              accounts,
               accountsLoading: false,
               accountsError: null,
               selectedAccountId: LIVE_ACCOUNT_ID,
@@ -584,6 +592,55 @@ describe("Live CSV daily-flow production page bridge", () => {
     expect(await screen.findByDisplayValue("New Entry")).not.toBeNull();
     await waitFor(() => expect(pullJournalTradeStats).toHaveBeenCalledWith(LIVE_ACCOUNT_ID, 501));
     await waitFor(() => expect(screen.getAllByText("2 trades")).not.toHaveLength(0));
+  });
+
+  it("does not let a stale journal-create completion override a newer account selection", async () => {
+    const user = userEvent.setup();
+    const pendingCreate = deferred<JournalEntry & { already_existed: boolean }>();
+    const { router, createJournalEntry } = mountDailyFlow([liveAccount, secondLiveAccount]);
+
+    await waitForImportReady();
+    importFile("fresh.csv");
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByText(/Imported 2 trades from fresh\.csv/);
+
+    const importedDay = await screen.findByRole("button", {
+      name: /Jul 24, 2026\..*2 total trades\./,
+    });
+    await user.click(importedDay);
+    createJournalEntry.mockReturnValueOnce(pendingCreate.promise);
+    await user.click(await screen.findByRole("button", { name: "Add Journal Entry" }));
+    await waitFor(() => expect(createJournalEntry).toHaveBeenCalled());
+
+    await act(async () => {
+      await router.navigate(`/dashboard?account=${secondLiveAccount.id}`);
+    });
+    await waitFor(() => expect(router.state.location.search).toContain(`account=${secondLiveAccount.id}`));
+
+    await act(async () => {
+      pendingCreate.resolve({
+        id: 777,
+        account_id: LIVE_ACCOUNT_ID,
+        entry_date: TRADE_DAY,
+        title: "New Entry",
+        mood: "Neutral",
+        tags: [],
+        body: "",
+        version: 1,
+        stats_source: null,
+        stats_json: null,
+        stats_pulled_at: null,
+        is_archived: false,
+        created_at: "2026-07-24T16:05:00Z",
+        updated_at: "2026-07-24T16:05:00Z",
+        already_existed: false,
+      });
+      await pendingCreate.promise;
+    });
+
+    expect(router.state.location.pathname).toBe("/dashboard");
+    expect(router.state.location.search).toContain(`account=${secondLiveAccount.id}`);
+    expect(router.state.location.search).not.toContain(`account=${LIVE_ACCOUNT_ID}&`);
   });
 
   it("keeps duplicates compact, stores only the new overlap row, and blocks a conflicting identity", async () => {

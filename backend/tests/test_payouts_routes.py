@@ -1,10 +1,12 @@
 import os
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine
+from sqlalchemy.exc import DataError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -44,6 +46,38 @@ def _create_payout(db_session, *, payout_date: date, amount: float, notes: str |
         ),
         db=db_session,
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"amount_cents": 2**31},
+        {"amount_cents": -(2**31) - 1},
+        {"amount": Decimal("1e1000000")},
+    ],
+)
+def test_payout_schema_rejects_values_outside_postgres_integer_range(payload):
+    with pytest.raises(ValidationError):
+        PayoutCreateIn(payout_date=date(2026, 3, 1), **payload)
+
+
+def test_payout_database_range_error_is_mapped_to_422(db_session):
+    db_session.commit = lambda: (_ for _ in ()).throw(
+        DataError("insert", {}, ValueError("integer out of range"))
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_payout(
+            payload=PayoutCreateIn(
+                payout_date=date(2026, 3, 1),
+                amount_cents=100,
+            ),
+            db=db_session,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "amount_cents_out_of_range"
+    assert db_session.query(Payout).count() == 0
 
 
 def test_create_payout_success(db_session):

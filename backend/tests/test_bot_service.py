@@ -2250,8 +2250,19 @@ def test_support_resistance_fetches_4h_and_1h_candles_with_100_bar_limit():
             self.calls = []
 
         def retrieve_bars(self, **kwargs):
+            assert db.in_transaction() is False
             self.calls.append(kwargs)
-            return []
+            timestamp = datetime(2026, 4, 1, 10 + len(self.calls), tzinfo=timezone.utc)
+            return [
+                {
+                    "timestamp": timestamp,
+                    "open": 100,
+                    "high": 101,
+                    "low": 99,
+                    "close": 100,
+                    "volume": 1,
+                }
+            ]
 
     client = StubClient()
     config = BotConfig(
@@ -2290,8 +2301,9 @@ def test_support_resistance_fetches_4h_and_1h_candles_with_100_bar_limit():
             strategy_params={"level_tolerance_percent": 0.25},
         )
 
-        assert rows == {"4H": [], "1H": []}
+        assert {key: len(value) for key, value in rows.items()} == {"4H": 1, "1H": 1}
         assert [(call["unit"], call["unit_number"], call["limit"]) for call in client.calls] == [(3, 4, 100), (3, 1, 100)]
+        assert db.in_transaction() is False
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
@@ -3286,6 +3298,62 @@ def test_fetch_market_candles_deduplicates_provider_timestamps():
         assert rows[0].close_price == 13.0
         assert rows[0].volume == 2.0
         assert db.query(ProjectXMarketCandle).count() == 1
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+        engine.dispose()
+
+
+def test_cached_market_candle_read_releases_owned_transaction_before_provider_io():
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine, tables=[ProjectXMarketCandle.__table__])
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = SessionLocal()
+    cached_at = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    provider_at = cached_at + timedelta(minutes=5)
+
+    class StubClient:
+        def retrieve_bars(self, **_kwargs):
+            assert db.in_transaction() is False
+            return [
+                {
+                    "timestamp": provider_at,
+                    "open": 11,
+                    "high": 12,
+                    "low": 10,
+                    "close": 11,
+                    "volume": 2,
+                }
+            ]
+
+    try:
+        db.add(_make_candle(cached_at, 10))
+        db.commit()
+        assert db.in_transaction() is False
+
+        rows = fetch_and_store_market_candles(
+            db,
+            user_id="00000000-0000-0000-0000-000000000000",
+            client=StubClient(),
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            live=False,
+            start=cached_at,
+            end=provider_at + timedelta(minutes=5),
+            unit="minute",
+            unit_number=5,
+            limit=500,
+            preserve_cached_history=True,
+        )
+
+        assert [_as_test_utc(row.candle_timestamp) for row in rows] == [
+            cached_at,
+            provider_at,
+        ]
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine, tables=[ProjectXMarketCandle.__table__])

@@ -8,17 +8,12 @@
 -- ============================================
 
 
--- Marker consumed by `npm run db:baseline`. Baseline mode also verifies that
--- application tables are empty, so re-running this idempotent file over an
--- existing database cannot silently skip its historical upgrades.
+-- Marker table consumed by `npm run db:baseline`. The current marker is
+-- recorded only after the full schema and its security hardening succeed.
 create table if not exists topsignal_schema_baselines (
   version text primary key,
   created_at timestamptz not null default now()
 );
-
-insert into topsignal_schema_baselines (version)
-values ('schema-20260729-v5')
-on conflict (version) do nothing;
 
 
 -- ============================================
@@ -375,8 +370,10 @@ create table if not exists projectx_trade_events (
     foreign key (import_batch_id, user_id, account_id, account_row_id, account_external_id)
     references trade_import_batches (id, user_id, account_id, account_row_id, account_external_id)
     on delete restrict,
-  unique (user_id, account_id, source_trade_id),
-  unique (user_id, account_id, order_id, trade_timestamp)
+  constraint uq_projectx_trade_events_account_source_trade
+    unique (user_id, account_id, source_trade_id),
+  constraint uq_projectx_trade_events_account_order_ts
+    unique (user_id, account_id, order_id, trade_timestamp)
 );
 
 
@@ -896,6 +893,139 @@ create index if not exists idx_payouts_payout_date
 
 create index if not exists idx_payouts_user_date_id
   on payouts (user_id, payout_date, id);
+
+
+-- ============================================
+-- SUPABASE DATA API HARDENING
+-- The browser uses Supabase for Auth only. If this schema is installed in a
+-- Supabase project that still has legacy automatic public-schema grants,
+-- prevent anon/authenticated from bypassing FastAPI's tenant authorization.
+-- Conditional role checks keep the schema portable to ordinary PostgreSQL.
+-- ============================================
+do $topsignal_data_api_hardening$
+declare
+  api_role text;
+begin
+  foreach api_role in array array['anon', 'authenticated']
+  loop
+    if exists (select 1 from pg_roles where rolname = api_role) then
+      execute format('revoke all privileges on all tables in schema public from %I', api_role);
+      execute format('revoke all privileges on all sequences in schema public from %I', api_role);
+      execute format('revoke execute on all functions in schema public from %I', api_role);
+
+      execute format(
+        'alter default privileges revoke all privileges on tables from %I',
+        api_role
+      );
+      execute format(
+        'alter default privileges in schema public '
+        'revoke all privileges on tables from %I',
+        api_role
+      );
+      execute format(
+        'alter default privileges revoke all privileges on sequences from %I',
+        api_role
+      );
+      execute format(
+        'alter default privileges in schema public '
+        'revoke all privileges on sequences from %I',
+        api_role
+      );
+      execute format(
+        'alter default privileges revoke execute on functions from %I',
+        api_role
+      );
+      execute format(
+        'alter default privileges in schema public '
+        'revoke execute on functions from %I',
+        api_role
+      );
+
+      if exists (select 1 from pg_roles where rolname = 'postgres') then
+        if pg_has_role(current_user, 'postgres', 'member') then
+          execute format(
+            'alter default privileges for role postgres '
+            'revoke all privileges on tables from %I',
+            api_role
+          );
+          execute format(
+            'alter default privileges for role postgres in schema public '
+            'revoke all privileges on tables from %I',
+            api_role
+          );
+          execute format(
+            'alter default privileges for role postgres '
+            'revoke all privileges on sequences from %I',
+            api_role
+          );
+          execute format(
+            'alter default privileges for role postgres in schema public '
+            'revoke all privileges on sequences from %I',
+            api_role
+          );
+          execute format(
+            'alter default privileges for role postgres '
+            'revoke execute on functions from %I',
+            api_role
+          );
+          execute format(
+            'alter default privileges for role postgres in schema public '
+            'revoke execute on functions from %I',
+            api_role
+          );
+        end if;
+      end if;
+    end if;
+  end loop;
+
+  if exists (
+    select 1 from pg_roles where rolname in ('anon', 'authenticated')
+  ) then
+    revoke all privileges on all tables in schema public from public;
+    revoke all privileges on all sequences in schema public from public;
+    revoke execute on all functions in schema public from public;
+
+    alter default privileges
+      revoke all privileges on tables from public;
+    alter default privileges in schema public
+      revoke all privileges on tables from public;
+    alter default privileges
+      revoke all privileges on sequences from public;
+    alter default privileges in schema public
+      revoke all privileges on sequences from public;
+
+    -- The built-in PUBLIC function grant is a global default, which cannot be
+    -- negated by a schema-scoped default ACL.
+    alter default privileges
+      revoke execute on functions from public;
+    alter default privileges in schema public
+      revoke execute on functions from public;
+
+    if exists (select 1 from pg_roles where rolname = 'postgres') then
+      if pg_has_role(current_user, 'postgres', 'member') then
+        alter default privileges for role postgres
+          revoke all privileges on tables from public;
+        alter default privileges for role postgres in schema public
+          revoke all privileges on tables from public;
+        alter default privileges for role postgres
+          revoke all privileges on sequences from public;
+        alter default privileges for role postgres in schema public
+          revoke all privileges on sequences from public;
+        alter default privileges for role postgres
+          revoke execute on functions from public;
+        alter default privileges for role postgres in schema public
+          revoke execute on functions from public;
+      end if;
+    end if;
+  end if;
+
+  -- Keep readiness fail-closed under psql autocommit: the marker is part of
+  -- the same atomic DO statement as every privilege change.
+  insert into topsignal_schema_baselines (version)
+  values ('schema-20260830-v6')
+  on conflict (version) do nothing;
+end
+$topsignal_data_api_hardening$;
 
 
 -- Legacy databento_* relational market tables are intentionally omitted from

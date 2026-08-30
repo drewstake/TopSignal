@@ -761,6 +761,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `SUPABASE_JWKS_URL` | Custom JWKS endpoint for JWT validation |
 | `SUPABASE_JWT_ISSUER` | Expected JWT issuer |
 | `SUPABASE_JWT_AUDIENCE` | Expected JWT audience |
+| `SUPABASE_JWT_ALGORITHMS` | Optional comma-separated narrowing of reviewed JWT algorithms (`HS256`, `RS256`, `ES256`) |
 | `SUPABASE_JWT_SECRET` | Shared secret for local HS-signed tokens |
 | `CREDENTIALS_ENCRYPTION_KEY` | Fernet key for encrypting stored provider credentials |
 | `ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS` | Explicitly allows one server-wide ProjectX identity only in a fully local, single-user runtime |

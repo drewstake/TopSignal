@@ -221,6 +221,26 @@ def _xlsx_bytes(rows: list[dict[str, str]]) -> bytes:
     return output.getvalue()
 
 
+def _xlsx_with_declared_dimension(content: bytes, reference: str) -> bytes:
+    source = io.BytesIO(content)
+    output = io.BytesIO()
+    with ZipFile(source, mode="r") as input_archive, ZipFile(
+        output,
+        mode="w",
+        compression=ZIP_DEFLATED,
+    ) as output_archive:
+        for entry in input_archive.infolist():
+            entry_content = input_archive.read(entry.filename)
+            if entry.filename == "xl/worksheets/sheet1.xml":
+                entry_content = entry_content.replace(
+                    b"<sheetData>",
+                    f'<dimension ref="{reference}"/><sheetData>'.encode("ascii"),
+                    1,
+                )
+            output_archive.writestr(entry, entry_content)
+    return output.getvalue()
+
+
 def _typed_datetime_xlsx_bytes(
     *,
     entered_at: date | datetime,
@@ -830,6 +850,23 @@ def test_parser_accepts_excel_open_xml_workbook(db_session):
     assert preview["total_rows"] == 1
     assert preview["new_rows"] == 1
     assert preview["summary"]["net_pnl"] == 198.78
+
+
+@pytest.mark.parametrize("dimension", ["A1:XFD1048576", "A1:A1048576", "A1:XFD2"])
+def test_parser_rejects_malicious_xlsx_dimensions_before_iteration(
+    db_session,
+    dimension,
+):
+    content = _xlsx_with_declared_dimension(
+        _xlsx_bytes([_trade_row()]),
+        dimension,
+    )
+
+    with pytest.raises(TradeImportValidationError) as exc_info:
+        _preview(db_session, content, filename="oversized-dimension.xlsx")
+
+    assert exc_info.value.code == "excel_worksheet_too_large"
+    assert db_session.query(ProjectXTradeEvent).count() == 0
 
 
 def test_parser_rejects_unverified_macro_enabled_workbooks(db_session):

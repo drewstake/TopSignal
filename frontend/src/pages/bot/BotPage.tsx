@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
@@ -12,7 +12,9 @@ import { Select } from "../../components/ui/Select";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId, writeStoredAccountId } from "../../lib/accountSelection";
+import { useAccountRequestGate } from "../../lib/accountRequestGate";
 import { botsApi } from "../../lib/api";
+import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
 import type {
   AccountInfo,
   BotActivity,
@@ -808,28 +810,27 @@ function formFromBot(bot: BotConfig): BotFormState {
 }
 
 function parsePositiveNumber(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  const parsed = parseStrictFiniteNumber(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 function parseNonNegativeNumber(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  const parsed = parseStrictFiniteNumber(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
 }
 
 function parseFiniteNumber(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseStrictFiniteNumber(value);
 }
 
 function parsePositiveInt(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  const parsed = parseStrictInteger(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 function parseNonNegativeInt(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  const parsed = parseStrictInteger(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
 }
 
 function formatDateTime(value: string | null) {
@@ -1212,10 +1213,12 @@ export function BotPage() {
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
   const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
+  const accountRequestGate = useAccountRequestGate(activeProjectXAccountId);
   const configsRequestSequence = useRef(0);
   const activityRequestSequence = useRef(0);
   const activityRequestController = useRef<AbortController | null>(null);
   const selectedBotIdRef = useRef<number | null>(null);
+  const previousProjectXAccountIdRef = useRef<number | null>(activeProjectXAccountId);
 
   const selectedBot = useMemo(() => {
     if (activeProjectXAccountId === null) {
@@ -1250,8 +1253,6 @@ export function BotPage() {
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
 
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
-    const sequence = configsRequestSequence.current + 1;
-    configsRequestSequence.current = sequence;
     if (activeProjectXAccountId === null) {
       setAuthenticatedCacheScope(null);
       setConfigs([]);
@@ -1260,6 +1261,13 @@ export function BotPage() {
       setLoading(false);
       return;
     }
+    const accountScope = accountRequestGate.capture(activeProjectXAccountId);
+    if (!accountRequestGate.isActive(accountScope)) {
+      return;
+    }
+    const requestToken = accountRequestGate.begin(activeProjectXAccountId, "configs");
+    const sequence = configsRequestSequence.current + 1;
+    configsRequestSequence.current = sequence;
     if (showLoading) {
       setLoading(true);
     }
@@ -1269,7 +1277,10 @@ export function BotPage() {
         activeProjectXAccountId,
         botsApi.listConfigsWithCacheScope,
       );
-      if (configsRequestSequence.current !== sequence) {
+      if (
+        configsRequestSequence.current !== sequence ||
+        !accountRequestGate.isCurrent(requestToken)
+      ) {
         return;
       }
       if (!result) {
@@ -1286,16 +1297,23 @@ export function BotPage() {
         return botRows.items[0]?.id ?? null;
       });
     } catch (err) {
-      if (configsRequestSequence.current === sequence) {
+      if (
+        configsRequestSequence.current === sequence &&
+        accountRequestGate.isCurrent(requestToken)
+      ) {
         setConfigWarnings([]);
         setError(err instanceof Error ? err.message : "Failed to load bot data");
       }
     } finally {
-      if (showLoading && configsRequestSequence.current === sequence) {
+      if (
+        showLoading &&
+        configsRequestSequence.current === sequence &&
+        accountRequestGate.isCurrent(requestToken)
+      ) {
         setLoading(false);
       }
     }
-  }, [activeProjectXAccountId]);
+  }, [accountRequestGate, activeProjectXAccountId]);
 
   const loadActivity = useCallback(async (botId: number | null) => {
     const sequence = activityRequestSequence.current + 1;
@@ -1310,30 +1328,47 @@ export function BotPage() {
     if (selectedBotIdRef.current !== botId) {
       return;
     }
+    const requestAccountId = activeProjectXAccountId;
+    if (requestAccountId === null) {
+      return;
+    }
+    const accountScope = accountRequestGate.capture(requestAccountId);
+    if (!accountRequestGate.isActive(accountScope)) {
+      return;
+    }
+    const requestToken = accountRequestGate.begin(requestAccountId, "activity");
     const controller = new AbortController();
     activityRequestController.current = controller;
     setActivity(null);
     setActivityLoading(true);
     try {
       const payload = await botsApi.getActivity(botId, 50, { signal: controller.signal });
-      if (activityRequestSequence.current === sequence && selectedBotIdRef.current === botId) {
+      if (
+        activityRequestSequence.current === sequence &&
+        selectedBotIdRef.current === botId &&
+        accountRequestGate.isCurrent(requestToken)
+      ) {
         setActivity(payload);
       }
     } catch (err) {
       if (
         activityRequestSequence.current === sequence &&
         selectedBotIdRef.current === botId &&
+        accountRequestGate.isCurrent(requestToken) &&
         !(err instanceof Error && err.name === "AbortError")
       ) {
         setError(err instanceof Error ? err.message : "Failed to load bot activity");
       }
     } finally {
-      if (activityRequestSequence.current === sequence) {
+      if (
+        activityRequestSequence.current === sequence &&
+        accountRequestGate.isCurrent(requestToken)
+      ) {
         setActivityLoading(false);
         activityRequestController.current = null;
       }
     }
-  }, []);
+  }, [accountRequestGate, activeProjectXAccountId]);
 
   useEffect(() => {
     void loadConfigs({ showLoading: true });
@@ -1360,6 +1395,31 @@ export function BotPage() {
         ? current
         : { ...current, accountId: String(activeProjectXAccountId) },
     );
+  }, [activeProjectXAccountId]);
+
+  useLayoutEffect(() => {
+    if (previousProjectXAccountIdRef.current === activeProjectXAccountId) {
+      return;
+    }
+
+    previousProjectXAccountIdRef.current = activeProjectXAccountId;
+    setConfigs([]);
+    setConfigWarnings([]);
+    setSelectedBotId(null);
+    setEditingBotId(null);
+    setForm(buildInitialForm(activeProjectXAccountId));
+    setContracts([]);
+    setActivity(null);
+    setLastEvaluation(null);
+    setMarketSnapshot(null);
+    setAuthenticatedCacheScope(null);
+    setLoading(activeProjectXAccountId !== null);
+    setActivityLoading(false);
+    setContractLoading(false);
+    setSaving(false);
+    setActionLoading(null);
+    setError(null);
+    setFormError(null);
   }, [activeProjectXAccountId]);
 
   useEffect(() => {
@@ -1390,7 +1450,7 @@ export function BotPage() {
   ]);
 
   useEffect(() => {
-    if (!selectedBot) {
+    if (!selectedBot || selectedBot.account_id !== activeProjectXAccountId) {
       return;
     }
 
@@ -1398,7 +1458,7 @@ export function BotPage() {
     setForm(formFromBot(selectedBot));
     setContracts([]);
     setFormError(null);
-  }, [selectedBot]);
+  }, [activeProjectXAccountId, selectedBot]);
 
   async function handleSearchContracts() {
     if (activeProjectXAccountId === null) {
@@ -1409,18 +1469,27 @@ export function BotPage() {
       setFormError("Contract search is required.");
       return;
     }
+    const requestAccountId = activeProjectXAccountId;
+    const requestToken = accountRequestGate.begin(requestAccountId, "contract-search");
     setContractLoading(true);
     setFormError(null);
     try {
       const rows = await botsApi.searchContracts({ searchText: form.contractSearch, live: false });
+      if (!accountRequestGate.isCurrent(requestToken)) {
+        return;
+      }
       setContracts(rows);
       if (rows[0]) {
         applyContract(rows[0]);
       }
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Contract search failed");
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setFormError(err instanceof Error ? err.message : "Contract search failed");
+      }
     } finally {
-      setContractLoading(false);
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setContractLoading(false);
+      }
     }
   }
 
@@ -1846,10 +1915,15 @@ export function BotPage() {
     }
 
     const deletedBotId = selectedBot.id;
+    const requestAccountId = selectedBot.account_id;
+    const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
     setActionLoading("delete");
     setError(null);
     try {
       await botsApi.deleteConfig(deletedBotId);
+      if (!accountRequestGate.isCurrent(requestToken)) {
+        return;
+      }
       if (editingBotId === deletedBotId) {
         handleCancelEdit();
       }
@@ -1859,9 +1933,13 @@ export function BotPage() {
       setActivity(null);
       await loadConfigs();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete bot");
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setError(err instanceof Error ? err.message : "Failed to delete bot");
+      }
     } finally {
-      setActionLoading(null);
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setActionLoading(null);
+      }
     }
   }
 
@@ -1982,6 +2060,20 @@ export function BotPage() {
       !projectXAccounts.some((account: AccountInfo) => account.id === accountId)
     ) {
       setFormError("Select an Express account before saving a bot.");
+      return;
+    }
+    if (activeProjectXAccountId === null || accountId !== activeProjectXAccountId) {
+      setFormError("Bot configuration must stay on the active Express account.");
+      return;
+    }
+    const editingConfig = editingBotId
+      ? configs.find((config) => config.id === editingBotId)
+      : null;
+    if (
+      editingBotId !== null &&
+      (!editingConfig || editingConfig.account_id !== activeProjectXAccountId)
+    ) {
+      setFormError("The bot being edited no longer belongs to the active account. Reload and try again.");
       return;
     }
     if (
@@ -2283,6 +2375,8 @@ export function BotPage() {
       return;
     }
 
+    const requestAccountId = activeProjectXAccountId;
+    const requestToken = accountRequestGate.begin(requestAccountId, "save");
     setSaving(true);
     setFormError(null);
     try {
@@ -2529,20 +2623,31 @@ export function BotPage() {
         allow_market_depth: false,
       };
 
-      const saved = editingBotId
-        ? await botsApi.updateConfig(editingBotId, payload)
+      const requestEditingBotId = editingBotId;
+      const saved = requestEditingBotId
+        ? await botsApi.updateConfig(requestEditingBotId, payload)
         : await botsApi.createConfig({
             ...payload,
             enabled: false,
             execution_mode: "dry_run",
           });
+      if (!accountRequestGate.isCurrent(requestToken)) {
+        return;
+      }
       setEditingBotId(null);
       await loadConfigs();
+      if (!accountRequestGate.isCurrent(requestToken)) {
+        return;
+      }
       setSelectedBotId(saved.id);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save bot");
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setFormError(err instanceof Error ? err.message : "Failed to save bot");
+      }
     } finally {
-      setSaving(false);
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setSaving(false);
+      }
     }
   }
 
@@ -2550,24 +2655,43 @@ export function BotPage() {
     if (demoModeEnabled || !selectedBot) {
       return;
     }
+    const requestAccountId = selectedBot.account_id;
+    const requestBotId = selectedBot.id;
+    const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
     setActionLoading(kind);
     setError(null);
     try {
       if (kind === "start") {
-        const result = await botsApi.start(selectedBot.id, { dryRun: true });
+        const result = await botsApi.start(requestBotId, { dryRun: true });
+        if (!accountRequestGate.isCurrent(requestToken)) {
+          return;
+        }
         setLastEvaluation(result);
       } else if (kind === "evaluate") {
-        const result = await botsApi.evaluate(selectedBot.id, { dryRun: true });
+        const result = await botsApi.evaluate(requestBotId, { dryRun: true });
+        if (!accountRequestGate.isCurrent(requestToken)) {
+          return;
+        }
         setLastEvaluation(result);
       } else {
-        await botsApi.stop(selectedBot.id);
+        await botsApi.stop(requestBotId);
+        if (!accountRequestGate.isCurrent(requestToken)) {
+          return;
+        }
       }
-      await Promise.all([loadConfigs(), loadActivity(selectedBot.id)]);
+      await Promise.all([loadConfigs(), loadActivity(requestBotId)]);
+      if (!accountRequestGate.isCurrent(requestToken)) {
+        return;
+      }
       setChartRefreshToken((current) => current + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bot action failed");
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setError(err instanceof Error ? err.message : "Bot action failed");
+      }
     } finally {
-      setActionLoading(null);
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setActionLoading(null);
+      }
     }
   }
 
@@ -2669,7 +2793,12 @@ export function BotPage() {
               </label>
               <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                 <span>Account</span>
-                <Select value={form.accountId} onChange={(event) => setForm({ ...form, accountId: event.target.value })}>
+                <Select
+                  value={form.accountId}
+                  onChange={(event) => setForm({ ...form, accountId: event.target.value })}
+                  disabled
+                  aria-describedby="bot-account-scope-note"
+                >
                   <option value="">Select account</option>
                   {projectXAccounts.map((account) => (
                     <option key={account.id} value={account.id}>
@@ -2677,6 +2806,9 @@ export function BotPage() {
                     </option>
                   ))}
                 </Select>
+                <span id="bot-account-scope-note" className="normal-case tracking-normal text-slate-500">
+                  Bot changes apply only to the active account.
+                </span>
               </label>
 
               <div className="space-y-2">
@@ -3133,7 +3265,7 @@ export function BotPage() {
                     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                       <span>Structure TF</span>
                       <Input
-                        value={deriveFvgStructureTimeframe(form.timeframeUnit, Number.parseInt(form.timeframeUnitNumber, 10) || 1)}
+                        value={deriveFvgStructureTimeframe(form.timeframeUnit, parsePositiveInt(form.timeframeUnitNumber) ?? 1)}
                         readOnly
                         disabled
                       />
@@ -3939,45 +4071,53 @@ export function BotPage() {
               <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Order Size</span>
-                  <Input value={form.orderSize} onChange={(event) => setForm({ ...form, orderSize: event.target.value })} />
+                  <Input type="number" inputMode="numeric" min="1" step="1" value={form.orderSize} onChange={(event) => setForm({ ...form, orderSize: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Max Contracts</span>
-                  <Input value={form.maxContracts} onChange={(event) => setForm({ ...form, maxContracts: event.target.value })} />
+                  <Input type="number" inputMode="numeric" min="1" step="1" value={form.maxContracts} onChange={(event) => setForm({ ...form, maxContracts: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Daily Loss</span>
-                  <Input value={form.maxDailyLoss} onChange={(event) => setForm({ ...form, maxDailyLoss: event.target.value })} />
+                  <Input type="number" inputMode="decimal" min="0" step="0.01" value={form.maxDailyLoss} onChange={(event) => setForm({ ...form, maxDailyLoss: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Max Open</span>
                   <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    step="1"
                     value={form.maxOpenPosition}
                     onChange={(event) => setForm({ ...form, maxOpenPosition: event.target.value })}
                   />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Trades/Day</span>
-                  <Input value={form.maxTradesPerDay} onChange={(event) => setForm({ ...form, maxTradesPerDay: event.target.value })} />
+                  <Input type="number" inputMode="numeric" min="0" step="1" value={form.maxTradesPerDay} onChange={(event) => setForm({ ...form, maxTradesPerDay: event.target.value })} />
                 </label>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Start ET</span>
-                  <Input value={form.tradingStartTime} onChange={(event) => setForm({ ...form, tradingStartTime: event.target.value })} />
+                  <Input type="time" step="1" value={form.tradingStartTime} onChange={(event) => setForm({ ...form, tradingStartTime: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>End ET</span>
-                  <Input value={form.tradingEndTime} onChange={(event) => setForm({ ...form, tradingEndTime: event.target.value })} />
+                  <Input type="time" step="1" value={form.tradingEndTime} onChange={(event) => setForm({ ...form, tradingEndTime: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Cooldown</span>
-                  <Input value={form.cooldownSeconds} onChange={(event) => setForm({ ...form, cooldownSeconds: event.target.value })} />
+                  <Input type="number" inputMode="numeric" min="0" step="1" value={form.cooldownSeconds} onChange={(event) => setForm({ ...form, cooldownSeconds: event.target.value })} />
                 </label>
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
                   <span>Stale Sec</span>
                   <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    step="1"
                     value={form.maxDataStalenessSeconds}
                     onChange={(event) => setForm({ ...form, maxDataStalenessSeconds: event.target.value })}
                   />

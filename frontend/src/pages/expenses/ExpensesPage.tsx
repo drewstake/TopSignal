@@ -47,6 +47,7 @@ import type {
 } from "../../lib/types";
 import { isDemoModeEnabled } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
+import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
 import { formatCurrency } from "../../utils/formatters";
 import { ExpenseCalendarCard } from "./ExpenseCalendarCard";
 import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
@@ -90,8 +91,8 @@ function parsePositiveInt(value: string) {
   if (!value.trim()) {
     return undefined;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  const parsed = parseStrictInteger(value);
+  if (parsed === null || parsed <= 0) {
     return null;
   }
   return parsed;
@@ -644,8 +645,8 @@ export function ExpensesPage() {
       return;
     }
 
-    const amount = Number.parseFloat(addState.amount);
-    if (!Number.isFinite(amount) || amount < 0) {
+    const amount = parseStrictFiniteNumber(addState.amount);
+    if (amount === null || amount < 0) {
       setAddError("Amount must be a non-negative number.");
       return;
     }
@@ -695,8 +696,8 @@ export function ExpensesPage() {
       return;
     }
 
-    const amount = Number.parseFloat(addPayoutState.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amount = parseStrictFiniteNumber(addPayoutState.amount);
+    if (amount === null || amount <= 0) {
       setAddPayoutError("Amount must be greater than 0.");
       return;
     }
@@ -1183,6 +1184,7 @@ export function ExpensesPage() {
             <label htmlFor="payout-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
             <Input
               id="payout-amount"
+              type="number"
               value={addPayoutState.amount}
               onChange={(event) =>
                 setAddPayoutState((current) => ({
@@ -1191,6 +1193,8 @@ export function ExpensesPage() {
                 }))
               }
               inputMode="decimal"
+              min="0.01"
+              step="0.01"
               placeholder="2500.00"
               required
             />
@@ -1315,6 +1319,7 @@ export function ExpensesPage() {
             <label htmlFor="expense-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
             <Input
               id="expense-amount"
+              type="number"
               value={addState.amount}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1323,6 +1328,8 @@ export function ExpensesPage() {
                 }))
               }
               inputMode="decimal"
+              min="0"
+              step="0.01"
             />
           </div>
 
@@ -1330,6 +1337,7 @@ export function ExpensesPage() {
             <label htmlFor="expense-account-id" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account ID (Optional)</label>
             <Input
               id="expense-account-id"
+              type="number"
               value={addState.accountId}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1338,6 +1346,8 @@ export function ExpensesPage() {
                 }))
               }
               inputMode="numeric"
+              min="1"
+              step="1"
             />
           </div>
 

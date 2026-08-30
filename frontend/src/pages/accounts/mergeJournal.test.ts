@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AccountInfo, JournalMergeResult } from "../../lib/types";
 import {
+  approveMergeJournalSubmission,
+  buildMergeJournalOverwriteConfirmation,
   buildMergeJournalSuccessMessage,
   filterMergeSourceAccounts,
   getMergeDestinationAccounts,
@@ -122,6 +124,69 @@ describe("validateMergeJournalForm", () => {
         includeImages: true,
       }),
     ).toBe("Old and new account must be different.");
+  });
+});
+
+describe("journal overwrite confirmation", () => {
+  const accountNamesById = new Map([
+    [7001, "Old XFA"],
+    [7002, "New XFA"],
+  ]);
+
+  it("requires an explicit destructive confirmation for overwrite", () => {
+    const form = {
+      fromAccountId: "7001",
+      toAccountId: "7002",
+      onConflict: "overwrite" as const,
+      includeImages: true,
+    };
+    const confirmOverwrite = vi.fn((message: string) => {
+      void message;
+      return false;
+    });
+
+    expect(approveMergeJournalSubmission(form, accountNamesById, confirmOverwrite)).toBe(false);
+    expect(confirmOverwrite).toHaveBeenCalledWith(
+      buildMergeJournalOverwriteConfirmation(form, accountNamesById),
+    );
+    expect(confirmOverwrite.mock.calls[0]?.[0]).toContain("Every existing destination entry");
+    expect(confirmOverwrite.mock.calls[0]?.[0]).toContain("Old XFA (#7001)");
+    expect(confirmOverwrite.mock.calls[0]?.[0]).toContain("New XFA (#7002)");
+    expect(confirmOverwrite.mock.calls[0]?.[0]).toContain("linked images");
+    expect(confirmOverwrite.mock.calls[0]?.[0]).toContain("cannot be undone");
+  });
+
+  it("keeps duplicate display names unambiguous with account IDs", () => {
+    const form = {
+      fromAccountId: "7001",
+      toAccountId: "7002",
+      onConflict: "overwrite" as const,
+      includeImages: false,
+    };
+    const duplicateNames = new Map([
+      [7001, "Express 50K"],
+      [7002, "Express 50K"],
+    ]);
+
+    expect(buildMergeJournalOverwriteConfirmation(form, duplicateNames)).toContain(
+      "from Express 50K (#7001) into Express 50K (#7002)",
+    );
+  });
+
+  it("does not prompt for the non-destructive skip behavior", () => {
+    const confirmOverwrite = vi.fn((message: string) => {
+      void message;
+      return false;
+    });
+    const form = {
+      fromAccountId: "7001",
+      toAccountId: "7002",
+      onConflict: "skip" as const,
+      includeImages: true,
+    };
+
+    expect(approveMergeJournalSubmission(form, accountNamesById, confirmOverwrite)).toBe(true);
+    expect(confirmOverwrite).not.toHaveBeenCalled();
   });
 });
 

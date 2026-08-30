@@ -201,6 +201,69 @@ def test_ai_recap_updates_existing_entry_without_losing_user_content(db_session)
     assert existing.tags == ["manual", "ai-recap", "nq", "execution"]
 
 
+def test_ai_recap_merges_a_concurrent_user_edit_from_fresh_state(tmp_path):
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'journal-race.db'}")
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[Account.__table__, JournalEntry.__table__, ProjectXTradeEvent.__table__],
+    )
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    primary = SessionLocal()
+    try:
+        add_projectx_account(primary, 7199)
+        add_closed_trade(primary, 7199)
+        created, _ = create_journal_entry(
+            primary,
+            user_id=DEFAULT_USER_ID,
+            account_id=7199,
+            entry_date=date(2026, 5, 12),
+            title="Manual review",
+            mood=JournalMood.FOCUSED,
+            tags=["manual"],
+            body="Original note.",
+        )
+        created_id = int(created.id)
+
+        class ConcurrentEditGemini(FakeGemini):
+            def generate_text(self, prompt, *, system_instruction=None, generation_config=None):
+                # The recap must not reserve a database transaction/connection
+                # while waiting for Gemini.
+                assert primary.in_transaction() is False
+                with SessionLocal() as concurrent:
+                    row = concurrent.query(JournalEntry).filter(JournalEntry.id == created_id).one()
+                    row.body = "Concurrent user note."
+                    row.version = 2
+                    concurrent.commit()
+                return super().generate_text(
+                    prompt,
+                    system_instruction=system_instruction,
+                    generation_config=generation_config,
+                )
+
+        result = generate_ai_journal_recap(
+            primary,
+            user_id=DEFAULT_USER_ID,
+            account_id=7199,
+            entry_date=date(2026, 5, 12),
+            gemini_client_factory=ConcurrentEditGemini,
+        )
+
+        primary.expire_all()
+        final = primary.query(JournalEntry).filter(JournalEntry.id == created_id).one()
+        assert result["updated"] is True
+        assert final.version == 3
+        assert "Concurrent user note." in final.body
+        assert "Original note." not in final.body
+        assert "# Daily Recap" in final.body
+    finally:
+        primary.close()
+        Base.metadata.drop_all(
+            bind=engine,
+            tables=[ProjectXTradeEvent.__table__, JournalEntry.__table__, Account.__table__],
+        )
+        engine.dispose()
+
+
 def test_ai_recap_replaces_existing_marked_section_without_duplication(db_session):
     add_projectx_account(db_session, 7104)
     add_closed_trade(db_session, 7104)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -72,11 +73,13 @@ def test_fresh_schema_contains_current_bot_safety_contract():
         "archived_at timestamptz",
         "accounts_archived_not_main_check",
         "'submission_unknown'",
-        "schema-20260729-v5",
+        "schema-20260830-v6",
         "create table if not exists trade_import_batches",
         "create table if not exists trade_import_previews",
         "create table if not exists expense_suppressions",
         "fk_projectx_trade_events_owned_batch",
+        "constraint uq_projectx_trade_events_account_source_trade",
+        "constraint uq_projectx_trade_events_account_order_ts",
         "commissions numeric(18,6)",
         "fee_scope text not null default 'per_side'",
         "order_size <= 10000 and order_size = trunc(order_size)",
@@ -98,11 +101,65 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_adds_expense_suppressions():
+def test_latest_migration_hardens_supabase_data_api():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260729_add_expense_suppressions.sql"
+        == "20260830_harden_supabase_data_api.sql"
     )
+
+
+def test_supabase_data_api_hardening_covers_existing_and_future_public_objects():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260830_harden_supabase_data_api.sql"
+    ).read_text(encoding="utf-8").lower()
+    schema = (migrate_db.REPO_ROOT / "db" / "schema.sql").read_text(encoding="utf-8").lower()
+
+    for sql in (migration, schema):
+        normalized_sql = " ".join(sql.split())
+        assert "array['anon', 'authenticated']" in sql
+        assert "revoke all privileges on all tables in schema public" in sql
+        assert "revoke all privileges on all sequences in schema public" in sql
+        assert "revoke execute on all functions in schema public" in sql
+        assert "alter default privileges for role postgres in schema public" in sql
+        assert "revoke execute on functions from public" in sql
+        assert (
+            "alter default privileges for role postgres "
+            "revoke execute on functions from public"
+        ) in normalized_sql
+        assert (
+            "alter default privileges for role postgres in schema public "
+            "revoke execute on functions from public"
+        ) in normalized_sql
+        for object_type in ("tables", "sequences"):
+            assert (
+                f"alter default privileges revoke all privileges on {object_type} "
+                "from public"
+            ) in normalized_sql
+            assert (
+                "alter default privileges in schema public revoke all privileges "
+                f"on {object_type} from public"
+            ) in normalized_sql
+            assert (
+                f"alter default privileges for role postgres revoke all privileges on {object_type} "
+                "from public"
+            ) in normalized_sql
+            assert (
+                "alter default privileges for role postgres in schema public "
+                f"revoke all privileges on {object_type} from public"
+            ) in normalized_sql
+        hardening_end = sql.rfind("$topsignal_data_api_hardening$;")
+        marker_position = sql.rfind("values ('schema-20260830-v6')")
+        assert 0 < marker_position < hardening_end
+        assert "values ('schema-20260830-v6')" not in sql[hardening_end:]
+
+    assert "auth.*" in migration
+    assert "storage.*" in migration
+    assert "values ('schema-20260830-v6')" in migration
+    assert "enable row level security" not in migration
+    assert "create policy" not in migration
 
 
 def test_expense_suppressions_migration_is_user_scoped_and_non_destructive():
@@ -249,6 +306,41 @@ def test_adoption_requires_explicit_backup_acknowledgement():
         migrate_db.migration_status(check_only=False, adopt_current=True)
 
 
+def test_adoption_executes_security_migration_before_recording_history(tmp_path):
+    historical = tmp_path / "20260101_historical.sql"
+    security = tmp_path / "20260830_harden_supabase_data_api.sql"
+    historical.write_text("select 'historical';", encoding="utf-8")
+    security.write_text("select 'security-hardening';", encoding="utf-8")
+    events = []
+
+    class Transaction:
+        def __enter__(self):
+            events.append(("transaction", "begin"))
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(("transaction", "rollback" if exc else "commit"))
+
+    class Connection:
+        def transaction(self):
+            return Transaction()
+
+        def execute(self, statement, params=None, **kwargs):
+            events.append((str(statement), params, kwargs))
+
+    migrate_db._record_all_migrations(
+        Connection(),
+        [historical, security],
+        execute_migrations=migrate_db.ADOPTION_EXECUTED_MIGRATIONS,
+    )
+
+    assert events[0] == ("transaction", "begin")
+    assert events[1] == ("select 'security-hardening';", None, {"prepare": False})
+    assert "create table if not exists topsignal_schema_migrations" in events[2][0]
+    assert "insert into topsignal_schema_migrations" in events[3][0]
+    assert "insert into topsignal_schema_migrations" in events[4][0]
+    assert events[-1] == ("transaction", "commit")
+
+
 def test_adoption_index_parser_requires_exact_ordered_keys():
     exact = (
         "CREATE UNIQUE INDEX uq_test ON public.sample USING btree "
@@ -269,6 +361,184 @@ def test_adoption_index_parser_requires_exact_ordered_keys():
         "bot_config_id",
         "idempotency_key",
     )
+
+
+def _sample_adoption_contract() -> migrate_db._SchemaContract:
+    return migrate_db._SchemaContract(
+        columns={
+            ("parents", "id"): migrate_db._ColumnContract(
+                postgres_type="bigint",
+                nullable=False,
+                default_expression="<generated>",
+            ),
+            ("children", "id"): migrate_db._ColumnContract(
+                postgres_type="bigint",
+                nullable=False,
+                default_expression="<generated>",
+            ),
+            ("children", "parent_id"): migrate_db._ColumnContract(
+                postgres_type="bigint",
+                nullable=False,
+                default_expression=None,
+            ),
+            ("children", "quantity"): migrate_db._ColumnContract(
+                postgres_type="numeric(18,6)",
+                nullable=False,
+                default_expression="<numeric:1>",
+            ),
+        },
+        primary_keys={"parents": ("id",), "children": ("id",)},
+        foreign_keys={
+            "children": (
+                migrate_db._ForeignKeyContract(
+                    local_columns=("parent_id",),
+                    remote_schema="<application>",
+                    remote_table="parents",
+                    remote_columns=("id",),
+                    match_type="SIMPLE",
+                    on_delete="CASCADE",
+                    on_update="NO ACTION",
+                    deferrable=False,
+                    initially_deferred=False,
+                    validated=True,
+                ),
+            )
+        },
+        checks={
+            "children": (
+                migrate_db._CheckContract(
+                    name="children_quantity_positive_check",
+                    expression="(quantity > (0)::numeric)",
+                    validated=True,
+                    no_inherit=False,
+                ),
+                migrate_db._CheckContract(
+                    name="children_quantity_supported_check",
+                    expression=(
+                        "((quantity <= (10000)::numeric) AND "
+                        "(quantity = trunc(quantity)))"
+                    ),
+                    validated=True,
+                    no_inherit=False,
+                ),
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("wrong_type", "PostgreSQL type text; expected numeric(18,6)"),
+        ("dropped_not_null", "children.quantity must be NOT NULL"),
+        ("wrong_default", "children.quantity has default None"),
+        ("wrong_fk_action", "ON DELETE CASCADE"),
+        ("wrong_fk_match", "MATCH SIMPLE"),
+        ("unexpected_column", "unexpected model-table columns: legacy_flag"),
+        ("unexpected_fk", "has unexpected foreign key"),
+        ("weakened_check", "children_quantity_supported_check"),
+    ],
+)
+def test_adoption_contract_rejects_structural_drift(mutation, expected_error):
+    expected = _sample_adoption_contract()
+    actual_columns = dict(expected.columns)
+    actual_foreign_keys = dict(expected.foreign_keys)
+    actual_checks = dict(expected.checks)
+
+    if mutation == "wrong_type":
+        actual_columns[("children", "quantity")] = replace(
+            actual_columns[("children", "quantity")],
+            postgres_type="text",
+        )
+    elif mutation == "dropped_not_null":
+        actual_columns[("children", "quantity")] = replace(
+            actual_columns[("children", "quantity")],
+            nullable=True,
+        )
+    elif mutation == "wrong_default":
+        actual_columns[("children", "quantity")] = replace(
+            actual_columns[("children", "quantity")],
+            default_expression=None,
+        )
+    elif mutation == "wrong_fk_action":
+        actual_foreign_keys["children"] = (
+            replace(actual_foreign_keys["children"][0], on_delete="RESTRICT"),
+        )
+    elif mutation == "wrong_fk_match":
+        actual_foreign_keys["children"] = (
+            replace(actual_foreign_keys["children"][0], match_type="FULL"),
+        )
+    elif mutation == "unexpected_column":
+        actual_columns[("children", "legacy_flag")] = migrate_db._ColumnContract(
+            postgres_type="boolean",
+            nullable=True,
+            default_expression=None,
+        )
+    elif mutation == "unexpected_fk":
+        actual_foreign_keys["children"] = (
+            *actual_foreign_keys["children"],
+            replace(
+                actual_foreign_keys["children"][0],
+                local_columns=("quantity",),
+            ),
+        )
+    elif mutation == "weakened_check":
+        actual_checks["children"] = (
+            actual_checks["children"][0],
+            replace(
+                actual_checks["children"][1],
+                expression="(quantity <= (20000)::numeric)",
+            ),
+        )
+    else:  # pragma: no cover - parametrization is exhaustive.
+        raise AssertionError(mutation)
+
+    actual = replace(
+        expected,
+        columns=actual_columns,
+        foreign_keys=actual_foreign_keys,
+        checks=actual_checks,
+    )
+    errors = migrate_db._schema_contract_errors(
+        expected=expected,
+        actual=actual,
+        expected_check_names={
+            ("children", "children_quantity_positive_check"),
+            ("children", "children_quantity_supported_check"),
+        },
+    )
+
+    assert any(expected_error in error for error in errors)
+
+
+def test_adoption_contract_accepts_stronger_combined_structural_check():
+    expected = _sample_adoption_contract()
+    actual = replace(
+        expected,
+        checks={
+            "children": (
+                migrate_db._CheckContract(
+                    name="children_quantity_check",
+                    expression=(
+                        "((quantity > (0)::numeric) AND "
+                        "(quantity <= (10000)::numeric) AND "
+                        "(quantity = trunc(quantity)))"
+                    ),
+                    validated=True,
+                    no_inherit=False,
+                ),
+            )
+        },
+    )
+
+    assert migrate_db._schema_contract_errors(
+        expected=expected,
+        actual=actual,
+        expected_check_names={
+            ("children", "children_quantity_positive_check"),
+            ("children", "children_quantity_supported_check"),
+        },
+    ) == []
 
 
 def test_migration_checksums_normalize_line_endings_and_utf8_bom(tmp_path):

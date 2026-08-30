@@ -41,6 +41,7 @@ import { filterAccountManagementRows, loadAccountManagementRows } from "./accoun
 import { MergeJournalCard } from "./components/MergeJournalCard";
 import {
   type MergeJournalFormState,
+  approveMergeJournalSubmission,
   buildMergeJournalSuccessMessage,
   filterMergeSourceAccounts,
   getMergeDestinationAccounts,
@@ -612,6 +613,9 @@ export function AccountsPage() {
 
     const fromAccountId = Number.parseInt(mergeForm.fromAccountId, 10);
     const toAccountId = Number.parseInt(mergeForm.toAccountId, 10);
+    if (!approveMergeJournalSubmission(mergeForm, mergeAccountNamesById, (message) => window.confirm(message))) {
+      return;
+    }
 
     setMergeJournalLoading(true);
     setMergeJournalError(null);

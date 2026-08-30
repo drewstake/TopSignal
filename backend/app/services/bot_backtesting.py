@@ -3174,23 +3174,43 @@ def prepare_bot_backtest_data(
         while cursor < fetch_end:
             chunk_end = min(fetch_end, cursor + chunk_span)
             budget.claim()
-            bot_service_module.fetch_and_store_market_candles(
-                db,
-                user_id=user_id,
-                client=client,
-                contract_id=contract_id,
-                symbol=symbol,
-                live=False,
-                start=cursor,
-                end=chunk_end,
-                unit=unit,
-                unit_number=unit_number,
-                limit=MAX_PROVIDER_FETCH_BARS,
-                include_partial_bar=False,
-                prefer_current_contract=False,
-                preserve_cached_history=True,
-                authoritative_refresh=True,
-            )
+            # Coverage checks above are database-only, but they leave their
+            # read transaction checked out.  Commit at the provider boundary
+            # so ProjectX history latency never consumes a pool connection.
+            # A commit also preserves (rather than discards) any caller writes
+            # that were pending when this legacy preparation path was entered.
+            if db.in_transaction():
+                db.commit()
+            # Use a short-lived cache session as well. The shared candle helper
+            # detaches its cached return rows when it owns a transaction; doing
+            # that in the caller session could unexpectedly detach objects the
+            # surrounding backtest still holds references to.
+            provider_db = Session(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+            try:
+                bot_service_module.fetch_and_store_market_candles(
+                    provider_db,
+                    user_id=user_id,
+                    client=client,
+                    contract_id=contract_id,
+                    symbol=symbol,
+                    live=False,
+                    start=cursor,
+                    end=chunk_end,
+                    unit=unit,
+                    unit_number=unit_number,
+                    limit=MAX_PROVIDER_FETCH_BARS,
+                    include_partial_bar=False,
+                    prefer_current_contract=False,
+                    preserve_cached_history=True,
+                    authoritative_refresh=True,
+                )
+                if provider_db.in_transaction():
+                    provider_db.commit()
+            except Exception:
+                provider_db.rollback()
+                raise
+            finally:
+                provider_db.close()
             if chunk_end >= fetch_end:
                 break
             cursor = chunk_end

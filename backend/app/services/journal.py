@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from uuid import uuid4
 
-from sqlalchemy import Text, cast, func, or_
+from sqlalchemy import Text, and_, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -230,7 +230,60 @@ def merge_journal_entries(
         .filter(JournalEntry.entry_date.in_(source_dates))
         .all()
     )
-    dest_by_date = {row.entry_date: row for row in existing_dest_rows}
+    initial_source_versions = {
+        int(row.id): int(row.version or 1) for row in source_rows
+    }
+    initial_dest_versions = {
+        int(row.id): int(row.version or 1) for row in existing_dest_rows
+    }
+    initial_dest_ids_by_date = {
+        row.entry_date: int(row.id) for row in existing_dest_rows
+    }
+
+    # Snapshot first, then lock every currently affected row in a deterministic
+    # account/date/id order. If a writer committed while this merge waited, the
+    # version comparison below turns the stale destructive merge into a 409.
+    locked_rows = _lock_journal_merge_rows(
+        db,
+        user_id=resolved_user_id,
+        from_account_id=from_account_id,
+        to_account_id=to_account_id,
+        source_dates=source_dates,
+    )
+    locked_by_id = {int(row.id): row for row in locked_rows}
+    for entry_id, initial_version in initial_source_versions.items():
+        locked_row = locked_by_id.get(entry_id)
+        if locked_row is None:
+            db.rollback()
+            raise JournalEntryDateConflictError("journal source changed during merge")
+        if int(locked_row.version or 1) != initial_version:
+            db.rollback()
+            raise VersionConflictError(locked_row)
+
+    source_rows = [locked_by_id[int(row.id)] for row in source_rows]
+    current_dest_rows = [
+        row for row in locked_rows if int(row.account_id) == int(to_account_id)
+    ]
+    current_dest_by_date = {row.entry_date: row for row in current_dest_rows}
+    for entry_date in source_dates:
+        initial_dest_id = initial_dest_ids_by_date.get(entry_date)
+        current_dest = current_dest_by_date.get(entry_date)
+        if initial_dest_id is None:
+            if current_dest is not None:
+                db.rollback()
+                raise VersionConflictError(current_dest)
+            continue
+        if current_dest is None or int(current_dest.id) != initial_dest_id:
+            db.rollback()
+            raise JournalEntryDateConflictError("journal destination changed during merge")
+        if (
+            normalized_conflict == JournalMergeConflictStrategy.OVERWRITE.value
+            and int(current_dest.version or 1) != initial_dest_versions[initial_dest_id]
+        ):
+            db.rollback()
+            raise VersionConflictError(current_dest)
+
+    dest_by_date = current_dest_by_date
 
     source_images_by_entry_id: dict[int, list[JournalEntryImage]] = {}
     if include_images:
@@ -313,6 +366,15 @@ def merge_journal_entries(
                 )
 
         db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        for filename in created_filenames:
+            _delete_journal_image_quietly(filename)
+        if _is_journal_entry_date_unique_conflict(exc):
+            raise JournalEntryDateConflictError(
+                "journal destination changed during merge"
+            ) from exc
+        raise
     except Exception:
         db.rollback()
         for filename in created_filenames:
@@ -323,6 +385,54 @@ def merge_journal_entries(
         _delete_journal_image_quietly(filename)
 
     return summary
+
+
+def _lock_journal_merge_rows(
+    db: Session,
+    *,
+    user_id: str,
+    from_account_id: int,
+    to_account_id: int,
+    source_dates: list[date],
+) -> list[JournalEntry]:
+    return (
+        db.query(JournalEntry)
+        .populate_existing()
+        .filter(JournalEntry.user_id == user_id)
+        .filter(
+            or_(
+                JournalEntry.account_id == from_account_id,
+                and_(
+                    JournalEntry.account_id == to_account_id,
+                    JournalEntry.entry_date.in_(source_dates),
+                ),
+            )
+        )
+        .order_by(
+            JournalEntry.account_id.asc(),
+            JournalEntry.entry_date.asc(),
+            JournalEntry.id.asc(),
+        )
+        .with_for_update()
+        .all()
+    )
+
+
+def _is_journal_entry_date_unique_conflict(exc: IntegrityError) -> bool:
+    diagnostic = getattr(exc.orig, "diag", None)
+    constraint_name = str(getattr(diagnostic, "constraint_name", "") or "").lower()
+    table_name = str(getattr(diagnostic, "table_name", "") or "").lower()
+    expected_names = {
+        "uq_journal_entries_account_entry_date",
+        "journal_entries_user_id_account_id_entry_date_key",
+    }
+    if constraint_name in expected_names and table_name in {"", "journal_entries"}:
+        return True
+    message = str(exc.orig or exc).lower()
+    return (
+        "unique constraint failed: journal_entries.user_id, "
+        "journal_entries.account_id, journal_entries.entry_date"
+    ) in message
 
 
 def update_journal_entry(
@@ -380,28 +490,59 @@ def update_journal_entry(
             return row
         raise VersionConflictError(row)
 
-    has_changes = False
-    for field_name, next_value in normalized_updates.items():
-        if _journal_entry_field_value(row, field_name) == next_value:
-            continue
-        setattr(row, field_name, next_value)
-        has_changes = True
+    changed_updates = {
+        field_name: next_value
+        for field_name, next_value in normalized_updates.items()
+        if _journal_entry_field_value(row, field_name) != next_value
+    }
 
-    if not has_changes:
+    if not changed_updates:
         return row
 
-    row.version = current_version + 1
-    row.updated_at = _utcnow()
-    db.add(row)
+    next_version = current_version + 1
+    update_values: dict[Any, Any] = {
+        getattr(JournalEntry, field_name): next_value
+        for field_name, next_value in changed_updates.items()
+    }
+    update_values[JournalEntry.version] = next_version
+    update_values[JournalEntry.updated_at] = _utcnow()
 
     try:
+        updated_count = (
+            db.query(JournalEntry)
+            .filter(JournalEntry.user_id == resolved_user_id)
+            .filter(JournalEntry.account_id == account_id)
+            .filter(JournalEntry.id == entry_id)
+            .filter(JournalEntry.version == current_version)
+            .update(update_values, synchronize_session=False)
+        )
+        if updated_count != 1:
+            db.rollback()
+            latest = _get_entry_for_account(
+                db,
+                user_id=resolved_user_id,
+                account_id=account_id,
+                entry_id=entry_id,
+            )
+            if latest is None:
+                raise LookupError("journal entry not found")
+            if _journal_entry_matches_updates(latest, normalized_updates):
+                return latest
+            raise VersionConflictError(latest)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise JournalEntryDateConflictError("journal entry already exists for this account and date") from exc
 
-    db.refresh(row)
-    return row
+    updated_row = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+    )
+    if updated_row is None:
+        raise LookupError("journal entry not found")
+    return updated_row
 
 
 def archive_journal_entry(
@@ -664,6 +805,13 @@ def pull_journal_entry_trade_stats(
     if row is None:
         raise LookupError("journal entry not found")
 
+    # Trade synchronization and the aggregate queries below may take long
+    # enough for an autosave to commit through another Session. Keep primitive
+    # snapshot values: the ORM row can be expired/refreshed when the callback
+    # releases this Session's transaction.
+    initial_version = int(row.version or 1)
+    initial_entry_date = row.entry_date
+
     base_trade_query = (
         db.query(ProjectXTradeEvent)
         .options(
@@ -688,6 +836,7 @@ def pull_journal_entry_trade_stats(
     window_end: datetime | None = None
 
     normalized_trade_ids = _normalize_trade_ids(trade_ids)
+    entry_date_was_defaulted = False
     if normalized_trade_ids:
         closed_query = closed_query.filter(ProjectXTradeEvent.id.in_(normalized_trade_ids))
     elif start_date is not None or end_date is not None:
@@ -703,6 +852,7 @@ def pull_journal_entry_trade_stats(
             before_query_sync(window_start, window_end)
     else:
         effective_date = entry_date or row.entry_date
+        entry_date_was_defaulted = entry_date is None
         window_start, window_end = _trading_day_bounds(effective_date)
         if before_query_sync is not None:
             before_query_sync(window_start, window_end)
@@ -742,19 +892,44 @@ def pull_journal_entry_trade_stats(
 
     snapshot = _compute_trade_stats_snapshot(closed_rows, largest_position_size=largest_position_size)
 
-    now = _utcnow()
-    stats_changed = row.stats_source != "trade_snapshot" or _copy_stats_json(row.stats_json) != snapshot
-    row.stats_source = "trade_snapshot"
-    row.stats_json = snapshot
-    row.stats_pulled_at = now
-    if stats_changed:
-        row.version = int(row.version or 1) + 1
-    row.updated_at = now
+    # Re-read under a row lock immediately before applying the computed
+    # snapshot. A concurrent journal edit wins; callers receive the same 409
+    # version-conflict contract as autosave instead of losing that edit or
+    # attaching stats for a date that is no longer current.
+    locked_row = _get_entry_for_account(
+        db,
+        user_id=resolved_user_id,
+        account_id=account_id,
+        entry_id=entry_id,
+        for_update=True,
+    )
+    if locked_row is None:
+        db.rollback()
+        raise LookupError("journal entry not found")
+    if (
+        int(locked_row.version or 1) != initial_version
+        or (entry_date_was_defaulted and locked_row.entry_date != initial_entry_date)
+    ):
+        db.rollback()
+        raise VersionConflictError(locked_row)
 
-    db.add(row)
+    now = _utcnow()
+    current_version = int(locked_row.version or 1)
+    stats_changed = (
+        locked_row.stats_source != "trade_snapshot"
+        or _copy_stats_json(locked_row.stats_json) != snapshot
+    )
+    locked_row.stats_source = "trade_snapshot"
+    locked_row.stats_json = snapshot
+    locked_row.stats_pulled_at = now
+    if stats_changed:
+        locked_row.version = current_version + 1
+    locked_row.updated_at = now
+
+    db.add(locked_row)
     db.commit()
-    db.refresh(row)
-    return row
+    db.refresh(locked_row)
+    return locked_row
 
 
 def serialize_journal_entry(row: JournalEntry) -> dict[str, Any]:
@@ -934,7 +1109,9 @@ def _get_entry_for_account(
         .filter(JournalEntry.id == entry_id)
     )
     if for_update:
-        query = query.with_for_update()
+        # Force a refresh even when an earlier read placed this identity in the
+        # Session cache. Otherwise a lock query can still expose stale fields.
+        query = query.populate_existing().with_for_update()
     return query.one_or_none()
 
 
