@@ -110,6 +110,21 @@ class ExpenseTotalsOut(BaseModel):
     count: int
 
 
+class ExpenseMonthSummaryOut(BaseModel):
+    month: date
+    total_amount: float
+    total_amount_cents: int
+    count: int
+    by_category: dict[str, ExpenseCategoryTotalsOut]
+
+
+class PayoutMonthSummaryOut(BaseModel):
+    month: date
+    total_amount: float
+    total_amount_cents: int
+    count: int
+
+
 class FinancialSummarySpendOut(BaseModel):
     last_payout_date: date | None
     total_amount: float
@@ -130,6 +145,8 @@ class FinancialSummaryOut(BaseModel):
     as_of_date: date
     first_cash_flow_date: date | None
     expense_totals: ExpenseTotalsOut
+    expense_months: list[ExpenseMonthSummaryOut]
+    payout_months: list[PayoutMonthSummaryOut]
     payout_totals: PayoutTotalsOut
     spend_since_last_payout: FinancialSummarySpendOut
     ranges: list[FinancialSummaryRangeOut]

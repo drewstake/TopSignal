@@ -19,6 +19,7 @@ import type {
   DayPnlPoint,
   ExpenseCategory,
   ExpenseListResponse,
+  ExpenseMonthlySummary,
   ExpenseRange,
   ExpenseRecord,
   ExpenseTotals,
@@ -30,6 +31,7 @@ import type {
   JournalEntry,
   JournalMood,
   PayoutListResponse,
+  PayoutMonthlySummary,
   PayoutRecord,
   PayoutTotals,
   PointsBasis,
@@ -1158,12 +1160,9 @@ function rowsInDateRange<T extends { expense_date?: string; payout_date?: string
   });
 }
 
-function buildExpenseTotals(
+function buildExpenseAggregate(
   rows: ExpenseRecord[],
-  range: ExpenseRange,
-  startDate: string | null,
-  endDate: string,
-): ExpenseTotals {
+): Pick<ExpenseTotals, "total_amount" | "total_amount_cents" | "by_category" | "count"> {
   const byCategory: ExpenseTotals["by_category"] = {};
   for (const row of rows) {
     const current = byCategory[row.category] ?? { amount: 0, amount_cents: 0, count: 0 };
@@ -1174,14 +1173,42 @@ function buildExpenseTotals(
   }
   const totalCents = sum(rows.map((row) => row.amount_cents));
   return {
-    range,
-    start_date: startDate,
-    end_date: endDate,
     total_amount: round(totalCents / 100),
     total_amount_cents: totalCents,
     by_category: byCategory,
     count: rows.length,
   };
+}
+
+function buildExpenseTotals(
+  rows: ExpenseRecord[],
+  range: ExpenseRange,
+  startDate: string | null,
+  endDate: string,
+): ExpenseTotals {
+  return {
+    range,
+    start_date: startDate,
+    end_date: endDate,
+    ...buildExpenseAggregate(rows),
+  };
+}
+
+function buildExpenseMonthlySummaries(rows: ExpenseRecord[]): ExpenseMonthlySummary[] {
+  const rowsByMonth = new Map<string, ExpenseRecord[]>();
+  for (const row of rows) {
+    const month = row.expense_date.slice(0, 7);
+    const monthRows = rowsByMonth.get(month) ?? [];
+    monthRows.push(row);
+    rowsByMonth.set(month, monthRows);
+  }
+
+  return [...rowsByMonth.entries()]
+    .sort(([leftMonth], [rightMonth]) => leftMonth.localeCompare(rightMonth))
+    .map(([month, monthRows]) => ({
+      month: `${month}-01`,
+      ...buildExpenseAggregate(monthRows),
+    }));
 }
 
 function buildPayoutTotals(rows: PayoutRecord[]): PayoutTotals {
@@ -1194,6 +1221,28 @@ function buildPayoutTotals(rows: PayoutRecord[]): PayoutTotals {
     average_amount_cents: averageCents,
     count: rows.length,
   };
+}
+
+function buildPayoutMonthlySummaries(rows: PayoutRecord[]): PayoutMonthlySummary[] {
+  const rowsByMonth = new Map<string, PayoutRecord[]>();
+  for (const row of rows) {
+    const month = row.payout_date.slice(0, 7);
+    const monthRows = rowsByMonth.get(month) ?? [];
+    monthRows.push(row);
+    rowsByMonth.set(month, monthRows);
+  }
+
+  return [...rowsByMonth.entries()]
+    .sort(([leftMonth], [rightMonth]) => leftMonth.localeCompare(rightMonth))
+    .map(([month, monthRows]) => {
+      const totalCents = sum(monthRows.map((row) => row.amount_cents));
+      return {
+        month: `${month}-01`,
+        total_amount: round(totalCents / 100),
+        total_amount_cents: totalCents,
+        count: monthRows.length,
+      };
+    });
 }
 
 function filterExpenses(query: Record<string, DemoQueryValue> | undefined, useSemanticRange: boolean) {
@@ -1248,7 +1297,9 @@ function buildFinancialSummary(query: Record<string, DemoQueryValue> | undefined
   const payoutDates = payoutsThroughAsOf.map((row) => row.payout_date).sort();
   const lastPayoutDate = payoutDates.at(-1) ?? null;
   const expenseTotals = buildExpenseTotals(expensesThroughAsOf, "all_time", null, asOfDate);
+  const expenseMonths = buildExpenseMonthlySummaries(expensesThroughAsOf);
   const payoutTotals = buildPayoutTotals(payoutsThroughAsOf);
+  const payoutMonths = buildPayoutMonthlySummaries(payoutsThroughAsOf);
   const spendRows = rowsInDateRange(expensesThroughAsOf, lastPayoutDate, asOfDate);
   const ranges: FinancialSummaryRange[] = financialRangeSpecs(firstCashFlowDate, asOfDate).map((spec) => {
     const rangeExpenses = rowsInDateRange(expensesThroughAsOf, spec.startDate, spec.endDate ?? asOfDate);
@@ -1267,7 +1318,9 @@ function buildFinancialSummary(query: Record<string, DemoQueryValue> | undefined
     as_of_date: asOfDate,
     first_cash_flow_date: firstCashFlowDate,
     expense_totals: expenseTotals,
+    expense_months: expenseMonths,
     payout_totals: payoutTotals,
+    payout_months: payoutMonths,
     spend_since_last_payout: {
       last_payout_date: lastPayoutDate,
       total_amount: round(spendCents / 100),

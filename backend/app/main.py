@@ -1007,6 +1007,14 @@ def get_financial_summary(
         start_date=None,
         end_date=effective_as_of_date,
     )
+    expense_months = _financial_expense_months(
+        expense_daily_rows,
+        end_date=effective_as_of_date,
+    )
+    payout_months = _financial_payout_months(
+        payout_daily_rows,
+        end_date=effective_as_of_date,
+    )
     # Existing all-time payout totals intentionally have no end-date filter.
     payout_totals = _financial_payout_totals(
         payout_daily_rows,
@@ -1047,6 +1055,8 @@ def get_financial_summary(
         "as_of_date": effective_as_of_date,
         "first_cash_flow_date": first_cash_flow_date,
         "expense_totals": expense_totals,
+        "expense_months": expense_months,
+        "payout_months": payout_months,
         "payout_totals": payout_totals,
         "spend_since_last_payout": {
             "last_payout_date": last_payout_date,
@@ -4020,6 +4030,70 @@ def _financial_expense_totals(
         },
         "count": count,
     }
+
+
+def _financial_expense_months(daily_rows, *, end_date: date) -> list[dict]:
+    monthly_categories: dict[date, dict[str, dict[str, int]]] = {}
+    for expense_date, category, amount_cents, row_count in daily_rows:
+        if expense_date > end_date:
+            continue
+
+        month = expense_date.replace(day=1)
+        category_key = str(category)
+        category_totals = monthly_categories.setdefault(month, {}).setdefault(
+            category_key,
+            {"amount_cents": 0, "count": 0},
+        )
+        category_totals["amount_cents"] += int(amount_cents)
+        category_totals["count"] += int(row_count)
+
+    months = []
+    for month in sorted(monthly_categories):
+        category_rows = monthly_categories[month]
+        total_amount_cents = sum(row["amount_cents"] for row in category_rows.values())
+        count = sum(row["count"] for row in category_rows.values())
+        months.append(
+            {
+                "month": month,
+                "total_amount": _cents_to_dollars(total_amount_cents),
+                "total_amount_cents": total_amount_cents,
+                "count": count,
+                "by_category": {
+                    category: {
+                        "amount": _cents_to_dollars(row["amount_cents"]),
+                        "amount_cents": row["amount_cents"],
+                        "count": row["count"],
+                    }
+                    for category, row in category_rows.items()
+                },
+            }
+        )
+    return months
+
+
+def _financial_payout_months(daily_rows, *, end_date: date) -> list[dict]:
+    monthly_totals: dict[date, dict[str, int]] = {}
+    for payout_date, amount_cents, row_count in daily_rows:
+        if payout_date > end_date:
+            continue
+
+        month = payout_date.replace(day=1)
+        totals = monthly_totals.setdefault(
+            month,
+            {"amount_cents": 0, "count": 0},
+        )
+        totals["amount_cents"] += int(amount_cents)
+        totals["count"] += int(row_count)
+
+    return [
+        {
+            "month": month,
+            "total_amount": _cents_to_dollars(totals["amount_cents"]),
+            "total_amount_cents": totals["amount_cents"],
+            "count": totals["count"],
+        }
+        for month, totals in sorted(monthly_totals.items())
+    ]
 
 
 def _financial_payout_totals(

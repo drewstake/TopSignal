@@ -39,6 +39,23 @@ function financialSummary(spendAmount: number): FinancialSummary {
     as_of_date: "2026-07-25",
     first_cash_flow_date: "2026-01-01",
     expense_totals: expenseTotals,
+    expense_months: [
+      {
+        month: "2026-01-01",
+        total_amount: 100,
+        total_amount_cents: 10_000,
+        by_category: {},
+        count: 2,
+      },
+    ],
+    payout_months: [
+      {
+        month: "2026-01-01",
+        total_amount: 300,
+        total_amount_cents: 30_000,
+        count: 1,
+      },
+    ],
     payout_totals: payoutTotals,
     spend_since_last_payout: {
       last_payout_date: "2026-07-10",
@@ -199,6 +216,73 @@ describe("ExpensesPage consolidated startup", () => {
     expect(summaryRequest.mock.calls[0]?.[0]).toEqual({ asOfDate: browserLocalToday });
     expect(summaryRequest.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(await screen.findByText("$25.00")).not.toBeNull();
+  });
+
+  it("uses a selected calendar month as the inclusive expense and payout ledger range", async () => {
+    const user = userEvent.setup();
+    const summary = financialSummary(25);
+    summary.expense_months = [
+      {
+        month: "2026-02-01",
+        total_amount: 125,
+        total_amount_cents: 12_500,
+        by_category: {
+          evaluation_fee: { amount: 125, amount_cents: 12_500, count: 2 },
+        },
+        count: 2,
+      },
+    ];
+    summary.payout_months = [
+      {
+        month: "2026-02-01",
+        total_amount: 500,
+        total_amount_cents: 50_000,
+        count: 1,
+      },
+    ];
+    mockExpenseStartup(summary);
+
+    render(<ExpensesPage />);
+
+    const february = await screen.findByRole("button", { name: /February 2026/i });
+    expect(february.textContent).toContain("$375.00 net");
+    expect(february.textContent).not.toContain("$500.00");
+    expect(february.textContent).not.toContain("$125.00");
+    await user.click(february);
+
+    await waitFor(() => expect(api.listExpenses).toHaveBeenLastCalledWith({
+      start_date: "2026-02-01",
+      end_date: "2026-02-28",
+      category: undefined,
+      limit: 50,
+      offset: 0,
+    }));
+    await waitFor(() => expect(api.listPayouts).toHaveBeenLastCalledWith({
+      start_date: "2026-02-01",
+      end_date: "2026-02-28",
+      limit: 50,
+      offset: 0,
+    }));
+    expect((screen.getByLabelText("Start Date") as HTMLInputElement).value).toBe("2026-02-01");
+    expect((screen.getByLabelText("End Date") as HTMLInputElement).value).toBe("2026-02-28");
+
+    await user.click(february);
+
+    await waitFor(() => expect(api.listExpenses).toHaveBeenLastCalledWith({
+      start_date: undefined,
+      end_date: undefined,
+      category: undefined,
+      limit: 50,
+      offset: 0,
+    }));
+    await waitFor(() => expect(api.listPayouts).toHaveBeenLastCalledWith({
+      start_date: undefined,
+      end_date: undefined,
+      limit: 50,
+      offset: 0,
+    }));
+    expect((screen.getByLabelText("Start Date") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("End Date") as HTMLInputElement).value).toBe("");
   });
 
   it("aborts and ignores a stale summary after a payout refresh starts", async () => {

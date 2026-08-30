@@ -36,10 +36,19 @@ import {
   type ExpenseAccountPresetType,
   type ExpenseStage,
 } from "../../lib/expensePresets";
-import type { ExpenseCategory, ExpenseRecord, ExpenseTotals, PayoutRecord, PayoutTotals } from "../../lib/types";
+import type {
+  ExpenseCategory,
+  ExpenseMonthlySummary,
+  ExpenseRecord,
+  ExpenseTotals,
+  PayoutMonthlySummary,
+  PayoutRecord,
+  PayoutTotals,
+} from "../../lib/types";
 import { isDemoModeEnabled } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { formatCurrency } from "../../utils/formatters";
+import { ExpenseCalendarCard } from "./ExpenseCalendarCard";
 import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildNetRangeOptions, formatLocalIsoDate, type NetRangeOption } from "./expenseNetRanges";
 import {
@@ -219,6 +228,10 @@ export function ExpensesPage() {
   const [totals, setTotals] = useState<ExpenseTotals | null>(null);
   const [totalsLoading, setTotalsLoading] = useState(true);
   const [totalsError, setTotalsError] = useState<string | null>(null);
+  const [expenseMonths, setExpenseMonths] = useState<ExpenseMonthlySummary[]>([]);
+  const [payoutMonths, setPayoutMonths] = useState<PayoutMonthlySummary[]>([]);
+  const [financialAsOfDate, setFinancialAsOfDate] = useState(getTodayLocalIsoDate);
+  const [selectedCalendarMonth, setSelectedCalendarMonth] = useState<string | null>(null);
   const [combineSpendSnapshot, setCombineSpendSnapshot] = useState(readCombineSpendSnapshot);
   const [combineTrackerLoading, setCombineTrackerLoading] = useState(false);
   const [combineTrackerError, setCombineTrackerError] = useState<string | null>(null);
@@ -286,12 +299,17 @@ export function ExpensesPage() {
     }
   }, [beginExpensesRequest, category, endDate, limit, offset, startDate]);
 
+  const selectedPayoutStartDate = selectedCalendarMonth ? startDate : "";
+  const selectedPayoutEndDate = selectedCalendarMonth ? endDate : "";
+
   const loadPayouts = useCallback(async () => {
     const isCurrent = beginPayoutsRequest();
     setPayoutLoading(true);
     setPayoutError(null);
     try {
       const payload = await listPayouts({
+        start_date: selectedPayoutStartDate || undefined,
+        end_date: selectedPayoutEndDate || undefined,
         limit: PAYOUT_PAGE_SIZE,
         offset: payoutOffset,
       });
@@ -311,7 +329,7 @@ export function ExpensesPage() {
         setPayoutLoading(false);
       }
     }
-  }, [beginPayoutsRequest, payoutOffset]);
+  }, [beginPayoutsRequest, payoutOffset, selectedPayoutEndDate, selectedPayoutStartDate]);
 
   const loadFinancialSummary = useCallback(async (signal?: AbortSignal) => {
     const isCurrent = beginFinancialSummaryRequest();
@@ -334,6 +352,9 @@ export function ExpensesPage() {
       }
 
       setTotals(response.expense_totals);
+      setExpenseMonths(response.expense_months ?? []);
+      setPayoutMonths(response.payout_months ?? []);
+      setFinancialAsOfDate(response.as_of_date);
       setPayoutTotals(response.payout_totals);
       setSpendSinceLastPayout({
         lastPayoutDate: response.spend_since_last_payout.last_payout_date,
@@ -364,6 +385,8 @@ export function ExpensesPage() {
       }
       const message = err instanceof Error ? err.message : "Failed to load financial summary";
       setTotals(null);
+      setExpenseMonths([]);
+      setPayoutMonths([]);
       setPayoutTotals(null);
       setSpendSinceLastPayout(null);
       setNetRanges([]);
@@ -698,6 +721,41 @@ export function ExpensesPage() {
     }
   }
 
+  function handleCalendarMonthSelect(month: string | null) {
+    if (month === null) {
+      setSelectedCalendarMonth(null);
+      setStartDate("");
+      setEndDate("");
+      setPayoutOffset(0);
+      return;
+    }
+
+    const [yearValue, monthValue] = month.split("-");
+    const year = Number.parseInt(yearValue ?? "", 10);
+    const monthNumber = Number.parseInt(monthValue ?? "", 10);
+    if (!Number.isInteger(year) || !Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+      return;
+    }
+
+    const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+    setSelectedCalendarMonth(month);
+    setStartDate(`${month}-01`);
+    setEndDate(`${month}-${String(lastDay).padStart(2, "0")}`);
+    setPayoutOffset(0);
+  }
+
+  function handleManualStartDateChange(value: string) {
+    setSelectedCalendarMonth(null);
+    setPayoutOffset(0);
+    setStartDate(value);
+  }
+
+  function handleManualEndDateChange(value: string) {
+    setSelectedCalendarMonth(null);
+    setPayoutOffset(0);
+    setEndDate(value);
+  }
+
   return (
     <div className="space-y-6 pb-10">
       <h1 className="sr-only">Expenses and Payouts</h1>
@@ -834,6 +892,16 @@ export function ExpensesPage() {
 
       {totalsError ? <p className="text-sm text-rose-300" role="alert">{totalsError}</p> : null}
 
+      <ExpenseCalendarCard
+        months={expenseMonths}
+        payoutMonths={payoutMonths}
+        loading={totalsLoading || payoutTotalsLoading}
+        error={totalsError ?? payoutTotalsError}
+        asOfDate={financialAsOfDate}
+        selectedMonth={selectedCalendarMonth}
+        onMonthSelect={handleCalendarMonthSelect}
+      />
+
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -849,11 +917,21 @@ export function ExpensesPage() {
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div>
               <label htmlFor="expenses-start-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
-              <Input id="expenses-start-date" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+              <Input
+                id="expenses-start-date"
+                type="date"
+                value={startDate}
+                onChange={(event) => handleManualStartDateChange(event.target.value)}
+              />
             </div>
             <div>
               <label htmlFor="expenses-end-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">End Date</label>
-              <Input id="expenses-end-date" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+              <Input
+                id="expenses-end-date"
+                type="date"
+                value={endDate}
+                onChange={(event) => handleManualEndDateChange(event.target.value)}
+              />
             </div>
             <div>
               <label htmlFor="expenses-category" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Category</label>

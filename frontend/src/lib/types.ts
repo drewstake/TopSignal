@@ -430,6 +430,14 @@ export interface ExpenseTotals {
   count: number;
 }
 
+export interface ExpenseMonthlySummary {
+  month: string;
+  total_amount: number;
+  total_amount_cents: number;
+  by_category: Record<string, ExpenseCategoryTotals>;
+  count: number;
+}
+
 export interface PayoutRecord {
   id: number;
   payout_date: string;
@@ -469,6 +477,13 @@ export interface PayoutTotals {
   count: number;
 }
 
+export interface PayoutMonthlySummary {
+  month: string;
+  total_amount: number;
+  total_amount_cents: number;
+  count: number;
+}
+
 export interface FinancialSummarySpend {
   last_payout_date: string | null;
   total_amount: number;
@@ -489,7 +504,9 @@ export interface FinancialSummary {
   as_of_date: string;
   first_cash_flow_date: string | null;
   expense_totals: ExpenseTotals;
+  expense_months: ExpenseMonthlySummary[];
   payout_totals: PayoutTotals;
+  payout_months: PayoutMonthlySummary[];
   spend_since_last_payout: FinancialSummarySpend;
   ranges: FinancialSummaryRange[];
 }

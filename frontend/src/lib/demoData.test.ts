@@ -233,6 +233,9 @@ describe("demo journals and financial story", () => {
       as_of_date: DEMO_AS_OF_DATE,
       account_id: PRIMARY_ACCOUNT_ID,
     });
+    const earlyFinancial = demo<FinancialSummary>("/api/expenses/financial-summary", {
+      as_of_date: "2026-07-10",
+    });
     const mainExpenses = expenses.filter((expense) => expense.account_id === PRIMARY_ACCOUNT_ID);
 
     expect(totals.total_amount_cents).toBe(sum(expenses.map((expense) => expense.amount_cents)));
@@ -240,13 +243,51 @@ describe("demo journals and financial story", () => {
     expect(week.start_date).toBe("2026-07-20");
     expect(week.total_amount_cents).toBe(2_500);
     expect(financial.expense_totals.total_amount_cents).toBe(totals.total_amount_cents);
+    expect(financial.expense_months.map((month) => ({
+      month: month.month,
+      total_amount_cents: month.total_amount_cents,
+      count: month.count,
+    }))).toEqual([
+      { month: "2026-06-01", total_amount_cents: 4_900, count: 1 },
+      { month: "2026-07-01", total_amount_cents: 36_100, count: 5 },
+    ]);
+    expect(financial.expense_months[1]?.by_category.other).toEqual({
+      amount: 124,
+      amount_cents: 12_400,
+      count: 2,
+    });
+    expect(earlyFinancial.expense_months.map((month) => ({
+      month: month.month,
+      total_amount_cents: month.total_amount_cents,
+      count: month.count,
+    }))).toEqual([
+      { month: "2026-06-01", total_amount_cents: 4_900, count: 1 },
+      { month: "2026-07-01", total_amount_cents: 8_800, count: 2 },
+    ]);
     expect(financial.payout_totals.total_amount_cents).toBe(sum(payouts.map((payout) => payout.amount_cents)));
+    expect(financial.payout_months).toEqual([
+      { month: "2026-06-01", total_amount: 875, total_amount_cents: 87_500, count: 1 },
+      { month: "2026-07-01", total_amount: 1_250, total_amount_cents: 125_000, count: 1 },
+    ]);
+    expect(sum(financial.payout_months.map((month) => month.total_amount_cents)))
+      .toBe(financial.payout_totals.total_amount_cents);
+    expect(earlyFinancial.payout_months).toEqual([
+      { month: "2026-06-01", total_amount: 875, total_amount_cents: 87_500, count: 1 },
+    ]);
     expect(financial.first_cash_flow_date).toBe("2026-06-26");
     expect(financial.spend_since_last_payout.last_payout_date).toBe("2026-07-17");
     expect(financial.spend_since_last_payout.total_amount_cents).toBe(2_500);
     expect(financial.ranges.find((range) => range.key === "all_time")?.expense_totals.total_amount_cents)
       .toBe(totals.total_amount_cents);
     expect(mainFinancial.expense_totals.total_amount_cents).toBe(sum(mainExpenses.map((expense) => expense.amount_cents)));
+    expect(mainFinancial.expense_months.map((month) => ({
+      month: month.month,
+      total_amount_cents: month.total_amount_cents,
+      categories: Object.keys(month.by_category),
+    }))).toEqual([
+      { month: "2026-06-01", total_amount_cents: 4_900, categories: ["evaluation_fee"] },
+      { month: "2026-07-01", total_amount_cents: 14_900, categories: ["activation_fee"] },
+    ]);
     expect(mainFinancial.payout_totals.total_amount_cents).toBe(financial.payout_totals.total_amount_cents);
     expect(payouts.every((payout) => ![0, 6].includes(new Date(`${payout.payout_date}T12:00:00Z`).getUTCDay()))).toBe(true);
   });

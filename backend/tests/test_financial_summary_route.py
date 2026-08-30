@@ -93,6 +93,7 @@ def test_financial_summary_preserves_ranges_totals_and_account_filter(db_session
     )
     _payout(db_session, payout_date=date(2025, 4, 15), amount_cents=20_000)
     _payout(db_session, payout_date=date(2026, 7, 10), amount_cents=50_000)
+    _payout(db_session, payout_date=date(2026, 7, 10), amount_cents=15_000)
     _payout(db_session, payout_date=date(2026, 7, 11), amount_cents=99_999, user_id=OTHER_USER)
     db_session.commit()
     monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: CURRENT_USER)
@@ -103,10 +104,33 @@ def test_financial_summary_preserves_ranges_totals_and_account_filter(db_session
     assert validated.first_cash_flow_date == date(2025, 3, 31)
     assert validated.expense_totals.total_amount_cents == 17_500
     assert validated.expense_totals.by_category["evaluation_fee"].amount_cents == 10_000
-    assert validated.payout_totals.total_amount_cents == 70_000
+    assert validated.payout_totals.total_amount_cents == 85_000
     assert validated.spend_since_last_payout.last_payout_date == date(2026, 7, 10)
     assert validated.spend_since_last_payout.total_amount_cents == 2_500
     assert validated.spend_since_last_payout.expense_count == 1
+    assert [item.month for item in validated.expense_months] == [
+        date(2025, 3, 1),
+        date(2026, 7, 1),
+    ]
+    assert validated.expense_months[0].total_amount_cents == 10_000
+    assert validated.expense_months[0].count == 1
+    assert validated.expense_months[0].by_category["evaluation_fee"].amount_cents == 10_000
+    assert validated.expense_months[1].total_amount == 75.0
+    assert validated.expense_months[1].total_amount_cents == 7_500
+    assert validated.expense_months[1].count == 2
+    assert validated.expense_months[1].by_category["data_fee"].amount_cents == 5_000
+    assert validated.expense_months[1].by_category["data_fee"].count == 1
+    assert validated.expense_months[1].by_category["other"].amount_cents == 2_500
+    assert [item.month for item in validated.payout_months] == [
+        date(2025, 4, 1),
+        date(2026, 7, 1),
+    ]
+    assert validated.payout_months[0].total_amount == 200.0
+    assert validated.payout_months[0].total_amount_cents == 20_000
+    assert validated.payout_months[0].count == 1
+    assert validated.payout_months[1].total_amount == 650.0
+    assert validated.payout_months[1].total_amount_cents == 65_000
+    assert validated.payout_months[1].count == 2
 
     ranges = {item.key: item for item in validated.ranges}
     assert list(item.key for item in validated.ranges) == [
@@ -124,7 +148,7 @@ def test_financial_summary_preserves_ranges_totals_and_account_filter(db_session
     assert ranges["anniversary_year_1"].end_date == date(2026, 3, 30)
     assert ranges["anniversary_year_1"].expense_totals.total_amount_cents == 10_000
     assert ranges["anniversary_year_2"].end_date == date(2026, 7, 25)
-    assert ranges["anniversary_year_2"].payout_totals.total_amount_cents == 50_000
+    assert ranges["anniversary_year_2"].payout_totals.total_amount_cents == 65_000
     assert ranges["all_time"].start_date is None
     assert ranges["all_time"].end_date is None
 
@@ -133,7 +157,11 @@ def test_financial_summary_preserves_ranges_totals_and_account_filter(db_session
     )
     assert account_summary.expense_totals.total_amount_cents == 15_000
     assert account_summary.spend_since_last_payout.total_amount_cents == 0
-    assert account_summary.payout_totals.total_amount_cents == 70_000
+    assert account_summary.payout_totals.total_amount_cents == 85_000
+    assert [item.total_amount_cents for item in account_summary.expense_months] == [10_000, 5_000]
+    assert account_summary.expense_months[1].count == 1
+    assert set(account_summary.expense_months[1].by_category) == {"data_fee"}
+    assert [item.total_amount_cents for item in account_summary.payout_months] == [20_000, 65_000]
 
 
 def test_financial_summary_uses_two_bounded_aggregate_queries(db_session, monkeypatch):
@@ -148,12 +176,15 @@ def test_financial_summary_uses_two_bounded_aggregate_queries(db_session, monkey
 
     event.listen(db_session.get_bind(), "before_cursor_execute", record_statement)
     try:
-        get_financial_summary(as_of_date=date(2026, 7, 25), db=db_session)
+        summary = FinancialSummaryOut.model_validate(
+            get_financial_summary(as_of_date=date(2026, 7, 25), db=db_session)
+        )
     finally:
         event.remove(db_session.get_bind(), "before_cursor_execute", record_statement)
 
     assert len(statements) == 2
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert summary.payout_months[0].total_amount_cents == 50_000
 
 
 def test_financial_summary_is_user_scoped_and_preserves_future_all_time_payout_behavior(db_session, monkeypatch):
@@ -168,6 +199,8 @@ def test_financial_summary_is_user_scoped_and_preserves_future_all_time_payout_b
     ranges = {item.key: item for item in summary.ranges}
 
     assert summary.expense_totals.total_amount_cents == 0
+    assert summary.expense_months == []
+    assert summary.payout_months == []
     assert summary.payout_totals.total_amount_cents == 9_000
     assert summary.spend_since_last_payout.last_payout_date == date(2026, 8, 2)
     assert summary.spend_since_last_payout.total_amount_cents == 0
@@ -180,6 +213,8 @@ def test_financial_summary_is_user_scoped_and_preserves_future_all_time_payout_b
     )
     assert other_summary.first_cash_flow_date is None
     assert other_summary.expense_totals.count == 0
+    assert other_summary.expense_months == []
+    assert other_summary.payout_months == []
     assert other_summary.payout_totals.count == 0
     assert len(other_summary.ranges) == 6
 
