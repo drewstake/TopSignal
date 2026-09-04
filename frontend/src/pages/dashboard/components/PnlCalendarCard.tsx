@@ -11,6 +11,7 @@ interface PnlCalendarCardProps {
   days: AccountPnlCalendarDay[];
   loading: boolean;
   error: string | null;
+  scopeKey?: string;
   journalDays?: Set<string>;
   journalDaysLoading?: boolean;
   selectedDate?: string | null;
@@ -184,6 +185,7 @@ export function PnlCalendarCard({
   days,
   loading,
   error,
+  scopeKey = "default",
   journalDays,
   journalDaysLoading = false,
   selectedDate,
@@ -214,24 +216,94 @@ export function PnlCalendarCard({
   }, [days]);
 
   const [visibleMonth, setVisibleMonth] = useState<Date>(() => monthStartUtc(new Date()));
+  const previousScopeKeyRef = useRef(scopeKey);
+  const previousDaysRef = useRef(days);
+  const pendingScopeResetRef = useRef<{
+    scopeKey: string;
+    daysAtScopeChange: readonly AccountPnlCalendarDay[];
+    sawLoading: boolean;
+  } | null>(null);
+  const scopeChangedBeforeEffects = previousScopeKeyRef.current !== scopeKey;
+  const scopeChangedWithNewData =
+    scopeChangedBeforeEffects && previousDaysRef.current !== days && !loading;
+  const pendingScopeReset = pendingScopeResetRef.current?.scopeKey === scopeKey
+    ? pendingScopeResetRef.current
+    : null;
+  const pendingScopeResetReady =
+    pendingScopeReset !== null &&
+    !loading &&
+    (pendingScopeReset.sawLoading || pendingScopeReset.daysAtScopeChange !== days);
+  const suppressVisibleRangeChange =
+    (scopeChangedBeforeEffects && !scopeChangedWithNewData) ||
+    (pendingScopeReset !== null && !pendingScopeResetReady);
+  const reportLatestMonth = scopeChangedWithNewData || pendingScopeResetReady;
 
   useEffect(() => {
-    if (days.length === 0) {
-      setVisibleMonth(monthStartUtc(new Date()));
+    if (previousScopeKeyRef.current !== scopeKey) {
+      previousScopeKeyRef.current = scopeKey;
+      const alreadyHasNewData = previousDaysRef.current !== days && !loading;
+      pendingScopeResetRef.current = alreadyHasNewData
+        ? null
+        : { scopeKey, daysAtScopeChange: days, sawLoading: loading };
+      previousDaysRef.current = days;
+      if (alreadyHasNewData) {
+        setVisibleMonth(monthBounds.max);
+      }
       return;
     }
 
-    setVisibleMonth(monthBounds.max);
-  }, [days, monthBounds.max]);
+    const pendingReset = pendingScopeResetRef.current;
+    if (pendingReset?.scopeKey === scopeKey) {
+      if (loading) {
+        pendingReset.sawLoading = true;
+        previousDaysRef.current = days;
+        return;
+      }
+      if (pendingReset.sawLoading || pendingReset.daysAtScopeChange !== days) {
+        pendingScopeResetRef.current = null;
+        previousDaysRef.current = days;
+        setVisibleMonth(monthBounds.max);
+      }
+      return;
+    }
+
+    previousDaysRef.current = days;
+    setVisibleMonth((current) => {
+      if (current.getTime() < monthBounds.min.getTime()) {
+        return monthBounds.min;
+      }
+      if (current.getTime() > monthBounds.max.getTime()) {
+        return monthBounds.max;
+      }
+      return current;
+    });
+  }, [days, loading, monthBounds.max, monthBounds.min, scopeKey]);
 
   useEffect(() => {
     if (!onVisibleRangeChange) {
       return;
     }
-    const start = monthStartUtc(visibleMonth);
+    if (suppressVisibleRangeChange) {
+      return;
+    }
+    const boundedVisibleMonth = reportLatestMonth
+      ? monthBounds.max
+      : visibleMonth.getTime() < monthBounds.min.getTime()
+        ? monthBounds.min
+        : visibleMonth.getTime() > monthBounds.max.getTime()
+          ? monthBounds.max
+          : visibleMonth;
+    const start = monthStartUtc(boundedVisibleMonth);
     const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
     onVisibleRangeChange(formatIsoDateUtc(start), formatIsoDateUtc(end));
-  }, [onVisibleRangeChange, visibleMonth]);
+  }, [
+    monthBounds.max,
+    monthBounds.min,
+    onVisibleRangeChange,
+    reportLatestMonth,
+    suppressVisibleRangeChange,
+    visibleMonth,
+  ]);
 
   const calendarCells = useMemo(() => {
     const year = visibleMonth.getUTCFullYear();

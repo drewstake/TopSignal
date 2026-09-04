@@ -303,10 +303,12 @@ function countAccountCalls(calls: readonly (readonly unknown[])[]) {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -371,14 +373,21 @@ describe("DashboardPage Compact Mode request and state integration", () => {
     expect(compactViewRender).not.toHaveBeenCalled();
 
     await waitFor(() => {
-      expect(api.getSummaryWithPointBases).toHaveBeenCalledTimes(1);
-      expect(api.getPnlCalendar).toHaveBeenCalledTimes(1);
-      expect(api.getTrades).toHaveBeenCalledTimes(2);
+      expect(api.getPnlCalendar).toHaveBeenCalledWith(LEADER_ID, {
+        start: undefined,
+        end: undefined,
+        all_time: true,
+      });
     });
-    expect(api.getTrades.mock.calls.map(([, query]) => query?.limit).sort((left, right) => (left ?? 0) - (right ?? 0))).toEqual([
-      200,
-      1_000,
-    ]);
+    await waitFor(() => {
+      expect(api.getPnlCalendar).toHaveBeenCalledWith(
+        LEADER_ID,
+        expect.objectContaining({ all_time: false, refresh: true }),
+      );
+      expect(api.getSummaryWithPointBases.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(api.getTrades.mock.calls.length).toBeGreaterThanOrEqual(4);
+    });
+    expect(new Set(api.getTrades.mock.calls.map(([, query]) => query?.limit))).toEqual(new Set([200, 1_000]));
     expect(api.getTrades.mock.calls.some(([, query]) => query?.limit === 7)).toBe(false);
   });
 
@@ -448,6 +457,362 @@ describe("DashboardPage Compact Mode request and state integration", () => {
     expect(summaryQuery.refresh).toBe(false);
     expect(tradeQuery).toMatchObject({ limit: 7, refresh: false, includeLifecycle: false });
     expect(calendarQuery).toMatchObject({ all_time: false, refresh: false });
+  });
+
+  it("refreshes a visible ProjectX month and reloads every Compact metric from the synced cache", async () => {
+    const leader = makeAccount(LEADER_ID, "Leader", { isMain: true });
+    const julyDay = makeDay("2026-07-31", 10);
+    const staleAugustDay = makeDay("2026-08-03", 20);
+    const correctedAugustDay = makeDay("2026-08-03", 200);
+    const addedAugustDay = makeDay("2026-08-05", 50);
+    const api = installAccountsApi({
+      accounts: [leader],
+      calendars: { [LEADER_ID]: [julyDay, staleAugustDay, makeDay("2026-08-04", -30)] },
+    });
+    let providerSynced = false;
+    api.getSummaryWithPointBases.mockImplementation(async () =>
+      summaryBundle(makeSummary({ net_pnl: providerSynced ? 250 : -10, trade_count: providerSynced ? 2 : 1 })),
+    );
+    api.getPnlCalendar.mockImplementation(async (_accountId, query) => {
+      if (query?.refresh) {
+        providerSynced = true;
+        return [correctedAugustDay, addedAugustDay];
+      }
+      return providerSynced
+        ? [julyDay, correctedAugustDay, addedAugustDay]
+        : [julyDay, staleAugustDay, makeDay("2026-08-04", -30)];
+    });
+    mountDashboard({ compact: true, accounts: [leader] });
+    await waitForCompactSettled();
+    api.getPnlCalendar.mockClear();
+
+    act(() => {
+      latestCompactProps().onCalendarVisibleRangeChange("2026-08-01", "2026-08-31");
+    });
+
+    await waitFor(() => {
+      expect(api.getPnlCalendar).toHaveBeenCalledWith(LEADER_ID, {
+        start: "2026-07-31T22:00:00.000Z",
+        end: "2026-08-31T20:59:59.999999Z",
+        all_time: false,
+        refresh: true,
+      });
+      expect(latestCompactProps().days).toEqual([julyDay, correctedAugustDay, addedAugustDay]);
+      expect(latestCompactProps().summary).toMatchObject({ net_pnl: 250, trade_count: 2 });
+    });
+  });
+
+  it("surfaces a failed visible-month refresh and retries that month after a successful trade sync", async () => {
+    const leader = makeAccount(LEADER_ID, "Leader", { isMain: true });
+    const julyDay = makeDay("2026-07-31", 10);
+    const staleAugustDay = makeDay("2026-08-03", 20);
+    const correctedAugustDay = makeDay("2026-08-03", 200);
+    const addedAugustDay = makeDay("2026-08-05", 50);
+    const staleCalendar = [julyDay, staleAugustDay];
+    const refreshedCalendar = [julyDay, correctedAugustDay, addedAugustDay];
+    const monthStart = "2026-07-31T22:00:00.000Z";
+    const monthEnd = "2026-08-31T20:59:59.999999Z";
+    let providerSynced = false;
+    let boundedMonthAttempts = 0;
+    const api = installAccountsApi({ accounts: [leader], calendars: { [LEADER_ID]: staleCalendar } });
+    api.getSummaryWithPointBases.mockImplementation(async () =>
+      summaryBundle(makeSummary({ net_pnl: providerSynced ? 250 : 20, trade_count: providerSynced ? 2 : 1 })),
+    );
+    api.getPnlCalendar.mockImplementation(async (_accountId, query) => {
+      const isVisibleMonthRefresh =
+        query?.all_time === false && query.start === monthStart && query.end === monthEnd && query.refresh === true;
+      if (isVisibleMonthRefresh) {
+        boundedMonthAttempts += 1;
+        if (boundedMonthAttempts === 1) {
+          throw new Error("ProjectX month refresh failed");
+        }
+        providerSynced = true;
+        return [correctedAugustDay, addedAugustDay];
+      }
+      return providerSynced ? refreshedCalendar : staleCalendar;
+    });
+
+    mountDashboard({ compact: true, accounts: [leader] });
+    await waitForCompactSettled();
+    expect(latestCompactProps().calendarDays).toEqual(staleCalendar);
+    expect(latestCompactProps().summary).toMatchObject({ net_pnl: 20, trade_count: 1 });
+    api.getSummaryWithPointBases.mockClear();
+    api.getPnlCalendar.mockClear();
+    api.getTrades.mockClear();
+
+    act(() => {
+      latestCompactProps().onCalendarVisibleRangeChange("2026-08-01", "2026-08-31");
+    });
+
+    expect(
+      await screen.findByText(
+        `ProjectX could not refresh this calendar month for account ${LEADER_ID}. Saved P&L is still shown. Use Sync Latest Trades to retry.`,
+      ),
+    ).toBeTruthy();
+    expect(boundedMonthAttempts).toBe(1);
+    expect(api.getPnlCalendar).toHaveBeenCalledTimes(1);
+    expect(api.getSummaryWithPointBases).not.toHaveBeenCalled();
+    expect(api.getTrades).not.toHaveBeenCalled();
+    expect(latestCompactProps().calendarDays).toEqual(staleCalendar);
+    expect(latestCompactProps().summary).toMatchObject({ net_pnl: 20, trade_count: 1 });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(ACCOUNT_TRADES_SYNCED_EVENT, {
+          detail: { accountId: LEADER_ID, fetchedCount: 1, insertedCount: 1 },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(boundedMonthAttempts).toBe(2);
+      expect(latestCompactProps().calendarDays).toEqual(refreshedCalendar);
+      expect(latestCompactProps().summary).toMatchObject({ net_pnl: 250, trade_count: 2 });
+    });
+    expect(
+      api.getPnlCalendar.mock.calls.filter(
+        ([, query]) =>
+          query?.all_time === false && query.start === monthStart && query.end === monthEnd && query.refresh === true,
+      ),
+    ).toHaveLength(2);
+    expect(screen.queryByText(/ProjectX could not refresh this calendar month/)).toBeNull();
+  });
+
+  it("applies a copy-roster month refresh to an account that becomes active while the refresh is in flight", async () => {
+    const leader = makeAccount(LEADER_ID, "Leader", { isMain: true });
+    const follower = makeAccount(FOLLOWER_ID, "Follower");
+    const leaderDay = makeDay("2026-08-03", 10);
+    const staleFollowerDay = makeDay("2026-08-03", 20);
+    const refreshedFollowerDay = makeDay("2026-08-03", 200);
+    const leaderMonthRefresh = deferred<AccountPnlCalendarDay[]>();
+    const followerMonthRefresh = deferred<AccountPnlCalendarDay[]>();
+    const monthStart = "2026-07-31T22:00:00.000Z";
+    const monthEnd = "2026-08-31T20:59:59.999999Z";
+    let followerProviderSynced = false;
+    enableCopyMode();
+    const api = installAccountsApi({
+      accounts: [leader, follower],
+      summaries: {
+        [LEADER_ID]: makeSummary({ net_pnl: 10, trade_count: 1 }),
+        [FOLLOWER_ID]: makeSummary({ net_pnl: 20, trade_count: 1 }),
+      },
+      calendars: { [LEADER_ID]: [leaderDay], [FOLLOWER_ID]: [staleFollowerDay] },
+    });
+    const { router } = mountDashboard({ compact: true, accounts: [leader, follower], accountId: LEADER_ID });
+    await waitForCompactSettled();
+    await waitFor(() => expect(api.getPnlCalendar).toHaveBeenCalledTimes(4));
+
+    api.getSummaryWithPointBases.mockImplementation(async (accountId) =>
+      summaryBundle(
+        accountId === FOLLOWER_ID
+          ? makeSummary({ net_pnl: followerProviderSynced ? 200 : 20, trade_count: 1 })
+          : makeSummary({ net_pnl: 10, trade_count: 1 }),
+      ),
+    );
+    api.getPnlCalendar.mockImplementation(async (accountId, query) => {
+      const isVisibleMonthRefresh =
+        query?.all_time === false && query.start === monthStart && query.end === monthEnd && query.refresh === true;
+      if (isVisibleMonthRefresh) {
+        return accountId === FOLLOWER_ID ? followerMonthRefresh.promise : leaderMonthRefresh.promise;
+      }
+      if (accountId === FOLLOWER_ID) {
+        return followerProviderSynced ? [refreshedFollowerDay] : [staleFollowerDay];
+      }
+      return [leaderDay];
+    });
+    api.getSummaryWithPointBases.mockClear();
+    api.getPnlCalendar.mockClear();
+    api.getTrades.mockClear();
+
+    act(() => {
+      latestCompactProps().onCalendarVisibleRangeChange("2026-08-01", "2026-08-31");
+    });
+    await waitFor(() => {
+      const visibleMonthAccountIds = api.getPnlCalendar.mock.calls
+        .filter(
+          ([, query]) =>
+            query?.all_time === false && query.start === monthStart && query.end === monthEnd && query.refresh === true,
+        )
+        .map(([accountId]) => accountId)
+        .sort((left, right) => left - right);
+      expect(visibleMonthAccountIds).toEqual([LEADER_ID, FOLLOWER_ID].sort((left, right) => left - right));
+    });
+
+    await act(async () => {
+      await router.navigate(`/dashboard?account=${FOLLOWER_ID}`);
+    });
+    await waitFor(() => {
+      const props = latestCompactProps();
+      expect(props.accountName).toBe("Follower copy group (2 accounts)");
+      expect(props.summaryLoading).toBe(false);
+      expect(props.daysLoading).toBe(false);
+      expect(props.summary.net_pnl).toBe(30);
+      expect(props.calendarDays).toEqual([
+        expect.objectContaining({ date: staleFollowerDay.date, net_pnl: 30, trade_count: 2 }),
+      ]);
+    });
+    const followerCalendarReadsBeforeCompletion = api.getPnlCalendar.mock.calls.filter(
+      ([accountId]) => accountId === FOLLOWER_ID,
+    ).length;
+
+    await act(async () => {
+      followerProviderSynced = true;
+      leaderMonthRefresh.resolve([leaderDay]);
+      followerMonthRefresh.resolve([refreshedFollowerDay]);
+      await Promise.all([leaderMonthRefresh.promise, followerMonthRefresh.promise]);
+    });
+
+    await waitFor(() => {
+      const props = latestCompactProps();
+      expect(props.accountName).toBe("Follower copy group (2 accounts)");
+      expect(props.summary.net_pnl).toBe(210);
+      expect(props.calendarDays).toEqual([
+        expect.objectContaining({ date: refreshedFollowerDay.date, net_pnl: 210, trade_count: 2 }),
+      ]);
+      expect(
+        api.getPnlCalendar.mock.calls.filter(([accountId]) => accountId === FOLLOWER_ID).length,
+      ).toBeGreaterThan(followerCalendarReadsBeforeCompletion);
+    });
+  });
+
+  it("does not restore an older generation warning after a newer month retry succeeds", async () => {
+    const leader = makeAccount(LEADER_ID, "Leader", { isMain: true });
+    const staleAugustDay = makeDay("2026-08-03", 20);
+    const refreshedAugustDay = makeDay("2026-08-03", 200);
+    const olderMonthRefresh = deferred<AccountPnlCalendarDay[]>();
+    const monthStart = "2026-07-31T22:00:00.000Z";
+    const monthEnd = "2026-08-31T20:59:59.999999Z";
+    let boundedMonthAttempts = 0;
+    let providerSynced = false;
+    const api = installAccountsApi({ accounts: [leader], calendars: { [LEADER_ID]: [staleAugustDay] } });
+    api.getPnlCalendar.mockImplementation(async (_accountId, query) => {
+      const isVisibleMonthRefresh =
+        query?.all_time === false && query.start === monthStart && query.end === monthEnd && query.refresh === true;
+      if (isVisibleMonthRefresh) {
+        boundedMonthAttempts += 1;
+        if (boundedMonthAttempts === 1) {
+          return olderMonthRefresh.promise;
+        }
+        providerSynced = true;
+        return [refreshedAugustDay];
+      }
+      return providerSynced ? [refreshedAugustDay] : [staleAugustDay];
+    });
+
+    mountDashboard({ compact: true, accounts: [leader] });
+    await waitForCompactSettled();
+    api.getPnlCalendar.mockClear();
+
+    act(() => {
+      latestCompactProps().onCalendarVisibleRangeChange("2026-08-01", "2026-08-31");
+    });
+    await waitFor(() => expect(boundedMonthAttempts).toBe(1));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(ACCOUNT_TRADES_SYNCED_EVENT, {
+          detail: { accountId: LEADER_ID, fetchedCount: 1, insertedCount: 1 },
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(boundedMonthAttempts).toBe(2);
+      expect(latestCompactProps().calendarDays).toEqual([refreshedAugustDay]);
+      expect(screen.queryByText(/ProjectX could not refresh this calendar month/)).toBeNull();
+    });
+
+    await act(async () => {
+      olderMonthRefresh.reject(new Error("Older ProjectX month refresh failed"));
+      await olderMonthRefresh.promise.catch(() => undefined);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(boundedMonthAttempts).toBe(2);
+    expect(latestCompactProps().calendarDays).toEqual([refreshedAugustDay]);
+    expect(screen.queryByText(/ProjectX could not refresh this calendar month/)).toBeNull();
+  });
+
+  it("reloads only the current selected-day scope after an in-flight month refresh resolves", async () => {
+    const leader = makeAccount(LEADER_ID, "Leader", { isMain: true });
+    const initialCalendar = [makeDay(TEST_DAY, 100), makeDay(NEXT_DAY, -25)];
+    const refreshedCalendar = [makeDay(TEST_DAY, 250), makeDay(NEXT_DAY, -25)];
+    const monthRefresh = deferred<AccountPnlCalendarDay[]>();
+    const selectedRange = requireValue(getTradingDayRange(TEST_DAY) ?? undefined, "selected trading-day range");
+    let providerSynced = false;
+    const api = installAccountsApi({ accounts: [leader], calendars: { [LEADER_ID]: initialCalendar } });
+    api.getSummaryWithPointBases.mockImplementation(async (_accountId, query) => {
+      const selectedDayRequest = query?.start === selectedRange.start && query?.end === selectedRange.end;
+      return summaryBundle(
+        makeSummary({
+          net_pnl: selectedDayRequest ? (providerSynced ? 250 : 100) : -999,
+          trade_count: selectedDayRequest ? 1 : 99,
+        }),
+      );
+    });
+    api.getPnlCalendar.mockImplementation(async (_accountId, query) => {
+      if (query?.refresh) {
+        return monthRefresh.promise;
+      }
+      return providerSynced ? refreshedCalendar : initialCalendar;
+    });
+
+    mountDashboard({ compact: true, accounts: [leader] });
+    await waitForCompactSettled();
+    api.getSummaryWithPointBases.mockClear();
+    api.getPnlCalendar.mockClear();
+    api.getTrades.mockClear();
+
+    act(() => {
+      latestCompactProps().onCalendarVisibleRangeChange("2026-07-01", "2026-07-31");
+    });
+    await waitFor(() => {
+      expect(api.getPnlCalendar).toHaveBeenCalledWith(
+        LEADER_ID,
+        expect.objectContaining({ all_time: false, refresh: true }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select test day" }));
+    await waitFor(() => {
+      expect(latestCompactProps().selectedDate).toBe(TEST_DAY);
+      expect(latestCompactProps().summary).toMatchObject({ net_pnl: 100, trade_count: 1 });
+    });
+
+    await act(async () => {
+      providerSynced = true;
+      monthRefresh.resolve(refreshedCalendar);
+      await monthRefresh.promise;
+    });
+
+    await waitFor(() => {
+      expect(latestCompactProps().summary).toMatchObject({ net_pnl: 250, trade_count: 1 });
+      expect(latestCompactProps().days).toEqual([refreshedCalendar[0]]);
+      expect(latestCompactProps().calendarDays).toEqual(refreshedCalendar);
+      expect(api.getSummaryWithPointBases).toHaveBeenCalledTimes(2);
+      expect(api.getPnlCalendar).toHaveBeenCalledTimes(2);
+      expect(api.getTrades).toHaveBeenCalledTimes(2);
+    });
+
+    expect(api.getSummaryWithPointBases.mock.calls.map(([, query]) => query)).toEqual([
+      { start: selectedRange.start, end: selectedRange.end, refresh: true },
+      { start: selectedRange.start, end: selectedRange.end, refresh: true },
+    ]);
+    expect(api.getTrades.mock.calls.map(([, query]) => query)).toEqual([
+      {
+        limit: 7,
+        start: selectedRange.start,
+        end: selectedRange.end,
+        refresh: true,
+        includeLifecycle: false,
+      },
+      {
+        limit: 7,
+        start: selectedRange.start,
+        end: selectedRange.end,
+        refresh: true,
+        includeLifecycle: false,
+      },
+    ]);
   });
 
   it("narrows summary and trades to a selected day without clearing or refetching calendar context", async () => {

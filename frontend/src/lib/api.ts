@@ -1168,7 +1168,7 @@ export const accountsApi = {
       end: requestQuery.end,
       all_time: requestQuery.all_time,
     });
-    return getUserScopedTimedCachedRequest({
+    const request = getUserScopedTimedCachedRequest({
       cache: accountPnlCalendarCacheByQuery,
       inFlight: inFlightAccountPnlCalendarByQuery,
       cacheKey,
@@ -1180,6 +1180,17 @@ export const accountsApi = {
           tracksLiveMutation: true,
           accessTokenOverride: accessToken,
         }),
+    });
+    if (!query.refresh) {
+      return request;
+    }
+
+    return request.then((days) => {
+      // A provider-backed calendar refresh can insert trade events. Invalidate
+      // every account read lane so summaries, trades, and all-time calendars
+      // cannot continue serving a pre-refresh snapshot for up to the cache TTL.
+      invalidateAccountReadCaches(accountId);
+      return days;
     });
   },
   refreshTrades,

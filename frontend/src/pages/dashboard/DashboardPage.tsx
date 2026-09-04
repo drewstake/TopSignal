@@ -104,6 +104,10 @@ import {
 } from "./compactDashboardData";
 import { resolveCustomDateRangeDraft } from "./customDateRange";
 import {
+  buildPnlCalendarRefreshWindow,
+  type PnlCalendarRefreshWindow,
+} from "./pnlCalendarRefresh";
+import {
   resolveLiveAccountEnableDecision,
   resolveProjectXAccountId,
 } from "./liveAccountMode";
@@ -568,6 +572,44 @@ interface CopyTradeSettingsSaveResult {
   errorMessage?: string;
 }
 
+interface RefreshedPnlCalendarMonth {
+  accountId: number;
+  days: AccountPnlCalendarDay[];
+}
+
+interface PnlCalendarMonthRefreshResult {
+  refreshed: RefreshedPnlCalendarMonth[];
+  failedAccountIds: number[];
+}
+
+async function refreshPnlCalendarMonth(
+  accountIds: readonly number[],
+  window: PnlCalendarRefreshWindow,
+): Promise<PnlCalendarMonthRefreshResult> {
+  const results = await Promise.all(
+    accountIds.map(async (accountId) => {
+      try {
+        const days = await accountsApi.getPnlCalendar(accountId, {
+          start: window.start,
+          end: window.end,
+          all_time: false,
+          refresh: true,
+        });
+        return { accountId, days };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return {
+    refreshed: results.filter((result): result is RefreshedPnlCalendarMonth => result !== null),
+    failedAccountIds: accountIds.filter(
+      (accountId) => !results.some((result) => result?.accountId === accountId),
+    ),
+  };
+}
+
 function buildMetricsRangeQuery(
   range: MetricsRangePreset,
   customRange: CustomDateRange | null,
@@ -649,18 +691,21 @@ function getCopyTradeRefreshQuery(range: MetricsRangeQuery, currentTradingDay: s
 
 async function refreshCopyTradeRange(accountIds: readonly number[], range: Pick<MetricsRangeQuery, "start" | "end">) {
   if (accountIds.length === 0) {
-    return;
+    return true;
   }
 
-  await Promise.all(
+  const results = await Promise.all(
     accountIds.map(async (accountId) => {
       try {
         await accountsApi.refreshTrades(accountId, range);
+        return true;
       } catch {
         // Fall back to the existing local cache for accounts that cannot refresh.
+        return false;
       }
     }),
   );
+  return results.every(Boolean);
 }
 
 function DashboardLoadingState() {
@@ -738,6 +783,14 @@ export function DashboardPage() {
   const beginCompactCalendarRequest = useLatestRequestGuard();
   const beginCompactCopyRefreshRequest = useLatestRequestGuard();
   const beginCompactJournalDaysRequest = useLatestRequestGuard();
+  const standardCalendarMonthRefreshAttemptedKeysRef = useRef(new Set<string>());
+  const compactCalendarMonthRefreshAttemptedKeysRef = useRef(new Set<string>());
+  const standardCalendarMonthRefreshCompletedKeysRef = useRef(new Set<string>());
+  const compactCalendarMonthRefreshCompletedKeysRef = useRef(new Set<string>());
+  const pendingCalendarMonthRefreshAccountIdsRef = useRef(new Set<number>());
+  const calendarMonthRefreshLatestWarningGenerationRef = useRef(new Map<string, number>());
+  const standardCopyTradeRangeRefreshedScopeKeyRef = useRef<string | null>(null);
+  const compactCopyTradeRangeRefreshedScopeKeyRef = useRef<string | null>(null);
 
   const [summary, setSummary] = useState<AccountSummary>(emptySummary);
   const [pointPayoffByBasis, setPointPayoffByBasis] = useState<PointPayoffByBasis>(() => createEmptyPointPayoffByBasis());
@@ -766,10 +819,12 @@ export function DashboardPage() {
   const [standardCalendarVisibleRange, setStandardCalendarVisibleRange] = useState<{
     startDate: string;
     endDate: string;
+    scopeKey: string;
   } | null>(null);
   const [compactCalendarVisibleRange, setCompactCalendarVisibleRange] = useState<{
     startDate: string;
     endDate: string;
+    scopeKey: string;
   } | null>(null);
   const [currentTradingDayKey, setCurrentTradingDayKey] = useState(() =>
     tradingDayKey(demoModeEnabled ? DEMO_AS_OF_ISO : new Date()),
@@ -777,6 +832,8 @@ export function DashboardPage() {
   const [compactAccountDataById, setCompactAccountDataById] = useState<Record<number, CompactAccountLoadState>>({});
   const [compactReloadNonce, setCompactReloadNonce] = useState(0);
   const [compactCopyRefreshVersion, setCompactCopyRefreshVersion] = useState(0);
+  const [calendarMonthRefreshApplyVersion, setCalendarMonthRefreshApplyVersion] = useState(0);
+  const [calendarMonthRefreshWarnings, setCalendarMonthRefreshWarnings] = useState<Record<string, string>>({});
   const compactAnalysisReloadHandledRef = useRef(0);
   const compactCalendarReloadHandledRef = useRef(0);
   const compactAnalysisCopyRefreshHandledRef = useRef(0);
@@ -981,6 +1038,34 @@ export function DashboardPage() {
       ),
     [copyTradeModeConfigured, copyTradeRosterAccountIds, selectedAccountId],
   );
+  const projectXAccountIds = useMemo(
+    () => new Set(orderedAccounts.filter((account) => account.trade_data_source === "projectx").map((account) => account.id)),
+    [orderedAccounts],
+  );
+  const standardCalendarRefreshAccountIds = useMemo(() => {
+    if (selectedAccountId === null) {
+      return [];
+    }
+    const requestedAccountIds = copyTradeModeActive ? copyTradeRosterAccountIds : [selectedAccountId];
+    return requestedAccountIds.filter((accountId) => projectXAccountIds.has(accountId));
+  }, [copyTradeModeActive, copyTradeRosterAccountIds, projectXAccountIds, selectedAccountId]);
+  const standardCalendarScopeKey = useMemo(
+    () =>
+      [
+        selectedAccountId ?? "none",
+        copyTradeModeActive ? standardCalendarRefreshAccountIds.join(",") : "single",
+        metricsRange,
+        metricsRange === "CUSTOM" ? `${customRange?.startDate ?? ""}:${customRange?.endDate ?? ""}` : "",
+      ].join("|"),
+    [
+      copyTradeModeActive,
+      customRange?.endDate,
+      customRange?.startDate,
+      metricsRange,
+      selectedAccountId,
+      standardCalendarRefreshAccountIds,
+    ],
+  );
   const metricsRangeQuery = useMemo(
     () => buildMetricsRangeQuery(metricsRange, customRange, currentTradingDayKey),
     [customRange, currentTradingDayKey, metricsRange],
@@ -1032,7 +1117,7 @@ export function DashboardPage() {
     return dateFormatter.format(parseIsoDay(activeSelectedTradeDate));
   }, [activeSelectedTradeDate]);
 
-  const loadSummaryAndCalendar = useCallback(async () => {
+  const loadSummaryAndCalendar = useCallback(async (options: { skipCopyTradeRefresh?: boolean } = {}) => {
     const isCurrent = beginSummaryRequest();
     if (compactMode.enabled) {
       setSummaryLoading(false);
@@ -1063,8 +1148,12 @@ export function DashboardPage() {
     setPnlCalendarError(null);
 
     try {
-      if (copyTradeModeActive) {
-        await refreshCopyTradeRange(copyTradeRosterAccountIds, getCopyTradeRefreshQuery(metricsRangeQuery, currentTradingDayKey));
+      if (copyTradeModeActive && !options.skipCopyTradeRefresh) {
+        const fullyRefreshed = await refreshCopyTradeRange(
+          copyTradeRosterAccountIds,
+          getCopyTradeRefreshQuery(metricsRangeQuery, currentTradingDayKey),
+        );
+        standardCopyTradeRangeRefreshedScopeKeyRef.current = fullyRefreshed ? standardCalendarScopeKey : null;
       }
 
       const summaryQuery = {
@@ -1212,6 +1301,7 @@ export function DashboardPage() {
     metricsRangeQuery,
     selectedAccountId,
     selectedTradeDayRefresh,
+    standardCalendarScopeKey,
     beginSummaryRequest,
     compactMode.enabled,
   ]);
@@ -1266,7 +1356,11 @@ export function DashboardPage() {
       setJournalDaysError(null);
       return;
     }
-    if (!selectedAccountId || !standardCalendarVisibleRange) {
+    if (
+      !selectedAccountId ||
+      !standardCalendarVisibleRange ||
+      standardCalendarVisibleRange.scopeKey !== standardCalendarScopeKey
+    ) {
       setJournalDaysLoading(false);
       setJournalDays(new Set());
       setJournalDaysError(null);
@@ -1293,7 +1387,13 @@ export function DashboardPage() {
         setJournalDaysLoading(false);
       }
     }
-  }, [beginJournalDaysRequest, compactMode.enabled, selectedAccountId, standardCalendarVisibleRange]);
+  }, [
+    beginJournalDaysRequest,
+    compactMode.enabled,
+    selectedAccountId,
+    standardCalendarScopeKey,
+    standardCalendarVisibleRange,
+  ]);
 
   const loadMetricsTrades = useCallback(async () => {
     const isCurrent = beginMetricsTradesRequest();
@@ -1540,6 +1640,27 @@ export function DashboardPage() {
     }
     return compactCopyTradeModeActive ? copyTradeRosterAccountIds : [selectedAccountId];
   }, [compactCopyTradeModeActive, compactMode.enabled, copyTradeRosterAccountIds, selectedAccountId]);
+  const compactCalendarRefreshAccountIds = useMemo(
+    () => compactRequestedAccountIds.filter((accountId) => projectXAccountIds.has(accountId)),
+    [compactRequestedAccountIds, projectXAccountIds],
+  );
+  const compactCalendarScopeKey = useMemo(
+    () =>
+      [
+        selectedAccountId ?? "none",
+        compactCopyTradeModeActive ? compactRequestedAccountIds.join(",") : "single",
+        metricsRange,
+        metricsRange === "CUSTOM" ? `${customRange?.startDate ?? ""}:${customRange?.endDate ?? ""}` : "",
+      ].join("|"),
+    [
+      compactCopyTradeModeActive,
+      compactRequestedAccountIds,
+      customRange?.endDate,
+      customRange?.startDate,
+      metricsRange,
+      selectedAccountId,
+    ],
+  );
   const compactContextAsOfKey = [
     compactMode.enabled ? "compact" : "standard",
     selectedAccountId ?? "none",
@@ -1609,6 +1730,7 @@ export function DashboardPage() {
     if (!compactCopyTradeModeActive || compactCalendarContextScope === null) {
       beginCompactCopyRefreshRequest();
       compactCopyRefreshInFlightRef.current = null;
+      compactCopyTradeRangeRefreshedScopeKeyRef.current = null;
       return;
     }
     const refreshKey = [
@@ -1617,16 +1739,25 @@ export function DashboardPage() {
       compactCalendarContextScope.key,
       compactReloadNonce,
     ].join("|");
+    const coverageKey = [
+      selectedAccountId ?? "none",
+      compactRequestedAccountIds.join(","),
+      compactCalendarContextScope.key,
+    ].join("|");
     if (compactCopyRefreshInFlightRef.current?.key === refreshKey) {
       return;
     }
     const isCurrent = beginCompactCopyRefreshRequest();
     const promise = refreshCompactCopyThenInvalidate(
-      () =>
-        refreshCopyTradeRange(compactRequestedAccountIds, {
+      async () => {
+        const fullyRefreshed = await refreshCopyTradeRange(compactRequestedAccountIds, {
           start: compactCalendarContextScope.start,
           end: compactCalendarContextScope.end,
-        }),
+        });
+        if (isCurrent()) {
+          compactCopyTradeRangeRefreshedScopeKeyRef.current = fullyRefreshed ? coverageKey : null;
+        }
+      },
       () => {
         if (isCurrent()) {
           setCompactCopyRefreshVersion((current) => current + 1);
@@ -1841,7 +1972,12 @@ export function DashboardPage() {
 
   const loadCompactJournalDays = useCallback(async () => {
     const isCurrent = beginCompactJournalDaysRequest();
-    if (!compactMode.enabled || !selectedAccountId || !compactCalendarVisibleRange) {
+    if (
+      !compactMode.enabled ||
+      !selectedAccountId ||
+      !compactCalendarVisibleRange ||
+      compactCalendarVisibleRange.scopeKey !== compactCalendarScopeKey
+    ) {
       setCompactJournalDays(new Set());
       setCompactJournalDaysLoading(false);
       setCompactJournalDaysError(null);
@@ -1873,6 +2009,7 @@ export function DashboardPage() {
     }
   }, [
     beginCompactJournalDaysRequest,
+    compactCalendarScopeKey,
     compactCalendarVisibleRange,
     compactMode.enabled,
     selectedAccountId,
@@ -2075,23 +2212,296 @@ export function DashboardPage() {
       }),
     [compactDays, compactMaxDrawdown, compactRiskBase?.value],
   );
-  const compactCalendarScopeKey = useMemo(
-    () =>
-      [
-        selectedAccountId ?? "none",
-        compactCopyTradeModeActive ? compactRequestedAccountIds.join(",") : "single",
-        metricsRange,
-        metricsRange === "CUSTOM" ? `${customRange?.startDate ?? ""}:${customRange?.endDate ?? ""}` : "",
-      ].join("|"),
-    [
-      compactCopyTradeModeActive,
-      compactRequestedAccountIds,
-      customRange?.endDate,
-      customRange?.startDate,
-      metricsRange,
-      selectedAccountId,
-    ],
-  );
+  useEffect(() => {
+    if (
+      demoModeEnabled ||
+      compactMode.enabled ||
+      pnlCalendarLoading ||
+      standardCalendarVisibleRange === null ||
+      standardCalendarVisibleRange.scopeKey !== standardCalendarScopeKey ||
+      standardCalendarRefreshAccountIds.length === 0
+    ) {
+      return;
+    }
+
+    const window = buildPnlCalendarRefreshWindow(standardCalendarVisibleRange);
+    if (window === null) {
+      return;
+    }
+    const warningKey = `standard|${standardCalendarScopeKey}|${window.startDate}|${window.endDate}`;
+    const refreshGeneration = compactReloadNonce;
+    const refreshEntries = standardCalendarRefreshAccountIds.map((accountId) => ({
+      accountId,
+      key: [refreshGeneration, standardCalendarScopeKey, accountId, window.startDate, window.endDate].join("|"),
+    }));
+    const coveredByCopyTradePreload =
+      copyTradeModeActive &&
+      standardCopyTradeRangeRefreshedScopeKeyRef.current === standardCalendarScopeKey &&
+      (!metricsRangeQuery.allTime ||
+        (window.startDate <= currentTradingDayKey && window.endDate >= currentTradingDayKey));
+    if (coveredByCopyTradePreload) {
+      calendarMonthRefreshLatestWarningGenerationRef.current.set(warningKey, refreshGeneration);
+      refreshEntries.forEach(({ key }) => {
+        standardCalendarMonthRefreshAttemptedKeysRef.current.add(key);
+        standardCalendarMonthRefreshCompletedKeysRef.current.add(key);
+      });
+      setCalendarMonthRefreshWarnings((current) => {
+        if (!(warningKey in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[warningKey];
+        return next;
+      });
+      return;
+    }
+    const pendingEntries = refreshEntries.filter(
+      ({ key }) => !standardCalendarMonthRefreshAttemptedKeysRef.current.has(key),
+    );
+    if (pendingEntries.length === 0) {
+      return;
+    }
+    pendingEntries.forEach(({ key }) => standardCalendarMonthRefreshAttemptedKeysRef.current.add(key));
+    calendarMonthRefreshLatestWarningGenerationRef.current.set(warningKey, refreshGeneration);
+    setCalendarMonthRefreshWarnings((current) => {
+      if (!(warningKey in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[warningKey];
+      return next;
+    });
+
+    void refreshPnlCalendarMonth(
+      pendingEntries.map(({ accountId }) => accountId),
+      window,
+    ).then(({ refreshed, failedAccountIds }) => {
+      // One automatic attempt per visible month prevents a failed provider from
+      // turning state changes into an unbounded retry loop. Sync Latest Trades
+      // increments the reload generation and supplies a bounded retry path.
+      const refreshedAccountIds = new Set(refreshed.map(({ accountId }) => accountId));
+      pendingEntries.forEach(({ accountId, key }) => {
+        if (refreshedAccountIds.has(accountId)) {
+          standardCalendarMonthRefreshCompletedKeysRef.current.add(key);
+        }
+      });
+      if (calendarMonthRefreshLatestWarningGenerationRef.current.get(warningKey) === refreshGeneration) {
+        setCalendarMonthRefreshWarnings((current) => {
+          const next = { ...current };
+          if (failedAccountIds.length === 0) {
+            delete next[warningKey];
+          } else {
+            const accountLabel = failedAccountIds.length === 1 ? "account" : "accounts";
+            next[warningKey] = `ProjectX could not refresh this calendar month for ${accountLabel} ${failedAccountIds.join(", ")}. Saved P&L is still shown. Use Sync Latest Trades to retry.`;
+          }
+          return next;
+        });
+      }
+      if (refreshed.length > 0) {
+        refreshed.forEach(({ accountId }) => pendingCalendarMonthRefreshAccountIdsRef.current.add(accountId));
+        setCalendarMonthRefreshApplyVersion((current) => current + 1);
+      }
+    });
+  }, [
+    compactReloadNonce,
+    compactMode.enabled,
+    copyTradeModeActive,
+    currentTradingDayKey,
+    demoModeEnabled,
+    metricsRangeQuery.allTime,
+    pnlCalendarLoading,
+    selectedAccountId,
+    standardCalendarRefreshAccountIds,
+    standardCalendarScopeKey,
+    standardCalendarVisibleRange,
+  ]);
+
+  useEffect(() => {
+    if (
+      demoModeEnabled ||
+      !compactMode.enabled ||
+      compactDaysLoading ||
+      compactCalendarVisibleRange === null ||
+      compactCalendarVisibleRange.scopeKey !== compactCalendarScopeKey ||
+      compactCalendarRefreshAccountIds.length === 0
+    ) {
+      return;
+    }
+
+    const window = buildPnlCalendarRefreshWindow(compactCalendarVisibleRange);
+    if (window === null) {
+      return;
+    }
+    const warningKey = `compact|${compactCalendarScopeKey}|${window.startDate}|${window.endDate}`;
+    const refreshGeneration = compactReloadNonce;
+    const refreshEntries = compactCalendarRefreshAccountIds.map((accountId) => ({
+      accountId,
+      key: [refreshGeneration, compactCalendarScopeKey, accountId, window.startDate, window.endDate].join("|"),
+    }));
+    const compactCopyCoverageKey = compactCalendarContextScope
+      ? [
+          selectedAccountId ?? "none",
+          compactRequestedAccountIds.join(","),
+          compactCalendarContextScope.key,
+        ].join("|")
+      : null;
+    if (
+      compactCopyTradeModeActive &&
+      compactCopyCoverageKey !== null &&
+      compactCopyRefreshInFlightRef.current?.key.startsWith(`${compactCopyCoverageKey}|`)
+    ) {
+      return;
+    }
+    const coveredByCopyTradePreload =
+      compactCopyTradeModeActive &&
+      compactCopyCoverageKey !== null &&
+      compactCopyTradeRangeRefreshedScopeKeyRef.current === compactCopyCoverageKey &&
+      (!compactCalendarContextScope?.allTime ||
+        (window.startDate <= currentTradingDayKey && window.endDate >= currentTradingDayKey));
+    if (coveredByCopyTradePreload) {
+      calendarMonthRefreshLatestWarningGenerationRef.current.set(warningKey, refreshGeneration);
+      refreshEntries.forEach(({ key }) => {
+        compactCalendarMonthRefreshAttemptedKeysRef.current.add(key);
+        compactCalendarMonthRefreshCompletedKeysRef.current.add(key);
+      });
+      setCalendarMonthRefreshWarnings((current) => {
+        if (!(warningKey in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[warningKey];
+        return next;
+      });
+      return;
+    }
+    const pendingEntries = refreshEntries.filter(
+      ({ key }) => !compactCalendarMonthRefreshAttemptedKeysRef.current.has(key),
+    );
+    if (pendingEntries.length === 0) {
+      return;
+    }
+    pendingEntries.forEach(({ key }) => compactCalendarMonthRefreshAttemptedKeysRef.current.add(key));
+    calendarMonthRefreshLatestWarningGenerationRef.current.set(warningKey, refreshGeneration);
+    setCalendarMonthRefreshWarnings((current) => {
+      if (!(warningKey in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[warningKey];
+      return next;
+    });
+
+    void refreshPnlCalendarMonth(
+      pendingEntries.map(({ accountId }) => accountId),
+      window,
+    ).then(({ refreshed, failedAccountIds }) => {
+      const refreshedAccountIds = new Set(refreshed.map(({ accountId }) => accountId));
+      pendingEntries.forEach(({ accountId, key }) => {
+        if (refreshedAccountIds.has(accountId)) {
+          compactCalendarMonthRefreshCompletedKeysRef.current.add(key);
+        }
+      });
+      if (calendarMonthRefreshLatestWarningGenerationRef.current.get(warningKey) === refreshGeneration) {
+        setCalendarMonthRefreshWarnings((current) => {
+          const next = { ...current };
+          if (failedAccountIds.length === 0) {
+            delete next[warningKey];
+          } else {
+            const accountLabel = failedAccountIds.length === 1 ? "account" : "accounts";
+            next[warningKey] = `ProjectX could not refresh this calendar month for ${accountLabel} ${failedAccountIds.join(", ")}. Saved P&L is still shown. Use Sync Latest Trades to retry.`;
+          }
+          return next;
+        });
+      }
+      if (refreshed.length > 0) {
+        refreshed.forEach(({ accountId }) => pendingCalendarMonthRefreshAccountIdsRef.current.add(accountId));
+        setCalendarMonthRefreshApplyVersion((current) => current + 1);
+      }
+    });
+  }, [
+    compactCalendarRefreshAccountIds,
+    compactCalendarContextScope,
+    compactCalendarScopeKey,
+    compactCalendarVisibleRange,
+    compactCopyTradeModeActive,
+    compactDaysLoading,
+    compactMode.enabled,
+    compactReloadNonce,
+    compactRequestedAccountIds,
+    currentTradingDayKey,
+    demoModeEnabled,
+    selectedAccountId,
+  ]);
+
+  useEffect(() => {
+    if (demoModeEnabled || selectedAccountId === null) {
+      return;
+    }
+
+    const displayedAccountIds = compactMode.enabled
+      ? compactRequestedAccountIds
+      : copyTradeModeActive
+        ? copyTradeRosterAccountIds
+        : [selectedAccountId];
+    const refreshedDisplayedAccountIds = displayedAccountIds.filter((accountId) =>
+      pendingCalendarMonthRefreshAccountIdsRef.current.has(accountId),
+    );
+    if (refreshedDisplayedAccountIds.length === 0) {
+      return;
+    }
+
+    // Consume provider-sync completions from the currently rendered scope. This
+    // state-driven handoff cannot miss a completion between render and effects,
+    // and the latest request guards prevent an older scope from winning a race.
+    refreshedDisplayedAccountIds.forEach((accountId) =>
+      pendingCalendarMonthRefreshAccountIdsRef.current.delete(accountId),
+    );
+    if (compactMode.enabled) {
+      compactAnalysisStartedKeyRef.current = null;
+      compactCalendarStartedKeyRef.current = null;
+      void Promise.all([loadCompactAnalysisData(), loadCompactCalendarData()]);
+      return;
+    }
+
+    void Promise.all([
+      loadSummaryAndCalendar({ skipCopyTradeRefresh: true }),
+      loadTrades(),
+      loadMetricsTrades(),
+    ]);
+  }, [
+    calendarMonthRefreshApplyVersion,
+    compactMode.enabled,
+    compactRequestedAccountIds,
+    copyTradeModeActive,
+    copyTradeRosterAccountIds,
+    demoModeEnabled,
+    loadCompactAnalysisData,
+    loadCompactCalendarData,
+    loadMetricsTrades,
+    loadSummaryAndCalendar,
+    loadTrades,
+    selectedAccountId,
+  ]);
+  const activeCalendarMonthRefreshWarning = useMemo(() => {
+    const mode = compactMode.enabled ? "compact" : "standard";
+    const scopeKey = compactMode.enabled ? compactCalendarScopeKey : standardCalendarScopeKey;
+    const visibleRange = compactMode.enabled ? compactCalendarVisibleRange : standardCalendarVisibleRange;
+    if (visibleRange === null || visibleRange.scopeKey !== scopeKey) {
+      return null;
+    }
+    return (
+      calendarMonthRefreshWarnings[
+        `${mode}|${scopeKey}|${visibleRange.startDate}|${visibleRange.endDate}`
+      ] ?? null
+    );
+  }, [
+    calendarMonthRefreshWarnings,
+    compactCalendarScopeKey,
+    compactCalendarVisibleRange,
+    compactMode.enabled,
+    standardCalendarScopeKey,
+    standardCalendarVisibleRange,
+  ]);
   const rawDashboardPnlCalendarDays = copyTradeStatsActive ? copyTradeCalendarDays : pnlCalendarDays;
   const dashboardSummary = useMemo(
     () =>
@@ -2758,23 +3168,39 @@ export function DashboardPage() {
     [compactMode.enabled, demoModeEnabled, journalOpenRequestGate, navigate, selectedAccountId],
   );
 
-  const handleStandardCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
-    setStandardCalendarVisibleRange((current) => {
-      if (current && current.startDate === startDate && current.endDate === endDate) {
-        return current;
-      }
-      return { startDate, endDate };
-    });
-  }, []);
+  const handleStandardCalendarVisibleRangeChange = useCallback(
+    (startDate: string, endDate: string) => {
+      setStandardCalendarVisibleRange((current) => {
+        if (
+          current &&
+          current.startDate === startDate &&
+          current.endDate === endDate &&
+          current.scopeKey === standardCalendarScopeKey
+        ) {
+          return current;
+        }
+        return { startDate, endDate, scopeKey: standardCalendarScopeKey };
+      });
+    },
+    [standardCalendarScopeKey],
+  );
 
-  const handleCompactCalendarVisibleRangeChange = useCallback((startDate: string, endDate: string) => {
-    setCompactCalendarVisibleRange((current) => {
-      if (current && current.startDate === startDate && current.endDate === endDate) {
-        return current;
-      }
-      return { startDate, endDate };
-    });
-  }, []);
+  const handleCompactCalendarVisibleRangeChange = useCallback(
+    (startDate: string, endDate: string) => {
+      setCompactCalendarVisibleRange((current) => {
+        if (
+          current &&
+          current.startDate === startDate &&
+          current.endDate === endDate &&
+          current.scopeKey === compactCalendarScopeKey
+        ) {
+          return current;
+        }
+        return { startDate, endDate, scopeKey: compactCalendarScopeKey };
+      });
+    },
+    [compactCalendarScopeKey],
+  );
 
   const saveCopyTradeSettings = useCallback((updater: (current: CopyTradeSettings) => CopyTradeSettings): CopyTradeSettingsSaveResult => {
     const current = copyTradeSettingsRef.current;
@@ -3061,6 +3487,15 @@ export function DashboardPage() {
             : providerAccountsRefreshing
               ? "Refreshing ProjectX accounts… Saved accounts remain available while this finishes."
               : providerSyncNotice?.message}
+        </Card>
+      ) : null}
+      {activeCalendarMonthRefreshWarning ? (
+        <Card
+          className="border-app-warning/40 bg-app-warning/10 p-3 text-xs text-app-warning"
+          role="alert"
+          aria-live="polite"
+        >
+          {activeCalendarMonthRefreshWarning}
         </Card>
       ) : null}
       <div className="space-y-2">
@@ -4241,6 +4676,7 @@ export function DashboardPage() {
           days={dashboardPnlCalendarDays}
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
+          scopeKey={standardCalendarScopeKey}
           journalDays={journalDays}
           journalDaysLoading={journalDaysLoading}
           selectedDate={activeSelectedTradeDate}

@@ -169,6 +169,37 @@ describe("accountsApi", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("invalidates cached account reads after a provider-backed calendar refresh", async () => {
+    installDemoModeStorage(false);
+    const accountId = 93_001;
+    let refreshed = false;
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes(`/api/accounts/${accountId}/pnl-calendar`)) {
+        refreshed = true;
+        return jsonResponse([]);
+      }
+      if (url.includes(`/api/accounts/${accountId}/summary`)) {
+        return jsonResponse({ net_pnl: refreshed ? 325 : -146 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    await expect(accountsApi.getSummary(accountId)).resolves.toMatchObject({ net_pnl: -146 });
+    await expect(accountsApi.getSummary(accountId)).resolves.toMatchObject({ net_pnl: -146 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await accountsApi.getPnlCalendar(accountId, {
+      start: "2026-07-31T22:00:00.000Z",
+      end: "2026-08-31T20:59:59.999999Z",
+      all_time: false,
+      refresh: true,
+    });
+
+    await expect(accountsApi.getSummary(accountId)).resolves.toMatchObject({ net_pnl: 325 });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("keeps CSV accounts selectable without resurrecting missing ProjectX accounts", async () => {
     installDemoModeStorage(false);
     vi.mocked(fetch).mockResolvedValueOnce(
