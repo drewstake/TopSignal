@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "backend"))
+from app.database_security import production_database_connect_args, validate_production_database_configuration
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 LEDGER_TABLE = "topsignal_schema_migrations"
 LOCK_NAME = "topsignal-schema-migrations-v1"
@@ -132,6 +134,7 @@ BASELINE_REQUIRED_INDEXES = {
 
 def _database_dsn() -> str:
     load_dotenv(REPO_ROOT / "backend" / ".env")
+    validate_production_database_configuration()
     value = os.getenv("MIGRATION_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
     if not value:
         raise RuntimeError("MIGRATION_DATABASE_URL or DATABASE_URL is required")
@@ -1092,7 +1095,13 @@ def migration_status(
             "--adopt-current requires --acknowledge-populated-database after a verified backup"
         )
 
-    with psycopg.connect(_database_dsn()) as connection:
+    dsn = _database_dsn()
+    with psycopg.connect(
+        dsn,
+        connect_timeout=10,
+        options="-c statement_timeout=300000 -c lock_timeout=15000 -c idle_in_transaction_session_timeout=60000",
+        **production_database_connect_args(dsn, label="migration database URL"),
+    ) as connection:
         connection.execute("select pg_advisory_lock(hashtext(%s))", (LOCK_NAME,))
         connection.commit()
         try:
@@ -1187,7 +1196,17 @@ def main() -> int:
             acknowledge_populated_database=args.acknowledge_populated_database,
         )
     except Exception as exc:
-        print(f"Migration failed: {exc}", file=sys.stderr)
+        # This runs before application logging is configured. Driver messages
+        # can include DSNs, SQL values, and passwords; retain a useful error
+        # category without persisting raw database diagnostics.
+        if isinstance(exc, psycopg.Error):
+            sqlstate = exc.sqlstate or "unknown"
+            detail = f"database_error ({type(exc).__name__}, SQLSTATE={sqlstate})"
+        else:
+            sys.path.insert(0, str(REPO_ROOT / "backend"))
+            from app.production_logging import redact
+            detail = redact(str(exc))
+        print(f"Migration failed: {detail}", file=sys.stderr)
         return 2
 
 

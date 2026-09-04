@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
 from threading import Event, Lock
+from time import monotonic
 from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
@@ -74,6 +75,7 @@ logger = logging.getLogger(__name__)
 _LIVE_SUBMISSION_SETTLEMENT_WINDOW = timedelta(seconds=60)
 _LIVE_PREFLIGHT_TRADE_PAGE_SIZE = 1_000
 _LIVE_PREFLIGHT_TRADE_MAX_PAGES = 200
+_LIVE_PREFLIGHT_MAX_DURATION_SECONDS = 15.0
 _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
 # ProjectX REST calls are bounded to 20 seconds by default.  Five minutes is
 # deliberately much longer than a single call, while progress renewals between
@@ -577,6 +579,7 @@ class LiveExecutionPreflight:
     entry_trades_today: int
     prior_delivery_contract_ids: tuple[str, ...]
     observed_at: datetime
+    latest_account_loss_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -699,6 +702,7 @@ class BotWorkerLeaseToken:
     lease_name: str
     owner_id: str
     lease_ttl_seconds: float
+    mutation_allowed: Callable[[], bool] | None = None
 
 
 class _ProviderMutationBlocked(RuntimeError):
@@ -1039,10 +1043,16 @@ def start_bot_run(
         user_id=user_id,
         account_id=int(config.account_id),
     )
+    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
+    if not resolved_dry_run:
+        shared_account_block = _shared_broker_account_block(
+            db, user_id=user_id, account_id=int(config.account_id)
+        )
+        if shared_account_block is not None:
+            raise ValueError(shared_account_block.code)
     now = datetime.now(timezone.utc)
     config.enabled = True
     config.updated_at = now
-    resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     _stop_running_bot_runs(
         db,
         user_id=user_id,
@@ -1596,11 +1606,13 @@ def _evaluate_bot_config_impl(
                     ]
                     evaluation_status = "risk_blocked"
                 else:
+                    preflight_started_at = monotonic()
                     mutation_fence = _ProviderMutationFence(
                         db=db,
                         token=worker_lease_token,
                         user_id=user_id,
                         account_id=int(config.account_id),
+                        preflight_deadline=preflight_started_at + _LIVE_PREFLIGHT_MAX_DURATION_SECONDS,
                     )
                     final_blocks = evaluate_risk_gates(
                         db,
@@ -1622,6 +1634,14 @@ def _evaluate_bot_config_impl(
                         decision=decision,
                         instrument_spec=instrument_spec,
                     )
+                    if monotonic() - preflight_started_at > _LIVE_PREFLIGHT_MAX_DURATION_SECONDS:
+                        final_blocks.append(
+                            RiskBlock(
+                                code="live_preflight_unavailable",
+                                message="Provider reconciliation exceeded the 15-second freshness budget; no order was routed.",
+                                severity="critical",
+                            )
+                        )
                     broker_flatten_completed = False
                     if (
                         order_attempt is not None
@@ -7413,7 +7433,11 @@ def evaluate_bollinger_mean_reversion(
         mode=take_profit_mode,
         r_multiple=take_profit_r_multiple,
     )
-    reward = take_profit - current_close if action == "BUY" else current_close - take_profit if take_profit is not None else None
+    reward = (
+        (take_profit - current_close if action == "BUY" else current_close - take_profit)
+        if take_profit is not None
+        else None
+    )
     raw_payload.update(
         {
             "stop_loss": stop_loss,
@@ -10910,6 +10934,13 @@ def evaluate_risk_gates(
         resulting_position_qty=resulting_position_qty,
     )
     additional_blocks: list[RiskBlock] = []
+    if not dry_run:
+        shared_account_block = _shared_broker_account_block(
+            db, user_id=user_id, account_id=int(config.account_id)
+        )
+        if shared_account_block is not None:
+            additional_blocks.append(shared_account_block)
+    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
 
     live_preflight_required = _requires_live_execution_preflight(
         config=config,
@@ -11022,6 +11053,16 @@ def evaluate_risk_gates(
                 - preflight.current_contract_worst_case_gross_qty
                 + proposed_contract_worst_case_gross
             )
+            if (
+                preflight.latest_account_loss_at is not None
+                and int(config.cooldown_seconds) > 0
+                and preflight.latest_account_loss_at
+                >= datetime.now(timezone.utc) - timedelta(seconds=int(config.cooldown_seconds))
+            ):
+                cooldown_block = RiskBlock(
+                    code="cooldown_after_loss",
+                    message="Cooldown is active after an authoritative provider-reported account loss.",
+                )
             if position_reducing:
                 _mark_order_attempt_reduce_only(order_attempt, decision=decision)
             if preflight.prior_delivery_contract_ids and not position_reducing:
@@ -11224,7 +11265,7 @@ def evaluate_risk_gates(
                 str(config.trading_end_time),
             ),
             delayed_session_block=_delayed_orb_session_loss_block(db, user_id=user_id, config=config),
-            cooldown_block=_cooldown_block(db, user_id=user_id, config=config),
+            cooldown_block=cooldown_block,
             position_reducing=position_reducing,
             defer_entry_risk_until_authoritative=bool(
                 live_preflight_required and not perform_live_preflight
@@ -11535,6 +11576,7 @@ def _fetch_live_execution_preflight(
     trade_events = trade_fetch.events
     daily_pnl = 0.0
     entry_trades_today = 0
+    latest_account_loss_at: datetime | None = None
     for event in trade_events:
         if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
             raise ProjectXClientError("ProjectX returned a trade for the wrong account.")
@@ -11572,6 +11614,8 @@ def _fetch_live_execution_preflight(
             commissions=commissions,
         )
         daily_pnl += pnl - effective_fee
+        if pnl - effective_fee < 0:
+            latest_account_loss_at = max(latest_account_loss_at or event_timestamp, event_timestamp)
     if not math.isfinite(daily_pnl):
         raise ProjectXClientError("ProjectX daily P&L total is not finite.")
 
@@ -11590,6 +11634,7 @@ def _fetch_live_execution_preflight(
         entry_trades_today=entry_trades_today,
         prior_delivery_contract_ids=tuple(sorted(prior_delivery_contract_ids)),
         observed_at=observed_at,
+        latest_account_loss_at=latest_account_loss_at,
     )
 
 
@@ -11650,6 +11695,19 @@ def reconcile_unresolved_order_attempts(
         if len(matches) != 1:
             continue
         match = matches[0]
+        # A deterministic tag is a lookup aid, not proof of order identity.
+        # Never clear the ambiguity latch using an unrelated account/contract
+        # or a previously recorded, conflicting provider order ID.
+        if (
+            match.get("account_id") != int(row.account_id)
+            or str(match.get("contract_id") or "") != str(row.contract_id)
+            or (
+                row.provider_order_id is not None
+                and str(match.get("order_id") or "") != str(row.provider_order_id)
+            )
+        ):
+            row.rejection_reason = "Provider tag matched an inconsistent order identity; reconciliation remains blocked."
+            continue
         provider_order_id = _normalized_optional_text(match.get("order_id"))
         if provider_order_id is None:
             continue
@@ -12163,14 +12221,18 @@ class _ProviderMutationFence:
         token: BotWorkerLeaseToken | None,
         user_id: str,
         account_id: int,
+        preflight_deadline: float | None = None,
     ) -> None:
         self.db = db
         self.token = token
         self.user_id = user_id
         self.account_id = int(account_id)
+        self.preflight_deadline = preflight_deadline
         self._locked_lease: BotRuntimeLease | None = None
 
     def require(self) -> None:
+        self._require_worker_mutation_allowed()
+        self._require_preflight_fresh()
         # This SELECT FOR UPDATE occurs after remote preflight, not before it.
         # populate/refresh semantics are essential: the worker Session may have
         # loaded this identity before a streaming disconnect invalidated it.
@@ -12185,6 +12247,19 @@ class _ProviderMutationFence:
             refresh_from_database=True,
         )
         _require_projectx_trade_data_source(account)
+        shared_account_block = _shared_broker_account_block(
+            self.db, user_id=self.user_id, account_id=self.account_id
+        )
+        if shared_account_block is not None:
+            raise _ProviderMutationBlocked(shared_account_block)
+        if str(account.account_state) != "ACTIVE" or account.can_trade is not True:
+            raise _ProviderMutationBlocked(
+                RiskBlock(
+                    code="account_tradability_changed",
+                    message="The final account state is not explicitly active and tradable; routing was blocked.",
+                    severity="critical",
+                )
+            )
         try:
             _require_account_emergency_latch_clear(
                 self.db,
@@ -12232,6 +12307,7 @@ class _ProviderMutationFence:
             )
 
         if self.token is None:
+            self._require_preflight_fresh()
             return
 
         lease_name = str(self.token.lease_name or "").strip()
@@ -12261,6 +12337,23 @@ class _ProviderMutationFence:
         self._locked_lease.heartbeat_at = observed_at
         self._locked_lease.expires_at = observed_at + timedelta(seconds=ttl_seconds)
         self.db.flush()
+        self._require_worker_mutation_allowed()
+        self._require_preflight_fresh()
+
+    def _require_preflight_fresh(self) -> None:
+        if self.preflight_deadline is not None and monotonic() > self.preflight_deadline:
+            raise _ProviderMutationBlocked(
+                RiskBlock(
+                    code="live_preflight_unavailable",
+                    message="Provider reconciliation expired while waiting for execution locks; routing was blocked.",
+                    severity="critical",
+                )
+            )
+
+    def _require_worker_mutation_allowed(self) -> None:
+        if self.token is not None and self.token.mutation_allowed is not None:
+            if self.token.mutation_allowed() is not True:
+                self._raise_lease_lost()
 
     @staticmethod
     def _raise_lease_lost() -> None:
@@ -12274,6 +12367,60 @@ class _ProviderMutationFence:
                 severity="critical",
             )
         )
+
+
+def _shared_broker_account_block(
+    db: Session, *, user_id: str, account_id: int
+) -> RiskBlock | None:
+    """Do not route an account whose execution state spans app identities.
+
+    Locks and audit rows are scoped to an app identity. Fail closed before
+    routing rather than claiming that separate tenant locks serialize the
+    same physical account. Keep orphaned active/ambiguous state as a blocker
+    even after a duplicate Account row is removed.
+    """
+    other_account = (
+        db.query(Account.id)
+        .filter(Account.provider == "projectx")
+        .filter(Account.external_id == str(account_id))
+        .filter(Account.user_id != user_id)
+        .first()
+    )
+    other_run = (
+        db.query(BotRun.id)
+        .filter(BotRun.account_id == int(account_id))
+        .filter(BotRun.user_id != user_id)
+        .filter(BotRun.status == "running")
+        .filter(BotRun.dry_run.is_(False))
+        .first()
+    )
+    recent_cutoff = datetime.now(timezone.utc) - _LIVE_SUBMISSION_SETTLEMENT_WINDOW
+    other_attempt = (
+        db.query(BotOrderAttempt.id)
+        .filter(BotOrderAttempt.account_id == int(account_id))
+        .filter(BotOrderAttempt.user_id != user_id)
+        .filter(BotOrderAttempt.execution_mode == "live")
+        .filter(
+            or_(
+                BotOrderAttempt.status.in_(["pending", "submission_unknown"]),
+                (
+                    (BotOrderAttempt.status == "submitted")
+                    & or_(
+                        BotOrderAttempt.created_at >= recent_cutoff,
+                        BotOrderAttempt.updated_at >= recent_cutoff,
+                    )
+                ),
+            )
+        )
+        .first()
+    )
+    if other_account is None and other_run is None and other_attempt is None:
+        return None
+    return RiskBlock(
+        code="shared_broker_account_ownership",
+        message="This broker account has shared or unresolved app ownership; automatic routing is blocked until ownership is resolved.",
+        severity="critical",
+    )
 
 
 def _require_owned_account(
@@ -12517,11 +12664,11 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
     except Exception as exc:
         safe_error = sanitize_error(exc)
         submission_outcome_unknown = (
-            isinstance(exc, (TimeoutError, ConnectionError))
-            or (
-                isinstance(exc, ProjectXClientError)
-                and bool(getattr(exc, "submission_outcome_unknown", False))
-            )
+            # An adapter bug or malformed successful response can happen after
+            # the broker accepted the order. Only the typed provider adapter
+            # can establish that an exception is a definite rejection.
+            not isinstance(exc, ProjectXClientError)
+            or bool(getattr(exc, "submission_outcome_unknown", False))
         )
         order_attempt.status = "submission_unknown" if submission_outcome_unknown else "error"
         order_attempt.rejection_reason = (

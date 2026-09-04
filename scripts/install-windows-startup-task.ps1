@@ -143,6 +143,16 @@ function Assert-NoBroadWrite([string]$Path) {
     }
 }
 
+function Assert-PrivateDataAcl([string]$Path, [string]$ServiceSid) {
+    $result = Get-AllowRightsBySid $Path
+    $allowed = @($ServiceSid, "S-1-5-18", "S-1-5-32-544")
+    foreach ($sid in $result.Rights.Keys) {
+        if ($sid -notin $allowed -and [long]$result.Rights[$sid] -ne 0) {
+            throw "Private data ACL for '$Path' grants access outside the service, SYSTEM, and Administrators ($sid)."
+        }
+    }
+}
+
 function Assert-HardenedDeployment(
     [string]$ReleasePath,
     [string]$WritableRuntimePath,
@@ -178,8 +188,15 @@ function Assert-HardenedDeployment(
         Assert-NoBroadWrite -Path $item.FullName
     }
     Assert-RequiredRights -Path $EnvironmentFile -Sid $ServiceSid -RequiredRights Read -ForbidWrite
+    Assert-PrivateDataAcl -Path $EnvironmentFile -ServiceSid $ServiceSid
     Assert-RequiredRights -Path $PythonExecutable -Sid $ServiceSid -RequiredRights ReadAndExecute -ForbidWrite
     Assert-RequiredRights -Path $WritableRuntimePath -Sid $ServiceSid -RequiredRights Modify
+    foreach ($item in @(Get-Item -LiteralPath $WritableRuntimePath; Get-ChildItem -LiteralPath $WritableRuntimePath -Force -Recurse)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Runtime item '$($item.FullName)' is a reparse point; use local private storage."
+        }
+        Assert-PrivateDataAcl -Path $item.FullName -ServiceSid $ServiceSid
+    }
 }
 
 if ($Port -lt 1 -or $Port -gt 65535 -or $FrontendPort -lt 1 -or $FrontendPort -gt 65535) {
@@ -196,11 +213,12 @@ $resolvedRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $resolvedRuntimeRoot = (Resolve-Path -LiteralPath $RuntimeRoot).Path
 $launcher = Join-Path $resolvedRoot "scripts\run-production.ps1"
 $frontendServer = Join-Path $resolvedRoot "scripts\serve-production-frontend.py"
+$backendServer = Join-Path $resolvedRoot "scripts\serve-production-backend.py"
 $frontendIndex = Join-Path $resolvedRoot "frontend\dist\index.html"
 $python = Join-Path $resolvedRoot "backend\.venv\Scripts\python.exe"
 $envFile = Join-Path $resolvedRoot "backend\.env"
 
-foreach ($requiredPath in @($launcher, $frontendServer, $frontendIndex, $python, $envFile)) {
+foreach ($requiredPath in @($launcher, $backendServer, $frontendServer, $frontendIndex, $python, $envFile)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required production file not found: $requiredPath"
     }

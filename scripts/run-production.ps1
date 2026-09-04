@@ -8,7 +8,9 @@ param(
     [int]$HealthIntervalSeconds = 10,
     [int]$HealthFailureThreshold = 3,
     [int]$WorkerHealthStartupGraceSeconds = 120,
-    [int]$WorkerHealthRestartAfterSeconds = 300
+    [int]$WorkerHealthRestartAfterSeconds = 300,
+    [int]$StartupCommandTimeoutSeconds = 300,
+    [int]$GracefulShutdownSeconds = 45
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,6 +128,9 @@ if ($WorkerHealthStartupGraceSeconds -lt 30) {
 if ($WorkerHealthRestartAfterSeconds -lt 120) {
     throw "Worker-health restart delay must be at least 120 seconds to avoid startup restart loops."
 }
+if ($StartupCommandTimeoutSeconds -lt 30 -or $StartupCommandTimeoutSeconds -gt 3600 -or $GracefulShutdownSeconds -lt 1 -or $GracefulShutdownSeconds -gt 120) {
+    throw "Startup command timeout must be 30-3600 seconds; graceful shutdown must be 1-120 seconds."
+}
 
 $resolvedRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 if (Test-Path -LiteralPath (Join-Path $resolvedRoot ".git")) {
@@ -139,11 +144,12 @@ $backendDir = Join-Path $resolvedRoot "backend"
 $frontendDist = Join-Path $resolvedRoot "frontend\dist"
 $frontendIndex = Join-Path $frontendDist "index.html"
 $frontendServer = Join-Path $resolvedRoot "scripts\serve-production-frontend.py"
+$backendServer = Join-Path $resolvedRoot "scripts\serve-production-backend.py"
 $envPath = Join-Path $backendDir ".env"
 $migrationTool = Join-Path $backendDir "tools\migrate_db.py"
 $loggingConfig = Join-Path $backendDir "logging.production.json"
 
-foreach ($requiredFile in @($envPath, $migrationTool, $loggingConfig, $frontendServer, $frontendIndex)) {
+foreach ($requiredFile in @($envPath, $migrationTool, $loggingConfig, $backendServer, $frontendServer, $frontendIndex)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required production file was not found: $requiredFile"
     }
@@ -163,6 +169,8 @@ New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $supervisorLog = Join-Path $logDir "supervisor.log"
 $runtimeLoggingConfig = Join-Path $resolvedRuntimeRoot "logging.runtime.json"
 $supervisorLockPath = Join-Path $resolvedRuntimeRoot "supervisor.lock"
+$operatorStopPath = Join-Path $resolvedRuntimeRoot "STOP"
+$shutdownPath = Join-Path $resolvedRuntimeRoot "shutdown.request"
 
 function Rotate-SupervisorLog {
     if (-not (Test-Path -LiteralPath $supervisorLog -PathType Leaf)) {
@@ -229,6 +237,7 @@ function Stop-ProcessTree(
     if ($null -eq $Process) {
         return
     }
+    $killer = $null
     try {
         $Process.Refresh()
         if ($Process.HasExited) {
@@ -254,6 +263,9 @@ function Stop-ProcessTree(
     catch {
         Write-SupervisorLog "taskkill failed while stopping $Description PID $($Process.Id): $($_.Exception.Message)"
     }
+    finally {
+        if ($null -ne $killer) { $killer.Dispose() }
+    }
 
     try {
         $Process.Refresh()
@@ -264,6 +276,36 @@ function Stop-ProcessTree(
     }
     catch {
         Write-SupervisorLog "Could not confirm that $Description PID $($Process.Id) exited: $($_.Exception.Message)"
+    }
+}
+
+function Wait-StartupCommand([System.Diagnostics.Process]$Process, [string]$Description) {
+    try {
+        if (-not $Process.WaitForExit($StartupCommandTimeoutSeconds * 1000)) {
+            Stop-ProcessTree -Process $Process -Description $Description
+            throw "$Description exceeded $StartupCommandTimeoutSeconds seconds; startup stopped."
+        }
+        if ($Process.ExitCode -ne 0) {
+            throw "$Description failed with exit code $($Process.ExitCode). See the startup logs."
+        }
+    }
+    finally {
+        $Process.Dispose()
+    }
+}
+
+function Stop-BackendGracefully([System.Diagnostics.Process]$Process) {
+    if ($null -eq $Process) { return }
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) { return }
+        [System.IO.File]::WriteAllText($shutdownPath, "shutdown")
+        if (-not $Process.WaitForExit($GracefulShutdownSeconds * 1000)) {
+            Write-SupervisorLog "Graceful backend shutdown timed out; forcing process-tree termination. Broker exposure must be inspected."
+        }
+    }
+    finally {
+        Stop-ProcessTree -Process $Process -Description "backend"
     }
 }
 
@@ -311,6 +353,10 @@ try {
     $supervisorLock.SetLength(0)
     $supervisorLock.Write($lockBytes, 0, $lockBytes.Length)
     $supervisorLock.Flush()
+    if (Test-Path -LiteralPath $operatorStopPath) {
+        Write-SupervisorLog "Operator STOP latch is set. Startup suppressed; explicit operator clearance is required."
+        return
+    }
     $killOnCloseJob = [TopSignalProcessJob]::CreateKillOnClose()
 
     # The scheduled identity has read/execute only on the release, including
@@ -341,10 +387,7 @@ try {
         -RedirectStandardError (Join-Path $logDir "security-check.stderr.log") `
         -PassThru
     Add-ProcessToSupervisorJob -JobHandle $killOnCloseJob -Process $securityCheckProcess -Description "production security check"
-    $securityCheckProcess.WaitForExit()
-    if ($securityCheckProcess.ExitCode -ne 0) {
-        throw "Production security configuration validation failed. See the security-check logs."
-    }
+    Wait-StartupCommand -Process $securityCheckProcess -Description "Production security configuration validation"
 
     Write-SupervisorLog "Applying checked migrations before backend startup."
     $migrationProcess = Start-Process `
@@ -356,10 +399,7 @@ try {
         -RedirectStandardError (Join-Path $logDir "migration.stderr.log") `
         -PassThru
     Add-ProcessToSupervisorJob -JobHandle $killOnCloseJob -Process $migrationProcess -Description "migration runner"
-    $migrationProcess.WaitForExit()
-    if ($migrationProcess.ExitCode -ne 0) {
-        throw "Database migration failed with exit code $($migrationProcess.ExitCode)."
-    }
+    Wait-StartupCommand -Process $migrationProcess -Description "Database migration"
     [TopSignalProcessJob]::Close($killOnCloseJob)
     $killOnCloseJob = [IntPtr]::Zero
 
@@ -372,6 +412,10 @@ try {
     $workerHealthRestartUsed = $false
 
     while ($true) {
+        if (Test-Path -LiteralPath $operatorStopPath) {
+            Write-SupervisorLog "Operator STOP latch is set; stopping without restart."
+            break
+        }
         $occupiedPorts = @(@($Port, $FrontendPort) | Where-Object { Test-LoopbackPortInUse $_ })
         if ($occupiedPorts.Count -gt 0) {
             Write-SupervisorLog "Loopback port(s) $($occupiedPorts -join ', ') are already accepting connections; waiting 60 seconds instead of entering an occupied-port restart loop."
@@ -381,13 +425,16 @@ try {
         # A fresh job per cycle guarantees that closing it removes descendants
         # even when a direct child exited before taskkill could traverse it.
         $killOnCloseJob = [TopSignalProcessJob]::CreateKillOnClose()
+        Remove-Item -LiteralPath $shutdownPath -Force -ErrorAction SilentlyContinue
         $backendArguments = @(
-            "-m", "uvicorn", "app.main:app",
+            $backendServer,
             "--app-dir", $backendDir,
             "--host", "127.0.0.1",
             "--port", $Port.ToString(),
             "--workers", "1",
-            "--log-config", $runtimeLoggingConfig
+            "--log-config", $runtimeLoggingConfig,
+            "--shutdown-file", $shutdownPath,
+            "--stop-file", $operatorStopPath
         )
         $backendArgumentLine = ($backendArguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
         $frontendArguments = @(
@@ -430,6 +477,10 @@ try {
             $workerHealthGraceEndsAt = $startedAt.AddSeconds($WorkerHealthStartupGraceSeconds)
 
             while ($true) {
+                if (Test-Path -LiteralPath $operatorStopPath) {
+                    $restartReason = "operator STOP latch"
+                    break
+                }
                 if ($backendProcess.WaitForExit($HealthIntervalSeconds * 1000)) {
                     $restartReason = "backend exited with code $($backendProcess.ExitCode)"
                     break
@@ -504,9 +555,16 @@ try {
         }
         finally {
             Stop-ProcessTree -Process $frontendProcess -Description "frontend server"
-            Stop-ProcessTree -Process $backendProcess -Description "backend"
+            Stop-BackendGracefully -Process $backendProcess
             [TopSignalProcessJob]::Close($killOnCloseJob)
             $killOnCloseJob = [IntPtr]::Zero
+            if ($null -ne $backendProcess) { $backendProcess.Dispose() }
+            if ($null -ne $frontendProcess) { $frontendProcess.Dispose() }
+        }
+
+        if (Test-Path -LiteralPath $operatorStopPath) {
+            Write-SupervisorLog "Stopped by operator; persistent STOP latch prevents restart after reboot."
+            break
         }
 
         $uptime = ([DateTimeOffset]::UtcNow - $startedAt).TotalSeconds

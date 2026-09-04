@@ -233,6 +233,31 @@ def test_refresh_account_trades_pages_through_provider_results(monkeypatch):
         engine.dispose()
 
 
+def test_refresh_rejects_repeated_provider_page_without_advancing_cache(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("PROJECTX_DAY_SYNC_LIMIT", "2")
+    engine, db = _make_session()
+    try:
+        account_id = 13032506
+        events = [_event(account_id, _dt(3, 14, 10), "FIRST"), _event(account_id, _dt(3, 14, 20), "SECOND")]
+        # This provider ignores offset and repeats the same full page.
+        client = _RecordingClient(events)
+        with pytest.raises(ProjectXClientError) as raised:
+            refresh_account_trades(db, client, account_id, start=_dt(3, 14, 0), end=_dt(3, 16, 0))
+        assert raised.value.reason_code == "trade_history_incomplete"
+        assert raised.value.status_code == 502
+        assert db.query(ProjectXTradeEvent).count() == 0
+        # A recovered provider can retry the identical range without a stale
+        # cursor or partial P&L masquerading as a completed refresh.
+        result = refresh_account_trades(db, _PagedClient(events), account_id, start=_dt(3, 14, 0), end=_dt(3, 16, 0))
+        assert result == {"fetched_count": 2, "inserted_count": 2}
+    finally:
+        db.close()
+        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeDaySync.__table__, ProjectXTradeEvent.__table__])
+        engine.dispose()
+
+
 def test_stale_provider_event_cannot_downgrade_completed_trade():
     engine, db = _make_session()
     try:

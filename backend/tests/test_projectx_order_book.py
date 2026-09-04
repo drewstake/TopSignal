@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+from datetime import datetime
+
+import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
@@ -15,6 +18,15 @@ from app.services.projectx_order_book import (  # noqa: E402
 CONTRACT_NQ = "CON.F.US.ENQ.U26"
 CONTRACT_MNQ = "CON.F.US.MNQ.U26"
 CONTRACT_MNQ_NEXT = "CON.F.US.MNQ.Z26"
+
+
+@pytest.fixture(autouse=True)
+def open_market_clock(monkeypatch):
+    # Transport regressions must run identically on weekends and holidays.
+    monkeypatch.setattr(
+        "app.services.projectx_order_book._utc_now",
+        lambda: datetime.fromisoformat("2026-07-10T14:00:00+00:00"),
+    )
 
 
 def _depth(
@@ -51,7 +63,7 @@ def test_market_by_price_updates_sort_and_remove_absolute_volume_levels():
     book.apply(
         _depth(
             timestamp="2026-07-10T13:00:01Z",
-            depth_type=10,
+            depth_type=1,
             price=20000.5,
             volume=7,
         )
@@ -67,7 +79,7 @@ def test_market_by_price_updates_sort_and_remove_absolute_volume_levels():
     book.apply(
         _depth(
             timestamp="2026-07-10T13:00:03Z",
-            depth_type=9,
+            depth_type=2,
             price=20000.0,
             volume=4,
         )
@@ -181,22 +193,29 @@ def test_clear_for_reconnect_always_emits_empty_reset_snapshot_and_new_epoch():
 
 
 class _StubClient:
+    def __init__(self):
+        self.auth_calls = 0
+
     def get_access_token(self):
+        self.auth_calls += 1
         return "server-only-projectx-token"
 
 
 class _FakeWebSocket:
     def __init__(self):
+        self.closed = False
         self.sent: list[str] = []
         self.incoming: asyncio.Queue[object] = asyncio.Queue()
+        self.incoming.put_nowait("{}" + _SIGNALR_RECORD_SEPARATOR)
 
     async def send(self, message):
         self.sent.append(message)
 
     async def recv(self):
-        return "{}" + _SIGNALR_RECORD_SEPARATOR
+        return await self.__anext__()
 
     async def close(self):
+        self.closed = True
         await self.incoming.put(StopAsyncIteration)
 
     def __aiter__(self):
@@ -219,6 +238,7 @@ class _FakeConnectionContext:
         return self.websocket
 
     async def __aexit__(self, *_args):
+        await self.websocket.close()
         return False
 
 
@@ -333,11 +353,136 @@ async def _wait_until(predicate, *, timeout=1.0):
     raise AssertionError("condition was not reached before timeout")
 
 
+@pytest.mark.parametrize("url", [
+    "ws://example.test/hub", "http://example.test/hub",
+    "wss://user:secret@example.test/hub", "wss://example.test/hub?token=secret",
+    "wss://example.test/hub#secret",
+])
+def test_market_depth_requires_tls_and_rejects_embedded_credentials(url):
+    connector = _FakeConnector()
+    with pytest.raises(Exception, match="endpoint must use TLS") as exc_info:
+        ProjectXMarketDepthSession(client=_StubClient(), market_hub_url=url, connect_factory=connector)
+    assert "secret" not in str(exc_info.value)
+    assert connector.urls == []
+
+
+def test_market_depth_default_connector_disables_redirects(monkeypatch):
+    import app.services.projectx_hubs as hubs_module
+
+    contexts = []
+
+    def connect(url, **kwargs):
+        assert url.startswith("wss://example.test/hub?access_token=")
+        context = _FakeConnectionContext(_FakeWebSocket())
+        context.process_redirect = lambda exc: "wss://other.example.test"
+        contexts.append(context)
+        return context
+
+    monkeypatch.setattr(hubs_module.websockets, "connect", connect)
+
+    async def scenario():
+        session = ProjectXMarketDepthSession(client=_StubClient(), market_hub_url="https://example.test/hub")
+        subscription = await session.subscribe(CONTRACT_NQ)
+        try:
+            await _wait_until(lambda: bool(contexts))
+            redirect_failure = RuntimeError("fixture redirect")
+            assert contexts[0].process_redirect(redirect_failure) is redirect_failure
+        finally:
+            await subscription.close()
+            await session.close()
+
+    asyncio.run(scenario())
+
+
 def _drain(queue: asyncio.Queue):
     output = []
     while not queue.empty():
         output.append(queue.get_nowait())
     return output
+
+
+@pytest.mark.parametrize("coalesced_depth", [False, True])
+def test_market_depth_consumes_one_handshake_ack_and_preserves_coalesced_frames(coalesced_depth):
+    class Socket(_FakeWebSocket):
+        def __init__(self):
+            super().__init__()
+            if coalesced_depth:
+                acknowledgement = self.incoming.get_nowait()
+                frame = {"type": 1, "target": "GatewayDepth", "arguments": [
+                    CONTRACT_MNQ, _depth(timestamp="2026-09-04T20:00:00Z", depth_type=2, price=20000, volume=7),
+                ]}
+                self.incoming.put_nowait(acknowledgement + json.dumps(frame) + _SIGNALR_RECORD_SEPARATOR)
+
+    async def scenario():
+        connector = _FakeConnector(Socket)
+        session = ProjectXMarketDepthSession(client=_StubClient(), connect_factory=connector)
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        try:
+            await _wait_until(lambda: connector.websockets and bool(_invocations(connector.websockets[0], "SubscribeContractMarketDepth")))
+            if coalesced_depth:
+                await _wait_until(lambda: session._channels[CONTRACT_MNQ].book.snapshot()["bids"] == [{"price": 20000, "size": 7}])
+            assert len(connector.websockets) == 1
+        finally:
+            await subscription.close()
+            await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("depth_type,side", [(3, "asks"), (10, "asks"), (4, "bids"), (9, "bids")])
+def test_best_quotes_replace_prior_price_instead_of_fabricating_depth(depth_type, side):
+    book = MarketByPriceBook(CONTRACT_MNQ)
+    for index in range(12):
+        event = book.apply(_depth(timestamp=f"2026-09-04T20:00:{index:02d}Z", depth_type=depth_type, price=20000+index, volume=7))
+    assert book.snapshot()[side] == [{"price": 20011, "size": 7}]
+    assert event[side] == [{"price": 20011, "size": 7}]
+    assert len(book._level_timestamps) == 1
+    assert book.apply(_depth(timestamp="2026-09-04T20:00:05Z", depth_type=depth_type, price=19990, volume=6)) is None
+    assert book.snapshot()[side] == [{"price": 20011, "size": 7}]
+
+
+def test_mixed_depth_and_quotes_keep_only_proven_levels_and_follow_the_current_best():
+    book = MarketByPriceBook(CONTRACT_MNQ)
+    book.apply(_depth(timestamp="2026-09-04T20:00:00Z", depth_type=4, price=20000, volume=2))
+    event = book.apply(_depth(timestamp="2026-09-04T20:00:01Z", depth_type=2, price=19999, volume=7))
+    assert event["price"] == 19999
+    assert book.snapshot()["bids"] == [{"price": 20000, "size": 2}, {"price": 19999, "size": 7}]
+    book.apply(_depth(timestamp="2026-09-04T20:00:02Z", depth_type=2, price=19998, volume=8))
+    book.apply(_depth(timestamp="2026-09-04T20:00:03Z", depth_type=4, price=20001, volume=2))
+    assert book.snapshot()["bids"] == [{"price": 20001, "size": 2}, {"price": 19999, "size": 7}, {"price": 19998, "size": 8}]
+    book.apply(_depth(timestamp="2026-09-04T20:00:04Z", depth_type=4, price=19999, volume=9))
+    assert book.snapshot()["bids"] == [{"price": 19999, "size": 9}, {"price": 19998, "size": 8}]
+    book.apply(_depth(timestamp="2026-09-04T20:00:05Z", depth_type=4, price=19998, volume=6))
+    assert book.snapshot()["bids"] == [{"price": 19998, "size": 6}]
+    book.clear_for_reconnect()
+    book.apply(_depth(timestamp="2026-09-04T20:00:04Z", depth_type=4, price=20002, volume=2))
+    book.apply(_depth(timestamp="2026-09-04T20:00:05Z", depth_type=4, price=20003, volume=3))
+    assert book.snapshot()["bids"] == [{"price": 20003, "size": 3}]
+
+
+def test_zero_size_best_quote_clears_prior_price_and_preserves_other_side():
+    book = MarketByPriceBook(CONTRACT_MNQ)
+    book.apply(_depth(timestamp="2026-09-04T20:00:00Z", depth_type=3, price=20001, volume=4))
+    book.apply(_depth(timestamp="2026-09-04T20:00:00Z", depth_type=4, price=20000, volume=2))
+    event = book.apply(_depth(timestamp="2026-09-04T20:00:01Z", depth_type=4, price=19999, volume=0))
+    assert event["bids"] == []
+    assert event["asks"] == [{"price": 20001, "size": 4}]
+
+
+def test_provider_reset_restores_top_of_book_fallback_after_full_depth():
+    book = MarketByPriceBook(CONTRACT_MNQ)
+    book.apply(_depth(timestamp="2026-09-04T20:00:00Z", depth_type=2, price=20000, volume=2))
+    book.apply({"timestamp": "2026-09-04T20:00:01Z", "type": 6})
+    book.apply(_depth(timestamp="2026-09-04T20:00:02Z", depth_type=4, price=20001, volume=3))
+    event = book.apply(_depth(timestamp="2026-09-04T20:00:03Z", depth_type=4, price=20002, volume=4))
+    assert event["bids"] == [{"price": 20002, "size": 4}]
+
+
+def test_older_best_quote_does_not_remove_newer_explicit_depth():
+    book = MarketByPriceBook(CONTRACT_MNQ)
+    book.apply(_depth(timestamp="2026-09-04T20:00:02Z", depth_type=2, price=20000, volume=7))
+    assert book.apply(_depth(timestamp="2026-09-04T20:00:01Z", depth_type=4, price=19999, volume=4)) is None
+    assert book.snapshot()["bids"] == [{"price": 20000, "size": 7}]
 
 
 def test_duplicate_clients_share_one_provider_subscription_and_reference_count_unsubscribe():
@@ -1176,4 +1321,259 @@ def test_queue_overflow_coalesces_to_snapshot_and_retains_state():
         await subscription.close()
         await session.close()
 
+    asyncio.run(scenario())
+
+
+def test_market_hours_wakeup_does_not_swallow_simultaneous_cancellation():
+    async def scenario():
+        session = ProjectXMarketDepthSession(client=_StubClient(), connect_factory=_FakeConnector())
+        waiter = None
+
+        class CancelWithWakeup(asyncio.Event):
+            async def wait(self):
+                await asyncio.sleep(0)
+                assert waiter is not None
+                waiter.cancel()
+                return True
+
+        session._market_wakeup = CancelWithWakeup()
+        waiter = asyncio.create_task(session._wait_for_market_check())
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["keepalive", "invocation"])
+def test_completed_websocket_send_preserves_simultaneous_cancellation(operation):
+    async def scenario():
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=_FakeConnector(), keepalive_seconds=0.01,
+        )
+        sender = None
+
+        class CancelWithSend:
+            sent = False
+
+            async def send(self, payload):
+                assert not self.sent, "Cancelled sender continued sending"
+                self.sent = True
+                await asyncio.sleep(0)
+                assert sender is not None
+                sender.cancel()
+
+        websocket = CancelWithSend()
+        generation = await session._activate_connection(websocket)
+        coroutine = (
+            session._send_keepalives(websocket, generation)
+            if operation == "keepalive"
+            else session._send_invocation_locked(websocket, "SubscribeContractMarketDepth", CONTRACT_MNQ, generation)
+        )
+        sender = asyncio.create_task(coroutine)
+        with pytest.raises(asyncio.CancelledError):
+            await sender
+        await session.close()
+        assert session._pending_invocations == {}
+        assert session._latest_contract_invocation == {}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("closed_at", [
+    "2026-09-04T21:00:00+00:00",  # Friday 5 PM EDT, the reported case
+    "2026-09-05T15:00:00+00:00",  # Saturday
+    "2026-09-06T21:59:59+00:00",  # Sunday just before opening
+    "2026-12-04T22:00:00+00:00",  # Friday 5 PM EST (winter offset)
+    "2026-12-06T22:59:59+00:00",  # Sunday before the winter opening
+    "2026-09-08T21:30:00+00:00",  # Daily maintenance
+    "2026-09-08T20:15:00+00:00",  # Equity index halt
+    "2026-09-07T17:00:00+00:00",  # Labor Day early close
+])
+def test_closed_market_stays_closed_without_authentication_or_provider_connections(closed_at):
+    async def scenario():
+        client = _StubClient()
+        connector = _FakeConnector()
+        session = ProjectXMarketDepthSession(
+            client=client, connect_factory=connector, market_check_seconds=0.01,
+            now=lambda: datetime.fromisoformat(closed_at),
+        )
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        assert subscription.initial_events[0]["data"]["state"] == "market_closed"
+        assert "resume automatically" in subscription.initial_events[0]["data"]["message"]
+        assert subscription.initial_events[1]["data"]["bids"] == []
+        await asyncio.sleep(0.055)  # Several calendar checks, with no provider retries.
+        await session._broadcast_contract_state(CONTRACT_MNQ, "connected")
+        await session._broadcast_state("reconnecting")
+        await session._apply_depth_entry(CONTRACT_MNQ, _depth(
+            timestamp=closed_at, depth_type=2, price=20000, volume=5,
+        ))
+        assert _drain(subscription.queue) == []
+        assert client.auth_calls == 0
+        assert connector.websockets == []
+        await subscription.close()
+        assert session._runner_task is None
+        await session.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("before", "closed", "reopens"), [
+    ("2026-09-04T20:59:59+00:00", "2026-09-04T21:00:00+00:00", "2026-09-06T22:00:00+00:00"),
+    ("2026-12-04T21:59:59+00:00", "2026-12-04T22:00:00+00:00", "2026-12-06T23:00:00+00:00"),
+    ("2026-09-08T20:59:59+00:00", "2026-09-08T21:00:00+00:00", "2026-09-08T22:00:00+00:00"),
+])
+def test_open_stream_closes_clears_prices_and_reopens_for_existing_subscribers(before, closed, reopens):
+    async def scenario():
+        clock = [datetime.fromisoformat(before)]
+        connector = _FakeConnector()
+        client = _StubClient()
+        session = ProjectXMarketDepthSession(
+            client=client, connect_factory=connector, now=lambda: clock[0],
+            market_check_seconds=0.01, reconnect_base_seconds=0.01,
+        )
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        await _wait_until(lambda: session._connection_state == "connected")
+        first = connector.websockets[0]
+        old_generation = session._connection_generation
+        await session._apply_depth_entry(CONTRACT_MNQ, _depth(
+            timestamp=before, depth_type=2, price=20000, volume=5,
+        ))
+        _drain(subscription.queue)
+        clock[0] = datetime.fromisoformat(closed)
+        await _wait_until(lambda: first.closed)
+        events = _drain(subscription.queue)
+        assert [event["data"]["state"] for event in events if event["event"] == "state"] == ["market_closed"]
+        assert any(event["event"] == "snapshot" and event["data"]["bids"] == [] for event in events)
+        await asyncio.sleep(0.04)
+        assert len(connector.websockets) == client.auth_calls == 1
+
+        clock[0] = datetime.fromisoformat(reopens)
+        await _wait_until(lambda: len(connector.websockets) == 2)
+        await _wait_until(lambda: session._connection_state == "connected")
+        assert _invocations(connector.websockets[1], "SubscribeContractMarketDepth")[0]["arguments"] == [CONTRACT_MNQ]
+        await session.process_signalr_frame({
+            "type": 1, "target": "GatewayDepth",
+            "arguments": [CONTRACT_MNQ, _depth(timestamp=before, depth_type=2, volume=99)],
+        }, connection_generation=old_generation)
+        assert session._channels[CONTRACT_MNQ].book.snapshot()["bids"] == []
+        await session._apply_depth_entry(CONTRACT_MNQ, _depth(
+            timestamp=reopens, depth_type=2, price=20001, volume=6,
+        ))
+        assert session._channels[CONTRACT_MNQ].book.snapshot()["bids"] == [{"price": 20001, "size": 6}]
+        await subscription.close()
+        await session.close()
+        assert not [task for task in asyncio.all_tasks() if task.get_name().startswith("projectx-market-depth")]
+    asyncio.run(scenario())
+
+
+def test_new_viewer_at_close_also_clears_existing_viewers_before_calendar_tick():
+    async def scenario():
+        clock = [datetime.fromisoformat("2026-09-04T20:59:59+00:00")]
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=_FakeConnector(), now=lambda: clock[0],
+        )
+        first = await session.subscribe(CONTRACT_MNQ)
+        await _wait_until(lambda: session._connection_state == "connected")
+        await session._apply_depth_entry(CONTRACT_MNQ, _depth(
+            timestamp=clock[0].isoformat(), depth_type=2, volume=5,
+        ))
+        _drain(first.queue)
+        clock[0] = datetime.fromisoformat("2026-09-04T21:00:00+00:00")
+        second = await session.subscribe(CONTRACT_MNQ)
+        assert second.initial_events[0]["data"]["state"] == "market_closed"
+        assert second.initial_events[1]["data"]["bids"] == []
+        events = _drain(first.queue)
+        assert events[-1]["data"]["state"] == "market_closed"
+        assert events[0]["event"] == "snapshot" and events[0]["data"]["bids"] == []
+        await first.close()
+        await second.close()
+        await session.close()
+    asyncio.run(scenario())
+
+
+def test_shared_session_only_subscribes_open_contracts_and_resumes_closed_contract():
+    async def scenario():
+        clock = [datetime.fromisoformat("2026-09-08T20:15:00+00:00")]
+        connector = _FakeConnector()
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=connector, now=lambda: clock[0],
+            market_check_seconds=0.01, reconnect_base_seconds=0.01,
+        )
+        equity = await session.subscribe(CONTRACT_MNQ)
+        energy_contract = "CON.F.US.CL.V26"
+        energy = await session.subscribe(energy_contract)
+        await _wait_until(lambda: session._connection_state == "connected")
+        assert session._provider_subscribed == {energy_contract}
+        assert equity.initial_events[0]["data"]["state"] == "market_closed"
+        assert not [event for event in _drain(equity.queue) if event["event"] == "state" and event["data"]["state"] != "market_closed"]
+        clock[0] = datetime.fromisoformat("2026-09-08T20:30:00+00:00")
+        await _wait_until(lambda: session._provider_subscribed == {energy_contract, CONTRACT_MNQ})
+        assert len(connector.websockets) == 2
+        await equity.close()
+        await energy.close()
+        await session.close()
+    asyncio.run(scenario())
+
+
+def test_market_closing_during_authentication_prevents_connection():
+    async def scenario():
+        clock = [datetime.fromisoformat("2026-09-04T20:59:59+00:00")]
+        class ClosingClient(_StubClient):
+            def get_access_token(self):
+                clock[0] = datetime.fromisoformat("2026-09-04T21:00:00+00:00")
+                return super().get_access_token()
+        client = ClosingClient()
+        connector = _FakeConnector()
+        session = ProjectXMarketDepthSession(
+            client=client, connect_factory=connector, now=lambda: clock[0], market_check_seconds=0.01,
+        )
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        await _wait_until(lambda: session._channels[CONTRACT_MNQ].market_open is False)
+        assert connector.websockets == []
+        assert client.auth_calls == 1
+        await subscription.close()
+        await session.close()
+    asyncio.run(scenario())
+
+
+def test_quiet_open_connection_sends_signalr_pings_and_stops_all_tasks_on_close():
+    async def scenario():
+        connector = _FakeConnector()
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=connector, keepalive_seconds=0.01,
+        )
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        await _wait_until(lambda: session._connection_state == "connected")
+        websocket = connector.websockets[0]
+        ping = '{"type":6}' + _SIGNALR_RECORD_SEPARATOR
+        await _wait_until(lambda: websocket.sent.count(ping) >= 3)
+        assert len(connector.websockets) == 1
+        await subscription.close()
+        sends_after_close = len(websocket.sent)
+        await asyncio.sleep(0.03)
+        assert len(websocket.sent) == sends_after_close
+        assert not [task for task in asyncio.all_tasks() if task.get_name().startswith("projectx-market-depth")]
+        await session.close()
+    asyncio.run(scenario())
+
+
+def test_keepalive_send_timeout_recovers_connection_during_open_market():
+    class HangingPingWebSocket(_FakeWebSocket):
+        async def send(self, message):
+            if message == '{"type":6}' + _SIGNALR_RECORD_SEPARATOR:
+                await asyncio.Event().wait()
+            await super().send(message)
+
+    async def scenario():
+        connector = _FakeConnector(HangingPingWebSocket)
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=connector, keepalive_seconds=0.01,
+            send_timeout_seconds=0.05, reconnect_base_seconds=0.01,
+        )
+        subscription = await session.subscribe(CONTRACT_MNQ)
+        await _wait_until(lambda: len(connector.websockets) >= 2)
+        assert connector.websockets[0].closed
+        assert any(event["event"] == "state" and event["data"]["state"] == "reconnecting" for event in _drain(subscription.queue))
+        await subscription.close()
+        await session.close()
     asyncio.run(scenario())

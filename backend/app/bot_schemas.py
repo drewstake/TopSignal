@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .trade_plan_schemas import TradeEvaluationResultOut
 
@@ -254,8 +254,8 @@ class BotTradeLevelsOut(BaseModel):
 class BotStartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dry_run: bool | None = None
-    confirm_live_order_routing: bool = False
+    dry_run: StrictBool | None = None
+    confirm_live_order_routing: StrictBool = False
     continuous: bool = False
     poll_interval_seconds: int | None = Field(default=None, ge=1, le=300)
     stop_at_session_end: bool = False

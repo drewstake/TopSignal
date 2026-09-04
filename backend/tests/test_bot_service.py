@@ -1180,6 +1180,36 @@ def test_bollinger_mean_reversion_generates_buy_signal_on_fresh_lower_band_break
     assert signal.raw_payload["take_profit"] > signal.price
 
 
+@pytest.mark.parametrize("close, high, low, setup_direction", [
+    (90.0, 100.4, 86.4, "BUY"),
+    (110.0, 113.6, 99.6, "SELL"),
+])
+def test_bollinger_mean_reversion_holds_when_vwap_target_has_no_volume(close, high, low, setup_direction):
+    base = datetime(2026, 4, 1, 13, 0, tzinfo=timezone.utc)
+    candles = _make_bollinger_base_candles(base, low_close=98.0, high_close=102.0)
+    candles.append(_make_candle(
+        base + timedelta(minutes=60 * 5), close,
+        open_price=100.0, high_price=high, low_price=low,
+    ))
+    for candle in candles:
+        candle.volume = 0
+
+    signal = evaluate_bollinger_mean_reversion(
+        candles,
+        strategy_params={
+            "bollinger_period": 60, "bollinger_stddev": 4.0,
+            "atr_period": 14, "atr_stop_buffer": 0.5,
+            "take_profit_mode": "vwap", "news_blackout_windows": [],
+        },
+    )
+
+    assert signal.action == "HOLD"
+    assert signal.raw_payload["setup_direction"] == setup_direction
+    assert signal.raw_payload["take_profit"] is None
+    assert signal.raw_payload["reward"] is None
+    assert "exit target does not produce a favorable" in signal.reason
+
+
 def test_bollinger_mean_reversion_generates_sell_signal_with_fixed_r_target():
     base = datetime(2026, 4, 1, 13, 0, tzinfo=timezone.utc)
     candles = _make_bollinger_base_candles(base, low_close=98.0, high_close=102.0)
@@ -4861,7 +4891,13 @@ def test_fetch_market_candles_resolves_legacy_symbol_before_history_call():
         engine.dispose()
 
 
-def test_dry_run_evaluation_logs_order_attempt_without_submitting():
+@pytest.fixture
+def open_exchange_session(monkeypatch):
+    # These mocked evaluation cases must also be runnable outside exchange hours.
+    monkeypatch.setattr("app.services.bot_service.futures_session_is_open", lambda *_args, **_kwargs: True)
+
+
+def test_dry_run_evaluation_logs_order_attempt_without_submitting(open_exchange_session):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -4965,7 +5001,7 @@ def test_dry_run_evaluation_logs_order_attempt_without_submitting():
         engine.dispose()
 
 
-def test_macd_support_resistance_evaluation_serializes_trailing_stop_plan_into_order_attempt():
+def test_macd_support_resistance_evaluation_serializes_trailing_stop_plan_into_order_attempt(open_exchange_session):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -5084,7 +5120,7 @@ def test_macd_support_resistance_evaluation_serializes_trailing_stop_plan_into_o
         engine.dispose()
 
 
-def test_donchian_reversal_uses_double_size_to_flip_position_without_risk_block():
+def test_donchian_reversal_uses_double_size_to_flip_position_without_risk_block(open_exchange_session):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -5201,7 +5237,7 @@ def test_donchian_reversal_uses_double_size_to_flip_position_without_risk_block(
         engine.dispose()
 
 
-def test_live_evaluation_is_blocked_without_explicit_confirmation():
+def test_live_evaluation_is_blocked_without_explicit_confirmation(open_exchange_session):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -5304,7 +5340,7 @@ def test_evaluate_endpoint_rejects_live_routing_request(monkeypatch):
     assert "dry-run only" in exc_info.value.detail
 
 
-def test_evaluation_uses_resolved_contract_for_decision_and_order_attempt():
+def test_evaluation_uses_resolved_contract_for_decision_and_order_attempt(open_exchange_session):
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},

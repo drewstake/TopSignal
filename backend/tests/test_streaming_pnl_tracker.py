@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timezone
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -18,6 +20,46 @@ from app.services.streaming_pnl_tracker import (
 
 def _dt(hour: int, minute: int = 0) -> str:
     return datetime(2026, 3, 1, hour, minute, tzinfo=timezone.utc).isoformat()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"timestamp": None}, {"timestamp": "invalid"}, {"timestamp": float("inf")},
+    {"timestamp": "2099-01-01T00:00:00Z"}, {"lastPrice": float("nan")},
+    {"lastPrice": float("inf")}, {"lastPrice": -1}, {"lastPrice": True},
+    {"bid": 102, "ask": 100},
+])
+def test_streaming_quotes_require_finite_price_and_authoritative_timestamp(overrides):
+    tracker = StreamingPnlTracker()
+    assert tracker.ingest_market_event({
+        "contractId": "fixture", "lastPrice": 100, "timestamp": _dt(9), **overrides,
+    }) is False
+    assert tracker.price_by_contract_id == {}
+
+
+def test_streaming_quote_cannot_replace_newer_market_update():
+    tracker = StreamingPnlTracker()
+    assert tracker.ingest_market_event({"contractId": "fixture", "lastPrice": 100, "timestamp": _dt(10)})
+    assert tracker.ingest_market_event({"contractId": "fixture", "lastPrice": 90, "timestamp": _dt(9)}) is False
+    assert tracker.get_market_price_update(contract_id="fixture").mark_price == 100
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), True])
+def test_streaming_position_rejects_invalid_size_and_price(value):
+    tracker = StreamingPnlTracker(owner_user_id="fixture", owner_account_id=101)
+    payload = {"accountId": 101, "contractId": "fixture", "netQty": 1, "avgPrice": 100, "timestamp": _dt(9)}
+    assert tracker.ingest_position_event({**payload, "netQty": value}) is False
+    assert tracker.ingest_position_event({**payload, "avgPrice": value}) is False
+    assert tracker.position_by_scope == {}
+
+
+def test_streaming_position_supports_provider_type_and_size_and_ignores_old_updates():
+    tracker = StreamingPnlTracker(owner_user_id="fixture", owner_account_id=101)
+    payload = {"accountId": 101, "contractId": "fixture", "type": 2, "size": 1,
+               "averagePrice": 100, "timestamp": _dt(10)}
+    assert tracker.ingest_position_event(payload)
+    assert tracker.position_by_scope[("fixture", 101, "fixture")].net_qty == -1
+    assert tracker.ingest_position_event({**payload, "size": 0, "timestamp": _dt(9)}) is False
+    assert tracker.position_by_scope[("fixture", 101, "fixture")].net_qty == -1
 
 
 def test_streaming_tracker_tracks_mae_mfe_and_closes_once():

@@ -156,6 +156,15 @@ def refresh_account_trades(
                     end=chunk_end,
                     limit=_read_int_env("PROJECTX_DAY_SYNC_LIMIT", _DEFAULT_DAY_SYNC_LIMIT),
                 )
+                if fetch_result.is_truncated:
+                    # A partial newest-first page can move the incremental
+                    # cursor past missing fills. Keep this chunk uncommitted
+                    # and fail the refresh so it must be fetched completely.
+                    raise ProjectXClientError(
+                        "ProjectX trade history is incomplete; refresh was not committed",
+                        status_code=502,
+                        reason_code="trade_history_incomplete",
+                    )
                 events = fetch_result.events
                 fetched_count += len(events)
                 try:

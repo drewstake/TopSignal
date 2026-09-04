@@ -1,12 +1,68 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MarketDepthStreamCallbacks } from "../../lib/api";
 import { OrderBookPanel } from "./OrderBookPanel";
 import { OrderBookStore } from "./orderBook";
 import { connectOrderBookPanelStream, type MarketDepthStreamFactory } from "./orderBookPanelStream";
 
+afterEach(cleanup);
+
 describe("OrderBookPanel", () => {
+  it("shows a stable market-closed state, clears prices, and resumes on the same stream", async () => {
+    const contractId = "CON.F.US.MNQ.U26";
+    let callbacks: MarketDepthStreamCallbacks | undefined;
+    const close = vi.fn();
+    const streamFactory = vi.fn<MarketDepthStreamFactory>((_query, next) => {
+      callbacks = next;
+      return close;
+    });
+    const { unmount } = render(<OrderBookPanel contractId={contractId} streamFactory={streamFactory} />);
+    const snapshot = {
+      contract_id: contractId, sequence: 1, timestamp: "2026-09-04T20:59:59Z",
+      bids: [{ price: 20000, size: 5 }], asks: [{ price: 20001, size: 6 }],
+    };
+    act(() => {
+      callbacks?.onState({ contract_id: contractId, state: "connected" });
+      callbacks?.onSnapshot(snapshot);
+    });
+    expect(screen.getByLabelText("Best bid 20,000.00, aggregate size 5")).toBeDefined();
+    act(() => {
+      callbacks?.onState({ contract_id: contractId, state: "market_closed" });
+      callbacks?.onSnapshot(snapshot); // Late data must not repopulate a closed book.
+      callbacks?.onUpdate({
+        contract_id: contractId, sequence: 999, timestamp: snapshot.timestamp,
+        side: "bid", price: 20000, size: 99,
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("Market closed")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toContain("resume automatically");
+    expect(screen.getByRole("status").getAttribute("aria-busy")).toBeNull();
+    expect(screen.queryByLabelText("Best bid 20,000.00, aggregate size 5")).toBeNull();
+    expect(screen.queryByText("Reconnecting")).toBeNull();
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    act(() => {
+      callbacks?.onState({ contract_id: contractId, state: "reconnecting" });
+      callbacks?.onState({ contract_id: contractId, state: "connected" });
+      callbacks?.onSnapshot({ ...snapshot, sequence: 2, bids: [], asks: [], reset: true });
+      callbacks?.onUpdate({
+        contract_id: contractId, sequence: 3, timestamp: "2026-09-06T22:00:00Z",
+        side: "bid", price: 20000, size: 7,
+      });
+    });
+    expect(screen.getByText("Connected")).toBeDefined();
+    expect(screen.getByLabelText("Best bid 20,000.00, aggregate size 7")).toBeDefined();
+    expect(screen.queryByText("Market closed")).toBeNull();
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("renders aggregate depth, spread, state, and the supported level counts without trading controls", () => {
     const markup = renderToStaticMarkup(
       <OrderBookPanel contractId="CON.F.US.MNQ.U26" symbol="MNQ" />,
@@ -14,6 +70,7 @@ describe("OrderBookPanel", () => {
 
     expect(markup).toContain("Order Book");
     expect(markup).toContain("MNQ · CON.F.US.MNQ.U26 · aggregate size by price");
+    expect(markup).toContain("Level 1 shows best bid/ask; Level 2 supplies market depth.");
     expect(markup).toContain("Loading");
     expect(markup).toContain("Loading order book…");
     expect(markup).toContain("Ask price");

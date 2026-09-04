@@ -35,6 +35,9 @@ class _Session:
     def get_bind(self):
         return object()
 
+    def connection(self):
+        return object()
+
     def rollback(self):
         self.rolled_back = True
 
@@ -333,8 +336,58 @@ def test_readiness_fails_closed_for_pending_migration(monkeypatch):
     response = main_module.readiness(db=db)
 
     assert response.status_code == 503
-    assert json.loads(response.body) == {"status": "not_ready"}
+    assert json.loads(response.body) == {
+        "status": "not_ready", "reason": "schema_outdated", "failed_checks": []
+    }
     assert db.rolled_back is True
+
+
+def test_readiness_database_failure_is_actionable_without_leaking_secrets():
+    class DisconnectedSession(_Session):
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("postgresql://secret-user:secret-password@private-host/db")
+
+        def rollback(self):
+            raise RuntimeError("rollback also failed with private query parameters")
+
+    response = main_module.readiness(db=DisconnectedSession())
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "status": "not_ready", "reason": "database_unavailable", "failed_checks": []
+    }
+    assert response.headers["retry-after"] == "5"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_readiness_reports_runtime_failed_checks_without_account_data(monkeypatch):
+    monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", object())
+    monkeypatch.setattr(
+        main_module, "inspect_bot_runtime",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            ready=False, checks={"lease_held": True, "provider_healthy": False, "orders_resolved": False},
+            failed_checks=("orders_resolved", "provider_healthy"),
+        ),
+    )
+    response = main_module.readiness(db=_Session())
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "status": "not_ready", "reason": "bot_runtime_not_ready",
+        "failed_checks": ["orders_resolved", "provider_healthy"],
+    }
+
+
+def test_readiness_refuses_missing_enabled_worker(monkeypatch):
+    monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", None)
+    monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ENABLED", "true")
+    response = main_module.readiness(db=_Session())
+    assert response.status_code == 503
+    assert json.loads(response.body)["reason"] == "worker_not_started"
+
+
+def test_liveness_does_not_depend_on_provider_or_database():
+    assert main_module.health() == {"status": "ok"}
 
 
 def test_readiness_rejects_unversioned_pre_runner_schema(monkeypatch):

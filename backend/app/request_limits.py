@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
+import asyncio
+import math
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -31,11 +32,14 @@ def _content_length(scope: Scope) -> int | None:
 class RequestBodyLimitMiddleware:
     """Bound every HTTP request body before routing or form/JSON parsing."""
 
-    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+    def __init__(self, app: ASGIApp, *, max_body_bytes: int, body_timeout_seconds: float = 30) -> None:
         if max_body_bytes <= 0:
             raise ValueError("max_body_bytes must be positive")
         self.app = app
         self.max_body_bytes = int(max_body_bytes)
+        if not math.isfinite(body_timeout_seconds) or body_timeout_seconds <= 0:
+            raise ValueError("body_timeout_seconds must be finite and positive")
+        self.body_timeout_seconds = body_timeout_seconds
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -68,11 +72,17 @@ class RequestBodyLimitMiddleware:
         # Content-Length instead of trusting it; memory remains bounded by the
         # configured ceiling and accepted upload handlers already materialize
         # their at-most-10-MiB files.
-        buffered: deque[Message] = deque()
+        buffered = bytearray()
         received_bytes = 0
+        deadline = asyncio.get_running_loop().time() + self.body_timeout_seconds
         while True:
-            message = await receive()
-            buffered.append(message)
+            try:
+                message = await asyncio.wait_for(
+                    receive(), timeout=max(0, deadline - asyncio.get_running_loop().time())
+                )
+            except asyncio.TimeoutError:
+                await self._reject(scope, receive, send, status_code=408, detail="request_body_timeout")
+                return
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
                 if received_bytes > self.max_body_bytes:
@@ -84,10 +94,13 @@ class RequestBodyLimitMiddleware:
                         detail="request_body_too_large",
                     )
                     return
+                # Collapse tiny/empty ASGI frames; a byte limit alone does not
+                # bound the memory consumed by millions of queued messages.
+                buffered.extend(message.get("body", b""))
                 if not message.get("more_body", False):
                     break
             elif message["type"] == "http.disconnect":
-                break
+                return
 
         if declared_length is not None and received_bytes != declared_length:
             await self._reject(
@@ -99,10 +112,17 @@ class RequestBodyLimitMiddleware:
             )
             return
 
+        replayed = False
+
         async def replay_receive() -> Message:
-            if buffered:
-                return buffered.popleft()
-            return {"type": "http.disconnect"}
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(buffered), "more_body": False}
+            # End of the request body is not a client disconnect. Streaming
+            # responses must keep listening to the real transport; fabricating
+            # a disconnect here cancels SSE before its headers/results arrive.
+            return await receive()
 
         await self.app(scope, replay_receive, send)
 

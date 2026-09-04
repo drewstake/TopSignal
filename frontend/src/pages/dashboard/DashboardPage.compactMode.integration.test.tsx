@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { Outlet, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { accountsApi } from "../../lib/api";
+import { accountsApi, refreshTrades as realRefreshTrades } from "../../lib/api";
 import { getTradingDayRange } from "../../lib/tradingDay";
 import { ACCOUNT_TRADES_SYNCED_EVENT } from "../../lib/tradeSyncEvents";
 import type {
@@ -250,7 +250,10 @@ function mountDashboard(options: {
             }}
           />
         ),
-        children: [{ path: "dashboard", element: <DashboardPage /> }],
+        children: [
+          { path: "dashboard", element: <DashboardPage /> },
+          { path: "accounts", element: <div>Accounts route</div> },
+        ],
       },
     ],
     { initialEntries: [`/dashboard${accountId ? `?account=${accountId}` : ""}`] },
@@ -323,9 +326,97 @@ afterEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("DashboardPage Compact Mode request and state integration", () => {
+  it.each([false, true])("reuses successful copy-trade sync after Dashboard → Accounts → Dashboard (compact=%s)", async (compact) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-04T21:05:00Z"));
+    const leader = makeAccount(compact ? 94001 : 93001, "Leader", { isMain: true });
+    const follower = makeAccount(compact ? 94002 : 93002, "Follower");
+    writeStoredCopyTradeSettings({ modeEnabled: true, followerAccountIdsByLeaderAccountId: { [leader.id]: [follower.id] } });
+    const api = installAccountsApi({ accounts: [leader, follower] });
+    api.refreshTrades.mockImplementation(realRefreshTrades);
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ fetched_count: 0, inserted_count: 0 }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { router } = mountDashboard({ compact, accounts: [leader, follower], accountId: leader.id });
+    await waitFor(() => expect(api.getSummaryWithPointBases).toHaveBeenCalled());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    if (compact) await waitForCompactSettled();
+    else await screen.findByText("Copy Adjusted");
+    const initialSummaryCalls = api.getSummaryWithPointBases.mock.calls.length;
+    await act(async () => { await router.navigate(`/accounts?account=${leader.id}`); });
+    expect(screen.getByText("Accounts route")).toBeTruthy();
+    vi.setSystemTime(new Date("2026-09-04T21:08:00Z"));
+    await act(async () => { await router.navigate(`/dashboard?account=${leader.id}`); });
+    await waitFor(() => expect(api.getSummaryWithPointBases.mock.calls.length).toBeGreaterThan(initialSummaryCalls));
+    if (compact) await waitForCompactSettled();
+    else await screen.findByText("Copy Adjusted");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).includes("/trades/refresh"))).toBe(true);
+    if (compact) {
+      expect(api.getSummaryWithPointBases.mock.calls.every(([, query]) => !query?.refresh)).toBe(true);
+      expect(api.getTrades.mock.calls.every(([, query]) => !query?.refresh)).toBe(true);
+    }
+  });
+
+  it.each([0, 2])("shows Live import setup only after toggling on with %s CSV accounts", async (liveCount) => {
+    const leader = makeAccount(LEADER_ID, "Express", { isMain: true });
+    const other = makeAccount(SECOND_ACCOUNT_ID, "Other Express");
+    const csvAccounts = Array.from({ length: liveCount }, (_, index) => ({
+      ...makeAccount(88001 + index, `Live CSV ${index + 1}`),
+      trade_data_source: "csv_import" as const,
+    }));
+    const accounts = [leader, other, ...csvAccounts];
+    installAccountsApi({ accounts });
+    const createLiveAccount = vi.spyOn(accountsApi, "createLiveImportAccount");
+    const { router } = mountDashboard({ compact: false, accounts });
+
+    const toggle = await screen.findByRole("switch", { name: "Live Account CSV mode is off" });
+    expect(screen.queryByText("Import trades")).toBeNull();
+    fireEvent.click(toggle);
+    expect(await screen.findByRole("switch", { name: "Live Account CSV mode is on" })).toBeTruthy();
+    expect(await screen.findByText("Import trades")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Upload trade file" }).hasAttribute("disabled")).toBe(true);
+    expect(new URLSearchParams(router.state.location.search).get("account")).toBe(String(LEADER_ID));
+    expect(createLiveAccount).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Live Account CSV mode is on" }));
+    expect(screen.getByRole("switch", { name: "Live Account CSV mode is off" })).toBeTruthy();
+    expect(screen.queryByText("Import trades")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upload trade file" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Live Account CSV mode is off" }));
+    expect(await screen.findByText("Import trades")).toBeTruthy();
+    await act(async () => { await router.navigate(`/dashboard?account=${SECOND_ACCOUNT_ID}`); });
+    expect(screen.getByRole("switch", { name: "Live Account CSV mode is off" })).toBeTruthy();
+    expect(screen.queryByText("Import trades")).toBeNull();
+    await act(async () => { await router.navigate(`/dashboard?account=${LEADER_ID}`); });
+    expect(screen.queryByText("Import trades")).toBeNull();
+  });
+
+  it("shows imports for the selected Live CSV account and hides them when toggled back off", async () => {
+    const express = makeAccount(LEADER_ID, "Express", { isMain: true });
+    const live = { ...makeAccount(FOLLOWER_ID, "Live CSV"), trade_data_source: "csv_import" as const };
+    const accounts = [express, live];
+    installAccountsApi({ accounts });
+    const { router } = mountDashboard({ compact: false, accounts });
+    fireEvent.click(await screen.findByRole("switch", { name: "Live Account CSV mode is off" }));
+    expect(await screen.findByRole("region", { name: "Trade import" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Live Account CSV mode is on" })).toBeTruthy();
+    expect(new URLSearchParams(router.state.location.search).get("account")).toBe(String(FOLLOWER_ID));
+
+    fireEvent.click(screen.getByRole("switch", { name: "Live Account CSV mode is on" }));
+    await screen.findByRole("switch", { name: "Live Account CSV mode is off" });
+    expect(screen.queryByRole("region", { name: "Trade import" })).toBeNull();
+    expect(screen.queryByText("Import trades")).toBeNull();
+    expect(new URLSearchParams(router.state.location.search).get("account")).toBe(String(LEADER_ID));
+  });
+
   it("offers a working retry when the AppShell account request fails", async () => {
     const reloadAccounts = vi.fn();
     mountDashboard({
@@ -366,8 +457,9 @@ describe("DashboardPage Compact Mode request and state integration", () => {
     expect(
       await screen.findByRole("button", { name: "Copy Full Stats" }, { timeout: 10_000 }),
     ).toBeTruthy();
-    expect(screen.getByText("Import trades")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Upload trade file" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByText("Import trades")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upload trade file" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add Live Account" })).toBeNull();
     expect(screen.queryByText("Copy Trade accounts")).toBeNull();
     expect(screen.queryByTestId("compact-view")).toBeNull();
     expect(compactViewRender).not.toHaveBeenCalled();
@@ -496,6 +588,7 @@ describe("DashboardPage Compact Mode request and state integration", () => {
         end: "2026-08-31T20:59:59.999999Z",
         all_time: false,
         refresh: true,
+        automaticRefresh: true,
       });
       expect(latestCompactProps().days).toEqual([julyDay, correctedAugustDay, addedAugustDay]);
       expect(latestCompactProps().summary).toMatchObject({ net_pnl: 250, trade_count: 2 });

@@ -152,6 +152,17 @@ afterEach(() => {
 });
 
 describe("TradesPage account-switch races", () => {
+  it("uses the local cache on navigation and bypasses it on Refresh", async () => {
+    const user = userEvent.setup();
+    const getSummary = vi.spyOn(accountsApi, "getSummary").mockResolvedValue(summary);
+    const getTrades = vi.spyOn(accountsApi, "getTrades").mockResolvedValue([]);
+    const refreshTrades = vi.spyOn(accountsApi, "refreshTrades");
+    render(<RouterProvider router={createTradesRouter({ accounts: [account(7101, "projectx", true)] })} />);
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+    expect(getSummary).toHaveBeenLastCalledWith(7101, expect.any(Object), { bypassCache: true });
+    expect(getTrades).toHaveBeenLastCalledWith(7101, expect.any(Object), { bypassCache: true });
+    expect(refreshTrades).not.toHaveBeenCalled();
+  });
   it("keeps account and first trade-data loading behind a skeleton", async () => {
     const express = account(7101, "projectx", true);
     const pendingSummary = deferred<AccountSummary>();
@@ -228,8 +239,8 @@ describe("TradesPage account-switch races", () => {
       await router.navigate("/?account=88001");
     });
     await waitFor(() => {
-      expect(getSummary).toHaveBeenCalledWith(live.id, expect.any(Object));
-      expect(getTrades).toHaveBeenCalledWith(live.id, expect.any(Object));
+      expect(getSummary).toHaveBeenCalledWith(live.id, expect.any(Object), { bypassCache: false });
+      expect(getTrades).toHaveBeenCalledWith(live.id, expect.any(Object), { bypassCache: false });
     });
 
     await act(async () => {
@@ -264,14 +275,14 @@ describe("TradesPage account-switch races", () => {
 
     render(<RouterProvider router={router} />);
     const syncButton = await screen.findByRole("button", { name: "Sync Latest" });
-    await waitFor(() => expect(getSummary).toHaveBeenCalledWith(7101, expect.any(Object)));
+    await waitFor(() => expect(getSummary).toHaveBeenCalledWith(7101, expect.any(Object), { bypassCache: false }));
     await user.click(syncButton);
 
     await router.navigate("/?account=88001");
     expect(await screen.findByRole("button", { name: "Import-only Account" })).not.toBeNull();
     await waitFor(() => {
-      expect(getSummary).toHaveBeenCalledWith(88001, expect.any(Object));
-      expect(getTrades).toHaveBeenCalledWith(88001, expect.any(Object));
+      expect(getSummary).toHaveBeenCalledWith(88001, expect.any(Object), { bypassCache: false });
+      expect(getTrades).toHaveBeenCalledWith(88001, expect.any(Object), { bypassCache: false });
     });
 
     expressSync.resolve({ fetched_count: 4, inserted_count: 2 });

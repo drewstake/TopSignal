@@ -43,6 +43,7 @@ import {
   buildGapRangeKey,
   buildGapRepairWindows,
   findCandleGaps,
+  isFuturesSessionOpen,
   isGapCoveredByRepairWindows,
   planBotCandleFetches,
   type BotCandleFetchRequest,
@@ -260,6 +261,7 @@ interface LoadCandlesOptions {
 
 interface LoadLivePriceOptions {
   force?: boolean;
+  allowClosedSession?: boolean;
 }
 
 interface LivePricePoint {
@@ -570,7 +572,8 @@ export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope,
     return null;
   }, [liveCandle, marketDataMatchesContext, streamPrice]);
   const livePrice = livePricePoint?.price ?? null;
-  void freshnessTick; // Re-render trigger for data- and price-age status.
+  void freshnessTick; // Re-render trigger for data/price age and session transitions.
+  const chartSessionOpen = isFuturesSessionOpen(Date.now(), bot?.symbol);
   const livePriceObservedAtMs = livePricePoint ? Date.parse(livePricePoint.observedAt) : Number.NaN;
   const livePriceIsStale =
     livePricePoint !== null &&
@@ -1233,12 +1236,23 @@ export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope,
     [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, scheduleBackgroundCandleFetches],
   );
 
-  const loadLivePrice = useCallback(async ({ force = false }: LoadLivePriceOptions = {}) => {
+  const loadLivePrice = useCallback(async ({ force = false, allowClosedSession = false }: LoadLivePriceOptions = {}) => {
     if (!chartConfig || !authenticatedCacheScope) {
       liveRequestsRef.current.invalidate();
       setLiveCandle(null);
       setStreamPrice(null);
       setLivePriceError(null);
+      return;
+    }
+
+    // The clock only suppresses display requests; it never authorizes trading.
+    // Keep the timer running so requests resume after the scheduled reopening.
+    if (!allowClosedSession && !isFuturesSessionOpen(Date.now(), chartConfig.symbol)) {
+      liveRequestsRef.current.invalidate();
+      liveCandleRef.current = null;
+      setLiveCandle(null);
+      setStreamPrice(null);
+      setStreamActive(false);
       return;
     }
 
@@ -2863,7 +2877,7 @@ export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope,
   }, [authenticatedCacheScope, bot, demoMode, loadCandles]);
 
   useEffect(() => {
-    if (demoMode || !bot) {
+    if (demoMode || !bot || !chartSessionOpen) {
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
       setStreamPrice(null);
@@ -2908,7 +2922,7 @@ export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope,
         liveStreamRenderTimeoutRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, bot, demoMode, scheduleLiveStreamPrice]);
+  }, [authenticatedCacheScope, bot, chartSessionOpen, demoMode, scheduleLiveStreamPrice]);
 
   useEffect(() => {
     if (demoMode || !bot) {
@@ -3252,7 +3266,7 @@ export function BotSignalChart({ bot, demoMode = false, authenticatedCacheScope,
                   return;
                 }
                 void loadCandles({ silent: true, forceRefresh: true });
-                void loadLivePrice({ force: true });
+                void loadLivePrice({ force: true, allowClosedSession: true });
               }}
               disabled={demoMode || !bot || loading || refreshing || historyLoading || gapRepairing}
               title={demoMode ? "Live market refresh is disabled in Demo Mode." : undefined}

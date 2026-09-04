@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -47,6 +48,13 @@ from app.services.projectx_client import PROJECTX_ERROR_NETWORK, ProjectXClientE
 USER_A = "00000000-0000-0000-0000-000000000001"
 USER_B = "00000000-0000-0000-0000-000000000002"
 CONTRACT_ID = "CON.F.US.MNQ.M26"
+
+
+@pytest.fixture(autouse=True)
+def open_exchange_session(monkeypatch):
+    # Execution tests use mocked provider data and an open exchange by default.
+    # Closure-specific tests override this; the real calendar has its own suite.
+    monkeypatch.setattr(bot_service, "futures_session_is_open", lambda *_args, **_kwargs: True)
 
 
 @pytest.fixture
@@ -205,7 +213,7 @@ def _patch_actionable_signal(
     action: str = "BUY",
     raw_payload: dict | None = None,
 ) -> datetime:
-    timestamp = candle_timestamp or (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microsecond=0)
+    timestamp = candle_timestamp or (datetime.now(timezone.utc) - timedelta(minutes=6)).replace(microsecond=0)
 
     def fake_fetch(_db, *, user_id, config, client):
         del client
@@ -1232,7 +1240,7 @@ def test_superseded_evaluation_failure_cannot_disable_or_overwrite_new_active_ru
     assert losing_run.raw_state["phase"] != "error"
 
 
-def test_provider_order_failure_preserves_error_attempt_and_terminal_run(db_session, monkeypatch):
+def test_unexpected_provider_failure_preserves_unknown_attempt_and_terminal_run(db_session, monkeypatch):
     _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
     db_session.commit()
     _patch_actionable_signal(monkeypatch)
@@ -1254,12 +1262,12 @@ def test_provider_order_failure_preserves_error_attempt_and_terminal_run(db_sess
     attempt = db_session.query(BotOrderAttempt).one()
     run = db_session.query(BotRun).one()
     assert result.status == "error"
-    assert attempt.status == "error"
+    assert attempt.status == "submission_unknown"
     assert attempt.execution_mode == "live"
     assert attempt.idempotency_key == result.idempotency_key
     assert "provider order unavailable" in str(attempt.rejection_reason)
     assert run.status == "error"
-    assert run.stop_reason == "provider_order_submission_failed"
+    assert run.stop_reason == "provider_order_submission_unknown"
     assert "provider order unavailable" in str(run.last_error)
     assert run.stopped_at is not None
     assert db_session.query(BotRun).filter(BotRun.status == "running").count() == 0
@@ -1975,6 +1983,7 @@ def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session):
             {
                 "order_id": "provider-456",
                 "account_id": 9001,
+                "contract_id": CONTRACT_ID,
                 "status": 2,
                 "custom_tag": "topsignal-1-reconcile",
                 "raw_payload": {"id": 456, "customTag": "topsignal-1-reconcile"},
@@ -2023,6 +2032,7 @@ def test_late_reconciliation_blocks_current_evaluation_and_restarts_settlement_w
             {
                 "order_id": "provider-late-fill",
                 "account_id": 9001,
+                "contract_id": CONTRACT_ID,
                 "status": 2,
                 "custom_tag": "topsignal-late-fill",
                 "raw_payload": {"id": "provider-late-fill", "status": 2},
@@ -2074,6 +2084,7 @@ def test_reconciliation_keeps_open_or_pending_provider_order_unresolved(db_sessi
             {
                 "order_id": "provider-working",
                 "account_id": 9001,
+                "contract_id": CONTRACT_ID,
                 "status": provider_status,
                 "custom_tag": "topsignal-working-order",
                 "raw_payload": {"id": "provider-working", "status": provider_status},
@@ -2275,6 +2286,235 @@ def test_network_timeout_marks_submission_unknown_for_reconciliation():
     assert attempt.provider_order_id is None
 
 
+@pytest.mark.parametrize("response", [None, [], "accepted", 1])
+def test_malformed_submission_response_remains_unknown(response):
+    attempt = SimpleNamespace(
+        raw_request={"accountId": 9001, "contractId": CONTRACT_ID, "type": 2, "side": 0, "size": 1},
+        status="pending", provider_order_id=None, rejection_reason=None, raw_response=None,
+    )
+
+    class MalformedClient(RecordingClient):
+        def place_order(self, **kwargs):
+            self.place_order_calls.append(kwargs)
+            return response
+
+    client = MalformedClient()
+    bot_service._submit_order_attempt(client=client, order_attempt=attempt)
+    assert attempt.status == "submission_unknown"
+    assert len(client.place_order_calls) == 1
+
+
+def test_typed_definite_rejection_does_not_claim_unknown_submission():
+    attempt = SimpleNamespace(
+        raw_request={"accountId": 9001, "contractId": CONTRACT_ID, "type": 2, "side": 0, "size": 1},
+        status="pending", provider_order_id=None, rejection_reason=None, raw_response=None,
+    )
+    client = RecordingClient(order_error=ProjectXClientError("Order rejected", status_code=400))
+    bot_service._submit_order_attempt(client=client, order_attempt=attempt)
+    assert attempt.status == "error"
+    assert len(client.place_order_calls) == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"account_id": 9999}, {"account_id": None},
+    {"contract_id": "CON.F.US.ES.U26"}, {"contract_id": None},
+    {"order_id": "different-recorded-order"},
+])
+def test_reconciliation_requires_matching_order_identity(db_session, changed):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    attempt = BotOrderAttempt(
+        user_id=USER_A, bot_config_id=int(config.id), account_id=9001,
+        contract_id=CONTRACT_ID, execution_mode="live", side="BUY", order_type="market",
+        size=1, status="submission_unknown", provider_order_id="known-order",
+        raw_request={"customTag": "identity-test"},
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    provider_order = {
+        "order_id": "known-order", "account_id": 9001, "contract_id": CONTRACT_ID,
+        "status": 2, "custom_tag": "identity-test", **changed,
+    }
+    result = bot_service.reconcile_unresolved_order_attempts(
+        db_session, user_id=USER_A, account_id=9001,
+        client=RecordingClient(orders=[provider_order]),
+    )
+    assert result.unresolved_count == 1
+    assert result.resolved_count == 0
+    assert attempt.status == "submission_unknown"
+    assert attempt.provider_order_id == "known-order"
+
+
+@pytest.mark.parametrize("can_trade,state", [(False, "LOCKED_OUT"), (None, "ACTIVE"), (True, "HIDDEN")])
+def test_final_boundary_blocks_tradability_change(db_session, monkeypatch, can_trade, state):
+    account, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+
+    class ChangedDuringPreflightClient(RecordingClient):
+        def list_accounts(self, **kwargs):
+            account.can_trade = can_trade
+            account.account_state = state
+            db_session.flush()
+            return super().list_accounts(**kwargs)
+
+    client = ChangedDuringPreflightClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert result.status == "risk_blocked"
+    assert "account_tradability_changed" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_slow_authoritative_preflight_blocks_routing(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    times = iter([100.0, 116.0])
+    monkeypatch.setattr(bot_service, "monotonic", lambda: next(times))
+    client = RecordingClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert result.status == "risk_blocked"
+    assert "live_preflight_unavailable" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_authoritative_preflight_expiry_after_database_lock_blocks_routing(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    times = iter([100.0, 101.0, 102.0, 116.0])
+    monkeypatch.setattr(bot_service, "monotonic", lambda: next(times))
+    client = RecordingClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert result.status == "risk_blocked"
+    assert "live_preflight_unavailable" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_authoritative_loss_cooldown_blocks_before_local_trade_sync(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.cooldown_seconds = 300
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(trades=[{
+        "account_id": 9001, "contract_id": CONTRACT_ID, "symbol": "MNQ", "size": 1,
+        "timestamp": datetime.now(timezone.utc), "pnl": -10.0, "fees": 0.0,
+        "voided": False, "order_id": "new-unsynced-loss", "source_trade_id": "loss-1",
+    }])
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert db_session.query(ProjectXTradeEvent).count() == 0
+    assert result.status == "risk_blocked"
+    assert "cooldown_after_loss" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+@pytest.mark.parametrize("foreign_state", ["ACTIVE", "LOCKED_OUT", "HIDDEN"])
+def test_shared_broker_account_cannot_start_live_run(db_session, foreign_state):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    foreign_account, _ = _add_account_and_config(db_session, user_id=USER_B)
+    foreign_account.account_state = foreign_state
+    db_session.commit()
+    client = RecordingClient()
+    with pytest.raises(ValueError, match="shared_broker_account_ownership"):
+        start_bot_run(
+            db_session, user_id=USER_A, bot_config_id=int(config.id), client=client,
+            dry_run=False, confirm_live_order_routing=True,
+        )
+    assert config.enabled is False
+    assert db_session.query(BotRun).count() == 0
+    assert client.place_order_calls == []
+
+
+def test_shared_broker_account_can_still_dry_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session)
+    _add_account_and_config(db_session, user_id=USER_B)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    client = RecordingClient()
+    result = start_bot_run(
+        db_session, user_id=USER_A, bot_config_id=int(config.id), client=client, dry_run=True,
+    )
+    assert result.status == "dry_run_attempt"
+    assert client.place_order_calls == []
+
+
+def test_final_boundary_blocks_new_shared_account_ownership(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+
+    class NewOwnerDuringPreflightClient(RecordingClient):
+        def list_accounts(self, **kwargs):
+            _add_account_and_config(db_session, user_id=USER_B)
+            return super().list_accounts(**kwargs)
+
+    client = NewOwnerDuringPreflightClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert "shared_broker_account_ownership" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+@pytest.mark.parametrize("orphan_kind", ["running", "pending", "submission_unknown", "submitted"])
+def test_deleted_duplicate_account_does_not_clear_foreign_execution_interlock(db_session, orphan_kind):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    foreign_account, foreign_config = _add_account_and_config(db_session, user_id=USER_B)
+    if orphan_kind == "running":
+        _add_running_live_worker_run(db_session, foreign_config)
+    else:
+        db_session.add(BotOrderAttempt(
+            user_id=USER_B, bot_config_id=int(foreign_config.id), account_id=9001,
+            contract_id=CONTRACT_ID, execution_mode="live", side="BUY", order_type="market",
+            size=1, status=orphan_kind, raw_request={"customTag": "orphan"},
+        ))
+    db_session.delete(foreign_account)
+    db_session.commit()
+    assert db_session.query(Account).filter(Account.user_id == USER_B).count() == 0
+    with pytest.raises(ValueError, match="shared_broker_account_ownership"):
+        start_bot_run(
+            db_session, user_id=USER_A, bot_config_id=int(config.id), client=RecordingClient(),
+            dry_run=False, confirm_live_order_routing=True,
+        )
+
+
+@pytest.mark.parametrize("revoke_after_lock", [False, True])
+def test_worker_shutdown_fences_mutation_before_and_after_database_lock(db_session, monkeypatch, revoke_after_lock):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = _add_running_live_worker_run(db_session, config)
+    token = _add_worker_lease(db_session, owner_id="shutdown-worker")
+    checks = iter([True, False] if revoke_after_lock else [False])
+    token = replace(token, mutation_allowed=lambda: next(checks))
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        run=run, dry_run=False, confirm_live_order_routing=True, worker_lease_token=token,
+    )
+    assert result.status == "risk_blocked"
+    assert "worker_lease_lost" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
 def test_success_response_without_provider_order_id_is_not_marked_submitted():
     attempt = SimpleNamespace(
         raw_request={
@@ -2335,6 +2575,58 @@ def test_higher_timeframe_staleness_is_measured_from_bar_close(db_session):
     )
 
     assert "stale_market_data" not in {block.code for block in blocks}
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("closed_age_seconds, expected_block", [(30, False), (120, True)])
+def test_configured_positive_staleness_threshold_controls_order_routing(
+    db_session, monkeypatch, dry_run, closed_age_seconds, expected_block,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.max_data_staleness_seconds = 60
+    db_session.commit()
+    # Five-minute candle's age is measured from close, not its opening time.
+    timestamp = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=closed_age_seconds)
+    _patch_actionable_signal(monkeypatch, candle_timestamp=timestamp)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=dry_run, confirm_live_order_routing=True,
+    )
+    assert ("stale_market_data" in _risk_codes(result)) is expected_block
+    if expected_block:
+        assert result.status == "risk_blocked"
+        assert client.place_order_calls == []
+    else:
+        assert result.status == ("dry_run_attempt" if dry_run else "submitted")
+        assert len(client.place_order_calls) == (0 if dry_run else 1)
+
+
+@pytest.mark.parametrize("prior_status", ["blocked", "rejected", "error"])
+@pytest.mark.parametrize("prior_age_seconds, expected_block", [(30, True), (301, False)])
+def test_rejected_order_cooldown_blocks_until_configured_interval_expires(
+    db_session, monkeypatch, prior_status, prior_age_seconds, expected_block,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.cooldown_seconds = 300
+    db_session.add(BotOrderAttempt(
+        user_id=USER_A, bot_config_id=int(config.id), account_id=9001,
+        contract_id=CONTRACT_ID, execution_mode="live", side="BUY", order_type="market",
+        size=1, status=prior_status, raw_request={"customTag": "prior-rejection"},
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=prior_age_seconds),
+    ))
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert ("cooldown_after_rejection" in _risk_codes(result)) is expected_block
+    assert result.status == ("risk_blocked" if expected_block else "submitted")
+    assert len(client.place_order_calls) == (0 if expected_block else 1)
 
 
 def test_risk_blocked_signal_creates_no_order_attempt(db_session, monkeypatch):

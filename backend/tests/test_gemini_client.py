@@ -1,4 +1,5 @@
 import json
+import traceback
 from io import BytesIO
 from urllib import error
 
@@ -38,7 +39,10 @@ def test_generate_content_posts_to_configured_model(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, size=-1):
+            if getattr(self, "read_once", False):
+                return b""
+            self.read_once = True
             return b'{"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}'
 
     def fake_urlopen(req, timeout):
@@ -48,7 +52,7 @@ def test_generate_content_posts_to_configured_model(monkeypatch):
         captured["payload"] = json.loads(req.data.decode("utf-8"))
         return StubResponse()
 
-    monkeypatch.setattr("app.services.gemini_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.services.gemini_client.open_credentialed_request", fake_urlopen)
 
     client = GeminiClient(api_key="test-key", model="gemini-3.1-flash-lite", timeout_seconds=7)
     data = client.generate_content(
@@ -101,7 +105,7 @@ def test_http_error_message_is_actionable(monkeypatch):
             fp=BytesIO(b'{"error": {"message": "API key not valid."}}'),
         )
 
-    monkeypatch.setattr("app.services.gemini_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.services.gemini_client.open_credentialed_request", fake_urlopen)
 
     client = GeminiClient(api_key="bad-key")
     with pytest.raises(GeminiClientError) as exc_info:
@@ -122,7 +126,10 @@ def test_retryable_http_error_is_retried(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, size=-1):
+            if getattr(self, "read_once", False):
+                return b""
+            self.read_once = True
             return b'{"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}'
 
     def fake_urlopen(*_args, **_kwargs):
@@ -140,9 +147,52 @@ def test_retryable_http_error_is_retried(monkeypatch):
             )
         return StubResponse()
 
-    monkeypatch.setattr("app.services.gemini_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("app.services.gemini_client.open_credentialed_request", fake_urlopen)
 
     client = GeminiClient(api_key="test-key", retry_attempts=2, retry_backoff_seconds=0)
 
     assert client.generate_text("Hello") == "ok"
     assert calls == 2
+
+
+@pytest.mark.parametrize("config", [
+    {"base_url": "http://example.invalid"}, {"base_url": "https://example.invalid?key=secret"},
+    {"timeout_seconds": float("inf")}, {"timeout_seconds": float("nan")},
+    {"retry_attempts": 99999}, {"retry_backoff_seconds": float("inf")},
+])
+def test_invalid_transport_config_never_reaches_network(config):
+    with pytest.raises(GeminiClientError, match="Invalid Gemini transport configuration"):
+        GeminiClient(api_key="fixture", **config)
+
+
+@pytest.mark.parametrize("transport_failure", [False, True])
+def test_reflected_credentials_are_suppressed_in_errors_and_tracebacks(monkeypatch, transport_failure):
+    body = BytesIO(json.dumps({"error": {"message": "Quota exceeded. key fixture-private-key token=secret-token https://service.invalid/?key=secret-url"}}).encode())
+    def fail(*_a, **_k):
+        if transport_failure:
+            raise error.URLError("fixture-private-key")
+        raise error.HTTPError("https://service.invalid", 429, "fixture-private-key", {}, body)
+    monkeypatch.setattr("app.services.gemini_client.open_credentialed_request", fail)
+    with pytest.raises(GeminiClientError) as caught:
+        GeminiClient(api_key="fixture-private-key", retry_attempts=1).generate_text("fixture")
+    rendered = "".join(traceback.format_exception(caught.type, caught.value, caught.tb))
+    assert "fixture-private-key" not in str(caught.value)
+    assert "secret-token" not in str(caught.value)
+    assert "secret-url" not in str(caught.value)
+    assert caught.value.__suppress_context__
+    # Frame source may itself contain fixture names; exception chains must not.
+    assert "urllib.error.URLError" not in rendered
+    assert "urllib.error.HTTPError" not in rendered
+    if not transport_failure:
+        assert "Quota exceeded" in str(caught.value)
+        assert body.closed
+
+
+def test_oversized_gemini_error_body_is_bounded_and_closed(monkeypatch):
+    body = BytesIO(b"x" * 16385)
+    def fail(*_a, **_k):
+        raise error.HTTPError("https://service.invalid", 400, "bad", {}, body)
+    monkeypatch.setattr("app.services.gemini_client.open_credentialed_request", fail)
+    with pytest.raises(GeminiClientError, match="HTTP 400"):
+        GeminiClient(api_key="fixture").generate_text("fixture")
+    assert body.closed

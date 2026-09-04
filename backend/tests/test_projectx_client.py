@@ -16,6 +16,124 @@ from app.services.projectx_client import (
 )
 
 
+@pytest.mark.parametrize("value", [2, -1, 0.5, float("nan"), float("inf"), "yes", "on", "maybe", {}, []])
+def test_provider_boolean_metadata_rejects_unknown_values(value):
+    from app.services.projectx_client import _safe_bool
+
+    assert _safe_bool(value) is None
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, float("nan"), float("inf"), "1.5"])
+def test_provider_integer_fields_do_not_coerce_unknown_values(value):
+    from app.services.projectx_client import _safe_int
+
+    assert _safe_int(value) is None
+
+
+def test_token_cache_repr_omits_bearer_token():
+    from app.services.projectx_client import _TokenCache
+
+    cache = _TokenCache(token="sensitive-fixture", expires_at=datetime.now(timezone.utc))
+    assert "sensitive-fixture" not in repr(cache)
+
+
+def test_access_token_lookup_prunes_expired_credentials(monkeypatch):
+    import app.services.projectx_client as client_module
+
+    client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(client_module, "_TOKEN_CACHE_BY_KEY", {
+        "expired": client_module._TokenCache("old-secret", now - timedelta(seconds=1)),
+        client._token_cache_key(): client_module._TokenCache("current-fixture", now + timedelta(minutes=5)),
+    })
+    assert client.get_access_token() == "current-fixture"
+    assert "expired" not in client_module._TOKEN_CACHE_BY_KEY
+
+
+@pytest.mark.parametrize("raw, expected", [("600", 600), ("-1", 0), ("nan", None), ("inf", None), ("garbage", None)])
+def test_retry_after_header_parser_is_finite(raw, expected):
+    from app.services.projectx_client import _retry_after_seconds
+
+    assert _retry_after_seconds(raw) == expected
+
+
+@pytest.mark.parametrize("url", ["http://example.test", "https://user:secret@example.test", "https://example.test/?token=secret", "https://example.test/#secret", "https://", "https://example.test:bad", "https://example.test/\npath"])
+def test_client_refuses_insecure_or_credential_bearing_endpoint(url):
+    with pytest.raises(ProjectXClientError) as exc_info:
+        ProjectXClient(base_url=url, username="fixture", api_key="fixture")
+    assert "secret" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("timeout", [None, 0, -1, float("nan"), float("inf"), 61, True])
+def test_client_requires_a_bounded_finite_timeout(timeout):
+    with pytest.raises(ProjectXClientError):
+        ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture", timeout_seconds=timeout)
+
+
+def test_transport_redirect_does_not_forward_bearer_or_mutation(monkeypatch):
+    import app.services.projectx_client as client_module
+    from email.message import Message
+    from urllib.response import addinfourl
+
+    seen = []
+    original_build = client_module.request.build_opener
+
+    class FixtureHttpsHandler(client_module.request.HTTPSHandler):
+        def https_open(self, req):
+            seen.append((req.full_url, req.get_header("Authorization")))
+            headers = Message()
+            headers["Location"] = "https://other.example.test/steal"
+            response = addinfourl(BytesIO(b"redirect"), headers, req.full_url, 302)
+            response.msg = "Found"
+            return response
+
+    monkeypatch.setattr(client_module.request, "build_opener", lambda *handlers: original_build(FixtureHttpsHandler(), *handlers))
+    client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    monkeypatch.setattr(client, "_get_access_token", lambda: "fixture-bearer")
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Order/place", payload={"fixture": True}, with_auth=True)
+    assert seen == [("https://example.test/api/Order/place", "Bearer fixture-bearer")]
+    assert exc_info.value.status_code == 302
+    assert exc_info.value.submission_outcome_unknown is True
+
+
+@pytest.mark.parametrize("payload", [b"x" * 33, b"\xff"])
+def test_oversized_or_invalid_utf8_submission_response_stays_ambiguous(monkeypatch, payload):
+    import app.services.projectx_client as client_module
+
+    monkeypatch.setattr(client_module, "_MAX_RESPONSE_BYTES", 32)
+    monkeypatch.setattr(client_module, "_open_projectx_request", lambda *_args, **_kwargs: BytesIO(payload))
+    client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Order/place", payload=None, with_auth=False)
+    assert exc_info.value.submission_outcome_unknown is True
+
+
+def test_interrupted_submission_response_stays_ambiguous(monkeypatch):
+    import app.services.projectx_client as client_module
+    from http.client import IncompleteRead
+
+    def fail(*_args, **_kwargs):
+        raise IncompleteRead(b"fixture", 10)
+
+    monkeypatch.setattr(client_module, "_open_projectx_request", fail)
+    client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    with pytest.raises(ProjectXClientError) as exc_info:
+        client._request_once("POST", "/api/Order/place", payload=None, with_auth=False)
+    assert exc_info.value.submission_outcome_unknown is True
+
+
+def test_strict_trade_history_requires_explicit_pnl_field():
+    class StubClient(ProjectXClient):
+        def _request(self, *_args, **_kwargs):
+            return {"trades": [{"accountId": 123, "fees": 1, "voided": False,
+                                "creationTimestamp": "2026-07-10T10:00:00Z"}]}
+
+    client = StubClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    with pytest.raises(ProjectXClientError, match="P&L field"):
+        client.fetch_trade_history(account_id=123, start=datetime(2026, 7, 10, tzinfo=timezone.utc), require_valid_collection=True)
+
+
 def test_parse_datetime_supports_variable_fraction_precision():
     parsed = _parse_datetime("2026-02-05T19:49:57.22185+00:00")
 
@@ -81,12 +199,12 @@ def test_request_once_marks_success_false_payloads_as_gateway_errors(monkeypatch
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return b'{"success": false, "responseStatus": {"message": "Session invalid"}}'
 
     client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
 
-    monkeypatch.setattr("app.services.projectx_client.request.urlopen", lambda *args, **kwargs: StubResponse())
+    monkeypatch.setattr("app.services.projectx_client._open_projectx_request", lambda *args, **kwargs: StubResponse())
 
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
@@ -104,12 +222,12 @@ def test_request_once_maps_login_key_error_code_3_to_actionable_message(monkeypa
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return b'{"token": null, "success": false, "errorCode": 3, "errorMessage": null}'
 
     client = ProjectXClient(base_url="https://example.test", username="demo", api_key="demo")
 
-    monkeypatch.setattr("app.services.projectx_client.request.urlopen", lambda *args, **kwargs: StubResponse())
+    monkeypatch.setattr("app.services.projectx_client._open_projectx_request", lambda *args, **kwargs: StubResponse())
 
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
@@ -129,7 +247,7 @@ def test_request_once_maps_timeout_to_gateway_timeout(monkeypatch):
     def raise_timeout(*_args, **_kwargs):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_timeout)
+    monkeypatch.setattr("app.services.projectx_client._open_projectx_request", raise_timeout)
 
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
@@ -146,7 +264,7 @@ def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
     def raise_url_timeout(*_args, **_kwargs):
         raise error.URLError(TimeoutError("timed out"))
 
-    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_url_timeout)
+    monkeypatch.setattr("app.services.projectx_client._open_projectx_request", raise_url_timeout)
 
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", "/api/Auth/loginKey", payload=None, with_auth=False)
@@ -185,7 +303,7 @@ def test_request_once_only_marks_order_submission_5xx_as_ambiguous(
             fp=BytesIO(b'{"message":"provider error"}'),
         )
 
-    monkeypatch.setattr("app.services.projectx_client.request.urlopen", raise_http_error)
+    monkeypatch.setattr("app.services.projectx_client._open_projectx_request", raise_http_error)
 
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", path, payload={}, with_auth=False)
@@ -274,6 +392,28 @@ def test_strict_trade_history_rejects_missing_timestamp():
 
     with pytest.raises(ProjectXClientError, match="valid timestamp"):
         StubClient().fetch_trade_history(
+            account_id=123,
+            start=datetime(2026, 7, 10, tzinfo=timezone.utc),
+            require_valid_collection=True,
+        )
+
+
+@pytest.mark.parametrize("overrides", [{"voided": None}, {"voided": "maybe"}, {"voided": 2}, {"accountId": 456}])
+def test_strict_trade_history_rejects_uncertain_void_or_wrong_account(overrides):
+    class StubClient(ProjectXClient):
+        def _request(self, *_args, **_kwargs):
+            return {"trades": [{
+                "accountId": 123,
+                "fees": 1.25,
+                "profitAndLoss": -10,
+                "voided": False,
+                "creationTimestamp": "2026-07-10T10:00:00Z",
+                **overrides,
+            }]}
+
+    client = StubClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    with pytest.raises(ProjectXClientError):
+        client.fetch_trade_history(
             account_id=123,
             start=datetime(2026, 7, 10, tzinfo=timezone.utc),
             require_valid_collection=True,
@@ -473,6 +613,8 @@ def test_retrieve_bars_does_not_close_a_future_bar_from_a_future_request_end():
         ({"h": 100, "c": 101}, "invalid OHLC envelope"),
         ({"v": -1}, "negative volume"),
         ({"v": True}, "non-numeric"),
+        ({"isPartial": "maybe"}, "invalid market bar partial status"),
+        ({"isPartial": None}, "invalid market bar partial status"),
     ],
 )
 def test_retrieve_bars_rejects_malformed_ohlcv(overrides, message):

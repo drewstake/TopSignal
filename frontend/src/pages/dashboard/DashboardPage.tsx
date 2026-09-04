@@ -594,6 +594,7 @@ async function refreshPnlCalendarMonth(
           end: window.end,
           all_time: false,
           refresh: true,
+          automaticRefresh: true,
         });
         return { accountId, days };
       } catch {
@@ -697,7 +698,7 @@ async function refreshCopyTradeRange(accountIds: readonly number[], range: Pick<
   const results = await Promise.all(
     accountIds.map(async (accountId) => {
       try {
-        await accountsApi.refreshTrades(accountId, range);
+        await accountsApi.refreshTrades(accountId, range, { automatic: true });
         return true;
       } catch {
         // Fall back to the existing local cache for accounts that cannot refresh.
@@ -768,6 +769,7 @@ export function DashboardPage() {
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
   const [liveAccountSetupRequest, setLiveAccountSetupRequest] = useState(0);
+  const [pendingLiveAccountSetup, setPendingLiveAccountSetup] = useState<{ accountId: number | null } | null>(null);
   const [tradeDataSourceFeedback, setTradeDataSourceFeedback] = useState<CopyTradeToggleFeedback | null>(null);
   const copyTradeSettingsRef = useRef(copyTradeSettings);
   const copyTradeTogglePendingRef = useRef(false);
@@ -836,8 +838,6 @@ export function DashboardPage() {
   const [calendarMonthRefreshWarnings, setCalendarMonthRefreshWarnings] = useState<Record<string, string>>({});
   const compactAnalysisReloadHandledRef = useRef(0);
   const compactCalendarReloadHandledRef = useRef(0);
-  const compactAnalysisCopyRefreshHandledRef = useRef(0);
-  const compactCalendarCopyRefreshHandledRef = useRef(0);
   const compactAnalysisStartedKeyRef = useRef<string | null>(null);
   const compactCalendarStartedKeyRef = useRef<string | null>(null);
   const compactCopyRefreshInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
@@ -879,6 +879,7 @@ export function DashboardPage() {
 
   const handleLiveImportAccountCreated = useCallback(
     (account: AccountInfo) => {
+      setPendingLiveAccountSetup(null);
       setAccounts((current) => [
         account,
         ...current.filter((candidate) => candidate.id !== account.id),
@@ -977,6 +978,13 @@ export function DashboardPage() {
     setCompactJournalActionError(null);
   }, [selectedAccountId]);
   const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
+  const liveAccountModeEnabled = selectedAccountIsCsvImport
+    || pendingLiveAccountSetup?.accountId === selectedAccountId;
+  useEffect(() => {
+    if (pendingLiveAccountSetup && pendingLiveAccountSetup.accountId !== selectedAccountId) {
+      setPendingLiveAccountSetup(null);
+    }
+  }, [pendingLiveAccountSetup, selectedAccountId]);
   const liveCsvAccounts = useMemo(
     () => orderedAccounts.filter((account) => account.trade_data_source === "csv_import"),
     [orderedAccounts],
@@ -1024,12 +1032,16 @@ export function DashboardPage() {
     () => describeAccountProviderSync(summarizeAccountProviderSync(orderedAccounts)),
     [orderedAccounts],
   );
-  const copyTradeRosterAccountIds = useMemo(
+  const copyTradeRosterKey = useMemo(
     () =>
       computeCopyTradeWhenEnabled(copyTradeModeConfigured, EMPTY_COPY_TRADE_ACCOUNT_IDS, () =>
         getCopyTradeRosterAccountIds(orderedAccounts, selectedAccountId, copyTradeSettings),
-      ),
+      ).join(","),
     [copyTradeModeConfigured, copyTradeSettings, orderedAccounts, selectedAccountId],
+  );
+  const copyTradeRosterAccountIds = useMemo(
+    () => copyTradeRosterKey ? copyTradeRosterKey.split(",").map(Number) : EMPTY_COPY_TRADE_ACCOUNT_IDS,
+    [copyTradeRosterKey],
   );
   const copyTradeFollowerAccountIds = useMemo(
     () =>
@@ -1799,9 +1811,9 @@ export function DashboardPage() {
     compactAnalysisStartedKeyRef.current = loadKey;
     const isCurrent = beginCompactAnalysisRequest();
 
-    const forceRefresh =
-      compactReloadNonce > compactAnalysisReloadHandledRef.current ||
-      compactCopyRefreshVersion > compactAnalysisCopyRefreshHandledRef.current;
+    // A copied-account sync has already invalidated changed local reads. Loading
+    // its results must not launch another provider sync through each GET route.
+    const forceRefresh = compactReloadNonce > compactAnalysisReloadHandledRef.current;
     const requestPlan = buildCompactAccountRequestPlan(compactScopes, { forceRefresh });
     setCompactAccountDataById((current) =>
       Object.fromEntries(
@@ -1862,7 +1874,6 @@ export function DashboardPage() {
     );
     if (isCurrent()) {
       compactAnalysisReloadHandledRef.current = compactReloadNonce;
-      compactAnalysisCopyRefreshHandledRef.current = compactCopyRefreshVersion;
     }
   }, [
     beginCompactAnalysisRequest,
@@ -1895,9 +1906,7 @@ export function DashboardPage() {
     compactCalendarStartedKeyRef.current = loadKey;
     const isCurrent = beginCompactCalendarRequest();
 
-    const forceRefresh =
-      compactReloadNonce > compactCalendarReloadHandledRef.current ||
-      compactCopyRefreshVersion > compactCalendarCopyRefreshHandledRef.current;
+    const forceRefresh = compactReloadNonce > compactCalendarReloadHandledRef.current;
     const contextScopes: CompactDashboardScopes = {
       analysisScope: calendarScope,
       calendarContextScope: calendarScope,
@@ -1950,7 +1959,6 @@ export function DashboardPage() {
     );
     if (isCurrent()) {
       compactCalendarReloadHandledRef.current = compactReloadNonce;
-      compactCalendarCopyRefreshHandledRef.current = compactCopyRefreshVersion;
     }
   }, [
     beginCompactCalendarRequest,
@@ -3240,11 +3248,13 @@ export function DashboardPage() {
       if (liveAccountEnabled) {
         const decision = resolveLiveAccountEnableDecision(orderedAccounts);
         if (decision.kind === "select") {
+          setPendingLiveAccountSetup(null);
           setActiveAccount(decision.accountId);
           setTradeDataSourceFeedback(null);
           return;
         }
 
+        setPendingLiveAccountSetup({ accountId: selectedAccountId });
         setLiveAccountSetupRequest((current) => current + 1);
         setTradeDataSourceFeedback(
           decision.liveAccountCount === 0
@@ -3254,6 +3264,12 @@ export function DashboardPage() {
                 message: `Choose one of ${decision.liveAccountCount} Live CSV accounts below. Your current Express account will stay unchanged.`,
               },
         );
+        return;
+      }
+
+      setPendingLiveAccountSetup(null);
+      setTradeDataSourceFeedback(null);
+      if (!selectedAccountIsCsvImport) {
         return;
       }
 
@@ -3275,7 +3291,7 @@ export function DashboardPage() {
         message: "Switched back to your ProjectX account. The separate Live CSV account was not changed.",
       });
     },
-    [orderedAccounts, setActiveAccount],
+    [orderedAccounts, selectedAccountId, selectedAccountIsCsvImport, setActiveAccount],
   );
 
   const handleCopyTradeModeChange = useCallback(
@@ -3560,15 +3576,15 @@ export function DashboardPage() {
             <div className="flex w-full min-w-0 flex-col gap-1 sm:w-auto sm:min-w-[230px]">
               <div className="flex items-center gap-1.5">
                 <Toggle
-                  checked={selectedAccountIsCsvImport}
+                  checked={liveAccountModeEnabled}
                   onChange={handleLiveAccountModeChange}
                   label="Live Account (CSV)"
-                  aria-label={selectedAccountIsCsvImport ? "Live Account CSV mode is on" : "Live Account CSV mode is off"}
+                  aria-label={liveAccountModeEnabled ? "Live Account CSV mode is on" : "Live Account CSV mode is off"}
                   aria-describedby={tradeDataSourceStatusMessage ? "trade-data-source-toggle-status" : undefined}
                   disabled={copyTradeTogglePending}
                   className={cn(
                     "h-11 flex-1 justify-center rounded-lg px-2.5 text-[11px] sm:h-8 sm:flex-none",
-                    selectedAccountIsCsvImport ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
+                    liveAccountModeEnabled ? "border-app-accent/50 bg-app-accent/15 ring-1 ring-app-accent/50" : undefined,
                   )}
                 />
                 <Badge
@@ -3654,7 +3670,7 @@ export function DashboardPage() {
           ) : null}
         </div>
 
-        {!compactMode.enabled && !demoModeEnabled ? <TradeImportPanel
+        {!compactMode.enabled && !demoModeEnabled && liveAccountModeEnabled ? <TradeImportPanel
           accountId={selectedAccountId}
           tradeDataSource={selectedAccount?.trade_data_source ?? null}
           liveAccounts={liveCsvAccounts}

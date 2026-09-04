@@ -3,10 +3,12 @@ import os
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import NullPool
+
+from .database_security import production_database_connect_args, validate_production_database_configuration
 
 load_dotenv()
 
@@ -43,25 +45,52 @@ def _uses_supabase_pooler(database_url: str) -> bool:
 
 
 def _build_engine_options(database_url: str) -> dict[str, Any]:
-    options: dict[str, Any] = {"pool_pre_ping": True}
+    options: dict[str, Any] = {"pool_pre_ping": True, "hide_parameters": True}
     parsed = make_url(database_url)
-    connect_args: dict[str, Any] = {}
+    connect_args: dict[str, Any] = production_database_connect_args(database_url)
 
     if parsed.get_backend_name() == "postgresql" and parsed.get_driver_name() == "psycopg":
+        connect_args.update(
+            connect_timeout=10,
+            keepalives=1,
+            keepalives_idle=10,
+            keepalives_interval=5,
+            keepalives_count=3,
+        )
+        options.update(pool_timeout=10, pool_recycle=300)
         if _uses_supabase_pooler(database_url):
             # Supabase transaction pooler is incompatible with psycopg prepared statements.
             connect_args["prepare_threshold"] = None
             # Let Supabase own pooling to avoid stale connection/session state in app pool.
             options["poolclass"] = NullPool
             options["pool_pre_ping"] = False
+            options.pop("pool_timeout")
 
     if connect_args:
         options["connect_args"] = connect_args
     return options
 
-engine = create_engine(DATABASE_URL, **_build_engine_options(DATABASE_URL))
+validate_production_database_configuration()
+try:
+    engine = create_engine(DATABASE_URL, **_build_engine_options(DATABASE_URL))
+except Exception:
+    # Imports precede production logging. Invalid URL components must not be
+    # echoed by driver/parser exceptions into startup stderr.
+    raise RuntimeError("Invalid DATABASE_URL or database engine configuration") from None
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+@event.listens_for(SessionLocal, "after_begin")
+def _bound_database_transaction(session, transaction, connection) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+    # Apply on every transaction, including transaction-pooler connections.
+    # Startup options/session SET can be rejected or lost by a pooler. The
+    # separate migration process retains its own, longer DDL timeout policy.
+    connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
+    connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+    connection.exec_driver_sql("SET LOCAL idle_in_transaction_session_timeout = '60s'")
 
 
 def resolve_database_host_mode() -> tuple[str, Literal["local", "cloud"]]:

@@ -176,6 +176,38 @@ afterEach(() => {
 });
 
 describe("JournalPage account-switch mutation guards", () => {
+  it("prevents Refresh from replacing an unsaved journal draft", async () => {
+    const save = vi.spyOn(accountsApi, "updateJournalEntry").mockResolvedValue({
+      ...entry(express.id, 41, "Unsaved draft"), version: 2,
+    });
+    mountJournal();
+    const title = await screen.findByDisplayValue("Express Entry");
+    fireEvent.change(title, { target: { value: "Unsaved draft" } });
+    expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByDisplayValue("Unsaved draft")).not.toBeNull();
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false));
+  });
+  it("reuses journal data on return visits and reloads entries with Refresh", async () => {
+    const row = entry(97601, 400, "Cached journal entry");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(
+      JSON.stringify(String(url).endsWith("/images") ? [] : { items: [row], total: 1 }),
+      { status: 200 },
+    ));
+    const mount = () => render(<RouterProvider router={createJournalRouter({
+      accounts: [account(row.account_id, "projectx", true)], initialEntry: "/?account=97601",
+    })} />);
+    const first = mount();
+    await screen.findByDisplayValue(row.title);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    first.unmount();
+    mount();
+    await screen.findByDisplayValue(row.title);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(fetchMock.mock.calls.every(([, options]) => options?.method === "GET")).toBe(true);
+  });
   it("keeps account and first entry loading behind a skeleton", async () => {
     const pendingEntries = deferred<{ items: JournalEntry[]; total: number }>();
     vi.spyOn(accountsApi, "getJournalEntries").mockReturnValue(pendingEntries.promise);

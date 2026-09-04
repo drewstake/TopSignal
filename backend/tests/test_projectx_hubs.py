@@ -15,6 +15,152 @@ def _unused_client_factory():
     raise AssertionError("unit dispatch tests must not create a provider client")
 
 
+@pytest.mark.parametrize("url", ["ws://example.test/hub", "https://user:secret@example.test/hub", "wss://example.test/hub?token=secret"])
+def test_hub_refuses_insecure_or_credential_bearing_endpoint(url):
+    with pytest.raises(Exception, match="endpoint must use TLS"):
+        ProjectXHubRunner(tracker=StreamingPnlTracker(), client_factory=_unused_client_factory,
+                          market_hub_url=url, user_hub_url="")
+
+
+def test_hub_connector_disables_redirects(monkeypatch):
+    from types import SimpleNamespace
+
+    connection = SimpleNamespace(process_redirect=lambda _exc: "wss://other.example.test")
+    monkeypatch.setattr(projectx_hubs_module.websockets, "connect", lambda *_args, **_kwargs: connection)
+    result = projectx_hubs_module._open_hub("wss://example.test/hub")
+    redirect_failure = RuntimeError("fixture redirect")
+    assert result.process_redirect(redirect_failure) is redirect_failure
+
+
+@pytest.mark.parametrize("account_id", [101.5, True, float("inf"), float("nan")])
+def test_account_classification_never_coerces_fractional_or_invalid_account_id(account_id):
+    observed = []
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(), client_factory=_unused_client_factory,
+        user_id="fixture", account_id=101, market_hub_url="", on_user_account=observed.append,
+    )
+    runner._dispatch_user_account({"id": account_id, "simulated": True})
+    assert observed == []
+
+
+def test_flapping_hub_uses_exponential_backoff_after_successful_handshake(monkeypatch):
+    class Client:
+        def get_access_token(self):
+            return "fixture-token"
+
+    class Websocket:
+        async def send(self, _message):
+            pass
+
+        async def recv(self):
+            return "{}\x1e"
+
+    class Connection:
+        async def __aenter__(self):
+            return Websocket()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    delays = []
+
+    async def disconnected(*_args):
+        raise ConnectionError("fixture flapping")
+
+    async def backoff(delay):
+        delays.append(delay)
+        if len(delays) == 3:
+            raise asyncio.CancelledError()
+
+    runner = ProjectXHubRunner(tracker=StreamingPnlTracker(), client_factory=Client,
+                              market_hub_url="wss://example.test/hub", user_hub_url="")
+    monkeypatch.setattr(projectx_hubs_module, "_open_hub", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", backoff)
+    monkeypatch.setattr(runner, "_receive_messages", disconnected)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner._consume_hub("market", "wss://example.test/hub"))
+    assert delays == [1, 2, 4]
+
+
+def test_cancelling_hub_reaps_receiver_and_refresh_tasks(monkeypatch):
+    class Client:
+        def get_access_token(self):
+            return "fixture-token"
+
+    class Websocket:
+        async def send(self, _message):
+            pass
+
+        async def recv(self):
+            return "{}\x1e"
+
+    class Connection:
+        async def __aenter__(self):
+            return Websocket()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(projectx_hubs_module.websockets, "connect", lambda *_args, **_kwargs: Connection())
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(), client_factory=Client,
+        user_id="fixture", account_id=101, market_hub_url="",
+        on_user_account=lambda _payload: None,
+    )
+
+    async def exercise():
+        entered = [asyncio.Event(), asyncio.Event()]
+        exited = []
+
+        async def child(index):
+            entered[index].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                exited.append(index)
+
+        monkeypatch.setattr(runner, "_receive_messages", lambda *_args: child(0))
+        monkeypatch.setattr(runner, "_refresh_user_account_loop", lambda *_args: child(1))
+        parent = asyncio.create_task(runner._consume_hub("user", "wss://example.test/hub"))
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered)), timeout=2)
+        parent.cancel()
+        await asyncio.gather(parent, return_exceptions=True)
+        assert sorted(exited) == [0, 1]
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(exercise())
+
+
+def test_failing_hub_reaps_its_sibling_consumer(monkeypatch):
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(), client_factory=_unused_client_factory,
+        user_id="fixture", account_id=101,
+        market_hub_url="wss://example.test/market", user_hub_url="wss://example.test/user",
+    )
+
+    async def exercise():
+        started = asyncio.Event()
+        exited = []
+
+        async def consume(kind, _url):
+            if kind == "market":
+                await started.wait()
+                raise RuntimeError("fixture failure")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                exited.append(True)
+
+        monkeypatch.setattr(runner, "_consume_hub", consume)
+        with pytest.raises(RuntimeError, match="fixture failure"):
+            await runner.run_forever()
+        assert exited == [True]
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(exercise())
+
+
 def test_market_gateway_quote_dispatch_preserves_contract_id_argument():
     tracker = StreamingPnlTracker()
     runner = ProjectXHubRunner(

@@ -30,3 +30,6 @@ backend/journal_images/
 *.xlsx
 *.xls
 *.pdf
+
+# Local audit tools, test logs, and disposable verification artifacts
+tmp/audit-*/

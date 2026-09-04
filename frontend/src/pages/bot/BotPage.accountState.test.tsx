@@ -189,7 +189,8 @@ describe("BotPage account-scoped edit state", () => {
 
     expect(confirm).toHaveBeenCalledOnce();
     expect(String(confirm.mock.calls[0]?.[0])).toContain("eligible to attempt order routing");
-    expect(String(confirm.mock.calls[0]?.[0])).toContain("attempted, not guaranteed");
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("restart automatically disarms routing");
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("before explicitly rearming");
     expect(String(confirm.mock.calls[0]?.[0])).not.toContain("will resume");
     expect(start).not.toHaveBeenCalled();
 

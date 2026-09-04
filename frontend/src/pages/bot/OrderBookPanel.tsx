@@ -83,6 +83,9 @@ export function OrderBookPanel({
             </span>
           ) : <OrderBookConnectionStatus store={store} />}
         </div>
+        {!demoMode ? <p className="text-xs text-app-muted">
+          Available levels depend on your data subscription. Level 1 shows best bid/ask; Level 2 supplies market depth.
+        </p> : null}
         {!demoMode ? <label className="flex items-center justify-between gap-3 text-xs text-app-muted">
           <span>Levels / side</span>
           <Select
@@ -296,6 +299,8 @@ function connectionLabel(connection: OrderBookConnectionState): string {
       return "Disconnected";
     case "reconnecting":
       return "Reconnecting";
+    case "market_closed":
+      return "Market closed";
     case "unavailable":
       return "Unavailable";
     default:
@@ -312,6 +317,7 @@ function connectionTone(connection: OrderBookConnectionState): string {
     case "reconnecting":
       return "border-app-warning/35 bg-app-warning/10 text-app-warning";
     case "unavailable":
+    case "market_closed":
       return "border-app-border bg-app-bg/55 text-app-muted";
     default:
       return "border-app-accent/35 bg-app-accent/10 text-app-accent";
@@ -324,6 +330,9 @@ function overlayMessage(
   hasDepth: boolean,
   message: string | null,
 ): string | null {
+  if (connection === "market_closed") {
+    return message || "Market closed. Order book updates resume automatically when the trading session opens.";
+  }
   if (connection === "unavailable") {
     return message || "Market depth is unavailable.";
   }

@@ -4,6 +4,13 @@ import os
 from pathlib import Path, PurePosixPath
 from urllib import error, parse, request
 
+from .credentialed_http import (
+    CredentialedHttpError,
+    open_credentialed_request,
+    read_bounded,
+    validate_credentialed_url,
+)
+
 _BACKEND_LOCAL = "local"
 _BACKEND_SUPABASE = "supabase"
 _DEFAULT_JOURNAL_IMAGE_STORAGE_DIR = "storage/journal_images"
@@ -18,7 +25,7 @@ def journal_storage_backend() -> str:
     normalized = configured.strip().lower()
     if normalized in {_BACKEND_LOCAL, _BACKEND_SUPABASE}:
         return normalized
-    return _BACKEND_LOCAL
+    raise RuntimeError("invalid_journal_image_storage_backend")
 
 
 def save_journal_image(*, object_key: str, file_bytes: bytes, mime_type: str) -> None:
@@ -79,13 +86,13 @@ def _save_journal_image_supabase(*, object_key: str, file_bytes: bytes, mime_typ
     }
     req = request.Request(url=url, data=file_bytes, headers=headers, method="POST")
     try:
-        with request.urlopen(req, timeout=20):
+        with open_credentialed_request(req, timeout=20, allow_loopback_http=_allow_local_storage_http()):
             return
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"supabase_storage_upload_failed: {detail}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"supabase_storage_upload_network_error: {exc.reason}") from exc
+        exc.close()
+        raise RuntimeError(f"supabase_storage_upload_failed: http_{exc.code}") from None
+    except (error.URLError, OSError, CredentialedHttpError):
+        raise RuntimeError("supabase_storage_upload_network_error") from None
 
 
 def _load_journal_image_supabase(*, object_key: str) -> bytes:
@@ -96,15 +103,15 @@ def _load_journal_image_supabase(*, object_key: str) -> bytes:
     }
     req = request.Request(url=url, headers=headers, method="GET")
     try:
-        with request.urlopen(req, timeout=20) as response:
-            return response.read()
+        with open_credentialed_request(req, timeout=20, allow_loopback_http=_allow_local_storage_http()) as response:
+            return read_bounded(response, max_bytes=10 * 1024 * 1024, timeout=20)
     except error.HTTPError as exc:
+        exc.close()
         if exc.code == 404:
-            raise FileNotFoundError(object_key) from exc
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"supabase_storage_download_failed: {detail}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"supabase_storage_download_network_error: {exc.reason}") from exc
+            raise FileNotFoundError(object_key) from None
+        raise RuntimeError(f"supabase_storage_download_failed: http_{exc.code}") from None
+    except (error.URLError, OSError, CredentialedHttpError):
+        raise RuntimeError("supabase_storage_download_network_error") from None
 
 
 def _delete_journal_image_supabase(*, object_key: str) -> None:
@@ -115,15 +122,15 @@ def _delete_journal_image_supabase(*, object_key: str) -> None:
     }
     req = request.Request(url=url, headers=headers, method="DELETE")
     try:
-        with request.urlopen(req, timeout=20):
+        with open_credentialed_request(req, timeout=20, allow_loopback_http=_allow_local_storage_http()):
             return
     except error.HTTPError as exc:
+        exc.close()
         if exc.code == 404:
             return
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"supabase_storage_delete_failed: {detail}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"supabase_storage_delete_network_error: {exc.reason}") from exc
+        raise RuntimeError(f"supabase_storage_delete_failed: http_{exc.code}") from None
+    except (error.URLError, OSError, CredentialedHttpError):
+        raise RuntimeError("supabase_storage_delete_network_error") from None
 
 
 def _supabase_object_url(object_key: str) -> str:
@@ -152,7 +159,12 @@ def _supabase_url() -> str:
     value = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
     if not value:
         raise RuntimeError("SUPABASE_URL is required when JOURNAL_IMAGE_STORAGE_BACKEND=supabase")
+    validate_credentialed_url(value, allow_loopback_http=_allow_local_storage_http())
     return value
+
+
+def _allow_local_storage_http() -> bool:
+    return str(os.getenv("TOPSIGNAL_ENV", "")).strip().lower() in {"development", "test"}
 
 
 def _supabase_bucket() -> str:

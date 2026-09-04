@@ -409,7 +409,7 @@ export function JournalPage() {
     await autosaveRef.current.flush();
   }, []);
 
-  const loadEntries = useCallback(async (signal?: AbortSignal) => {
+  const loadEntries = useCallback(async (signal?: AbortSignal, bypassCache = false) => {
     if (!selectedAccountId) {
       setSettledEntriesScope(null);
       setEntries([]);
@@ -433,7 +433,7 @@ export function JournalPage() {
       if (signal?.aborted || !accountRequestGate.isCurrent(request)) {
         return;
       }
-      const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery, { signal });
+      const payload = await accountsApi.getJournalEntries(selectedAccountId, listQuery, { signal, bypassCache });
       if (!accountRequestGate.isCurrent(request)) {
         return;
       }
@@ -662,7 +662,7 @@ export function JournalPage() {
     };
   }, [flushAutosave, selectedAccountId]);
 
-  const loadEntryImages = useCallback(async (signal?: AbortSignal) => {
+  const loadEntryImages = useCallback(async (signal?: AbortSignal, bypassCache = false) => {
     if (!selectedAccountId || !selectedEntry?.id) {
       setImages([]);
       setImagesLoading(false);
@@ -680,7 +680,7 @@ export function JournalPage() {
     setImagesError(null);
 
     try {
-      const rows = await accountsApi.listJournalImages(selectedAccountId, entryId, { signal });
+      const rows = await accountsApi.listJournalImages(selectedAccountId, entryId, { signal, bypassCache });
       if (!accountRequestGate.isCurrent(request)) {
         return;
       }
@@ -1360,6 +1360,15 @@ export function JournalPage() {
                 onCopyEntry={handleCopyEntry}
                 onCopyRecent={handleCopyRecent}
               />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={loadingEntries || conflictServerEntry !== null || saveState !== "saved"}
+                onClick={() => {
+                  void loadEntries(undefined, true);
+                  void loadEntryImages(undefined, true);
+                }}
+              >Refresh</Button>
               <Button
                 size="sm"
                 variant="secondary"
