@@ -52,7 +52,15 @@ def test_postgres_two_workers_exclude_each_other_and_fence_expired_owner(postgre
         owner = workers[won.index(True)]
         standby = workers[won.index(False)]
         with postgres_sessions() as db:
-            db.execute(text("update bot_runtime_leases set expires_at = current_timestamp - interval '1 second' where lease_name = :name"), {"name": lease_name})
+            # Model a valid historical lease, including its earlier heartbeat.
+            # Expiring only expires_at violates the database safety constraint.
+            db.execute(text("""
+                update bot_runtime_leases
+                set acquired_at = current_timestamp - interval '3 seconds',
+                    heartbeat_at = current_timestamp - interval '2 seconds',
+                    expires_at = current_timestamp - interval '1 second'
+                where lease_name = :name
+            """), {"name": lease_name})
             db.commit()
         assert standby._acquire_or_renew_lease() is True
         assert owner._acquire_or_renew_lease() is False
