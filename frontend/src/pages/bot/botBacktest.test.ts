@@ -5,6 +5,7 @@ import {
   BACKTEST_MAX_RENDERED_CHART_POINTS,
   buildBacktestChartPaths,
   buildBacktestPayload,
+  describeBacktestError,
   describeBacktestProgress,
   validateBacktestForm,
   type BotBacktestFormState,
@@ -17,6 +18,25 @@ const validForm: BotBacktestFormState = {
   commissionPerContract: "1.20",
   slippageTicks: "1",
 };
+
+describe("describeBacktestError", () => {
+  it.each(["MNQ", "MES", "NQ", "ES"])("explains both required %s imports without treating staged candles as ready history", (root) => {
+    const message = describeBacktestError(new Error(`databento_history_missing:${root}: import historical data before backtesting`));
+    expect(message).toContain(`${root} replay history is not ready`);
+    expect(message).toContain("both the Databento OHLCV-1m and matching Definition files");
+    expect(message).toContain("OHLCV candles alone are not enough");
+    expect(message).toContain("verify contract expirations and rollover");
+    expect(message).not.toContain("is not installed on this computer");
+    expect(message).toContain("separate ProjectX candles");
+    expect(message).not.toContain("databento_history_missing");
+  });
+
+  it("distinguishes transport failures from actionable server errors", () => {
+    expect(describeBacktestError(new TypeError("Failed to fetch"))).toContain("Check that the backend is running");
+    expect(describeBacktestError(new Error("Historical data failed integrity validation."))).toBe("Historical data failed integrity validation.");
+    expect(describeBacktestError(null)).toBe("Backtest failed.");
+  });
+});
 
 describe("validateBacktestForm", () => {
   it("accepts full-history execution settings", () => {

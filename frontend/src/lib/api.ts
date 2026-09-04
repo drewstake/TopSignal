@@ -1,3 +1,5 @@
+import { TradeRefreshCache } from "./tradeRefreshCache";
+
 import type {
   AccountEmergencyFlattenResult,
   AccountAutomationClassification,
@@ -79,12 +81,14 @@ import { dispatchAccountDisplayNameUpdated } from "./accountSelection";
 import { reclassifyAccountListProviderFreshness } from "./accountProviderState";
 import { isDemoModeEnabled, sanitizeDemoApiResponse, subscribeToDemoModeChanges } from "./demoMode";
 import { beginLiveMutationRequest } from "./liveMutationState";
+import { NavigationReadCache, type NavigationReadOptions } from "./navigationReadCache";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
 const ACCOUNT_READ_CACHE_TTL_MS = 10 * 60_000;
+const navigationReadCache = new NavigationReadCache(ACCOUNT_READ_CACHE_TTL_MS);
 const BACKTEST_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 
 type QueryValue = string | number | boolean | null | undefined;
@@ -275,6 +279,24 @@ async function getUserScopedTimedCachedRequest<T>(options: UserScopedTimedCached
     cacheKey: `${options.cacheKey}|scope:${auth.cacheScope}`,
     load: () => options.load(auth.accessToken),
   });
+}
+
+async function getNavigationRead<T>(
+  group: string,
+  path: string,
+  query: Record<string, QueryValue>,
+  options: NavigationReadOptions = {},
+): Promise<T> {
+  const auth = await getRequestAuthContext();
+  return navigationReadCache.get(
+    `${group}|scope:${auth.cacheScope}|${path}?${toSortedQueryCacheKey(query)}`,
+    (signal) => requestJson<T>(path, { query, signal, accessTokenOverride: auth.accessToken }),
+    options,
+  );
+}
+
+export function clearFinancialReadCache(): void {
+  navigationReadCache.invalidate("financial|");
 }
 
 /**
@@ -712,6 +734,7 @@ const inFlightAccountPnlCalendarByQuery = new Map<string, Promise<AccountPnlCale
 const accountJournalDaysCacheByQuery = new Map<string, TimedCache<JournalDaysResponse>>();
 const inFlightAccountJournalDaysByQuery = new Map<string, Promise<JournalDaysResponse>>();
 const accountCacheVersionById = new Map<number, number>();
+const tradeRefreshCache = new TradeRefreshCache<AccountTradeRefreshResult>();
 const accountJournalCacheVersionById = new Map<number, number>();
 
 interface RequestSignalOptions {
@@ -795,7 +818,8 @@ function clearMapByPrefix<T>(map: Map<string, T>, prefix: string) {
   }
 }
 
-function invalidateAccountReadCaches(accountId?: number) {
+function invalidateAccountReadCaches(accountId?: number, preserveRefreshObservation = false) {
+  if (!preserveRefreshObservation) tradeRefreshCache.invalidate(accountId);
   if (typeof accountId !== "number") {
     accountCacheVersionById.clear();
     accountTradesCacheByQuery.clear();
@@ -822,6 +846,7 @@ function invalidateAccountReadCaches(accountId?: number) {
 }
 
 function invalidateAccountJournalCaches(accountId?: number) {
+  navigationReadCache.invalidate(typeof accountId === "number" ? `journal|${accountId}|` : "journal|");
   if (typeof accountId !== "number") {
     accountJournalCacheVersionById.clear();
     accountJournalDaysCacheByQuery.clear();
@@ -954,16 +979,20 @@ export function getSelectableAccountsLocalFirst(): Promise<AccountInfo[]> {
   return getSelectableAccountsFromApi({ refreshProvider: false });
 }
 
-export function refreshTrades(accountId: number, query: Pick<AccountSummaryQuery, "start" | "end"> = {}) {
-  return requestJson<AccountTradeRefreshResult>(`/api/accounts/${accountId}/trades/refresh`, {
-    method: "POST",
-    query: {
-      start: query.start,
-      end: query.end,
-    },
-  }).then((result) => {
-    invalidateAccountReadCaches(accountId);
-    return result;
+export async function refreshTrades(
+  accountId: number,
+  query: Pick<AccountSummaryQuery, "start" | "end"> = {},
+  options: { automatic?: boolean } = {},
+) {
+  const auth = await getRequestAuthContext();
+  return tradeRefreshCache.run({
+    scope: auth.cacheScope, accountId, range: query, automatic: options.automatic === true,
+    load: () => requestJson<AccountTradeRefreshResult>(`/api/accounts/${accountId}/trades/refresh`, {
+      method: "POST", query: { start: query.start, end: query.end }, accessTokenOverride: auth.accessToken,
+    }).then((result) => {
+      invalidateAccountReadCaches(accountId, true);
+      return result;
+    }),
   });
 }
 
@@ -1002,6 +1031,7 @@ interface AccountSummaryQuery {
 
 interface AccountPnlCalendarQuery extends AccountSummaryQuery {
   all_time?: boolean;
+  automaticRefresh?: boolean;
 }
 
 export const accountsApi = {
@@ -1076,7 +1106,7 @@ export const accountsApi = {
         refresh,
       },
     }),
-  getTrades: (accountId: number, query: AccountTradesQuery = {}) => {
+  getTrades: (accountId: number, query: AccountTradesQuery = {}, options: { bypassCache?: boolean } = {}) => {
     const requestQuery = {
       limit: query.limit ?? 200,
       start: query.start,
@@ -1097,7 +1127,7 @@ export const accountsApi = {
       inFlight: inFlightAccountTradesByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
-      bypassCache: Boolean(query.refresh),
+      bypassCache: Boolean(query.refresh || options.bypassCache),
       load: (accessToken) =>
         requestJson<AccountTrade[]>(`/api/accounts/${accountId}/trades`, {
           query: requestQuery,
@@ -1106,7 +1136,7 @@ export const accountsApi = {
         }),
     });
   },
-  getSummary: (accountId: number, query: AccountSummaryQuery = {}) => {
+  getSummary: (accountId: number, query: AccountSummaryQuery = {}, options: { bypassCache?: boolean } = {}) => {
     const requestQuery = {
       start: query.start,
       end: query.end,
@@ -1123,7 +1153,7 @@ export const accountsApi = {
       inFlight: inFlightAccountSummaryByQuery,
       cacheKey,
       ttlMs: ACCOUNT_READ_CACHE_TTL_MS,
-      bypassCache: Boolean(query.refresh),
+      bypassCache: Boolean(query.refresh || options.bypassCache),
       load: (accessToken) =>
         requestJson<AccountSummary>(`/api/accounts/${accountId}/summary`, {
           query: requestQuery,
@@ -1156,7 +1186,12 @@ export const accountsApi = {
         }),
     });
   },
-  getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}) => {
+  getPnlCalendar: (accountId: number, query: AccountPnlCalendarQuery = {}): Promise<AccountPnlCalendarDay[]> => {
+    if (query.refresh && query.automaticRefresh) {
+      return refreshTrades(accountId, query, { automatic: true }).then(() =>
+        accountsApi.getPnlCalendar(accountId, { ...query, refresh: false, automaticRefresh: false }),
+      );
+    }
     const requestQuery = {
       start: query.start,
       end: query.end,
@@ -1231,19 +1266,16 @@ export const accountsApi = {
         signal: options.signal,
       },
     ),
-  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: RequestSignalOptions = {}) =>
-    requestJson<JournalEntriesResponse>(`/api/accounts/${accountId}/journal`, {
-      query: {
-        start_date: query.start_date,
-        end_date: query.end_date,
-        mood: query.mood,
-        q: query.q,
-        include_archived: query.include_archived,
-        limit: query.limit ?? 20,
-        offset: query.offset ?? 0,
-      },
-      signal: options.signal,
-    }),
+  getJournalEntries: (accountId: number, query: JournalEntriesQuery = {}, options: NavigationReadOptions = {}) =>
+    getNavigationRead<JournalEntriesResponse>(`journal|${accountId}`, `/api/accounts/${accountId}/journal`, {
+      start_date: query.start_date,
+      end_date: query.end_date,
+      mood: query.mood,
+      q: query.q,
+      include_archived: query.include_archived,
+      limit: query.limit ?? 20,
+      offset: query.offset ?? 0,
+    }, options),
   createJournalEntry: (accountId: number, body: JournalEntryCreateInput) =>
     requestJson<JournalEntryCreateResult>(`/api/accounts/${accountId}/journal`, {
       method: "POST",
@@ -1256,10 +1288,7 @@ export const accountsApi = {
     requestJson<JournalEntrySaveResult>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "PATCH",
       body,
-    }).then((result) => {
-      invalidateAccountJournalCaches(accountId);
-      return result;
-    }),
+    }).finally(() => invalidateAccountJournalCaches(accountId)),
   deleteJournalEntry: (accountId: number, entryId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}`, {
       method: "DELETE",
@@ -1293,18 +1322,17 @@ export const accountsApi = {
     formData.append("file", file, filename ?? fallbackName);
     return requestMultipart<JournalEntryImage>(`/api/accounts/${accountId}/journal/${entryId}/images`, {
       formData,
-    }).then((image) => normalizeJournalImage(image));
+    }).then((image) => normalizeJournalImage(image))
+      .finally(() => invalidateAccountJournalCaches(accountId));
   },
-  listJournalImages: (accountId: number, entryId: number, options: RequestSignalOptions = {}) =>
-    requestJson<JournalEntryImage[]>(`/api/accounts/${accountId}/journal/${entryId}/images`, {
-      signal: options.signal,
-    }).then((images) =>
+  listJournalImages: (accountId: number, entryId: number, options: NavigationReadOptions = {}) =>
+    getNavigationRead<JournalEntryImage[]>(`journal|${accountId}`, `/api/accounts/${accountId}/journal/${entryId}/images`, {}, options).then((images) =>
       images.map((image) => normalizeJournalImage(image)),
     ),
   deleteJournalImage: (accountId: number, entryId: number, imageId: number) =>
     requestJson<void>(`/api/accounts/${accountId}/journal/${entryId}/images/${imageId}`, {
       method: "DELETE",
-    }),
+    }).finally(() => invalidateAccountJournalCaches(accountId)),
   pullJournalTradeStats: (accountId: number, entryId: number, body: JournalPullTradeStatsInput = {}) =>
     requestJson<JournalEntry>(`/api/accounts/${accountId}/journal/${entryId}/pull-trade-stats`, {
       method: "POST",
@@ -2096,6 +2124,7 @@ function isMarketDepthConnectionState(value: unknown): value is ProjectXMarketDe
     value === "connected" ||
     value === "disconnected" ||
     value === "reconnecting" ||
+    value === "market_closed" ||
     value === "unavailable"
   );
 }
@@ -2461,24 +2490,22 @@ export const botsApi = {
     }),
 };
 
-export function listExpenses(params: ExpenseListQuery = {}) {
-  return requestJson<ExpenseListResponse>("/api/expenses", {
-    query: {
-      start_date: params.start_date,
-      end_date: params.end_date,
-      account_id: params.account_id,
-      category: params.category,
-      limit: params.limit ?? 200,
-      offset: params.offset ?? 0,
-    },
-  });
+export function listExpenses(params: ExpenseListQuery = {}, options: NavigationReadOptions = {}) {
+  return getNavigationRead<ExpenseListResponse>("financial", "/api/expenses", {
+    start_date: params.start_date,
+    end_date: params.end_date,
+    account_id: params.account_id,
+    category: params.category,
+    limit: params.limit ?? 200,
+    offset: params.offset ?? 0,
+  }, options);
 }
 
 export function createExpense(payload: ExpenseCreateInput) {
   return requestJson<ExpenseRecord>("/api/expenses", {
     method: "POST",
     body: payload,
-  });
+  }).finally(clearFinancialReadCache);
 }
 
 export function getCombineTrackerExpenseSuppressions() {
@@ -2496,14 +2523,14 @@ export function deleteExpense(
     query: {
       suppress_auto_recreation: options.suppressAutoRecreation ?? true,
     },
-  });
+  }).finally(clearFinancialReadCache);
 }
 
 export function updateExpense(id: number, payload: ExpenseUpdateInput) {
   return requestJson<ExpenseRecord>(`/api/expenses/${id}`, {
     method: "PATCH",
     body: payload,
-  });
+  }).finally(clearFinancialReadCache);
 }
 
 interface ExpenseTotalsQuery {
@@ -2515,15 +2542,13 @@ interface ExpenseTotalsQuery {
 }
 
 export function getExpenseTotals(range: ExpenseRange, options: ExpenseTotalsQuery = {}) {
-  return requestJson<ExpenseTotals>("/api/expenses/totals", {
-    query: {
-      range,
-      account_id: options.accountId,
-      start_date: options.startDate,
-      end_date: options.endDate,
-      start_created_at: options.startCreatedAt,
-      end_created_at: options.endCreatedAt,
-    },
+  return getNavigationRead<ExpenseTotals>("financial", "/api/expenses/totals", {
+    range,
+    account_id: options.accountId,
+    start_date: options.startDate,
+    end_date: options.endDate,
+    start_created_at: options.startCreatedAt,
+    end_created_at: options.endCreatedAt,
   });
 }
 
@@ -2534,37 +2559,32 @@ export interface FinancialSummaryQuery {
 
 export function getFinancialSummary(
   query: FinancialSummaryQuery = {},
-  options: RequestSignalOptions = {},
+  options: NavigationReadOptions = {},
 ) {
-  return requestJson<FinancialSummary>("/api/expenses/financial-summary", {
-    query: {
-      as_of_date: query.asOfDate,
-      account_id: query.accountId,
-    },
-    signal: options.signal,
-  });
+  return getNavigationRead<FinancialSummary>("financial", "/api/expenses/financial-summary", {
+    as_of_date: query.asOfDate,
+    account_id: query.accountId,
+  }, options);
 }
 
-export function listPayouts(params: PayoutListQuery = {}) {
-  return requestJson<PayoutListResponse>("/api/payouts", {
-    query: {
-      start_date: params.start_date,
-      end_date: params.end_date,
-      limit: params.limit ?? 200,
-      offset: params.offset ?? 0,
-    },
-  });
+export function listPayouts(params: PayoutListQuery = {}, options: NavigationReadOptions = {}) {
+  return getNavigationRead<PayoutListResponse>("financial", "/api/payouts", {
+    start_date: params.start_date,
+    end_date: params.end_date,
+    limit: params.limit ?? 200,
+    offset: params.offset ?? 0,
+  }, options);
 }
 
 export function createPayout(payload: PayoutCreateInput) {
   return requestJson<PayoutRecord>("/api/payouts", {
     method: "POST",
     body: payload,
-  });
+  }).finally(clearFinancialReadCache);
 }
 
 export function deletePayout(id: number) {
-  return requestJson<void>(`/api/payouts/${id}`, { method: "DELETE" });
+  return requestJson<void>(`/api/payouts/${id}`, { method: "DELETE" }).finally(clearFinancialReadCache);
 }
 
 interface PayoutTotalsQuery {
@@ -2573,10 +2593,8 @@ interface PayoutTotalsQuery {
 }
 
 export function getPayoutTotals(options: PayoutTotalsQuery = {}) {
-  return requestJson<PayoutTotals>("/api/payouts/totals", {
-    query: {
-      start_date: options.startDate,
-      end_date: options.endDate,
-    },
+  return getNavigationRead<PayoutTotals>("financial", "/api/payouts/totals", {
+    start_date: options.startDate,
+    end_date: options.endDate,
   });
 }

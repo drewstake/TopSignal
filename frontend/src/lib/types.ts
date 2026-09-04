@@ -1251,6 +1251,7 @@ export type ProjectXMarketDepthConnectionState =
   | "connected"
   | "disconnected"
   | "reconnecting"
+  | "market_closed"
   | "unavailable";
 
 export interface ProjectXMarketDepthState {

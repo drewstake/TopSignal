@@ -11,15 +11,15 @@ import math
 import os
 from typing import Any, AsyncContextManager, Callable, Mapping
 
-import websockets
-
-from .projectx_client import ProjectXClient, ProjectXClientError
+from .projectx_client import ProjectXClient, ProjectXClientError, validate_projectx_url
 from .projectx_hubs import (
     _SIGNALR_RECORD_SEPARATOR,
     _append_query,
     _decode_signalr_frames,
+    _open_hub,
     _signalr_handshake,
 )
+from .trading_day import futures_session_is_open
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,13 @@ _ASK_TYPES = frozenset({1, 3, 10})  # Ask, BestAsk, NewBestAsk
 _BID_TYPES = frozenset({2, 4, 9})  # Bid, BestBid, NewBestBid
 _RESET_TYPE = 6
 _RECENT_FINGERPRINT_LIMIT = 4096
+_MARKET_CLOSED_MESSAGE = (
+    "Market closed. Order book updates resume automatically when the trading session opens."
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,9 @@ class MarketByPriceBook:
         self._last_timestamp: datetime | None = None
         self._last_reset_timestamp: datetime | None = None
         self._level_timestamps: dict[tuple[str, Decimal], datetime] = {}
+        self._explicit_depth_levels: set[tuple[str, Decimal]] = set()
+        self._best_quote_prices: dict[str, Decimal] = {}
+        self._best_quote_timestamps: dict[str, datetime] = {}
         self._recent_fingerprints: deque[tuple[Any, ...]] = deque()
         self._recent_fingerprint_set: set[tuple[Any, ...]] = set()
 
@@ -83,6 +93,9 @@ class MarketByPriceBook:
             self._bids.clear()
             self._asks.clear()
             self._level_timestamps.clear()
+            self._explicit_depth_levels.clear()
+            self._best_quote_prices.clear()
+            self._best_quote_timestamps.clear()
             self._last_reset_timestamp = timestamp
             self._last_timestamp = timestamp
             self._sequence += 1
@@ -113,17 +126,52 @@ class MarketByPriceBook:
         if previous_timestamp is not None and timestamp < previous_timestamp:
             return None
 
+        is_best_quote = depth_type not in {1, 2}
+        best_timestamp = self._best_quote_timestamps.get(side)
+        if best_timestamp is not None and timestamp < best_timestamp:
+            return None
+        levels = self._bids if side == "bid" else self._asks
+        if is_best_quote:
+            # A best quote proves only its current price. A prior quote is not
+            # a resting depth level unless an explicit Ask/Bid also supplied it.
+            # The new best price also invalidates any supposedly better levels.
+            obsolete = [
+                level_price for level_price in levels
+                if (side == "bid" and level_price > price)
+                or (side == "ask" and level_price < price)
+            ] if volume > 0 else []
+            if any(levels[level_price].timestamp > timestamp for level_price in obsolete):
+                return None
+            prior_best = self._best_quote_prices.get(side)
+            if prior_best is not None and (side, prior_best) not in self._explicit_depth_levels:
+                obsolete.append(prior_best)
+            for level_price in obsolete:
+                levels.pop(level_price, None)
+                self._explicit_depth_levels.discard((side, level_price))
+                # The side-wide best timestamp rejects late updates for removed
+                # prices, so quote-only feeds need no unbounded tombstone map.
+                self._level_timestamps.pop((side, level_price), None)
+            self._best_quote_timestamps[side] = timestamp
+            if volume > 0:
+                self._best_quote_prices[side] = price
+            else:
+                self._best_quote_prices.pop(side, None)
+        elif volume > 0:
+            self._explicit_depth_levels.add(level_key)
+        else:
+            self._explicit_depth_levels.discard(level_key)
+
         self._remember_fingerprint(fingerprint)
         self._level_timestamps[level_key] = timestamp
         if self._last_timestamp is None or timestamp > self._last_timestamp:
             self._last_timestamp = timestamp
 
-        levels = self._bids if side == "bid" else self._asks
         previous = levels.get(price)
         if volume == 0:
-            if previous is None:
+            self._explicit_depth_levels.discard(level_key)
+            if previous is None and not is_best_quote:
                 return None
-            del levels[price]
+            levels.pop(price, None)
         else:
             replacement = _Level(
                 price=price,
@@ -137,6 +185,9 @@ class MarketByPriceBook:
             levels[price] = replacement
 
         self._sequence += 1
+        if is_best_quote:
+            # A full snapshot removes obsolete best prices in every client.
+            return self.snapshot()
         return {
             "contract_id": self.contract_id,
             "sequence": self._sequence,
@@ -156,6 +207,9 @@ class MarketByPriceBook:
         self._bids.clear()
         self._asks.clear()
         self._level_timestamps.clear()
+        self._explicit_depth_levels.clear()
+        self._best_quote_prices.clear()
+        self._best_quote_timestamps.clear()
         self._recent_fingerprints.clear()
         self._recent_fingerprint_set.clear()
         self._last_timestamp = None
@@ -196,6 +250,8 @@ class MarketByPriceBook:
 class _ContractChannel:
     book: MarketByPriceBook
     subscribers: set[asyncio.Queue[dict[str, Any]]] = field(default_factory=set)
+    market_open: bool | None = None
+    last_state: dict[str, Any] | None = None
 
 
 class OrderBookSubscription:
@@ -236,19 +292,23 @@ class ProjectXMarketDepthSession:
         *,
         client: ProjectXClient,
         market_hub_url: str | None = None,
-        connect_factory: Callable[..., AsyncContextManager[Any]] = websockets.connect,
+        connect_factory: Callable[..., AsyncContextManager[Any]] | None = None,
         reconnect_base_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
         subscriber_queue_size: int = 512,
         send_timeout_seconds: float = 5.0,
+        market_check_seconds: float = 5.0,
+        keepalive_seconds: float = 15.0,
+        now: Callable[[], datetime] | None = None,
     ):
         self._client = client
-        self._market_hub_url = (
+        self._market_hub_url = validate_projectx_url(
             market_hub_url
             or os.getenv("PROJECTX_MARKET_HUB_URL")
-            or _DEFAULT_MARKET_HUB_URL
+            or _DEFAULT_MARKET_HUB_URL,
+            websocket=True,
         )
-        self._connect_factory = connect_factory
+        self._connect_factory = _open_hub if connect_factory is None else connect_factory
         self._reconnect_base_seconds = max(0.01, float(reconnect_base_seconds))
         self._reconnect_max_seconds = max(
             self._reconnect_base_seconds,
@@ -256,6 +316,10 @@ class ProjectXMarketDepthSession:
         )
         self._subscriber_queue_size = max(8, int(subscriber_queue_size))
         self._send_timeout_seconds = max(0.05, float(send_timeout_seconds))
+        self._market_check_seconds = max(0.01, float(market_check_seconds))
+        self._keepalive_seconds = max(0.01, float(keepalive_seconds))
+        self._now = now or _utc_now
+        self._market_wakeup = asyncio.Event()
         self._channels: dict[str, _ContractChannel] = {}
         self._lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
@@ -290,7 +354,10 @@ class ProjectXMarketDepthSession:
             if channel is None:
                 channel = _ContractChannel(book=MarketByPriceBook(normalized_contract_id))
                 self._channels[normalized_contract_id] = channel
+            if not futures_session_is_open(self._now(), symbol=normalized_contract_id):
+                self._publish_state_locked(normalized_contract_id, channel, "market_closed")
             channel.subscribers.add(queue)
+            self._market_wakeup.set()
 
             state = self._connection_state
             if self._runner_task is None or self._runner_task.done():
@@ -303,8 +370,9 @@ class ProjectXMarketDepthSession:
 
             # Queue registration and snapshot capture happen under the same lock as
             # applying updates, so no delta can overtake this initial snapshot.
+            state_payload = self._state_for_market(normalized_contract_id, state)
             initial_events = [
-                {"event": "state", "data": _state_payload(normalized_contract_id, state)},
+                {"event": "state", "data": state_payload},
                 {"event": "snapshot", "data": channel.book.snapshot()},
             ]
 
@@ -541,11 +609,20 @@ class ProjectXMarketDepthSession:
     async def _run_connection_loop(self) -> None:
         backoff_seconds = self._reconnect_base_seconds
         while await self._has_active_contracts():
+            any_open, _ = await self._refresh_market_states()
+            if not any_open:
+                # Keep local SSE subscribers alive without authenticating or dialing
+                # ProjectX throughout a scheduled closure. New contracts wake this wait.
+                await self._wait_for_market_check()
+                continue
             connected_once = False
             active_websocket: Any | None = None
             active_generation: int | None = None
             try:
                 token = await asyncio.to_thread(self._client.get_access_token)
+                any_open, _ = await self._refresh_market_states()
+                if not any_open:
+                    continue
                 url_with_token = _append_query(
                     self._market_hub_url,
                     {"access_token": token},
@@ -557,8 +634,7 @@ class ProjectXMarketDepthSession:
                     close_timeout=5,
                     max_size=2 * 1024 * 1024,
                 ) as websocket:
-                    await _signalr_handshake(websocket)
-                    await _receive_handshake_response(websocket)
+                    pending_frames = await _signalr_handshake(websocket)
                     active_generation = await self._activate_connection(websocket)
                     active_websocket = websocket
                     await self._sync_provider_subscriptions(
@@ -568,13 +644,22 @@ class ProjectXMarketDepthSession:
                     connected_once = True
                     backoff_seconds = self._reconnect_base_seconds
                     await self._broadcast_state("connected")
+                    # Existing SSE viewers need a new baseline after a scheduled
+                    # closure, even if the provider starts with deltas, not Reset.
+                    async with self._lock:
+                        for contract_id, channel in self._channels.items():
+                            if futures_session_is_open(self._now(), symbol=contract_id):
+                                self._broadcast_to_channel_locked(
+                                    channel, {"event": "snapshot", "data": channel.book.snapshot(reset=True)},
+                                )
 
-                    async for raw_message in websocket:
-                        for frame in _decode_signalr_frames(raw_message):
-                            await self.process_signalr_frame(
-                                frame,
-                                connection_generation=active_generation,
-                            )
+                    for frame in pending_frames:
+                        await self.process_signalr_frame(
+                            frame,
+                            connection_generation=active_generation,
+                        )
+
+                    await self._run_connected(websocket, active_generation)
                     if await self._has_active_contracts():
                         await self._broadcast_state(
                             "reconnecting",
@@ -611,10 +696,101 @@ class ProjectXMarketDepthSession:
             await asyncio.sleep(backoff_seconds)
             backoff_seconds = min(self._reconnect_max_seconds, backoff_seconds * 2.0)
 
+    def _state_for_market(
+        self, contract_id: str, state: str, *, message: str | None = None,
+    ) -> dict[str, Any]:
+        if not futures_session_is_open(self._now(), symbol=contract_id):
+            return _state_payload(contract_id, "market_closed", message=_MARKET_CLOSED_MESSAGE)
+        return _state_payload(contract_id, state, message=message)
+
+    def _publish_state_locked(
+        self, contract_id: str, channel: _ContractChannel, state: str,
+        *, message: str | None = None,
+    ) -> None:
+        payload = self._state_for_market(contract_id, state, message=message)
+        if payload["state"] == "market_closed":
+            if channel.last_state == payload:
+                return
+            self._broadcast_to_channel_locked(
+                channel, {"event": "snapshot", "data": channel.book.clear_for_reconnect()},
+            )
+        channel.last_state = payload
+        self._broadcast_to_channel_locked(channel, {"event": "state", "data": payload})
+
+    async def _refresh_market_states(self) -> tuple[bool, bool]:
+        any_open = False
+        changed = False
+        async with self._lock:
+            for contract_id, channel in self._channels.items():
+                is_open = futures_session_is_open(self._now(), symbol=contract_id)
+                was_open = channel.market_open
+                channel.market_open = is_open
+                any_open |= is_open
+                changed |= was_open is not None and was_open != is_open
+                if not is_open:
+                    self._publish_state_locked(contract_id, channel, "market_closed")
+                elif was_open is False:
+                    self._publish_state_locked(contract_id, channel, "reconnecting")
+        return any_open, changed
+
+    async def _wait_for_market_check(self) -> None:
+        try:
+            await asyncio.wait_for(self._market_wakeup.wait(), self._market_check_seconds)
+        except asyncio.TimeoutError:
+            pass
+        self._market_wakeup.clear()
+
+    async def _watch_market_hours(self) -> None:
+        while True:
+            await self._wait_for_market_check()
+            _, changed = await self._refresh_market_states()
+            if changed:
+                # Rebuild the shared connection from the contracts still open.
+                # Closed channels remain attached to SSE and receive no depth.
+                return
+
+    async def _send_keepalives(self, websocket: Any, generation: int) -> None:
+        while True:
+            await asyncio.sleep(self._keepalive_seconds)
+            async with self._send_lock:
+                if self._websocket is not websocket or self._connection_generation != generation:
+                    return
+                # SignalR requires protocol pings; WebSocket control pings alone
+                # do not satisfy its client timeout during an otherwise quiet feed.
+                await asyncio.wait_for(
+                    websocket.send('{"type":6}' + _SIGNALR_RECORD_SEPARATOR),
+                    timeout=self._send_timeout_seconds,
+                )
+
+    async def _run_connected(self, websocket: Any, generation: int) -> None:
+        async def receive() -> None:
+            async for raw_message in websocket:
+                for frame in _decode_signalr_frames(raw_message):
+                    await self.process_signalr_frame(frame, connection_generation=generation)
+
+        tasks = [
+            asyncio.create_task(receive(), name="projectx-market-depth-reader"),
+            asyncio.create_task(self._watch_market_hours(), name="projectx-market-depth-hours"),
+            asyncio.create_task(
+                self._send_keepalives(websocket, generation), name="projectx-market-depth-keepalive",
+            ),
+        ]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _apply_depth_entry(self, contract_id: str, entry: Mapping[str, Any]) -> None:
         async with self._lock:
             channel = self._channels.get(contract_id)
             if channel is None:
+                return
+            if not futures_session_is_open(self._now(), symbol=contract_id):
+                self._publish_state_locked(contract_id, channel, "market_closed")
                 return
             event_data = channel.book.apply(entry)
             if event_data is None:
@@ -637,13 +813,7 @@ class ProjectXMarketDepthSession:
         async with self._lock:
             self._connection_state = state
             for contract_id, channel in self._channels.items():
-                self._broadcast_to_channel_locked(
-                    channel,
-                    {
-                        "event": "state",
-                        "data": _state_payload(contract_id, state, message=message),
-                    },
-                )
+                self._publish_state_locked(contract_id, channel, state, message=message)
 
     def _broadcast_to_channel_locked(
         self,
@@ -729,7 +899,9 @@ class ProjectXMarketDepthSession:
     ) -> None:
         async with self._send_lock:
             async with self._lock:
-                active = contract_id in self._channels
+                active = contract_id in self._channels and futures_session_is_open(
+                    self._now(), symbol=contract_id,
+                )
             current_websocket = self._websocket
             current_generation = self._connection_generation
             if websocket is not None and current_websocket is not websocket:
@@ -873,13 +1045,7 @@ class ProjectXMarketDepthSession:
             channel = self._channels.get(contract_id)
             if channel is None:
                 return
-            self._broadcast_to_channel_locked(
-                channel,
-                {
-                    "event": "state",
-                    "data": _state_payload(contract_id, state, message=message),
-                },
-            )
+            self._publish_state_locked(contract_id, channel, state, message=message)
 
     async def _has_active_contracts(self) -> bool:
         async with self._lock:
@@ -1000,16 +1166,6 @@ class ProjectXOrderBookRegistry:
                 and self._user_slots.get(user_id) is slot
             ):
                 del self._user_slots[user_id]
-
-
-async def _receive_handshake_response(websocket: Any) -> None:
-    raw_message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
-    frames = _decode_signalr_frames(raw_message)
-    if not frames:
-        raise ConnectionError("ProjectX market hub returned an invalid SignalR handshake")
-    handshake = frames[0]
-    if handshake.get("error"):
-        raise ConnectionError("ProjectX market hub rejected the SignalR handshake")
 
 
 def _depth_entries(raw: Any) -> list[Mapping[str, Any]]:

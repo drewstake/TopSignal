@@ -2889,7 +2889,7 @@ export function BotPage() {
       !window.confirm(
         `Request continuous LIVE arming for "${selectedBot.name}" on simulated Practice account ${selectedBot.account_id}? ` +
           "If the server accepts this request, the worker is eligible to attempt order routing only while every safety check passes. " +
-          "Provider-accepted orders are final. Recovery after an application restart is attempted, not guaranteed; verify runtime status and broker state after every restart.",
+          "Provider-accepted orders are final. An application restart automatically disarms routing. Verify broker positions and orders before explicitly rearming.",
       )
     ) {
       return;

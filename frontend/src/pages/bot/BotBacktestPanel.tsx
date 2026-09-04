@@ -28,6 +28,7 @@ import {
   BACKTEST_EQUITY_TOP,
   buildBacktestPayload,
   buildBacktestChartPaths,
+  describeBacktestError,
   describeBacktestProgress,
   validateBacktestForm,
   type BotBacktestFormState,
@@ -137,7 +138,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
       }
     } catch (err) {
       if (requestSequence.current === sequence) {
-        setError(err instanceof Error ? err.message : "Backtest failed.");
+        setError(describeBacktestError(err));
       }
     } finally {
       if (requestSequence.current === sequence) {

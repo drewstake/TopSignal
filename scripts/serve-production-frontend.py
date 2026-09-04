@@ -11,9 +11,43 @@ import argparse
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import threading
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
+
+
+class BoundedFrontendServer(ThreadingHTTPServer):
+    """Cap slow/local clients so a browser cannot exhaust threads or sockets."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 32
+
+    def __init__(self, *args, max_connections: int = 32, **kwargs):
+        self._slots = threading.BoundedSemaphore(max_connections)
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(10)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
 class TopSignalFrontendHandler(SimpleHTTPRequestHandler):
@@ -158,9 +192,7 @@ def main() -> int:
             **handler_kwargs,
         )
 
-    ThreadingHTTPServer.allow_reuse_address = True
-    ThreadingHTTPServer.daemon_threads = True
-    server = ThreadingHTTPServer((args.host, args.port), handler_factory)
+    server = BoundedFrontendServer((args.host, args.port), handler_factory)
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

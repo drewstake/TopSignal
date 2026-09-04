@@ -171,6 +171,28 @@ describe("buildAnniversaryYearRangeOptions", () => {
 });
 
 describe("ExpensesPage consolidated startup", () => {
+  it("reuses saved data across visits and refreshes on demand without reconciling", async () => {
+    api.clearFinancialReadCache();
+    const user = userEvent.setup();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(
+      JSON.stringify(String(url).includes("financial-summary") ? financialSummary(25) : { items: [], total: 0 }),
+      { status: 200 },
+    ));
+    const first = render(<ExpensesPage />);
+    await screen.findByText("$25.00");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    first.unmount();
+    render(<ExpensesPage />);
+    await screen.findByText("$25.00");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    for (const [url, options] of fetchMock.mock.calls) {
+      expect(String(url)).not.toContain("/accounts");
+      expect(options?.method).toBe("GET");
+    }
+    api.clearFinancialReadCache();
+  });
   it("shows loading states instead of false empty values before startup settles", async () => {
     const expenses = deferred<Awaited<ReturnType<typeof api.listExpenses>>>();
     const payouts = deferred<Awaited<ReturnType<typeof api.listPayouts>>>();

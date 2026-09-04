@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Textarea } from "../../components/ui/Textarea";
 import {
   accountsApi,
+  clearFinancialReadCache,
   createPayout,
   createExpense,
   deletePayout,
@@ -414,7 +415,7 @@ export function ExpensesPage() {
         category: expenseCategory,
         limit: COMBINE_EXPENSE_PAGE_SIZE,
         offset: nextOffset,
-      });
+      }, { bypassCache: true });
 
       rows.push(...payload.items);
       if (payload.items.length < COMBINE_EXPENSE_PAGE_SIZE) {
@@ -910,7 +911,13 @@ export function ExpensesPage() {
               <CardTitle>Expenses</CardTitle>
               <CardDescription>Track paid account fees and operational costs.</CardDescription>
             </div>
-            <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Expense</Button>
+            <div className="flex gap-2">
+              <Button variant="secondary" disabled={loading || payoutLoading || totalsLoading} onClick={() => {
+                clearFinancialReadCache();
+                refreshFinancialData();
+              }}>Refresh</Button>
+              <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Expense</Button>
+            </div>
           </div>
         </CardHeader>
 

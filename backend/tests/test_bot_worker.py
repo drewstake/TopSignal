@@ -480,6 +480,32 @@ def test_provider_429_uses_shared_user_backoff_without_cycle_retry_storm(
     assert cycle["retrying_runs"] == 1
 
 
+def test_provider_success_cannot_mask_another_runs_outage(session_factory, monkeypatch):
+    _seed_run(session_factory, config_id=1, run_id=1, account_id=101)
+    _seed_run(session_factory, config_id=2, run_id=2, account_id=102)
+    runtime = _runtime(session_factory)
+    monkeypatch.setattr(runtime, "_sync_account_streams", lambda _ids: None)
+    calls = []
+
+    def process(**kwargs):
+        calls.append(kwargs["run_id"])
+        if len(calls) == 1:
+            raise ProjectXClientError("fixture outage", status_code=503)
+        return {"evaluated": True, "provider_ok": True}
+
+    monkeypatch.setattr(runtime, "_process_run", process)
+    assert runtime._run_cycle(startup_recovery=False)["provider_status"] == "error"
+    # The failed run remains in backoff while a healthy peer evaluates again.
+    assert runtime._run_cycle(startup_recovery=False)["provider_status"] == "error"
+
+
+def test_backoff_honors_provider_retry_after_beyond_local_maximum():
+    assert worker_module._retry_delay_seconds(
+        ProjectXClientError("throttled", status_code=429, retry_after_seconds=600),
+        failures=1, key="fixture", maximum=300,
+    ) == 600
+
+
 def test_duplicate_legacy_running_rows_are_closed_before_selection(session_factory):
     _seed_run(session_factory, run_id=1, started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
     engine = session_factory.kw["bind"]
@@ -548,3 +574,153 @@ def test_unexpected_runner_failure_is_visible_in_snapshot(session_factory):
         readiness = inspect_bot_runtime(db, runtime=runtime)
     assert readiness.ready is False
     assert readiness.checks["worker_task_healthy"] is False
+
+
+def test_worker_recovery_disarms_routing_runs_before_streams_or_provider_access(session_factory, monkeypatch):
+    _seed_run(session_factory, dry_run=False)
+    runtime = _runtime(session_factory)
+    streamed = []
+    monkeypatch.setattr(runtime, "_sync_account_streams", lambda ids: streamed.extend(ids))
+    monkeypatch.setattr(runtime, "_client_for_user", lambda user: pytest.fail("recovery must not contact provider"))
+
+    cycle = runtime._run_cycle(startup_recovery=True)
+
+    assert streamed == []
+    assert cycle["active_runs"] == 0
+    with session_factory() as db:
+        run = db.get(BotRun, 1)
+        assert run.status == "stopped"
+        assert run.stop_reason == "worker_restart_requires_rearm"
+        assert run.raw_state["live_routing_confirmed"] is False
+        assert db.get(BotConfig, 1).execution_mode == "live"
+        assert db.get(BotConfig, 1).enabled is True
+
+
+def test_worker_shutdown_timeout_retains_inflight_task_and_does_not_release_lease(session_factory, monkeypatch):
+    from threading import Event
+
+    runtime = _runtime(session_factory)
+    runtime.settings = _settings(shutdown_timeout_seconds=0.02)
+    entered, release = Event(), Event()
+    released_leases = []
+    monkeypatch.setattr(runtime, "_release_lease", lambda: released_leases.append(True))
+    monkeypatch.setattr(runtime, "_stop_account_streams", lambda: None)
+
+    def in_flight():
+        entered.set()
+        release.wait(timeout=2)
+
+    async def exercise():
+        runtime._runner_task = asyncio.create_task(asyncio.to_thread(in_flight))
+        await asyncio.to_thread(entered.wait, 1)
+        task = runtime._runner_task
+        try:
+            assert await runtime.stop() is False
+            assert runtime._shutdown_requested.is_set()
+            assert runtime._runner_task is task
+            assert not task.cancelled()
+            assert not task.done()
+            assert released_leases == []
+            assert runtime.snapshot().last_error_code == "worker_shutdown_incomplete"
+            await runtime.start()
+            assert runtime._runner_task is task
+        finally:
+            release.set()
+        assert await runtime.stop() is True
+        assert released_leases == [True]
+        assert runtime._runner_task is None
+
+    asyncio.run(exercise())
+
+
+def test_unexpected_cycle_cancellation_revokes_routing_before_draining_thread(session_factory, monkeypatch):
+    from threading import Event
+
+    runtime = _runtime(session_factory)
+    entered, release = Event(), Event()
+    finished = []
+
+    def cycle(_recovery):
+        entered.set()
+        release.wait(timeout=2)
+        finished.append(True)
+        return {}
+
+    monkeypatch.setattr(runtime, "_run_cycle", cycle)
+    runtime._replace_snapshot(owns_lease=True)
+
+    async def exercise():
+        task = asyncio.create_task(runtime._run_cycle_async(False))
+        await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        try:
+            assert not task.done()
+            assert runtime._shutdown_requested.is_set()
+            assert runtime.snapshot().owns_lease is False
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished == [True]
+        runtime._runner_finished(task)
+        assert runtime.snapshot().last_error_code == "worker_task_cancelled"
+        assert runtime.snapshot().state == "crashed"
+
+    asyncio.run(exercise())
+
+
+def test_outage_backoff_remains_bounded_after_days_of_failures():
+    assert worker_module._retry_delay_seconds(
+        ProjectXClientError("offline", status_code=503),
+        failures=100000,
+        key="outage",
+        maximum=300,
+    ) == 300
+
+
+def test_cancelling_lease_renewal_waits_for_database_operation(session_factory, monkeypatch):
+    from threading import Event
+
+    runtime = _runtime(session_factory)
+    entered, release = Event(), Event()
+    finished = []
+
+    def renewal():
+        entered.set()
+        release.wait(timeout=2)
+        finished.append(True)
+        return True
+
+    monkeypatch.setattr(runtime, "_acquire_or_renew_lease", renewal)
+
+    async def exercise():
+        task = asyncio.create_task(runtime._renew_lease_async())
+        await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        try:
+            assert not task.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished == [True]
+
+    asyncio.run(exercise())
+
+
+def test_worker_does_not_report_shutdown_complete_with_unreaped_stream(session_factory):
+    runtime = _runtime(session_factory)
+    runtime._account_streams[("fixture", 101)] = SimpleNamespace(stop=lambda: False)
+
+    assert asyncio.run(runtime.stop()) is False
+    assert runtime.snapshot().last_error_code == "streaming_shutdown_incomplete"
+    assert runtime._account_streams
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_worker_rejects_nonfinite_environment_timing(monkeypatch, value):
+    monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_POLL_SECONDS", value)
+    with pytest.raises(RuntimeError):
+        BotWorkerSettings.from_env()

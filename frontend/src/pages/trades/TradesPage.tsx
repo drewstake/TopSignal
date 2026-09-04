@@ -333,7 +333,7 @@ export function TradesPage() {
   const tradeDataGate = useAccountRequestGate(selectedAccountId);
   const syncGate = useAccountRequestGate(selectedAccountId);
 
-  const loadTradesAndSummary = useCallback(async (requestedAccountId = selectedAccountId) => {
+  const loadTradesAndSummary = useCallback(async (requestedAccountId = selectedAccountId, bypassCache = false) => {
     if (!requestedAccountId) {
       setSettledDataScope(null);
       setSummaryLoading(false);
@@ -370,12 +370,12 @@ export function TradesPage() {
     const summaryPromise = accountsApi.getSummary(requestedAccountId, {
       start: startIso,
       end: endIso,
-    });
+    }, { bypassCache });
     const tradesPromise = accountsApi.getTrades(requestedAccountId, {
       limit,
       start: startIso,
       end: endIso,
-    });
+    }, { bypassCache });
 
     try {
       const [nextSummary, nextTrades] = await Promise.all([summaryPromise, tradesPromise]);
@@ -650,7 +650,7 @@ export function TradesPage() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => void loadTradesAndSummary()}
+              onClick={() => void loadTradesAndSummary(selectedAccountId, true)}
               disabled={summaryLoading || tradesLoading || !selectedAccountId || dateRangeInvalid}
             >
               Refresh

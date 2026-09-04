@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -28,8 +28,8 @@ class ProjectXCredentialsEncryptionKeyInvalid(ProjectXCredentialsUnavailable):
 
 @dataclass(frozen=True)
 class ProjectXCredentials:
-    username: str
-    api_key: str
+    username: str = field(repr=False)
+    api_key: str = field(repr=False)
 
 
 def upsert_projectx_credentials(

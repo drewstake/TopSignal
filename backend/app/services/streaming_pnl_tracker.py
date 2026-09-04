@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 from threading import RLock
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, overload
 
 from sqlalchemy.orm import Session
 
@@ -119,6 +120,9 @@ class StreamingPnlTracker:
             return False
 
         with self._lock:
+            previous = self.market_update_by_contract_id.get(update.contract_id)
+            if previous is not None and update.timestamp < previous.timestamp:
+                return False
             self.price_by_contract_id[update.contract_id] = update.mark_price
             self.market_update_by_contract_id[update.contract_id] = update
             if update.symbol:
@@ -152,6 +156,8 @@ class StreamingPnlTracker:
             contract_id = update.contract_id
             scope_key = (resolved_user_id, resolved_account_id, contract_id)
             previous_state = self.position_by_scope.get(scope_key)
+            if previous_state is not None and update.updated_at < previous_state.updated_at:
+                return False
             previous_qty = previous_state.net_qty if previous_state is not None else 0.0
             next_qty = update.net_qty
             previous_sign = _sign(previous_qty)
@@ -358,6 +364,12 @@ def parse_position_update(payload: Mapping[str, Any]) -> PositionUpdate | None:
                     net_qty = qty * side_sign
 
         if net_qty is None:
+            position_type = _safe_int(_first_value(candidate, ["type", "positionType"]))
+            size = _safe_float(_first_value(candidate, ["size"]), default=None)
+            if position_type in {1, 2} and size is not None and size >= 0:
+                net_qty = size if position_type == 1 else -size
+
+        if net_qty is None:
             continue
 
         avg_price = _safe_float(
@@ -373,6 +385,8 @@ def parse_position_update(payload: Mapping[str, Any]) -> PositionUpdate | None:
             ),
             default=0.0,
         )
+        if abs(net_qty) > _EPSILON and avg_price <= 0:
+            continue
         updated_at = _parse_timestamp(
             _first_value(candidate, ["timestamp", "updatedAt", "updateTime", "time", "tradeTimestamp"])
         ) or _utc_now()
@@ -421,16 +435,21 @@ def parse_quote_trade(payload: Mapping[str, Any]) -> MarketPriceUpdate | None:
 
         mark_price: float | None = None
         if bid is not None and ask is not None:
+            if bid <= 0 or ask <= 0 or bid > ask:
+                continue
             mark_price = (bid + ask) / 2.0
         elif last is not None:
             mark_price = last
 
-        if mark_price is None:
+        if mark_price is None or not math.isfinite(mark_price) or mark_price <= 0:
             continue
 
         timestamp = _parse_timestamp(
             _first_value(candidate, ["timestamp", "updatedAt", "updateTime", "time", "tradeTimestamp"])
-        ) or _utc_now()
+        )
+        if timestamp is None or timestamp > _utc_now():
+            # Receipt time cannot establish freshness of an undated quote.
+            continue
         return MarketPriceUpdate(
             contract_id=contract_id,
             mark_price=mark_price,
@@ -521,21 +540,31 @@ def _first_value(payload: Mapping[str, Any], keys: list[str]) -> Any:
     return None
 
 
+@overload
+def _safe_float(value: Any, *, default: float) -> float: ...
+
+
+@overload
+def _safe_float(value: Any, *, default: None) -> float | None: ...
+
+
 def _safe_float(value: Any, *, default: float | None) -> float | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return default
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _safe_int(value: Any) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        parsed = int(value)
+        return None if isinstance(value, float) and value != parsed else parsed
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -552,10 +581,15 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return _as_utc(value)
     if isinstance(value, (int, float)):
+        if isinstance(value, bool) or not math.isfinite(value):
+            return None
         seconds = float(value)
         if seconds > 1_000_000_000_000:
             seconds /= 1000.0
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
     if isinstance(value, str):
         text = value.strip()
         if text == "":

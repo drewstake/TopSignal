@@ -142,16 +142,26 @@ export class OrderBookStore {
       // snapshot has re-established the book.
       this.awaitingSnapshot = true;
     }
+    if (state.state === "market_closed") {
+      this.bids.clear();
+      this.asks.clear();
+      this.sequence = null;
+      this.lastTimestampMs = null;
+      this.awaitingSnapshot = true;
+      this.recomputeVisibleBook();
+    }
     this.replaceMeta({
       ...this.meta,
       connection: state.state,
       message: state.message?.trim() || null,
+      ...(state.state === "market_closed" ? { hasSnapshot: false, hasDepth: false } : {}),
     });
     return true;
   }
 
   applySnapshot(snapshot: ProjectXMarketDepthSnapshot): boolean {
     if (
+      this.meta.connection === "market_closed" ||
       !this.matchesContract(snapshot.contract_id) ||
       !Array.isArray(snapshot.bids) ||
       !Array.isArray(snapshot.asks) ||

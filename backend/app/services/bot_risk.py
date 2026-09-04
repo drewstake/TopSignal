@@ -100,11 +100,11 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                     severity="critical",
                 )
             )
-        if context.account_can_trade is False:
+        if context.account_can_trade is not True:
             blocks.append(
                 RiskBlock(
                     code="account_cannot_trade",
-                    message="Provider marks this account as not tradable.",
+                    message="Provider has not explicitly confirmed this account is tradable.",
                     severity="critical",
                 )
             )
@@ -225,7 +225,20 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                 )
             )
 
-        if context.trades_today >= context.max_trades_per_day:
+        if (
+            not isinstance(context.trades_today, int)
+            or not isinstance(context.max_trades_per_day, int)
+            or context.trades_today < 0
+            or context.max_trades_per_day < 0
+        ):
+            blocks.append(
+                RiskBlock(
+                    code="invalid_daily_trade_count",
+                    message="Daily trade count and configured limit must be non-negative integers.",
+                    severity="critical",
+                )
+            )
+        elif context.trades_today >= context.max_trades_per_day:
             blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
 
         daily_values_are_finite = (
@@ -241,11 +254,11 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                     severity="critical",
                 )
             )
-        elif not daily_values_are_finite:
+        elif not daily_values_are_finite or context.max_daily_loss < 0:
             blocks.append(
                 RiskBlock(
                     code="invalid_daily_pnl_risk_data",
-                    message="Daily realized or unrealized P&L risk data is not finite.",
+                    message="Daily P&L must be finite and the daily loss limit non-negative.",
                     severity="critical",
                 )
             )
@@ -287,6 +300,19 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                 RiskBlock(
                     code="missing_market_data",
                     message="No closed candle data is available.",
+                    severity="critical",
+                )
+            )
+        elif (
+            not math.isfinite(context.latest_candle_age_seconds)
+            or context.latest_candle_age_seconds < 0
+            or not math.isfinite(context.max_data_staleness_seconds)
+            or context.max_data_staleness_seconds <= 0
+        ):
+            blocks.append(
+                RiskBlock(
+                    code="invalid_market_data_age",
+                    message="Closed-candle age must be finite and non-negative with a positive staleness limit.",
                     severity="critical",
                 )
             )

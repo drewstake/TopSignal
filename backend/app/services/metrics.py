@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from typing import Optional
 
 from sqlalchemy import Integer, case, cast, func
@@ -31,6 +32,16 @@ class ClosedTradeSample:
     is_rule_break: bool
 
 
+class IncompleteTradePnlError(ValueError):
+    """Closed-trade metrics cannot safely represent absent or invalid P&L."""
+
+
+def _finite_pnl(value: float) -> float:
+    if not math.isfinite(value):
+        raise IncompleteTradePnlError("Closed trades require finite authoritative P&L and fees.")
+    return value
+
+
 def _round(value: float, digits: int = 2) -> float:
     return round(value, digits)
 
@@ -48,23 +59,29 @@ def _safe_float(value: Optional[float]) -> float:
 
 
 def _trade_pnl_before_fees(trade: Trade) -> float:
-    if trade.pnl is not None:
-        return float(trade.pnl)
-
-    # TODO: add contract multipliers when futures specs are available in DB.
-    if trade.exit_price is None:
-        return 0.0
-
-    direction = 1 if trade.side == "LONG" else -1
-    return _safe_float(trade.qty) * (_safe_float(trade.exit_price) - _safe_float(trade.entry_price)) * direction
+    if trade.pnl is None:
+        raise IncompleteTradePnlError("Closed trades require authoritative P&L before metrics are available.")
+    return _finite_pnl(float(trade.pnl))
 
 
 def _trade_net_pnl(trade: Trade) -> float:
-    return _trade_pnl_before_fees(trade) - _safe_float(trade.fees)
+    return _finite_pnl(_trade_pnl_before_fees(trade) - _safe_float(trade.fees))
 
 
 def _net_pnl_sql_expr():
-    return func.coalesce(Trade.pnl, 0) - func.coalesce(Trade.fees, 0)
+    return Trade.pnl - func.coalesce(Trade.fees, 0)
+
+
+def _missing_pnl_count_sql_expr():
+    return func.sum(case((Trade.pnl.is_(None), 1), else_=0)).label("missing_pnl_count")
+
+
+def _aggregate_pnl(row) -> float:
+    # Validation is part of the aggregate read, so a concurrent incomplete
+    # trade cannot appear between a separate precheck and the actual query.
+    if int(row.missing_pnl_count or 0) > 0:
+        raise IncompleteTradePnlError("Closed trades require authoritative P&L before metrics are available.")
+    return _finite_pnl(float(row.pnl))
 
 
 def _closed_trade_query(db: Session, account_id: Optional[int], user_id: Optional[str] = None):
@@ -178,6 +195,7 @@ def get_pnl_by_hour(db: Session, account_id: Optional[int] = None, user_id: Opti
             hour_expr.label("hour"),
             func.count(Trade.id).label("trade_count"),
             func.coalesce(func.sum(net_expr), 0).label("pnl"),
+            _missing_pnl_count_sql_expr(),
         )
         .filter(Trade.closed_at.isnot(None))
     )
@@ -190,7 +208,7 @@ def get_pnl_by_hour(db: Session, account_id: Optional[int] = None, user_id: Opti
     row_map = {
         int(row.hour): {
             "trade_count": int(row.trade_count),
-            "pnl": _round(float(row.pnl), 2),
+            "pnl": _round(_aggregate_pnl(row), 2),
         }
         for row in rows
     }
@@ -206,7 +224,9 @@ def get_pnl_by_hour(db: Session, account_id: Optional[int] = None, user_id: Opti
 
 
 def get_pnl_by_day(db: Session, account_id: Optional[int] = None, user_id: Optional[str] = None) -> list[dict]:
-    day_expr = cast(func.extract("isodow", Trade.opened_at), Integer)
+    # Both PostgreSQL and SQLite support dow; map Sunday to ISO weekday 7.
+    weekday = cast(func.extract("dow", Trade.opened_at), Integer)
+    day_expr = case((weekday == 0, 7), else_=weekday)
     net_expr = _net_pnl_sql_expr()
 
     query = (
@@ -214,6 +234,7 @@ def get_pnl_by_day(db: Session, account_id: Optional[int] = None, user_id: Optio
             day_expr.label("day_of_week"),
             func.count(Trade.id).label("trade_count"),
             func.coalesce(func.sum(net_expr), 0).label("pnl"),
+            _missing_pnl_count_sql_expr(),
         )
         .filter(Trade.closed_at.isnot(None))
     )
@@ -226,7 +247,7 @@ def get_pnl_by_day(db: Session, account_id: Optional[int] = None, user_id: Optio
     row_map = {
         int(row.day_of_week): {
             "trade_count": int(row.trade_count),
-            "pnl": _round(float(row.pnl), 2),
+            "pnl": _round(_aggregate_pnl(row), 2),
         }
         for row in rows
     }
@@ -253,6 +274,7 @@ def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None, user_id: Op
             func.count(Trade.id).label("trade_count"),
             win_expr.label("win_count"),
             pnl_sum_expr.label("pnl"),
+            _missing_pnl_count_sql_expr(),
         )
         .filter(Trade.closed_at.isnot(None))
     )
@@ -275,7 +297,7 @@ def get_pnl_by_symbol(db: Session, account_id: Optional[int] = None, user_id: Op
             {
                 "symbol": row.symbol,
                 "trade_count": trade_count,
-                "pnl": _round(float(row.pnl), 2),
+                "pnl": _round(_aggregate_pnl(row), 2),
                 "win_rate": _round((win_count / trade_count) * 100, 2) if trade_count > 0 else 0.0,
             }
         )

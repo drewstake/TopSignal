@@ -52,6 +52,15 @@ describe("parseProjectXMarketDepthSseFrame", () => {
     });
   });
 
+  it("accepts a scheduled market closure as an explicit state", () => {
+    expect(parseProjectXMarketDepthSseFrame(sseEvent("state", {
+      contract_id: "CON.F.US.MNQ.U26", state: "market_closed", message: "Market closed.",
+    }))).toEqual({
+      event: "state",
+      data: { contract_id: "CON.F.US.MNQ.U26", state: "market_closed", message: "Market closed." },
+    });
+  });
+
   it("rejects malformed, unknown, and provider-shaped events", () => {
     expect(parseProjectXMarketDepthSseFrame("event: update\ndata: not-json")).toBeNull();
     expect(parseProjectXMarketDepthSseFrame('event: other\ndata: {"ok":true}')).toBeNull();

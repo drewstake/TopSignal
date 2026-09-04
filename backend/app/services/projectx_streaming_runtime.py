@@ -71,7 +71,12 @@ class StreamingRuntime:
         if self.stop_event is not None:
             self.stop_event.set()
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(lambda: None)
+            try:
+                self.loop.call_soon_threadsafe(lambda: None)
+            except RuntimeError:
+                # A crashed runtime may already have closed its event loop.
+                # Still join/reap the thread instead of abandoning its handles.
+                pass
         thread.join(timeout=max(0.5, timeout_seconds))
         if thread.is_alive():
             # Keep every handle so callers can retry/reap this exact runtime.
@@ -101,6 +106,12 @@ class StreamingRuntime:
                 },
             )
         finally:
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            self.loop.run_until_complete(self.loop.shutdown_default_executor())
             self.loop.close()
 
     async def _run_until_stopped(self) -> None:
@@ -111,6 +122,11 @@ class StreamingRuntime:
         runner_task = asyncio.create_task(self.runner.run_forever())
         try:
             while not stop_event.is_set():
+                if runner_task.done():
+                    # Surface a dead runner so the owning worker can restart
+                    # this runtime instead of retaining an idle live thread.
+                    await runner_task
+                    raise RuntimeError("projectx_streaming_runner_exited")
                 await asyncio.sleep(0.25)
         finally:
             runner_task.cancel()

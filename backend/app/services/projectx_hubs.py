@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
 import websockets
 
-from .projectx_client import ProjectXClient
+from .projectx_client import ProjectXClient, validate_projectx_url
 from .streaming_pnl_tracker import StreamingPnlTracker
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,14 @@ _MARKET_SUBSCRIBE_ENV = "PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE"
 _USER_SUBSCRIBE_ENV = "PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE"
 _DEFAULT_USER_HUB_URL = "https://rtc.topstepx.com/hubs/user"
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
+
+
+def _open_hub(url: str, **kwargs):
+    connection = websockets.connect(url, **kwargs)
+    # websockets 16 exposes this policy hook; an authenticated connection must
+    # fail at a redirect rather than forward credentials to a new endpoint.
+    connection.process_redirect = lambda exc: exc
+    return connection
 
 
 @dataclass
@@ -139,6 +147,9 @@ class ProjectXHubRunner:
             if user_hub_url is None
             else user_hub_url
         )
+        for url in (self._market_hub_url, self._user_hub_url):
+            if url:
+                validate_projectx_url(url, websocket=True)
         if self._user_hub_url and (self._user_id is None or self._account_id is None):
             raise ValueError("a user hub requires an explicit user_id and account_id scope")
         if self._account_id is not None and self._account_id <= 0:
@@ -165,7 +176,15 @@ class ProjectXHubRunner:
             logger.info("[hubs] market/user hub URLs are not configured; streaming runner is idle")
             return
 
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _access_token(self) -> str:
+        return self._client_factory().get_access_token()
 
     async def probe_user_account_once(
         self,
@@ -196,13 +215,12 @@ class ProjectXHubRunner:
                 observed.set_result(dict(payload))
 
         async def probe() -> Mapping[str, Any]:
-            client = self._client_factory()
-            token = client.get_access_token()
+            token = await asyncio.to_thread(self._access_token)
             url_with_token = _append_query(
                 self._user_hub_url,
                 {"access_token": token},
             )
-            async with websockets.connect(
+            async with _open_hub(
                 url_with_token,
                 ping_interval=20,
                 ping_timeout=20,
@@ -240,13 +258,13 @@ class ProjectXHubRunner:
         subscribe_env = _MARKET_SUBSCRIBE_ENV if stream_kind == "market" else _USER_SUBSCRIBE_ENV
 
         while True:
+            connected_at: float | None = None
             try:
-                client = self._client_factory()
-                token = client.get_access_token()
+                token = await asyncio.to_thread(self._access_token)
                 url_with_token = _append_query(hub_url, {"access_token": token})
                 logger.info("[hubs] connecting kind=%s", stream_kind)
 
-                async with websockets.connect(
+                async with _open_hub(
                     url_with_token,
                     ping_interval=20,
                     ping_timeout=20,
@@ -254,6 +272,7 @@ class ProjectXHubRunner:
                     max_size=2 * 1024 * 1024,
                 ) as websocket:
                     initial_frames = await _signalr_handshake(websocket)
+                    connected_at = time.monotonic()
                     subscription_messages = _load_subscription_messages(subscribe_env)
                     if stream_kind == "user":
                         subscription_messages = [
@@ -265,7 +284,6 @@ class ProjectXHubRunner:
                     for frame in initial_frames:
                         self._dispatch_frame(stream_kind, frame)
 
-                    backoff_seconds = self._reconnect_base_seconds
                     receiver = asyncio.create_task(
                         self._receive_messages(stream_kind, websocket)
                     )
@@ -275,15 +293,19 @@ class ProjectXHubRunner:
                         else None
                     )
                     tasks = {receiver, *([refresh] if refresh is not None else [])}
-                    done, pending = await asyncio.wait(
-                        tasks,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    for task in done:
-                        await task
+                    try:
+                        done, _pending = await asyncio.wait(
+                            tasks,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for task in done:
+                            await task
+                    finally:
+                        # Cancellation while waiting must reap BOTH children;
+                        # otherwise each reconnect leaks a refresh coroutine.
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
             except asyncio.CancelledError:
                 if stream_kind == "user":
                     self._notify_user_disconnect()
@@ -291,6 +313,8 @@ class ProjectXHubRunner:
             except Exception as exc:
                 if stream_kind == "user":
                     self._notify_user_disconnect()
+                if connected_at is not None and time.monotonic() - connected_at >= 60.0:
+                    backoff_seconds = self._reconnect_base_seconds
                 logger.warning(
                     "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s",
                     stream_kind,
@@ -545,6 +569,8 @@ def _positive_int(value: Any) -> int | None:
     try:
         normalized = int(value)
     except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, float) and value != normalized:
         return None
     return normalized if normalized > 0 else None
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import Event, Lock
 from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
@@ -142,6 +143,7 @@ class BotRuntimeReadiness:
     counts: dict[str, int]
     state: str
     provider_status: str
+    failed_checks: tuple[str, ...] = ()
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +152,7 @@ class BotRuntimeReadiness:
             "provider_status": self.provider_status,
             "checks": dict(self.checks),
             "counts": dict(self.counts),
+            "failed_checks": list(self.failed_checks),
         }
 
 
@@ -159,9 +162,8 @@ ClientFactory = Callable[..., ProjectXClient]
 class BotWorkerRuntime:
     """Single-owner, closed-candle evaluator coordinated through the database.
 
-    A BotConfig being enabled is not authorization to create or resurrect a
-    run.  Only the latest still-running BotRun created by the explicit start
-    endpoint is eligible for adoption after restart.
+    Configuration never authorizes routing. Dry runs may resume after restart;
+    every provider-routing run is disarmed when a worker assumes ownership.
     """
 
     def __init__(
@@ -177,6 +179,7 @@ class BotWorkerRuntime:
         host = socket.gethostname()[:64] or "unknown-host"
         self.owner_id = f"{host}:{os.getpid()}:{uuid4()}"
         self._stop_event = asyncio.Event()
+        self._shutdown_requested = Event()
         self._runner_task: asyncio.Task[None] | None = None
         self._lease_task: asyncio.Task[None] | None = None
         self._state_lock = Lock()
@@ -208,34 +211,51 @@ class BotWorkerRuntime:
         self._account_streams: dict[tuple[str, int], StreamingRuntime] = {}
 
     async def start(self) -> None:
-        if not self.settings.enabled or self._runner_task is not None:
+        if not self.settings.enabled or self._runner_task is not None or (
+            self._shutdown_requested.is_set() and self._account_streams
+        ):
             return
         self._stop_event.clear()
+        self._shutdown_requested.clear()
         self._replace_snapshot(started_at=datetime.now(timezone.utc), state="electing")
         self._runner_task = asyncio.create_task(
             self._run_forever(), name="topsignal-recurring-bot-worker"
         )
         self._runner_task.add_done_callback(self._runner_finished)
 
-    async def stop(self) -> None:
+    async def stop(self) -> bool:
         if not self.settings.enabled:
             self._replace_snapshot(state="disabled", owns_lease=False)
-            return
+            return True
+        self._shutdown_requested.set()
         self._stop_event.set()
+        self._replace_snapshot(state="stopping")
         task = self._runner_task
         if task is not None:
             try:
-                await asyncio.wait_for(task, timeout=self.settings.shutdown_timeout_seconds)
+                # Cancelling to_thread only cancels the awaiter: the evaluator
+                # can still be in a broker call. Retain its task and lease until
+                # it drains; the final routing fence observes shutdown now.
+                await asyncio.wait_for(asyncio.shield(task), timeout=self.settings.shutdown_timeout_seconds)
             except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._runner_task = None
+                self._replace_snapshot(last_error_code="worker_shutdown_incomplete")
+                logger.critical("bot_worker_shutdown_incomplete")
+                return False
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
+            except Exception as exc:
+                self._record_failure("worker_shutdown_task_error", exc)
+        await self._stop_lease_heartbeat()
         await asyncio.to_thread(self._stop_account_streams)
+        if self._account_streams:
+            self._replace_snapshot(last_error_code="streaming_shutdown_incomplete")
+            logger.critical("bot_worker_streaming_shutdown_incomplete")
+            return False
         await asyncio.to_thread(self._release_lease)
+        self._runner_task = None
         self._replace_snapshot(state="stopped", owns_lease=False)
+        return True
 
     def snapshot(self) -> BotWorkerSnapshot:
         with self._state_lock:
@@ -249,30 +269,28 @@ class BotWorkerRuntime:
         )
 
     def _runner_finished(self, task: asyncio.Task[None]) -> None:
-        if task.cancelled() or self._stop_event.is_set():
+        if self._stop_event.is_set():
             return
-        try:
-            failure = task.exception()
-        except asyncio.CancelledError:
-            return
-        if failure is not None:
+        failure = None if task.cancelled() else task.exception()
+        if failure is not None or task.cancelled():
+            self._shutdown_requested.set()
             if self._lease_task is not None:
                 self._lease_task.cancel()
             logger.critical(
                 "bot_worker_task_crashed",
-                extra={"error_type": type(failure).__name__},
+                extra={"error_type": "CancelledError" if task.cancelled() else type(failure).__name__},
             )
             self._replace_snapshot(
                 state="crashed",
                 owns_lease=False,
-                last_error_code="worker_task_crashed",
+                last_error_code="worker_task_cancelled" if task.cancelled() else "worker_task_crashed",
             )
 
     async def _run_forever(self) -> None:
         recovered_for_ownership = False
         while not self._stop_event.is_set():
             try:
-                owns_lease = await asyncio.to_thread(self._acquire_or_renew_lease)
+                owns_lease = await self._renew_lease_async()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -296,7 +314,7 @@ class BotWorkerRuntime:
                 )
             self._replace_snapshot(state="recovering" if not recovered_for_ownership else "running", owns_lease=True)
             try:
-                cycle = await asyncio.to_thread(self._run_cycle, not recovered_for_ownership)
+                cycle = await self._run_cycle_async(not recovered_for_ownership)
                 now = datetime.now(timezone.utc)
                 recovered_for_ownership = self._replace_snapshot_if_lease_owned(
                     state="running",
@@ -321,6 +339,19 @@ class BotWorkerRuntime:
         await self._stop_lease_heartbeat()
         await asyncio.to_thread(self._stop_account_streams)
 
+    async def _run_cycle_async(self, startup_recovery: bool) -> dict[str, Any]:
+        operation = asyncio.create_task(asyncio.to_thread(self._run_cycle, startup_recovery))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            self._shutdown_requested.set()
+            self._replace_snapshot(state="stopping", owns_lease=False, last_error_code="worker_task_cancelled")
+            try:
+                await operation
+            except Exception as exc:
+                self._record_failure("worker_cancelled_cycle_error", exc)
+            raise
+
     async def _lease_heartbeat_loop(self) -> None:
         try:
             while not self._stop_event.is_set():
@@ -328,7 +359,7 @@ class BotWorkerRuntime:
                 if self._stop_event.is_set():
                     break
                 try:
-                    renewed = await asyncio.to_thread(self._acquire_or_renew_lease)
+                    renewed = await self._renew_lease_async()
                 except Exception as exc:
                     self._record_failure("lease_heartbeat_error", exc)
                     renewed = False
@@ -338,11 +369,23 @@ class BotWorkerRuntime:
         finally:
             self._lease_task = None
 
+    async def _renew_lease_async(self) -> bool:
+        operation = asyncio.create_task(asyncio.to_thread(self._acquire_or_renew_lease))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # A cancelled await cannot cancel the synchronous DB transaction.
+            # Drain it before cleanup can release the lease; otherwise a late
+            # renewal can resurrect a stopped owner after the release.
+            await operation
+            raise
+
     async def _stop_lease_heartbeat(self) -> None:
         task = self._lease_task
         if task is None or task is asyncio.current_task():
             return
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
         try:
             await task
         except asyncio.CancelledError:
@@ -370,9 +413,25 @@ class BotWorkerRuntime:
         provider_check_at = prior_snapshot.last_provider_check_at
 
         with self.session_factory() as db:
+            if startup_recovery:
+                # A persisted confirmation is an audit record, never authority
+                # to route after a crash, reboot, or lease takeover.
+                for run in db.query(BotRun).filter(
+                    BotRun.status == "running", BotRun.dry_run.is_(False)
+                ).with_for_update().all():
+                    transition_bot_run(run, "stopped", reason="worker_restart_requires_rearm", now=now)
+                    state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+                    state["live_routing_confirmed"] = False
+                    run.raw_state = state
+                db.flush()
             run_ids = _select_latest_running_run_ids(db, now=now)
             db.commit()
             unresolved = _unresolved_live_submission_count(db)
+            active_users = {
+                str(user_id) for (user_id,) in db.query(BotRun.user_id).filter(
+                    BotRun.id.in_(run_ids) if run_ids else False
+                ).distinct().all()
+            }
         active_run_ids = set(run_ids)
         self._retry_not_before_by_run = {
             run_id: retry_at
@@ -383,6 +442,14 @@ class BotWorkerRuntime:
             run_id: failures
             for run_id, failures in self._retry_failures_by_run.items()
             if run_id in active_run_ids
+        }
+        self._provider_retry_failures_by_user = {
+            user_id: failures for user_id, failures in self._provider_retry_failures_by_user.items()
+            if user_id in active_users
+        }
+        self._provider_retry_not_before_by_user = {
+            user_id: retry_at for user_id, retry_at in self._provider_retry_not_before_by_user.items()
+            if user_id in active_users
         }
         self._sync_account_streams(run_ids)
 
@@ -415,6 +482,8 @@ class BotWorkerRuntime:
         probe_due = monotonic() - self._last_provider_probe >= self.settings.provider_probe_seconds
         probed_users: set[str] = set()
         for run_id in run_ids:
+            if self._shutdown_requested.is_set():
+                break
             if monotonic() < self._retry_not_before_by_run.get(run_id, 0.0):
                 continue
             try:
@@ -429,7 +498,8 @@ class BotWorkerRuntime:
                 if result["evaluated"]:
                     evaluated_runs += 1
                 if result["provider_ok"]:
-                    provider_status = "ok"
+                    if not errors:
+                        provider_status = "ok"
                     provider_success_at = now
                     provider_check_at = now
                 self._retry_not_before_by_run.pop(run_id, None)
@@ -463,6 +533,11 @@ class BotWorkerRuntime:
 
         if active_runs and provider_status == "idle":
             provider_status = "unknown"
+        if provider_status == "ok" and (
+            self._retry_failures_by_run or self._provider_retry_failures_by_user
+            or (unresolved and self._reconcile_retry_failures)
+        ):
+            provider_status = "error"
         return {
             "errors": errors,
             "last_error_code": last_error_code,
@@ -606,6 +681,10 @@ class BotWorkerRuntime:
                         lease_name=_LEASE_NAME,
                         owner_id=self.owner_id,
                         lease_ttl_seconds=self.settings.lease_ttl_seconds,
+                        mutation_allowed=lambda: (
+                            not self._shutdown_requested.is_set()
+                            and self.snapshot().owns_lease
+                        ),
                     ),
                 )
                 lease_lost = any(
@@ -1063,7 +1142,7 @@ def inspect_bot_runtime(
         "live_gate": _background_live_execution_enabled(),
         "account_classification_fresh": awaiting_classification == 0,
         "accounts_simulated": ineligible_live_accounts == 0,
-        "provider_healthy": provider_status not in {"error", "throttled"},
+        "provider_healthy": provider_status == "ok" if active_work else provider_status not in {"error", "throttled"},
         "submissions_reconciled": unresolved == 0,
         # This is an account admission latch, not worker-process health.  The
         # UI must not arm while false, but /ready should remain healthy so an
@@ -1094,6 +1173,7 @@ def inspect_bot_runtime(
         required_checks["provider_healthy"] = provider_status == "ok"
     return BotRuntimeReadiness(
         ready=all(required_checks.values()),
+        failed_checks=tuple(sorted(key for key, passed in required_checks.items() if not passed)),
         checks=checks,
         counts={
             "enabled_configs": len(enabled_configs),
@@ -1352,8 +1432,15 @@ def _retry_delay_seconds(
 ) -> float:
     status_code = getattr(exc, "status_code", None)
     base = 30.0 if status_code == 429 else 5.0
-    exponential = min(base * (2 ** max(failures - 1, 0)), maximum)
-    return min(exponential + _deterministic_jitter_seconds(key, min(base, 10.0)), maximum)
+    # Bound the exponent before computing it: days of outages otherwise grow
+    # a giant integer and eventually overflow conversion to float.
+    exponent = min(max(failures - 1, 0), 32)
+    exponential = min(base * (2 ** exponent), maximum)
+    delay = min(exponential + _deterministic_jitter_seconds(key, min(base, 10.0)), maximum)
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    if isinstance(retry_after, (int, float)) and math.isfinite(retry_after):
+        delay = max(delay, float(retry_after))
+    return delay
 
 
 def _is_retryable_provider_failure(exc: BaseException) -> bool:
@@ -1428,7 +1515,7 @@ def _float_env(name: str, default: float, *, minimum: float) -> float:
         value = default if raw is None else float(raw.strip())
     except (TypeError, ValueError) as exc:
         raise RuntimeError(f"{name} must be a number") from exc
-    if value < minimum:
+    if not math.isfinite(value) or value < minimum:
         raise RuntimeError(f"{name} must be at least {minimum:g}")
     return value
 

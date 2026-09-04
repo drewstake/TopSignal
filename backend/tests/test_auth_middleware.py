@@ -149,6 +149,36 @@ def test_production_runtime_rejects_disabled_auth_even_when_local(monkeypatch):
         _validate_runtime_security_configuration()
 
 
+@pytest.mark.parametrize("name,value,reason", [
+    ("ALLOW_QUERY_BEARER_TOKENS", "true", "ALLOW_QUERY_BEARER_TOKENS"),
+    ("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "typo", "ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS"),
+    ("ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY", "true", "ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY"),
+    ("DATABASE_URL", "sqlite://", "DATABASE_URL"),
+    ("CREDENTIALS_ENCRYPTION_KEY", "invalid-secret", "CREDENTIALS_ENCRYPTION_KEY"),
+    ("SUPABASE_URL", "http://remote.invalid", "SUPABASE_URL"),
+    ("SUPABASE_JWT_AUDIENCE", "", "SUPABASE_JWT_AUDIENCE"),
+    ("TOPSIGNAL_DB_SCHEMA_INIT", "full", "TOPSIGNAL_DB_SCHEMA_INIT"),
+])
+def test_production_rejects_unsafe_configuration_before_network(monkeypatch, name, value, reason):
+    import base64
+
+    configured = {
+        "TOPSIGNAL_ENV": "production", "AUTH_REQUIRED": "true",
+        "DATABASE_URL": "postgresql+psycopg://test:test@localhost/test",
+        "CREDENTIALS_ENCRYPTION_KEY": base64.urlsafe_b64encode(b"0" * 32).decode(),
+        "SUPABASE_URL": "https://example.invalid", "SUPABASE_JWT_AUDIENCE": "authenticated",
+        "TOPSIGNAL_DB_SCHEMA_INIT": "skip", "ALLOW_QUERY_BEARER_TOKENS": "false",
+        "ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS": "false", "ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY": "false",
+    }
+    for key, item in configured.items():
+        monkeypatch.setenv(key, item)
+    _validate_runtime_security_configuration()
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match=reason) as raised:
+        _validate_runtime_security_configuration()
+    assert "invalid-secret" not in str(raised.value)
+
+
 def test_cloud_runtime_rejects_shared_provider_credentials(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")

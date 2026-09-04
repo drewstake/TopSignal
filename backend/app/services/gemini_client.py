@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from time import sleep
 from typing import Any, Mapping
 from urllib import error, parse, request
+
+from app.production_logging import redact
+from .credentialed_http import (
+    CredentialedHttpError,
+    open_credentialed_request,
+    read_bounded,
+    validate_credentialed_url,
+    validate_timeout,
+)
 
 
 DEFAULT_GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -37,9 +47,17 @@ class GeminiClient:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
-        self.retry_attempts = max(1, retry_attempts)
-        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        try:
+            validate_credentialed_url(self.base_url)
+            self.timeout_seconds = validate_timeout(timeout_seconds)
+            if isinstance(retry_attempts, bool) or not isinstance(retry_attempts, int) or not 1 <= retry_attempts <= 5:
+                raise ValueError("retry attempts")
+            if not math.isfinite(retry_backoff_seconds) or not 0 <= retry_backoff_seconds <= 30:
+                raise ValueError("retry backoff")
+        except (CredentialedHttpError, TypeError, ValueError):
+            raise GeminiClientError("Invalid Gemini transport configuration: require HTTPS, finite timeout <=120s, 1-5 attempts, and backoff <=30s.") from None
+        self.retry_attempts = retry_attempts
+        self.retry_backoff_seconds = retry_backoff_seconds
 
     @classmethod
     def from_env(cls) -> "GeminiClient":
@@ -117,21 +135,23 @@ class GeminiClient:
         raw = ""
         for attempt_index in range(self.retry_attempts):
             try:
-                with request.urlopen(req, timeout=self.timeout_seconds) as response:
-                    raw = response.read().decode("utf-8")
+                with open_credentialed_request(req, timeout=self.timeout_seconds) as response:
+                    raw = read_bounded(response, max_bytes=4 * 1024 * 1024, timeout=self.timeout_seconds).decode("utf-8")
                 break
-            except TimeoutError as exc:
-                raise GeminiClientError("Gemini request timed out.", status_code=504) from exc
+            except TimeoutError:
+                raise GeminiClientError("Gemini request timed out.", status_code=504) from None
             except error.HTTPError as exc:
-                message = _read_http_error(exc)
+                message = _read_http_error(exc, api_key=self.api_key)
                 if _should_retry_http_error(exc.code) and attempt_index < self.retry_attempts - 1:
                     _sleep_before_retry(attempt_index, self.retry_backoff_seconds)
                     continue
-                raise GeminiClientError(message, status_code=exc.code) from exc
+                raise GeminiClientError(message, status_code=exc.code) from None
             except error.URLError as exc:
                 if isinstance(exc.reason, TimeoutError):
-                    raise GeminiClientError("Gemini request timed out.", status_code=504) from exc
-                raise GeminiClientError(f"Gemini request failed: {exc.reason}", status_code=502) from exc
+                    raise GeminiClientError("Gemini request timed out.", status_code=504) from None
+                raise GeminiClientError("Gemini request failed: transport unavailable.", status_code=502) from None
+            except (CredentialedHttpError, UnicodeDecodeError, OSError):
+                raise GeminiClientError("Gemini request failed: invalid or unavailable transport response.", status_code=502) from None
 
         try:
             parsed = json.loads(raw)
@@ -157,8 +177,13 @@ def _extract_text(data: Mapping[str, Any]) -> str:
     return "".join(chunks).strip()
 
 
-def _read_http_error(exc: error.HTTPError) -> str:
-    raw = exc.read().decode("utf-8", errors="replace")
+def _read_http_error(exc: error.HTTPError, *, api_key: str = "") -> str:
+    try:
+        raw = read_bounded(exc, max_bytes=16384, timeout=5).decode("utf-8", errors="replace")
+    except (CredentialedHttpError, OSError):
+        return f"Gemini request failed with HTTP {exc.code}."
+    finally:
+        exc.close()
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
@@ -170,7 +195,9 @@ def _read_http_error(exc: error.HTTPError) -> str:
         if isinstance(error_payload, Mapping):
             message = error_payload.get("message")
     if isinstance(message, str) and message.strip():
-        return f"Gemini request failed: {message.strip()}"
+        if api_key:
+            message = message.replace(api_key, "[REDACTED]")
+        return f"Gemini request failed: {redact(message.strip())[:500]}"
     return f"Gemini request failed with HTTP {exc.code}."
 
 
@@ -181,7 +208,7 @@ def _should_retry_http_error(status_code: int) -> bool:
 def _sleep_before_retry(attempt_index: int, backoff_seconds: float) -> None:
     if backoff_seconds <= 0:
         return
-    sleep(backoff_seconds * (2**attempt_index))
+    sleep(min(30, backoff_seconds * (2**attempt_index)))
 
 
 def _first_env(*names: str) -> str | None:

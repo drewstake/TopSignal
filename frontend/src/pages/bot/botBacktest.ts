@@ -41,6 +41,18 @@ export interface BotBacktestProgressCopy {
   percent: number | null;
 }
 
+export function describeBacktestError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Backtest failed.";
+  const missingHistory = /^databento_history_missing:(MNQ|MES|NQ|ES):/.exec(message);
+  if (missingHistory) {
+    return `${missingHistory[1]} replay history is not ready. Import and process both the Databento OHLCV-1m and matching Definition files. OHLCV candles alone are not enough: Definition data is needed to verify contract expirations and rollover. The signal chart uses separate ProjectX candles.`;
+  }
+  if (error instanceof TypeError && message === "Failed to fetch") {
+    return "Could not connect to the backtest server. Check that the backend is running, then retry.";
+  }
+  return message;
+}
+
 export function describeBacktestProgress(
   progress: BotBacktestProgress | null,
 ): BotBacktestProgressCopy {

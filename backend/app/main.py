@@ -24,6 +24,9 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session
+from sqlalchemy.engine import make_url
+from cryptography.fernet import Fernet
+from urllib.parse import urlsplit
 
 from .auth import (
     AuthError,
@@ -36,8 +39,10 @@ from .auth import (
     get_authenticated_user_or_default,
     reset_authenticated_user,
 )
+from .database_security import validate_production_database_configuration
 from .db import (
     SessionLocal,
+    engine,
     get_db,
     guard_against_local_database_url,
     init_db,
@@ -47,6 +52,7 @@ from .db import (
 )
 from .bot_worker import (
     BotWorkerRuntime,
+    BotWorkerSettings,
     continuous_start_availability,
     inspect_bot_runtime,
 )
@@ -134,6 +140,7 @@ from .projectx_schemas import (
 )
 from .schemas import TradeOut
 from .services.metrics import (
+    IncompleteTradePnlError,
     get_behavior_metrics,
     get_pnl_by_day,
     get_pnl_by_hour,
@@ -401,6 +408,8 @@ async def _trade_import_preview_cleanup_loop() -> None:
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
     global _bot_worker_runtime
+    if _bot_worker_runtime is not None:
+        raise RuntimeError("previous_bot_worker_shutdown_incomplete")
     _validate_runtime_security_configuration()
     _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
     _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
@@ -421,19 +430,39 @@ async def app_lifespan(_: FastAPI):
         await _bot_worker_runtime.start()
         yield
     finally:
-        if _bot_worker_runtime is not None:
-            await _bot_worker_runtime.stop()
-            _bot_worker_runtime = None
-        cleanup_task.cancel()
         try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
-        await _order_book_registry.close()
-        _stop_streaming_runtime()
+            if _bot_worker_runtime is not None:
+                if await _bot_worker_runtime.stop() is False:
+                    logger.critical("bot_worker_shutdown_incomplete")
+                else:
+                    _bot_worker_runtime = None
+        finally:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                await _order_book_registry.close()
+            finally:
+                _stop_streaming_runtime()
+                if _bot_worker_runtime is None:
+                    engine.dispose()
 
 
 app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
+
+
+@app.exception_handler(IncompleteTradePnlError)
+async def incomplete_trade_pnl_handler(_request: Request, _exc: IncompleteTradePnlError):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": {
+            "code": "metrics_pnl_incomplete",
+            "message": "Closed trades have missing or invalid authoritative P&L. Reconcile P&L before using metrics.",
+        }},
+        headers={"Cache-Control": "no-store"},
+    )
 
 app.add_middleware(
     RequestBodyLimitMiddleware,
@@ -609,11 +638,18 @@ def worker_health(require_enabled: bool = False):
     return payload
 
 
+class _ReadinessFailure(RuntimeError):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 @app.get("/ready")
 def readiness(db: Session = Depends(get_db)):
+    failed_checks: list[str] = []
     try:
         db.execute(text("select 1"))
-        schema = inspect(db.get_bind())
+        schema = inspect(db.connection())
         table_names = set(schema.get_table_names())
         required_tables = {
             "account_emergency_actions",
@@ -628,17 +664,17 @@ def readiness(db: Session = Depends(get_db)):
             "trade_import_previews",
         }
         if not required_tables.issubset(table_names):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         attempt_column_rows = schema.get_columns("bot_order_attempts")
         attempt_columns = {column["name"] for column in attempt_column_rows}
         if not {"execution_mode", "correlation_id", "idempotency_key"}.issubset(attempt_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         bot_config_column = next(
             (column for column in attempt_column_rows if column["name"] == "bot_config_id"),
             None,
         )
         if bot_config_column is None or not bool(bot_config_column.get("nullable")):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         account_columns = {column["name"] for column in schema.get_columns("accounts")}
         if not {
             "balance",
@@ -646,7 +682,7 @@ def readiness(db: Session = Depends(get_db)):
             "provider_simulated",
             "provider_classification_observed_at",
         }.issubset(account_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         emergency_action_columns = {
             column["name"]
             for column in schema.get_columns("account_emergency_actions")
@@ -664,7 +700,7 @@ def readiness(db: Session = Depends(get_db)):
             "result_payload",
             "completed_at",
         }.issubset(emergency_action_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         emergency_action_checks = " ".join(
             str(check.get("sqltext") or "").lower()
             for check in schema.get_check_constraints("account_emergency_actions")
@@ -678,7 +714,7 @@ def readiness(db: Session = Depends(get_db)):
             or "lease_expires_at is not null" not in emergency_action_checks
             or "attempt_count >= 1" not in emergency_action_checks
         ):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         emergency_action_indexes = schema.get_indexes("account_emergency_actions")
         pending_action_index = next(
             (
@@ -689,14 +725,14 @@ def readiness(db: Session = Depends(get_db)):
             None,
         )
         if pending_action_index is None or not bool(pending_action_index.get("unique")):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         expense_suppression_columns = {
             column["name"] for column in schema.get_columns("expense_suppressions")
         }
         if not {"user_id", "source", "account_id", "created_at"}.issubset(
             expense_suppression_columns
         ):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         trade_import_batch_columns = {
             column["name"]
             for column in schema.get_columns("trade_import_batches")
@@ -713,7 +749,7 @@ def readiness(db: Session = Depends(get_db)):
             "duplicate_rows",
             "imported_at",
         }.issubset(trade_import_batch_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         trade_event_columns = {
             column["name"]
             for column in schema.get_columns("projectx_trade_events")
@@ -728,7 +764,7 @@ def readiness(db: Session = Depends(get_db)):
             "account_row_id",
             "account_external_id",
         }.issubset(trade_event_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         trade_import_preview_columns = {
             column["name"]
             for column in schema.get_columns("trade_import_previews")
@@ -746,7 +782,7 @@ def readiness(db: Session = Depends(get_db)):
             "retention_until",
             "import_batch_id",
         }.issubset(trade_import_preview_columns):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         trade_event_foreign_keys = schema.get_foreign_keys(
             "projectx_trade_events"
         )
@@ -760,16 +796,16 @@ def readiness(db: Session = Depends(get_db)):
             None,
         )
         if import_batch_fk is None:
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         trade_event_checks = " ".join(
             str(check.get("sqltext") or "").lower()
             for check in schema.get_check_constraints("projectx_trade_events")
         )
         if "10000" not in trade_event_checks or "import_batch_id is null" not in trade_event_checks:
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         attempt_checks = schema.get_check_constraints("bot_order_attempts")
         if not any("submission_unknown" in str(check.get("sqltext")) for check in attempt_checks):
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         attempt_foreign_keys = schema.get_foreign_keys("bot_order_attempts")
         config_fk = next(
             (
@@ -781,13 +817,13 @@ def readiness(db: Session = Depends(get_db)):
         )
         on_delete = str((config_fk or {}).get("options", {}).get("ondelete") or "").upper()
         if config_fk is None or on_delete != "SET NULL":
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         config_checks = " ".join(
             str(check.get("sqltext") or "").lower()
             for check in schema.get_check_constraints("bot_configs")
         )
         if "10000" not in config_checks or "trunc" not in config_checks:
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         if "topsignal_schema_migrations" in table_names:
             migration_applied = db.execute(
                 text(
@@ -797,7 +833,7 @@ def readiness(db: Session = Depends(get_db)):
                 {"version": _REQUIRED_SCHEMA_MIGRATION},
             ).scalar_one_or_none()
             if migration_applied is None:
-                raise RuntimeError("schema_outdated")
+                raise _ReadinessFailure("schema_outdated")
         elif "topsignal_schema_baselines" in table_names:
             baseline_applied = db.execute(
                 text(
@@ -807,16 +843,29 @@ def readiness(db: Session = Depends(get_db)):
                 {"version": _REQUIRED_SCHEMA_BASELINE},
             ).scalar_one_or_none()
             if baseline_applied is None:
-                raise RuntimeError("schema_outdated")
+                raise _ReadinessFailure("schema_outdated")
         else:
-            raise RuntimeError("schema_outdated")
+            raise _ReadinessFailure("schema_outdated")
         if _bot_worker_runtime is not None:
             runtime_readiness = inspect_bot_runtime(db, runtime=_bot_worker_runtime)
+            failed_checks = list(runtime_readiness.failed_checks)
             if not runtime_readiness.ready:
-                raise RuntimeError("bot_runtime_not_ready")
-    except Exception:
-        db.rollback()
-        return JSONResponse(status_code=503, content={"status": "not_ready"})
+                raise _ReadinessFailure("bot_runtime_not_ready")
+        elif BotWorkerSettings.from_env().enabled:
+            raise _ReadinessFailure("worker_not_started")
+    except Exception as exc:
+        reason = exc.reason if isinstance(exc, _ReadinessFailure) else "database_unavailable"
+        try:
+            db.rollback()
+        except Exception:
+            # A lost connection can also fail rollback. Preserve the original
+            # safe 503 reason and never expose SQL, parameters, or credentials.
+            pass
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": reason, "failed_checks": failed_checks},
+            headers={"Retry-After": "5", "Cache-Control": "no-store"},
+        )
     return {"status": "ready"}
 
 
@@ -4306,6 +4355,42 @@ def _validate_runtime_security_configuration() -> None:
         raise RuntimeError(
             "AUTH_REQUIRED=true is required when TOPSIGNAL_ENV=production."
         )
+    if runtime_environment == "production":
+        for name in (
+            "ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS",
+            "ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY",
+            "ALLOW_QUERY_BEARER_TOKENS",
+        ):
+            if os.getenv(name, "false").strip().lower() not in {"false", "0", "no", "off"}:
+                raise RuntimeError(f"{name} must be explicitly disabled in production")
+        try:
+            database_url = make_url(os.environ.get("DATABASE_URL", ""))
+            if database_url.drivername != "postgresql+psycopg":
+                raise ValueError("unsupported database")
+        except Exception:
+            raise RuntimeError("Production requires a valid postgresql+psycopg DATABASE_URL") from None
+        validate_production_database_configuration()
+        try:
+            Fernet(os.environ.get("CREDENTIALS_ENCRYPTION_KEY", "").encode("ascii"))
+        except (ValueError, TypeError, UnicodeError):
+            raise RuntimeError("Production requires a valid CREDENTIALS_ENCRYPTION_KEY") from None
+        try:
+            issuer = urlsplit(os.environ.get("SUPABASE_URL", ""))
+            if not issuer.hostname or issuer.username or issuer.password or issuer.query or issuer.fragment:
+                raise ValueError("invalid issuer")
+            if issuer.scheme != "https" and not (
+                issuer.scheme == "http" and issuer.hostname in {"localhost", "127.0.0.1", "::1"}
+            ):
+                raise ValueError("insecure issuer")
+        except ValueError:
+            raise RuntimeError("Production requires an HTTPS SUPABASE_URL or explicit loopback issuer") from None
+        if not os.environ.get("SUPABASE_JWT_AUDIENCE", "").strip():
+            raise RuntimeError("Production requires SUPABASE_JWT_AUDIENCE")
+        if os.getenv("TOPSIGNAL_DB_SCHEMA_INIT", "skip").strip().lower() != "skip":
+            raise RuntimeError("Production requires TOPSIGNAL_DB_SCHEMA_INIT=skip; use the migration runner")
+        # Strictly validate worker timing and gate syntax before any startup
+        # database work, even when the operator has not enabled the worker.
+        BotWorkerSettings.from_env()
     if not auth_required() and not local_only:
         raise RuntimeError(
             "AUTH_REQUIRED=false is allowed only with a local database and local/disabled Supabase runtime."

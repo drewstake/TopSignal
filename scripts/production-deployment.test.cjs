@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const os = require("node:os");
 const test = require("node:test");
 
 const root = path.resolve(__dirname, "..");
@@ -105,6 +106,7 @@ test("PowerShell 5.1 and 7 parsers accept production scripts when available", (t
     "scripts/run-production.ps1",
     "scripts/install-windows-startup-task.ps1",
     "scripts/build-production-frontend.ps1",
+    "scripts/stop-production.ps1",
   ];
   const parserCommand = [
     "$errors = $null",
@@ -156,4 +158,98 @@ test("frontend server rejects a non-loopback bind without opening a listener", (
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}${result.stderr}`, /must be exactly 127\.0\.0\.1/);
   assert.equal(fs.existsSync(path.join(root, "must-not-be-created.log")), false);
+});
+
+function windowsHarness(t, source) {
+  if (process.platform !== "win32") {
+    t.skip("Windows-only isolated PowerShell behavior test");
+    return;
+  }
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "topsignal-ops-test-"));
+  try {
+    const harness = path.join(temp, "harness.ps1");
+    fs.writeFileSync(harness, `$ErrorActionPreference = 'Stop'\n${source}\n`);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", harness], {
+      cwd: root,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15000,
+      env: { ...process.env, TOPSIGNAL_TEST_RUNTIME: temp, TOPSIGNAL_TEST_ROOT: root },
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+  } finally {
+    // This directory is created exclusively for this test and checked before deletion.
+    assert.ok(temp.startsWith(path.join(os.tmpdir(), "topsignal-ops-test-")));
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+const extractFunctions = `
+function Import-SelectedFunctions([string]$ScriptPath, [string[]]$Names) {
+  $syntax = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$null, [ref]$null)
+  $definitions = $syntax.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)
+  foreach ($definition in $definitions) {
+    if ($definition.Name -in $Names) {
+      Invoke-Expression $definition.Extent.Text.Replace("function $($definition.Name)", "function global:$($definition.Name)")
+    }
+  }
+}
+`;
+
+test("private data ACL rejects readable secrets and runtime grants outside trusted identities", (t) => {
+  windowsHarness(t, `${extractFunctions}
+Import-SelectedFunctions (Join-Path $env:TOPSIGNAL_TEST_ROOT 'scripts/install-windows-startup-task.ps1') @('Assert-PrivateDataAcl')
+function Get-AllowRightsBySid { return [PSCustomObject]@{Rights = $script:aclRights} }
+$script:aclRights = @{ 'service' = 1; 'S-1-5-18' = 1; 'S-1-5-32-544' = 1 }
+Assert-PrivateDataAcl 'fixture' 'service'
+foreach ($untrusted in @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'another-local-user')) {
+  $script:aclRights[$untrusted] = 1
+  $rejected = $false
+  try { Assert-PrivateDataAcl 'fixture' 'service' } catch { $rejected = $true }
+  if (-not $rejected) { throw "Allowed untrusted read $untrusted" }
+  $script:aclRights.Remove($untrusted)
+}
+`);
+});
+
+test("stop command durably latches before disabling a mocked task and never routes orders", (t) => {
+  windowsHarness(t, `
+$script:disabled = $false
+function Get-ScheduledTask { param($TaskName) return [PSCustomObject]@{State='Ready'} }
+function Disable-ScheduledTask { param($TaskName)
+  if (-not (Test-Path -LiteralPath (Join-Path $env:TOPSIGNAL_TEST_RUNTIME 'STOP'))) { throw 'Stop latch was not first' }
+  $script:disabled = $true
+}
+function Stop-ScheduledTask { throw 'Must not force-stop a stopped fixture' }
+. (Join-Path $env:TOPSIGNAL_TEST_ROOT 'scripts/stop-production.ps1') -RuntimeRoot $env:TOPSIGNAL_TEST_RUNTIME -TaskName 'fixture-only'
+if (-not $script:disabled) { throw 'Did not disable task' }
+if (-not (Test-Path -LiteralPath (Join-Path $env:TOPSIGNAL_TEST_RUNTIME 'shutdown.request'))) { throw 'No graceful shutdown request' }
+`);
+});
+
+test("startup command timeout kills only the fixture child and rejects startup", (t) => {
+  windowsHarness(t, `${extractFunctions}
+Import-SelectedFunctions (Join-Path $env:TOPSIGNAL_TEST_ROOT 'scripts/run-production.ps1') @('Wait-StartupCommand')
+$StartupCommandTimeoutSeconds = 0
+$script:killedFixture = $false
+function Stop-ProcessTree { param($Process, $Description) $Process.Kill(); $Process.WaitForExit(); $script:killedFixture = $true }
+$child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 10') -WindowStyle Hidden -PassThru
+$rejected = $false
+try { Wait-StartupCommand $child 'fixture sleep' } catch { $rejected = $_.Exception.Message -match 'exceeded' }
+if (-not $rejected -or -not $script:killedFixture) { throw 'Hung startup was not bounded' }
+`);
+});
+
+test("supervisor exclusive file lock rejects a second Windows owner", (t) => {
+  windowsHarness(t, `
+$path = Join-Path $env:TOPSIGNAL_TEST_RUNTIME 'supervisor.lock'
+$first = [System.IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None')
+try {
+  $rejected = $false
+  try { $second = [System.IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None'); $second.Dispose() } catch { $rejected = $true }
+  if (-not $rejected) { throw 'Duplicate lock accepted' }
+} finally { $first.Dispose() }
+$replacement = [System.IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None')
+$replacement.Dispose()
+`);
 });

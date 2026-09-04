@@ -125,7 +125,7 @@ export function CopyTradePanel({
             Reset Uncopy Events
           </Button>
           <Badge variant={totals.canCalculate ? "accent" : "warning"}>
-            {loading ? "Syncing" : totals.canCalculate ? "Copy Adjusted" : "Needs Leader"}
+            {loading ? "Loading" : totals.canCalculate ? "Copy Adjusted" : "Needs Leader"}
           </Badge>
         </div>
       </CardHeader>
@@ -305,7 +305,7 @@ export function CopyTradePanel({
                       <Badge variant={roleBadgeVariant(row.role)}>{row.role}</Badge>
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge variant={statusBadgeVariant(row.status)}>{row.status}</Badge>
+                      <Badge variant={statusBadgeVariant(row.status)}>{row.status === "Syncing" ? "Loading" : row.status}</Badge>
                     </TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.dailyPnl))}>{formatPnl(row.dailyPnl)}</TableCell>
                     <TableCell className={cn("text-right font-mono", contributionClass(row.netPnl))}>{formatPnl(row.netPnl)}</TableCell>

@@ -48,12 +48,66 @@ def test_database_dsn_rejects_supabase_transaction_pooler(monkeypatch):
         migrate_db._database_dsn()
 
 
+def test_production_migration_tls_rejection_precedes_any_connection(monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:fixture@localhost/topsignal")
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", "postgresql://user:private-password@remote.invalid/topsignal?sslmode=prefer")
+    for name in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(migrate_db.psycopg, "connect", lambda *_a, **_k: pytest.fail("insecure migration connected"))
+    with pytest.raises(RuntimeError, match="MIGRATION_DATABASE_URL.*verify-full") as caught:
+        migrate_db.migration_status(check_only=True)
+    assert "private-password" not in str(caught.value)
+
+
+def test_production_migration_connect_enforces_verified_tls_options(monkeypatch, tmp_path):
+    from urllib.parse import quote
+    ca = tmp_path / "provider-ca.pem"
+    ca.write_bytes(b"fixture CA; connection is mocked")
+    url = "postgresql://user:fixture@remote.invalid/topsignal?sslmode=verify-full&sslrootcert=" + quote(str(ca), safe="")
+    monkeypatch.setenv("TOPSIGNAL_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:fixture@localhost/topsignal")
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", url)
+    for name in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"):
+        monkeypatch.delenv(name, raising=False)
+    class CapturedConnection(Exception):
+        pass
+    def capture(dsn, **kwargs):
+        assert dsn == url
+        assert kwargs["sslmode"] == "verify-full"
+        assert kwargs["sslrootcert"] == str(ca)
+        assert kwargs["gssencmode"] == "disable"
+        raise CapturedConnection
+    monkeypatch.setattr(migrate_db.psycopg, "connect", capture)
+    with pytest.raises(CapturedConnection):
+        migrate_db.migration_status(check_only=True)
+
+
 def test_migrations_are_discovered_in_filename_order():
     files = migrate_db._migration_files()
 
     assert files
     assert [path.name for path in files] == sorted(path.name for path in files)
     assert all(path.suffix == ".sql" for path in files)
+
+
+@pytest.mark.parametrize("driver_error", [False, True])
+def test_cli_migration_errors_do_not_log_database_credentials(monkeypatch, capsys, driver_error):
+    import psycopg
+
+    monkeypatch.setattr("sys.argv", ["migrate_db.py", "--check"])
+
+    def fail(**_kwargs):
+        message = "postgresql://operator:private-password@localhost/db password=private-password"
+        if driver_error:
+            raise psycopg.OperationalError(message)
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(migrate_db, "migration_status", fail)
+    assert migrate_db.main() == 2
+    output = capsys.readouterr().err
+    assert "Migration failed:" in output
+    assert "private-password" not in output
 
 
 def test_fresh_schema_contains_current_bot_safety_contract():

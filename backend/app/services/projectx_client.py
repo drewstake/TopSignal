@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+from http.client import HTTPException
 import json
 import math
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Any, Iterator
 from urllib import error, parse, request
@@ -15,7 +17,7 @@ from urllib import error, parse, request
 
 @dataclass
 class _TokenCache:
-    token: str
+    token: str = field(repr=False)
     expires_at: datetime
 
 
@@ -27,6 +29,8 @@ _PROJECTX_ORDER_SIDES = {0, 1}
 _PROJECTX_POSITION_LONG = 1
 _PROJECTX_POSITION_SHORT = 2
 _MAX_PROJECTX_ORDER_SIZE = 10_000
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+_MAX_ERROR_BYTES = 64 * 1024
 _PROJECTX_UNIT_SECONDS = {
     1: 1,
     2: 60,
@@ -55,11 +59,45 @@ class ProjectXClientError(RuntimeError):
         status_code: int | None = None,
         submission_outcome_unknown: bool = False,
         reason_code: str | None = None,
+        retry_after_seconds: float | None = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.submission_outcome_unknown = bool(submission_outcome_unknown)
         self.reason_code = reason_code
+        self.retry_after_seconds = retry_after_seconds
+
+
+class _RejectRedirectHandler(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Credentials and mutations must never be forwarded to a new endpoint.
+        return None
+
+
+def _open_projectx_request(req, *, timeout):
+    return request.build_opener(_RejectRedirectHandler()).open(req, timeout=timeout)
+
+
+def validate_projectx_url(value: str, *, websocket: bool = False) -> str:
+    normalized = str(value).strip()
+    try:
+        parsed = parse.urlsplit(normalized)
+        valid = (
+            parsed.scheme in ({"https", "wss"} if websocket else {"https"})
+            and bool(parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment
+            and not any(character.isspace() or ord(character) < 32 for character in normalized)
+        )
+        _ = parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ProjectXClientError(
+            "ProjectX endpoint must use TLS without embedded credentials, query, or fragment.",
+            reason_code=PROJECTX_ERROR_CONFIGURATION,
+        )
+    return normalized
 
 
 class ProjectXClient:
@@ -73,10 +111,12 @@ class ProjectXClient:
         api_key: str,
         timeout_seconds: int = 20,
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = validate_projectx_url(base_url).rstrip("/")
         self.username = username
         self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+        if isinstance(timeout_seconds, bool) or not _is_finite_number(timeout_seconds) or not 0 < float(timeout_seconds) <= 60:
+            raise ProjectXClientError("ProjectX timeout must be finite and between 0 and 60 seconds.", reason_code=PROJECTX_ERROR_CONFIGURATION)
+        self.timeout_seconds = float(timeout_seconds)
 
     @classmethod
     def from_env(cls) -> "ProjectXClient":
@@ -132,7 +172,7 @@ class ProjectXClient:
                 raise ProjectXClientError("ProjectX Account/search returned an account without an ID.")
 
             account_id = _safe_int(account_id_raw)
-            if account_id is None:
+            if account_id is None or account_id <= 0:
                 raise ProjectXClientError("ProjectX Account/search returned an invalid account ID.")
 
             can_trade = _safe_bool(_first_value(row, ["canTrade", "can_trade"]))
@@ -233,9 +273,13 @@ class ProjectXClient:
             open_price, high_price, low_price, close_price, volume = _validated_market_bar_values(
                 row
             )
-            provider_marks_partial = _is_truthy(
-                _first_value(row, list(_PARTIAL_BAR_KEYS))
-            )
+            partial_marker = _first_value(row, list(_PARTIAL_BAR_KEYS))
+            provider_marks_partial = _safe_bool(partial_marker)
+            if any(key in row for key in _PARTIAL_BAR_KEYS) and provider_marks_partial is None:
+                raise ProjectXClientError(
+                    "ProjectX returned an invalid market bar partial status.",
+                    reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+                )
             nominal_close = _projectx_bar_nominal_close(
                 timestamp,
                 unit=int(unit),
@@ -550,6 +594,12 @@ class ProjectXClient:
                     raise ProjectXClientError("ProjectX Trade/search returned incomplete daily P&L data.")
                 if not any(key in row for key in voided_keys):
                     raise ProjectXClientError("ProjectX Trade/search omitted the execution void status.")
+                if _safe_bool(_first_value(row, ["voided", "isVoided", "is_voided"])) is None:
+                    raise ProjectXClientError("ProjectX Trade/search returned an invalid execution void status.")
+                if account_value != int(account_id):
+                    raise ProjectXClientError("ProjectX Trade/search returned a trade for another account.")
+                if not any(key in row for key in ("profitAndLoss", "pnl", "realizedPnl")):
+                    raise ProjectXClientError("ProjectX Trade/search omitted the execution P&L field.")
                 pnl_value = _first_value(row, ["profitAndLoss", "pnl", "realizedPnl"])
                 if pnl_value is not None and not _is_finite_number(pnl_value):
                     raise ProjectXClientError("ProjectX Trade/search returned invalid daily P&L data.")
@@ -592,7 +642,11 @@ class ProjectXClient:
                     "order_id": order_id_text,
                     "source_trade_id": source_trade_id_text,
                     "status": _string_or_none(_first_value(row, ["status", "tradeStatus", "state"])),
-                    "voided": _is_truthy(_first_value(row, ["voided", "isVoided", "is_voided"])),
+                    "voided": (
+                        _safe_bool(_first_value(row, ["voided", "isVoided", "is_voided"]))
+                        if require_valid_collection
+                        else _is_truthy(_first_value(row, ["voided", "isVoided", "is_voided"]))
+                    ),
                     "raw_payload": row,
                 }
             )
@@ -706,19 +760,34 @@ class ProjectXClient:
         req = request.Request(url=url, data=body, headers=headers, method=method.upper())
 
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
+            with _open_projectx_request(req, timeout=self.timeout_seconds) as response:
+                raw_bytes = response.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw_bytes) > _MAX_RESPONSE_BYTES:
+                    raise ProjectXClientError(
+                        "ProjectX response exceeded the maximum allowed size.", status_code=502,
+                        submission_outcome_unknown=_is_broker_mutation_path(path),
+                        reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+                    )
+                raw = raw_bytes.decode("utf-8")
         except error.HTTPError as exc:
-            raw_error = exc.read().decode("utf-8", errors="replace")
+            try:
+                raw_error = exc.read(_MAX_ERROR_BYTES).decode("utf-8", errors="replace")
+            except (OSError, HTTPException):
+                raw_error = ""
+            finally:
+                exc.close()
             detail = _extract_error_message(raw_error) or str(exc.reason)
             raise ProjectXClientError(
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
                 submission_outcome_unknown=(
                     _is_broker_mutation_path(path)
-                    and (int(exc.code) == 408 or 500 <= int(exc.code) <= 599)
+                    and (300 <= int(exc.code) <= 399 or int(exc.code) == 408 or 500 <= int(exc.code) <= 599)
                 ),
                 reason_code=_http_error_reason_code(path=path, status_code=int(exc.code)),
+                retry_after_seconds=_retry_after_seconds(
+                    exc.headers.get("Retry-After") if exc.headers is not None else None
+                ),
             ) from exc
         except TimeoutError as exc:
             raise ProjectXClientError(
@@ -738,6 +807,13 @@ class ProjectXClient:
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
+                submission_outcome_unknown=_is_broker_mutation_path(path),
+                reason_code=PROJECTX_ERROR_NETWORK,
+            ) from exc
+
+        except (OSError, HTTPException, UnicodeDecodeError) as exc:
+            raise ProjectXClientError(
+                "ProjectX response was interrupted or invalid.", status_code=502,
                 submission_outcome_unknown=_is_broker_mutation_path(path),
                 reason_code=PROJECTX_ERROR_NETWORK,
             ) from exc
@@ -775,6 +851,11 @@ class ProjectXClient:
         cache_key = self._token_cache_key()
         now = datetime.now(timezone.utc)
         with _TOKEN_LOCK:
+            # Credential rotations must not retain expired bearer tokens for
+            # the entire lifetime of an unattended process.
+            for expired_key in tuple(_TOKEN_CACHE_BY_KEY):
+                if _TOKEN_CACHE_BY_KEY[expired_key].expires_at <= now:
+                    _TOKEN_CACHE_BY_KEY.pop(expired_key, None)
             cache_entry = _TOKEN_CACHE_BY_KEY.get(cache_key)
             if cache_entry and (cache_entry.expires_at - _TOKEN_SAFETY_WINDOW) > now:
                 return cache_entry.token
@@ -815,6 +896,19 @@ class ProjectXClient:
             separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(material).hexdigest()
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            seconds = (_as_utc(parsedate_to_datetime(value)) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, seconds) if math.isfinite(seconds) else None
 
 
 def projectx_error_reason_code(exc: ProjectXClientError) -> str:
@@ -935,11 +1029,11 @@ def _normalize_contract_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return default
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -1017,35 +1111,34 @@ def _projectx_bar_nominal_close(
 
 
 def _safe_int(value: Any) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        parsed = int(value)
+        if isinstance(value, float) and value != parsed:
+            return None
+        return parsed
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
 def _validate_projectx_order_type(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ProjectXClientError("Unsupported ProjectX order type.") from exc
+    parsed = _safe_int(value)
     if parsed not in _PROJECTX_ORDER_TYPES:
         raise ProjectXClientError("Unsupported ProjectX order type.")
     return parsed
 
 
 def _validate_projectx_order_side(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ProjectXClientError("Unsupported ProjectX order side.") from exc
+    parsed = _safe_int(value)
     if parsed not in _PROJECTX_ORDER_SIDES:
         raise ProjectXClientError("Unsupported ProjectX order side.")
     return parsed
 
 
 def _validate_projectx_order_size(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ProjectXClientError("ProjectX order size must be a positive whole number.")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -1061,6 +1154,8 @@ def _validate_projectx_order_size(value: Any) -> int:
 
 
 def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -1074,12 +1169,12 @@ def _safe_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return bool(int(value))
+        return bool(value) if value in (0, 1) else None
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
+        if normalized in {"1", "true"}:
             return True
-        if normalized in {"0", "false", "no", "n", "off"}:
+        if normalized in {"0", "false"}:
             return False
     return None
 
@@ -1151,7 +1246,7 @@ def _normalize_side(raw_side: Any) -> str:
         return "UNKNOWN"
 
     if isinstance(raw_side, (int, float)):
-        numeric = int(raw_side)
+        numeric = _safe_int(raw_side)
         if numeric == 0:
             return "BUY"
         if numeric == 1:
