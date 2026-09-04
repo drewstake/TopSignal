@@ -59,9 +59,10 @@ def trading_day_bounds_utc(value: date) -> tuple[datetime, datetime]:
 def futures_session_is_open(value: datetime, *, symbol: str | None = None) -> bool:
     """Return whether a timestamp falls inside the scheduled CME futures session.
 
-    The common Globex week is used for unknown products. Known equity-index
-    roots additionally honor the daily 16:15-16:30 ET halt and modern recurring
-    CME holiday closures, avoiding false candle-gap repairs during closures.
+    The common Globex week is used for unknown products. Every root fails closed
+    for the recurring major CME holiday schedule; known equity-index roots also
+    honor the daily 16:15-16:30 ET halt. Product-specific calendars can narrow
+    this conservative fallback in the future.
     """
 
     local = as_utc(value).astimezone(TRADING_TZ)
@@ -75,9 +76,6 @@ def futures_session_is_open(value: datetime, *, symbol: str | None = None) -> bo
         return False
     if time(hour=17) <= local_time < time(hour=18):
         return False
-    if not _uses_cme_equity_schedule(symbol):
-        return True
-
     trading_date = trading_day_date(value)
     holiday = _cme_equity_holiday_schedule(trading_date)
     if holiday is not None and holiday.full_close:
@@ -86,7 +84,7 @@ def futures_session_is_open(value: datetime, *, symbol: str | None = None) -> bo
         close_time = holiday.early_close if holiday and holiday.early_close else time(hour=17)
         if local_time >= close_time:
             return False
-        if _EQUITY_HALT_START <= local_time < _EQUITY_HALT_END:
+        if _uses_cme_equity_schedule(symbol) and _EQUITY_HALT_START <= local_time < _EQUITY_HALT_END:
             return False
     return True
 
@@ -109,9 +107,13 @@ def _cme_equity_holiday_schedule(value: date) -> FuturesHolidaySchedule | None:
     """Recurring CME equity-index exceptions for the modern schedule regime."""
 
     year = value.year
-    new_year = date(year, 1, 1)
-    observed_new_year = new_year + timedelta(days=1) if new_year.weekday() == 6 else new_year
-    if value == observed_new_year:
+    # Jan 1 can be observed on Dec 31 of the preceding calendar year, so both
+    # nominal years must be checked for a date near the year boundary.
+    observed_new_year_dates = {
+        _nearest_weekday(date(nominal_year, 1, 1))
+        for nominal_year in (year, year + 1)
+    }
+    if value in observed_new_year_dates:
         return FuturesHolidaySchedule("New Year's Day", value, full_close=True)
 
     if value == _nearest_weekday(date(year, 12, 25)):

@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol, Sequence
 
+from .trading_day import trading_day_date
+
 
 class CandleLike(Protocol):
     candle_timestamp: datetime
@@ -165,6 +167,13 @@ def bollinger_bands(
 
 
 def session_vwap_values(candles: Sequence[CandleLike]) -> list[float | None]:
+    """Return VWAP values reset at the CME futures trading-day boundary.
+
+    Trading days run from 18:00 America/New_York through the following
+    afternoon, so a UTC-calendar reset would split one Globex session and move
+    by an hour across daylight-saving transitions.
+    """
+
     values: list[float | None] = []
     current_session: str | None = None
     cumulative_volume = 0.0
@@ -172,7 +181,7 @@ def session_vwap_values(candles: Sequence[CandleLike]) -> list[float | None]:
     current_vwap: float | None = None
 
     for candle in candles:
-        session = _timestamp(candle).date().isoformat()
+        session = trading_day_date(_timestamp(candle)).isoformat()
         if session != current_session:
             current_session = session
             cumulative_volume = 0.0

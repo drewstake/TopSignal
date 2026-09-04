@@ -153,7 +153,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>Backtest</CardTitle>
-            <CardDescription>Deterministic replay of the configured contract&apos;s complete closed-candle history</CardDescription>
+            <CardDescription>Deterministic historical replay plus a chronological holdout diagnostic</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             {demoMode ? <Badge variant="accent">Demo snapshot</Badge> : null}
@@ -222,7 +222,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
             className="w-full xl:w-auto"
             title={demoMode ? "Backtest server jobs are disabled in Demo Mode." : undefined}
           >
-            {running ? "Stop & Run New Backtest" : "Run Full History Backtest"}
+            {running ? "Stop & Run New Backtest" : "Run Stored History Replay"}
           </Button>
         </form>
 
@@ -241,7 +241,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
         ) : result ? (
           <BacktestResults result={result} />
         ) : (
-          <BacktestEmptyState message="Set the execution costs, then replay every fully closed candle available for this contract." />
+          <BacktestEmptyState message="Set the execution costs, then replay the stored closed candles for this contract." />
         )}
       </CardContent>
     </Card>
@@ -312,7 +312,7 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-app-border pt-5">
         <div>
-          <h4 className="text-sm font-semibold text-app-text md:text-base">Results</h4>
+          <h4 className="text-sm font-semibold text-app-text md:text-base">Historical replay (not validation)</h4>
           <p className="mt-1 text-xs text-app-muted">
             {formatContract(result.range.symbol, result.range.contract_id)} · {formatTimeframe(result.range.timeframe_unit, result.range.timeframe_unit_number)} · {integerFormatter.format(result.range.bar_count)} closed bars
           </p>
@@ -340,25 +340,39 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 xl:grid-cols-6">
-        <ResultMetric label="Net P&L" value={formatCurrency(metrics.net_pnl)} tone={pnlTone(metrics.net_pnl)} />
-        <ResultMetric label="Gross P&L" value={formatCurrency(metrics.gross_pnl)} tone={pnlTone(metrics.gross_pnl)} />
-        <ResultMetric label="Trades" value={integerFormatter.format(metrics.trade_count)} />
-        <ResultMetric label="Win rate" value={formatPercent(metrics.win_rate)} />
-        <ResultMetric label="Profit factor" value={formatRatio(metrics.profit_factor)} />
-        <ResultMetric label="Expectancy" value={formatCurrency(metrics.expectancy)} tone={pnlTone(metrics.expectancy)} />
-        <ResultMetric label="Average win" value={formatCurrency(metrics.average_win)} tone="positive" />
-        <ResultMetric label="Average loss" value={formatCurrency(metrics.average_loss)} tone="negative" />
-        <ResultMetric label="Payoff ratio" value={formatRatio(metrics.payoff_ratio)} />
-        <ResultMetric label="Max drawdown" value={formatCurrency(-Math.abs(metrics.max_drawdown_dollars))} tone="negative" />
-        <ResultMetric label="Drawdown %" value={formatPercent(metrics.max_drawdown_percent)} tone="negative" />
-        <ResultMetric label="Exposure" value={formatPercent(metrics.exposure_percent)} />
-        <ResultMetric label="Average MAE" value={formatCurrency(metrics.average_mae)} tone="negative" />
-        <ResultMetric label="Average MFE" value={formatCurrency(metrics.average_mfe)} tone="positive" />
-        <ResultMetric label="Commission" value={formatCurrency(metrics.total_commission)} />
-        <ResultMetric label="Win streak" value={integerFormatter.format(metrics.max_consecutive_wins)} />
-        <ResultMetric label="Loss streak" value={integerFormatter.format(metrics.max_consecutive_losses)} />
-        <ResultMetric label="W / L" value={`${integerFormatter.format(metrics.winning_trades)} / ${integerFormatter.format(metrics.losing_trades)}`} />
+      {result.evaluation_split ? (
+        <ChronologicalHoldout split={result.evaluation_split} />
+      ) : (
+        <div className="rounded-xl border border-app-warning/35 bg-app-warning/10 px-4 py-3 text-sm text-app-text-soft">
+          No isolated chronological holdout is available for this saved result. Treat every metric below as in-sample and descriptive only.
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <div>
+          <h5 className="text-sm font-semibold text-app-text">Full-replay metrics</h5>
+          <p className="mt-0.5 text-xs text-app-muted">Descriptive in-sample results; these are not evidence of future performance.</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 xl:grid-cols-6">
+          <ResultMetric label="Net P&L" value={formatCurrency(metrics.net_pnl)} tone={pnlTone(metrics.net_pnl)} />
+          <ResultMetric label="Gross P&L" value={formatCurrency(metrics.gross_pnl)} tone={pnlTone(metrics.gross_pnl)} />
+          <ResultMetric label="Trades" value={integerFormatter.format(metrics.trade_count)} />
+          <ResultMetric label="Win rate" value={formatPercent(metrics.win_rate)} />
+          <ResultMetric label="Profit factor" value={formatRatio(metrics.profit_factor)} />
+          <ResultMetric label="Expectancy" value={formatCurrency(metrics.expectancy)} tone={pnlTone(metrics.expectancy)} />
+          <ResultMetric label="Average win" value={formatCurrency(metrics.average_win)} tone="positive" />
+          <ResultMetric label="Average loss" value={formatCurrency(metrics.average_loss)} tone="negative" />
+          <ResultMetric label="Payoff ratio" value={formatRatio(metrics.payoff_ratio)} />
+          <ResultMetric label="Max drawdown" value={formatCurrency(-Math.abs(metrics.max_drawdown_dollars))} tone="negative" />
+          <ResultMetric label="Drawdown %" value={formatPercent(metrics.max_drawdown_percent)} tone="negative" />
+          <ResultMetric label="Exposure" value={formatPercent(metrics.exposure_percent)} />
+          <ResultMetric label="Average MAE" value={formatCurrency(metrics.average_mae)} tone="negative" />
+          <ResultMetric label="Average MFE" value={formatCurrency(metrics.average_mfe)} tone="positive" />
+          <ResultMetric label="Commission" value={formatCurrency(metrics.total_commission)} />
+          <ResultMetric label="Win streak" value={integerFormatter.format(metrics.max_consecutive_wins)} />
+          <ResultMetric label="Loss streak" value={integerFormatter.format(metrics.max_consecutive_losses)} />
+          <ResultMetric label="W / L" value={`${integerFormatter.format(metrics.winning_trades)} / ${integerFormatter.format(metrics.losing_trades)}`} />
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.7fr)]">
@@ -379,6 +393,53 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
       ) : null}
 
       <TradeLedger result={result} />
+    </div>
+  );
+}
+
+function ChronologicalHoldout({
+  split,
+}: {
+  split: NonNullable<BotBacktestResult["evaluation_split"]>;
+}) {
+  return (
+    <section className="space-y-3 rounded-xl border border-app-accent/30 bg-app-accent/10 p-4">
+      <div>
+        <h5 className="text-sm font-semibold text-app-text">{split.label}</h5>
+        <p className="mt-1 text-xs leading-5 text-app-muted">
+          The last 20% of bars was replayed with fresh portfolio and risk state. It is a diagnostic only—not proof of future performance.
+        </p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {([
+          ["First 80% (in sample)", split.in_sample],
+          ["Final 20% (holdout)", split.holdout],
+        ] as const).map(([label, window]) => (
+          <div key={label} className="rounded-lg border border-app-border bg-app-bg/35 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-app-muted">{label}</p>
+            <p className="mt-1 text-xs text-app-muted">
+              {integerFormatter.format(window.bar_count)} bars · {formatTimestamp(window.start)} – {formatTimestamp(window.end)}
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <HoldoutMetric label="Net P&L" value={formatCurrency(window.metrics.net_pnl)} />
+              <HoldoutMetric label="Trades" value={integerFormatter.format(window.metrics.trade_count)} />
+              <HoldoutMetric label="Win rate" value={formatPercent(window.metrics.win_rate)} />
+              <HoldoutMetric label="Profit factor" value={formatRatio(window.metrics.profit_factor)} />
+              <HoldoutMetric label="Expectancy" value={formatCurrency(window.metrics.expectancy)} />
+              <HoldoutMetric label="W / L" value={`${window.metrics.winning_trades} / ${window.metrics.losing_trades}`} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HoldoutMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-app-muted">{label}</p>
+      <p className="font-medium text-app-text">{value}</p>
     </div>
   );
 }

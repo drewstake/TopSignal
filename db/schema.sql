@@ -50,6 +50,11 @@ create table if not exists accounts (
   -- Last known provider balance, retained for stale-local reads during outages.
   balance numeric(18,6),
 
+  -- Authoritative provider classification used to keep unattended automation
+  -- on simulated accounts. The observation timestamp is freshness-bounded.
+  provider_simulated boolean,
+  provider_classification_observed_at timestamptz,
+
   -- Derived TopSignal lifecycle state from ProjectX account flags.
   account_state text not null default 'ACTIVE'
     check (account_state in ('ACTIVE','LOCKED_OUT','HIDDEN','MISSING')),
@@ -624,6 +629,85 @@ create index if not exists idx_bot_runs_account_status
 create unique index if not exists uq_bot_runs_one_running_per_config
   on bot_runs (user_id, bot_config_id)
   where status = 'running';
+
+create unique index if not exists uq_bot_runs_one_live_running_per_account
+  on bot_runs (user_id, account_id)
+  where status = 'running' and not dry_run;
+
+
+-- ============================================
+-- TABLE: bot_runtime_leases
+-- Cross-process election for the recurring bot evaluator.
+-- ============================================
+create table if not exists bot_runtime_leases (
+  lease_name text primary key,
+  owner_id text not null,
+  acquired_at timestamptz not null,
+  heartbeat_at timestamptz not null,
+  expires_at timestamptz not null,
+  details jsonb not null default '{}'::jsonb,
+  constraint bot_runtime_leases_expiry_after_heartbeat_check
+    check (expires_at > heartbeat_at)
+);
+
+create index if not exists idx_bot_runtime_leases_expires
+  on bot_runtime_leases (expires_at);
+
+alter table bot_runtime_leases enable row level security;
+
+
+-- ============================================
+-- TABLE: account_emergency_actions
+-- Durable account-level kill-switch and broker-flatten audit trail.
+-- ============================================
+create table if not exists account_emergency_actions (
+  id bigserial primary key,
+  user_id uuid not null default '00000000-0000-0000-0000-000000000000',
+  account_id bigint not null,
+  provider text not null default 'projectx',
+  status text not null default 'pending'
+    check (status in ('pending','confirmed_account_flat','unconfirmed')),
+  confirmed_flat boolean not null default false,
+  reason text not null default 'manual_emergency_flatten',
+  risk_code text,
+  risk_message text,
+  risk_severity text
+    check (risk_severity is null or risk_severity in ('info','warning','critical')),
+  lease_owner_id text,
+  lease_expires_at timestamptz,
+  attempt_count integer not null default 1,
+  request_payload jsonb not null default '{}'::jsonb,
+  result_payload jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  constraint account_emergency_actions_confirmation_consistency_check check (
+    (status = 'confirmed_account_flat' and confirmed_flat)
+    or (status <> 'confirmed_account_flat' and not confirmed_flat)
+  ),
+  constraint account_emergency_actions_completion_consistency_check check (
+    (status = 'pending' and completed_at is null)
+    or (status <> 'pending' and completed_at is not null)
+  ),
+  constraint account_emergency_actions_pending_lease_check check (
+    status <> 'pending'
+    or (lease_owner_id is not null and lease_expires_at is not null)
+  ),
+  constraint account_emergency_actions_attempt_count_check check (
+    attempt_count >= 1
+  )
+);
+
+create index if not exists idx_account_emergency_actions_user_account_created
+  on account_emergency_actions (user_id, account_id, created_at desc);
+
+create unique index if not exists uq_account_emergency_actions_one_pending
+  on account_emergency_actions (user_id, account_id)
+  where status = 'pending';
+
+-- Browser clients must use the authenticated API so ownership validation and
+-- the confirmation contract cannot be bypassed through the Data API.
+alter table account_emergency_actions enable row level security;
 
 
 -- ============================================

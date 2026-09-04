@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from urllib import error
 
@@ -160,6 +160,9 @@ def test_request_once_maps_url_timeout_reason_to_gateway_timeout(monkeypatch):
     ("path", "status_code", "outcome_unknown", "reason_code"),
     [
         ("/api/Order/place", 503, True, PROJECTX_ERROR_NETWORK),
+        ("/api/Order/place", 408, True, PROJECTX_ERROR_NETWORK),
+        ("/api/Order/cancel", 503, True, PROJECTX_ERROR_NETWORK),
+        ("/api/Position/closeContract", 408, True, PROJECTX_ERROR_NETWORK),
         ("/api/Order/place", 400, False, PROJECTX_ERROR_PROVIDER_RESPONSE),
         ("/api/Trade/search", 503, False, PROJECTX_ERROR_NETWORK),
     ],
@@ -386,6 +389,121 @@ def test_retrieve_bars_infers_an_unmarked_intraday_tail_is_partial():
     assert closed[0]["is_partial"] is False
 
 
+def test_retrieve_bars_does_not_trust_false_partial_marker_before_nominal_close():
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            return {
+                "bars": [
+                    {
+                        "t": "2026-04-27T00:00:00Z",
+                        "o": 100,
+                        "h": 102,
+                        "l": 99,
+                        "c": 101,
+                        "v": 10,
+                        "isPartial": False,
+                    }
+                ]
+            }
+
+    client = StubClient()
+    request = {
+        "contract_id": "CON.F.US.MNQ.M26",
+        "live": False,
+        "start": datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc),
+        "end": datetime(2026, 4, 27, 3, 59, tzinfo=timezone.utc),
+        "unit": 3,
+        "unit_number": 4,
+        "limit": 500,
+    }
+
+    assert client.retrieve_bars(**request, include_partial_bar=False) == []
+    included = client.retrieve_bars(**request, include_partial_bar=True)
+    assert len(included) == 1
+    assert included[0]["is_partial"] is True
+
+
+def test_retrieve_bars_does_not_close_a_future_bar_from_a_future_request_end():
+    starts_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            return {
+                "bars": [
+                    {
+                        "t": starts_at.isoformat(),
+                        "o": 100,
+                        "h": 102,
+                        "l": 99,
+                        "c": 101,
+                        "v": 10,
+                        "isPartial": False,
+                    }
+                ]
+            }
+
+    client = StubClient()
+    request = {
+        "contract_id": "CON.F.US.MNQ.M26",
+        "live": False,
+        "start": starts_at,
+        "end": starts_at + timedelta(hours=1),
+        "unit": 2,
+        "unit_number": 5,
+        "limit": 500,
+    }
+
+    assert client.retrieve_bars(**request, include_partial_bar=False) == []
+    included = client.retrieve_bars(**request, include_partial_bar=True)
+    assert included[0]["is_partial"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"c": "bad"}, "non-numeric"),
+        ({"c": float("nan")}, "non-finite"),
+        ({"c": 0}, "non-positive"),
+        ({"h": 100, "c": 101}, "invalid OHLC envelope"),
+        ({"v": -1}, "negative volume"),
+        ({"v": True}, "non-numeric"),
+    ],
+)
+def test_retrieve_bars_rejects_malformed_ohlcv(overrides, message):
+    class StubClient(ProjectXClient):
+        def __init__(self):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            bar = {
+                "t": "2026-04-27T00:00:00Z",
+                "o": 100,
+                "h": 102,
+                "l": 99,
+                "c": 101,
+                "v": 10,
+            }
+            bar.update(overrides)
+            return {"bars": [bar]}
+
+    with pytest.raises(ProjectXClientError, match=message):
+        StubClient().retrieve_bars(
+            contract_id="CON.F.US.MNQ.M26",
+            live=False,
+            start=datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 4, 27, 0, 5, tzinfo=timezone.utc),
+            unit=2,
+            unit_number=5,
+            limit=500,
+        )
+
+
 def test_place_order_uses_projectx_order_place_payload():
     class StubClient(ProjectXClient):
         def __init__(self):
@@ -468,6 +586,65 @@ def test_place_order_uses_projectx_sell_market_payload_with_brackets():
     assert response["order_id"] == "9057"
 
 
+def test_cancel_order_sends_numeric_order_id_and_requires_success_acknowledgement():
+    class StubClient(ProjectXClient):
+        def __init__(self, response):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.response = response
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return self.response
+
+    client = StubClient({"success": True})
+    response = client.cancel_order(account_id=123, order_id="789")
+
+    assert client.calls == [
+        ("POST", "/api/Order/cancel", {"accountId": 123, "orderId": 789}, True)
+    ]
+    assert response["success"] is True
+
+    with pytest.raises(ProjectXClientError, match="positive integer order ID"):
+        client.cancel_order(account_id=123, order_id="opaque-id")
+
+    ambiguous = StubClient({})
+    with pytest.raises(ProjectXClientError) as exc_info:
+        ambiguous.cancel_order(account_id=123, order_id=789)
+    assert exc_info.value.submission_outcome_unknown is True
+
+
+def test_close_position_uses_full_contract_endpoint_and_requires_success_acknowledgement():
+    class StubClient(ProjectXClient):
+        def __init__(self, response):
+            super().__init__(base_url="https://example.test", username="demo", api_key="demo")
+            self.response = response
+            self.calls = []
+
+        def _request(self, method, path, *, payload=None, with_auth):
+            self.calls.append((method, path, payload, with_auth))
+            return self.response
+
+    client = StubClient({"success": True})
+    response = client.close_position(
+        account_id=123,
+        contract_id="CON.F.US.MNQ.M26",
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/api/Position/closeContract",
+            {"accountId": 123, "contractId": "CON.F.US.MNQ.M26"},
+            True,
+        )
+    ]
+    assert response["success"] is True
+
+    ambiguous = StubClient({"success": True, "unexpected": "shape"})
+    assert ambiguous.close_position(account_id=123, contract_id="CON.F.US.MNQ.M26")["success"] is True
+
+
 def test_search_open_positions_returns_authoritative_signed_sizes():
     class StubClient(ProjectXClient):
         def __init__(self):
@@ -486,6 +663,7 @@ def test_search_open_positions_returns_authoritative_signed_sizes():
                         "type": 1,
                         "size": 2,
                         "averagePrice": 20100.25,
+                        "unrealizedPnl": -37.5,
                     },
                     {
                         "id": 12,
@@ -504,6 +682,7 @@ def test_search_open_positions_returns_authoritative_signed_sizes():
 
     assert client.calls == [("POST", "/api/Position/searchOpen", {"accountId": 123}, True)]
     assert [row["signed_size"] for row in rows] == [2.0, -1.0]
+    assert [row["unrealized_pnl"] for row in rows] == [-37.5, None]
 
 
 def test_search_open_positions_rejects_malformed_collection_instead_of_assuming_flat():
@@ -609,10 +788,12 @@ def test_search_open_orders_requires_authoritative_working_order_rows():
             "account_id": 123,
             "contract_id": "CON.F.US.MNQ.M26",
             "status": 1,
+            "order_type": None,
             "side": 0,
             "size": 1.0,
             "signed_size": 1.0,
             "custom_tag": "topsignal-working",
+            "parent_order_id": None,
             "raw_payload": {
                 "id": 789,
                 "accountId": 123,
@@ -675,7 +856,14 @@ def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
             self.calls.append((method, path, payload, with_auth))
             return {
                 "accounts": [
-                    {"id": 5, "name": "ACTIVE_5", "balance": 50000, "canTrade": True, "isVisible": True},
+                    {
+                        "id": 5,
+                        "name": "ACTIVE_5",
+                        "balance": 50000,
+                        "canTrade": True,
+                        "isVisible": True,
+                        "isSimulated": True,
+                    },
                     {"id": 6, "name": "NO_TRADE", "balance": 25000, "canTrade": False, "isVisible": True},
                 ]
             }
@@ -693,6 +881,7 @@ def test_list_accounts_uses_search_endpoint_with_only_active_accounts_true():
             "status": "ACTIVE",
             "can_trade": True,
             "is_visible": True,
+            "simulated": True,
         }
     ]
 
@@ -724,6 +913,7 @@ def test_list_accounts_can_request_all_accounts():
             "status": "ACTIVE",
             "can_trade": True,
             "is_visible": True,
+            "simulated": None,
         },
         {
             "id": 6,
@@ -732,6 +922,7 @@ def test_list_accounts_can_request_all_accounts():
             "status": "LOCKED_OUT",
             "can_trade": False,
             "is_visible": True,
+            "simulated": None,
         },
     ]
 
@@ -761,6 +952,7 @@ def test_list_accounts_marks_hidden_when_is_visible_false():
             "status": "HIDDEN",
             "can_trade": True,
             "is_visible": False,
+            "simulated": None,
         }
     ]
     assert rows_active == []

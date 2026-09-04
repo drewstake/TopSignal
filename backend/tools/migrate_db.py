@@ -42,10 +42,25 @@ ADOPTION_EXECUTED_MIGRATIONS = frozenset(
     {"20260830_harden_supabase_data_api.sql"}
 )
 BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
+    "account_emergency_actions": {
+        "id",
+        "user_id",
+        "account_id",
+        "status",
+        "confirmed_flat",
+        "lease_owner_id",
+        "lease_expires_at",
+        "attempt_count",
+        "request_payload",
+        "result_payload",
+        "completed_at",
+    },
     "accounts": {
         "user_id",
         "external_id",
         "balance",
+        "provider_simulated",
+        "provider_classification_observed_at",
         "account_state",
         "can_trade",
         "trade_data_source",
@@ -96,12 +111,21 @@ BASELINE_REQUIRED_COLUMNS: dict[str, set[str]] = {
     },
     "bot_backtests": {"user_id", "input_fingerprint", "result_snapshot"},
     "bot_runs": {"last_evaluated_at", "last_error"},
+    "bot_runtime_leases": {
+        "lease_name",
+        "owner_id",
+        "heartbeat_at",
+        "expires_at",
+        "details",
+    },
     "bot_decisions": {"correlation_id", "idempotency_key"},
     "bot_order_attempts": {"execution_mode", "correlation_id", "idempotency_key"},
     "topsignal_schema_baselines": {"version", "created_at"},
 }
 BASELINE_REQUIRED_INDEXES = {
+    "uq_account_emergency_actions_one_pending",
     "uq_bot_order_attempts_idempotency_key",
+    "uq_bot_runs_one_live_running_per_account",
     "uq_bot_runs_one_running_per_config",
 }
 

@@ -20,11 +20,13 @@ from sqlalchemy.orm import Session
 
 from ..models import (
     Account,
+    AccountEmergencyAction,
     BotConfig,
     BotDecision,
     BotOrderAttempt,
     BotRiskEvent,
     BotRun,
+    BotRuntimeLease,
     InstrumentMetadata,
     PositionLifecycle,
     ProjectXMarketCandle,
@@ -49,7 +51,7 @@ from .projectx_accounts import (
     TRADE_DATA_SOURCE_PROJECTX,
     get_projectx_account_row,
 )
-from .projectx_client import ProjectXClient, ProjectXClientError
+from .projectx_client import PROJECTX_ERROR_NETWORK, ProjectXClient, ProjectXClientError
 from .projectx_trades import fetch_trade_history_all_pages
 from .bot_strategy_registry import (
     SUPPORTED_STRATEGY_IDENTIFIERS,
@@ -72,12 +74,37 @@ logger = logging.getLogger(__name__)
 _LIVE_SUBMISSION_SETTLEMENT_WINDOW = timedelta(seconds=60)
 _LIVE_PREFLIGHT_TRADE_PAGE_SIZE = 1_000
 _LIVE_PREFLIGHT_TRADE_MAX_PAGES = 200
+_ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
+# ProjectX REST calls are bounded to 20 seconds by default.  Five minutes is
+# deliberately much longer than a single call, while progress renewals between
+# every read/mutation make a genuinely active account flatten non-reclaimable.
+_ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION = timedelta(minutes=5)
 _TRANSIENT_LIVE_RISK_CODES = {
+    "account_emergency_flatten_unresolved",
+    "account_automation_classification_unknown",
+    "account_unrealized_pnl_unavailable",
     "authoritative_target_already_reached",
+    "cooldown_after_loss",
+    "cooldown_after_rejection",
+    "exchange_session_closed",
+    "live_preflight_unavailable",
+    "max_account_gross_position",
+    "max_contracts",
+    "max_open_position",
+    "max_trades_per_day",
+    "missing_market_data",
     "order_reconciliation_settling",
+    "proposed_stop_risk_exceeds_daily_loss_budget",
     "recent_live_submission_settling",
+    "session_loss_limit_reached",
+    "stale_market_data",
+    "outside_session",
+    "verified_flatten_required",
+    "working_orders_require_cancel_for_exit",
     "working_order_direction_conflict",
     "working_order_exposure",
+    "working_order_reconciliation_unavailable",
+    "worker_lease_lost",
 }
 
 _PROJECTX_UNIT_BY_NAME = {
@@ -105,6 +132,12 @@ _ORDER_TYPE_MARKET = 2
 _SIDE_BY_ACTION = {"BUY": 0, "SELL": 1}
 _LIVE_ACCOUNT_PATTERN = re.compile(r"\b(LIVE|LFA|BROKERAGE|FUNDED\s+LIVE)\b", re.IGNORECASE)
 _STRATEGY_SMA_CROSS = "sma_cross"
+_SMA_CROSS_DEFAULTS = {
+    # Direct tick distances let the execution layer construct an atomic broker
+    # bracket without guessing instrument-specific price percentages.
+    "protective_stop_ticks": 8,
+    "take_profit_ticks": 16,
+}
 _STRATEGY_SUPPORT_RESISTANCE = "support_resistance"
 _STRATEGY_LIQUIDITY_SWEEP_RETEST = "liquidity_sweep_retest"
 _STRATEGY_DONCHIAN_BREAKOUT = "donchian_breakout"
@@ -532,9 +565,17 @@ class OpenPositionState:
 class LiveExecutionPreflight:
     account_state: str
     account_can_trade: bool
+    account_automation_eligible: bool | None
     current_position_qty: float
     working_order_signed_sizes: tuple[float, ...]
+    working_orders: tuple[dict[str, Any], ...]
+    account_gross_position_qty: float
+    current_contract_worst_case_gross_qty: float
+    account_unrealized_pnl: float
+    unrealized_pnl_complete: bool
     daily_pnl: float
+    entry_trades_today: int
+    prior_delivery_contract_ids: tuple[str, ...]
     observed_at: datetime
 
 
@@ -549,6 +590,36 @@ class ReconciliationOutcome:
 
         yield self.unresolved_count
         yield self.error
+
+
+@dataclass
+class _BrokerActionAuditAttempt:
+    raw_request: dict[str, Any]
+    status: str = "pending"
+    provider_order_id: str | None = None
+    rejection_reason: str | None = None
+    raw_response: Any = None
+
+
+@dataclass(frozen=True)
+class EmergencyFlattenResult:
+    run: BotRun
+    confirmed_flat: bool
+    status: str
+    risk_block: RiskBlock | None
+    audit: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AccountEmergencyFlattenResult:
+    account_id: int
+    audit_id: int
+    confirmed_flat: bool
+    status: str
+    risk_block: RiskBlock | None
+    audit: dict[str, Any]
+    disabled_bot_config_ids: tuple[int, ...]
+    stopped_bot_run_ids: tuple[int, ...]
 
 
 def _canonical_snapshot_value(value: Any) -> Any:
@@ -615,6 +686,29 @@ class EvaluationResult:
     candles: list[ProjectXMarketCandle]
 
 
+@dataclass(frozen=True)
+class BotWorkerLeaseToken:
+    """Unforgeable-for-the-process lease identity carried by worker evaluations.
+
+    ``owner_id`` contains the runtime's per-process UUID.  The evaluator also
+    receives the configured TTL so it can renew the already-owned lease while
+    holding the lease-row lock across a provider mutation and its audit write.
+    Manual evaluations omit this token and remain independent of the worker.
+    """
+
+    lease_name: str
+    owner_id: str
+    lease_ttl_seconds: float
+
+
+class _ProviderMutationBlocked(RuntimeError):
+    """Carries a fail-closed risk result from the final mutation boundary."""
+
+    def __init__(self, block: RiskBlock):
+        super().__init__(block.code)
+        self.block = block
+
+
 class BotRunEvaluationError(RuntimeError):
     """Carries a durable failed-run audit that the API layer must commit."""
 
@@ -623,6 +717,21 @@ class BotRunEvaluationError(RuntimeError):
         self.cause = cause
         self.run = run
         self.correlation_id = correlation_id
+
+
+class AccountEmergencyLatchActiveError(RuntimeError):
+    """Raised when an account is not yet verified clear after a kill switch."""
+
+    code = "account_emergency_flatten_unresolved"
+
+    def __init__(self, *, action_id: int, status: str):
+        super().__init__(self.code)
+        self.action_id = int(action_id)
+        self.status = str(status)
+
+
+class _AccountEmergencyActionOwnershipLost(RuntimeError):
+    """The pending emergency action was reclaimed after this worker stalled."""
 
 
 def list_bot_configs(
@@ -835,6 +944,77 @@ def _fail_active_bot_run_after_evaluation_error(
     return current_run
 
 
+def _preserve_active_run_after_retryable_pre_routing_error(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    bot_run_id: int,
+    correlation_id: str,
+    error: BaseException,
+) -> bool:
+    """Keep a continuous run armed only for a proven pre-routing provider outage."""
+
+    if isinstance(error, SQLAlchemyError):
+        return False
+    retryable_provider_error = isinstance(error, (TimeoutError, ConnectionError))
+    if isinstance(error, ProjectXClientError):
+        status_code = getattr(error, "status_code", None)
+        retryable_provider_error = bool(
+            getattr(error, "reason_code", None) == PROJECTX_ERROR_NETWORK
+            or status_code in {408, 429}
+            or (status_code is not None and int(status_code) >= 500)
+        )
+    if not retryable_provider_error:
+        return False
+
+    # Discard only the failed evaluation transaction, then inspect durable audit
+    # rows.  A committed pending/ambiguous mutation means the run must remain
+    # terminal; retrying could duplicate exposure.
+    db.rollback()
+    unresolved_attempt = (
+        db.query(BotOrderAttempt.id)
+        .filter(BotOrderAttempt.user_id == user_id)
+        .filter(BotOrderAttempt.bot_config_id == int(bot_config_id))
+        .filter(BotOrderAttempt.bot_run_id == int(bot_run_id))
+        .filter(BotOrderAttempt.correlation_id == correlation_id)
+        .filter(BotOrderAttempt.status.in_(["pending", "submission_unknown"]))
+        .first()
+    )
+    if unresolved_attempt is not None:
+        return False
+
+    current_run = _find_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        bot_run_id=bot_run_id,
+        lock_for_update=True,
+    )
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
+    if current_run is None or str(current_run.status) != "running" or not bool(config.enabled):
+        return False
+
+    state = dict(current_run.raw_state) if isinstance(current_run.raw_state, dict) else {}
+    state["phase"] = "retry_wait"
+    state["last_transient_error"] = {
+        "correlation_id": correlation_id,
+        "error_type": type(error).__name__,
+        "message": sanitize_error(error, max_length=180),
+        "provider_status_code": getattr(error, "status_code", None),
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    current_run.raw_state = state
+    current_run.last_heartbeat_at = datetime.now(timezone.utc)
+    db.flush()
+    return True
+
+
 def start_bot_run(
     db: Session,
     *,
@@ -843,11 +1023,22 @@ def start_bot_run(
     client: ProjectXClient,
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
+    continuous: bool = False,
 ) -> EvaluationResult:
     correlation_id = new_correlation_id()
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
-    account = _require_owned_account(db, user_id=user_id, account_id=int(config.account_id))
+    account = _require_owned_account(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+        lock_for_update=True,
+    )
     _require_projectx_trade_data_source(account)
+    _require_account_emergency_latch_clear(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+    )
     now = datetime.now(timezone.utc)
     config.enabled = True
     config.updated_at = now
@@ -859,6 +1050,20 @@ def start_bot_run(
         reason="superseded_by_manual_start",
         now=now,
     )
+    if not resolved_dry_run:
+        sibling_live_run = (
+            db.query(BotRun.id)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.account_id == int(config.account_id))
+            .filter(BotRun.bot_config_id != int(config.id))
+            .filter(BotRun.status == "running")
+            .filter(BotRun.dry_run.is_(False))
+            .first()
+        )
+        if sibling_live_run is not None:
+            raise ValueError(
+                "account_live_bot_already_running: only one live bot may own an account"
+            )
     # Release the partial active-run uniqueness slot before inserting the replacement.
     db.flush()
     run = BotRun(
@@ -874,6 +1079,13 @@ def start_bot_run(
             "phase": "evaluating",
             "correlation_id": correlation_id,
             "execution_mode": "dry_run" if resolved_dry_run else "live",
+            # A worker may adopt a persisted live run only when the originating
+            # request explicitly armed live routing.  Execution mode alone is
+            # not durable proof of that confirmation.
+            "live_routing_confirmed": bool(
+                confirm_live_order_routing and not resolved_dry_run
+            ),
+            "continuous": bool(continuous),
         },
     )
     try:
@@ -889,6 +1101,20 @@ def start_bot_run(
             .first()
         )
         if active_run is None:
+            conflicting_account_run = (
+                db.query(BotRun.id)
+                .filter(BotRun.user_id == user_id)
+                .filter(BotRun.account_id == int(config.account_id))
+                .filter(BotRun.status == "running")
+                .filter(BotRun.dry_run.is_(False))
+                .first()
+                if not resolved_dry_run
+                else None
+            )
+            if conflicting_account_run is not None:
+                raise ValueError(
+                    "account_live_bot_already_running: only one live bot may own an account"
+                ) from exc
             raise
         raise ValueError("bot_run_start_conflict: another request already started this bot") from exc
     # The enabled config and running audit row must be durable before evaluation
@@ -905,15 +1131,33 @@ def start_bot_run(
             dry_run=resolved_dry_run,
             confirm_live_order_routing=confirm_live_order_routing,
             correlation_id=correlation_id,
+            preserve_run_on_transient_pre_routing_error=bool(continuous),
         )
         return result
     except Exception as exc:
-        current_run = _fail_active_bot_run_after_evaluation_error(
+        preserved = bool(continuous) and _preserve_active_run_after_retryable_pre_routing_error(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
             bot_run_id=int(run.id),
+            correlation_id=correlation_id,
             error=exc,
+        )
+        current_run = (
+            _find_bot_run(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                bot_run_id=int(run.id),
+            )
+            if preserved
+            else _fail_active_bot_run_after_evaluation_error(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                bot_run_id=int(run.id),
+                error=exc,
+            )
         )
         log_bot_event(
             logger,
@@ -945,9 +1189,12 @@ def evaluate_bot_config(
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
     correlation_id: str | None = None,
+    preserve_run_on_transient_pre_routing_error: bool = False,
+    worker_lease_token: BotWorkerLeaseToken | None = None,
 ) -> EvaluationResult:
     bot_config_id = int(config.id)
     bot_run_id = int(run.id) if run is not None else None
+    correlation_id = correlation_id or new_correlation_id()
     try:
         return _evaluate_bot_config_impl(
             db,
@@ -959,9 +1206,22 @@ def evaluate_bot_config(
             dry_run=dry_run,
             confirm_live_order_routing=confirm_live_order_routing,
             correlation_id=correlation_id,
+            worker_lease_token=worker_lease_token,
         )
     except Exception as exc:
-        if bot_run_id is not None and db.is_active:
+        preserved = (
+            bot_run_id is not None
+            and preserve_run_on_transient_pre_routing_error
+            and _preserve_active_run_after_retryable_pre_routing_error(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                bot_run_id=bot_run_id,
+                correlation_id=correlation_id,
+                error=exc,
+            )
+        )
+        if bot_run_id is not None and db.is_active and not preserved:
             _fail_active_bot_run_after_evaluation_error(
                 db,
                 user_id=user_id,
@@ -983,6 +1243,7 @@ def _evaluate_bot_config_impl(
     dry_run: bool | None = None,
     confirm_live_order_routing: bool = False,
     correlation_id: str | None = None,
+    worker_lease_token: BotWorkerLeaseToken | None = None,
 ) -> EvaluationResult:
     del account  # Ownership is always re-read under the caller's user scope.
     correlation_id = correlation_id or new_correlation_id()
@@ -1165,6 +1426,7 @@ def _evaluate_bot_config_impl(
                 confirm_live_order_routing=confirm_live_order_routing,
                 client=client,
                 decision=decision,
+                instrument_spec=instrument_spec,
                 # Only the final account-locked pass may consult authoritative
                 # provider state. An earlier remote pass would be stale before
                 # routing and would double every live preflight request.
@@ -1272,15 +1534,18 @@ def _evaluate_bot_config_impl(
                     bot_config_id=int(config.id),
                     lock_for_update=True,
                 )
-                # Serialize the final authoritative preflight and provider call
-                # across every bot configured on the same brokerage account.
-                # The initial audit commit releases earlier locks, so this
-                # account lock is deliberately reacquired before rechecking.
+                # Manual evaluations retain the account-row serialization used
+                # by the request path.  A worker evaluation must leave the row
+                # unlocked during remote preflight so a streaming disconnect
+                # can invalidate its cached account classification.  The worker
+                # acquires and refreshes this row only at the final mutation
+                # boundary, where its deployment lease supplies serialization.
                 resolved_account = _require_owned_account(
                     db,
                     user_id=user_id,
                     account_id=int(config.account_id),
-                    lock_for_update=True,
+                    lock_for_update=False,
+                    refresh_from_database=True,
                 )
                 order_attempt = _require_order_attempt(
                     db,
@@ -1331,6 +1596,12 @@ def _evaluate_bot_config_impl(
                     ]
                     evaluation_status = "risk_blocked"
                 else:
+                    mutation_fence = _ProviderMutationFence(
+                        db=db,
+                        token=worker_lease_token,
+                        user_id=user_id,
+                        account_id=int(config.account_id),
+                    )
                     final_blocks = evaluate_risk_gates(
                         db,
                         user_id=user_id,
@@ -1349,10 +1620,49 @@ def _evaluate_bot_config_impl(
                         ignore_order_attempt_id=order_attempt_id,
                         order_attempt=order_attempt,
                         decision=decision,
+                        instrument_spec=instrument_spec,
                     )
+                    broker_flatten_completed = False
+                    if (
+                        order_attempt is not None
+                        and len(final_blocks) == 1
+                        and final_blocks[0].code
+                        in {"working_orders_require_cancel_for_exit", "verified_flatten_required"}
+                    ):
+                        try:
+                            flatten_block = _execute_verified_reduce_only_flatten(
+                                client=client,
+                                account_id=int(config.account_id),
+                                contract_id=execution_contract_id,
+                                order_attempt=order_attempt,
+                                before_provider_mutation=(
+                                    mutation_fence.require
+                                    if mutation_fence is not None
+                                    else None
+                                ),
+                            )
+                            if flatten_block is None:
+                                final_blocks = []
+                                broker_flatten_completed = True
+                            else:
+                                final_blocks = [flatten_block]
+                        except _ProviderMutationBlocked as exc:
+                            final_blocks = [exc.block]
+                    if not final_blocks and not broker_flatten_completed:
+                        try:
+                            # No provider call may occur between this check and
+                            # Order/place.  The lease and freshly-read account
+                            # rows remain locked until the caller commits the
+                            # provider outcome and audit writeback.
+                            mutation_fence.require()
+                        except _ProviderMutationBlocked as exc:
+                            final_blocks = [exc.block]
                     if final_blocks:
-                        order_attempt.status = "blocked"
-                        order_attempt.rejection_reason = "; ".join(block.message for block in final_blocks)
+                        if order_attempt.status != "submission_unknown":
+                            order_attempt.status = "blocked"
+                            order_attempt.rejection_reason = "; ".join(
+                                block.message for block in final_blocks
+                            )
                         risk_events = [
                             _create_risk_event(
                                 db,
@@ -1380,10 +1690,10 @@ def _evaluate_bot_config_impl(
                                 reason="final_live_preflight_blocked_order",
                             )
                     else:
-                        # The config and shared account locks are held through
-                        # the provider call, so stop and sibling bots cannot
-                        # overtake an already claimed submission.
-                        _submit_order_attempt(client=client, order_attempt=order_attempt)
+                        # Config, refreshed account, and worker lease locks are
+                        # held through the provider call and audit writeback.
+                        if not broker_flatten_completed:
+                            _submit_order_attempt(client=client, order_attempt=order_attempt)
                         if order_attempt.status == "submitted":
                             evaluation_status = "submitted"
                         else:
@@ -1502,6 +1812,631 @@ def stop_latest_bot_run(
     )
     db.flush()
     return run
+
+
+def emergency_flatten_account(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    client: ProjectXClient | None = None,
+    client_factory: Callable[[], ProjectXClient] | None = None,
+    confirm_broker_flatten: bool,
+    reason: str = "manual_emergency_flatten",
+) -> AccountEmergencyFlattenResult:
+    """Disable all account automation, then request and verify broker flatness.
+
+    This kill switch is keyed only by the authenticated user's owned ProjectX
+    account.  It therefore remains available without a bot configuration.  A
+    pending account audit and every local stop are committed before provider
+    client construction or mutation; a provider outage cannot roll automation
+    back into an enabled state or erase the attempt.
+    """
+
+    if confirm_broker_flatten is not True:
+        raise ValueError("emergency_flatten_requires_explicit_confirmation")
+    if int(account_id) <= 0:
+        raise ValueError("account_id must be a positive integer")
+
+    # Briefly lock the account as the shared final-mutation fence, then commit
+    # the pending intent.  Automatic execution takes this same Account -> latch
+    # order only at its final mutation boundary, so either its provider call
+    # linearizes first or it observes this kill intent; long preflight work does
+    # not delay the emergency latch.
+    account = _require_owned_account(
+        db,
+        user_id=user_id,
+        account_id=int(account_id),
+        lock_for_update=True,
+        refresh_from_database=True,
+    )
+    if account.trade_data_source != TRADE_DATA_SOURCE_PROJECTX:
+        raise ValueError("csv_import_accounts_cannot_be_emergency_flattened")
+
+    intent_at = datetime.now(timezone.utc)
+    correlation_id = new_correlation_id()
+    lease_owner_id = correlation_id
+    account_bot_config_ids: list[int] = []
+    disabled_account_config_ids: list[int] = []
+    stopped_account_run_ids: list[int] = []
+
+    def pending_is_fresh(pending_action: AccountEmergencyAction) -> bool:
+        return bool(
+            pending_action.lease_expires_at is not None
+            and _as_utc(pending_action.lease_expires_at) > datetime.now(timezone.utc)
+        )
+
+    def duplicate_result(
+        pending_action: AccountEmergencyAction,
+    ) -> AccountEmergencyFlattenResult:
+        pending_action_id = int(pending_action.id)
+        pending_lease_expires_at = (
+            _as_utc(pending_action.lease_expires_at).isoformat()
+            if pending_action.lease_expires_at is not None
+            else None
+        )
+        existing_audit = (
+            dict(pending_action.result_payload)
+            if isinstance(pending_action.result_payload, dict)
+            else (
+                dict(pending_action.request_payload)
+                if isinstance(pending_action.request_payload, dict)
+                else {}
+            )
+        )
+        # Release the action-row lock before taking execution locks.  A
+        # duplicate sends no broker request, but it still reasserts every local
+        # stop so a crash between the first request's intent and cleanup cannot
+        # leave the UI/runtime appearing armed during the fresh-lease window.
+        db.commit()
+        duplicate_configs = (
+            db.query(BotConfig)
+            .filter(BotConfig.user_id == user_id)
+            .filter(BotConfig.account_id == int(account_id))
+            .order_by(BotConfig.id.asc())
+            .with_for_update()
+            .all()
+        )
+        duplicate_account = _require_owned_account(
+            db,
+            user_id=user_id,
+            account_id=int(account_id),
+            lock_for_update=True,
+            refresh_from_database=True,
+        )
+        if duplicate_account.trade_data_source != TRADE_DATA_SOURCE_PROJECTX:
+            raise ValueError("csv_import_accounts_cannot_be_emergency_flattened")
+        duplicate_stopped_at = datetime.now(timezone.utc)
+        duplicate_disabled_config_ids: list[int] = []
+        for duplicate_config in duplicate_configs:
+            if bool(duplicate_config.enabled):
+                duplicate_disabled_config_ids.append(int(duplicate_config.id))
+            duplicate_config.enabled = False
+            duplicate_config.updated_at = duplicate_stopped_at
+        duplicate_runs = (
+            db.query(BotRun)
+            .filter(BotRun.user_id == user_id)
+            .filter(BotRun.account_id == int(account_id))
+            .filter(BotRun.status == "running")
+            .order_by(BotRun.id.asc())
+            .with_for_update()
+            .all()
+        )
+        duplicate_stopped_run_ids: list[int] = []
+        for duplicate_run in duplicate_runs:
+            transition_bot_run(
+                duplicate_run,
+                "stopped",
+                reason=f"{reason}_account_wide_duplicate",
+            )
+            duplicate_stopped_run_ids.append(int(duplicate_run.id))
+        db.commit()
+
+        block = RiskBlock(
+            code="account_emergency_flatten_in_progress",
+            message=(
+                "An account-wide emergency flatten is already in progress; "
+                "no duplicate broker mutations were sent."
+            ),
+            severity="critical",
+        )
+        existing_audit.update(
+            {
+                "audit_id": pending_action_id,
+                "confirmed_flat": False,
+                "scope": "entire_account",
+                "status": "unconfirmed",
+                "risk_block": block.__dict__,
+                "duplicate_request_suppressed": True,
+                "lease_expires_at": pending_lease_expires_at,
+                "disabled_account_config_ids": duplicate_disabled_config_ids,
+                "stopped_account_run_ids": duplicate_stopped_run_ids,
+            }
+        )
+        return AccountEmergencyFlattenResult(
+            account_id=int(account_id),
+            audit_id=pending_action_id,
+            confirmed_flat=False,
+            status="unconfirmed",
+            risk_block=block,
+            audit=existing_audit,
+            disabled_bot_config_ids=tuple(duplicate_disabled_config_ids),
+            stopped_bot_run_ids=tuple(duplicate_stopped_run_ids),
+        )
+
+    def request_for_action(
+        pending_action: AccountEmergencyAction | None,
+    ) -> tuple[dict[str, Any], int, bool]:
+        recovered = pending_action is not None
+        attempt_number = 1
+        previous_correlation_id: str | None = None
+        original_correlation_id: str | None = None
+        previous_lease_expires_at: str | None = None
+        if pending_action is not None:
+            prior_request = (
+                dict(pending_action.request_payload)
+                if isinstance(pending_action.request_payload, dict)
+                else {}
+            )
+            attempt_number = max(1, int(pending_action.attempt_count or 1)) + 1
+            previous_correlation_id = _normalized_optional_text(
+                prior_request.get("correlationId")
+            )
+            original_correlation_id = _normalized_optional_text(
+                prior_request.get("originalCorrelationId")
+            ) or previous_correlation_id
+            if pending_action.lease_expires_at is not None:
+                previous_lease_expires_at = _as_utc(
+                    pending_action.lease_expires_at
+                ).isoformat()
+
+        request: dict[str, Any] = {
+            "accountId": int(account_id),
+            "scope": "entire_account",
+            "providerAction": "cancel_all_orders_then_close_all_contracts",
+            "explicitConfirmation": True,
+            "correlationId": correlation_id,
+            "attemptNumber": attempt_number,
+            "phase": "intent_committed",
+            "accountBotConfigIds": [],
+            "disabledAccountConfigIds": [],
+            "stoppedAccountRunIds": [],
+        }
+        if recovered:
+            request.update(
+                {
+                    "recoveredStalePending": True,
+                    "recoveryClaimedAt": intent_at.isoformat(),
+                    "previousCorrelationId": previous_correlation_id,
+                    "originalCorrelationId": original_correlation_id,
+                    "previousLeaseExpiresAt": previous_lease_expires_at,
+                }
+            )
+        return request, attempt_number, recovered
+
+    existing_pending_action = (
+        db.query(AccountEmergencyAction)
+        .filter(AccountEmergencyAction.user_id == user_id)
+        .filter(AccountEmergencyAction.account_id == int(account_id))
+        .filter(AccountEmergencyAction.status == "pending")
+        .order_by(AccountEmergencyAction.id.desc())
+        .with_for_update()
+        .first()
+    )
+    if existing_pending_action is not None and pending_is_fresh(existing_pending_action):
+        return duplicate_result(existing_pending_action)
+
+    raw_request, attempt_count, recovered_stale_pending = request_for_action(
+        existing_pending_action
+    )
+    if existing_pending_action is None:
+        action = AccountEmergencyAction(
+            user_id=user_id,
+            account_id=int(account_id),
+            provider="projectx",
+            status="pending",
+            confirmed_flat=False,
+            reason=reason,
+            lease_owner_id=lease_owner_id,
+            lease_expires_at=intent_at + _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION,
+            attempt_count=attempt_count,
+            request_payload=dict(raw_request),
+        )
+        try:
+            # The partial unique pending-action index arbitrates two requests
+            # that both observed no action without locking the account row.
+            with db.begin_nested():
+                db.add(action)
+                db.flush()
+        except IntegrityError:
+            existing_pending_action = (
+                db.query(AccountEmergencyAction)
+                .filter(AccountEmergencyAction.user_id == user_id)
+                .filter(AccountEmergencyAction.account_id == int(account_id))
+                .filter(AccountEmergencyAction.status == "pending")
+                .order_by(AccountEmergencyAction.id.desc())
+                .with_for_update()
+                .first()
+            )
+            if existing_pending_action is None:
+                raise
+            if pending_is_fresh(existing_pending_action):
+                return duplicate_result(existing_pending_action)
+            raw_request, attempt_count, recovered_stale_pending = request_for_action(
+                existing_pending_action
+            )
+            action = existing_pending_action
+    else:
+        action = existing_pending_action
+
+    if existing_pending_action is not None:
+        # Reclaim the expired audit under its row lock.  Subsequent broker work
+        # begins from new authoritative reads, never from historical mutations.
+        action.lease_owner_id = lease_owner_id
+        action.lease_expires_at = intent_at + _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION
+        action.attempt_count = attempt_count
+        action.request_payload = dict(raw_request)
+        action.result_payload = None
+        action.updated_at = intent_at
+    db.flush()
+    audit_id = int(action.id)
+
+    # Primary safety boundary: the kill intent is visible before waiting for
+    # any lock held by live evaluation/submission code.
+    db.commit()
+
+    def renew_action_lease() -> None:
+        progress_at = datetime.now(timezone.utc)
+        owned_action = (
+            db.query(AccountEmergencyAction)
+            .filter(AccountEmergencyAction.id == audit_id)
+            .filter(AccountEmergencyAction.user_id == user_id)
+            .filter(AccountEmergencyAction.account_id == int(account_id))
+            .filter(AccountEmergencyAction.status == "pending")
+            .filter(AccountEmergencyAction.lease_owner_id == lease_owner_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if owned_action is None:
+            db.rollback()
+            raise _AccountEmergencyActionOwnershipLost(
+                "account_emergency_action_ownership_lost"
+            )
+        owned_action.lease_expires_at = (
+            progress_at + _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION
+        )
+        owned_action.updated_at = progress_at
+        # Keep the progress lease crash-safe.  There are no broker mutations in
+        # this transaction, and the account remains latched by its pending row.
+        db.commit()
+
+    def ownership_lost_result() -> AccountEmergencyFlattenResult:
+        db.rollback()
+        lost_block = RiskBlock(
+            code="account_emergency_flatten_ownership_lost",
+            message=(
+                "Automation remains stopped, but this request lost ownership of "
+                "the account emergency action to a recovery request."
+            ),
+            severity="critical",
+        )
+        lost_audit = {
+            "audit_id": audit_id,
+            "account_id": int(account_id),
+            "scope": "entire_account",
+            "confirmed_flat": False,
+            "status": "unconfirmed",
+            "risk_block": lost_block.__dict__,
+            "correlation_id": correlation_id,
+            "ownership_lost": True,
+            "disabled_account_config_ids": disabled_account_config_ids,
+            "stopped_account_run_ids": stopped_account_run_ids,
+        }
+        return AccountEmergencyFlattenResult(
+            account_id=int(account_id),
+            audit_id=audit_id,
+            confirmed_flat=False,
+            status="unconfirmed",
+            risk_block=lost_block,
+            audit=lost_audit,
+            disabled_bot_config_ids=tuple(disabled_account_config_ids),
+            stopped_bot_run_ids=tuple(stopped_account_run_ids),
+        )
+
+    # Now acquire locks in the same config/account/action order as execution,
+    # revalidate ownership/source, and durably stop local automation before any
+    # emergency provider read or mutation.
+    account_configs = (
+        db.query(BotConfig)
+        .filter(BotConfig.user_id == user_id)
+        .filter(BotConfig.account_id == int(account_id))
+        .order_by(BotConfig.id.asc())
+        .with_for_update()
+        .all()
+    )
+    account = _require_owned_account(
+        db,
+        user_id=user_id,
+        account_id=int(account_id),
+        lock_for_update=True,
+        refresh_from_database=True,
+    )
+    if account.trade_data_source != TRADE_DATA_SOURCE_PROJECTX:
+        raise ValueError("csv_import_accounts_cannot_be_emergency_flattened")
+    owned_action = (
+        db.query(AccountEmergencyAction)
+        .filter(AccountEmergencyAction.id == audit_id)
+        .filter(AccountEmergencyAction.user_id == user_id)
+        .filter(AccountEmergencyAction.account_id == int(account_id))
+        .filter(AccountEmergencyAction.status == "pending")
+        .filter(AccountEmergencyAction.lease_owner_id == lease_owner_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if owned_action is None:
+        return ownership_lost_result()
+
+    stopped_at = datetime.now(timezone.utc)
+    account_bot_config_ids.extend(int(row.id) for row in account_configs)
+    for account_config in account_configs:
+        if bool(account_config.enabled):
+            disabled_account_config_ids.append(int(account_config.id))
+        account_config.enabled = False
+        account_config.updated_at = stopped_at
+    raced_account_runs = (
+        db.query(BotRun)
+        .filter(BotRun.user_id == user_id)
+        .filter(BotRun.account_id == int(account_id))
+        .filter(BotRun.status == "running")
+        .order_by(BotRun.id.asc())
+        .with_for_update()
+        .all()
+    )
+    for raced_run in raced_account_runs:
+        transition_bot_run(
+            raced_run,
+            "stopped",
+            reason=f"{reason}_account_wide",
+        )
+        stopped_account_run_ids.append(int(raced_run.id))
+
+    raw_request.update(
+        {
+            "phase": "local_stops_committed",
+            "accountBotConfigIds": account_bot_config_ids,
+            "disabledAccountConfigIds": disabled_account_config_ids,
+            "stoppedAccountRunIds": stopped_account_run_ids,
+        }
+    )
+    attempt = _BrokerActionAuditAttempt(raw_request=raw_request)
+    owned_action.request_payload = dict(raw_request)
+    owned_action.lease_expires_at = stopped_at + _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION
+    owned_action.updated_at = stopped_at
+    # Secondary safety boundary: local stops and complete request audit precede
+    # client construction and all emergency provider operations.
+    db.commit()
+
+    block: RiskBlock | None = None
+    try:
+        renew_action_lease()
+        resolved_client = client if client is not None else (
+            client_factory() if client_factory is not None else None
+        )
+        if resolved_client is None:
+            raise RuntimeError("ProjectX client is unavailable for the emergency account flatten.")
+        # A slow credential/client factory must not resume provider mutation
+        # after another request has reclaimed its expired action.
+        renew_action_lease()
+    except _AccountEmergencyActionOwnershipLost:
+        return ownership_lost_result()
+    except Exception as exc:
+        db.rollback()
+        safe_error = sanitize_error(exc, max_length=180)
+        attempt.status = "submission_unknown"
+        attempt.rejection_reason = safe_error
+        attempt.raw_response = {
+            "broker_action": "cancel_all_orders_then_close_all_contracts",
+            "scope": "entire_account",
+            "account_id": int(account_id),
+            "client_error": safe_error,
+        }
+        block = RiskBlock(
+            code="emergency_broker_client_unavailable",
+            message=(
+                "Automation was stopped, but the broker client was unavailable; "
+                "the entire account could not be verified flat."
+            ),
+            severity="critical",
+        )
+    else:
+        try:
+            block = _execute_verified_account_flatten(
+                client=resolved_client,
+                account_id=int(account_id),
+                order_attempt=attempt,
+                progress_heartbeat=renew_action_lease,
+            )
+        except _AccountEmergencyActionOwnershipLost:
+            return ownership_lost_result()
+    confirmed_flat = block is None and attempt.status == "submitted"
+    audit = (
+        dict(attempt.raw_response)
+        if isinstance(attempt.raw_response, dict)
+        else {"raw_response": attempt.raw_response}
+    )
+    audit.update(
+        {
+            "confirmed_flat": confirmed_flat,
+            "scope": "entire_account",
+            "status": "confirmed_account_flat" if confirmed_flat else "unconfirmed",
+            "risk_block": block.__dict__ if block is not None else None,
+            "audit_id": audit_id,
+            "correlation_id": correlation_id,
+            "account_bot_config_ids": account_bot_config_ids,
+            "disabled_account_config_ids": disabled_account_config_ids,
+            "stopped_account_run_ids": stopped_account_run_ids,
+            "recovered_stale_pending": recovered_stale_pending,
+            "attempt_count": attempt_count,
+        }
+    )
+
+    # Only the current lease owner may terminalize the shared audit.  This lock
+    # also prevents a stale-takeover request from racing the final audit write.
+    action = (
+        db.query(AccountEmergencyAction)
+        .filter(AccountEmergencyAction.id == audit_id)
+        .filter(AccountEmergencyAction.user_id == user_id)
+        .filter(AccountEmergencyAction.account_id == int(account_id))
+        .filter(AccountEmergencyAction.status == "pending")
+        .filter(AccountEmergencyAction.lease_owner_id == lease_owner_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if action is None:
+        return ownership_lost_result()
+
+    if confirmed_flat:
+        recovered_attempts = (
+            db.query(BotOrderAttempt)
+            .filter(BotOrderAttempt.user_id == user_id)
+            .filter(BotOrderAttempt.account_id == int(account_id))
+            .filter(BotOrderAttempt.execution_mode == "live")
+            .filter(BotOrderAttempt.status.in_(["pending", "submission_unknown"]))
+            .with_for_update()
+            .all()
+        )
+        recovered_at = datetime.now(timezone.utc)
+        for recovered_attempt in recovered_attempts:
+            prior_response = (
+                dict(recovered_attempt.raw_response)
+                if isinstance(recovered_attempt.raw_response, dict)
+                else {"prior_raw_response": recovered_attempt.raw_response}
+            )
+            prior_response["emergency_flatten_resolution"] = {
+                "scope": "entire_account",
+                "verified_account_flat": True,
+                "resolved_at": recovered_at.isoformat(),
+                "account_emergency_action_id": audit_id,
+            }
+            recovered_attempt.status = "error"
+            recovered_attempt.rejection_reason = (
+                "Resolved by a verified account-wide emergency flatten; this attempt must not be retried."
+            )
+            recovered_attempt.raw_response = prior_response
+            recovered_attempt.updated_at = recovered_at
+        audit["resolved_unresolved_live_attempt_ids"] = [
+            int(row.id) for row in recovered_attempts
+        ]
+
+    action.status = "confirmed_account_flat" if confirmed_flat else "unconfirmed"
+    action.confirmed_flat = confirmed_flat
+    action.risk_code = block.code if block is not None else None
+    action.risk_message = block.message if block is not None else None
+    action.risk_severity = block.severity if block is not None else None
+    action.result_payload = audit
+    action.completed_at = datetime.now(timezone.utc)
+    action.updated_at = action.completed_at
+    db.flush()
+    # Persist the final provider outcome inside the service as well.  A route or
+    # compatibility adapter failure after this point cannot erase the audit.
+    db.commit()
+    return AccountEmergencyFlattenResult(
+        account_id=int(account_id),
+        audit_id=audit_id,
+        confirmed_flat=confirmed_flat,
+        status="confirmed_account_flat" if confirmed_flat else "unconfirmed",
+        risk_block=block,
+        audit=audit,
+        disabled_bot_config_ids=tuple(disabled_account_config_ids),
+        stopped_bot_run_ids=tuple(stopped_account_run_ids),
+    )
+
+
+def emergency_flatten_bot_config(
+    db: Session,
+    *,
+    user_id: str,
+    bot_config_id: int,
+    client: ProjectXClient | None = None,
+    client_factory: Callable[[], ProjectXClient] | None = None,
+    confirm_broker_flatten: bool,
+    reason: str = "manual_emergency_flatten",
+) -> EmergencyFlattenResult:
+    """Compatibility adapter for the original bot-config emergency endpoint."""
+
+    if confirm_broker_flatten is not True:
+        raise ValueError("emergency_flatten_requires_explicit_confirmation")
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
+    account_id = int(config.account_id)
+    run = stop_latest_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        reason=reason,
+    )
+    run_id = int(run.id)
+
+    result = emergency_flatten_account(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        client=client,
+        client_factory=client_factory,
+        confirm_broker_flatten=confirm_broker_flatten,
+        reason=reason,
+    )
+    config = _require_bot_config(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        lock_for_update=True,
+    )
+    run = _find_bot_run(
+        db,
+        user_id=user_id,
+        bot_config_id=bot_config_id,
+        bot_run_id=run_id,
+        lock_for_update=True,
+    )
+    if run is None:
+        raise RuntimeError("stopped_bot_run_missing_during_emergency_flatten")
+    audit = dict(result.audit)
+    audit["source_bot_config_id"] = int(bot_config_id)
+    audit["source_bot_run_id"] = run_id
+    state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+    state["emergency_flatten"] = audit
+    run.raw_state = state
+    db.add(
+        BotDecision(
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            bot_run_id=run_id,
+            account_id=account_id,
+            contract_id=str(config.contract_id),
+            symbol=config.symbol,
+            decision_type="lifecycle",
+            action="STOP",
+            reason=(
+                "emergency_flatten_confirmed"
+                if result.confirmed_flat
+                else "emergency_flatten_unconfirmed"
+            ),
+            raw_payload=audit,
+        )
+    )
+    db.flush()
+    return EmergencyFlattenResult(
+        run=run,
+        confirmed_flat=result.confirmed_flat,
+        status=result.status,
+        risk_block=result.risk_block,
+        audit=audit,
+    )
 
 
 def get_bot_activity(
@@ -2651,12 +3586,21 @@ def store_market_candles(
     unit_number: int,
     bars: Iterable[dict[str, Any]],
 ) -> list[ProjectXMarketCandle]:
-    normalized = _dedupe_market_candle_bars(bars)
+    fetched_at = datetime.now(timezone.utc)
+    validated = [
+        _validated_market_candle_bar(
+            bar,
+            unit=unit,
+            unit_number=unit_number,
+            observed_at=fetched_at,
+        )
+        for bar in bars
+    ]
+    normalized = _dedupe_market_candle_bars(validated)
     if not normalized:
         return []
 
     timestamps = [bar["timestamp"] for bar in normalized]
-    fetched_at = datetime.now(timezone.utc)
 
     dialect_name = _session_dialect_name(db)
     if dialect_name in {"postgresql", "sqlite"}:
@@ -2718,11 +3662,11 @@ def store_market_candles(
             )
             db.add(row)
         row.symbol = symbol
-        row.open_price = float(bar.get("open") or 0.0)
-        row.high_price = float(bar.get("high") or 0.0)
-        row.low_price = float(bar.get("low") or 0.0)
-        row.close_price = float(bar.get("close") or 0.0)
-        row.volume = float(bar.get("volume") or 0.0)
+        row.open_price = float(bar["open"])
+        row.high_price = float(bar["high"])
+        row.low_price = float(bar["low"])
+        row.close_price = float(bar["close"])
+        row.volume = float(bar["volume"])
         row.is_partial = incoming_is_partial
         row.raw_payload = bar.get("raw_payload")
         row.fetched_at = fetched_at
@@ -2735,12 +3679,12 @@ def store_market_candles(
 
 def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     by_timestamp: dict[datetime, dict[str, Any]] = {}
-    for bar in bars:
+    for index, bar in enumerate(bars):
         if not isinstance(bar, dict):
-            continue
+            raise ValueError(f"invalid_market_candle: row {index} is not an object")
         timestamp = bar.get("timestamp")
-        if not isinstance(timestamp, datetime):
-            continue
+        if timestamp is None or not callable(getattr(timestamp, "astimezone", None)):
+            raise ValueError(f"invalid_market_candle: row {index} has no valid timestamp")
         timestamp_utc = _as_utc(timestamp)
         candidate = {**bar, "timestamp": timestamp_utc}
         existing = by_timestamp.get(timestamp_utc)
@@ -2752,6 +3696,65 @@ def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str,
             continue
         by_timestamp[timestamp_utc] = candidate
     return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+
+
+def _validated_market_candle_bar(
+    bar: dict[str, Any],
+    *,
+    unit: str,
+    unit_number: int,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    if not isinstance(bar, dict):
+        raise ValueError("invalid_market_candle: row is not an object")
+    timestamp_value = bar.get("timestamp")
+    if timestamp_value is None or not callable(
+        getattr(timestamp_value, "astimezone", None)
+    ):
+        raise ValueError("invalid_market_candle: row has no valid timestamp")
+    timestamp = _as_utc(timestamp_value)
+    values: dict[str, float] = {}
+    for name in ("open", "high", "low", "close", "volume"):
+        raw_value = bar.get(name)
+        if raw_value is None or isinstance(raw_value, bool):
+            raise ValueError(
+                f"invalid_market_candle: {name} is missing or non-numeric at {timestamp.isoformat()}"
+            )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid_market_candle: {name} is non-numeric at {timestamp.isoformat()}"
+            ) from exc
+        if not math.isfinite(value):
+            raise ValueError(
+                f"invalid_market_candle: {name} is non-finite at {timestamp.isoformat()}"
+            )
+        values[name] = value
+
+    if min(values[name] for name in ("open", "high", "low", "close")) <= 0:
+        raise ValueError(
+            f"invalid_market_candle: prices must be positive at {timestamp.isoformat()}"
+        )
+    if values["high"] < max(values["open"], values["low"], values["close"]):
+        raise ValueError(f"invalid_market_candle: invalid high at {timestamp.isoformat()}")
+    if values["low"] > min(values["open"], values["high"], values["close"]):
+        raise ValueError(f"invalid_market_candle: invalid low at {timestamp.isoformat()}")
+    if values["volume"] < 0:
+        raise ValueError(f"invalid_market_candle: negative volume at {timestamp.isoformat()}")
+
+    nominal_close = _market_candle_nominal_close(
+        timestamp,
+        unit=unit,
+        unit_number=unit_number,
+    )
+    return {
+        **bar,
+        "timestamp": timestamp,
+        **values,
+        "is_partial": bool(bar.get("is_partial") or False)
+        or nominal_close > _as_utc(observed_at),
+    }
 
 
 def _session_dialect_name(db: Session) -> str:
@@ -2778,11 +3781,11 @@ def _market_candle_insert_values(
         "unit": unit,
         "unit_number": unit_number,
         "candle_timestamp": bar["timestamp"],
-        "open_price": float(bar.get("open") or 0.0),
-        "high_price": float(bar.get("high") or 0.0),
-        "low_price": float(bar.get("low") or 0.0),
-        "close_price": float(bar.get("close") or 0.0),
-        "volume": float(bar.get("volume") or 0.0),
+        "open_price": float(bar["open"]),
+        "high_price": float(bar["high"]),
+        "low_price": float(bar["low"]),
+        "close_price": float(bar["close"]),
+        "volume": float(bar["volume"]),
         "is_partial": bool(bar.get("is_partial") or False),
         "raw_payload": bar.get("raw_payload"),
         "fetched_at": fetched_at,
@@ -2894,8 +3897,7 @@ def evaluate_sma_cross(
     if getattr(candles, "_topsignal_sorted_closed", False):
         closed = candles
     else:
-        closed = [candle for candle in candles if not bool(candle.is_partial)]
-        closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
+        closed = _closed_candles(candles)
     if len(closed) < slow_period + 1:
         return SignalResult(
             action="HOLD",
@@ -5328,6 +6330,27 @@ def evaluate_orb_fibonacci_pullback(
             "opening_range_bars": opening_range_bars,
         }
     )
+    for index, candle in enumerate(session_candles):
+        expected_timestamp = session_start + timedelta(minutes=bar_minutes * index)
+        actual_timestamp = _as_utc(candle.candle_timestamp)
+        if actual_timestamp != expected_timestamp:
+            raw_payload.update(
+                {
+                    "data_quality_error": "incomplete_session_history",
+                    "expected_candle_timestamp": expected_timestamp.isoformat(),
+                    "actual_candle_timestamp": actual_timestamp.isoformat(),
+                }
+            )
+            return SignalResult(
+                action="HOLD",
+                reason=(
+                    "Session candle history is incomplete; expected a closed candle at "
+                    f"{expected_timestamp.isoformat()} before evaluating ORB Fibonacci Pullback."
+                ),
+                candle_timestamp=latest_timestamp,
+                price=latest_price,
+                raw_payload=raw_payload,
+            )
     if len(session_candles) <= opening_range_bars:
         return SignalResult(
             action="HOLD",
@@ -9080,9 +10103,103 @@ def _serialize_pivot_level(level: PivotLevel) -> dict[str, Any]:
 def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketCandle]:
     if getattr(candles, "_topsignal_sorted_closed", False):
         return candles
-    closed = [candle for candle in candles if not bool(candle.is_partial)]
+    observed_at = datetime.now(timezone.utc)
+    inferred_interval = _inferred_candle_interval(candles)
+    closed: list[ProjectXMarketCandle] = []
+    for candle in candles:
+        nominal_close = _validate_market_candle_for_strategy(
+            candle,
+            fallback_interval=inferred_interval,
+        )
+        fetched_at = getattr(candle, "fetched_at", None)
+        fetched_before_close = (
+            fetched_at is not None and _as_utc(fetched_at) < nominal_close
+        )
+        if (
+            not bool(candle.is_partial)
+            and not fetched_before_close
+            and nominal_close <= observed_at
+        ):
+            closed.append(candle)
     closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
     return closed
+
+
+def _validate_market_candle_for_strategy(
+    candle: ProjectXMarketCandle,
+    *,
+    fallback_interval: timedelta | None = None,
+) -> datetime:
+    timestamp_value = getattr(candle, "candle_timestamp", None)
+    if timestamp_value is None or not callable(
+        getattr(timestamp_value, "astimezone", None)
+    ):
+        raise ValueError("invalid_market_candle: candle timestamp is missing or invalid")
+    timestamp = _as_utc(timestamp_value)
+    values: dict[str, float] = {}
+    for name, attribute in (
+        ("open", "open_price"),
+        ("high", "high_price"),
+        ("low", "low_price"),
+        ("close", "close_price"),
+        ("volume", "volume"),
+    ):
+        raw_value = getattr(candle, attribute, None)
+        if raw_value is None or isinstance(raw_value, bool):
+            raise ValueError(
+                f"invalid_market_candle: {name} is missing or non-numeric at {timestamp.isoformat()}"
+            )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid_market_candle: {name} is non-numeric at {timestamp.isoformat()}"
+            ) from exc
+        if not math.isfinite(value):
+            raise ValueError(
+                f"invalid_market_candle: {name} is non-finite at {timestamp.isoformat()}"
+            )
+        values[name] = value
+    if min(values[name] for name in ("open", "high", "low", "close")) <= 0:
+        raise ValueError(
+            f"invalid_market_candle: prices must be positive at {timestamp.isoformat()}"
+        )
+    if values["high"] < max(values["open"], values["low"], values["close"]):
+        raise ValueError(f"invalid_market_candle: invalid high at {timestamp.isoformat()}")
+    if values["low"] > min(values["open"], values["high"], values["close"]):
+        raise ValueError(f"invalid_market_candle: invalid low at {timestamp.isoformat()}")
+    if values["volume"] < 0:
+        raise ValueError(f"invalid_market_candle: negative volume at {timestamp.isoformat()}")
+    unit = getattr(candle, "unit", None)
+    unit_number = getattr(candle, "unit_number", None)
+    if unit is not None and unit_number is not None:
+        return _market_candle_nominal_close(
+            timestamp,
+            unit=str(unit),
+            unit_number=int(unit_number),
+        )
+    if fallback_interval is not None and fallback_interval > timedelta(0):
+        return timestamp + fallback_interval
+    raise ValueError("invalid_market_candle: candle timeframe is missing or invalid")
+
+
+def _inferred_candle_interval(
+    candles: Iterable[ProjectXMarketCandle],
+) -> timedelta | None:
+    timestamps = sorted(
+        {
+            _as_utc(value)
+            for candle in candles
+            if (value := getattr(candle, "candle_timestamp", None)) is not None
+            and callable(getattr(value, "astimezone", None))
+        }
+    )
+    intervals = [
+        current - previous
+        for previous, current in zip(timestamps, timestamps[1:])
+        if current > previous
+    ]
+    return min(intervals) if intervals else None
 
 
 def _sequence_indicator_cache(sequence: Any) -> dict[tuple[Any, ...], Any] | None:
@@ -9764,6 +10881,7 @@ def evaluate_risk_gates(
     ignore_order_attempt_id: int | None = None,
     order_attempt: BotOrderAttempt | None = None,
     decision: BotDecision | None = None,
+    instrument_spec: InstrumentSpec | None = None,
     perform_live_preflight: bool = True,
     reconcile_live_submissions: bool = True,
 ) -> list[RiskBlock]:
@@ -9775,13 +10893,23 @@ def evaluate_risk_gates(
         else float(current_position_qty) + signed_change
     )
     daily_pnl = _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+    trades_today = _todays_account_entry_trade_count(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+    )
     account_state = str(account.account_state)
     account_can_trade = account.can_trade
+    account_automation_eligible: bool | None = None
+    require_account_classification = False
+    account_unrealized_pnl = 0.0
+    unrealized_pnl_complete = True
+    account_gross_position_qty = abs(resulting_position_qty)
+    position_reducing = _is_strict_position_reduction(
+        current_position_qty=float(current_position_qty),
+        resulting_position_qty=resulting_position_qty,
+    )
     additional_blocks: list[RiskBlock] = []
-    if order_attempt is not None:
-        protection_block = _order_attempt_protection_block(config=config, order_attempt=order_attempt)
-        if protection_block is not None:
-            additional_blocks.append(protection_block)
 
     live_preflight_required = _requires_live_execution_preflight(
         config=config,
@@ -9789,8 +10917,8 @@ def evaluate_risk_gates(
         dry_run=dry_run,
         confirm_live_order_routing=confirm_live_order_routing,
     )
+    preflight: LiveExecutionPreflight | None = None
     if live_preflight_required and perform_live_preflight:
-        preflight: LiveExecutionPreflight | None = None
         preflight_error: Exception | None = None
         if client is None:
             preflight_error = ProjectXClientError(
@@ -9802,6 +10930,20 @@ def evaluate_risk_gates(
                     client,
                     account_id=int(config.account_id),
                     contract_id=contract_id,
+                    symbol=symbol,
+                    mark_price=(
+                        float(latest_candle.close_price)
+                        if latest_candle is not None
+                        else None
+                    ),
+                    point_value=(
+                        instrument_spec.point_value
+                        if instrument_spec is not None
+                        else None
+                    ),
+                    cached_account_automation_eligible=(
+                        _fresh_cached_account_automation_eligibility(account)
+                    ),
                 )
             except Exception as exc:
                 preflight_error = exc
@@ -9820,6 +10962,10 @@ def evaluate_risk_gates(
         if preflight is not None:
             account_state = preflight.account_state
             account_can_trade = preflight.account_can_trade
+            account_automation_eligible = preflight.account_automation_eligible
+            require_account_classification = True
+            account_unrealized_pnl = preflight.account_unrealized_pnl
+            unrealized_pnl_complete = preflight.unrealized_pnl_complete
             adjustment_block: RiskBlock | None = None
             if target_position_qty is not None:
                 adjustment_block = _apply_authoritative_target_to_order_attempt(
@@ -9855,7 +11001,83 @@ def evaluate_risk_gates(
             # rewritten above from the authoritative provider position.
             resulting_position_qty = preflight.current_position_qty + signed_change
             daily_pnl = preflight.daily_pnl
-            if preflight.working_order_signed_sizes and adjustment_block is None:
+            trades_today = preflight.entry_trades_today
+            position_reducing = _is_strict_position_reduction(
+                current_position_qty=preflight.current_position_qty,
+                resulting_position_qty=resulting_position_qty,
+            )
+            positive_working = sum(
+                max(0.0, size) for size in preflight.working_order_signed_sizes
+            )
+            negative_working = sum(
+                min(0.0, size) for size in preflight.working_order_signed_sizes
+            )
+            proposed_contract_worst_case_gross = max(
+                abs(resulting_position_qty),
+                abs(resulting_position_qty + positive_working),
+                abs(resulting_position_qty + negative_working),
+            )
+            account_gross_position_qty = (
+                preflight.account_gross_position_qty
+                - preflight.current_contract_worst_case_gross_qty
+                + proposed_contract_worst_case_gross
+            )
+            if position_reducing:
+                _mark_order_attempt_reduce_only(order_attempt, decision=decision)
+            if preflight.prior_delivery_contract_ids and not position_reducing:
+                prior_deliveries = ", ".join(preflight.prior_delivery_contract_ids)
+                additional_blocks.append(
+                    RiskBlock(
+                        code="prior_delivery_exposure",
+                        message=(
+                            "A prior delivery of this futures root still has an open position or working "
+                            f"order ({prior_deliveries}); new-entry routing is blocked until it is managed."
+                        ),
+                        severity="critical",
+                    )
+                )
+                if decision is not None:
+                    payload = (
+                        dict(decision.raw_payload)
+                        if isinstance(decision.raw_payload, dict)
+                        else {}
+                    )
+                    payload["prior_delivery_contract_ids"] = list(
+                        preflight.prior_delivery_contract_ids
+                    )
+                    decision.raw_payload = payload
+            if position_reducing and adjustment_block is None:
+                if abs(resulting_position_qty) <= 1e-9:
+                    additional_blocks.append(
+                        RiskBlock(
+                            code=(
+                                "working_orders_require_cancel_for_exit"
+                                if preflight.working_order_signed_sizes
+                                else "verified_flatten_required"
+                            ),
+                            message=(
+                                "The reduce-only position exit must use the provider close endpoint "
+                                "and be verified flat."
+                            ),
+                            severity="critical",
+                        )
+                    )
+                else:
+                    additional_blocks.append(
+                        RiskBlock(
+                            code="partial_reduction_not_supported",
+                            message=(
+                                "ProjectX Order/place has no authoritative reduce-only flag; "
+                                "partial automated reductions are blocked."
+                            ),
+                            severity="critical",
+                        )
+                    )
+            if (
+                preflight.working_order_signed_sizes
+                and adjustment_block is None
+                and not position_reducing
+            ):
                 current_provider_position = preflight.current_position_qty
                 safe_combined_reduction = (
                     abs(current_provider_position) > 1e-9
@@ -9869,12 +11091,6 @@ def evaluate_risk_gates(
                         + sum(abs(size) for size in preflight.working_order_signed_sizes)
                         <= abs(current_provider_position) + 1e-9
                     )
-                )
-                positive_working = sum(
-                    max(0.0, size) for size in preflight.working_order_signed_sizes
-                )
-                negative_working = sum(
-                    min(0.0, size) for size in preflight.working_order_signed_sizes
                 )
                 worst_case_position = max(
                     abs(resulting_position_qty),
@@ -9964,6 +11180,22 @@ def evaluate_risk_gates(
         if latest_candle is not None
         else None
     )
+    if order_attempt is not None and not position_reducing:
+        protection_block = _order_attempt_protection_block(
+            config=config,
+            order_attempt=order_attempt,
+        )
+        if protection_block is not None:
+            additional_blocks.append(protection_block)
+    authoritative_entry_risk_required = bool(
+        live_preflight_required and perform_live_preflight and preflight is not None
+    )
+    proposed_stop_risk = _proposed_order_stop_risk(
+        order_attempt=order_attempt,
+        decision=decision,
+        order_size=order_size,
+        instrument_spec=instrument_spec,
+    )
     return additional_blocks + evaluate_risk(
         RiskEvaluationContext(
             bot_enabled=bool(config.enabled),
@@ -9981,7 +11213,7 @@ def evaluate_risk_gates(
             resulting_position_qty=resulting_position_qty,
             max_contracts=float(config.max_contracts),
             max_open_position=float(config.max_open_position),
-            trades_today=_todays_bot_trade_count(db, user_id=user_id, config=config),
+            trades_today=trades_today,
             max_trades_per_day=int(config.max_trades_per_day),
             daily_pnl=daily_pnl,
             max_daily_loss=float(config.max_daily_loss),
@@ -9993,7 +11225,149 @@ def evaluate_risk_gates(
             ),
             delayed_session_block=_delayed_orb_session_loss_block(db, user_id=user_id, config=config),
             cooldown_block=_cooldown_block(db, user_id=user_id, config=config),
+            position_reducing=position_reducing,
+            defer_entry_risk_until_authoritative=bool(
+                live_preflight_required and not perform_live_preflight
+            ),
+            account_automation_eligible=account_automation_eligible,
+            require_account_classification=authoritative_entry_risk_required,
+            account_gross_position_qty=account_gross_position_qty,
+            max_account_gross_position=(
+                min(float(config.max_contracts), float(config.max_open_position))
+                if authoritative_entry_risk_required
+                else None
+            ),
+            account_unrealized_pnl=account_unrealized_pnl,
+            unrealized_pnl_complete=unrealized_pnl_complete,
+            proposed_stop_risk=proposed_stop_risk,
+            require_proposed_stop_risk=bool(
+                authoritative_entry_risk_required and not position_reducing
+            ),
+            exchange_session_open=futures_session_is_open(
+                datetime.now(timezone.utc),
+                symbol=symbol or contract_id,
+            ),
         )
+    )
+
+
+def _is_strict_position_reduction(
+    *,
+    current_position_qty: float,
+    resulting_position_qty: float,
+) -> bool:
+    if not math.isfinite(current_position_qty) or not math.isfinite(resulting_position_qty):
+        return False
+    epsilon = 1e-9
+    if abs(current_position_qty) <= epsilon:
+        return False
+    if abs(resulting_position_qty) >= abs(current_position_qty) - epsilon:
+        return False
+    return (
+        abs(resulting_position_qty) <= epsilon
+        or resulting_position_qty * current_position_qty > 0
+    )
+
+
+def _mark_order_attempt_reduce_only(
+    order_attempt: BotOrderAttempt | None,
+    *,
+    decision: BotDecision | None,
+) -> None:
+    if decision is not None:
+        payload = dict(decision.raw_payload) if isinstance(decision.raw_payload, dict) else {}
+        payload["execution_classification"] = "reduce_only"
+        decision.raw_payload = payload
+    if order_attempt is None:
+        return
+    request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
+    # ProjectX does not expose a reduce-only flag for Order/place.  Exact
+    # authoritative sizing supplies that invariant; attached entry brackets
+    # must be removed because they could create fresh exposure after a flatten.
+    request.pop("stopLossBracket", None)
+    request.pop("takeProfitBracket", None)
+    request["executionIntent"] = "reduce_only"
+    plan = request.get("strategyOrderPlan")
+    plan = dict(plan) if isinstance(plan, dict) else {}
+    plan["execution_classification"] = "reduce_only"
+    request["strategyOrderPlan"] = plan
+    order_attempt.raw_request = request
+
+
+def _proposed_order_stop_risk(
+    *,
+    order_attempt: BotOrderAttempt | None,
+    decision: BotDecision | None,
+    order_size: float,
+    instrument_spec: InstrumentSpec | None,
+) -> float | None:
+    if instrument_spec is None or not math.isfinite(instrument_spec.tick_value) or instrument_spec.tick_value <= 0:
+        return None
+    if not math.isfinite(order_size) or order_size <= 0:
+        return None
+
+    if order_attempt is not None and isinstance(order_attempt.raw_request, dict):
+        bracket = order_attempt.raw_request.get("stopLossBracket")
+        if _valid_bracket_payload(bracket, expected_type=4):
+            return float(bracket["ticks"]) * float(instrument_spec.tick_value) * float(order_size)
+
+    payload = decision.raw_payload if decision is not None and isinstance(decision.raw_payload, dict) else {}
+    entry_price = _finite_optional_float(decision.price if decision is not None else payload.get("entry_price"))
+    stop_loss = _finite_optional_float(payload.get("stop_loss"))
+    if (
+        entry_price is None
+        or stop_loss is None
+        or not math.isfinite(instrument_spec.tick_size)
+        or instrument_spec.tick_size <= 0
+    ):
+        return None
+    stop_ticks = max(1, int(round(abs(entry_price - stop_loss) / instrument_spec.tick_size)))
+    return float(stop_ticks) * float(instrument_spec.tick_value) * float(order_size)
+
+
+def _fresh_cached_account_automation_eligibility(
+    account: Account,
+    *,
+    now: datetime | None = None,
+) -> bool | None:
+    simulated = getattr(account, "provider_simulated", None)
+    observed_at = getattr(account, "provider_classification_observed_at", None)
+    if not isinstance(simulated, bool) or not isinstance(observed_at, datetime):
+        return None
+    age = _as_utc(now or datetime.now(timezone.utc)) - _as_utc(observed_at)
+    if age < timedelta(seconds=-30) or age > _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE:
+        return None
+    return simulated
+
+
+def _projectx_contract_family(contract_id: str | None) -> str | None:
+    value = str(contract_id or "").strip().upper()
+    parts = value.split(".")
+    if len(parts) < 5 or parts[:3] != ["CON", "F", "US"]:
+        return None
+    if not all(part.strip() for part in parts[3:]):
+        return None
+    # ProjectX outright IDs end with a delivery token (for example U26).
+    # Comparing the provider-native prefix avoids UI/provider root aliases such
+    # as NQ/ENQ and MGC/GMET.
+    return ".".join(parts[:-1])
+
+
+def _same_futures_contract_family(
+    *,
+    execution_contract_id: str,
+    candidate_contract_id: str,
+    execution_family: str | None,
+    execution_root: str | None,
+) -> bool:
+    if str(candidate_contract_id) == str(execution_contract_id):
+        return True
+    candidate_family = _projectx_contract_family(candidate_contract_id)
+    if execution_family is not None and candidate_family is not None:
+        return candidate_family == execution_family
+    return bool(
+        execution_root is not None
+        and normalize_symbol_key(candidate_contract_id) == execution_root
     )
 
 
@@ -10002,6 +11376,10 @@ def _fetch_live_execution_preflight(
     *,
     account_id: int,
     contract_id: str,
+    symbol: str | None = None,
+    mark_price: float | None = None,
+    point_value: float | None = None,
+    cached_account_automation_eligible: bool | None = None,
     now: datetime | None = None,
 ) -> LiveExecutionPreflight:
     observed_at = _as_utc(now or datetime.now(timezone.utc))
@@ -10022,34 +11400,123 @@ def _fetch_live_execution_preflight(
     provider_account_state = str(provider_account.get("status") or "").strip().upper()
     if provider_account_state not in {"ACTIVE", "LOCKED_OUT", "HIDDEN"}:
         raise ProjectXClientError("ProjectX returned an unknown account state during live preflight.")
+    provider_simulated = provider_account.get("simulated")
+    account_automation_eligible = (
+        provider_simulated
+        if isinstance(provider_simulated, bool)
+        else cached_account_automation_eligible
+    )
 
     positions = client.search_open_positions(account_id=int(account_id))
     current_position_qty = 0.0
+    position_qty_by_contract: dict[str, float] = {}
+    account_unrealized_pnl = 0.0
+    unrealized_pnl_complete = True
+    execution_family = _projectx_contract_family(contract_id)
+    execution_root = normalize_symbol_key(symbol) or normalize_symbol_key(contract_id)
+    prior_delivery_contract_ids: set[str] = set()
     for position in positions:
         if not isinstance(position, dict) or int(position.get("account_id", -1)) != int(account_id):
             raise ProjectXClientError("ProjectX returned a position for the wrong account.")
-        if str(position.get("contract_id") or "") != str(contract_id):
-            continue
         signed_size = _finite_optional_float(position.get("signed_size"))
         if signed_size is None:
             raise ProjectXClientError("ProjectX returned an invalid signed open-position size.")
-        current_position_qty += signed_size
-    if not math.isfinite(current_position_qty):
+        position_contract_id = str(position.get("contract_id") or "")
+        if not position_contract_id:
+            raise ProjectXClientError("ProjectX returned an open position without a contract ID.")
+        position_qty_by_contract[position_contract_id] = (
+            position_qty_by_contract.get(position_contract_id, 0.0) + signed_size
+        )
+        is_execution_contract = position_contract_id == str(contract_id)
+        if (
+            not is_execution_contract
+            and _same_futures_contract_family(
+                execution_contract_id=contract_id,
+                candidate_contract_id=position_contract_id,
+                execution_family=execution_family,
+                execution_root=execution_root,
+            )
+        ):
+            prior_delivery_contract_ids.add(position_contract_id)
+        if is_execution_contract:
+            current_position_qty += signed_size
+
+        unrealized_pnl = _finite_optional_float(position.get("unrealized_pnl"))
+        if unrealized_pnl is None and is_execution_contract:
+            average_price = _finite_optional_float(position.get("average_price"))
+            if (
+                average_price is not None
+                and mark_price is not None
+                and math.isfinite(mark_price)
+                and point_value is not None
+                and math.isfinite(point_value)
+                and point_value > 0
+            ):
+                unrealized_pnl = (
+                    (float(mark_price) - average_price)
+                    * abs(signed_size)
+                    * float(point_value)
+                    * (1.0 if signed_size > 0 else -1.0)
+                )
+        if unrealized_pnl is None:
+            unrealized_pnl_complete = False
+        else:
+            account_unrealized_pnl += unrealized_pnl
+    if not math.isfinite(current_position_qty) or any(
+        not math.isfinite(value) for value in position_qty_by_contract.values()
+    ):
         raise ProjectXClientError("ProjectX open-position total is not finite.")
+    if not math.isfinite(account_unrealized_pnl):
+        raise ProjectXClientError("ProjectX unrealized P&L total is not finite.")
 
     open_orders = client.search_open_orders(account_id=int(account_id))
     working_order_signed_sizes: list[float] = []
+    working_orders: list[dict[str, Any]] = []
+    working_sizes_by_contract: dict[str, list[float]] = {}
     for open_order in open_orders:
         if not isinstance(open_order, dict) or int(open_order.get("account_id", -1)) != int(account_id):
             raise ProjectXClientError("ProjectX returned an open order for the wrong account.")
-        if str(open_order.get("contract_id") or "") != str(contract_id):
-            continue
         if open_order.get("status") not in {1, 6}:
             raise ProjectXClientError("ProjectX Order/searchOpen returned a non-working order status.")
         signed_size = _finite_optional_float(open_order.get("signed_size"))
         if signed_size is None or abs(signed_size) <= 0:
             raise ProjectXClientError("ProjectX returned an invalid working-order size.")
-        working_order_signed_sizes.append(signed_size)
+        open_order_contract_id = str(open_order.get("contract_id") or "")
+        if not open_order_contract_id:
+            raise ProjectXClientError("ProjectX returned an open order without a contract ID.")
+        working_sizes_by_contract.setdefault(open_order_contract_id, []).append(signed_size)
+        if open_order_contract_id == str(contract_id):
+            working_order_signed_sizes.append(signed_size)
+            working_orders.append(dict(open_order))
+        elif (
+            _same_futures_contract_family(
+                execution_contract_id=contract_id,
+                candidate_contract_id=open_order_contract_id,
+                execution_family=execution_family,
+                execution_root=execution_root,
+            )
+        ):
+            prior_delivery_contract_ids.add(open_order_contract_id)
+
+    def contract_worst_case_gross(contract_key: str) -> float:
+        position_qty = position_qty_by_contract.get(contract_key, 0.0)
+        working_sizes = working_sizes_by_contract.get(contract_key, [])
+        positive_working = math.fsum(max(0.0, size) for size in working_sizes)
+        negative_working = math.fsum(min(0.0, size) for size in working_sizes)
+        return max(
+            abs(position_qty),
+            abs(position_qty + positive_working),
+            abs(position_qty + negative_working),
+        )
+
+    exposure_contract_ids = set(position_qty_by_contract) | set(working_sizes_by_contract)
+    account_gross_position_qty = math.fsum(
+        contract_worst_case_gross(contract_key)
+        for contract_key in exposure_contract_ids
+    )
+    current_contract_worst_case_gross_qty = contract_worst_case_gross(str(contract_id))
+    if not math.isfinite(account_gross_position_qty):
+        raise ProjectXClientError("ProjectX account-wide working exposure is not finite.")
 
     pnl_start, pnl_end = trading_day_bounds_utc(trading_day_date(observed_at))
     trade_fetch = fetch_trade_history_all_pages(
@@ -10067,6 +11534,7 @@ def _fetch_live_execution_preflight(
         )
     trade_events = trade_fetch.events
     daily_pnl = 0.0
+    entry_trades_today = 0
     for event in trade_events:
         if not isinstance(event, dict) or int(event.get("account_id", -1)) != int(account_id):
             raise ProjectXClientError("ProjectX returned a trade for the wrong account.")
@@ -10082,6 +11550,7 @@ def _fetch_live_execution_preflight(
         # stored/provider fee is per-side, so the closed row is normalized to a
         # round turn and receives the same Topstep commission used by metrics.
         if event.get("pnl") is None:
+            entry_trades_today += 1
             continue
         fees = _finite_optional_float(event.get("fees"))
         pnl = _finite_optional_float(event.get("pnl"))
@@ -10109,9 +11578,17 @@ def _fetch_live_execution_preflight(
     return LiveExecutionPreflight(
         account_state=provider_account_state,
         account_can_trade=provider_can_trade,
+        account_automation_eligible=account_automation_eligible,
         current_position_qty=current_position_qty,
         working_order_signed_sizes=tuple(working_order_signed_sizes),
+        working_orders=tuple(working_orders),
+        account_gross_position_qty=account_gross_position_qty,
+        current_contract_worst_case_gross_qty=current_contract_worst_case_gross_qty,
+        account_unrealized_pnl=account_unrealized_pnl,
+        unrealized_pnl_complete=unrealized_pnl_complete,
         daily_pnl=daily_pnl,
+        entry_trades_today=entry_trades_today,
+        prior_delivery_contract_ids=tuple(sorted(prior_delivery_contract_ids)),
         observed_at=observed_at,
     )
 
@@ -10667,12 +12144,145 @@ def _claim_order_attempt(
         return None, winner
 
 
+class _ProviderMutationFence:
+    """Final database fence for live bot provider mutations.
+
+    The account is intentionally not locked while the worker performs remote
+    preflight reads.  Each provider mutation comes through ``require`` so a
+    disconnect-driven classification invalidation or a newly-persisted account
+    emergency intent can win before routing. For recurring evaluations, the
+    deployment lease is also locked once, renewed before every mutation, and
+    retained by this Session until the provider outcome and audit rows are
+    committed. Synchronous starts deliberately carry no worker lease token.
+    """
+
+    def __init__(
+        self,
+        *,
+        db: Session,
+        token: BotWorkerLeaseToken | None,
+        user_id: str,
+        account_id: int,
+    ) -> None:
+        self.db = db
+        self.token = token
+        self.user_id = user_id
+        self.account_id = int(account_id)
+        self._locked_lease: BotRuntimeLease | None = None
+
+    def require(self) -> None:
+        # This SELECT FOR UPDATE occurs after remote preflight, not before it.
+        # populate/refresh semantics are essential: the worker Session may have
+        # loaded this identity before a streaming disconnect invalidated it.
+        # Emergency intent insertion takes this same account lock before it
+        # writes its latch, so locking Account first also closes the otherwise
+        # unavoidable "checked no latch, then emergency inserts" race.
+        account = _require_owned_account(
+            self.db,
+            user_id=self.user_id,
+            account_id=self.account_id,
+            lock_for_update=True,
+            refresh_from_database=True,
+        )
+        _require_projectx_trade_data_source(account)
+        try:
+            _require_account_emergency_latch_clear(
+                self.db,
+                user_id=self.user_id,
+                account_id=self.account_id,
+            )
+        except AccountEmergencyLatchActiveError as exc:
+            raise _ProviderMutationBlocked(
+                RiskBlock(
+                    code=exc.code,
+                    message=(
+                        "An account emergency flatten is pending or unconfirmed; "
+                        "automatic provider routing is paused."
+                    ),
+                    severity="critical",
+                )
+            ) from exc
+
+        observed_at = datetime.now(timezone.utc)
+        automation_eligible = _fresh_cached_account_automation_eligibility(
+            account,
+            now=observed_at,
+        )
+        if automation_eligible is None:
+            raise _ProviderMutationBlocked(
+                RiskBlock(
+                    code="account_automation_classification_unknown",
+                    message=(
+                        "The final provider-account classification is missing or stale; "
+                        "automatic routing was not attempted."
+                    ),
+                    severity="critical",
+                )
+            )
+        if automation_eligible is not True:
+            raise _ProviderMutationBlocked(
+                RiskBlock(
+                    code="account_type_not_eligible_for_automation",
+                    message=(
+                        "ProjectX classifies this account as non-simulated; "
+                        "automatic routing is blocked."
+                    ),
+                    severity="critical",
+                )
+            )
+
+        if self.token is None:
+            return
+
+        lease_name = str(self.token.lease_name or "").strip()
+        owner_id = str(self.token.owner_id or "").strip()
+        ttl_seconds = float(self.token.lease_ttl_seconds)
+        if not lease_name or not owner_id or not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+            self._raise_lease_lost()
+
+        lease = (
+            self.db.query(BotRuntimeLease)
+            .filter(BotRuntimeLease.lease_name == lease_name)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if lease is None or str(lease.owner_id) != owner_id:
+            self._raise_lease_lost()
+        if self._locked_lease is None and _as_utc(lease.expires_at) <= observed_at:
+            self._raise_lease_lost()
+        self._locked_lease = lease
+
+        # Renewal is part of this still-uncommitted fenced transaction. A rival
+        # owner cannot take over while provider I/O is in progress because its
+        # lease update must wait for this row lock. A crash rolls the renewal
+        # back, preserving ordinary expiry/takeover semantics.
+        assert self._locked_lease is not None
+        self._locked_lease.heartbeat_at = observed_at
+        self._locked_lease.expires_at = observed_at + timedelta(seconds=ttl_seconds)
+        self.db.flush()
+
+    @staticmethod
+    def _raise_lease_lost() -> None:
+        raise _ProviderMutationBlocked(
+            RiskBlock(
+                code="worker_lease_lost",
+                message=(
+                    "The recurring worker no longer owns an unexpired execution lease; "
+                    "the provider mutation was not attempted."
+                ),
+                severity="critical",
+            )
+        )
+
+
 def _require_owned_account(
     db: Session,
     *,
     user_id: str,
     account_id: int,
     lock_for_update: bool = False,
+    refresh_from_database: bool = False,
 ) -> Account:
     account = get_projectx_account_row(
         db,
@@ -10682,7 +12292,46 @@ def _require_owned_account(
     )
     if account is None:
         raise LookupError("account_not_found")
+    if refresh_from_database:
+        db.refresh(account, with_for_update=lock_for_update)
     return account
+
+
+def _latest_account_emergency_action(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    lock_for_update: bool = False,
+) -> AccountEmergencyAction | None:
+    query = (
+        db.query(AccountEmergencyAction)
+        .filter(AccountEmergencyAction.user_id == user_id)
+        .filter(AccountEmergencyAction.account_id == int(account_id))
+        .order_by(AccountEmergencyAction.id.desc())
+    )
+    if lock_for_update:
+        query = query.populate_existing().with_for_update()
+    return query.first()
+
+
+def _require_account_emergency_latch_clear(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+) -> None:
+    action = _latest_account_emergency_action(
+        db,
+        user_id=user_id,
+        account_id=account_id,
+        lock_for_update=True,
+    )
+    if action is not None and str(action.status) in {"pending", "unconfirmed"}:
+        raise AccountEmergencyLatchActiveError(
+            action_id=int(action.id),
+            status=str(action.status),
+        )
 
 
 def _require_projectx_trade_data_source(account: Account) -> None:
@@ -10758,8 +12407,23 @@ def _create_order_attempt(
         ),
     }
     if isinstance(decision.raw_payload, dict):
+        decision_payload = dict(decision.raw_payload)
+        if str(config.strategy_type) == _STRATEGY_SMA_CROSS:
+            sma_params = _normalize_strategy_params(
+                _STRATEGY_SMA_CROSS,
+                config.strategy_params,
+            )
+            decision_payload.setdefault("strategy_type", _STRATEGY_SMA_CROSS)
+            decision_payload.setdefault(
+                "protective_stop_ticks",
+                int(sma_params["protective_stop_ticks"]),
+            )
+            decision_payload.setdefault(
+                "take_profit_ticks",
+                int(sma_params["take_profit_ticks"]),
+            )
         strategy_order_plan = {
-            key: decision.raw_payload[key]
+            key: decision_payload[key]
             for key in [
                 "strategy_type",
                 "signal_category",
@@ -10788,8 +12452,10 @@ def _create_order_attempt(
                 "effective_order_size",
                 "exit_on_opposite_candle",
                 "exit_deadline",
+                "protective_stop_ticks",
+                "take_profit_ticks",
             ]
-            if key in decision.raw_payload
+            if key in decision_payload
         }
         if strategy_order_plan:
             request_payload["strategyOrderPlan"] = strategy_order_plan
@@ -10800,7 +12466,7 @@ def _create_order_attempt(
                 symbol=decision.symbol or config.symbol,
                 action=action,
                 entry_price=float(decision.price) if decision.price is not None else None,
-                decision_payload=decision.raw_payload,
+                decision_payload=decision_payload,
             )
         )
     row = BotOrderAttempt(
@@ -10864,6 +12530,438 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             else safe_error
         )
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
+
+
+def _execute_verified_reduce_only_flatten(
+    *,
+    client: ProjectXClient,
+    account_id: int,
+    contract_id: str,
+    order_attempt: BotOrderAttempt | _BrokerActionAuditAttempt,
+    before_provider_mutation: Callable[[], None] | None = None,
+) -> RiskBlock | None:
+    """Cancel contract orders, close the position, and verify the account is flat.
+
+    ProjectX cancel/close calls are not safely retryable and the close endpoint
+    has no custom idempotency tag.  Every mutation is therefore followed by an
+    authoritative read.  An exception is considered reconciled only when that
+    read proves the requested safe state.
+    """
+
+    audit: dict[str, Any] = {
+        "broker_action": "cancel_orders_then_close_contract",
+        "account_id": int(account_id),
+        "contract_id": str(contract_id),
+        "cancelled_order_ids": [],
+        "cancel_errors": [],
+    }
+
+    def fence_provider_mutation() -> None:
+        if before_provider_mutation is None:
+            return
+        try:
+            before_provider_mutation()
+        except Exception:
+            # Preserve any already-completed cancellation audit if a later
+            # emergency/classification check stops the remaining sequence.
+            order_attempt.raw_response = audit
+            raise
+
+    try:
+        initial_orders = client.search_open_orders(account_id=int(account_id))
+    except Exception as exc:
+        return RiskBlock(
+            code="working_order_reconciliation_unavailable",
+            message=(
+                "Working orders could not be refreshed before the reduce-only flatten: "
+                f"{sanitize_error(exc, max_length=180)}"
+            ),
+            severity="critical",
+        )
+
+    contract_orders: list[dict[str, Any]] = []
+    for row in initial_orders:
+        if not isinstance(row, dict) or int(row.get("account_id", -1)) != int(account_id):
+            return RiskBlock(
+                code="working_order_reconciliation_invalid",
+                message="ProjectX returned an invalid account-scoped working order during flatten.",
+                severity="critical",
+            )
+        if str(row.get("contract_id") or "") == str(contract_id):
+            contract_orders.append(row)
+
+    for row in contract_orders:
+        order_id = row.get("order_id")
+        fence_provider_mutation()
+        try:
+            response = client.cancel_order(account_id=int(account_id), order_id=order_id)
+            audit["cancelled_order_ids"].append(str(order_id))
+            audit.setdefault("cancel_responses", []).append(response.get("raw_payload"))
+        except Exception as exc:
+            audit["cancel_errors"].append(
+                {"order_id": str(order_id), "error": sanitize_error(exc, max_length=180)}
+            )
+
+    try:
+        remaining_orders = client.search_open_orders(account_id=int(account_id))
+    except Exception as exc:
+        remaining_orders = None
+        audit["order_verification_error"] = sanitize_error(exc, max_length=180)
+    if remaining_orders is None:
+        order_attempt.status = "submission_unknown"
+        order_attempt.rejection_reason = "Working-order cancellation could not be verified."
+        order_attempt.raw_response = audit
+        return RiskBlock(
+            code="working_order_cancellation_unconfirmed",
+            message="Working-order cancellation could not be verified; the position was not closed.",
+            severity="critical",
+        )
+
+    remaining_contract_orders = [
+        row
+        for row in remaining_orders
+        if isinstance(row, dict)
+        and int(row.get("account_id", -1)) == int(account_id)
+        and str(row.get("contract_id") or "") == str(contract_id)
+    ]
+    if remaining_contract_orders:
+        audit["remaining_order_ids"] = [
+            str(row.get("order_id")) for row in remaining_contract_orders
+        ]
+        order_attempt.status = "submission_unknown"
+        order_attempt.rejection_reason = "One or more working orders remain after cancellation."
+        order_attempt.raw_response = audit
+        return RiskBlock(
+            code="working_order_cancellation_unconfirmed",
+            message="One or more working provider orders remain; flattening was not attempted.",
+            severity="critical",
+        )
+
+    try:
+        before_close_qty = _provider_contract_position_qty(
+            client.search_open_positions(account_id=int(account_id)),
+            account_id=int(account_id),
+            contract_id=contract_id,
+        )
+    except Exception as exc:
+        audit["position_verification_error"] = sanitize_error(exc, max_length=180)
+        order_attempt.status = "submission_unknown"
+        order_attempt.rejection_reason = "Position state could not be verified after order cancellation."
+        order_attempt.raw_response = audit
+        return RiskBlock(
+            code="position_reconciliation_unavailable",
+            message="Position state could not be verified after cancelling working orders.",
+            severity="critical",
+        )
+    audit["position_before_close"] = before_close_qty
+    if abs(before_close_qty) <= 1e-9:
+        audit["reconciled_noop"] = True
+        audit["position_after_close"] = 0.0
+        order_attempt.status = "submitted"
+        order_attempt.rejection_reason = None
+        order_attempt.raw_response = audit
+        request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
+        request["providerAction"] = "reconciled_flat_noop"
+        request["verifiedFlat"] = True
+        order_attempt.raw_request = request
+        return None
+
+    close_error: Exception | None = None
+    fence_provider_mutation()
+    try:
+        close_response = client.close_position(
+            account_id=int(account_id),
+            contract_id=str(contract_id),
+        )
+        audit["close_response"] = close_response.get("raw_payload")
+    except Exception as exc:
+        close_error = exc
+        audit["close_error"] = sanitize_error(exc, max_length=180)
+
+    try:
+        final_qty = _provider_contract_position_qty(
+            client.search_open_positions(account_id=int(account_id)),
+            account_id=int(account_id),
+            contract_id=contract_id,
+        )
+        final_orders = client.search_open_orders(account_id=int(account_id))
+    except Exception as exc:
+        audit["final_verification_error"] = sanitize_error(exc, max_length=180)
+        final_qty = None
+        final_orders = None
+
+    final_contract_orders = (
+        [
+            row
+            for row in final_orders
+            if isinstance(row, dict)
+            and int(row.get("account_id", -1)) == int(account_id)
+            and str(row.get("contract_id") or "") == str(contract_id)
+        ]
+        if final_orders is not None
+        else None
+    )
+    audit["position_after_close"] = final_qty
+    audit["close_reconciled_after_error"] = bool(close_error is not None and final_qty == 0)
+    if final_qty is not None and abs(final_qty) <= 1e-9 and final_contract_orders == []:
+        order_attempt.status = "submitted"
+        order_attempt.provider_order_id = None
+        order_attempt.rejection_reason = None
+        order_attempt.raw_response = audit
+        request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
+        request["providerAction"] = "Position/closeContract"
+        request["verifiedFlat"] = True
+        order_attempt.raw_request = request
+        return None
+
+    order_attempt.status = "submission_unknown"
+    order_attempt.rejection_reason = (
+        "The broker close outcome is unknown; the contract position was not verified flat."
+    )
+    order_attempt.raw_response = audit
+    return RiskBlock(
+        code="broker_flatten_unconfirmed",
+        message="The broker close outcome could not be verified flat; all new routing is disabled.",
+        severity="critical",
+    )
+
+
+def _execute_verified_account_flatten(
+    *,
+    client: ProjectXClient,
+    account_id: int,
+    order_attempt: _BrokerActionAuditAttempt,
+    progress_heartbeat: Callable[[], None] | None = None,
+) -> RiskBlock | None:
+    """Cancel every account order, close every contract, then verify zero exposure.
+
+    Cancel and close mutations are intentionally issued at most once.  Provider
+    exceptions are reconciled by authoritative reads; only a completely empty
+    account is reported as successful.
+    """
+
+    audit: dict[str, Any] = {
+        "broker_action": "cancel_all_orders_then_close_all_contracts",
+        "scope": "entire_account",
+        "account_id": int(account_id),
+        "cancelled_order_ids": [],
+        "cancel_errors": [],
+        "close_contract_ids": [],
+        "close_errors": [],
+    }
+
+    def unresolved(*, code: str, message: str) -> RiskBlock:
+        order_attempt.status = "submission_unknown"
+        order_attempt.rejection_reason = message
+        order_attempt.raw_response = audit
+        return RiskBlock(code=code, message=message, severity="critical")
+
+    def provider_call(callback: Callable[[], Any]) -> Any:
+        # Renew before and after every bounded broker call.  If a worker stalls
+        # beyond the lease and another request reclaims the action, the old
+        # worker detects ownership loss before issuing its next mutation.
+        if progress_heartbeat is not None:
+            progress_heartbeat()
+        try:
+            return callback()
+        finally:
+            if progress_heartbeat is not None:
+                progress_heartbeat()
+
+    try:
+        initial_orders = _validated_account_open_orders(
+            provider_call(
+                lambda: client.search_open_orders(account_id=int(account_id))
+            ),
+            account_id=int(account_id),
+        )
+    except _AccountEmergencyActionOwnershipLost:
+        raise
+    except Exception as exc:
+        audit["initial_order_reconciliation_error"] = sanitize_error(exc, max_length=180)
+        return unresolved(
+            code="account_working_order_reconciliation_unavailable",
+            message="The account working-order set could not be verified before emergency flattening.",
+        )
+
+    audit["initial_order_ids"] = [str(row.get("order_id")) for row in initial_orders]
+    for row in initial_orders:
+        order_id = row.get("order_id")
+        try:
+            response = provider_call(
+                lambda order_id=order_id: client.cancel_order(
+                    account_id=int(account_id),
+                    order_id=order_id,
+                )
+            )
+            audit["cancelled_order_ids"].append(str(order_id))
+            audit.setdefault("cancel_responses", []).append(response.get("raw_payload"))
+        except _AccountEmergencyActionOwnershipLost:
+            raise
+        except Exception as exc:
+            audit["cancel_errors"].append(
+                {"order_id": str(order_id), "error": sanitize_error(exc, max_length=180)}
+            )
+
+    try:
+        remaining_orders = _validated_account_open_orders(
+            provider_call(
+                lambda: client.search_open_orders(account_id=int(account_id))
+            ),
+            account_id=int(account_id),
+        )
+    except _AccountEmergencyActionOwnershipLost:
+        raise
+    except Exception as exc:
+        audit["order_verification_error"] = sanitize_error(exc, max_length=180)
+        return unresolved(
+            code="account_working_order_cancellation_unconfirmed",
+            message="Account-wide working-order cancellation could not be verified.",
+        )
+    if remaining_orders:
+        audit["remaining_order_ids"] = [str(row.get("order_id")) for row in remaining_orders]
+        return unresolved(
+            code="account_working_order_cancellation_unconfirmed",
+            message="One or more account working orders remain; positions were not closed.",
+        )
+
+    try:
+        before_positions = _provider_account_position_quantities(
+            provider_call(
+                lambda: client.search_open_positions(account_id=int(account_id))
+            ),
+            account_id=int(account_id),
+        )
+    except _AccountEmergencyActionOwnershipLost:
+        raise
+    except Exception as exc:
+        audit["position_verification_error"] = sanitize_error(exc, max_length=180)
+        return unresolved(
+            code="account_position_reconciliation_unavailable",
+            message="Account positions could not be verified after cancelling working orders.",
+        )
+
+    audit["positions_before_close"] = before_positions
+    for contract_id in sorted(before_positions):
+        try:
+            response = provider_call(
+                lambda contract_id=contract_id: client.close_position(
+                    account_id=int(account_id),
+                    contract_id=contract_id,
+                )
+            )
+            audit["close_contract_ids"].append(contract_id)
+            audit.setdefault("close_responses", []).append(response.get("raw_payload"))
+        except _AccountEmergencyActionOwnershipLost:
+            raise
+        except Exception as exc:
+            audit["close_errors"].append(
+                {"contract_id": contract_id, "error": sanitize_error(exc, max_length=180)}
+            )
+
+    try:
+        final_orders = _validated_account_open_orders(
+            provider_call(
+                lambda: client.search_open_orders(account_id=int(account_id))
+            ),
+            account_id=int(account_id),
+        )
+        final_positions = _provider_account_position_quantities(
+            provider_call(
+                lambda: client.search_open_positions(account_id=int(account_id))
+            ),
+            account_id=int(account_id),
+        )
+    except _AccountEmergencyActionOwnershipLost:
+        raise
+    except Exception as exc:
+        audit["final_verification_error"] = sanitize_error(exc, max_length=180)
+        return unresolved(
+            code="broker_account_flatten_unconfirmed",
+            message="The entire account could not be verified flat after broker mutations.",
+        )
+
+    audit["remaining_order_ids"] = [str(row.get("order_id")) for row in final_orders]
+    audit["positions_after_close"] = final_positions
+    audit["reconciled_after_mutation_error"] = bool(
+        (audit["cancel_errors"] or audit["close_errors"])
+        and not final_orders
+        and not final_positions
+    )
+    if final_orders or final_positions:
+        return unresolved(
+            code="broker_account_flatten_unconfirmed",
+            message="The broker account still has an open order or position after emergency flattening.",
+        )
+
+    audit["reconciled_noop"] = not initial_orders and not before_positions
+    order_attempt.status = "submitted"
+    order_attempt.rejection_reason = None
+    order_attempt.raw_response = audit
+    request = dict(order_attempt.raw_request)
+    request["providerAction"] = "account_wide_emergency_flatten"
+    request["verifiedAccountFlat"] = True
+    order_attempt.raw_request = request
+    return None
+
+
+def _validated_account_open_orders(
+    rows: Iterable[dict[str, Any]],
+    *,
+    account_id: int,
+) -> list[dict[str, Any]]:
+    validated: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or int(row.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a working order for the wrong account.")
+        if _normalized_optional_text(row.get("order_id")) is None:
+            raise ProjectXClientError("ProjectX returned a working order without an order ID.")
+        validated.append(row)
+    return validated
+
+
+def _provider_account_position_quantities(
+    positions: Iterable[dict[str, Any]],
+    *,
+    account_id: int,
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for row in positions:
+        if not isinstance(row, dict) or int(row.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a position for the wrong account.")
+        contract_id = _normalized_optional_text(row.get("contract_id"))
+        size = _finite_optional_float(row.get("signed_size"))
+        if contract_id is None or size is None:
+            raise ProjectXClientError("ProjectX returned an invalid account position.")
+        totals[contract_id] = totals.get(contract_id, 0.0) + size
+    if any(not math.isfinite(size) for size in totals.values()):
+        raise ProjectXClientError("ProjectX account position total is not finite.")
+    return {
+        contract_id: size
+        for contract_id, size in totals.items()
+        if abs(size) > 1e-9
+    }
+
+
+def _provider_contract_position_qty(
+    positions: Iterable[dict[str, Any]],
+    *,
+    account_id: int,
+    contract_id: str,
+) -> float:
+    total = 0.0
+    for row in positions:
+        if not isinstance(row, dict) or int(row.get("account_id", -1)) != int(account_id):
+            raise ProjectXClientError("ProjectX returned a position for the wrong account.")
+        if str(row.get("contract_id") or "") != str(contract_id):
+            continue
+        size = _finite_optional_float(row.get("signed_size"))
+        if size is None:
+            raise ProjectXClientError("ProjectX returned an invalid signed open-position size.")
+        total += size
+    if not math.isfinite(total):
+        raise ProjectXClientError("ProjectX open-position total is not finite.")
+    return total
 
 
 def _load_or_resolve_instrument_spec(
@@ -10968,11 +13066,35 @@ def _strategy_protection_block(
         return None
 
     strategy_type = str(payload.get("strategy_type") or config.strategy_type)
+    if strategy_type == _STRATEGY_SMA_CROSS:
+        params = _normalize_strategy_params(_STRATEGY_SMA_CROSS, config.strategy_params)
+        stop_ticks = params.get("protective_stop_ticks")
+        target_ticks = params.get("take_profit_ticks")
+        if (
+            not isinstance(stop_ticks, int)
+            or isinstance(stop_ticks, bool)
+            or stop_ticks <= 0
+            or not isinstance(target_ticks, int)
+            or isinstance(target_ticks, bool)
+            or target_ticks <= 0
+        ):
+            return RiskBlock(
+                code="strategy_protection_ticks_invalid",
+                message="SMA Cross requires positive whole-tick stop and target distances.",
+                severity="critical",
+            )
+        if instrument_spec is None or instrument_spec.tick_value <= 0:
+            return RiskBlock(
+                code="instrument_tick_metadata_missing",
+                message="Valid instrument tick metadata is required to risk-check protective brackets.",
+                severity="critical",
+            )
+        return None
+
     raw_stop = payload.get("stop_loss")
     stop_loss = _finite_optional_float(raw_stop)
     target_present, take_profit = _planned_take_profit(payload)
-    protection_required = strategy_type != _STRATEGY_SMA_CROSS
-    if protection_required and stop_loss is None:
+    if stop_loss is None:
         return RiskBlock(
             code="strategy_stop_loss_missing",
             message="This strategy requires a finite protective stop before an entry can be routed.",
@@ -10990,9 +13112,6 @@ def _strategy_protection_block(
             message="The strategy supplied an invalid take-profit target.",
             severity="critical",
         )
-    if stop_loss is None:
-        return None
-
     entry_price = _finite_optional_float(signal.price)
     if entry_price is None:
         return RiskBlock(
@@ -11036,12 +13155,13 @@ def _order_attempt_protection_block(
 ) -> RiskBlock | None:
     request = order_attempt.raw_request if isinstance(order_attempt.raw_request, dict) else {}
     plan = request.get("strategyOrderPlan") if isinstance(request.get("strategyOrderPlan"), dict) else {}
-    if plan.get("signal_category") == "exit":
+    if (
+        plan.get("execution_classification") == "reduce_only"
+        or request.get("executionIntent") == "reduce_only"
+    ):
         return None
-    strategy_type = str(plan.get("strategy_type") or config.strategy_type)
-    stop_required = strategy_type != _STRATEGY_SMA_CROSS or plan.get("stop_loss") is not None
     stop_bracket = request.get("stopLossBracket")
-    if stop_required and not _valid_bracket_payload(stop_bracket, expected_type=4):
+    if not _valid_bracket_payload(stop_bracket, expected_type=4):
         return RiskBlock(
             code="protective_stop_bracket_missing",
             message="The live order is missing a valid protective stop bracket.",
@@ -11177,6 +13297,26 @@ def _strategy_bracket_payloads(
 ) -> dict[str, Any]:
     if decision_payload.get("signal_category") == "exit":
         return {}
+    direct_stop_ticks = decision_payload.get("protective_stop_ticks")
+    direct_target_ticks = decision_payload.get("take_profit_ticks")
+    if (
+        isinstance(direct_stop_ticks, int)
+        and not isinstance(direct_stop_ticks, bool)
+        and direct_stop_ticks > 0
+    ):
+        payload: dict[str, Any] = {
+            "stopLossBracket": {"ticks": direct_stop_ticks, "type": 4}
+        }
+        if (
+            isinstance(direct_target_ticks, int)
+            and not isinstance(direct_target_ticks, bool)
+            and direct_target_ticks > 0
+        ):
+            payload["takeProfitBracket"] = {
+                "ticks": direct_target_ticks,
+                "type": 1,
+            }
+        return payload
     stop_loss = _finite_optional_float(decision_payload.get("stop_loss"))
     _, take_profit = _planned_take_profit(decision_payload)
     if entry_price is None or stop_loss is None:
@@ -11388,14 +13528,33 @@ def _is_contract_allowed(config: BotConfig, *, contract_id: str, symbol: str | N
 
 
 def _todays_bot_trade_count(db: Session, *, user_id: str, config: BotConfig) -> int:
+    """Legacy compatibility wrapper for the account-wide entry-fill count."""
+
+    return _todays_account_entry_trade_count(
+        db,
+        user_id=user_id,
+        account_id=int(config.account_id),
+    )
+
+
+def _todays_account_entry_trade_count(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+) -> int:
     start, end = trading_day_bounds_utc(trading_day_date(datetime.now(timezone.utc)))
     count = (
-        db.query(func.count(BotOrderAttempt.id))
-        .filter(BotOrderAttempt.user_id == user_id)
-        .filter(BotOrderAttempt.bot_config_id == int(config.id))
-        .filter(BotOrderAttempt.created_at >= start)
-        .filter(BotOrderAttempt.created_at <= end)
-        .filter(BotOrderAttempt.status.in_(["dry_run", "submitted"]))
+        db.query(func.count(ProjectXTradeEvent.id))
+        .filter(ProjectXTradeEvent.user_id == user_id)
+        .filter(ProjectXTradeEvent.account_id == int(account_id))
+        .filter(ProjectXTradeEvent.trade_timestamp >= start)
+        .filter(ProjectXTradeEvent.trade_timestamp <= end)
+        # ProjectX closing executions carry realized P&L; an absent P&L marks
+        # an exposure-increasing entry fill.  Order attempts are deliberately
+        # not counted because rejected/dry-run/exiting orders are not entries.
+        .filter(ProjectXTradeEvent.pnl.is_(None))
+        .filter(_non_voided_trade_event_expr())
         .scalar()
     )
     return int(count or 0)
@@ -11618,10 +13777,27 @@ def _validate_strategy_type(value: Any) -> str:
 
 def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any]:
     normalized_strategy_type = _validate_strategy_type(strategy_type)
-    if normalized_strategy_type in {_STRATEGY_SMA_CROSS, _STRATEGY_EMA_SCALPING}:
+    raw_params = params if isinstance(params, dict) else {}
+    if normalized_strategy_type == _STRATEGY_SMA_CROSS:
+        return {
+            "protective_stop_ticks": _bounded_int_param(
+                raw_params,
+                "protective_stop_ticks",
+                int(_SMA_CROSS_DEFAULTS["protective_stop_ticks"]),
+                minimum=1,
+                maximum=100_000,
+            ),
+            "take_profit_ticks": _bounded_int_param(
+                raw_params,
+                "take_profit_ticks",
+                int(_SMA_CROSS_DEFAULTS["take_profit_ticks"]),
+                minimum=1,
+                maximum=100_000,
+            ),
+        }
+    if normalized_strategy_type == _STRATEGY_EMA_SCALPING:
         return {}
 
-    raw_params = params if isinstance(params, dict) else {}
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
         raw_sources = raw_params.get("source_strategies", _TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES)
         if not isinstance(raw_sources, (list, tuple)):
@@ -13007,6 +15183,29 @@ def _market_candle_interval(*, unit: str, unit_number: int) -> timedelta:
     if normalized_unit not in _UNIT_SECONDS_BY_NAME:
         raise ValueError("unsupported candle unit")
     return timedelta(seconds=_UNIT_SECONDS_BY_NAME[normalized_unit] * max(1, int(unit_number)))
+
+
+def _market_candle_nominal_close(
+    timestamp: datetime,
+    *,
+    unit: str,
+    unit_number: int,
+) -> datetime:
+    normalized_unit = str(unit).strip().lower()
+    normalized_number = int(unit_number)
+    if normalized_number <= 0 or normalized_unit not in _PROJECTX_UNIT_BY_NAME:
+        raise ValueError("unsupported candle unit")
+    timestamp_utc = _as_utc(timestamp)
+    if normalized_unit != "month":
+        return timestamp_utc + timedelta(
+            seconds=_UNIT_SECONDS_BY_NAME[normalized_unit] * normalized_number
+        )
+    month_index = timestamp_utc.year * 12 + timestamp_utc.month - 1 + normalized_number
+    return timestamp_utc.replace(
+        year=month_index // 12,
+        month=month_index % 12 + 1,
+        day=1,
+    )
 
 
 def _as_utc(value: datetime) -> datetime:

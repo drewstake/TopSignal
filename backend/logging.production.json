@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "default": {
+      "format": "%(asctime)s %(levelname)s %(name)s %(message)s"
+    },
+    "access": {
+      "format": "%(asctime)s %(levelname)s %(client_addr)s \"%(request_line)s\" %(status_code)s"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "formatter": "default",
+      "stream": "ext://sys.stderr"
+    },
+    "rotating_file": {
+      "class": "logging.handlers.TimedRotatingFileHandler",
+      "formatter": "default",
+      "filename": "backend/storage/logs/topsignal.log",
+      "when": "midnight",
+      "interval": 1,
+      "backupCount": 14,
+      "encoding": "utf-8",
+      "utc": true
+    },
+    "rotating_access_file": {
+      "class": "logging.handlers.TimedRotatingFileHandler",
+      "formatter": "access",
+      "filename": "backend/storage/logs/access.log",
+      "when": "midnight",
+      "interval": 1,
+      "backupCount": 7,
+      "encoding": "utf-8",
+      "utc": true
+    }
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": ["console", "rotating_file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": ["console", "rotating_file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": ["rotating_access_file"],
+      "level": "INFO",
+      "propagate": false
+    }
+  },
+  "root": {
+    "handlers": ["console", "rotating_file"],
+    "level": "INFO"
+  }
+}

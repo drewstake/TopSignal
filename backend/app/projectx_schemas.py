@@ -26,6 +26,8 @@ class ProjectXAccountOut(BaseModel):
     is_archived: bool = False
     can_trade: bool | None = None
     is_visible: bool | None = None
+    provider_simulated: bool | None = None
+    provider_classification_observed_at: datetime | None = None
     last_trade_at: datetime | None = None
     last_seen_at: datetime | None = None
     provider_data_stale: bool = False
@@ -35,6 +37,13 @@ class ProjectXAccountOut(BaseModel):
     provider_sync_error_message: str | None = None
     provider_last_successful_refresh_at: datetime | None = None
     trade_data_source: ProjectXTradeDataSource
+
+
+class ProjectXAccountAutomationClassificationOut(BaseModel):
+    account_id: int
+    provider_simulated: bool
+    provider_classification_observed_at: datetime
+    source: Literal["projectx_user_hub"]
 
 
 class TopstepLiveAccountCreateIn(BaseModel):

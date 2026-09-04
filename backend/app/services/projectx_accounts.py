@@ -168,6 +168,9 @@ def sync_projectx_accounts(
         row.account_state = payload["account_state"]
         row.can_trade = payload["can_trade"]
         row.is_visible = payload["is_visible"]
+        if isinstance(payload["provider_simulated"], bool):
+            row.provider_simulated = payload["provider_simulated"]
+            row.provider_classification_observed_at = now
         row.last_seen_at = now
         if row.first_seen_at is None:
             row.first_seen_at = now
@@ -588,6 +591,9 @@ def _normalize_provider_account(payload: dict[str, Any]) -> dict[str, Any] | Non
     is_visible_raw = payload.get("is_visible")
     is_visible = is_visible_raw if isinstance(is_visible_raw, bool) else None
 
+    simulated_raw = payload.get("simulated")
+    provider_simulated = simulated_raw if isinstance(simulated_raw, bool) else None
+
     balance_raw = payload.get("balance")
     try:
         balance = float(balance_raw) if balance_raw is not None else None
@@ -602,8 +608,58 @@ def _normalize_provider_account(payload: dict[str, Any]) -> dict[str, Any] | Non
         "balance": balance,
         "can_trade": can_trade,
         "is_visible": is_visible,
+        "provider_simulated": provider_simulated,
         "account_state": account_state_from_flags(can_trade=can_trade, is_visible=is_visible),
     }
+
+
+def persist_projectx_account_classification(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+    simulated: bool,
+    observed_at: datetime | None = None,
+) -> Account:
+    """Persist one tenant-scoped, authoritative ProjectX account classification."""
+
+    if not isinstance(simulated, bool):
+        raise ValueError("provider account simulated classification must be boolean")
+    row = get_projectx_account_row(
+        db,
+        int(account_id),
+        user_id=user_id,
+        lock_for_update=True,
+    )
+    if row is None:
+        raise LookupError("projectx_account_not_found")
+    if row.trade_data_source != TRADE_DATA_SOURCE_PROJECTX:
+        raise ValueError("provider classification requires a ProjectX-backed account")
+    row.provider_simulated = simulated
+    row.provider_classification_observed_at = _as_utc(
+        observed_at or datetime.now(timezone.utc)
+    )
+    return row
+
+
+def invalidate_projectx_account_classification(
+    db: Session,
+    *,
+    user_id: str,
+    account_id: int,
+) -> Account | None:
+    """Fail closed immediately when the authoritative user stream disconnects."""
+
+    row = get_projectx_account_row(
+        db,
+        int(account_id),
+        user_id=user_id,
+        lock_for_update=True,
+    )
+    if row is None:
+        return None
+    row.provider_classification_observed_at = None
+    return row
 
 
 def _as_utc(value: datetime) -> datetime:

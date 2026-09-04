@@ -585,6 +585,20 @@ def test_resampling_uses_session_anchored_buckets_and_preserves_provenance():
             source_file_sha256=HASH_B,
         ),
     ]
+    rows[1:1] = [
+        _RawContinuousBar(
+            timestamp=session_open + timedelta(minutes=minute),
+            instrument_id=101,
+            raw_symbol="MNQM4",
+            open_nano=101_000_000_000,
+            high_nano=103_000_000_000,
+            low_nano=100_000_000_000,
+            close_nano=102_000_000_000,
+            volume=0,
+            source_file_sha256=HASH_A,
+        )
+        for minute in range(1, 89)
+    ]
 
     candles = list(
         resample_databento_bars(
@@ -614,6 +628,48 @@ def test_resampling_uses_session_anchored_buckets_and_preserves_provenance():
     assert candle.source_raw_symbol == "MNQM4"
     assert candle.source_file_sha256 == "multiple"
     assert candle.roll_policy_version == ROLL_POLICY_VERSION
+
+
+def test_resampling_drops_a_nominally_closed_bucket_with_missing_source_minutes():
+    start = datetime(2024, 3, 4, 14, 30, tzinfo=timezone.utc)
+    rows = [
+        _RawContinuousBar(
+            timestamp=start,
+            instrument_id=101,
+            raw_symbol="MNQM4",
+            open_nano=100_000_000_000,
+            high_nano=102_000_000_000,
+            low_nano=99_000_000_000,
+            close_nano=101_000_000_000,
+            volume=4,
+            source_file_sha256=HASH_A,
+        ),
+        _RawContinuousBar(
+            timestamp=start + timedelta(minutes=4),
+            instrument_id=101,
+            raw_symbol="MNQM4",
+            open_nano=101_000_000_000,
+            high_nano=104_000_000_000,
+            low_nano=100_000_000_000,
+            close_nano=103_000_000_000,
+            volume=6,
+            source_file_sha256=HASH_B,
+        ),
+    ]
+
+    candles = list(
+        resample_databento_bars(
+            rows,
+            user_id=OWNER_ID,
+            contract_id=CONTRACT_ID,
+            root_symbol="MNQ",
+            unit="minute",
+            unit_number=5,
+            closed_by=start + timedelta(minutes=5),
+        )
+    )
+
+    assert candles == []
 
 
 def test_replay_loader_enforces_its_in_memory_row_ceiling(db_session):

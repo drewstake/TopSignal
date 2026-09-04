@@ -8,6 +8,13 @@ This repository contains:
 - a FastAPI backend in `backend/`
 - a PostgreSQL schema and raw SQL migrations in `db/`
 
+For an unattended personal-device deployment, follow the checked-in
+[Windows 24/7 operations guide](docs/windows-24x7-operations.md). It covers the
+dedicated non-administrator task identity, immutable release ACLs, prebuilt
+loopback control UI, single-worker supervisor, safe dry-run defaults,
+migrations, health checks, local logs, reboot recovery, power settings, and
+backup/restore drills.
+
 ## Why This Project Exists
 
 ProjectX exposes account and trade data, but the raw provider API is not a good day-to-day analytics workspace by itself. TopSignal exists to solve that gap.
@@ -242,7 +249,7 @@ A user can:
 - search ProjectX contracts from the configuration form
 - choose from multiple strategy types, including SMA Cross, EMA Scalping, Support/Resistance, Donchian Breakout, FVG Sweep + MSS, Liquidity Sweep + Retest, Supertrend Pivot, RVOL Breakout, relative-strength strategies, Bollinger/VWAP/Fisher mean reversion, ORB variants, and pullback/trap strategies
 - set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
-- start a dry-run bot run, evaluate the strategy once, or stop the latest run
+- start a continuously armed dry-run, explicitly arm eligible live routing, evaluate once, or stop future automation
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
 - inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
 - review trade-plan grades when a strategy produces entry, stop, and target prices
@@ -258,7 +265,9 @@ Important bot behaviors:
 
 - The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
 - New configurations default to dry-run mode and are saved disabled.
-- The current UI only starts dry-run runs; live order routing requires backend support plus explicit live confirmation and is not exposed by the page controls.
+- Dry-run is the default. Live routing requires a live-mode configuration, an explicit confirmation, both server-side live gates, a healthy leased worker, and a fresh provider-hub classification proving the account is simulated.
+- **Stop Automation** is local-only: it prevents future evaluations but does not cancel working broker orders or close positions. The separately typed-confirmation emergency control cancels and flattens the entire account, then reports success only after ProjectX verifies no orders or positions remain.
+- Live/funded accounts are fail-closed. This supports Topstep's simulated account workflows; ProjectX API automation must not be used for a Live Funded Account.
 - Bot decisions, runs, order attempts, and risk events are persisted server-side for auditability.
 - Historical backtests read only the local fingerprinted Databento Parquet/mmap cache. They never fetch or fall back to ProjectX candles.
 - The interactive signal chart and live/dry-run evaluation retain their existing closed-bar cache and frontend cache for responsiveness.
@@ -554,10 +563,12 @@ Typical bot workflow:
 2. the user searches ProjectX contracts and saves a named bot configuration
 3. the Signal Chart requests ProjectX candles for the bot contract and selected chart timeframe
 4. `POST /api/bots/{id}/evaluate` computes one selected-strategy decision, persists it, and returns market analysis plus optional trade-plan evaluation
-5. `POST /api/bots/{id}/start` creates or updates a run, evaluates the selected strategy, and records any dry-run order attempt or risk block
-6. `POST /api/bots/{id}/stop` stops the latest running bot run
-7. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
-8. `POST /api/bots/{id}/backtests` binary-slices a prebuilt Databento continuous-root mmap and runs an order-routing-free deterministic replay
+5. `POST /api/bots/{id}/start` creates a durable, explicitly armed run, evaluates once, and allows the single leased worker to adopt continuous runs after restart
+6. `POST /api/bots/{id}/stop` locally stops the latest running bot run without claiming to alter broker state
+7. `POST /api/bots/{id}/emergency-flatten` durably stops automation, cancels all account orders, closes all account positions, and verifies the account is flat
+8. `GET /api/bots/runtime/status` reports worker, lease, provider, classification, and unresolved-submission safety checks
+9. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
+10. `POST /api/bots/{id}/backtests` binary-slices a prebuilt Databento continuous-root mmap and runs an order-routing-free deterministic replay
 
 Risk checks can block execution for disabled bots, non-active accounts, disallowed contracts, stale data, daily trade limits, session windows, position limits, cooldowns, and daily loss constraints.
 
@@ -797,6 +808,15 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `TOPSIGNAL_BACKTEST_RESULT_CACHE_MAX_BYTES` | Conservative estimated memory ceiling for cached replay results; defaults to `268435456` bytes (256 MiB) |
 | `TOPSIGNAL_DEV_BACKEND_PORT` | Preferred backend port for local dev; defaults to `8000` and falls forward when busy |
 | `TOPSIGNAL_LIVE_EXECUTION_ENABLED` | Enables one server-side live-routing gate when set to a true value; defaults disabled, is never sufficient by itself, and is ignored in tests |
+| `TOPSIGNAL_BOT_WORKER_ENABLED` | Enables the database-leased recurring closed-candle evaluator; defaults disabled |
+| `TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION` | Independent worker live-routing gate; defaults disabled and is never sufficient by itself |
+| `TOPSIGNAL_BOT_WORKER_POLL_SECONDS` | Worker scheduler polling interval; defaults to `5` seconds |
+| `TOPSIGNAL_BOT_CANDLE_CLOSE_GRACE_SECONDS` | Delay after a computed candle boundary before evaluation; defaults to `2` seconds |
+| `TOPSIGNAL_BOT_MAX_SCHEDULE_JITTER_SECONDS` | Deterministic maximum worker evaluation jitter; defaults to `3` seconds |
+| `TOPSIGNAL_BOT_WORKER_LEASE_TTL_SECONDS` | Database worker lease duration; defaults to `45` seconds |
+| `TOPSIGNAL_BOT_WORKER_HEARTBEAT_SECONDS` | Worker lease-renewal interval; defaults to `10` seconds and must be less than half the TTL |
+| `TOPSIGNAL_BOT_PROVIDER_PROBE_SECONDS` | Provider health-probe interval for armed runs; defaults to `60` seconds |
+| `TOPSIGNAL_BOT_MAX_RETRY_BACKOFF_SECONDS` | Maximum retry delay after transient provider/runtime errors; defaults to `300` seconds |
 | `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD` | On Windows, set to `1` to use Uvicorn's native reload instead of wrapper-managed backend reload |
 | `JOURNAL_IMAGE_STORAGE_BACKEND` | `local` or `supabase` |
 | `JOURNAL_IMAGE_STORAGE_DIR` | Local journal image directory |
@@ -808,7 +828,7 @@ The repo-level `.env.example` is the source of truth for starter env profiles. I
 | `PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
 | `PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE` | Optional custom subscription payload |
 
-ProjectX user-hub lifecycle persistence is never started from server-wide environment credentials. The streaming service requires an explicit authenticated `user_id`, owned account ID, and per-user client factory; its position state is keyed by user, account, and contract. Until request-driven runtime lifecycle management is wired to deployment infrastructure, startup keeps this path hard-disabled and the UI uses its existing scoped polling/fallback behavior.
+ProjectX user-hub lifecycle persistence is never started from server-wide environment credentials. The process-global stream remains disabled. For each explicitly armed live run, the leased bot worker instead creates a demand-driven runtime with an authenticated `user_id`, owned account ID, and per-user client factory; its state is keyed by user, account, and contract and is stopped when that account no longer has an eligible run.
 
 #### Frontend variables
 
@@ -839,6 +859,8 @@ Frontend auth behavior:
 | `npm run dev` | Run backend and frontend together |
 | `npm run dev:backend` | Run backend dev script |
 | `npm run dev:frontend` | Run frontend dev script |
+| `npm run prod` | From an ACL-hardened non-Git release, apply migrations and supervise the loopback API, bot worker, and prebuilt control UI on Windows |
+| `npm run prod:backend` | Backward-compatible alias of `npm run prod`; it also supervises the production control UI |
 | `npm --prefix frontend run build` | Production frontend build |
 | `npm --prefix frontend run lint` | Frontend lint |
 | `npm --prefix frontend run test` | Frontend tests |
@@ -850,8 +872,8 @@ Frontend auth behavior:
 - There is backend support for per-user ProjectX credentials, but there is no dedicated frontend credentials-management screen in the current routed UI.
 - The repository still carries the legacy `trades` table and `/metrics/*` routes beside the newer `projectx_trade_events` pipeline.
 - The accounts endpoint performs provider sync inline, which can make the first load noticeably slower on large account sets.
-- The optional streaming lifecycle runtime persists position data, but the current UI does not expose those records directly.
-- The bot page exposes dry-run start/evaluate/stop controls, while live order routing remains backend-gated and intentionally absent from the current UI.
+- The optional streaming lifecycle runtime persists position data, while the bot worker starts account-scoped user-hub streams only for explicitly armed live runs.
+- Live order routing remains deliberately multi-gated and limited to freshly verified simulated accounts. Passing tests and a green readiness endpoint do not replace a multi-session Practice soak or operator supervision.
 - Schema evolution uses the checksummed migration runner; startup compatibility helpers remain as a temporary local-development safety net.
 - Backtest concurrency limits are process-local. Use a single API worker until a distributed queue or lease is added for multi-worker or multi-replica deployments.
 - Expense combine tracking is partly client-side, so it is not a fully server-authoritative accounting subsystem.
@@ -861,6 +883,7 @@ Frontend auth behavior:
 - `db.md`: database design, persistence model, and trade-ingestion notes
 - `db/README.md`: fresh schema and migration application instructions
 - `docs/perf-notes.md`: dashboard and accounts performance findings and fixes
+- `docs/windows-24x7-operations.md`: personal-Windows-laptop deployment, startup, readiness, recovery, and Practice-soak checklist
 - `frontend/README.md`: frontend architecture, routes, API client behavior, and local frontend development
 
 ## Summary

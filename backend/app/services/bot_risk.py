@@ -40,6 +40,17 @@ class RiskEvaluationContext:
     inside_trading_session: bool
     delayed_session_block: RiskBlock | None = None
     cooldown_block: RiskBlock | None = None
+    position_reducing: bool = False
+    defer_entry_risk_until_authoritative: bool = False
+    account_automation_eligible: bool | None = None
+    require_account_classification: bool = False
+    account_gross_position_qty: float = 0.0
+    max_account_gross_position: float | None = None
+    account_unrealized_pnl: float = 0.0
+    unrealized_pnl_complete: bool = True
+    proposed_stop_risk: float | None = None
+    require_proposed_stop_risk: bool = False
+    exchange_session_open: bool = True
 
 
 def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
@@ -105,7 +116,37 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                     severity="critical",
                 )
             )
-    if not context.contract_allowed:
+        if context.require_account_classification:
+            if context.account_automation_eligible is None:
+                blocks.append(
+                    RiskBlock(
+                        code="account_automation_classification_unknown",
+                        message=(
+                            "ProjectX did not explicitly classify this account as simulated. "
+                            "Connect the ProjectX account stream and wait for a fresh "
+                            "GatewayUserAccount classification before live automation can route."
+                        ),
+                        severity="critical",
+                    )
+                )
+            elif not context.account_automation_eligible:
+                blocks.append(
+                    RiskBlock(
+                        code="account_type_not_eligible_for_automation",
+                        message="ProjectX classifies this account as non-simulated; live automation is blocked.",
+                        severity="critical",
+                    )
+                )
+
+    # Checks below this point govern creation or growth of exposure.  A verified
+    # reduction must remain available when a daily/session/data entry gate has
+    # fired.  The first live pass deliberately defers these checks until the
+    # account-locked provider preflight can classify the action authoritatively.
+    entry_risk_applies = not (
+        context.position_reducing or context.defer_entry_risk_until_authoritative
+    )
+
+    if entry_risk_applies and not context.contract_allowed:
         blocks.append(RiskBlock(code="contract_not_allowed", message="Contract is outside this bot's allowed contract list."))
     order_size_is_finite = math.isfinite(context.order_size)
     resulting_position_is_finite = math.isfinite(context.resulting_position_qty)
@@ -137,7 +178,9 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                 severity="critical",
             )
         )
-    if not max_contracts_is_valid or not max_open_position_is_valid:
+    if entry_risk_applies and (
+        not max_contracts_is_valid or not max_open_position_is_valid
+    ):
         blocks.append(
             RiskBlock(
                 code="invalid_position_limit",
@@ -148,45 +191,119 @@ def evaluate_risk(context: RiskEvaluationContext) -> list[RiskBlock]:
                 severity="critical",
             )
         )
-    elif resulting_position_is_finite:
+    elif resulting_position_is_finite and entry_risk_applies:
         if abs(context.resulting_position_qty) > context.max_contracts:
             blocks.append(RiskBlock(code="max_contracts", message="Resulting position exceeds max contracts."))
         if abs(context.resulting_position_qty) > context.max_open_position:
             blocks.append(RiskBlock(code="max_open_position", message="Resulting position exceeds max open position setting."))
-    if context.trades_today >= context.max_trades_per_day:
-        blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
-    if not math.isfinite(context.daily_pnl) or not math.isfinite(context.max_daily_loss):
-        blocks.append(
-            RiskBlock(
-                code="invalid_daily_pnl_risk_data",
-                message="Daily P&L risk data is not finite.",
-                severity="critical",
-            )
+    if entry_risk_applies:
+        account_gross_is_valid = math.isfinite(context.account_gross_position_qty)
+        max_account_gross_is_valid = (
+            context.max_account_gross_position is not None
+            and math.isfinite(context.max_account_gross_position)
+            and context.max_account_gross_position > 0
         )
-    elif context.daily_pnl <= -context.max_daily_loss:
-        blocks.append(
-            RiskBlock(
-                code="max_daily_loss",
-                message="Account has reached the configured daily loss limit.",
-                severity="critical",
+        if context.max_account_gross_position is not None and (
+            not account_gross_is_valid or not max_account_gross_is_valid
+        ):
+            blocks.append(
+                RiskBlock(
+                    code="invalid_account_exposure_risk_data",
+                    message="Authoritative account-wide exposure data is invalid.",
+                    severity="critical",
+                )
             )
-        )
-    if context.delayed_session_block is not None:
-        blocks.append(context.delayed_session_block)
-    if context.latest_candle_age_seconds is None:
-        blocks.append(
-            RiskBlock(
-                code="missing_market_data",
-                message="No closed candle data is available.",
-                severity="critical",
+        elif (
+            context.max_account_gross_position is not None
+            and context.account_gross_position_qty > context.max_account_gross_position
+        ):
+            blocks.append(
+                RiskBlock(
+                    code="max_account_gross_position",
+                    message="Resulting account-wide gross position exceeds the configured position limit.",
+                    severity="critical",
+                )
             )
+
+        if context.trades_today >= context.max_trades_per_day:
+            blocks.append(RiskBlock(code="max_trades_per_day", message="Daily bot trade limit has been reached."))
+
+        daily_values_are_finite = (
+            math.isfinite(context.daily_pnl)
+            and math.isfinite(context.max_daily_loss)
+            and math.isfinite(context.account_unrealized_pnl)
         )
-    elif context.latest_candle_age_seconds > context.max_data_staleness_seconds:
-        blocks.append(RiskBlock(code="stale_market_data", message="Latest candle is stale.", severity="critical"))
-    if not context.inside_trading_session:
-        blocks.append(RiskBlock(code="outside_session", message="Current time is outside the bot trading session."))
-    if context.cooldown_block is not None:
-        blocks.append(context.cooldown_block)
+        if not context.unrealized_pnl_complete:
+            blocks.append(
+                RiskBlock(
+                    code="account_unrealized_pnl_unavailable",
+                    message="Authoritative unrealized P&L is unavailable for one or more open account positions.",
+                    severity="critical",
+                )
+            )
+        elif not daily_values_are_finite:
+            blocks.append(
+                RiskBlock(
+                    code="invalid_daily_pnl_risk_data",
+                    message="Daily realized or unrealized P&L risk data is not finite.",
+                    severity="critical",
+                )
+            )
+        else:
+            account_day_pnl = context.daily_pnl + context.account_unrealized_pnl
+            if account_day_pnl <= -context.max_daily_loss:
+                blocks.append(
+                    RiskBlock(
+                        code="max_daily_loss",
+                        message="Account has reached the configured daily loss limit including unrealized P&L.",
+                        severity="critical",
+                    )
+                )
+            if context.require_proposed_stop_risk:
+                stop_risk = context.proposed_stop_risk
+                if stop_risk is None or not math.isfinite(stop_risk) or stop_risk <= 0:
+                    blocks.append(
+                        RiskBlock(
+                            code="proposed_stop_risk_unavailable",
+                            message="The proposed entry's provider-held stop risk could not be verified.",
+                            severity="critical",
+                        )
+                    )
+                elif account_day_pnl - stop_risk <= -context.max_daily_loss:
+                    blocks.append(
+                        RiskBlock(
+                            code="proposed_stop_risk_exceeds_daily_loss_budget",
+                            message=(
+                                "The proposed entry's stop risk exceeds the account's remaining daily loss budget."
+                            ),
+                            severity="critical",
+                        )
+                    )
+
+        if context.delayed_session_block is not None:
+            blocks.append(context.delayed_session_block)
+        if context.latest_candle_age_seconds is None:
+            blocks.append(
+                RiskBlock(
+                    code="missing_market_data",
+                    message="No closed candle data is available.",
+                    severity="critical",
+                )
+            )
+        elif context.latest_candle_age_seconds > context.max_data_staleness_seconds:
+            blocks.append(RiskBlock(code="stale_market_data", message="Latest candle is stale.", severity="critical"))
+        if not context.inside_trading_session:
+            blocks.append(RiskBlock(code="outside_session", message="Current time is outside the bot trading session."))
+        if not context.exchange_session_open:
+            blocks.append(
+                RiskBlock(
+                    code="exchange_session_closed",
+                    message="The exchange session is closed for this contract.",
+                    severity="critical",
+                )
+            )
+        if context.cooldown_block is not None:
+            blocks.append(context.cooldown_block)
     if context.action not in {"BUY", "SELL"}:
         blocks.append(RiskBlock(code="unsupported_action", message="Only BUY and SELL actions can create order attempts."))
     return blocks

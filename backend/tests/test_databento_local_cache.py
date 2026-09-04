@@ -332,7 +332,7 @@ def test_build_creates_partitioned_parquet_and_persistent_memmaps(
     assert manifest["source_fingerprint"] == tiny_cache.source_fingerprint
     assert manifest["records_by_schema"] == {"definition": 1, "ohlcv-1m": 6}
     assert set(manifest["series"]) == {"MNQ:1m", "MNQ:5m"}
-    for timeframe, expected_rows in (("1m", 6), ("5m", 2)):
+    for timeframe, expected_rows in (("1m", 6), ("5m", 1)):
         entry = manifest["series"][f"MNQ:{timeframe}"]
         series_dir = tiny_cache.version_dir / entry["path"]
         assert entry["rows"] == expected_rows
@@ -622,12 +622,13 @@ def test_lazy_mmap_view_matches_eager_fields_and_exposes_o1_slices(
         store.clear()
 
 
-def test_nonaligned_source_start_exposes_first_partial_resampled_bucket(
+def test_nonaligned_source_start_drops_partial_and_exposes_first_complete_bucket(
     tmp_path: Path,
 ):
     raw_start = datetime(2024, 3, 4, 14, 32, tzinfo=timezone.utc)
     archives, _ = _tiny_mnq_archives(
         tmp_path / "archives",
+        bar_count=8,
         start=raw_start,
     )
     cache_root = tmp_path / "cache"
@@ -640,7 +641,7 @@ def test_nonaligned_source_start_exposes_first_partial_resampled_bucket(
     try:
         bounds = store.history_bounds("MNQ")
         assert bounds is not None
-        assert bounds[0] == datetime(2024, 3, 4, 14, 30, tzinfo=timezone.utc)
+        assert bounds[0] == raw_start
         candles = store.load_candles(
             user_id=OWNER_ID,
             contract_id=CONTRACT_ID,
@@ -652,7 +653,7 @@ def test_nonaligned_source_start_exposes_first_partial_resampled_bucket(
             closed_by=raw_start + timedelta(minutes=8),
         )
         assert [row.candle_timestamp for row in candles] == [
-            datetime(2024, 3, 4, 14, 30, tzinfo=timezone.utc),
+            datetime(2024, 3, 4, 14, 35, tzinfo=timezone.utc),
         ]
         assert (
             candles[0].open_price,
@@ -660,7 +661,7 @@ def test_nonaligned_source_start_exposes_first_partial_resampled_bucket(
             candles[0].low_price,
             candles[0].close_price,
             candles[0].volume,
-        ) == (100.0, 104.0, 99.0, 102.5, 33)
+        ) == (103.0, 109.0, 102.0, 107.5, 75)
     finally:
         store.clear()
 

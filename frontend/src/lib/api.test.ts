@@ -78,6 +78,24 @@ describe("accountsApi", () => {
     });
   });
 
+  it("requests one fresh account automation classification", async () => {
+    const observed = {
+      account_id: 7301,
+      provider_simulated: true,
+      provider_classification_observed_at: "2026-09-04T02:15:00Z",
+      source: "projectx_user_hub",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(observed));
+
+    await expect(accountsApi.refreshAutomationClassification(7301)).resolves.toEqual(observed);
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe(
+      "http://127.0.0.1:8000/api/accounts/7301/automation-classification/refresh",
+    );
+    expect(init?.method).toBe("POST");
+  });
+
   it("reads persisted combine suppressions and distinguishes user deletion from duplicate cleanup", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(
@@ -585,6 +603,71 @@ describe("botsApi", () => {
     expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({
       Authorization: `Bearer ${token}`,
     });
+  });
+
+  it("returns the structured emergency-flatten safety result when the provider cannot verify flat", async () => {
+    const unconfirmed = {
+      run: {
+        id: 90,
+        bot_config_id: 42,
+        account_id: 7301,
+        status: "stopped",
+        dry_run: false,
+        started_at: "2026-09-03T12:00:00Z",
+        stopped_at: "2026-09-03T12:01:00Z",
+        stop_reason: "manual_emergency_flatten",
+        last_heartbeat_at: null,
+      },
+      confirmed_flat: false,
+      status: "unconfirmed",
+      risk_block: {
+        code: "broker_account_flatten_unconfirmed",
+        message: "The provider still reports exposure.",
+        severity: "critical",
+      },
+      audit: { scope: "entire_account" },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify(unconfirmed), {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(botsApi.emergencyFlatten(42, true)).resolves.toEqual(unconfirmed);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/bots/42/emergency-flatten");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ confirm_broker_flatten: true });
+  });
+
+  it("uses the account kill switch without requiring a bot config", async () => {
+    const unconfirmed = {
+      account_id: 7301,
+      audit_id: 91,
+      confirmed_flat: false,
+      status: "unconfirmed",
+      risk_block: {
+        code: "broker_account_flatten_unconfirmed",
+        message: "The provider still reports exposure.",
+        severity: "critical",
+      },
+      audit: { scope: "entire_account" },
+      disabled_bot_config_ids: [42, 43],
+      stopped_bot_run_ids: [90],
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify(unconfirmed), {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(botsApi.emergencyFlattenAccount(7301, true)).resolves.toEqual(unconfirmed);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/accounts/7301/emergency-flatten");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ confirm_broker_flatten: true });
   });
 
   it("posts one date-free full-history request to the plural backend route", async () => {

@@ -8,6 +8,7 @@ from app.services.technical_indicators import (
     detect_candlestick_patterns,
     detect_fair_value_gaps,
     detect_order_blocks,
+    session_vwap_values,
     waddah_attar_explosion,
 )
 
@@ -116,3 +117,34 @@ def test_waddah_attar_and_snapshot_return_projectx_style_indicator_state():
     }
     assert snapshot["waddah_attar"] is not None
     assert "active_count" in snapshot["fair_value_gaps"]
+
+
+def test_session_vwap_uses_dst_safe_futures_trading_day_boundaries():
+    candles = [
+        _candle(
+            0,
+            100,
+            candle_timestamp=datetime(2026, 3, 9, 21, 55, tzinfo=timezone.utc),
+            high_price=100,
+            low_price=100,
+            volume=1,
+        ),
+        _candle(
+            1,
+            200,
+            candle_timestamp=datetime(2026, 3, 9, 22, 0, tzinfo=timezone.utc),
+            high_price=200,
+            low_price=200,
+            volume=1,
+        ),
+        _candle(
+            2,
+            300,
+            candle_timestamp=datetime(2026, 3, 10, 0, 0, tzinfo=timezone.utc),
+            high_price=300,
+            low_price=300,
+            volume=1,
+        ),
+    ]
+
+    assert session_vwap_values(candles) == [100, 200, 250]

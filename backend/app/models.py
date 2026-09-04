@@ -43,6 +43,8 @@ class Account(Base):
     name = Column(Text, nullable=True)
     display_name = Column(Text, nullable=True)
     balance = Column(Numeric(18, 6), nullable=True)
+    provider_simulated = Column(Boolean, nullable=True)
+    provider_classification_observed_at = Column(DateTime(timezone=True), nullable=True)
     account_state = Column(Text, nullable=False, server_default="ACTIVE")
     can_trade = Column(Boolean, nullable=True)
     is_visible = Column(Boolean, nullable=True)
@@ -875,6 +877,122 @@ class BotRun(Base):
             unique=True,
             postgresql_where=text("status = 'running'"),
             sqlite_where=text("status = 'running'"),
+        ),
+        Index(
+            "uq_bot_runs_one_live_running_per_account",
+            "user_id",
+            "account_id",
+            unique=True,
+            postgresql_where=text("status = 'running' and not dry_run"),
+            sqlite_where=text("status = 'running' and dry_run = 0"),
+        ),
+    )
+
+
+class BotRuntimeLease(Base):
+    """Database-backed ownership lease for the recurring bot evaluator.
+
+    The lease is deliberately independent from any user or bot.  It elects one
+    evaluator process for the whole deployment while BotRun remains the durable
+    per-bot authorization and lifecycle record.
+    """
+
+    __tablename__ = "bot_runtime_leases"
+
+    lease_name = Column(Text, primary_key=True)
+    owner_id = Column(Text, nullable=False)
+    acquired_at = Column(DateTime(timezone=True), nullable=False)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    details = Column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "expires_at > heartbeat_at",
+            name="bot_runtime_leases_expiry_after_heartbeat_check",
+        ),
+        Index("idx_bot_runtime_leases_expires", "expires_at"),
+    )
+
+
+class AccountEmergencyAction(Base):
+    """Durable account-level kill-switch and broker-flatten audit record.
+
+    This record deliberately does not reference a bot configuration.  An
+    operator must be able to reduce account risk even when no bot exists (or a
+    prior configuration was deleted), and the audit must survive either case.
+    """
+
+    __tablename__ = "account_emergency_actions"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    user_id = Column(
+        USER_ID_TYPE,
+        nullable=False,
+        server_default=text(f"'{DEFAULT_USER_ID}'"),
+    )
+    account_id = Column(BigInteger, nullable=False)
+    provider = Column(Text, nullable=False, default="projectx", server_default="projectx")
+    status = Column(Text, nullable=False, default="pending", server_default="pending")
+    confirmed_flat = Column(Boolean, nullable=False, default=False, server_default="false")
+    reason = Column(Text, nullable=False, default="manual_emergency_flatten", server_default="manual_emergency_flatten")
+    risk_code = Column(Text, nullable=True)
+    risk_message = Column(Text, nullable=True)
+    risk_severity = Column(Text, nullable=True)
+    # A pending action is a short, renewable lease rather than a permanent
+    # tombstone.  A later explicit emergency request may safely reclaim an
+    # expired lease and reconcile the broker's *current* state after a process
+    # crash, while a fresh lease suppresses concurrent duplicate mutations.
+    lease_owner_id = Column(Text, nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=1, server_default="1")
+    request_payload = Column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+    result_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending','confirmed_account_flat','unconfirmed')",
+            name="account_emergency_actions_status_check",
+        ),
+        CheckConstraint(
+            "risk_severity is null or risk_severity in ('info','warning','critical')",
+            name="account_emergency_actions_risk_severity_check",
+        ),
+        CheckConstraint(
+            "(status = 'confirmed_account_flat' and confirmed_flat) or "
+            "(status <> 'confirmed_account_flat' and not confirmed_flat)",
+            name="account_emergency_actions_confirmation_consistency_check",
+        ),
+        CheckConstraint(
+            "(status = 'pending' and completed_at is null) or "
+            "(status <> 'pending' and completed_at is not null)",
+            name="account_emergency_actions_completion_consistency_check",
+        ),
+        CheckConstraint(
+            "status <> 'pending' or "
+            "(lease_owner_id is not null and lease_expires_at is not null)",
+            name="account_emergency_actions_pending_lease_check",
+        ),
+        CheckConstraint(
+            "attempt_count >= 1",
+            name="account_emergency_actions_attempt_count_check",
+        ),
+        Index(
+            "idx_account_emergency_actions_user_account_created",
+            "user_id",
+            "account_id",
+            created_at.desc(),
+        ),
+        Index(
+            "uq_account_emergency_actions_one_pending",
+            "user_id",
+            "account_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
         ),
     )
 

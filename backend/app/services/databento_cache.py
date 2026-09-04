@@ -28,13 +28,13 @@ from databento_dbn import (
     StatMsg,
 )
 
-from .trading_day import trading_day_bounds_utc, trading_day_date
+from .trading_day import futures_session_is_open, trading_day_bounds_utc, trading_day_date
 
 
 DATASET = "GLBX.MDP3"
 SUPPORTED_ROOTS = frozenset({"MNQ", "MES", "NQ", "ES"})
 ROLL_POLICY_VERSION = "volume_previous_completed_session_v1"
-CACHE_FORMAT_VERSION = 3
+CACHE_FORMAT_VERSION = 4
 DEFAULT_TIMEFRAMES = (
     ("minute", 1),
     ("minute", 5),
@@ -1393,7 +1393,7 @@ def _series_fingerprint(
         "root_symbol": root_symbol,
         "unit": unit,
         "unit_number": int(unit_number),
-        "resampling": "globex_session_anchored_ohlcv_v1",
+        "resampling": "globex_session_anchored_complete_ohlcv_v2",
     }
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
@@ -3203,6 +3203,7 @@ def _build_resampled_series(
     transitions = (
         (bucket_starts[1:] != bucket_starts[:-1])
         | (raw_symbol_codes[1:] != raw_symbol_codes[:-1])
+        | (instrument_ids[1:] != instrument_ids[:-1])
     )
     group_starts = np.concatenate(
         (np.array([0], dtype=np.int64), np.flatnonzero(transitions) + 1)
@@ -3210,7 +3211,19 @@ def _build_resampled_series(
     group_ends = np.concatenate(
         (group_starts[1:], np.array([rows], dtype=np.int64))
     )
-    output_rows = int(group_starts.size)
+    complete_groups = _complete_resample_group_mask(
+        timestamps=timestamps,
+        bucket_starts=bucket_starts,
+        bucket_ends=bucket_ends,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        root_symbol=root_symbol,
+    )
+    output_rows = int(np.count_nonzero(complete_groups))
+    if output_rows == 0:
+        raise DatabentoCacheError(
+            f"databento_complete_resampled_rows_missing:{root_symbol}:{unit}:{unit_number}"
+        )
     dtypes: dict[str, Any] = {
         "timestamp_ns": np.int64,
         "close_timestamp_ns": np.int64,
@@ -3229,24 +3242,26 @@ def _build_resampled_series(
         )
         for name, dtype in dtypes.items()
     }
-    output["timestamp_ns"][:] = bucket_starts[group_starts]
-    output["close_timestamp_ns"][:] = bucket_ends[group_starts]
-    output["open_nano"][:] = np.asarray(arrays["open_nano"])[group_starts]
+    selected_starts = group_starts[complete_groups]
+    selected_ends = group_ends[complete_groups]
+    output["timestamp_ns"][:] = bucket_starts[selected_starts]
+    output["close_timestamp_ns"][:] = bucket_ends[selected_starts]
+    output["open_nano"][:] = np.asarray(arrays["open_nano"])[selected_starts]
     output["high_nano"][:] = np.maximum.reduceat(
         np.asarray(arrays["high_nano"]), group_starts
-    )
+    )[complete_groups]
     output["low_nano"][:] = np.minimum.reduceat(
         np.asarray(arrays["low_nano"]), group_starts
-    )
-    output["close_nano"][:] = np.asarray(arrays["close_nano"])[group_ends - 1]
+    )[complete_groups]
+    output["close_nano"][:] = np.asarray(arrays["close_nano"])[selected_ends - 1]
     output["volume"][:] = np.add.reduceat(
         np.asarray(arrays["volume"], dtype=np.uint64), group_starts
-    )
-    output["instrument_id"][:] = instrument_ids[group_starts]
-    output["raw_symbol_code"][:] = raw_symbol_codes[group_starts]
-    output["session_ordinal"][:] = session_ordinals[group_starts]
+    )[complete_groups]
+    output["instrument_id"][:] = instrument_ids[selected_starts]
+    output["raw_symbol_code"][:] = raw_symbol_codes[selected_starts]
+    output["session_ordinal"][:] = session_ordinals[selected_starts]
     first_timestamp_ns = int(output["timestamp_ns"][0])
-    source_end_ns = int(base_entry["source_end_ns"])
+    source_end_ns = int(output["close_timestamp_ns"][-1])
     for array in output.values():
         array.flush()
         _close_memmap(array)
@@ -3266,3 +3281,63 @@ def _build_resampled_series(
         "source_end_ns": source_end_ns,
         "raw_symbols_by_code": _raw_symbols_by_code(manifest, root_symbol),
     }
+
+
+def _complete_resample_group_mask(
+    *,
+    timestamps: np.ndarray,
+    bucket_starts: np.ndarray,
+    bucket_ends: np.ndarray,
+    group_starts: np.ndarray,
+    group_ends: np.ndarray,
+    root_symbol: str,
+) -> np.ndarray:
+    """Drop aggregates that omit any open-session one-minute constituent."""
+
+    minute_ns = 60_000_000_000
+    first_timestamps = timestamps[group_starts]
+    last_timestamps = timestamps[group_ends - 1]
+    row_counts = group_ends - group_starts
+    contiguous_counts = ((last_timestamps - first_timestamps) // minute_ns) + 1
+    suspect = (
+        (row_counts != contiguous_counts)
+        | (first_timestamps != bucket_starts[group_starts])
+        | (last_timestamps + minute_ns != bucket_ends[group_starts])
+    )
+    if not bool(np.any(suspect)):
+        return np.ones(group_starts.size, dtype=np.bool_)
+
+    complete = np.ones(group_starts.size, dtype=np.bool_)
+    for group_index in np.flatnonzero(suspect):
+        start_index = int(group_starts[group_index])
+        end_index = int(group_ends[group_index])
+        complete[group_index] = _covers_every_open_minute(
+            np.asarray(timestamps[start_index:end_index], dtype=np.int64),
+            start_ns=int(bucket_starts[start_index]),
+            end_ns=int(bucket_ends[start_index]),
+            root_symbol=root_symbol,
+        )
+    return complete
+
+
+def _covers_every_open_minute(
+    actual_timestamps: np.ndarray,
+    *,
+    start_ns: int,
+    end_ns: int,
+    root_symbol: str,
+) -> bool:
+    minute_ns = 60_000_000_000
+    actual_index = 0
+    cursor_ns = int(start_ns)
+    while cursor_ns < int(end_ns):
+        cursor = _datetime_from_ns(cursor_ns)
+        if futures_session_is_open(cursor, symbol=root_symbol):
+            if (
+                actual_index >= int(actual_timestamps.size)
+                or int(actual_timestamps[actual_index]) != cursor_ns
+            ):
+                return False
+            actual_index += 1
+        cursor_ns += minute_ns
+    return actual_index == int(actual_timestamps.size)

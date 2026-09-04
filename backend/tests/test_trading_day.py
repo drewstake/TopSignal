@@ -53,3 +53,22 @@ def test_equity_schedule_excludes_modern_holiday_closures():
         datetime(2026, 12, 25, 15, 0, tzinfo=timezone.utc),
         symbol="MNQ",
     ) is False
+
+
+def test_unknown_root_fails_closed_for_obvious_major_holiday_closures():
+    assert futures_session_is_open(
+        datetime(2026, 12, 25, 15, 0, tzinfo=timezone.utc),
+        symbol="UNMAPPED",
+    ) is False
+    assert futures_session_is_open(
+        datetime(2026, 7, 3, 17, 0, tzinfo=timezone.utc),
+        symbol="UNMAPPED",
+    ) is False
+
+
+def test_new_year_observed_on_prior_december_31_is_closed():
+    # Jan 1, 2022 was Saturday, so the exchange holiday was observed Friday.
+    assert futures_session_is_open(
+        datetime(2021, 12, 31, 17, 0, tzinfo=timezone.utc),
+        symbol="MNQ",
+    ) is False

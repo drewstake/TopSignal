@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..models import DatabentoInstrument, DatabentoOhlcv1m, DatabentoRollSchedule
 from .databento_ingestion import MNQ_HISTORY_START_UTC, SUPPORTED_DATASET
-from .trading_day import as_utc, trading_day_bounds_utc
+from .trading_day import as_utc, futures_session_is_open, trading_day_bounds_utc
 
 
 ROLL_POLICY_VERSION = "volume_previous_completed_session_v1"
@@ -407,6 +407,7 @@ def resample_databento_bars(
                 "volume": row.volume,
                 "source_hash": row.source_file_sha256,
                 "roll_policy_version": row.roll_policy_version,
+                "timestamps": [timestamp],
             }
         else:
             if row.raw_symbol != bucket["raw_symbol"]:
@@ -421,6 +422,7 @@ def resample_databento_bars(
                 raise DatabentoMarketDataError(
                     "databento_roll_policy_changed_within_bucket"
                 )
+            bucket["timestamps"].append(timestamp)
     if bucket is not None:
         candle = _finish_bucket(
             bucket,
@@ -482,6 +484,11 @@ def _finish_bucket(
 ) -> DatabentoReplayCandle | None:
     if as_utc(bucket["end"]) > cutoff:
         return None
+    if not _bucket_has_complete_open_minute_coverage(
+        bucket,
+        root_symbol=root_symbol,
+    ):
+        return None
     return DatabentoReplayCandle(
         user_id=user_id,
         contract_id=contract_id,
@@ -505,6 +512,25 @@ def _finish_bucket(
         roll_policy_version=str(bucket["roll_policy_version"]),
         nominal_close_time=as_utc(bucket["end"]),
     )
+
+
+def _bucket_has_complete_open_minute_coverage(
+    bucket: Mapping[str, Any],
+    *,
+    root_symbol: str,
+) -> bool:
+    actual = tuple(as_utc(value) for value in bucket.get("timestamps", ()))
+    if not actual or len(actual) != len(set(actual)):
+        return False
+
+    expected: list[datetime] = []
+    cursor = as_utc(bucket["start"])
+    end = as_utc(bucket["end"])
+    while cursor < end:
+        if futures_session_is_open(cursor, symbol=root_symbol):
+            expected.append(cursor)
+        cursor += timedelta(minutes=1)
+    return actual == tuple(expected)
 
 
 def _bucket_bounds(

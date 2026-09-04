@@ -1,9 +1,12 @@
 import json
 import os
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.main as main_module
+from app.bot_worker import BotWorkerRuntime, BotWorkerSettings
 
 
 class _Result:
@@ -52,10 +55,12 @@ class _Inspector:
 
     def get_table_names(self):
         tables = [
+            "account_emergency_actions",
             "accounts",
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
+            "bot_runtime_leases",
             "expense_suppressions",
             "projectx_trade_events",
             "trade_import_batches",
@@ -78,10 +83,29 @@ class _Inspector:
         return [table for table in tables if table != self.missing_table]
 
     def get_columns(self, table_name):
+        if table_name == "account_emergency_actions":
+            return [
+                {"name": column_name, "nullable": column_name in {"result_payload", "completed_at"}}
+                for column_name in {
+                    "id",
+                    "user_id",
+                    "account_id",
+                    "status",
+                    "confirmed_flat",
+                    "lease_owner_id",
+                    "lease_expires_at",
+                    "attempt_count",
+                    "request_payload",
+                    "result_payload",
+                    "completed_at",
+                }
+            ]
         if table_name == "accounts":
             return [
                 {"name": "balance", "nullable": True},
                 {"name": "trade_data_source", "nullable": False},
+                {"name": "provider_simulated", "nullable": True},
+                {"name": "provider_classification_observed_at", "nullable": True},
             ]
         if table_name == "trade_import_batches":
             return [
@@ -180,6 +204,20 @@ class _Inspector:
         ]
 
     def get_check_constraints(self, table_name):
+        if table_name == "account_emergency_actions":
+            return [
+                {
+                    "sqltext": (
+                        "status in ('pending','confirmed_account_flat','unconfirmed') "
+                        "and ((status = 'confirmed_account_flat' and confirmed_flat) "
+                        "or (status <> 'confirmed_account_flat' and not confirmed_flat)) "
+                        "and ((status = 'pending' and completed_at is null) "
+                        "or (status <> 'pending' and completed_at is not null)) "
+                        "and (status <> 'pending' or (lease_owner_id is not null "
+                        "and lease_expires_at is not null)) and attempt_count >= 1"
+                    )
+                }
+            ]
         if table_name == "bot_configs":
             return [{"sqltext": "order_size <= 10000 and order_size = trunc(order_size)"}]
         if table_name == "projectx_trade_events":
@@ -188,6 +226,16 @@ class _Inspector:
                 {"sqltext": "import_batch_id is null or account_row_id is not null"},
             ]
         return [{"sqltext": "status in ('pending', 'submission_unknown')"}]
+
+    def get_indexes(self, table_name):
+        if table_name == "account_emergency_actions":
+            return [
+                {
+                    "name": "uq_account_emergency_actions_one_pending",
+                    "unique": True,
+                }
+            ]
+        return []
 
     def get_foreign_keys(self, table_name):
         if table_name == "projectx_trade_events":
@@ -212,13 +260,70 @@ class _Inspector:
         ]
 
 
+def _worker_runtime(*, enabled: bool) -> BotWorkerRuntime:
+    return BotWorkerRuntime(
+        session_factory=lambda: None,
+        client_factory=lambda *_args, **_kwargs: None,
+        settings=BotWorkerSettings(enabled=enabled),
+    )
+
+
+def test_worker_health_requires_enabled_runtime_for_production_supervisor(monkeypatch):
+    runtime = _worker_runtime(enabled=False)
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+
+    optional = main_module.worker_health(require_enabled=False)
+    required = main_module.worker_health(require_enabled=True)
+
+    assert optional == {"status": "disabled", "enabled": False, "healthy": True}
+    assert required.status_code == 503
+    assert json.loads(required.body) == {
+        "status": "disabled",
+        "enabled": False,
+        "healthy": False,
+    }
+
+
+def test_worker_health_requires_live_task_and_fresh_runner_heartbeat(monkeypatch):
+    runtime = _worker_runtime(enabled=True)
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+
+    missing_task = main_module.worker_health(require_enabled=True)
+    assert missing_task.status_code == 503
+
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat()
+    assert main_module.worker_health(require_enabled=True) == {
+        "status": "starting",
+        "enabled": True,
+        "healthy": True,
+    }
+
+    runtime._runner_task = SimpleNamespace(done=lambda: True)
+    completed = main_module.worker_health(require_enabled=True)
+    assert completed.status_code == 503
+
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat(
+        now=datetime.now(timezone.utc) - timedelta(seconds=46)
+    )
+    stale = main_module.worker_health(require_enabled=True)
+    assert stale.status_code == 503
+
+    runtime._touch_runner_heartbeat()
+    runtime._replace_snapshot(state="crashed", owns_lease=False)
+    response = main_module.worker_health(require_enabled=True)
+    assert response.status_code == 503
+    assert json.loads(response.body)["status"] == "crashed"
+
+
 def test_readiness_requires_current_migration_ledger(monkeypatch):
     monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
     db = _Session(migration_applied=True)
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert db.rolled_back is False
-    assert {"version": "20260830_harden_supabase_data_api.sql"} in db.params
+    assert {"version": "20260903_add_bot_runtime_lease.sql"} in db.params
 
 
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
@@ -254,6 +359,23 @@ def test_readiness_still_requires_projectx_bot_persistence(monkeypatch):
         main_module,
         "inspect",
         lambda _bind: _Inspector(missing_table="bot_order_attempts"),
+    )
+
+    response = main_module.readiness(db=_Session())
+    assert response.status_code == 503
+
+
+def test_readiness_requires_account_emergency_action_invariants(monkeypatch):
+    class MissingEmergencyInvariantInspector(_Inspector):
+        def get_check_constraints(self, table_name):
+            if table_name == "account_emergency_actions":
+                return [{"sqltext": "status in ('pending','confirmed_account_flat','unconfirmed')"}]
+            return super().get_check_constraints(table_name)
+
+    monkeypatch.setattr(
+        main_module,
+        "inspect",
+        lambda _bind: MissingEmergencyInvariantInspector(),
     )
 
     response = main_module.readiness(db=_Session())

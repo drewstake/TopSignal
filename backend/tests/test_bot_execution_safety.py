@@ -1,9 +1,10 @@
 import os
 from datetime import datetime, timedelta, timezone
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -15,10 +16,12 @@ from app.db import Base
 from app.bot_schemas import BotConfigUpdateIn
 from app.models import (
     Account,
+    AccountEmergencyAction,
     BotConfig,
     BotDecision,
     BotOrderAttempt,
     BotRun,
+    BotRuntimeLease,
     InstrumentMetadata,
     ProjectXMarketCandle,
     ProjectXTradeEvent,
@@ -30,8 +33,15 @@ from app.services.bot_execution_safety import (
     touch_bot_run,
     transition_bot_run,
 )
-from app.services.bot_service import BotRunEvaluationError, SignalResult, evaluate_bot_config, start_bot_run
-from app.services.projectx_client import ProjectXClientError
+from app.services.bot_service import (
+    BotRunEvaluationError,
+    BotWorkerLeaseToken,
+    SignalResult,
+    evaluate_bot_config,
+    start_bot_run,
+)
+from app.services.bot_risk import RiskBlock, RiskEvaluationContext, evaluate_risk
+from app.services.projectx_client import PROJECTX_ERROR_NETWORK, ProjectXClientError
 
 
 USER_A = "00000000-0000-0000-0000-000000000001"
@@ -64,6 +74,7 @@ class RecordingClient:
         *,
         order_error: Exception | None = None,
         account_can_trade: bool = True,
+        account_simulated: bool | None = True,
         positions: list[dict] | None = None,
         open_orders: list[dict] | None = None,
         trades: list[dict] | None = None,
@@ -71,11 +82,14 @@ class RecordingClient:
     ):
         self.order_error = order_error
         self.account_can_trade = account_can_trade
+        self.account_simulated = account_simulated
         self.positions = positions or []
         self.open_orders = open_orders or []
         self.trades = trades or []
         self.orders = orders or []
         self.place_order_calls: list[dict] = []
+        self.cancel_order_calls: list[dict] = []
+        self.close_position_calls: list[dict] = []
 
     def list_accounts(self, *, only_active_accounts=True):
         del only_active_accounts
@@ -85,6 +99,7 @@ class RecordingClient:
                 "name": "Practice 9001",
                 "status": "ACTIVE" if self.account_can_trade else "LOCKED_OUT",
                 "can_trade": self.account_can_trade,
+                "simulated": self.account_simulated,
             }
         ]
 
@@ -108,6 +123,27 @@ class RecordingClient:
             raise self.order_error
         return {"order_id": "provider-order-1", "raw_payload": {"accepted": True}}
 
+    def cancel_order(self, *, account_id, order_id):
+        self.cancel_order_calls.append({"account_id": account_id, "order_id": order_id})
+        self.open_orders = [
+            row for row in self.open_orders if str(row.get("order_id")) != str(order_id)
+        ]
+        return {"success": True, "raw_payload": {"success": True}}
+
+    def close_position(self, *, account_id, contract_id):
+        self.close_position_calls.append(
+            {"account_id": account_id, "contract_id": contract_id}
+        )
+        self.positions = [
+            row
+            for row in self.positions
+            if not (
+                int(row.get("account_id", -1)) == int(account_id)
+                and str(row.get("contract_id")) == str(contract_id)
+            )
+        ]
+        return {"success": True, "raw_payload": {"success": True}}
+
 
 def _add_account_and_config(
     db: Session,
@@ -127,6 +163,8 @@ def _add_account_and_config(
         trade_data_source=trade_data_source,
         account_state="ACTIVE",
         can_trade=True,
+        provider_simulated=True,
+        provider_classification_observed_at=datetime.now(timezone.utc),
         is_visible=True,
     )
     config = BotConfig(
@@ -202,6 +240,50 @@ def _patch_actionable_signal(
 
 def _risk_codes(result) -> set[str]:
     return {event.code for event in result.risk_events}
+
+
+def _add_running_live_worker_run(db: Session, config: BotConfig) -> BotRun:
+    now = datetime.now(timezone.utc)
+    run = BotRun(
+        user_id=str(config.user_id),
+        bot_config_id=int(config.id),
+        account_id=int(config.account_id),
+        status="running",
+        dry_run=False,
+        started_at=now,
+        last_heartbeat_at=now,
+        raw_state={
+            "source": "manual_start",
+            "phase": "idle",
+            "continuous": True,
+            "execution_mode": "live",
+            "live_routing_confirmed": True,
+        },
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _add_worker_lease(db: Session, *, owner_id: str) -> BotWorkerLeaseToken:
+    now = datetime.now(timezone.utc)
+    lease_name = "recurring-bot-evaluator-v1"
+    db.add(
+        BotRuntimeLease(
+            lease_name=lease_name,
+            owner_id=owner_id,
+            acquired_at=now,
+            heartbeat_at=now,
+            expires_at=now + timedelta(seconds=45),
+            details={},
+        )
+    )
+    db.flush()
+    return BotWorkerLeaseToken(
+        lease_name=lease_name,
+        owner_id=owner_id,
+        lease_ttl_seconds=45,
+    )
 
 
 def test_csv_import_account_is_rejected_before_any_projectx_bot_call(db_session):
@@ -421,6 +503,185 @@ def test_only_final_live_preflight_runs_under_the_account_lock(
 
     assert result.status == "submitted"
     assert transaction_states == [True]
+
+
+def test_worker_lease_takeover_mid_cycle_fences_place_order_and_keeps_run_armed(
+    db_session,
+    monkeypatch,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = _add_running_live_worker_run(db_session, config)
+    lease_token = _add_worker_lease(db_session, owner_id="worker-original")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+
+    class MidCycleTakeoverClient(RecordingClient):
+        def list_accounts(self, *, only_active_accounts=True):
+            lease = db_session.get(BotRuntimeLease, lease_token.lease_name)
+            lease.owner_id = "worker-takeover"
+            lease.heartbeat_at = datetime.now(timezone.utc)
+            lease.expires_at = datetime.now(timezone.utc) + timedelta(seconds=45)
+            db_session.flush()
+            return super().list_accounts(only_active_accounts=only_active_accounts)
+
+    client = MidCycleTakeoverClient()
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        run=run,
+        dry_run=False,
+        confirm_live_order_routing=True,
+        worker_lease_token=lease_token,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"worker_lease_lost"}
+    assert client.place_order_calls == []
+    assert result.order_attempt is not None
+    assert result.order_attempt.status == "blocked"
+    assert result.config.enabled is True
+    assert result.run is not None and result.run.status == "running"
+
+
+def test_final_boundary_reloads_disconnect_invalidated_classification_before_order(
+    db_session,
+    monkeypatch,
+):
+    account, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+
+    class DisconnectDuringPreflightClient(RecordingClient):
+        def list_accounts(self, *, only_active_accounts=True):
+            # Simulate the account-hub disconnect invalidation that is allowed
+            # to commit while remote preflight runs without an Account row lock.
+            persisted = db_session.get(Account, int(account.id))
+            persisted.provider_simulated = None
+            persisted.provider_classification_observed_at = None
+            db_session.flush()
+            return super().list_accounts(only_active_accounts=only_active_accounts)
+
+    client = DisconnectDuringPreflightClient()
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"account_automation_classification_unknown"}
+    assert client.place_order_calls == []
+    assert result.config.enabled is True
+
+
+def test_emergency_intent_inserted_during_preflight_fences_sync_place_order(
+    db_session,
+    monkeypatch,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+
+    class EmergencyDuringPreflightClient(RecordingClient):
+        def list_accounts(self, *, only_active_accounts=True):
+            now = datetime.now(timezone.utc)
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9001,
+                    status="pending",
+                    confirmed_flat=False,
+                    lease_owner_id="emergency-owner",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    request_payload={},
+                )
+            )
+            db_session.flush()
+            return super().list_accounts(only_active_accounts=only_active_accounts)
+
+    client = EmergencyDuringPreflightClient()
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"account_emergency_flatten_unresolved"}
+    assert client.place_order_calls == []
+    assert result.config.enabled is True
+
+
+def test_worker_lease_loss_fences_verified_exit_cancel_and_close(
+    db_session,
+    monkeypatch,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "donchian_breakout"
+    run = _add_running_live_worker_run(db_session, config)
+    lease_token = _add_worker_lease(db_session, owner_id="worker-original")
+    db_session.get(BotRuntimeLease, lease_token.lease_name).owner_id = "worker-takeover"
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={
+            "signal_category": "exit",
+            "current_position_qty": 1.0,
+            "target_position_qty": 0.0,
+        },
+    )
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    client = RecordingClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}],
+        open_orders=[
+            {
+                "order_id": "protective-order",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": -1.0,
+            }
+        ],
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        run=run,
+        dry_run=False,
+        confirm_live_order_routing=True,
+        worker_lease_token=lease_token,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"worker_lease_lost"}
+    assert client.cancel_order_calls == []
+    assert client.close_position_calls == []
+    assert client.place_order_calls == []
+    assert result.config.enabled is True
+    assert result.run is not None and result.run.status == "running"
 
 
 def test_config_change_after_audit_commit_blocks_stale_live_signal(
@@ -652,6 +913,208 @@ def test_database_constraint_rejects_fractional_bot_contract_quantities(db_sessi
             db_session.flush()
 
 
+def test_account_emergency_action_database_invariants(db_session):
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        AccountEmergencyAction(
+            user_id=USER_A,
+            account_id=9001,
+            status="pending",
+            confirmed_flat=False,
+            lease_owner_id="first-owner",
+            lease_expires_at=now + timedelta(minutes=5),
+            request_payload={},
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9001,
+                    status="pending",
+                    confirmed_flat=False,
+                    lease_owner_id="second-owner",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    request_payload={},
+                )
+            )
+            db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9004,
+                    status="pending",
+                    confirmed_flat=False,
+                    request_payload={},
+                )
+            )
+            db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9005,
+                    status="unconfirmed",
+                    confirmed_flat=False,
+                    attempt_count=0,
+                    request_payload={},
+                    completed_at=now,
+                )
+            )
+            db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9002,
+                    status="confirmed_account_flat",
+                    confirmed_flat=False,
+                    request_payload={},
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            db_session.flush()
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(
+                AccountEmergencyAction(
+                    user_id=USER_A,
+                    account_id=9003,
+                    status="pending",
+                    confirmed_flat=False,
+                    lease_owner_id="completed-pending-owner",
+                    lease_expires_at=now + timedelta(minutes=5),
+                    request_payload={},
+                    completed_at=now,
+                )
+            )
+            db_session.flush()
+
+
+@pytest.mark.parametrize("status", ["pending", "unconfirmed"])
+def test_unresolved_account_emergency_latch_blocks_every_new_start(
+    db_session,
+    status,
+):
+    _, config = _add_account_and_config(db_session, enabled=False)
+    action = AccountEmergencyAction(
+        user_id=USER_A,
+        account_id=9001,
+        status=status,
+        confirmed_flat=False,
+        lease_owner_id=("active-owner" if status == "pending" else None),
+        lease_expires_at=(
+            datetime.now(timezone.utc) + timedelta(minutes=5)
+            if status == "pending"
+            else None
+        ),
+        request_payload={},
+        completed_at=(datetime.now(timezone.utc) if status == "unconfirmed" else None),
+    )
+    db_session.add(action)
+    db_session.commit()
+    client = RecordingClient()
+
+    with pytest.raises(
+        bot_service.AccountEmergencyLatchActiveError,
+        match="account_emergency_flatten_unresolved",
+    ) as raised:
+        start_bot_run(
+            db_session,
+            user_id=USER_A,
+            bot_config_id=int(config.id),
+            client=client,
+            dry_run=True,
+        )
+
+    assert raised.value.action_id == int(action.id)
+    assert raised.value.status == status
+    assert db_session.query(BotRun).count() == 0
+    assert db_session.get(BotConfig, int(config.id)).enabled is False
+    assert client.place_order_calls == []
+
+
+def test_later_confirmed_account_flat_action_clears_start_latch(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False)
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            AccountEmergencyAction(
+                user_id=USER_A,
+                account_id=9001,
+                status="unconfirmed",
+                confirmed_flat=False,
+                request_payload={},
+                completed_at=now - timedelta(seconds=1),
+            ),
+            AccountEmergencyAction(
+                user_id=USER_A,
+                account_id=9001,
+                status="confirmed_account_flat",
+                confirmed_flat=True,
+                request_payload={},
+                result_payload={"confirmed_flat": True},
+                completed_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+    timestamp = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    def hold_fetch(_db, *, user_id, config, client):
+        del client
+        return [
+            ProjectXMarketCandle(
+                user_id=user_id,
+                contract_id=str(config.contract_id),
+                symbol=config.symbol,
+                live=False,
+                unit=str(config.timeframe_unit),
+                unit_number=int(config.timeframe_unit_number),
+                candle_timestamp=timestamp,
+                open_price=100,
+                high_price=101,
+                low_price=99,
+                close_price=100,
+                volume=100,
+                is_partial=False,
+            )
+        ], SignalResult(
+            action="HOLD",
+            reason="no signal",
+            candle_timestamp=timestamp,
+            price=100,
+            raw_payload={},
+        )
+
+    monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", hold_fetch)
+    monkeypatch.setattr(bot_service, "build_bot_market_analysis", lambda **_kwargs: {})
+    monkeypatch.setattr(bot_service, "build_signal_trade_evaluation", lambda **_kwargs: None)
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=RecordingClient(),
+        dry_run=True,
+    )
+
+    assert result.run is not None
+    assert result.run.status == "running"
+    assert result.config.enabled is True
+
+
 def test_provider_candle_failure_on_start_persists_error_run_and_no_running_run(db_session, monkeypatch):
     _, config = _add_account_and_config(db_session, enabled=False)
     db_session.commit()
@@ -881,9 +1344,12 @@ def test_live_target_exit_is_resized_from_authoritative_provider_position(
     assert float(result.decision.quantity) == 1.0
     assert result.decision.raw_payload["planned_order_size"] == 2.0
     assert result.decision.raw_payload["effective_order_size"] == 1.0
-    assert len(client.place_order_calls) == 1
-    assert client.place_order_calls[0]["size"] == 1
-    assert client.place_order_calls[0]["side"] == 1
+    assert client.place_order_calls == []
+    assert client.close_position_calls == [
+        {"account_id": 9001, "contract_id": CONTRACT_ID}
+    ]
+    assert result.order_attempt.raw_request["providerAction"] == "Position/closeContract"
+    assert result.order_attempt.raw_request["verifiedFlat"] is True
 
 
 def test_live_target_direction_conflict_fails_closed(db_session, monkeypatch):
@@ -1132,7 +1598,7 @@ def test_live_risk_blocks_while_provider_order_is_working(db_session, monkeypatc
     assert client.place_order_calls == []
 
 
-def test_reducing_exit_fails_closed_when_same_side_working_order_could_reverse_position(
+def test_reducing_exit_cancels_working_order_then_uses_verified_close(
     db_session,
     monkeypatch,
 ):
@@ -1170,9 +1636,15 @@ def test_reducing_exit_fails_closed_when_same_side_working_order_could_reverse_p
         confirm_live_order_routing=True,
     )
 
-    assert result.status == "risk_blocked"
-    assert "working_order_direction_conflict" in _risk_codes(result)
+    assert result.status == "submitted"
+    assert result.risk_events == []
     assert client.place_order_calls == []
+    assert client.cancel_order_calls == [
+        {"account_id": 9001, "order_id": "protective-sell"}
+    ]
+    assert client.close_position_calls == [
+        {"account_id": 9001, "contract_id": CONTRACT_ID}
+    ]
 
 
 def test_recent_submission_blocks_sibling_bot_during_provider_settlement(db_session, monkeypatch):
@@ -1648,6 +2120,7 @@ def test_bracket_required_live_entry_fails_closed_without_tick_metadata(db_sessi
     config.contract_id = "CON.F.US.BP6.U26"
     config.symbol = "BP6"
     config.allowed_contracts = [config.contract_id]
+    config.max_daily_loss = 100_000
     db_session.commit()
     _patch_actionable_signal(
         monkeypatch,
@@ -1678,6 +2151,7 @@ def test_provider_tick_metadata_is_persisted_and_used_for_live_brackets(db_sessi
     config.contract_id = "CON.F.US.BP6.U26"
     config.symbol = "BP6"
     config.allowed_contracts = [config.contract_id]
+    config.max_daily_loss = 100_000
     db_session.commit()
     _patch_actionable_signal(
         monkeypatch,
@@ -2064,3 +2538,1409 @@ def test_bot_evaluation_and_idempotency_are_user_scoped(db_session, monkeypatch)
     assert result_a.idempotency_key != result_b.idempotency_key
     assert db_session.query(BotOrderAttempt).filter(BotOrderAttempt.user_id == USER_A).count() == 1
     assert db_session.query(BotOrderAttempt).filter(BotOrderAttempt.user_id == USER_B).count() == 1
+
+
+def _enable_live_test_routing(monkeypatch) -> None:
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    monkeypatch.setattr(bot_service, "futures_session_is_open", lambda *_args, **_kwargs: True)
+
+
+def _add_mnq_tick_metadata(db_session) -> None:
+    db_session.add(InstrumentMetadata(symbol="MNQ", tick_size=0.25, tick_value=0.5))
+    db_session.flush()
+
+
+def test_verified_position_reduction_bypasses_every_entry_risk_gate():
+    blocks = evaluate_risk(
+        RiskEvaluationContext(
+            bot_enabled=True,
+            account_state="ACTIVE",
+            account_can_trade=True,
+            live_funded_account=False,
+            configured_execution_mode="dry_run",
+            dry_run=True,
+            confirm_live_order_routing=False,
+            running_under_tests=False,
+            live_environment_enabled=False,
+            contract_allowed=False,
+            action="SELL",
+            order_size=1.0,
+            resulting_position_qty=1.0,
+            max_contracts=float("nan"),
+            max_open_position=float("nan"),
+            trades_today=99,
+            max_trades_per_day=0,
+            daily_pnl=-10_000.0,
+            max_daily_loss=1.0,
+            latest_candle_age_seconds=10_000.0,
+            max_data_staleness_seconds=1,
+            inside_trading_session=False,
+            delayed_session_block=RiskBlock("session_loss_limit_reached", "delayed"),
+            cooldown_block=RiskBlock("cooldown_after_loss", "cooldown"),
+            position_reducing=True,
+            account_gross_position_qty=10_000.0,
+            max_account_gross_position=1.0,
+            account_unrealized_pnl=-10_000.0,
+            unrealized_pnl_complete=False,
+            proposed_stop_risk=None,
+            require_proposed_stop_risk=True,
+            exchange_session_open=False,
+        )
+    )
+
+    assert blocks == []
+
+
+def test_partial_live_reduction_fails_closed_without_projectx_reduce_only(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "donchian_breakout"
+    config.max_contracts = 3
+    config.max_open_position = 3
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={
+            "signal_category": "exit",
+            "effective_order_size": 1.0,
+            "current_position_qty": 2.0,
+            "target_position_qty": 1.0,
+        },
+    )
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 2.0}]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "partial_reduction_not_supported" in _risk_codes(result)
+    assert client.place_order_calls == []
+    assert client.close_position_calls == []
+
+
+def test_full_exit_reconciles_ambiguous_close_without_retry(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "donchian_breakout"
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={
+            "signal_category": "exit",
+            "current_position_qty": 1.0,
+            "target_position_qty": 0.0,
+        },
+    )
+    _enable_live_test_routing(monkeypatch)
+
+    class AmbiguousButFilledClient(RecordingClient):
+        def close_position(self, *, account_id, contract_id):
+            super().close_position(account_id=account_id, contract_id=contract_id)
+            raise ProjectXClientError(
+                "close timed out",
+                status_code=408,
+                submission_outcome_unknown=True,
+                reason_code=PROJECTX_ERROR_NETWORK,
+            )
+
+    client = AmbiguousButFilledClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}]
+    )
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "submitted"
+    assert len(client.close_position_calls) == 1
+    assert result.order_attempt.raw_response["close_reconciled_after_error"] is True
+    assert client.place_order_calls == []
+
+
+def test_full_exit_reconciles_ambiguous_protective_cancel_before_close(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "donchian_breakout"
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={
+            "signal_category": "exit",
+            "current_position_qty": 1.0,
+            "target_position_qty": 0.0,
+        },
+    )
+    _enable_live_test_routing(monkeypatch)
+
+    class AmbiguousButCancelledClient(RecordingClient):
+        def cancel_order(self, *, account_id, order_id):
+            super().cancel_order(account_id=account_id, order_id=order_id)
+            raise ProjectXClientError(
+                "cancel timed out",
+                status_code=408,
+                submission_outcome_unknown=True,
+                reason_code=PROJECTX_ERROR_NETWORK,
+            )
+
+    client = AmbiguousButCancelledClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}],
+        open_orders=[
+            {
+                "order_id": "201",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": -1.0,
+            }
+        ],
+    )
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "submitted"
+    assert len(client.cancel_order_calls) == 1
+    assert len(client.close_position_calls) == 1
+    assert len(result.order_attempt.raw_response["cancel_errors"]) == 1
+    assert client.place_order_calls == []
+
+
+def test_sma_live_entry_uses_validated_atomic_provider_brackets(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_params = {"protective_stop_ticks": 12, "take_profit_ticks": 24}
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "submitted"
+    assert len(client.place_order_calls) == 1
+    assert client.place_order_calls[0]["stop_loss_bracket"] == {"ticks": 12, "type": 4}
+    assert client.place_order_calls[0]["take_profit_bracket"] == {"ticks": 24, "type": 1}
+    assert result.order_attempt.raw_request["stopLossBracket"] == {"ticks": 12, "type": 4}
+
+
+def test_sma_entry_stop_risk_must_fit_remaining_account_loss_budget(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_params = {"protective_stop_ticks": 600, "take_profit_ticks": 800}
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "proposed_stop_risk_exceeds_daily_loss_budget" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_exit_label_cannot_bypass_protection_for_exposure_increasing_order(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "donchian_breakout"
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={"signal_category": "exit"},
+    )
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient()
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "protective_stop_bracket_missing" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+@pytest.mark.parametrize(
+    ("position", "position_limit", "expected_code"),
+    [
+        (
+            {"account_id": 9001, "contract_id": "CON.F.US.MES.M26", "signed_size": 1.0, "unrealized_pnl": 0.0},
+            1,
+            "max_account_gross_position",
+        ),
+        (
+            {"account_id": 9001, "contract_id": "CON.F.US.MES.M26", "signed_size": 1.0},
+            2,
+            "account_unrealized_pnl_unavailable",
+        ),
+        (
+            {"account_id": 9001, "contract_id": "CON.F.US.MES.M26", "signed_size": 1.0, "unrealized_pnl": -251.0},
+            2,
+            "max_daily_loss",
+        ),
+    ],
+)
+def test_live_entry_uses_account_wide_exposure_and_unrealized_pnl(
+    db_session,
+    monkeypatch,
+    position,
+    position_limit,
+    expected_code,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.max_contracts = position_limit
+    config.max_open_position = position_limit
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(positions=[position])
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert expected_code in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_account_wide_gross_limit_includes_working_orders_on_other_contracts(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(
+        open_orders=[
+            {
+                "order_id": "other-contract-entry",
+                "account_id": 9001,
+                "contract_id": "CON.F.US.MES.M26",
+                "status": 1,
+                "signed_size": 1.0,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "max_account_gross_position" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_prior_projectx_delivery_blocks_entry_despite_ui_provider_root_alias(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.contract_id = "CON.F.US.ENQ.M26"
+    config.symbol = "NQ"
+    config.allowed_contracts = [config.contract_id]
+    config.max_contracts = 3
+    config.max_open_position = 3
+    db_session.add(InstrumentMetadata(symbol="NQ", tick_size=0.25, tick_value=5.0))
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(
+        positions=[
+            {
+                "account_id": 9001,
+                "contract_id": "CON.F.US.ENQ.H26",
+                "signed_size": 1.0,
+                "unrealized_pnl": 0.0,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "prior_delivery_exposure" in _risk_codes(result)
+    assert result.decision.raw_payload["prior_delivery_contract_ids"] == ["CON.F.US.ENQ.H26"]
+    assert client.place_order_calls == []
+
+
+def test_exchange_closure_blocks_entries_but_not_verified_full_exit(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "running_under_tests", lambda: False)
+    monkeypatch.setattr(bot_service, "live_execution_environment_enabled", lambda: True)
+    monkeypatch.setattr(bot_service, "futures_session_is_open", lambda *_args, **_kwargs: False)
+    entry_client = RecordingClient()
+
+    entry = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=entry_client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+    assert entry.status == "risk_blocked"
+    assert "exchange_session_closed" in _risk_codes(entry)
+    assert entry_client.place_order_calls == []
+
+    config_id = int(config.id)
+    db_session.rollback()
+    db_session.expunge_all()
+    db_session.query(BotOrderAttempt).delete(synchronize_session=False)
+    db_session.query(BotDecision).delete(synchronize_session=False)
+    config = db_session.get(BotConfig, config_id)
+    config.strategy_type = "donchian_breakout"
+    db_session.commit()
+    _patch_actionable_signal(
+        monkeypatch,
+        action="SELL",
+        raw_payload={
+            "signal_category": "exit",
+            "current_position_qty": 1.0,
+            "target_position_qty": 0.0,
+        },
+    )
+    exit_client = RecordingClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}]
+    )
+    exit_result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=exit_client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+    assert exit_result.status == "submitted"
+    assert len(exit_client.close_position_calls) == 1
+    assert exit_client.place_order_calls == []
+
+
+def test_account_entry_fill_count_is_account_wide_and_excludes_exits(db_session):
+    _, config = _add_account_and_config(db_session)
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            ProjectXTradeEvent(
+                user_id=USER_A,
+                account_id=9001,
+                contract_id=CONTRACT_ID,
+                symbol="MNQ",
+                side="BUY",
+                size=1,
+                price=100,
+                trade_timestamp=now,
+                order_id="entry-from-another-bot",
+                pnl=None,
+            ),
+            ProjectXTradeEvent(
+                user_id=USER_A,
+                account_id=9001,
+                contract_id=CONTRACT_ID,
+                symbol="MNQ",
+                side="SELL",
+                size=1,
+                price=101,
+                trade_timestamp=now,
+                order_id="position-reducing-exit",
+                pnl=20,
+                fees=0,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    assert config.id is not None
+    assert bot_service._todays_account_entry_trade_count(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+    ) == 1
+
+
+def test_provider_entry_fill_consumes_account_daily_trade_limit(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.max_trades_per_day = 1
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(
+        trades=[
+            {
+                "account_id": 9001,
+                "source_trade_id": "provider-entry-fill",
+                "order_id": "other-bot-entry",
+                "timestamp": datetime.now(timezone.utc),
+                "pnl": None,
+            }
+        ]
+    )
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "max_trades_per_day" in _risk_codes(result)
+    assert client.place_order_calls == []
+
+
+def test_unknown_account_classification_keeps_continuous_live_run_armed(db_session, monkeypatch):
+    account, config = _add_account_and_config(
+        db_session,
+        enabled=False,
+        execution_mode="live",
+    )
+    account.provider_simulated = None
+    account.provider_classification_observed_at = None
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=RecordingClient(account_simulated=None),
+        dry_run=False,
+        confirm_live_order_routing=True,
+        continuous=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert _risk_codes(result) == {"account_automation_classification_unknown"}
+    assert result.run.status == "running"
+    assert result.config.enabled is True
+    assert result.run.raw_state["continuous"] is True
+    assert result.run.raw_state["live_routing_confirmed"] is True
+
+
+def test_fresh_gateway_account_classification_allows_live_entry(db_session, monkeypatch):
+    account, config = _add_account_and_config(db_session, execution_mode="live")
+    account.provider_simulated = True
+    account.provider_classification_observed_at = datetime.now(timezone.utc)
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(account_simulated=None)
+
+    result = evaluate_bot_config(
+        db_session,
+        user_id=USER_A,
+        config=config,
+        account=None,
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+    )
+
+    assert result.status == "submitted"
+    assert len(client.place_order_calls) == 1
+
+
+def test_authoritative_non_simulated_account_is_terminal_for_continuous_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=RecordingClient(account_simulated=False),
+        dry_run=False,
+        confirm_live_order_routing=True,
+        continuous=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "account_type_not_eligible_for_automation" in _risk_codes(result)
+    assert result.run.status == "blocked"
+    assert result.config.enabled is False
+
+
+def test_retryable_pre_routing_outage_preserves_only_opted_in_continuous_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    db_session.commit()
+
+    def fail_fetch(*_args, **_kwargs):
+        raise ProjectXClientError(
+            "gateway temporarily unavailable",
+            status_code=503,
+            reason_code=PROJECTX_ERROR_NETWORK,
+        )
+
+    monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", fail_fetch)
+    with pytest.raises(BotRunEvaluationError, match="gateway temporarily unavailable"):
+        start_bot_run(
+            db_session,
+            user_id=USER_A,
+            bot_config_id=int(config.id),
+            client=RecordingClient(),
+            dry_run=False,
+            confirm_live_order_routing=True,
+            continuous=True,
+        )
+    db_session.commit()
+    db_session.expire_all()
+
+    run = db_session.query(BotRun).one()
+    assert run.status == "running"
+    assert run.raw_state["phase"] == "retry_wait"
+    assert run.raw_state["last_transient_error"]["provider_status_code"] == 503
+    assert db_session.get(BotConfig, config.id).enabled is True
+    assert db_session.query(BotOrderAttempt).count() == 0
+
+
+def test_retryable_error_after_durable_pending_claim_is_terminal(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+        raw_state={"live_routing_confirmed": True, "continuous": True},
+    )
+    db_session.add(run)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    real_require_config = bot_service._require_bot_config
+    call_count = 0
+
+    def fail_after_claim(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:
+            raise ProjectXClientError(
+                "gateway failed after audit claim",
+                status_code=503,
+                reason_code=PROJECTX_ERROR_NETWORK,
+            )
+        return real_require_config(*args, **kwargs)
+
+    monkeypatch.setattr(bot_service, "_require_bot_config", fail_after_claim)
+    with pytest.raises(ProjectXClientError, match="failed after audit claim"):
+        evaluate_bot_config(
+            db_session,
+            user_id=USER_A,
+            config=config,
+            account=None,
+            client=RecordingClient(),
+            run=run,
+            dry_run=False,
+            confirm_live_order_routing=True,
+            preserve_run_on_transient_pre_routing_error=True,
+        )
+    db_session.commit()
+    db_session.expire_all()
+
+    persisted_run = db_session.get(BotRun, int(run.id))
+    attempt = db_session.query(BotOrderAttempt).one()
+    assert persisted_run.status == "error"
+    assert db_session.get(BotConfig, int(config.id)).enabled is False
+    assert attempt.status == "pending"
+
+
+def test_live_preflight_outage_is_transient_for_continuous_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+
+    class UnavailablePreflightClient(RecordingClient):
+        def search_open_positions(self, *, account_id):
+            del account_id
+            raise ProjectXClientError("positions unavailable", status_code=503)
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=UnavailablePreflightClient(),
+        dry_run=False,
+        confirm_live_order_routing=True,
+        continuous=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "live_preflight_unavailable" in _risk_codes(result)
+    assert result.run.status == "running"
+    assert result.config.enabled is True
+
+
+def test_outside_session_is_transient_for_continuous_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    monkeypatch.setattr(bot_service, "_is_inside_trading_session", lambda *_args, **_kwargs: False)
+    client = RecordingClient()
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+        continuous=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "outside_session" in _risk_codes(result)
+    assert result.run.status == "running"
+    assert result.config.enabled is True
+    assert client.place_order_calls == []
+
+
+def test_max_daily_loss_is_sticky_and_terminal_for_continuous_run(db_session, monkeypatch):
+    _, config = _add_account_and_config(db_session, enabled=False, execution_mode="live")
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(
+        trades=[
+            {
+                "account_id": 9001,
+                "source_trade_id": "loss-close",
+                "order_id": "loss-close",
+                "timestamp": datetime.now(timezone.utc),
+                "pnl": -251.0,
+                "fees": 0.0,
+            }
+        ]
+    )
+
+    result = start_bot_run(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=client,
+        dry_run=False,
+        confirm_live_order_routing=True,
+        continuous=True,
+    )
+
+    assert result.status == "risk_blocked"
+    assert "max_daily_loss" in _risk_codes(result)
+    assert result.run.status == "blocked"
+    assert result.config.enabled is False
+    assert client.place_order_calls == []
+
+
+def test_only_one_running_live_bot_may_own_an_account(db_session):
+    _, first = _add_account_and_config(db_session, execution_mode="live", name="First live bot")
+    second = BotConfig(
+        user_id=USER_A,
+        account_id=9001,
+        name="Second live bot",
+        enabled=False,
+        execution_mode="live",
+        strategy_type="sma_cross",
+        strategy_params={},
+        contract_id=CONTRACT_ID,
+        symbol="MNQ",
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        lookback_bars=25,
+        fast_period=2,
+        slow_period=3,
+        order_size=1,
+        max_contracts=1,
+        max_daily_loss=250,
+        max_trades_per_day=10,
+        max_open_position=1,
+        allowed_contracts=[CONTRACT_ID],
+        trading_start_time="00:00",
+        trading_end_time="23:59",
+        cooldown_seconds=0,
+        max_data_staleness_seconds=3600,
+    )
+    db_session.add(second)
+    db_session.flush()
+    db_session.add(
+        BotRun(
+            user_id=USER_A,
+            bot_config_id=int(first.id),
+            account_id=9001,
+            status="running",
+            dry_run=False,
+            started_at=datetime.now(timezone.utc),
+            raw_state={"live_routing_confirmed": True, "continuous": True},
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="account_live_bot_already_running"):
+        start_bot_run(
+            db_session,
+            user_id=USER_A,
+            bot_config_id=int(second.id),
+            client=RecordingClient(),
+            dry_run=False,
+            confirm_live_order_routing=True,
+            continuous=True,
+        )
+
+
+def _add_unresolved_live_attempt(db_session, *, config, run, status="submission_unknown"):
+    decision = BotDecision(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        bot_run_id=int(run.id),
+        account_id=9001,
+        contract_id=CONTRACT_ID,
+        decision_type="signal",
+        action="BUY",
+        reason="ambiguous prior submission",
+        candle_timestamp=datetime.now(timezone.utc),
+        quantity=1,
+    )
+    db_session.add(decision)
+    db_session.flush()
+    attempt = BotOrderAttempt(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        bot_run_id=int(run.id),
+        bot_decision_id=int(decision.id),
+        account_id=9001,
+        contract_id=CONTRACT_ID,
+        execution_mode="live",
+        correlation_id="ambiguous-before-emergency",
+        idempotency_key="ambiguous-before-emergency",
+        side="BUY",
+        order_type="market",
+        size=1,
+        status=status,
+        raw_request={"customTag": "topsignal-emergency-recovery"},
+    )
+    db_session.add(attempt)
+    db_session.flush()
+    return attempt
+
+
+def test_emergency_flatten_is_account_wide_and_resolves_stale_attempts(db_session):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    second_payload = {
+        column.name: getattr(config, column.name)
+        for column in BotConfig.__table__.columns
+        if column.name not in {"id", "created_at", "updated_at"}
+    }
+    second_payload.update(name="Same-account observer", enabled=True, execution_mode="dry_run")
+    second_config = BotConfig(**second_payload)
+    db_session.add(second_config)
+    db_session.flush()
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+        raw_state={"live_routing_confirmed": True, "continuous": True},
+    )
+    db_session.add(run)
+    db_session.flush()
+    second_run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(second_config.id),
+        account_id=9001,
+        status="running",
+        dry_run=True,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(second_run)
+    db_session.flush()
+    unresolved = _add_unresolved_live_attempt(db_session, config=config, run=run)
+    db_session.commit()
+    client = RecordingClient(
+        positions=[
+            {"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0},
+            {"account_id": 9001, "contract_id": "CON.F.US.MES.M26", "signed_size": -2.0},
+        ],
+        open_orders=[
+            {"order_id": "101", "account_id": 9001, "contract_id": CONTRACT_ID, "status": 1, "signed_size": -1.0},
+            {"order_id": "102", "account_id": 9001, "contract_id": "CON.F.US.MES.M26", "status": 6, "signed_size": 2.0},
+        ],
+    )
+
+    result = bot_service.emergency_flatten_bot_config(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client_factory=lambda: client,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.status == "confirmed_account_flat"
+    assert result.confirmed_flat is True
+    assert result.audit["scope"] == "entire_account"
+    assert {row["order_id"] for row in client.cancel_order_calls} == {"101", "102"}
+    assert {row["contract_id"] for row in client.close_position_calls} == {
+        CONTRACT_ID,
+        "CON.F.US.MES.M26",
+    }
+    assert client.positions == []
+    assert client.open_orders == []
+    assert unresolved.status == "error"
+    assert "must not be retried" in unresolved.rejection_reason
+    assert int(unresolved.id) in result.audit["resolved_unresolved_live_attempt_ids"]
+    assert result.run.status == "stopped"
+    assert second_run.status == "stopped"
+    assert second_config.enabled is False
+    assert int(second_run.id) in result.audit["stopped_account_run_ids"]
+    assert db_session.get(BotConfig, int(config.id)).enabled is False
+
+
+def test_unconfirmed_emergency_flatten_leaves_ambiguous_attempt_unresolved(db_session):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(run)
+    db_session.flush()
+    unresolved = _add_unresolved_live_attempt(db_session, config=config, run=run)
+    db_session.commit()
+
+    class UnconfirmedCancelClient(RecordingClient):
+        def cancel_order(self, *, account_id, order_id):
+            self.cancel_order_calls.append({"account_id": account_id, "order_id": order_id})
+            raise ProjectXClientError(
+                "cancel timed out",
+                status_code=408,
+                submission_outcome_unknown=True,
+            )
+
+    client = UnconfirmedCancelClient(
+        positions=[{"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}],
+        open_orders=[
+            {"order_id": "101", "account_id": 9001, "contract_id": CONTRACT_ID, "status": 1, "signed_size": -1.0}
+        ],
+    )
+    result = bot_service.emergency_flatten_bot_config(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client=client,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.status == "unconfirmed"
+    assert result.confirmed_flat is False
+    assert result.risk_block.code == "account_working_order_cancellation_unconfirmed"
+    assert unresolved.status == "submission_unknown"
+    assert client.close_position_calls == []
+    assert result.run.status == "stopped"
+    assert config.enabled is False
+
+
+def test_emergency_client_factory_failure_still_persists_local_stop(db_session):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(run)
+    db_session.commit()
+
+    def fail_client_factory():
+        raise ProjectXClientError("credentials unavailable", status_code=503)
+
+    result = bot_service.emergency_flatten_bot_config(
+        db_session,
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        client_factory=fail_client_factory,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.status == "unconfirmed"
+    assert result.risk_block.code == "emergency_broker_client_unavailable"
+    assert result.run.status == "stopped"
+    assert config.enabled is False
+
+
+def test_account_emergency_flatten_works_without_any_bot_config(db_session, monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_LIVE_ORDER_EXECUTION", "false")
+    monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "false")
+    account = Account(
+        user_id=USER_A,
+        provider="projectx",
+        external_id="9001",
+        name="Practice 9001",
+        trade_data_source="projectx",
+        account_state="ACTIVE",
+        can_trade=True,
+        is_visible=True,
+    )
+    db_session.add(account)
+    db_session.commit()
+    client = RecordingClient(
+        positions=[
+            {"account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": 1.0}
+        ],
+        open_orders=[
+            {
+                "order_id": "501",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+                "signed_size": -1.0,
+            }
+        ],
+    )
+
+    result = bot_service.emergency_flatten_account(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client=client,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.confirmed_flat is True
+    assert result.status == "confirmed_account_flat"
+    assert result.disabled_bot_config_ids == ()
+    assert result.stopped_bot_run_ids == ()
+    assert client.cancel_order_calls == [{"account_id": 9001, "order_id": "501"}]
+    assert client.close_position_calls == [
+        {"account_id": 9001, "contract_id": CONTRACT_ID}
+    ]
+    db_session.expire_all()
+    audit_row = db_session.get(AccountEmergencyAction, result.audit_id)
+    assert audit_row is not None
+    assert audit_row.account_id == 9001
+    assert audit_row.status == "confirmed_account_flat"
+    assert audit_row.confirmed_flat is True
+    assert audit_row.result_payload["confirmed_flat"] is True
+
+
+def test_account_emergency_flatten_stops_every_bot_before_client_failure(db_session):
+    _, first = _add_account_and_config(
+        db_session,
+        execution_mode="live",
+        name="First emergency bot",
+    )
+    second_values = {
+        column.name: getattr(first, column.name)
+        for column in BotConfig.__table__.columns
+        if column.name not in {"id", "created_at", "updated_at"}
+    }
+    second_values["name"] = "Second emergency bot"
+    second = BotConfig(**second_values)
+    db_session.add(second)
+    db_session.flush()
+    first_run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(first.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+    )
+    second_run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(second.id),
+        account_id=9001,
+        status="running",
+        dry_run=True,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add_all([first_run, second_run])
+    db_session.commit()
+
+    def fail_after_asserting_durable_local_stop():
+        db_session.expire_all()
+        assert db_session.get(BotConfig, int(first.id)).enabled is False
+        assert db_session.get(BotConfig, int(second.id)).enabled is False
+        assert db_session.get(BotRun, int(first_run.id)).status == "stopped"
+        assert db_session.get(BotRun, int(second_run.id)).status == "stopped"
+        pending = db_session.query(AccountEmergencyAction).one()
+        assert pending.status == "pending"
+        raise ProjectXClientError("credentials unavailable", status_code=503)
+
+    result = bot_service.emergency_flatten_account(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client_factory=fail_after_asserting_durable_local_stop,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.confirmed_flat is False
+    assert result.status == "unconfirmed"
+    assert result.risk_block.code == "emergency_broker_client_unavailable"
+    assert set(result.disabled_bot_config_ids) == {int(first.id), int(second.id)}
+    assert set(result.stopped_bot_run_ids) == {int(first_run.id), int(second_run.id)}
+    db_session.expire_all()
+    audit_row = db_session.get(AccountEmergencyAction, result.audit_id)
+    assert audit_row.status == "unconfirmed"
+    assert audit_row.confirmed_flat is False
+    assert audit_row.risk_severity == "critical"
+    assert audit_row.result_payload["status"] == "unconfirmed"
+
+
+def test_account_emergency_intent_is_committed_before_waiting_for_execution_locks(
+    db_session,
+):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.add(run)
+    db_session.commit()
+
+    SessionFactory = sessionmaker(
+        bind=db_session.get_bind(),
+        autoflush=False,
+        autocommit=False,
+        expire_on_commit=False,
+    )
+    emergency_db = SessionFactory()
+    reached_execution_lock_query = Event()
+    release_execution_lock_query = Event()
+    outcome: dict[str, object] = {}
+
+    def pause_before_config_lock(execute_state):
+        statement = str(execute_state.statement).lower()
+        if (
+            execute_state.is_select
+            and "from bot_configs" in statement
+            and not reached_execution_lock_query.is_set()
+        ):
+            reached_execution_lock_query.set()
+            assert release_execution_lock_query.wait(timeout=5)
+
+    event.listen(emergency_db, "do_orm_execute", pause_before_config_lock)
+
+    def invoke_emergency():
+        try:
+            outcome["result"] = bot_service.emergency_flatten_account(
+                emergency_db,
+                user_id=USER_A,
+                account_id=9001,
+                client_factory=lambda: (_ for _ in ()).throw(
+                    ProjectXClientError("credentials unavailable", status_code=503)
+                ),
+                confirm_broker_flatten=True,
+            )
+        except BaseException as exc:  # surfaced on the main test thread below
+            outcome["error"] = exc
+
+    worker = Thread(target=invoke_emergency, daemon=True)
+    worker.start()
+    assert reached_execution_lock_query.wait(timeout=5)
+
+    # The simulated execution-lock wait occurs before local run cleanup.  A
+    # separate session must nevertheless observe the committed kill intent.
+    with SessionFactory() as observer:
+        pending = observer.query(AccountEmergencyAction).one()
+        assert pending.status == "pending"
+        assert pending.request_payload["phase"] == "intent_committed"
+        assert observer.get(BotConfig, int(config.id)).enabled is True
+        assert observer.get(BotRun, int(run.id)).status == "running"
+
+    release_execution_lock_query.set()
+    worker.join(timeout=5)
+    event.remove(emergency_db, "do_orm_execute", pause_before_config_lock)
+    emergency_db.close()
+
+    assert worker.is_alive() is False
+    assert "error" not in outcome
+    result = outcome["result"]
+    assert result.status == "unconfirmed"
+    assert result.risk_block.code == "emergency_broker_client_unavailable"
+    db_session.expire_all()
+    assert db_session.get(BotConfig, int(config.id)).enabled is False
+    assert db_session.get(BotRun, int(run.id)).status == "stopped"
+
+
+def test_account_emergency_flatten_rejects_unowned_and_csv_accounts(db_session):
+    account = Account(
+        user_id=USER_B,
+        provider="projectx",
+        external_id="9001",
+        name="Other user's account",
+        trade_data_source="projectx",
+        account_state="ACTIVE",
+    )
+    csv_account = Account(
+        user_id=USER_A,
+        provider="projectx",
+        external_id="9002",
+        name="Imported account",
+        trade_data_source="csv_import",
+        account_state="ACTIVE",
+    )
+    db_session.add_all([account, csv_account])
+    db_session.commit()
+    factory_calls = []
+
+    with pytest.raises(LookupError, match="account_not_found"):
+        bot_service.emergency_flatten_account(
+            db_session,
+            user_id=USER_A,
+            account_id=9001,
+            client_factory=lambda: factory_calls.append(True),
+            confirm_broker_flatten=True,
+        )
+    db_session.rollback()
+    with pytest.raises(ValueError, match="csv_import_accounts_cannot_be_emergency_flattened"):
+        bot_service.emergency_flatten_account(
+            db_session,
+            user_id=USER_A,
+            account_id=9002,
+            client_factory=lambda: factory_calls.append(True),
+            confirm_broker_flatten=True,
+        )
+
+    assert factory_calls == []
+    assert db_session.query(AccountEmergencyAction).count() == 0
+
+
+def test_pending_account_emergency_suppresses_duplicate_provider_mutations(db_session):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    run = BotRun(
+        user_id=USER_A,
+        bot_config_id=int(config.id),
+        account_id=9001,
+        status="running",
+        dry_run=False,
+        started_at=datetime.now(timezone.utc),
+    )
+    pending = AccountEmergencyAction(
+        user_id=USER_A,
+        account_id=9001,
+        status="pending",
+        confirmed_flat=False,
+        lease_owner_id="active-owner",
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        request_payload={"scope": "entire_account"},
+    )
+    db_session.add_all([run, pending])
+    db_session.commit()
+    factory_calls = []
+
+    result = bot_service.emergency_flatten_account(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client_factory=lambda: factory_calls.append(True),
+        confirm_broker_flatten=True,
+    )
+
+    assert result.confirmed_flat is False
+    assert result.risk_block.code == "account_emergency_flatten_in_progress"
+    assert result.audit_id == int(pending.id)
+    assert result.audit["duplicate_request_suppressed"] is True
+    assert factory_calls == []
+    db_session.expire_all()
+    assert db_session.get(BotConfig, int(config.id)).enabled is False
+    assert db_session.get(BotRun, int(run.id)).status == "stopped"
+    assert db_session.get(AccountEmergencyAction, int(pending.id)).status == "pending"
+
+
+def test_stale_pending_account_emergency_reconciles_already_flat_without_mutation(
+    db_session,
+):
+    _add_account_and_config(db_session, execution_mode="live")
+    stale = AccountEmergencyAction(
+        user_id=USER_A,
+        account_id=9001,
+        status="pending",
+        confirmed_flat=False,
+        lease_owner_id="crashed-worker",
+        lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        attempt_count=1,
+        request_payload={
+            "correlationId": "crashed-request",
+            # Historical payload is deliberately not a mutation replay source.
+            "cancelledOrderIds": ["old-order-that-no-longer-exists"],
+            "closeContractIds": ["OLD.CONTRACT"],
+        },
+    )
+    db_session.add(stale)
+    db_session.commit()
+    original_audit_id = int(stale.id)
+    client = RecordingClient()
+
+    result = bot_service.emergency_flatten_account(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client=client,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.audit_id == original_audit_id
+    assert result.confirmed_flat is True
+    assert result.audit["recovered_stale_pending"] is True
+    assert result.audit["reconciled_noop"] is True
+    assert client.cancel_order_calls == []
+    assert client.close_position_calls == []
+    db_session.expire_all()
+    recovered = db_session.get(AccountEmergencyAction, original_audit_id)
+    assert recovered.status == "confirmed_account_flat"
+    assert recovered.attempt_count == 2
+    assert recovered.lease_owner_id != "crashed-worker"
+    assert recovered.request_payload["previousCorrelationId"] == "crashed-request"
+
+
+def test_stale_pending_account_emergency_flattens_only_current_broker_exposure(
+    db_session,
+):
+    _add_account_and_config(db_session, execution_mode="live")
+    stale = AccountEmergencyAction(
+        user_id=USER_A,
+        account_id=9001,
+        status="pending",
+        confirmed_flat=False,
+        lease_owner_id="crashed-worker",
+        lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        attempt_count=3,
+        request_payload={
+            "correlationId": "crashed-request",
+            "cancelledOrderIds": ["stale-saved-order"],
+            "closeContractIds": ["STALE.SAVED.CONTRACT"],
+        },
+    )
+    db_session.add(stale)
+    db_session.commit()
+    client = RecordingClient(
+        open_orders=[
+            {
+                "order_id": "current-order",
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "status": 1,
+            }
+        ],
+        positions=[
+            {
+                "account_id": 9001,
+                "contract_id": CONTRACT_ID,
+                "signed_size": -2.0,
+            }
+        ],
+    )
+
+    result = bot_service.emergency_flatten_account(
+        db_session,
+        user_id=USER_A,
+        account_id=9001,
+        client=client,
+        confirm_broker_flatten=True,
+    )
+
+    assert result.confirmed_flat is True
+    assert client.cancel_order_calls == [
+        {"account_id": 9001, "order_id": "current-order"}
+    ]
+    assert client.close_position_calls == [
+        {"account_id": 9001, "contract_id": CONTRACT_ID}
+    ]
+    assert "stale-saved-order" not in result.audit["cancelled_order_ids"]
+    assert "STALE.SAVED.CONTRACT" not in result.audit["close_contract_ids"]
+    db_session.expire_all()
+    recovered = db_session.get(AccountEmergencyAction, int(stale.id))
+    assert recovered.status == "confirmed_account_flat"
+    assert recovered.attempt_count == 4

@@ -139,6 +139,16 @@ def test_cloud_runtime_rejects_disabled_auth(monkeypatch):
         _validate_runtime_security_configuration()
 
 
+def test_production_runtime_rejects_disabled_auth_even_when_local(monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_ENV", "production")
+    monkeypatch.setenv("AUTH_REQUIRED", "false")
+    monkeypatch.setattr("app.main.resolve_database_host_mode", lambda: ("127.0.0.1", "local"))
+    monkeypatch.setattr("app.main.resolve_supabase_mode", lambda: "local")
+
+    with pytest.raises(RuntimeError, match="AUTH_REQUIRED=true"):
+        _validate_runtime_security_configuration()
+
+
 def test_cloud_runtime_rejects_shared_provider_credentials(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "true")

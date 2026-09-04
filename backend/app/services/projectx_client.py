@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -26,7 +27,13 @@ _PROJECTX_ORDER_SIDES = {0, 1}
 _PROJECTX_POSITION_LONG = 1
 _PROJECTX_POSITION_SHORT = 2
 _MAX_PROJECTX_ORDER_SIZE = 10_000
-_PROJECTX_INTRADAY_UNIT_SECONDS = {1: 1, 2: 60, 3: 60 * 60}
+_PROJECTX_UNIT_SECONDS = {
+    1: 1,
+    2: 60,
+    3: 60 * 60,
+    4: 24 * 60 * 60,
+    5: 7 * 24 * 60 * 60,
+}
 _PARTIAL_BAR_KEYS = ("isPartial", "is_partial", "partial")
 PROJECTX_ERROR_AUTH_FAILED = "projectx_auth_failed"
 PROJECTX_ERROR_CONFIGURATION = "projectx_configuration_error"
@@ -134,6 +141,9 @@ class ProjectXClient:
             is_visible = _safe_bool(_first_value(row, ["isVisible", "is_visible"]))
             if is_visible is None:
                 raise ProjectXClientError("ProjectX Account/search omitted authoritative account visibility.")
+            simulated = _safe_bool(
+                _first_value(row, ["simulated", "isSimulated", "is_simulated"])
+            )
             status = _account_status_from_flags(can_trade=can_trade, is_visible=is_visible)
             balance = _safe_float(
                 _first_value(
@@ -159,6 +169,10 @@ class ProjectXClient:
                     "status": status,
                     "can_trade": can_trade,
                     "is_visible": is_visible,
+                    # ``None`` is intentionally preserved.  Callers displaying
+                    # accounts may tolerate older provider payloads, while live
+                    # automation can fail closed unless this is explicitly true.
+                    "simulated": simulated,
                 }
             )
 
@@ -205,29 +219,43 @@ class ProjectXClient:
         output: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
-                continue
+                raise ProjectXClientError(
+                    "ProjectX returned a malformed market bar.",
+                    reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+                )
 
             timestamp = _parse_datetime(_first_value(row, ["t", "timestamp", "time"]))
             if timestamp is None:
-                continue
-            has_partial_marker = any(key in row for key in _PARTIAL_BAR_KEYS)
-            is_partial = _is_truthy(_first_value(row, list(_PARTIAL_BAR_KEYS)))
-            interval_seconds = _PROJECTX_INTRADAY_UNIT_SECONDS.get(int(unit))
-            if not has_partial_marker and interval_seconds is not None:
-                is_partial = timestamp + timedelta(
-                    seconds=interval_seconds * max(1, int(unit_number))
-                ) > _as_utc(end)
+                raise ProjectXClientError(
+                    "ProjectX returned a market bar without a valid timestamp.",
+                    reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+                )
+            open_price, high_price, low_price, close_price, volume = _validated_market_bar_values(
+                row
+            )
+            provider_marks_partial = _is_truthy(
+                _first_value(row, list(_PARTIAL_BAR_KEYS))
+            )
+            nominal_close = _projectx_bar_nominal_close(
+                timestamp,
+                unit=int(unit),
+                unit_number=max(1, int(unit_number)),
+            )
+            # Provider partial flags are advisory. A false flag cannot make a
+            # candle closed before its full nominal interval has elapsed.
+            closure_cutoff = min(_as_utc(end), datetime.now(timezone.utc))
+            is_partial = provider_marks_partial or nominal_close > closure_cutoff
             if is_partial and not include_partial_bar:
                 continue
 
             output.append(
                 {
                     "timestamp": timestamp,
-                    "open": _safe_float(_first_value(row, ["o", "open"])),
-                    "high": _safe_float(_first_value(row, ["h", "high"])),
-                    "low": _safe_float(_first_value(row, ["l", "low"])),
-                    "close": _safe_float(_first_value(row, ["c", "close"])),
-                    "volume": _safe_float(_first_value(row, ["v", "volume"])),
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
                     "is_partial": is_partial,
                     "raw_payload": row,
                 }
@@ -282,6 +310,42 @@ class ProjectXClient:
             "request_payload": payload,
         }
 
+    def cancel_order(self, *, account_id: int, order_id: str | int) -> dict[str, Any]:
+        """Cancel one order and reject an acknowledgement with unknown shape.
+
+        A successful response is only an acknowledgement; callers must still
+        reconcile with ``search_open_orders`` before assuming the order cannot
+        fill.
+        """
+
+        normalized_order_id = _safe_int(order_id)
+        if normalized_order_id is None or normalized_order_id <= 0:
+            raise ProjectXClientError("ProjectX order cancellation requires a positive integer order ID.")
+        payload = {"accountId": int(account_id), "orderId": normalized_order_id}
+        data = self._request("POST", "/api/Order/cancel", payload=payload, with_auth=True)
+        _require_mutation_acknowledgement(data, endpoint="Order/cancel")
+        return {"success": True, "raw_payload": data, "request_payload": payload}
+
+    def close_position(self, *, account_id: int, contract_id: str) -> dict[str, Any]:
+        """Request a full close for one delivery contract.
+
+        The endpoint has no idempotency tag, so callers must always verify the
+        resulting position and treat an unverified response as ambiguous.
+        """
+
+        normalized_contract_id = _string_or_none(contract_id)
+        if normalized_contract_id is None:
+            raise ProjectXClientError("ProjectX position close requires a contract ID.")
+        payload = {"accountId": int(account_id), "contractId": normalized_contract_id}
+        data = self._request(
+            "POST",
+            "/api/Position/closeContract",
+            payload=payload,
+            with_auth=True,
+        )
+        _require_mutation_acknowledgement(data, endpoint="Position/closeContract")
+        return {"success": True, "raw_payload": data, "request_payload": payload}
+
     def search_open_positions(self, *, account_id: int) -> list[dict[str, Any]]:
         """Return the provider's current open positions for an account.
 
@@ -320,6 +384,19 @@ class ProjectXClient:
                     "signed_size": float(size) if position_type == _PROJECTX_POSITION_LONG else -float(size),
                     "average_price": _safe_float(
                         _first_value(row, ["averagePrice", "average_price"]),
+                        default=None,
+                    ),
+                    "unrealized_pnl": _safe_float(
+                        _first_value(
+                            row,
+                            [
+                                "unrealizedPnl",
+                                "unrealizedPnL",
+                                "unrealized_pnl",
+                                "openPnl",
+                                "openPnL",
+                            ],
+                        ),
                         default=None,
                     ),
                     "creation_timestamp": _parse_datetime(
@@ -390,6 +467,7 @@ class ProjectXClient:
             row_account_id = _safe_int(_first_value(row, ["accountId", "account_id"]))
             contract_id = _string_or_none(_first_value(row, ["contractId", "contract_id"]))
             status = _safe_int(_first_value(row, ["status", "orderStatus", "order_status"]))
+            order_type = _safe_int(_first_value(row, ["type", "orderType", "order_type"]))
             side = _safe_int(_first_value(row, ["side", "orderSide", "order_side"]))
             size = _safe_float(_first_value(row, ["size", "quantity", "qty"]), default=None)
             if (
@@ -409,10 +487,14 @@ class ProjectXClient:
                     "account_id": row_account_id,
                     "contract_id": contract_id,
                     "status": status,
+                    "order_type": order_type,
                     "side": side,
                     "size": float(size),
                     "signed_size": float(size) if side == 0 else -float(size),
                     "custom_tag": _string_or_none(_first_value(row, ["customTag", "custom_tag"])),
+                    "parent_order_id": _string_or_none(
+                        _first_value(row, ["parentOrderId", "parent_order_id"])
+                    ),
                     "raw_payload": row,
                 }
             )
@@ -632,14 +714,17 @@ class ProjectXClient:
             raise ProjectXClientError(
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
-                submission_outcome_unknown=(_is_order_submission_path(path) and 500 <= int(exc.code) <= 599),
+                submission_outcome_unknown=(
+                    _is_broker_mutation_path(path)
+                    and (int(exc.code) == 408 or 500 <= int(exc.code) <= 599)
+                ),
                 reason_code=_http_error_reason_code(path=path, status_code=int(exc.code)),
             ) from exc
         except TimeoutError as exc:
             raise ProjectXClientError(
                 "ProjectX request timed out. Check the ProjectX connection and try again.",
                 status_code=504,
-                submission_outcome_unknown=_is_order_submission_path(path),
+                submission_outcome_unknown=_is_broker_mutation_path(path),
                 reason_code=PROJECTX_ERROR_NETWORK,
             ) from exc
         except error.URLError as exc:
@@ -647,13 +732,13 @@ class ProjectXClient:
                 raise ProjectXClientError(
                     "ProjectX request timed out. Check the ProjectX connection and try again.",
                     status_code=504,
-                    submission_outcome_unknown=_is_order_submission_path(path),
+                    submission_outcome_unknown=_is_broker_mutation_path(path),
                     reason_code=PROJECTX_ERROR_NETWORK,
                 ) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
-                submission_outcome_unknown=_is_order_submission_path(path),
+                submission_outcome_unknown=_is_broker_mutation_path(path),
                 reason_code=PROJECTX_ERROR_NETWORK,
             ) from exc
 
@@ -666,7 +751,7 @@ class ProjectXClient:
             raise ProjectXClientError(
                 "ProjectX returned a non-JSON response.",
                 status_code=502,
-                submission_outcome_unknown=_is_order_submission_path(path),
+                submission_outcome_unknown=_is_broker_mutation_path(path),
                 reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
             ) from exc
 
@@ -788,6 +873,14 @@ def _is_order_submission_path(path: str) -> bool:
     return path.rstrip("/").lower() == "/api/order/place"
 
 
+def _is_broker_mutation_path(path: str) -> bool:
+    return path.rstrip("/").lower() in {
+        "/api/order/place",
+        "/api/order/cancel",
+        "/api/position/closecontract",
+    }
+
+
 def _is_authentication_path(path: str) -> bool:
     return path.rstrip("/").lower() == "/api/auth/loginkey"
 
@@ -797,9 +890,19 @@ def _http_error_reason_code(*, path: str, status_code: int) -> str:
         return PROJECTX_ERROR_AUTH_FAILED
     if _is_authentication_path(path) and 400 <= status_code < 500:
         return PROJECTX_ERROR_AUTH_FAILED
-    if status_code >= 500:
+    if status_code == 408 or status_code >= 500:
         return PROJECTX_ERROR_NETWORK
     return PROJECTX_ERROR_PROVIDER_RESPONSE
+
+
+def _require_mutation_acknowledgement(payload: Any, *, endpoint: str) -> None:
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise ProjectXClientError(
+            f"ProjectX {endpoint} returned an ambiguous acknowledgement.",
+            status_code=502,
+            submission_outcome_unknown=True,
+            reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+        )
 
 
 def _normalize_contract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -838,6 +941,79 @@ def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _validated_market_bar_values(
+    row: dict[str, Any],
+) -> tuple[float, float, float, float, float]:
+    values: list[float] = []
+    for aliases in (
+        ["o", "open"],
+        ["h", "high"],
+        ["l", "low"],
+        ["c", "close"],
+        ["v", "volume"],
+    ):
+        raw_value = _first_value(row, aliases)
+        if raw_value is None or isinstance(raw_value, bool):
+            raise ProjectXClientError(
+                "ProjectX returned a market bar with a non-numeric OHLCV value.",
+                reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+            )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ProjectXClientError(
+                "ProjectX returned a market bar with a non-numeric OHLCV value.",
+                reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+            ) from exc
+        if not math.isfinite(value):
+            raise ProjectXClientError(
+                "ProjectX returned a market bar with a non-finite OHLCV value.",
+                reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+            )
+        values.append(value)
+
+    open_price, high_price, low_price, close_price, volume = values
+    if min(open_price, high_price, low_price, close_price) <= 0:
+        raise ProjectXClientError(
+            "ProjectX returned a market bar with a non-positive price.",
+            reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+        )
+    if high_price < max(open_price, low_price, close_price) or low_price > min(
+        open_price, high_price, close_price
+    ):
+        raise ProjectXClientError(
+            "ProjectX returned a market bar with an invalid OHLC envelope.",
+            reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+        )
+    if volume < 0:
+        raise ProjectXClientError(
+            "ProjectX returned a market bar with negative volume.",
+            reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+        )
+    return open_price, high_price, low_price, close_price, volume
+
+
+def _projectx_bar_nominal_close(
+    timestamp: datetime,
+    *,
+    unit: int,
+    unit_number: int,
+) -> datetime:
+    opened_at = _as_utc(timestamp)
+    seconds = _PROJECTX_UNIT_SECONDS.get(int(unit))
+    if seconds is not None:
+        return opened_at + timedelta(seconds=seconds * max(1, int(unit_number)))
+    if int(unit) == 6:
+        month_index = opened_at.month - 1 + max(1, int(unit_number))
+        year = opened_at.year + month_index // 12
+        month = month_index % 12 + 1
+        return opened_at.replace(year=year, month=month, day=1)
+    raise ProjectXClientError(
+        "ProjectX returned bars for an unsupported timeframe unit.",
+        reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
+    )
 
 
 def _safe_int(value: Any) -> int | None:

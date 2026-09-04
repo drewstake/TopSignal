@@ -30,8 +30,19 @@ VALID_RUN_TRANSITIONS: dict[str, frozenset[str]] = {
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _SECRET_VALUE_PATTERN = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|bearer|password|secret|token)\b\s*[:=]\s*[^\s,;]+"
+    r'''(?ix)
+    ["']?
+    (api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|jwt)
+    ["']?\s*[:=]\s*
+    (?:
+        "(?:\\.|[^"\\])*"
+        | '(?:\\.|[^'\\])*'
+        | bearer\s+[^\s,;}\]]+
+        | [^\s,;}\]]+
+    )
+    '''
 )
+_BEARER_VALUE_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 
 
 class InvalidBotRunTransition(ValueError):
@@ -139,6 +150,7 @@ def sanitize_error(error: BaseException | str, *, max_length: int = 500) -> str:
     else:
         message = str(error)
     redacted = _SECRET_VALUE_PATTERN.sub(lambda match: f"{match.group(1)}=[REDACTED]", message)
+    redacted = _BEARER_VALUE_PATTERN.sub("Bearer [REDACTED]", redacted)
     compact = " ".join(redacted.split())
     return compact[:max_length] or "Bot evaluation failed."
 

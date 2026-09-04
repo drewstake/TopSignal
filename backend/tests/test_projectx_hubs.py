@@ -7,7 +7,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.services.projectx_hubs as projectx_hubs_module
-from app.services.projectx_hubs import ProjectXHubRunner, _append_query
+from app.services.projectx_hubs import ProjectXHubRunner, _append_query, _signalr_handshake
 from app.services.streaming_pnl_tracker import StreamingPnlTracker
 
 
@@ -89,6 +89,38 @@ def test_hub_disconnect_log_does_not_expose_bearer_token(monkeypatch, caplog):
     assert "error_type=RuntimeError" in caplog.text
 
 
+def test_user_hub_disconnect_invalidates_classification(monkeypatch):
+    invalidations = []
+
+    class StubClient:
+        def get_access_token(self):
+            return "fixture-token"
+
+    def fail_connect(_url, **_kwargs):
+        raise ConnectionError("offline")
+
+    async def stop_after_failure(_delay):
+        raise asyncio.CancelledError()
+
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101),
+        client_factory=StubClient,
+        user_id="user-a",
+        account_id=101,
+        market_hub_url="",
+        user_hub_url="wss://example.test/hubs/user",
+        on_user_account=lambda _payload: None,
+        on_user_disconnect=lambda: invalidations.append(True),
+    )
+    monkeypatch.setattr(projectx_hubs_module.websockets, "connect", fail_connect)
+    monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", stop_after_failure)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner._consume_hub("user", "wss://example.test/hubs/user"))
+
+    assert invalidations == [True]
+
+
 def test_dispatch_circuit_isolates_repeated_tracker_failures():
     class FailingTracker(StreamingPnlTracker):
         def __init__(self):
@@ -143,6 +175,194 @@ def test_user_hub_dispatch_is_scoped_to_explicit_owner():
     )
 
     assert ("user-a", 101, contract_id) in tracker.position_by_scope
+
+
+def test_gateway_user_account_is_not_misrouted_as_a_position():
+    observed = []
+    tracker = StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101)
+    runner = ProjectXHubRunner(
+        tracker=tracker,
+        client_factory=_unused_client_factory,
+        user_id="user-a",
+        account_id=101,
+        market_hub_url="",
+        user_hub_url="wss://example.test/hubs/user",
+        on_user_account=observed.append,
+    )
+
+    runner._dispatch_frame(
+        "user",
+        {
+            "type": 1,
+            "target": "GatewayUserAccount",
+            "arguments": [{"id": 101, "simulated": False}],
+        },
+    )
+
+    assert observed == [{"id": 101, "simulated": False}]
+    assert tracker.position_by_scope == {}
+
+
+def test_signalr_handshake_waits_for_ack_before_subscriptions():
+    class Websocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, message):
+            self.sent.append(message)
+
+        async def recv(self):
+            return '{}\x1e{"type":1,"target":"GatewayQuote","arguments":[]}\x1e'
+
+    websocket = Websocket()
+    frames = asyncio.run(_signalr_handshake(websocket))
+
+    assert websocket.sent == ['{"protocol": "json", "version": 1}\x1e']
+    assert frames == [{"type": 1, "target": "GatewayQuote", "arguments": []}]
+
+
+@pytest.mark.parametrize("response", ["not-json\x1e", "[]\x1e", '{"error":"denied"}\x1e'])
+def test_signalr_handshake_rejects_malformed_or_error_response(response):
+    class Websocket:
+        async def send(self, _message):
+            return None
+
+        async def recv(self):
+            return response
+
+    with pytest.raises(ConnectionError, match="handshake"):
+        asyncio.run(_signalr_handshake(Websocket()))
+
+
+def test_gateway_user_account_ignores_another_account_in_same_user_snapshot():
+    observed = []
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101),
+        client_factory=_unused_client_factory,
+        user_id="user-a",
+        account_id=101,
+        market_hub_url="",
+        user_hub_url="wss://example.test/hubs/user",
+        on_user_account=observed.append,
+    )
+
+    runner._dispatch_frame(
+        "user",
+        {
+            "type": 1,
+            "target": "GatewayUserAccount",
+            "arguments": [{"id": 202, "simulated": True}],
+        },
+    )
+
+    assert observed == []
+
+
+def test_user_account_refresh_resubscribes_before_classification_ttl(monkeypatch):
+    sent = []
+
+    class Websocket:
+        async def send(self, message):
+            sent.append(message)
+
+    calls = 0
+
+    async def one_interval(_seconds):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError()
+
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101),
+        client_factory=_unused_client_factory,
+        user_id="user-a",
+        account_id=101,
+        market_hub_url="",
+        user_hub_url="wss://example.test/hubs/user",
+        on_user_account=lambda _payload: None,
+    )
+    monkeypatch.setattr(projectx_hubs_module.asyncio, "sleep", one_interval)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(runner._refresh_user_account_loop(Websocket()))
+
+    assert any("UnsubscribeAccounts" in message for message in sent)
+    assert any("SubscribeAccounts" in message for message in sent)
+
+
+def test_default_user_hub_subscribes_to_all_account_scoped_streams():
+    messages = projectx_hubs_module._default_user_subscription_messages(101)
+
+    assert messages == [
+        {"type": 1, "target": "SubscribeAccounts", "arguments": []},
+        {"type": 1, "target": "SubscribePositions", "arguments": [101]},
+        {"type": 1, "target": "SubscribeOrders", "arguments": [101]},
+        {"type": 1, "target": "SubscribeTrades", "arguments": [101]},
+    ]
+
+
+def test_one_shot_account_probe_closes_without_disconnect_invalidation(monkeypatch):
+    sent = []
+    invalidations = []
+
+    class Client:
+        def get_access_token(self):
+            return "fixture-token"
+
+    class Websocket:
+        def __init__(self):
+            self.messages = [
+                "{}\x1e",
+                (
+                    '{"type":1,"target":"GatewayUserAccount",'
+                    '"arguments":[{"id":101,"simulated":true}]}\x1e'
+                ),
+            ]
+
+        async def send(self, message):
+            sent.append(message)
+
+        async def recv(self):
+            return self.messages.pop(0)
+
+    websocket = Websocket()
+
+    class Connection:
+        async def __aenter__(self):
+            return websocket
+
+        async def __aexit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        projectx_hubs_module.websockets,
+        "connect",
+        lambda *_args, **_kwargs: Connection(),
+    )
+    observed = []
+    runner = ProjectXHubRunner(
+        tracker=StreamingPnlTracker(owner_user_id="user-a", owner_account_id=101),
+        client_factory=Client,
+        user_id="user-a",
+        account_id=101,
+        market_hub_url="",
+        user_hub_url="wss://example.test/hubs/user",
+        on_user_account=observed.append,
+        on_user_disconnect=lambda: invalidations.append(True),
+    )
+
+    result = asyncio.run(runner.probe_user_account_once(timeout_seconds=1))
+
+    assert result == {"id": 101, "simulated": True}
+    assert observed == [{"id": 101, "simulated": True}]
+    assert invalidations == []
+    assert any("SubscribeAccounts" in message for message in sent)
+    assert not any(
+        target in message
+        for message in sent
+        for target in ("SubscribePositions", "SubscribeOrders", "SubscribeTrades")
+    )
 
 
 def test_user_hub_refuses_process_global_unscoped_configuration():

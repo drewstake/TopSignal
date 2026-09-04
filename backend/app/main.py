@@ -45,6 +45,11 @@ from .db import (
     resolve_database_host_mode,
     resolve_supabase_mode,
 )
+from .bot_worker import (
+    BotWorkerRuntime,
+    continuous_start_availability,
+    inspect_bot_runtime,
+)
 from .expense_schemas import (
     CombineTrackerSuppressionsOut,
     ExpenseCategory,
@@ -74,6 +79,7 @@ from .journal_schemas import (
     PullTradeStatsIn,
 )
 from .bot_schemas import (
+    AccountEmergencyFlattenOut,
     BotActivityOut,
     BotBacktestIn,
     BotBacktestOut,
@@ -81,6 +87,8 @@ from .bot_schemas import (
     BotConfigListOut,
     BotConfigOut,
     BotConfigUpdateIn,
+    BotEmergencyFlattenIn,
+    BotEmergencyFlattenOut,
     BotEvaluationOut,
     BotRunOut,
     BotStartIn,
@@ -101,6 +109,7 @@ from .payout_schemas import PayoutCreateIn, PayoutListOut, PayoutOut, PayoutTota
 from .request_limits import RequestBodyLimitMiddleware
 from .projectx_schemas import (
     AuthMeOut,
+    ProjectXAccountAutomationClassificationOut,
     ProjectXAccountArchiveIn,
     ProjectXAccountArchiveOut,
     ProjectXAccountMainOut,
@@ -201,6 +210,11 @@ from .services.projectx_client import (
     projectx_error_reason_code,
 )
 from .services.projectx_order_book import ProjectXOrderBookRegistry
+from .services.projectx_streaming_runtime import (
+    ProjectXAccountClassificationProbeTimeout,
+    ProjectXAccountClassificationProbeUnavailable,
+    refresh_projectx_account_classification_once,
+)
 from .services.instruments import POINTS_BASIS_SYMBOLS, normalize_points_basis
 from .services.projectx_trades import (
     derive_trade_execution_lifecycles,
@@ -222,9 +236,12 @@ from .services.trade_imports import (
 )
 from .services.bot_service import (
     _looks_like_projectx_contract_id,
+    AccountEmergencyLatchActiveError,
     BotRunEvaluationError,
     create_bot_config,
     delete_bot_config,
+    emergency_flatten_account,
+    emergency_flatten_bot_config,
     evaluate_bot_config,
     fetch_and_store_market_candles,
     get_bot_activity,
@@ -269,7 +286,7 @@ _REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
-_REQUIRED_SCHEMA_MIGRATION = "20260830_harden_supabase_data_api.sql"
+_REQUIRED_SCHEMA_MIGRATION = "20260903_add_bot_runtime_lease.sql"
 _REQUIRED_SCHEMA_BASELINE = "schema-20260830-v6"
 _AUTH_VERIFICATION_CAPACITY = 64
 _AUTH_VERIFICATION_EXECUTOR = ThreadPoolExecutor(
@@ -277,8 +294,11 @@ _AUTH_VERIFICATION_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="topsignal-auth",
 )
 _AUTH_VERIFICATION_SLOTS = BoundedSemaphore(_AUTH_VERIFICATION_CAPACITY)
+_ACCOUNT_CLASSIFICATION_REFRESH_SLOTS = BoundedSemaphore(4)
+_ACCOUNT_CLASSIFICATION_REFRESH_TIMEOUT_SECONDS = 10.0
 _TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
+_bot_worker_runtime: BotWorkerRuntime | None = None
 _order_book_registry = ProjectXOrderBookRegistry()
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0
@@ -380,6 +400,7 @@ async def _trade_import_preview_cleanup_loop() -> None:
 
 @asynccontextmanager
 async def app_lifespan(_: FastAPI):
+    global _bot_worker_runtime
     _validate_runtime_security_configuration()
     _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_GLOBAL", 2)
     _backtest_capacity_limit("BACKTEST_MAX_CONCURRENT_PER_USER", 1)
@@ -393,8 +414,16 @@ async def app_lifespan(_: FastAPI):
     cleanup_task = asyncio.create_task(_trade_import_preview_cleanup_loop())
     try:
         _start_streaming_runtime_if_enabled()
+        _bot_worker_runtime = BotWorkerRuntime(
+            session_factory=SessionLocal,
+            client_factory=_projectx_client_for_user_without_open_transaction,
+        )
+        await _bot_worker_runtime.start()
         yield
     finally:
+        if _bot_worker_runtime is not None:
+            await _bot_worker_runtime.stop()
+            _bot_worker_runtime = None
         cleanup_task.cancel()
         try:
             await cleanup_task
@@ -549,6 +578,37 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/worker")
+def worker_health(require_enabled: bool = False):
+    """Expose only the process-local worker task state for the supervisor.
+
+    This is deliberately separate from readiness: provider degradation,
+    account classification, and operator-action blocks must not create a
+    restart loop.  The production supervisor opts into ``require_enabled`` so
+    a disabled or crashed recurring worker cannot look healthy.
+    """
+
+    runtime = _bot_worker_runtime
+    if runtime is None:
+        payload = {"status": "not_started", "enabled": False, "healthy": False}
+        return JSONResponse(status_code=503, content=payload)
+
+    snapshot = runtime.snapshot()
+    enabled = bool(runtime.settings.enabled)
+    healthy = bool(
+        (enabled and runtime.task_healthy())
+        or (not enabled and not require_enabled)
+    )
+    payload = {
+        "status": str(snapshot.state),
+        "enabled": enabled,
+        "healthy": healthy,
+    }
+    if not healthy:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
 @app.get("/ready")
 def readiness(db: Session = Depends(get_db)):
     try:
@@ -556,10 +616,12 @@ def readiness(db: Session = Depends(get_db)):
         schema = inspect(db.get_bind())
         table_names = set(schema.get_table_names())
         required_tables = {
+            "account_emergency_actions",
             "accounts",
             "bot_backtests",
             "bot_configs",
             "bot_order_attempts",
+            "bot_runtime_leases",
             "expense_suppressions",
             "projectx_trade_events",
             "trade_import_batches",
@@ -578,7 +640,55 @@ def readiness(db: Session = Depends(get_db)):
         if bot_config_column is None or not bool(bot_config_column.get("nullable")):
             raise RuntimeError("schema_outdated")
         account_columns = {column["name"] for column in schema.get_columns("accounts")}
-        if not {"balance", "trade_data_source"}.issubset(account_columns):
+        if not {
+            "balance",
+            "trade_data_source",
+            "provider_simulated",
+            "provider_classification_observed_at",
+        }.issubset(account_columns):
+            raise RuntimeError("schema_outdated")
+        emergency_action_columns = {
+            column["name"]
+            for column in schema.get_columns("account_emergency_actions")
+        }
+        if not {
+            "id",
+            "user_id",
+            "account_id",
+            "status",
+            "confirmed_flat",
+            "lease_owner_id",
+            "lease_expires_at",
+            "attempt_count",
+            "request_payload",
+            "result_payload",
+            "completed_at",
+        }.issubset(emergency_action_columns):
+            raise RuntimeError("schema_outdated")
+        emergency_action_checks = " ".join(
+            str(check.get("sqltext") or "").lower()
+            for check in schema.get_check_constraints("account_emergency_actions")
+        )
+        if (
+            "confirmed_account_flat" not in emergency_action_checks
+            or "confirmed_flat" not in emergency_action_checks
+            or "completed_at is null" not in emergency_action_checks
+            or "completed_at is not null" not in emergency_action_checks
+            or "lease_owner_id is not null" not in emergency_action_checks
+            or "lease_expires_at is not null" not in emergency_action_checks
+            or "attempt_count >= 1" not in emergency_action_checks
+        ):
+            raise RuntimeError("schema_outdated")
+        emergency_action_indexes = schema.get_indexes("account_emergency_actions")
+        pending_action_index = next(
+            (
+                index
+                for index in emergency_action_indexes
+                if index.get("name") == "uq_account_emergency_actions_one_pending"
+            ),
+            None,
+        )
+        if pending_action_index is None or not bool(pending_action_index.get("unique")):
             raise RuntimeError("schema_outdated")
         expense_suppression_columns = {
             column["name"] for column in schema.get_columns("expense_suppressions")
@@ -700,10 +810,29 @@ def readiness(db: Session = Depends(get_db)):
                 raise RuntimeError("schema_outdated")
         else:
             raise RuntimeError("schema_outdated")
+        if _bot_worker_runtime is not None:
+            runtime_readiness = inspect_bot_runtime(db, runtime=_bot_worker_runtime)
+            if not runtime_readiness.ready:
+                raise RuntimeError("bot_runtime_not_ready")
     except Exception:
         db.rollback()
         return JSONResponse(status_code=503, content={"status": "not_ready"})
     return {"status": "ready"}
+
+
+@app.get("/api/bots/runtime/status")
+def get_bot_runtime_status(db: Session = Depends(get_db)):
+    runtime = _bot_worker_runtime
+    if runtime is None:
+        return {
+            "ready": False,
+            "state": "not_started",
+            "provider_status": "unknown",
+            "checks": {"worker_enabled": False},
+            "counts": {},
+        }
+    user_id = get_authenticated_user_id()
+    return inspect_bot_runtime(db, runtime=runtime, user_id=user_id).public_dict()
 
 
 @app.get("/api/auth/me", response_model=AuthMeOut)
@@ -1472,6 +1601,72 @@ def metrics_behavior(
     if account_id is not None:
         _validate_account_id(account_id)
     return get_behavior_metrics(db, account_id=account_id, user_id=user_id)
+
+
+@app.post(
+    "/api/accounts/{account_id}/automation-classification/refresh",
+    response_model=ProjectXAccountAutomationClassificationOut,
+)
+def refresh_projectx_account_automation_classification(account_id: int):
+    """Fetch one fresh simulated/live classification from the scoped user hub."""
+
+    user_id = get_authenticated_user_id()
+    if account_id <= 0:
+        raise HTTPException(status_code=400, detail="account_id must be a positive integer")
+    if not _ACCOUNT_CLASSIFICATION_REFRESH_SLOTS.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="projectx_account_classification_refresh_busy",
+            headers={"Retry-After": "2"},
+        )
+
+    def client_factory() -> ProjectXClient:
+        with SessionLocal() as credential_db:
+            client = _projectx_client_for_user_without_open_transaction(
+                credential_db,
+                user_id=user_id,
+            )
+        # Token acquisition is synchronous; cap its own network timeout to the
+        # one-shot endpoint budget as well as bounding the async websocket work.
+        client.timeout_seconds = min(
+            int(client.timeout_seconds),
+            int(_ACCOUNT_CLASSIFICATION_REFRESH_TIMEOUT_SECONDS),
+        )
+        return client
+
+    try:
+        observation = refresh_projectx_account_classification_once(
+            user_id=user_id,
+            account_id=account_id,
+            client_factory=client_factory,
+            timeout_seconds=_ACCOUNT_CLASSIFICATION_REFRESH_TIMEOUT_SECONDS,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProjectXAccountClassificationProbeTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="projectx_account_classification_timeout",
+        ) from exc
+    except ProjectXAccountClassificationProbeUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="projectx_account_classification_unavailable",
+            headers={"Retry-After": "2"},
+        ) from exc
+    finally:
+        _ACCOUNT_CLASSIFICATION_REFRESH_SLOTS.release()
+
+    return ProjectXAccountAutomationClassificationOut(
+        account_id=observation.account_id,
+        provider_simulated=observation.provider_simulated,
+        provider_classification_observed_at=(
+            observation.provider_classification_observed_at
+        ),
+        source="projectx_user_hub",
+    )
 
 
 @app.get("/api/accounts", response_model=list[ProjectXAccountOut])
@@ -2877,6 +3072,31 @@ def start_trading_bot(
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     body = payload or BotStartIn()
+    if body.poll_interval_seconds is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="per_run_poll_interval_is_not_supported",
+        )
+    if body.stop_at_session_end:
+        raise HTTPException(
+            status_code=422,
+            detail="automatic_session_end_stop_is_not_supported",
+        )
+    if body.continuous:
+        runtime = _bot_worker_runtime
+        if runtime is None:
+            raise HTTPException(status_code=503, detail="bot_worker_not_started")
+        available, reason = continuous_start_availability(
+            db,
+            runtime=runtime,
+            requested_live=body.dry_run is False,
+        )
+        if not available:
+            raise HTTPException(
+                status_code=503,
+                detail=reason or "bot_worker_unavailable",
+                headers={"Retry-After": "5"},
+            )
     try:
         config = get_bot_config(
             db,
@@ -2903,6 +3123,7 @@ def start_trading_bot(
             client=client,
             dry_run=body.dry_run,
             confirm_live_order_routing=body.confirm_live_order_routing,
+            continuous=body.continuous,
         )
         db.commit()
     except BotRunEvaluationError as exc:
@@ -2938,6 +3159,16 @@ def start_trading_bot(
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AccountEmergencyLatchActiveError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "account_emergency_action_id": exc.action_id,
+                "account_emergency_status": exc.status,
+            },
+        ) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2959,6 +3190,15 @@ def evaluate_trading_bot(
     body = payload or BotStartIn(dry_run=True)
     if body.dry_run is False:
         raise HTTPException(status_code=400, detail="evaluate endpoint is dry-run only; use /start for live order routing")
+    if body.continuous:
+        raise HTTPException(status_code=422, detail="continuous_mode_requires_start_endpoint")
+    if body.poll_interval_seconds is not None:
+        raise HTTPException(status_code=422, detail="per_run_poll_interval_is_not_supported")
+    if body.stop_at_session_end:
+        raise HTTPException(
+            status_code=422,
+            detail="automatic_session_end_stop_is_not_supported",
+        )
     try:
         config = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
         if config is None:
@@ -3013,6 +3253,146 @@ def stop_trading_bot(
         db.rollback()
         raise
     return serialize_bot_run(run)
+
+
+@app.post(
+    "/api/bots/{bot_config_id}/emergency-flatten",
+    response_model=BotEmergencyFlattenOut,
+    responses={409: {"model": BotEmergencyFlattenOut}},
+)
+def emergency_flatten_trading_bot(
+    bot_config_id: int,
+    payload: BotEmergencyFlattenIn,
+    db: Session = Depends(get_db),
+):
+    """Stop local automation, then request and verify an account-wide broker flatten."""
+
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+
+    def client_factory() -> ProjectXClient:
+        # Use a separate short-lived session: the emergency service owns `db`
+        # and has already durably stopped automation before invoking this.
+        with SessionLocal() as credential_db:
+            return _projectx_client_for_user_without_open_transaction(
+                credential_db,
+                user_id=user_id,
+            )
+
+    try:
+        result = emergency_flatten_bot_config(
+            db,
+            user_id=user_id,
+            bot_config_id=bot_config_id,
+            client_factory=client_factory,
+            confirm_broker_flatten=payload.confirm_broker_flatten,
+        )
+        response_payload = BotEmergencyFlattenOut(
+            run=serialize_bot_run(result.run),
+            confirmed_flat=result.confirmed_flat,
+            status=result.status,
+            risk_block=(
+                {
+                    "code": result.risk_block.code,
+                    "message": result.risk_block.message,
+                    "severity": result.risk_block.severity,
+                }
+                if result.risk_block is not None
+                else None
+            ),
+            audit=result.audit,
+        )
+        # Persist the broker audit whether verification succeeded or failed.
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    if not result.confirmed_flat:
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(response_payload.model_dump()),
+        )
+    return response_payload
+
+
+@app.post(
+    "/api/accounts/{account_id}/emergency-flatten",
+    response_model=AccountEmergencyFlattenOut,
+    responses={409: {"model": AccountEmergencyFlattenOut}},
+)
+def emergency_flatten_projectx_account(
+    account_id: int,
+    payload: BotEmergencyFlattenIn,
+    db: Session = Depends(get_db),
+):
+    """Stop all local account automation, then request and verify broker flatness."""
+
+    user_id = get_authenticated_user_id()
+    if account_id <= 0:
+        raise HTTPException(status_code=400, detail="account_id must be a positive integer")
+
+    def client_factory() -> ProjectXClient:
+        # Client construction happens after the emergency service's durable
+        # local-stop commit and outside that transaction.
+        with SessionLocal() as credential_db:
+            return _projectx_client_for_user_without_open_transaction(
+                credential_db,
+                user_id=user_id,
+            )
+
+    try:
+        result = emergency_flatten_account(
+            db,
+            user_id=user_id,
+            account_id=account_id,
+            client_factory=client_factory,
+            confirm_broker_flatten=payload.confirm_broker_flatten,
+        )
+        response_payload = AccountEmergencyFlattenOut(
+            account_id=result.account_id,
+            audit_id=result.audit_id,
+            confirmed_flat=result.confirmed_flat,
+            status=result.status,
+            risk_block=(
+                {
+                    "code": result.risk_block.code,
+                    "message": result.risk_block.message,
+                    "severity": result.risk_block.severity,
+                }
+                if result.risk_block is not None
+                else None
+            ),
+            audit=result.audit,
+            disabled_bot_config_ids=list(result.disabled_bot_config_ids),
+            stopped_bot_run_ids=list(result.stopped_bot_run_ids),
+        )
+        # The service commits both the pre-mutation stop record and final
+        # provider outcome; this harmless commit covers future route additions.
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    if not result.confirmed_flat:
+        return JSONResponse(
+            status_code=409,
+            content=jsonable_encoder(response_payload.model_dump()),
+        )
+    return response_payload
 
 
 @app.get("/api/bots/{bot_config_id}/activity", response_model=BotActivityOut)
@@ -3921,6 +4301,11 @@ def _runtime_is_local_only() -> bool:
 
 def _validate_runtime_security_configuration() -> None:
     local_only = _runtime_is_local_only()
+    runtime_environment = str(os.getenv("TOPSIGNAL_ENV") or "").strip().lower()
+    if runtime_environment == "production" and not auth_required():
+        raise RuntimeError(
+            "AUTH_REQUIRED=true is required when TOPSIGNAL_ENV=production."
+        )
     if not auth_required() and not local_only:
         raise RuntimeError(
             "AUTH_REQUIRED=false is allowed only with a local database and local/disabled Supabase runtime."
@@ -4589,6 +4974,10 @@ def _serialize_projectx_account(
             provider_is_visible
             if isinstance(provider_is_visible, bool)
             else row.is_visible
+        ),
+        "provider_simulated": None if is_csv_import else row.provider_simulated,
+        "provider_classification_observed_at": (
+            None if is_csv_import else row.provider_classification_observed_at
         ),
         "last_trade_at": last_trade_at,
         "last_seen_at": None if is_csv_import else row.last_seen_at,

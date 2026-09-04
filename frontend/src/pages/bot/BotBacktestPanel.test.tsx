@@ -84,6 +84,25 @@ const result: BotBacktestResult = {
     long: breakdown,
     short: { ...breakdown, trade_count: 0, winning_trades: 0, win_rate: 0, gross_pnl: 0, net_pnl: 0, expectancy: 0, average_win: 0 },
   },
+  evaluation_split: {
+    method: "chronological_80_20_fixed_parameters",
+    label: "Chronological holdout diagnostic (not strategy validation)",
+    validation_status: "diagnostic_only",
+    split_timestamp: "2026-01-24T14:30:00Z",
+    in_sample: {
+      start: "2026-01-02T14:30:00Z",
+      end: "2026-01-24T14:30:00Z",
+      bar_count: 400,
+      metrics: breakdown,
+    },
+    holdout: {
+      start: "2026-01-24T14:30:00Z",
+      end: "2026-01-30T21:00:00Z",
+      bar_count: 100,
+      metrics: { ...breakdown, net_pnl: -12.5, gross_pnl: -10, winning_trades: 0, losing_trades: 1 },
+    },
+    notes: ["This diagnostic is not proof of future performance."],
+  },
   equity_curve: [
     { timestamp: "2026-01-02T14:30:00Z", equity: 50_000, realized_pnl: 0, unrealized_pnl: 0 },
     { timestamp: "2026-01-02T15:00:00Z", equity: 50_047.6, realized_pnl: 47.6, unrealized_pnl: 0 },
@@ -138,6 +157,9 @@ describe("BacktestResults", () => {
     expect(markup).toContain("External routing disabled");
     expect(markup).toContain("Trade ledger");
     expect(markup).toContain("take profit");
+    expect(markup).toContain("Chronological holdout diagnostic (not strategy validation)");
+    expect(markup).toContain("Final 20% (holdout)");
+    expect(markup).toContain("diagnostic only");
   });
 });
 
@@ -145,7 +167,8 @@ describe("BotBacktestPanel", () => {
   it("offers one full-history action without date inputs", () => {
     const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} />);
 
-    expect(markup).toContain("Run Full History Backtest");
+    expect(markup).toContain("Run Stored History Replay");
+    expect(markup).not.toContain("Full History");
     expect(markup).toContain("Backtest strategy");
     expect(markup).toContain("Instrument");
     expect(markup).toContain("MNQ — Micro Nasdaq-100");

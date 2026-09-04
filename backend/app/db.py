@@ -119,14 +119,15 @@ def log_runtime_connection_targets() -> None:
 
 
 def _schema_init_is_enabled() -> bool:
-    raw_value = os.getenv(_SCHEMA_INIT_ENV, "full").strip().lower()
+    # Application replicas never mutate production schema implicitly. Local
+    # bootstrap and migration scripts opt in explicitly with ``full``/force.
+    raw_value = os.getenv(_SCHEMA_INIT_ENV, "skip").strip().lower()
     if raw_value in {"", "1", "true", "yes", "y", "on", "full"}:
         return True
     if raw_value in {"0", "false", "no", "n", "off", "skip"}:
         return False
 
-    logger.warning("Unknown %s value %r; running database schema init.", _SCHEMA_INIT_ENV, raw_value)
-    return True
+    raise RuntimeError(f"Unknown {_SCHEMA_INIT_ENV} value {raw_value!r}; expected full or skip")
 
 
 def init_db(*, force: bool = False):
@@ -174,6 +175,15 @@ def _ensure_accounts_schema_compatibility() -> None:
             conn.execute(text("alter table accounts add column if not exists display_name text"))
         if "balance" not in column_names:
             conn.execute(text("alter table accounts add column if not exists balance numeric(18,6)"))
+        if "provider_simulated" not in column_names:
+            conn.execute(text("alter table accounts add column if not exists provider_simulated boolean"))
+        if "provider_classification_observed_at" not in column_names:
+            conn.execute(
+                text(
+                    "alter table accounts add column if not exists "
+                    "provider_classification_observed_at timestamptz"
+                )
+            )
         if "trade_data_source" not in column_names:
             conn.execute(
                 text(

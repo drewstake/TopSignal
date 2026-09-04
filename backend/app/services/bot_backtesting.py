@@ -63,7 +63,7 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "3.1.1-databento-lazy-mmap"
+BACKTEST_ENGINE_VERSION = "3.3.0-chronological-holdout"
 LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
 # Unit tests for the pre-Databento engine can opt in by monkeypatching this
 # process-local constant. It is deliberately not environment-configurable and
@@ -799,6 +799,11 @@ class BacktestEngine:
         self.last_loss_at: datetime | None = None
         self.block_counts: dict[str, int] = defaultdict(int)
         self.unfilled_final_signals = 0
+        self.delivery_roll_count = 0
+        self.delivery_roll_forced_exit_count = 0
+        self.delivery_roll_discarded_signal_count = 0
+        self._delivery_history_floor = 0
+        self._history_delivery_identity: tuple[str | None, int | None] | None = None
         self._emitted_topbot_signal_identities: set[tuple[str, datetime]] = set()
         self._topbot_source_cache: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
         self.topbot_source_failure_counts: dict[tuple[str, str], int] = defaultdict(int)
@@ -825,6 +830,9 @@ class BacktestEngine:
             self._current_event_timestamp = candle_start
             self._current_event_in_session = inside_session
 
+            if index > 0:
+                self._handle_delivery_change(index=index)
+
             counted_position = self.position
             if counted_position is not None:
                 self._current_bar_exposed = True
@@ -848,8 +856,20 @@ class BacktestEngine:
                 if all_close_ns is not None
                 else self.all_close_times[history_cursor] <= event_time
             ):
+                history_candle = self.all_candles[history_cursor]
+                history_delivery = _candle_delivery_identity(history_candle)
+                if (
+                    self._history_delivery_identity is not None
+                    and history_delivery is not None
+                    and history_delivery != self._history_delivery_identity
+                ):
+                    closed_history.clear()
+                    self._delivery_history_floor = history_cursor
+                    self._topbot_history_cache.clear()
+                if history_delivery is not None:
+                    self._history_delivery_identity = history_delivery
                 if self._sma_close_values is None:
-                    closed_history.append(self.all_candles[history_cursor])
+                    closed_history.append(history_candle)
                 history_cursor += 1
             if (
                 self._uses_real_evaluator
@@ -1050,7 +1070,8 @@ class BacktestEngine:
         assert closes is not None
         fast_period = int(self.config.fast_period)
         slow_period = int(self.config.slow_period)
-        visible_count = min(closed_count, self.evaluator_history_limit)
+        segment_count = max(0, closed_count - self._delivery_history_floor)
+        visible_count = min(segment_count, self.evaluator_history_limit)
         latest_index = closed_count - 1
         latest = self.all_candles[latest_index]
         if visible_count < slow_period + 1:
@@ -1105,6 +1126,35 @@ class BacktestEngine:
                 "current_slow": current_slow,
             },
         )
+
+    def _handle_delivery_change(self, *, index: int) -> None:
+        previous_candle = self.execution_candles[index - 1]
+        current_candle = self.execution_candles[index]
+        previous_delivery = _candle_delivery_identity(previous_candle)
+        current_delivery = _candle_delivery_identity(current_candle)
+        if (
+            previous_delivery is None
+            or current_delivery is None
+            or previous_delivery == current_delivery
+        ):
+            return
+
+        self.delivery_roll_count += 1
+        if self.pending is not None:
+            self.pending = None
+            self.delivery_roll_discarded_signal_count += 1
+        if self.position is None:
+            return
+
+        previous_close = float(previous_candle.close_price)
+        previous_close_time = self.execution_close_times[index - 1]
+        self._update_excursion(previous_close, previous_close)
+        self._close_position(
+            raw_exit_price=previous_close,
+            exit_timestamp=previous_close_time,
+            exit_reason="contract_roll",
+        )
+        self.delivery_roll_forced_exit_count += 1
 
     def _record_topbot_source_failures(self, signal: SignalResult) -> None:
         payload = signal.raw_payload if isinstance(signal.raw_payload, dict) else {}
@@ -1699,6 +1749,11 @@ class BacktestEngine:
                     fallback=stream.start_times,
                 ),
             )
+        start_index = _contiguous_delivery_start(
+            stream.candles,
+            start_index=start_index,
+            end_index=end_index,
+        )
         # Preserve the mmap view through the evaluator boundary. Evaluators
         # already treat engine-owned ``_topsignal_sorted_closed`` inputs as
         # immutable sequences, so expanding every rolling window into Python
@@ -1755,16 +1810,39 @@ class BacktestEngine:
         desired_side = "long" if pending.action == "BUY" else "short"
         signal_category = str(pending.payload.get("signal_category") or "entry")
         is_exit_only = signal_category == "exit"
+        target_position_qty = _finite_optional_float(
+            pending.payload.get("target_position_qty")
+        )
 
         if self.position is not None and self.position.side != desired_side:
+            current_position_qty = (
+                self.position.quantity if self.position.side == "long" else -self.position.quantity
+            )
+            if (
+                target_position_qty is not None
+                and target_position_qty * current_position_qty < -(1e-9**2)
+            ):
+                # Live routing cannot attach authoritative bracket children to a
+                # market order that both flattens and enters the other side.
+                # Preserve parity by leaving the position unchanged; a later
+                # evaluation may emit the required flatten-only target.
+                self.block_counts["atomic_reversal_not_supported"] += 1
+                return
             self._current_bar_exposed = True
             self._update_excursion(float(candle.open_price), float(candle.open_price))
-            exit_reason = str(pending.payload.get("exit_reason") or "position_reversal")
+            exit_reason = str(
+                pending.payload.get("exit_reason") or "opposite_signal_flatten"
+            )
             self._close_position(
                 raw_exit_price=float(candle.open_price),
                 exit_timestamp=fill_time,
                 exit_reason=exit_reason,
             )
+            # A target-less strategy signal is one market-order delta. Against
+            # an equal-size position that delta flattens; it does not also open
+            # a new position. Target-aware signals either flatten to zero above
+            # or are blocked as unsupported atomic reversals.
+            return
 
         if is_exit_only or self.position is not None:
             return
@@ -2203,6 +2281,14 @@ class BacktestEngine:
                     )
 
     def _append_run_warnings(self) -> None:
+        if self.delivery_roll_count:
+            self.warnings.append(
+                f"Detected {self.delivery_roll_count} futures delivery change(s); "
+                "strategy history was segmented at each roll, "
+                f"{self.delivery_roll_forced_exit_count} open position(s) were closed at the "
+                "prior delivery's final close, and "
+                f"{self.delivery_roll_discarded_signal_count} pending signal(s) were discarded."
+            )
         if self.unfilled_final_signals:
             self.warnings.append(
                 "The final-bar signal was not filled because no next bar existed in the test range."
@@ -3371,10 +3457,11 @@ def run_backtest(
     replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
     progress_callback: BacktestProgressCallback | None = None,
     cancellation_callback: BacktestCancellationCallback | None = None,
+    include_evaluation_split: bool = True,
 ) -> dict[str, Any]:
     """Run a pure replay. This function cannot create or route an order."""
 
-    return BacktestEngine(
+    engine = BacktestEngine(
         config=config,
         candles=candles,
         settings=BacktestSettings(
@@ -3391,7 +3478,105 @@ def run_backtest(
         replay_streams=replay_streams,
         progress_callback=progress_callback,
         cancellation_callback=cancellation_callback,
-    ).run()
+    )
+    result = engine.run()
+    result["evaluation_split"] = None
+    if signal_evaluator is None and include_evaluation_split:
+        result["evaluation_split"] = _build_chronological_holdout_evaluation(
+            engine,
+            full_result=result,
+            replay_streams=replay_streams,
+            cancellation_callback=cancellation_callback,
+        )
+        if result["evaluation_split"] is None:
+            result["warnings"].append(
+                "A chronological holdout was unavailable because fewer than four execution bars "
+                "were present; this replay is in-sample only and is not strategy validation."
+            )
+        else:
+            result["warnings"].append(
+                "The chronological holdout is a fixed-parameter diagnostic, not independent "
+                "validation or evidence of future performance."
+            )
+    return result
+
+
+def _build_chronological_holdout_evaluation(
+    engine: BacktestEngine,
+    *,
+    full_result: Mapping[str, Any],
+    replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None,
+    cancellation_callback: BacktestCancellationCallback | None,
+) -> dict[str, Any] | None:
+    """Replay the final 20% with fresh portfolio/risk state and causal warmup only."""
+
+    total_bars = len(engine.execution_candles)
+    if total_bars < 4:
+        return None
+    holdout_bars = max(2, math.ceil(total_bars * 0.20))
+    split_index = total_bars - holdout_bars
+    if split_index < 2:
+        return None
+
+    split_timestamp = engine.execution_start_times[split_index]
+    holdout_engine = BacktestEngine(
+        config=engine.config,
+        candles=engine.all_candles,
+        settings=BacktestSettings(
+            start=split_timestamp,
+            end=engine.settings.end,
+            starting_balance=engine.settings.starting_balance,
+            commission_per_contract=engine.settings.commission_per_contract,
+            slippage_ticks=engine.settings.slippage_ticks,
+            tick_size=engine.settings.tick_size,
+            tick_value=engine.settings.tick_value,
+            # The isolated window must realize any final position so its trade
+            # metrics do not depend on activity outside the holdout.
+            force_close_at_end=True,
+        ),
+        replay_streams=replay_streams,
+        cancellation_callback=cancellation_callback,
+    )
+    holdout_result = holdout_engine.run()
+    split_utc = _as_utc(split_timestamp)
+    in_sample_trades = [
+        trade
+        for trade in full_result.get("trades", [])
+        if _as_utc(datetime.fromisoformat(str(trade["entry_timestamp"]))) < split_utc
+        and _as_utc(datetime.fromisoformat(str(trade["exit_timestamp"]))) <= split_utc
+    ]
+    crossing_trade_count = sum(
+        1
+        for trade in full_result.get("trades", [])
+        if _as_utc(datetime.fromisoformat(str(trade["entry_timestamp"]))) < split_utc
+        < _as_utc(datetime.fromisoformat(str(trade["exit_timestamp"])))
+    )
+    return {
+        "method": "chronological_80_20_fixed_parameters",
+        "label": "Chronological holdout diagnostic (not strategy validation)",
+        "validation_status": "diagnostic_only",
+        "split_timestamp": split_utc.isoformat(),
+        "in_sample": {
+            "start": engine.execution_start_times[0].isoformat(),
+            "end": split_utc.isoformat(),
+            "bar_count": split_index,
+            "metrics": _backtest_breakdown_snapshot(_trade_breakdown(in_sample_trades)),
+        },
+        "holdout": {
+            "start": holdout_result["range"]["start"],
+            "end": holdout_result["range"]["end"],
+            "bar_count": int(holdout_result["range"]["bar_count"]),
+            "metrics": _backtest_breakdown_snapshot(holdout_result["metrics"]),
+        },
+        "notes": [
+            "Strategy parameters were fixed before the holdout replay; this workflow did not optimize them.",
+            "The holdout used a fresh cash, position, pending-signal, cooldown, and daily-risk state.",
+            "Only candles closed before each holdout decision were available; pre-split candles were used solely as causal indicator warmup.",
+            "The holdout final position was closed at its last bar so holdout trade metrics are self-contained.",
+            f"{crossing_trade_count} full-replay trade(s) crossed the split and were excluded from the in-sample summary.",
+            "This diagnostic is not proof of future performance and is not a substitute for forward paper trading.",
+        ],
+    }
 
 
 def _projected_candle_query(db: Session):
@@ -5109,15 +5294,8 @@ def _cached_candle_is_effectively_partial(candle: ProjectXMarketCandle) -> bool:
 def _cached_candle_was_fetched_before_nominal_close(
     candle: ProjectXMarketCandle,
 ) -> bool:
-    if str(candle.unit) not in {"second", "minute", "hour"}:
-        return False
     fetched_at = candle.fetched_at
     if fetched_at is None:
-        return False
-    raw_payload = candle.raw_payload
-    if isinstance(raw_payload, dict) and any(
-        key in raw_payload for key in ("isPartial", "is_partial", "partial")
-    ):
         return False
     return _as_utc(fetched_at) < _candle_close_time(candle)
 
@@ -5130,6 +5308,41 @@ def _candle_stream_has_overlaps(candles: list[ProjectXMarketCandle]) -> bool:
             return True
         previous_close_time = _candle_close_time(row)
     return False
+
+
+def _candle_delivery_identity(
+    candle: ProjectXMarketCandle,
+) -> tuple[str | None, int | None] | None:
+    raw_symbol_value = getattr(candle, "source_raw_symbol", None)
+    raw_symbol = str(raw_symbol_value).strip() if raw_symbol_value is not None else ""
+    instrument_value = getattr(candle, "source_instrument_id", None)
+    try:
+        instrument_id = int(instrument_value) if instrument_value is not None else None
+    except (TypeError, ValueError):
+        instrument_id = None
+    if not raw_symbol and instrument_id is None:
+        return None
+    return raw_symbol or None, instrument_id
+
+
+def _contiguous_delivery_start(
+    candles: Sequence[ProjectXMarketCandle],
+    *,
+    start_index: int,
+    end_index: int,
+) -> int:
+    """Exclude another delivery from the bounded history exposed to an evaluator."""
+
+    if end_index - start_index <= 1:
+        return start_index
+    latest_delivery = _candle_delivery_identity(candles[end_index - 1])
+    if latest_delivery is None:
+        return start_index
+    for index in range(end_index - 2, start_index - 1, -1):
+        candidate = _candle_delivery_identity(candles[index])
+        if candidate is not None and candidate != latest_delivery:
+            return index + 1
+    return start_index
 
 
 def _candle_close_time(candle: ProjectXMarketCandle) -> datetime:
@@ -5388,6 +5601,25 @@ def _build_metrics(
     }
 
 
+def _backtest_breakdown_snapshot(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: metrics[key]
+        for key in (
+            "trade_count",
+            "winning_trades",
+            "losing_trades",
+            "win_rate",
+            "gross_pnl",
+            "net_pnl",
+            "profit_factor",
+            "expectancy",
+            "average_win",
+            "average_loss",
+            "payoff_ratio",
+        )
+    }
+
+
 def _trade_breakdown(trades: list[dict[str, Any]]) -> dict[str, Any]:
     winners = [float(trade["net_pnl"]) for trade in trades if float(trade["net_pnl"]) > 0]
     losers = [float(trade["net_pnl"]) for trade in trades if float(trade["net_pnl"]) < 0]
@@ -5516,7 +5748,8 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
             "forced_close_at_last_bar_close" if settings.force_close_at_end else "left_open"
         ),
         "position_rule": (
-            "signals_target_direction; same-side_duplicates_do_not_pyramid; opposites_reverse; "
+            "same-side_duplicates_do_not_pyramid; target-less opposite signals flatten an "
+            "equal-size position; target-aware atomic reversals are blocked to match live routing; "
             "oversized_entries_are_blocked_not_capped"
         ),
         "session_rule": (
@@ -5531,7 +5764,12 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
         "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
         "market_data": (
             "databento_global_ohlcv_1m_resampled_on_session_anchored_buckets; "
-            "continuous_delivery_uses_only_previous_completed_session_volume"
+            "continuous_delivery_uses_only_previous_completed_session_volume; evaluator_history_"
+            "is_segmented_at_delivery_changes"
+        ),
+        "roll_gap_rule": (
+            "open_positions_close_at_the_prior_delivery_final_close; pending_cross-roll_signals_"
+            "are_discarded"
         ),
         "historical_source": "databento",
         "roll_policy_version": ROLL_POLICY_VERSION,

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 _SIGNALR_RECORD_SEPARATOR = "\x1e"
 _MARKET_SUBSCRIBE_ENV = "PROJECTX_MARKET_HUB_SUBSCRIBE_MESSAGE"
 _USER_SUBSCRIBE_ENV = "PROJECTX_USER_HUB_SUBSCRIBE_MESSAGE"
+_DEFAULT_USER_HUB_URL = "https://rtc.topstepx.com/hubs/user"
+_HANDSHAKE_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass
@@ -121,6 +123,9 @@ class ProjectXHubRunner:
         reconnect_max_seconds: float = 30.0,
         dispatch_failure_threshold: int = 5,
         dispatch_recovery_seconds: float = 30.0,
+        user_account_refresh_seconds: float = 240.0,
+        on_user_account: Callable[[Mapping[str, Any]], None] | None = None,
+        on_user_disconnect: Callable[[], None] | None = None,
     ):
         self._tracker = tracker
         self._client_factory = client_factory
@@ -129,7 +134,11 @@ class ProjectXHubRunner:
         self._market_hub_url = (
             os.getenv("PROJECTX_MARKET_HUB_URL") if market_hub_url is None else market_hub_url
         )
-        self._user_hub_url = os.getenv("PROJECTX_USER_HUB_URL") if user_hub_url is None else user_hub_url
+        self._user_hub_url = (
+            os.getenv("PROJECTX_USER_HUB_URL", _DEFAULT_USER_HUB_URL)
+            if user_hub_url is None
+            else user_hub_url
+        )
         if self._user_hub_url and (self._user_id is None or self._account_id is None):
             raise ValueError("a user hub requires an explicit user_id and account_id scope")
         if self._account_id is not None and self._account_id <= 0:
@@ -138,6 +147,11 @@ class ProjectXHubRunner:
         self._reconnect_max_seconds = max(self._reconnect_base_seconds, float(reconnect_max_seconds))
         self._dispatch_failure_threshold = max(1, int(dispatch_failure_threshold))
         self._dispatch_recovery_seconds = max(0.1, float(dispatch_recovery_seconds))
+        self._user_account_refresh_seconds = min(
+            240.0, max(30.0, float(user_account_refresh_seconds))
+        )
+        self._on_user_account = on_user_account
+        self._on_user_disconnect = on_user_disconnect
         self._dispatch_circuits: dict[str, _DispatchCircuit] = {}
 
     async def run_forever(self) -> None:
@@ -152,6 +166,74 @@ class ProjectXHubRunner:
             return
 
         await asyncio.gather(*tasks)
+
+    async def probe_user_account_once(
+        self,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> Mapping[str, Any]:
+        """Read one scoped GatewayUserAccount snapshot, then close the socket.
+
+        Unlike ``run_forever``, this bounded probe never starts market,
+        position, order, or trade subscriptions and never invokes the normal
+        disconnect invalidation callback when its intentional close occurs.
+        The configured account callback completes before the observation is
+        returned, so persistence failures cannot be mistaken for success.
+        """
+
+        if not self._user_hub_url or self._user_id is None or self._account_id is None:
+            raise ValueError("a user-account probe requires an explicit user hub and owner scope")
+
+        timeout = min(15.0, max(0.5, float(timeout_seconds)))
+        loop = asyncio.get_running_loop()
+        observed: asyncio.Future[Mapping[str, Any]] = loop.create_future()
+        configured_callback = self._on_user_account
+
+        def capture(payload: Mapping[str, Any]) -> None:
+            if configured_callback is not None:
+                configured_callback(payload)
+            if not observed.done():
+                observed.set_result(dict(payload))
+
+        async def probe() -> Mapping[str, Any]:
+            client = self._client_factory()
+            token = client.get_access_token()
+            url_with_token = _append_query(
+                self._user_hub_url,
+                {"access_token": token},
+            )
+            async with websockets.connect(
+                url_with_token,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+                max_size=2 * 1024 * 1024,
+            ) as websocket:
+                initial_frames = await _signalr_handshake(websocket)
+                for frame in initial_frames:
+                    self._dispatch_frame("user", frame)
+                if observed.done():
+                    return observed.result()
+
+                await websocket.send(
+                    json.dumps(
+                        {"type": 1, "target": "SubscribeAccounts", "arguments": []}
+                    )
+                    + _SIGNALR_RECORD_SEPARATOR
+                )
+                while not observed.done():
+                    raw_message = await websocket.recv()
+                    for frame in _decode_signalr_frames(raw_message):
+                        self._dispatch_frame("user", frame)
+                        if observed.done():
+                            break
+                return observed.result()
+
+        self._on_user_account = capture
+        try:
+            return await asyncio.wait_for(probe(), timeout=timeout)
+        finally:
+            self._on_user_account = configured_callback
 
     async def _consume_hub(self, stream_kind: str, hub_url: str) -> None:
         backoff_seconds = self._reconnect_base_seconds
@@ -171,17 +253,44 @@ class ProjectXHubRunner:
                     close_timeout=5,
                     max_size=2 * 1024 * 1024,
                 ) as websocket:
-                    await _signalr_handshake(websocket)
-                    for message in _load_subscription_messages(subscribe_env):
+                    initial_frames = await _signalr_handshake(websocket)
+                    subscription_messages = _load_subscription_messages(subscribe_env)
+                    if stream_kind == "user":
+                        subscription_messages = [
+                            *_default_user_subscription_messages(self._account_id),
+                            *subscription_messages,
+                        ]
+                    for message in subscription_messages:
                         await websocket.send(json.dumps(message) + _SIGNALR_RECORD_SEPARATOR)
+                    for frame in initial_frames:
+                        self._dispatch_frame(stream_kind, frame)
 
                     backoff_seconds = self._reconnect_base_seconds
-                    async for raw_message in websocket:
-                        for frame in _decode_signalr_frames(raw_message):
-                            self._dispatch_frame(stream_kind, frame)
+                    receiver = asyncio.create_task(
+                        self._receive_messages(stream_kind, websocket)
+                    )
+                    refresh = (
+                        asyncio.create_task(self._refresh_user_account_loop(websocket))
+                        if stream_kind == "user" and self._on_user_account is not None
+                        else None
+                    )
+                    tasks = {receiver, *([refresh] if refresh is not None else [])}
+                    done, pending = await asyncio.wait(
+                        tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    for task in done:
+                        await task
             except asyncio.CancelledError:
+                if stream_kind == "user":
+                    self._notify_user_disconnect()
                 raise
             except Exception as exc:
+                if stream_kind == "user":
+                    self._notify_user_disconnect()
                 logger.warning(
                     "[hubs] disconnected kind=%s retry_in=%.1fs error_type=%s",
                     stream_kind,
@@ -190,6 +299,26 @@ class ProjectXHubRunner:
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(self._reconnect_max_seconds, backoff_seconds * 2.0)
+
+    async def _receive_messages(self, stream_kind: str, websocket: Any) -> None:
+        async for raw_message in websocket:
+            for frame in _decode_signalr_frames(raw_message):
+                self._dispatch_frame(stream_kind, frame)
+        raise ConnectionError(f"ProjectX {stream_kind} hub closed the connection")
+
+    async def _refresh_user_account_loop(self, websocket: Any) -> None:
+        while True:
+            await asyncio.sleep(self._user_account_refresh_seconds)
+            # GatewayUserAccount is snapshot-on-subscribe/change rather than a
+            # periodic event. Re-subscribe before the five-minute safety TTL so
+            # only a fresh hub-derived classification can renew eligibility.
+            for message in (
+                {"type": 1, "target": "UnsubscribeAccounts", "arguments": []},
+                {"type": 1, "target": "SubscribeAccounts", "arguments": []},
+            ):
+                await websocket.send(
+                    json.dumps(message) + _SIGNALR_RECORD_SEPARATOR
+                )
 
     def _dispatch_frame(self, stream_kind: str, frame: Mapping[str, Any]) -> None:
         frame_type = frame.get("type")
@@ -209,6 +338,24 @@ class ProjectXHubRunner:
             payload.setdefault("contractId", arguments[0])
             self._dispatch_payload(stream_kind, payload)
             return
+
+        if stream_kind == "user":
+            target = str(frame.get("target") or "").strip().casefold()
+            if target == "gatewayuseraccount":
+                argument_account_id = next(
+                    (_positive_int(argument) for argument in arguments if not isinstance(argument, Mapping)),
+                    None,
+                )
+                for argument in arguments:
+                    if isinstance(argument, Mapping):
+                        payload = dict(argument)
+                        if argument_account_id is not None:
+                            payload.setdefault("accountId", argument_account_id)
+                        self._dispatch_user_account(payload)
+                return
+            if target and target != "gatewayuserposition":
+                # Orders, trades, and account events are not position payloads.
+                return
 
         for argument in arguments:
             if isinstance(argument, Mapping):
@@ -246,6 +393,36 @@ class ProjectXHubRunner:
 
         circuit.record_success()
 
+    def _dispatch_user_account(self, payload: Mapping[str, Any]) -> None:
+        callback = self._on_user_account
+        if callback is None:
+            return
+        account_id = _positive_int(
+            payload.get("id", payload.get("accountId", payload.get("account_id")))
+        )
+        simulated = payload.get(
+            "simulated", payload.get("isSimulated", payload.get("is_simulated"))
+        )
+        if account_id != self._account_id:
+            # SubscribeAccounts may snapshot every account owned by this user;
+            # this runner persists only its explicitly scoped account.
+            return
+        if not isinstance(simulated, bool):
+            raise ValueError("GatewayUserAccount omitted a boolean simulated classification")
+        callback({"id": account_id, "simulated": simulated})
+
+    def _notify_user_disconnect(self) -> None:
+        callback = self._on_user_disconnect
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as exc:
+            logger.error(
+                "projectx_user_hub_disconnect_invalidation_failed",
+                extra={"error_type": type(exc).__name__},
+            )
+
     def _dispatch_circuit(self, stream_kind: str) -> _DispatchCircuit:
         circuit = self._dispatch_circuits.get(stream_kind)
         if circuit is None:
@@ -272,9 +449,47 @@ class ProjectXHubRunner:
         }
 
 
-async def _signalr_handshake(websocket: websockets.WebSocketClientProtocol) -> None:
+async def _signalr_handshake(
+    websocket: websockets.WebSocketClientProtocol,
+    *,
+    timeout_seconds: float = _HANDSHAKE_TIMEOUT_SECONDS,
+) -> list[Mapping[str, Any]]:
     handshake_payload = {"protocol": "json", "version": 1}
     await websocket.send(json.dumps(handshake_payload) + _SIGNALR_RECORD_SEPARATOR)
+    try:
+        raw_response = await asyncio.wait_for(
+            websocket.recv(),
+            timeout=max(0.1, float(timeout_seconds)),
+        )
+    except asyncio.TimeoutError as exc:
+        raise ConnectionError("ProjectX SignalR handshake timed out") from exc
+
+    if isinstance(raw_response, bytes):
+        response_text = raw_response.decode("utf-8", errors="strict")
+    elif isinstance(raw_response, str):
+        response_text = raw_response
+    else:
+        raise ConnectionError("ProjectX SignalR handshake returned an invalid frame type")
+    chunks = [
+        chunk
+        for chunk in response_text.split(_SIGNALR_RECORD_SEPARATOR)
+        if chunk.strip()
+    ]
+    if not chunks:
+        raise ConnectionError("ProjectX SignalR handshake returned an empty response")
+    try:
+        response = json.loads(chunks[0])
+    except json.JSONDecodeError as exc:
+        raise ConnectionError("ProjectX SignalR handshake returned malformed JSON") from exc
+    if not isinstance(response, Mapping):
+        raise ConnectionError("ProjectX SignalR handshake returned an invalid response")
+    if response.get("error"):
+        raise ConnectionError("ProjectX SignalR handshake was rejected")
+    if response:
+        raise ConnectionError("ProjectX SignalR handshake response was not an acknowledgement")
+
+    remaining = _SIGNALR_RECORD_SEPARATOR.join(chunks[1:])
+    return _decode_signalr_frames(remaining) if remaining else []
 
 
 def _decode_signalr_frames(raw_message: Any) -> list[Mapping[str, Any]]:
@@ -311,6 +526,27 @@ def _load_subscription_messages(env_name: str) -> list[Mapping[str, Any]]:
     if isinstance(parsed, list):
         return [item for item in parsed if isinstance(item, Mapping)]
     return []
+
+
+def _default_user_subscription_messages(account_id: int | None) -> list[Mapping[str, Any]]:
+    if account_id is None or account_id <= 0:
+        return []
+    return [
+        {"type": 1, "target": "SubscribeAccounts", "arguments": []},
+        {"type": 1, "target": "SubscribePositions", "arguments": [account_id]},
+        {"type": 1, "target": "SubscribeOrders", "arguments": [account_id]},
+        {"type": 1, "target": "SubscribeTrades", "arguments": [account_id]},
+    ]
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return normalized if normalized > 0 else None
 
 
 def _append_query(url: str, params: Mapping[str, str]) -> str:

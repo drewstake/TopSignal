@@ -92,6 +92,10 @@ export interface AccountInfo {
   trade_data_source: AccountTradeDataSource;
   balance: number | null;
   provider_data_stale: boolean;
+  /** Provider-reported account classification from the authenticated realtime user hub. */
+  provider_simulated?: boolean | null;
+  /** UTC instant when provider_simulated was last observed; null means not yet verified. */
+  provider_classification_observed_at?: string | null;
   /** Optional only for rolling upgrades from account APIs older than the sync-status contract. */
   provider_sync_status?: AccountProviderSyncStatus;
   provider_sync_error_code?: string | null;
@@ -107,6 +111,13 @@ export interface AccountInfo {
   can_trade: boolean | null;
   is_visible: boolean | null;
   last_trade_at: string | null;
+}
+
+export interface AccountAutomationClassification {
+  account_id: number;
+  provider_simulated: boolean;
+  provider_classification_observed_at: string;
+  source: "projectx_user_hub";
 }
 
 export interface AccountMainUpdateResult {
@@ -1058,6 +1069,8 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  protective_stop_ticks?: number;
+  take_profit_ticks?: number;
   source_strategies?: BotStrategyType[];
   source_strategy_params?: Record<string, Record<string, unknown>>;
   minimum_score?: number;
@@ -1458,6 +1471,7 @@ export interface BotBacktestAssumptions {
   same_bar_exit_rule: string;
   bracket_rule: string;
   gap_rule: string;
+  roll_gap_rule?: string;
   final_position_handling: string;
   position_rule: string;
   session_rule: string;
@@ -1514,6 +1528,56 @@ export interface BotBacktestMetrics {
   short: BotBacktestBreakdown;
 }
 
+export interface BotRuntimeStatus {
+  ready: boolean;
+  state: string;
+  provider_status: string;
+  checks: Record<string, boolean>;
+  counts: Record<string, number>;
+}
+
+export interface BotEmergencyFlattenRiskBlock {
+  code: string;
+  message: string;
+  severity: string;
+}
+
+export interface BotEmergencyFlattenResult {
+  run: BotRun;
+  confirmed_flat: boolean;
+  status: string;
+  risk_block: BotEmergencyFlattenRiskBlock | null;
+  audit: Record<string, unknown>;
+}
+
+export interface AccountEmergencyFlattenResult {
+  account_id: number;
+  audit_id: number;
+  confirmed_flat: boolean;
+  status: "confirmed_account_flat" | "unconfirmed";
+  risk_block: BotEmergencyFlattenRiskBlock | null;
+  audit: Record<string, unknown>;
+  disabled_bot_config_ids: number[];
+  stopped_bot_run_ids: number[];
+}
+
+export interface BotBacktestEvaluationWindow {
+  start: string;
+  end: string;
+  bar_count: number;
+  metrics: BotBacktestBreakdown;
+}
+
+export interface BotBacktestEvaluationSplit {
+  method: "chronological_80_20_fixed_parameters";
+  label: string;
+  validation_status: "diagnostic_only";
+  split_timestamp: string;
+  in_sample: BotBacktestEvaluationWindow;
+  holdout: BotBacktestEvaluationWindow;
+  notes: string[];
+}
+
 export interface BotBacktestEquityPoint {
   timestamp: string;
   equity: number;
@@ -1566,6 +1630,7 @@ export interface BotBacktestResult {
   config_snapshot: Record<string, unknown>;
   assumptions: BotBacktestAssumptions;
   metrics: BotBacktestMetrics;
+  evaluation_split?: BotBacktestEvaluationSplit | null;
   equity_curve: BotBacktestEquityPoint[];
   drawdown_series: BotBacktestDrawdownPoint[];
   daily_results: BotBacktestPeriodResult[];

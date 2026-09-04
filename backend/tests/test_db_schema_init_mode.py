@@ -25,6 +25,29 @@ def test_init_db_skips_schema_init_when_disabled(monkeypatch):
     assert calls == []
 
 
+def test_init_db_defaults_to_skip(monkeypatch):
+    calls = []
+    _patch_schema_init_steps(monkeypatch, calls)
+    monkeypatch.delenv("TOPSIGNAL_DB_SCHEMA_INIT", raising=False)
+
+    db.init_db()
+
+    assert calls == []
+
+
+def test_init_db_rejects_unknown_mode(monkeypatch):
+    calls = []
+    _patch_schema_init_steps(monkeypatch, calls)
+    monkeypatch.setenv("TOPSIGNAL_DB_SCHEMA_INIT", "maybe")
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="expected full or skip"):
+        db.init_db()
+
+    assert calls == []
+
+
 def test_init_db_force_runs_schema_init_when_disabled(monkeypatch):
     calls = []
     _patch_schema_init_steps(monkeypatch, calls)

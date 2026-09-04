@@ -1,4 +1,6 @@
 import type {
+  AccountEmergencyFlattenResult,
+  AccountAutomationClassification,
   AccountArchiveUpdateResult,
   AccountMainUpdateResult,
   AccountInfo,
@@ -61,6 +63,8 @@ import type {
   BotConfigListResponse,
   BotConfigUpdateInput,
   BotEvaluation,
+  BotEmergencyFlattenResult,
+  BotRuntimeStatus,
   BotTimeframeUnit,
   ProjectXContract,
   ProjectXMarketCandle,
@@ -1014,6 +1018,11 @@ export const accountsApi = {
       return account;
     }),
   getAuthMe: () => requestJson<AuthMe>("/api/auth/me"),
+  refreshAutomationClassification: (accountId: number) =>
+    requestJson<AccountAutomationClassification>(
+      `/api/accounts/${accountId}/automation-classification/refresh`,
+      { method: "POST" },
+    ),
   getProjectXCredentialsStatus: () =>
     requestJson<ProjectXCredentialsStatus>("/api/me/providers/projectx/credentials/status"),
   putProjectXCredentials: (payload: ProjectXCredentialsInput) =>
@@ -1423,6 +1432,84 @@ function botStartPayload(options: BotStartOptions = {}) {
     poll_interval_seconds: options.pollIntervalSeconds,
     stop_at_session_end: options.stopAtSessionEnd,
   };
+}
+
+function isBotEmergencyFlattenResult(value: unknown): value is BotEmergencyFlattenResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<BotEmergencyFlattenResult>;
+  return (
+    typeof candidate.confirmed_flat === "boolean" &&
+    typeof candidate.status === "string" &&
+    Boolean(candidate.run && typeof candidate.run === "object") &&
+    Boolean(candidate.audit && typeof candidate.audit === "object")
+  );
+}
+
+async function requestBotEmergencyFlatten(
+  botConfigId: number,
+  confirmBrokerFlatten: true,
+): Promise<BotEmergencyFlattenResult> {
+  try {
+    return await requestJson<BotEmergencyFlattenResult>(
+      `/api/bots/${botConfigId}/emergency-flatten`,
+      {
+        method: "POST",
+        body: { confirm_broker_flatten: confirmBrokerFlatten },
+      },
+    );
+  } catch (error) {
+    // A 409 is an audited safety outcome: automation is stopped, but the
+    // provider could not prove the account flat. Preserve that structured
+    // response so the UI can show the operator the precise critical block.
+    if (error instanceof ApiError && error.status === 409 && isBotEmergencyFlattenResult(error.body)) {
+      return error.body;
+    }
+    throw error;
+  }
+}
+
+function isAccountEmergencyFlattenResult(value: unknown): value is AccountEmergencyFlattenResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<AccountEmergencyFlattenResult>;
+  return (
+    typeof candidate.account_id === "number" &&
+    typeof candidate.audit_id === "number" &&
+    typeof candidate.confirmed_flat === "boolean" &&
+    (candidate.status === "confirmed_account_flat" || candidate.status === "unconfirmed") &&
+    Boolean(candidate.audit && typeof candidate.audit === "object") &&
+    Array.isArray(candidate.disabled_bot_config_ids) &&
+    Array.isArray(candidate.stopped_bot_run_ids)
+  );
+}
+
+async function requestAccountEmergencyFlatten(
+  accountId: number,
+  confirmBrokerFlatten: true,
+): Promise<AccountEmergencyFlattenResult> {
+  try {
+    return await requestJson<AccountEmergencyFlattenResult>(
+      `/api/accounts/${accountId}/emergency-flatten`,
+      {
+        method: "POST",
+        body: { confirm_broker_flatten: confirmBrokerFlatten },
+      },
+    );
+  } catch (error) {
+    // An unconfirmed flatten is a critical, audited safety result rather than
+    // a generic request failure. Preserve its details for the operator.
+    if (
+      error instanceof ApiError &&
+      error.status === 409 &&
+      isAccountEmergencyFlattenResult(error.body)
+    ) {
+      return error.body;
+    }
+    throw error;
+  }
 }
 
 export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbacks: MarketPriceStreamCallbacks): () => void {
@@ -2342,6 +2429,12 @@ export const botsApi = {
   stop: (botConfigId: number) =>
     requestJson<BotEvaluation["run"]>(`/api/bots/${botConfigId}/stop`, {
       method: "POST",
+    }),
+  emergencyFlatten: requestBotEmergencyFlatten,
+  emergencyFlattenAccount: requestAccountEmergencyFlatten,
+  getRuntimeStatus: (options: RequestSignalOptions = {}) =>
+    requestJson<BotRuntimeStatus>("/api/bots/runtime/status", {
+      signal: options.signal,
     }),
   getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {

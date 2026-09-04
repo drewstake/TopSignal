@@ -61,6 +61,10 @@ def test_fresh_schema_contains_current_bot_safety_contract():
 
     required_fragments = [
         "create table if not exists bot_backtests",
+        "create table if not exists account_emergency_actions",
+        "lease_owner_id text",
+        "lease_expires_at timestamptz",
+        "attempt_count integer not null default 1",
         "last_evaluated_at timestamptz",
         "last_error text",
         "'duplicate_skip'",
@@ -101,11 +105,38 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_hardens_supabase_data_api():
+def test_latest_migration_adds_bot_runtime_lease():
     assert (
         migrate_db._migration_files()[-1].name
-        == "20260830_harden_supabase_data_api.sql"
+        == "20260903_add_bot_runtime_lease.sql"
     )
+
+    migration = migrate_db._migration_files()[-1].read_text(encoding="utf-8").lower()
+    assert "create table if not exists bot_runtime_leases" in migration
+    assert "provider_classification_observed_at" in migration
+    assert "uq_bot_runs_one_live_running_per_account" in migration
+
+
+def test_account_emergency_action_migration_is_durable_and_api_private():
+    migration = (
+        migrate_db.REPO_ROOT
+        / "db"
+        / "migrations"
+        / "20260903_add_account_emergency_actions.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "create table if not exists account_emergency_actions" in migration
+    assert "confirmed_account_flat" in migration
+    assert "result_payload jsonb" in migration
+    assert "account_emergency_actions_confirmation_consistency_check" in migration
+    assert "account_emergency_actions_completion_consistency_check" in migration
+    assert "account_emergency_actions_pending_lease_check" in migration
+    assert "account_emergency_actions_attempt_count_check" in migration
+    assert "uq_account_emergency_actions_one_pending" in migration
+    assert "enable row level security" in migration
+    assert "revoke all privileges on table public.account_emergency_actions" in migration
+    assert "drop table" not in migration
+    assert "delete from" not in migration
 
 
 def test_supabase_data_api_hardening_covers_existing_and_future_public_objects():

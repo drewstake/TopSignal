@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .trade_plan_schemas import TradeEvaluationResultOut
 
@@ -252,8 +252,58 @@ class BotTradeLevelsOut(BaseModel):
 
 
 class BotStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     dry_run: bool | None = None
     confirm_live_order_routing: bool = False
+    continuous: bool = False
+    poll_interval_seconds: int | None = Field(default=None, ge=1, le=300)
+    stop_at_session_end: bool = False
+
+
+class BotEmergencyFlattenIn(BaseModel):
+    """Explicitly authorize an account-wide broker flatten operation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_broker_flatten: Literal[True]
+
+    @field_validator("confirm_broker_flatten", mode="before")
+    @classmethod
+    def require_json_boolean_true(cls, value):
+        # Pydantic treats integer 1 as equal to Literal[True] unless rejected
+        # before coercion.  A broker kill switch requires the literal JSON
+        # boolean, not a truthy substitute.
+        if value is not True:
+            raise ValueError("confirm_broker_flatten must be literal true")
+        return value
+
+
+class BotEmergencyFlattenRiskBlockOut(BaseModel):
+    code: str
+    message: str
+    severity: str
+
+
+class BotEmergencyFlattenOut(BaseModel):
+    run: BotRunOut
+    confirmed_flat: bool
+    status: Literal["confirmed_account_flat", "unconfirmed"]
+    risk_block: BotEmergencyFlattenRiskBlockOut | None = None
+    audit: dict[str, Any]
+
+
+class AccountEmergencyFlattenOut(BaseModel):
+    """Account-level result that remains valid without any bot configuration."""
+
+    account_id: int
+    audit_id: int
+    confirmed_flat: bool
+    status: Literal["confirmed_account_flat", "unconfirmed"]
+    risk_block: BotEmergencyFlattenRiskBlockOut | None = None
+    audit: dict[str, Any]
+    disabled_bot_config_ids: list[int]
+    stopped_bot_run_ids: list[int]
 
 
 class BotScenarioWeightsOut(BaseModel):
@@ -514,6 +564,7 @@ class BotBacktestAssumptionsOut(BaseModel):
     same_bar_exit_rule: str
     bracket_rule: str
     gap_rule: str
+    roll_gap_rule: str = "not_recorded"
     final_position_handling: str
     position_rule: str
     session_rule: str
@@ -557,6 +608,23 @@ class BotBacktestMetricsOut(BotBacktestBreakdownOut):
     exposure_percent: float
     long: BotBacktestBreakdownOut
     short: BotBacktestBreakdownOut
+
+
+class BotBacktestEvaluationWindowOut(BaseModel):
+    start: datetime
+    end: datetime
+    bar_count: int = Field(ge=1)
+    metrics: BotBacktestBreakdownOut
+
+
+class BotBacktestEvaluationSplitOut(BaseModel):
+    method: Literal["chronological_80_20_fixed_parameters"]
+    label: str
+    validation_status: Literal["diagnostic_only"]
+    split_timestamp: datetime
+    in_sample: BotBacktestEvaluationWindowOut
+    holdout: BotBacktestEvaluationWindowOut
+    notes: list[str]
 
 
 class BotBacktestEquityPointOut(BaseModel):
@@ -611,6 +679,7 @@ class BotBacktestOut(BaseModel):
     config_snapshot: dict[str, Any]
     assumptions: BotBacktestAssumptionsOut
     metrics: BotBacktestMetricsOut
+    evaluation_split: BotBacktestEvaluationSplitOut | None = None
     equity_curve: list[BotBacktestEquityPointOut]
     drawdown_series: list[BotBacktestDrawdownPointOut]
     daily_results: list[BotBacktestPeriodOut]

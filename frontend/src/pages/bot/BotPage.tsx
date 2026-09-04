@@ -13,12 +13,14 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { ACCOUNT_QUERY_PARAM, parseAccountId, writeStoredAccountId } from "../../lib/accountSelection";
 import { useAccountRequestGate } from "../../lib/accountRequestGate";
-import { botsApi } from "../../lib/api";
+import { accountsApi, botsApi } from "../../lib/api";
 import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
 import type {
   AccountInfo,
   BotActivity,
   BotConfig,
+  BotExecutionMode,
+  BotRuntimeStatus,
   BotEvaluation,
   BotLiquiditySweepTargetMode,
   BotOrbStopMode,
@@ -85,6 +87,61 @@ const TOPBOT_DEFAULTS = {
   trailingAtrMultiplier: "2",
   moveToBreakevenAtR: "1",
 };
+const SMA_CROSS_DEFAULTS = {
+  protectiveStopTicks: "8",
+  takeProfitTicks: "16",
+};
+const PROVIDER_CLASSIFICATION_MAX_AGE_MS = 5 * 60 * 1_000;
+const PROVIDER_CLASSIFICATION_FUTURE_TOLERANCE_MS = 30 * 1_000;
+
+type AccountEmergencyOutcome = {
+  accountId: number;
+  auditReference: string | null;
+  completedAt: string;
+  message: string;
+  state: "confirmed" | "unconfirmed" | "unknown";
+  status: string;
+};
+
+type AccountClassificationOverride = {
+  observedAt: string | null;
+  simulated: boolean | null;
+};
+
+type AccountClassificationVerification = {
+  accountId: number;
+  completedAt: string;
+  message: string;
+  state: "verified" | "blocked" | "failed";
+};
+
+function providerClassificationIsFresh(account: AccountInfo | null | undefined, now = Date.now()): boolean {
+  if (!account?.provider_classification_observed_at) {
+    return false;
+  }
+  const observedAt = Date.parse(account.provider_classification_observed_at);
+  if (!Number.isFinite(observedAt)) {
+    return false;
+  }
+  const age = now - observedAt;
+  return age >= -PROVIDER_CLASSIFICATION_FUTURE_TOLERANCE_MS && age <= PROVIDER_CLASSIFICATION_MAX_AGE_MS;
+}
+
+function emergencyAuditReference(auditId: number | null | undefined, audit: Record<string, unknown>): string | null {
+  if (typeof auditId === "number" && Number.isFinite(auditId)) {
+    return `Audit #${auditId}`;
+  }
+  for (const key of ["reference", "correlation_id", "provider_reference", "request_id"]) {
+    const value = audit[key];
+    if (typeof value === "string" && value.trim()) {
+      return `${key.replaceAll("_", " ")}: ${value.trim()}`;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return `${key.replaceAll("_", " ")}: ${value}`;
+    }
+  }
+  return null;
+}
 const EASTERN_TIME_ZONE = "America/New_York";
 const SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT = "0.25";
 const DONCHIAN_DEFAULTS = {
@@ -357,6 +414,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 
 interface BotFormState {
   name: string;
+  executionMode: BotExecutionMode;
   strategyType: BotStrategyType;
   topbotMinimumScore: string;
   topbotMinimumConfidence: string;
@@ -375,6 +433,8 @@ interface BotFormState {
   lookbackBars: string;
   fastPeriod: string;
   slowPeriod: string;
+  smaProtectiveStopTicks: string;
+  smaTakeProfitTicks: string;
   levelTolerancePercent: string;
   donchianEntryPeriod: string;
   donchianExitPeriod: string;
@@ -458,6 +518,7 @@ interface BotFormState {
 function buildInitialForm(accountId: number | null): BotFormState {
   return {
     name: strategyDefaultName("sma_cross"),
+    executionMode: "dry_run",
     strategyType: "sma_cross",
     topbotMinimumScore: TOPBOT_DEFAULTS.minimumScore,
     topbotMinimumConfidence: TOPBOT_DEFAULTS.minimumConfidence,
@@ -476,6 +537,8 @@ function buildInitialForm(accountId: number | null): BotFormState {
     lookbackBars: "200",
     fastPeriod: "9",
     slowPeriod: "21",
+    smaProtectiveStopTicks: SMA_CROSS_DEFAULTS.protectiveStopTicks,
+    smaTakeProfitTicks: SMA_CROSS_DEFAULTS.takeProfitTicks,
     levelTolerancePercent: SUPPORT_RESISTANCE_DEFAULT_TOLERANCE_PERCENT,
     donchianEntryPeriod: DONCHIAN_DEFAULTS.entryPeriod,
     donchianExitPeriod: DONCHIAN_DEFAULTS.exitPeriod,
@@ -560,6 +623,7 @@ function buildInitialForm(accountId: number | null): BotFormState {
 function formFromBot(bot: BotConfig): BotFormState {
   return {
     name: bot.name,
+    executionMode: bot.execution_mode,
     strategyType: bot.strategy_type,
     topbotMinimumScore: String(bot.strategy_params?.minimum_score ?? TOPBOT_DEFAULTS.minimumScore),
     topbotMinimumConfidence: String(bot.strategy_params?.minimum_confidence ?? TOPBOT_DEFAULTS.minimumConfidence),
@@ -609,6 +673,12 @@ function formFromBot(bot: BotConfig): BotFormState {
         : bot.strategy_type === "vwap_gap_retrace"
           ? "1"
           : String(bot.timeframe_unit_number),
+    smaProtectiveStopTicks: String(
+      bot.strategy_params?.protective_stop_ticks ?? SMA_CROSS_DEFAULTS.protectiveStopTicks,
+    ),
+    smaTakeProfitTicks: String(
+      bot.strategy_params?.take_profit_ticks ?? SMA_CROSS_DEFAULTS.takeProfitTicks,
+    ),
     lookbackBars:
       bot.strategy_type === "support_resistance" ||
       bot.strategy_type === "liquidity_sweep_retest" ||
@@ -1213,12 +1283,21 @@ export function BotPage() {
   const [editingBotId, setEditingBotId] = useState<number | null>(null);
   const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
   const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<BotRuntimeStatus | null>(null);
+  const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null);
+  const [emergencyFlattenAccountId, setEmergencyFlattenAccountId] = useState<number | null>(null);
+  const [emergencyOutcome, setEmergencyOutcome] = useState<AccountEmergencyOutcome | null>(null);
+  const [classificationOverrides, setClassificationOverrides] = useState<Record<number, AccountClassificationOverride>>({});
+  const [classificationVerificationAccountId, setClassificationVerificationAccountId] = useState<number | null>(null);
+  const [classificationVerification, setClassificationVerification] = useState<AccountClassificationVerification | null>(null);
   const accountRequestGate = useAccountRequestGate(activeProjectXAccountId);
   const configsRequestSequence = useRef(0);
   const activityRequestSequence = useRef(0);
   const activityRequestController = useRef<AbortController | null>(null);
   const selectedBotIdRef = useRef<number | null>(null);
   const previousProjectXAccountIdRef = useRef<number | null>(activeProjectXAccountId);
+  const activeProjectXAccountIdRef = useRef<number | null>(activeProjectXAccountId);
+  const runtimeRequestController = useRef<AbortController | null>(null);
 
   const selectedBot = useMemo(() => {
     if (activeProjectXAccountId === null) {
@@ -1239,6 +1318,23 @@ export function BotPage() {
     [lastEvaluation, selectedBot],
   );
   selectedBotIdRef.current = selectedBot?.id ?? null;
+  activeProjectXAccountIdRef.current = activeProjectXAccountId;
+  const activeClassificationOverride = activeProjectXAccountId === null
+    ? undefined
+    : classificationOverrides[activeProjectXAccountId];
+  const activeProviderSimulated = activeClassificationOverride
+    ? activeClassificationOverride.simulated
+    : activeAccount?.provider_simulated;
+  const activeProviderClassificationObservedAt = activeClassificationOverride
+    ? activeClassificationOverride.observedAt
+    : activeAccount?.provider_classification_observed_at;
+  const effectiveActiveAccount = activeAccount
+    ? {
+        ...activeAccount,
+        provider_simulated: activeProviderSimulated,
+        provider_classification_observed_at: activeProviderClassificationObservedAt,
+      }
+    : activeAccount;
   const selectedBotActivity = useMemo(
     () =>
       selectedBot &&
@@ -1251,6 +1347,99 @@ export function BotPage() {
     [activity, selectedBot],
   );
   const selectedBotStrategySummary = useMemo(() => (selectedBot ? strategySummary(selectedBot) : null), [selectedBot]);
+  const activeAccountClassificationFresh = providerClassificationIsFresh(effectiveActiveAccount);
+  const runtimeContinuousBlockReason = useMemo(() => {
+    if (runtimeStatusError) {
+      return `Runtime status could not be verified: ${runtimeStatusError}`;
+    }
+    if (!runtimeStatus) {
+      return "Waiting for the continuous-worker status check.";
+    }
+    if (runtimeStatus.checks.worker_enabled !== true) {
+      return "The continuous worker is disabled on the server.";
+    }
+    if (runtimeStatus.checks.worker_task_healthy !== true) {
+      return `The continuous worker task is unhealthy (state: ${runtimeStatus.state}).`;
+    }
+    if (runtimeStatus.checks.lease_healthy !== true) {
+      return "No healthy worker lease is currently confirmed.";
+    }
+    if (runtimeStatus.checks.account_emergency_clear !== true) {
+      const unresolved = runtimeStatus.counts.unresolved_account_emergency_actions;
+      return Number.isFinite(unresolved) && unresolved > 0
+        ? `${unresolved} account emergency-flatten outcome(s) remain unresolved. Confirm the affected account is flat before arming automation.`
+        : "An account emergency-flatten outcome remains unresolved. Confirm the affected account is flat before arming automation.";
+    }
+    if (["crashed", "error", "lease_lost", "stopped"].includes(runtimeStatus.state)) {
+      return `The continuous worker state is ${runtimeStatus.state}.`;
+    }
+    if (
+      runtimeStatus.checks.provider_healthy !== true ||
+      ["error", "throttled"].includes(runtimeStatus.provider_status)
+    ) {
+      return `ProjectX provider health is ${runtimeStatus.provider_status}.`;
+    }
+    if (
+      runtimeStatus.checks.submissions_reconciled !== true ||
+      runtimeStatus.counts.unresolved_live_submissions !== 0
+    ) {
+      const unresolved = runtimeStatus.counts.unresolved_live_submissions;
+      return Number.isFinite(unresolved)
+        ? `${unresolved} live submission(s) still require reconciliation.`
+        : "Live-submission reconciliation is not confirmed.";
+    }
+    return null;
+  }, [runtimeStatus, runtimeStatusError]);
+  const continuousArmBlockReason = useMemo(() => {
+    if (runtimeContinuousBlockReason) {
+      return runtimeContinuousBlockReason;
+    }
+    if (selectedBot?.execution_mode !== "live") {
+      return null;
+    }
+    if (runtimeStatus?.checks.live_gate !== true) {
+      return "Both server-side live-routing gates must be enabled.";
+    }
+    if (runtimeStatus.checks.account_classification_fresh !== true) {
+      return "A fresh simulated-account classification is not confirmed for every armed live account.";
+    }
+    if (runtimeStatus.checks.accounts_simulated !== true) {
+      return "At least one armed account is not eligible for automated ProjectX routing.";
+    }
+    if (activeProviderSimulated === false) {
+      return "Automated ProjectX routing is blocked for live or funded accounts.";
+    }
+    if (activeProviderSimulated !== true) {
+      return "ProjectX has not verified this account as simulated Practice.";
+    }
+    if (!activeAccountClassificationFresh) {
+      return "The simulated Practice-account classification is stale; wait for a fresh provider observation.";
+    }
+    return null;
+  }, [activeAccountClassificationFresh, activeProviderSimulated, runtimeContinuousBlockReason, runtimeStatus, selectedBot]);
+  const runtimeCanArmContinuous = runtimeContinuousBlockReason === null;
+
+  const loadRuntimeStatus = useCallback(async () => {
+    runtimeRequestController.current?.abort();
+    const controller = new AbortController();
+    runtimeRequestController.current = controller;
+    try {
+      const nextStatus = await botsApi.getRuntimeStatus({ signal: controller.signal });
+      if (!controller.signal.aborted) {
+        setRuntimeStatus(nextStatus);
+        setRuntimeStatusError(null);
+      }
+    } catch (err) {
+      if (!controller.signal.aborted && !(err instanceof Error && err.name === "AbortError")) {
+        setRuntimeStatus(null);
+        setRuntimeStatusError(err instanceof Error ? err.message : "Runtime status unavailable");
+      }
+    } finally {
+      if (runtimeRequestController.current === controller) {
+        runtimeRequestController.current = null;
+      }
+    }
+  }, []);
 
   const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
     if (activeProjectXAccountId === null) {
@@ -1374,11 +1563,30 @@ export function BotPage() {
     void loadConfigs({ showLoading: true });
   }, [loadConfigs]);
 
+  useEffect(() => {
+    if (demoModeEnabled || activeProjectXAccountId === null) {
+      runtimeRequestController.current?.abort();
+      runtimeRequestController.current = null;
+      setRuntimeStatus(null);
+      setRuntimeStatusError(null);
+      return undefined;
+    }
+    void loadRuntimeStatus();
+    const intervalId = window.setInterval(() => void loadRuntimeStatus(), 15_000);
+    return () => {
+      window.clearInterval(intervalId);
+      runtimeRequestController.current?.abort();
+      runtimeRequestController.current = null;
+    };
+  }, [activeProjectXAccountId, demoModeEnabled, loadRuntimeStatus]);
+
   useEffect(() => () => {
     configsRequestSequence.current += 1;
     activityRequestSequence.current += 1;
     activityRequestController.current?.abort();
     activityRequestController.current = null;
+    runtimeRequestController.current?.abort();
+    runtimeRequestController.current = null;
   }, []);
 
   useEffect(() => {
@@ -1954,6 +2162,8 @@ export function BotPage() {
     const lookbackBars = parsePositiveInt(form.lookbackBars);
     const fastPeriod = parsePositiveInt(form.fastPeriod);
     const slowPeriod = parsePositiveInt(form.slowPeriod);
+    const smaProtectiveStopTicks = parsePositiveInt(form.smaProtectiveStopTicks);
+    const smaTakeProfitTicks = parsePositiveInt(form.smaTakeProfitTicks);
     const topbotMinimumScore = parseNonNegativeNumber(form.topbotMinimumScore);
     const topbotMinimumConfidence = parseNonNegativeNumber(form.topbotMinimumConfidence);
     const topbotMinimumDirectionalVotes = parsePositiveInt(form.topbotMinimumDirectionalVotes);
@@ -2098,6 +2308,13 @@ export function BotPage() {
     }
     if (effectiveSlowPeriod <= effectiveFastPeriod) {
       setFormError("Slow period must be greater than fast period.");
+      return;
+    }
+    if (
+      form.strategyType === "sma_cross" &&
+      (smaProtectiveStopTicks === null || smaTakeProfitTicks === null)
+    ) {
+      setFormError("SMA protection distances must be positive whole tick values.");
       return;
     }
     if (
@@ -2381,7 +2598,14 @@ export function BotPage() {
     setFormError(null);
     try {
       const strategyParams: BotConfig["strategy_params"] =
-        form.strategyType === "topbot_adaptive"
+        form.strategyType === "sma_cross"
+          ? {
+              protective_stop_ticks:
+                smaProtectiveStopTicks ?? Number(SMA_CROSS_DEFAULTS.protectiveStopTicks),
+              take_profit_ticks:
+                smaTakeProfitTicks ?? Number(SMA_CROSS_DEFAULTS.takeProfitTicks),
+            }
+        : form.strategyType === "topbot_adaptive"
           ? {
               source_strategies:
                 configs.find((config) => config.id === editingBotId)?.strategy_params?.source_strategies ??
@@ -2601,6 +2825,7 @@ export function BotPage() {
       const payload = {
         name: form.name.trim(),
         account_id: accountId,
+        execution_mode: form.executionMode,
         contract_id: form.contractId,
         symbol: form.symbol || null,
         strategy_type: form.strategyType,
@@ -2629,7 +2854,6 @@ export function BotPage() {
         : await botsApi.createConfig({
             ...payload,
             enabled: false,
-            execution_mode: "dry_run",
           });
       if (!accountRequestGate.isCurrent(requestToken)) {
         return;
@@ -2655,6 +2879,21 @@ export function BotPage() {
     if (demoModeEnabled || !selectedBot) {
       return;
     }
+    const startsLiveRouting = kind === "start" && selectedBot.execution_mode === "live";
+    if (kind === "start" && continuousArmBlockReason) {
+      setError(`Continuous arming blocked: ${continuousArmBlockReason}`);
+      return;
+    }
+    if (
+      startsLiveRouting &&
+      !window.confirm(
+        `Request continuous LIVE arming for "${selectedBot.name}" on simulated Practice account ${selectedBot.account_id}? ` +
+          "If the server accepts this request, the worker is eligible to attempt order routing only while every safety check passes. " +
+          "Provider-accepted orders are final. Recovery after an application restart is attempted, not guaranteed; verify runtime status and broker state after every restart.",
+      )
+    ) {
+      return;
+    }
     const requestAccountId = selectedBot.account_id;
     const requestBotId = selectedBot.id;
     const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
@@ -2662,7 +2901,12 @@ export function BotPage() {
     setError(null);
     try {
       if (kind === "start") {
-        const result = await botsApi.start(requestBotId, { dryRun: true });
+        const result = await botsApi.start(requestBotId, {
+          dryRun: !startsLiveRouting,
+          confirmLiveOrderRouting: startsLiveRouting,
+          continuous: true,
+          stopAtSessionEnd: false,
+        });
         if (!accountRequestGate.isCurrent(requestToken)) {
           return;
         }
@@ -2678,8 +2922,12 @@ export function BotPage() {
         if (!accountRequestGate.isCurrent(requestToken)) {
           return;
         }
+        setClassificationOverrides((current) => ({
+          ...current,
+          [requestAccountId]: { observedAt: null, simulated: null },
+        }));
       }
-      await Promise.all([loadConfigs(), loadActivity(requestBotId)]);
+      await Promise.all([loadConfigs(), loadActivity(requestBotId), loadRuntimeStatus()]);
       if (!accountRequestGate.isCurrent(requestToken)) {
         return;
       }
@@ -2692,6 +2940,123 @@ export function BotPage() {
       if (accountRequestGate.isCurrent(requestToken)) {
         setActionLoading(null);
       }
+    }
+  }
+
+  async function verifyAutomationClassification() {
+    if (
+      demoModeEnabled ||
+      activeProjectXAccountId === null ||
+      classificationVerificationAccountId !== null
+    ) {
+      return;
+    }
+    const requestAccountId = activeProjectXAccountId;
+    setClassificationVerificationAccountId(requestAccountId);
+    try {
+      const result = await accountsApi.refreshAutomationClassification(requestAccountId);
+      if (result.account_id !== requestAccountId) {
+        throw new Error("ProjectX classification response did not match the requested account.");
+      }
+      setClassificationOverrides((current) => ({
+        ...current,
+        [requestAccountId]: {
+          observedAt: result.provider_classification_observed_at,
+          simulated: result.provider_simulated,
+        },
+      }));
+      setClassificationVerification({
+        accountId: requestAccountId,
+        completedAt: new Date().toISOString(),
+        message: result.provider_simulated
+          ? "ProjectX verified this as a simulated Practice account. Live arming still depends on every other safety check."
+          : "ProjectX classified this as live or funded, so automated order routing remains blocked.",
+        state: result.provider_simulated ? "verified" : "blocked",
+      });
+      await loadRuntimeStatus();
+    } catch (err) {
+      setClassificationOverrides((current) => ({
+        ...current,
+        [requestAccountId]: { observedAt: null, simulated: null },
+      }));
+      setClassificationVerification({
+        accountId: requestAccountId,
+        completedAt: new Date().toISOString(),
+        message: err instanceof Error ? err.message : "Practice-account verification failed.",
+        state: "failed",
+      });
+    } finally {
+      setClassificationVerificationAccountId((current) => (current === requestAccountId ? null : current));
+    }
+  }
+
+  async function runEmergencyFlatten() {
+    if (demoModeEnabled || activeProjectXAccountId === null || emergencyFlattenAccountId !== null) {
+      return;
+    }
+    const requestAccountId = activeProjectXAccountId;
+    const confirmationPhrase = `FLATTEN ${requestAccountId}`;
+    const typedConfirmation = window.prompt(
+      `EMERGENCY ACCOUNT-WIDE ACTION\n\nThis disables automation, cancels every working order, and closes every open position on ProjectX account ${requestAccountId} — including trades not opened by a bot.\n\nType ${confirmationPhrase} to continue.`,
+    );
+    if (typedConfirmation === null) {
+      return;
+    }
+    if (typedConfirmation.trim() !== confirmationPhrase) {
+      setError(`Emergency flatten cancelled: enter exactly ${confirmationPhrase}.`);
+      return;
+    }
+
+    const requestBotId = selectedBot?.account_id === requestAccountId ? selectedBot.id : null;
+    setEmergencyFlattenAccountId(requestAccountId);
+    setError(null);
+    try {
+      const result = await botsApi.emergencyFlattenAccount(requestAccountId, true);
+      if (result.account_id !== requestAccountId) {
+        throw new Error("Emergency-flatten response did not match the requested account.");
+      }
+      const completedAt = new Date().toISOString();
+      setEmergencyOutcome({
+        accountId: requestAccountId,
+        auditReference: emergencyAuditReference(result.audit_id, result.audit),
+        completedAt,
+        message: result.confirmed_flat
+          ? "ProjectX confirmed that no working orders or open positions remain on the account."
+          : result.risk_block?.message ??
+            "The provider did not confirm that the entire account is flat. Check ProjectX immediately.",
+        state: result.confirmed_flat ? "confirmed" : "unconfirmed",
+        status: result.status,
+      });
+      setClassificationOverrides((current) => ({
+        ...current,
+        [requestAccountId]: { observedAt: null, simulated: null },
+      }));
+      if (activeProjectXAccountIdRef.current === requestAccountId) {
+        const refreshes: Array<Promise<unknown>> = [loadConfigs(), loadRuntimeStatus()];
+        if (requestBotId !== null) {
+          refreshes.push(loadActivity(requestBotId));
+        }
+        await Promise.allSettled(refreshes);
+        setChartRefreshToken((current) => current + 1);
+      }
+    } catch (err) {
+      setClassificationOverrides((current) => ({
+        ...current,
+        [requestAccountId]: { observedAt: null, simulated: null },
+      }));
+      const detail = err instanceof Error ? err.message : "No verified response was received.";
+      setEmergencyOutcome({
+        accountId: requestAccountId,
+        auditReference: null,
+        completedAt: new Date().toISOString(),
+        message:
+          `The request ended without a verifiable provider outcome (${detail}). The account may or may not be flat. ` +
+          "Check ProjectX working orders and positions directly; do not retry blindly.",
+        state: "unknown",
+        status: "transport_outcome_unknown",
+      });
+    } finally {
+      setEmergencyFlattenAccountId((current) => (current === requestAccountId ? null : current));
     }
   }
 
@@ -2810,6 +3175,29 @@ export function BotPage() {
                   Bot changes apply only to the active account.
                 </span>
               </label>
+
+              <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                <span>Execution</span>
+                <Select
+                  value={form.executionMode}
+                  onChange={(event) =>
+                    setForm({ ...form, executionMode: event.target.value as BotExecutionMode })
+                  }
+                >
+                  <option value="dry_run">Dry run — no orders</option>
+                  <option value="live">Live — real orders</option>
+                </Select>
+                <span className="normal-case tracking-normal text-slate-500">
+                  Live configurations remain disabled until separately armed from the run controls.
+                </span>
+              </label>
+
+              {form.executionMode === "live" ? (
+                <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100" role="status">
+                  Live routing requires server enablement, an eligible simulated ProjectX account, fresh provider data,
+                  and protective order geometry. Saving this setting does not start the bot.
+                </div>
+              ) : null}
 
               <div className="space-y-2">
                 <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -4065,6 +4453,36 @@ export function BotPage() {
                       />
                     </label>
                   </div>
+                  {form.strategyType === "sma_cross" ? (
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Protective Stop Ticks</span>
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          step="1"
+                          value={form.smaProtectiveStopTicks}
+                          onChange={(event) =>
+                            setForm({ ...form, smaProtectiveStopTicks: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+                        <span>Take Profit Ticks</span>
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          min="1"
+                          step="1"
+                          value={form.smaTakeProfitTicks}
+                          onChange={(event) =>
+                            setForm({ ...form, smaTakeProfitTicks: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                 </>
               )}
 
@@ -4198,9 +4616,130 @@ export function BotPage() {
                   )}
                 </button>
               </div>
+              <div
+                className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-300"
+                role="status"
+                aria-label="Automation runtime status"
+              >
+                <Badge variant={runtimeCanArmContinuous ? "positive" : runtimeStatusError ? "negative" : "warning"}>
+                  {runtimeCanArmContinuous
+                    ? "Worker admission checks passed"
+                    : runtimeStatusError
+                      ? "Runtime unavailable"
+                      : "Continuous arming blocked"}
+                </Badge>
+                {runtimeStatus ? (
+                  <span>Worker: {runtimeStatus.state}; provider: {runtimeStatus.provider_status}</span>
+                ) : null}
+                {runtimeContinuousBlockReason ? (
+                  <span className="text-amber-200">{runtimeContinuousBlockReason}</span>
+                ) : null}
+                {runtimeStatus?.counts.unresolved_live_submissions ? (
+                  <span className="text-rose-200">
+                    {runtimeStatus.counts.unresolved_live_submissions} unresolved live submission(s)
+                  </span>
+                ) : null}
+                <Badge
+                  variant={
+                    activeProviderSimulated === true && activeAccountClassificationFresh
+                      ? "positive"
+                      : activeProviderSimulated === false
+                        ? "negative"
+                        : "warning"
+                  }
+                >
+                  {activeProviderSimulated === true && activeAccountClassificationFresh
+                    ? "Practice account verified"
+                    : activeProviderSimulated === false
+                      ? "Live/funded routing blocked"
+                      : activeProviderSimulated === true
+                        ? "Practice classification stale"
+                        : "Account classification pending"}
+                </Badge>
+                {activeProviderClassificationObservedAt ? (
+                  <span>
+                    Classification observed {formatDateTime(activeProviderClassificationObservedAt)}
+                  </span>
+                ) : null}
+                {activeProviderSimulated !== false && !activeAccountClassificationFresh ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => void verifyAutomationClassification()}
+                    disabled={demoModeEnabled || classificationVerificationAccountId !== null}
+                    title={demoModeEnabled ? demoDisabledTitle : "Open a bounded ProjectX user-hub probe for this account"}
+                  >
+                    {classificationVerificationAccountId !== null
+                      ? `Verifying account ${classificationVerificationAccountId}`
+                      : "Verify Practice account"}
+                  </Button>
+                ) : null}
+                {runtimeStatusError ? <span>{runtimeStatusError}</span> : null}
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-5">
+                {classificationVerification ? (
+                  <div
+                    className={
+                      classificationVerification.state === "verified"
+                        ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
+                        : "rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
+                    }
+                    role={classificationVerification.state === "failed" ? "alert" : "status"}
+                  >
+                    <p className="font-semibold">
+                      Account {classificationVerification.accountId} classification {classificationVerification.state}
+                    </p>
+                    <p className="mt-1">{classificationVerification.message}</p>
+                    <p className="mt-1 text-xs opacity-80">
+                      Checked {formatDateTime(classificationVerification.completedAt)}
+                    </p>
+                  </div>
+                ) : null}
+                <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 p-3" aria-label="ProjectX emergency controls">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-rose-100">ProjectX account {activeProjectXAccountId} emergency control</p>
+                      <p className="mt-1 text-xs text-rose-100/85">
+                        Account-wide: disables its bots, cancels every working order, and closes every open position, including trades outside this bot workspace.
+                      </p>
+                    </div>
+                    <Button
+                      variant="danger"
+                      onClick={() => void runEmergencyFlatten()}
+                      disabled={demoModeEnabled || emergencyFlattenAccountId !== null}
+                      title={demoModeEnabled ? demoDisabledTitle : "Affects every open order and position on the selected ProjectX account"}
+                    >
+                      {emergencyFlattenAccountId !== null
+                        ? `Flatten pending for account ${emergencyFlattenAccountId}`
+                        : `Emergency: Flatten Account ${activeProjectXAccountId}`}
+                    </Button>
+                  </div>
+                </div>
+                {emergencyOutcome ? (
+                  <div
+                    className={
+                      emergencyOutcome.state === "confirmed"
+                        ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
+                        : "rounded-xl border border-rose-400/45 bg-rose-500/15 px-4 py-3 text-sm text-rose-100"
+                    }
+                    role={emergencyOutcome.state === "confirmed" ? "status" : "alert"}
+                    aria-live={emergencyOutcome.state === "confirmed" ? "polite" : "assertive"}
+                  >
+                    <p className="font-semibold">
+                      {emergencyOutcome.state === "confirmed"
+                        ? `Account ${emergencyOutcome.accountId} confirmed flat`
+                        : emergencyOutcome.state === "unconfirmed"
+                          ? `Account ${emergencyOutcome.accountId} flatten unconfirmed`
+                          : `Account ${emergencyOutcome.accountId} flatten outcome unknown`}
+                    </p>
+                    <p className="mt-1">{emergencyOutcome.message}</p>
+                    <p className="mt-1 text-xs opacity-80">
+                      Recorded {formatDateTime(emergencyOutcome.completedAt)} · Status: {emergencyOutcome.status}
+                      {emergencyOutcome.auditReference ? ` · ${emergencyOutcome.auditReference}` : ""}
+                    </p>
+                  </div>
+                ) : null}
                 {selectedBot ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3">
@@ -4213,15 +4752,42 @@ export function BotPage() {
                       <Metric label="Risk" value={`$${selectedBot.max_daily_loss.toFixed(0)}`} />
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button onClick={() => void runBotAction("start")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
-                        {actionLoading === "start" ? "Starting" : "Start Dry Run"}
+                      <Button
+                        onClick={() => void runBotAction("start")}
+                        disabled={
+                          demoModeEnabled ||
+                          actionLoading !== null ||
+                          emergencyFlattenAccountId !== null ||
+                          continuousArmBlockReason !== null
+                        }
+                        title={
+                          demoModeEnabled
+                            ? demoDisabledTitle
+                            : emergencyFlattenAccountId !== null
+                              ? `Emergency flatten is pending for account ${emergencyFlattenAccountId}.`
+                              : continuousArmBlockReason ?? undefined
+                        }
+                      >
+                        {actionLoading === "start"
+                          ? "Requesting"
+                          : selectedBot.execution_mode === "live"
+                            ? "Request Continuous Live Arming"
+                            : "Request Continuous Dry Run"}
                       </Button>
-                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
+                      <Button variant="secondary" onClick={() => void runBotAction("evaluate")} disabled={demoModeEnabled || actionLoading !== null || emergencyFlattenAccountId !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
                         {actionLoading === "evaluate" ? "Evaluating" : "Evaluate"}
                       </Button>
-                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={demoModeEnabled || actionLoading !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
-                        {actionLoading === "stop" ? "Stopping" : "Stop"}
+                      <Button variant="danger" onClick={() => void runBotAction("stop")} disabled={demoModeEnabled || actionLoading !== null || emergencyFlattenAccountId !== null} title={demoModeEnabled ? demoDisabledTitle : undefined}>
+                        {actionLoading === "stop" ? "Stopping" : "Stop Automation"}
                       </Button>
+                    </div>
+                    {continuousArmBlockReason ? (
+                      <p className="text-xs text-amber-200" role="status">
+                        Continuous arming blocked: {continuousArmBlockReason}
+                      </p>
+                    ) : null}
+                    <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      <strong>Stop Automation</strong> only prevents future bot evaluations. It does not cancel broker orders or close positions.
                     </div>
                     {selectedBotEvaluation ? (
                       <div className="grid gap-3">

@@ -17,6 +17,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 from app.db import Base
 from app.models import (
     Account,
+    AccountEmergencyAction,
     BotConfig,
     BotDecision,
     BotOrderAttempt,
@@ -64,6 +65,7 @@ from app.services.bot_service import (
     stop_latest_bot_run,
     update_bot_config,
 )
+from app.services.bot_execution_safety import sanitize_error
 from app.services.projectx_client import ProjectXClientError
 import app.main as main_module
 import app.services.bot_service as bot_service_module
@@ -71,6 +73,26 @@ import app.services.bot_service as bot_service_module
 
 def _dt(minutes_ago: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+
+
+def test_bot_error_sanitizer_redacts_json_headers_and_bearer_values():
+    message = (
+        'HTTP 401 {"access_token":"json-token", "apiKey":"json-key"} '
+        "Authorization: Bearer header-token password=plain-password "
+        "Bearer standalone-token"
+    )
+
+    sanitized = sanitize_error(message)
+
+    for secret in (
+        "json-token",
+        "json-key",
+        "header-token",
+        "plain-password",
+        "standalone-token",
+    ):
+        assert secret not in sanitized
+    assert sanitized.count("[REDACTED]") == 5
 
 
 def test_app_lifespan_does_not_run_backtest_warming(monkeypatch):
@@ -327,7 +349,7 @@ def _make_delayed_orb_session(
                     timestamp,
                     open_price=base_price,
                     high=base_price + 0.4,
-                    low=base_price + 0.1,
+                    low=base_price - 0.1,
                     close=base_price + 0.2,
                     volume=12 + index,
                 )
@@ -362,8 +384,8 @@ def _make_bollinger_base_candles(
                 base + timedelta(minutes=index * 5),
                 close,
                 open_price=100.0,
-                high_price=close + 0.5,
-                low_price=close - 0.5,
+                high_price=max(100.0, close) + 0.5,
+                low_price=min(100.0, close) - 0.5,
                 volume=10,
             )
         )
@@ -621,6 +643,173 @@ def test_sma_cross_generates_buy_signal_on_latest_closed_candle():
     assert signal.action == "BUY"
     assert "SMA crossover" in signal.reason
     assert signal.price == 20.0
+
+
+def test_strategy_evaluation_rejects_invalid_candle_values():
+    candle = _make_candle(
+        datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        100,
+        high_price=99,
+    )
+
+    with pytest.raises(ValueError, match="invalid_market_candle: invalid high"):
+        evaluate_sma_cross([candle], fast_period=1, slow_period=2)
+
+
+def test_strategy_evaluation_does_not_treat_future_bar_as_closed():
+    candle = _make_candle(
+        datetime.now(timezone.utc) + timedelta(minutes=5),
+        100,
+    )
+
+    assert bot_service_module._closed_candles([candle]) == []
+
+
+def test_strategy_evaluation_rejects_a_false_closed_marker_fetched_mid_bar():
+    opened_at = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    candle = _make_candle(opened_at, 100, unit="minute", unit_number=5)
+    candle.is_partial = False
+    candle.fetched_at = opened_at + timedelta(minutes=4)
+
+    assert bot_service_module._closed_candles([candle]) == []
+
+
+def test_service_normalization_marks_bar_partial_until_nominal_close():
+    opened_at = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    bar = {
+        "timestamp": opened_at,
+        "open": 100,
+        "high": 101,
+        "low": 99,
+        "close": 100,
+        "volume": 1,
+        "is_partial": False,
+    }
+
+    mid_bar = bot_service_module._validated_market_candle_bar(
+        bar,
+        unit="minute",
+        unit_number=5,
+        observed_at=opened_at + timedelta(minutes=4, seconds=59),
+    )
+    at_close = bot_service_module._validated_market_candle_bar(
+        bar,
+        unit="minute",
+        unit_number=5,
+        observed_at=opened_at + timedelta(minutes=5),
+    )
+
+    assert mid_bar["is_partial"] is True
+    assert at_close["is_partial"] is False
+
+
+def test_orb_fibonacci_pullback_holds_when_session_prefix_has_a_gap():
+    session_start = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
+    candles = [
+        _make_candle(session_start, 100, unit="minute", unit_number=5),
+        _make_candle(
+            session_start + timedelta(minutes=10),
+            101,
+            unit="minute",
+            unit_number=5,
+        ),
+        _make_candle(
+            session_start + timedelta(minutes=15),
+            102,
+            unit="minute",
+            unit_number=5,
+        ),
+        _make_candle(
+            session_start + timedelta(minutes=20),
+            103,
+            unit="minute",
+            unit_number=5,
+        ),
+    ]
+
+    signal = bot_service_module.evaluate_orb_fibonacci_pullback(
+        candles,
+        timeframe_unit="minute",
+        timeframe_unit_number=5,
+        strategy_params={"opening_range_minutes": 15},
+        session_start_time="09:30",
+        session_end_time="15:45",
+    )
+
+    assert signal.action == "HOLD"
+    assert signal.raw_payload["data_quality_error"] == "incomplete_session_history"
+    assert "2026-07-06T13:35:00+00:00" in signal.reason
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"open": 0},
+        {"close": float("nan")},
+        {"high": 99},
+        {"volume": -1},
+    ],
+)
+def test_store_market_candles_rejects_invalid_values_before_database_io(updates):
+    bar = {
+        "timestamp": datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        "open": 100,
+        "high": 101,
+        "low": 99,
+        "close": 100,
+        "volume": 1,
+    }
+    bar.update(updates)
+
+    class DatabaseMustNotBeUsed:
+        def get_bind(self):
+            raise AssertionError("invalid bars must be rejected before persistence")
+
+    with pytest.raises(ValueError, match="invalid_market_candle"):
+        bot_service_module.store_market_candles(
+            DatabaseMustNotBeUsed(),
+            user_id="00000000-0000-0000-0000-000000000000",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            live=False,
+            unit="minute",
+            unit_number=5,
+            bars=[bar],
+        )
+
+
+def test_store_market_candles_validates_even_a_duplicate_that_would_be_discarded():
+    timestamp = datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc)
+    valid = {
+        "timestamp": timestamp,
+        "open": 100,
+        "high": 101,
+        "low": 99,
+        "close": 100,
+        "volume": 1,
+        "is_partial": False,
+    }
+    malformed_duplicate = {
+        **valid,
+        "close": float("nan"),
+        "is_partial": True,
+    }
+
+    class DatabaseMustNotBeUsed:
+        def get_bind(self):
+            raise AssertionError("invalid bars must be rejected before persistence")
+
+    with pytest.raises(ValueError, match="invalid_market_candle: close is non-finite"):
+        bot_service_module.store_market_candles(
+            DatabaseMustNotBeUsed(),
+            user_id="00000000-0000-0000-0000-000000000000",
+            contract_id="CON.F.US.MNQ.M26",
+            symbol="MNQ",
+            live=False,
+            unit="minute",
+            unit_number=5,
+            bars=[valid, malformed_duplicate],
+        )
 
 
 def test_opening_rvol_breakout_generates_buy_signal_on_green_opening_candle():
@@ -966,7 +1155,7 @@ def test_bollinger_mean_reversion_generates_buy_signal_on_fresh_lower_band_break
             base + timedelta(minutes=60 * 5),
             90.0,
             open_price=100.0,
-            high_price=90.4,
+            high_price=100.4,
             low_price=86.4,
             volume=25,
         )
@@ -1000,7 +1189,7 @@ def test_bollinger_mean_reversion_generates_sell_signal_with_fixed_r_target():
             110.0,
             open_price=100.0,
             high_price=113.6,
-            low_price=109.6,
+            low_price=99.6,
             volume=25,
         )
     )
@@ -1032,7 +1221,7 @@ def test_bollinger_mean_reversion_holds_inside_news_blackout_window():
             datetime(2026, 4, 1, 14, 0, tzinfo=timezone.utc),
             90.0,
             open_price=100.0,
-            high_price=90.4,
+            high_price=100.4,
             low_price=86.4,
             volume=25,
         )
@@ -2111,7 +2300,7 @@ def test_vwap_gap_retrace_generates_buy_signal_on_gap_up_vwap_rejection():
         _make_minute_candle(datetime(2026, 4, 2, 13, 32, tzinfo=timezone.utc), open_price=104.2, high=104.5, low=103.9, close=104.0, volume=900),
         _make_minute_candle(datetime(2026, 4, 2, 13, 33, tzinfo=timezone.utc), open_price=104.0, high=104.1, low=103.6, close=103.8, volume=850),
         _make_minute_candle(datetime(2026, 4, 2, 13, 34, tzinfo=timezone.utc), open_price=103.8, high=103.9, low=103.2, close=103.4, volume=800),
-        _make_minute_candle(datetime(2026, 4, 2, 13, 35, tzinfo=timezone.utc), open_price=103.4, high=104.0, low=103.6, close=103.95, volume=1_200),
+        _make_minute_candle(datetime(2026, 4, 2, 13, 35, tzinfo=timezone.utc), open_price=103.4, high=104.0, low=103.4, close=103.95, volume=1_200),
     ]
 
     signal = evaluate_vwap_gap_retrace([previous_close, *current_session])
@@ -2412,7 +2601,7 @@ def test_fvg_sweep_mss_generates_sell_signal_on_structure_break():
         _make_candle(datetime(2026, 4, 1, 9, 30, tzinfo=timezone.utc), 112, unit_number=15, open_price=111, high_price=113, low_price=111, volume=45),
         _make_candle(datetime(2026, 4, 1, 9, 45, tzinfo=timezone.utc), 111, unit_number=15, open_price=112, high_price=112, low_price=110, volume=48),
         _make_candle(datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc), 110, unit_number=15, open_price=111, high_price=111, low_price=109, volume=50),
-        _make_candle(datetime(2026, 4, 1, 10, 15, tzinfo=timezone.utc), 108, unit_number=15, open_price=109, high_price=108, low_price=107, volume=52),
+        _make_candle(datetime(2026, 4, 1, 10, 15, tzinfo=timezone.utc), 108, unit_number=15, open_price=108, high_price=108, low_price=107, volume=52),
         _make_candle(datetime(2026, 4, 1, 10, 30, tzinfo=timezone.utc), 107, unit_number=15, open_price=108, high_price=108, low_price=106, volume=47),
     ]
     structure_candles = [
@@ -4697,10 +4886,10 @@ def test_dry_run_evaluation_logs_order_attempt_without_submitting():
 
         def retrieve_bars(self, **_kwargs):
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": _dt(20), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(10), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": _dt(5), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -5035,10 +5224,10 @@ def test_live_evaluation_is_blocked_without_explicit_confirmation():
     class StubClient:
         def retrieve_bars(self, **_kwargs):
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": _dt(20), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(10), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": _dt(5), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -5151,10 +5340,10 @@ def test_evaluation_uses_resolved_contract_for_decision_and_order_attempt():
         def retrieve_bars(self, **kwargs):
             assert kwargs["contract_id"] == "CON.F.US.MNQ.M26"
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
-                {"timestamp": _dt(0), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
+                {"timestamp": _dt(20), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(10), "open": 9, "high": 9, "low": 9, "close": 9, "volume": 1},
+                {"timestamp": _dt(5), "open": 20, "high": 20, "low": 20, "close": 20, "volume": 1},
             ]
 
         def place_order(self, **_kwargs):
@@ -5210,6 +5399,7 @@ def test_start_bot_run_supersedes_existing_running_run():
     )
     tables = [
         Account.__table__,
+        AccountEmergencyAction.__table__,
         ProjectXMarketCandle.__table__,
         BotConfig.__table__,
         BotRun.__table__,
@@ -5222,10 +5412,10 @@ def test_start_bot_run_supersedes_existing_running_run():
     class StubClient:
         def retrieve_bars(self, **_kwargs):
             return [
-                {"timestamp": _dt(3), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(2), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(1), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
-                {"timestamp": _dt(0), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(20), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(15), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(10), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
+                {"timestamp": _dt(5), "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1},
             ]
 
     user_id = "00000000-0000-0000-0000-000000000000"

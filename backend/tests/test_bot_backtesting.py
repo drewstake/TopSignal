@@ -193,6 +193,7 @@ def _run(
     replay_streams: dict[str, list[ProjectXMarketCandle]] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     cancellation_callback: Callable[[], bool] | None = None,
+    include_evaluation_split: bool = True,
 ) -> dict[str, Any]:
     first = min(_utc(row.candle_timestamp) for row in candles)
     last = max(_utc(row.candle_timestamp) for row in candles)
@@ -211,6 +212,7 @@ def _run(
         replay_streams=replay_streams,
         progress_callback=progress_callback,
         cancellation_callback=cancellation_callback,
+        include_evaluation_split=include_evaluation_split,
     )
 
 
@@ -255,6 +257,38 @@ def test_signal_evaluation_receives_only_bars_closed_as_of_each_event():
         ],
     ]
     assert all(BASE_TIME + timedelta(minutes=15) not in call for call in observed)
+
+
+def test_real_strategy_reports_an_isolated_chronological_holdout():
+    prices = [100, 99, 101, 102, 100, 98, 101, 103, 100, 97] * 2
+    bars = [
+        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=price)
+        for index, price in enumerate(prices)
+    ]
+
+    result = _run(bars)
+
+    split = result["evaluation_split"]
+    assert split["method"] == "chronological_80_20_fixed_parameters"
+    assert split["validation_status"] == "diagnostic_only"
+    assert split["in_sample"]["bar_count"] == 14
+    assert split["holdout"]["bar_count"] == 4
+    assert split["split_timestamp"] == (BASE_TIME + timedelta(minutes=80)).isoformat()
+    assert set(split["holdout"]["metrics"]) == {
+        "trade_count",
+        "winning_trades",
+        "losing_trades",
+        "win_rate",
+        "gross_pnl",
+        "net_pnl",
+        "profit_factor",
+        "expectancy",
+        "average_win",
+        "average_loss",
+        "payoff_ratio",
+    }
+    assert any("fresh cash, position" in note for note in split["notes"])
+    assert any("not independent validation" in warning for warning in result["warnings"])
 
 
 def test_replay_progress_is_exact_monotonic_and_throttled_to_percent_changes():
@@ -839,7 +873,7 @@ def test_fees_slippage_quantity_and_tick_value_are_applied_to_both_sides():
     assert result["equity_curve"][-1]["equity"] == 50_008
 
 
-def test_long_and_short_reversal_accounting_and_period_breakdowns():
+def test_opposite_targetless_signal_flattens_without_fictitious_reversal_entry():
     bars = [
         _candle(BASE_TIME, close_price=100),
         _candle(BASE_TIME + timedelta(minutes=5), open_price=100, close_price=101),
@@ -855,18 +889,84 @@ def test_long_and_short_reversal_accounting_and_period_breakdowns():
 
     result = _run(bars, evaluator=evaluator, tick_size=1, tick_value=10)
 
-    assert [trade["side"] for trade in result["trades"]] == ["long", "short"]
-    assert [trade["gross_pnl"] for trade in result["trades"]] == [20, 20]
-    assert result["trades"][0]["exit_reason"] == "position_reversal"
-    assert result["trades"][1]["exit_reason"] == "forced_end_of_test"
-    assert result["metrics"]["trade_count"] == 2
-    assert result["metrics"]["gross_pnl"] == 40
+    assert [trade["side"] for trade in result["trades"]] == ["long"]
+    assert [trade["gross_pnl"] for trade in result["trades"]] == [20]
+    assert result["trades"][0]["exit_reason"] == "opposite_signal_flatten"
+    assert result["metrics"]["trade_count"] == 1
+    assert result["metrics"]["gross_pnl"] == 20
     assert result["metrics"]["long"]["trade_count"] == 1
     assert result["metrics"]["long"]["net_pnl"] == 20
-    assert result["metrics"]["short"]["trade_count"] == 1
-    assert result["metrics"]["short"]["net_pnl"] == 20
-    assert sum(row["net_pnl"] for row in result["daily_results"]) == 40
-    assert sum(row["net_pnl"] for row in result["monthly_results"]) == 40
+    assert result["metrics"]["short"]["trade_count"] == 0
+    assert result["metrics"]["short"]["net_pnl"] == 0
+    assert sum(row["net_pnl"] for row in result["daily_results"]) == 20
+    assert sum(row["net_pnl"] for row in result["monthly_results"]) == 20
+
+
+def test_target_aware_atomic_reversal_is_blocked_like_live_routing():
+    bars = [
+        _candle(BASE_TIME, close_price=100),
+        _candle(BASE_TIME + timedelta(minutes=5), open_price=100, close_price=101),
+        _candle(BASE_TIME + timedelta(minutes=10), open_price=102, close_price=101),
+        _candle(BASE_TIME + timedelta(minutes=15), open_price=101, close_price=100),
+    ]
+    evaluator = _scripted_evaluator(
+        {
+            BASE_TIME: {
+                "action": "BUY",
+                "price": 100,
+                "payload": {"target_position_qty": 1},
+            },
+            BASE_TIME + timedelta(minutes=5): {
+                "action": "SELL",
+                "price": 101,
+                "payload": {"target_position_qty": -1, "signal_category": "reversal"},
+            },
+        }
+    )
+
+    result = _run(bars, evaluator=evaluator, tick_size=1, tick_value=10)
+
+    assert [trade["side"] for trade in result["trades"]] == ["long"]
+    assert result["trades"][0]["exit_reason"] == "forced_end_of_test"
+    assert any("atomic reversal not supported" in warning for warning in result["warnings"])
+
+
+def test_delivery_change_segments_history_and_flattens_before_new_contract_prices():
+    bars = [
+        _candle(BASE_TIME, open_price=100, close_price=100),
+        _candle(BASE_TIME + timedelta(minutes=5), open_price=100, close_price=100),
+        _candle(BASE_TIME + timedelta(minutes=10), open_price=120, close_price=120),
+        _candle(BASE_TIME + timedelta(minutes=15), open_price=121, close_price=121),
+    ]
+    for row in bars[:2]:
+        row.source_raw_symbol = "MNQM6"
+        row.source_instrument_id = 101
+    for row in bars[2:]:
+        row.source_raw_symbol = "MNQU6"
+        row.source_instrument_id = 202
+
+    observed_histories: list[list[str]] = []
+
+    def evaluator(candles: list[ProjectXMarketCandle]) -> SignalResult:
+        observed_histories.append([str(row.source_raw_symbol) for row in candles])
+        if _utc(candles[-1].candle_timestamp) == BASE_TIME:
+            return SignalResult(
+                action="BUY",
+                reason="scripted",
+                candle_timestamp=BASE_TIME,
+                price=100,
+                raw_payload={},
+            )
+        return _hold(candles)
+
+    result = _run(bars, evaluator=evaluator, tick_size=1, tick_value=10)
+
+    assert result["trades"][0]["exit_reason"] == "contract_roll"
+    assert result["trades"][0]["exit_price"] == 100
+    assert result["trades"][0]["gross_pnl"] == 0
+    assert observed_histories[2] == ["MNQU6"]
+    assert all("MNQM6" not in history for history in observed_histories[2:])
+    assert any("delivery change" in warning for warning in result["warnings"])
 
 
 def test_resting_target_executes_before_a_queued_gap_reversal():
@@ -916,6 +1016,7 @@ def test_daily_trade_and_position_limits_block_entries_without_silent_sizing():
         {
             BASE_TIME: {"action": "BUY", "price": 100},
             BASE_TIME + timedelta(minutes=5): {"action": "SELL", "price": 101},
+            BASE_TIME + timedelta(minutes=10): {"action": "SELL", "price": 101},
         }
     )
 
@@ -1237,6 +1338,7 @@ def test_topbot_replay_synchronizes_slower_source_streams_without_lookahead(monk
             backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
             backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
         },
+        include_evaluation_split=False,
     )
 
     assert observed == [
@@ -2761,6 +2863,7 @@ def test_prepared_sma_replay_exactly_matches_legacy_evaluator_path():
         "slippage_ticks": 1.5,
         "tick_size": 0.25,
         "tick_value": 0.50,
+        "include_evaluation_split": False,
     }
 
     optimized = _run(candles, **run_options)
@@ -3110,6 +3213,7 @@ def test_topbot_cached_replay_exactly_matches_legacy_bisect_reference(
             backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
             backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
         },
+        "include_evaluation_split": False,
     }
 
     optimized = _run(primary, **run_options)
