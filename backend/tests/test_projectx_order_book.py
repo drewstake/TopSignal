@@ -1324,6 +1324,62 @@ def test_queue_overflow_coalesces_to_snapshot_and_retains_state():
     asyncio.run(scenario())
 
 
+def test_market_hours_wakeup_does_not_swallow_simultaneous_cancellation():
+    async def scenario():
+        session = ProjectXMarketDepthSession(client=_StubClient(), connect_factory=_FakeConnector())
+        waiter = None
+
+        class CancelWithWakeup(asyncio.Event):
+            async def wait(self):
+                await asyncio.sleep(0)
+                assert waiter is not None
+                waiter.cancel()
+                return True
+
+        session._market_wakeup = CancelWithWakeup()
+        waiter = asyncio.create_task(session._wait_for_market_check())
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["keepalive", "invocation"])
+def test_completed_websocket_send_preserves_simultaneous_cancellation(operation):
+    async def scenario():
+        session = ProjectXMarketDepthSession(
+            client=_StubClient(), connect_factory=_FakeConnector(), keepalive_seconds=0.01,
+        )
+        sender = None
+
+        class CancelWithSend:
+            sent = False
+
+            async def send(self, payload):
+                assert not self.sent, "Cancelled sender continued sending"
+                self.sent = True
+                await asyncio.sleep(0)
+                assert sender is not None
+                sender.cancel()
+
+        websocket = CancelWithSend()
+        generation = await session._activate_connection(websocket)
+        coroutine = (
+            session._send_keepalives(websocket, generation)
+            if operation == "keepalive"
+            else session._send_invocation_locked(websocket, "SubscribeContractMarketDepth", CONTRACT_MNQ, generation)
+        )
+        sender = asyncio.create_task(coroutine)
+        with pytest.raises(asyncio.CancelledError):
+            await sender
+        await session.close()
+        assert session._pending_invocations == {}
+        assert session._latest_contract_invocation == {}
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("closed_at", [
     "2026-09-04T21:00:00+00:00",  # Friday 5 PM EDT, the reported case
     "2026-09-05T15:00:00+00:00",  # Saturday

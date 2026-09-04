@@ -507,15 +507,14 @@ class ProjectXMarketDepthSession:
             try:
                 close_result = close()
                 if hasattr(close_result, "__await__"):
-                    await asyncio.wait_for(close_result, timeout=2.0)
+                    async with asyncio.timeout(2.0):
+                        await close_result
             except Exception:
                 pass
         task.cancel()
         try:
-            await asyncio.wait_for(
-                asyncio.gather(task, return_exceptions=True),
-                timeout=2.0,
-            )
+            async with asyncio.timeout(2.0):
+                await asyncio.gather(task, return_exceptions=True)
         except asyncio.TimeoutError:
             logger.warning("[market-depth] connection task did not stop before timeout")
 
@@ -735,7 +734,10 @@ class ProjectXMarketDepthSession:
 
     async def _wait_for_market_check(self) -> None:
         try:
-            await asyncio.wait_for(self._market_wakeup.wait(), self._market_check_seconds)
+            # Python 3.11 wait_for can consume caller cancellation when the
+            # event finishes in the same loop turn, stranding connection cleanup.
+            async with asyncio.timeout(self._market_check_seconds):
+                await self._market_wakeup.wait()
         except asyncio.TimeoutError:
             pass
         self._market_wakeup.clear()
@@ -757,10 +759,8 @@ class ProjectXMarketDepthSession:
                     return
                 # SignalR requires protocol pings; WebSocket control pings alone
                 # do not satisfy its client timeout during an otherwise quiet feed.
-                await asyncio.wait_for(
-                    websocket.send('{"type":6}' + _SIGNALR_RECORD_SEPARATOR),
-                    timeout=self._send_timeout_seconds,
-                )
+                async with asyncio.timeout(self._send_timeout_seconds):
+                    await websocket.send('{"type":6}' + _SIGNALR_RECORD_SEPARATOR)
 
     async def _run_connected(self, websocket: Any, generation: int) -> None:
         async def receive() -> None:
@@ -973,13 +973,11 @@ class ProjectXMarketDepthSession:
         )
         self._latest_contract_invocation[contract_id] = invocation_id
         try:
-            await asyncio.wait_for(
-                websocket.send(
+            async with asyncio.timeout(self._send_timeout_seconds):
+                await websocket.send(
                     json.dumps(payload, separators=(",", ":"))
                     + _SIGNALR_RECORD_SEPARATOR
-                ),
-                timeout=self._send_timeout_seconds,
-            )
+                )
         except BaseException:
             self._pending_invocations.pop(invocation_id, None)
             if self._latest_contract_invocation.get(contract_id) == invocation_id:

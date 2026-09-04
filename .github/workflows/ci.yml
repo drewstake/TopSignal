@@ -551,7 +551,8 @@ jobs:
 
       - name: Run backend tests with standard Windows paths
         working-directory: backend
-        run: python -m pytest -q
+        timeout-minutes: 10
+        run: python -m pytest -q -x -o faulthandler_timeout=60
 
       - uses: actions/setup-node@v4
         with:
