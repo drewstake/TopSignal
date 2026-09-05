@@ -15,7 +15,7 @@ import sys
 
 def main() -> int:
     for name in tuple(os.environ):
-        if name.startswith(("PROJECTX_", "TOPSTEP_", "TOPSTEPX_", "DATABENTO_", "SUPABASE_", "GEMINI_", "TOPSIGNAL_")) or name in {
+        if name.startswith(("PROJECTX_", "TOPSTEP_", "TOPSTEPX_", "DATABENTO_", "SUPABASE_", "GEMINI_", "TOPSIGNAL_", "TRADING_ECONOMICS_", "CBOE_")) or name in {
             "DATABASE_URL", "CREDENTIALS_ENCRYPTION_KEY", "AUTH_REQUIRED",
             "ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS", "ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY",
             "MIGRATION_DATABASE_URL", "ALLOW_QUERY_BEARER_TOKENS", "DEFAULT_USER_ID",

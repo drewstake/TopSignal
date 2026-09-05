@@ -53,6 +53,7 @@ Core features in the current routed app:
 - Payout tracking, payout totals, and spend-since-last-payout context
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
 - One-click TopBot MNQ dry/live run controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
+- [Market-data workspace](docs/market-data-workspace-2026-09-05.md) with coverage checks, related-market collection, economic events, recorded flow, and decision outcomes
 - Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 

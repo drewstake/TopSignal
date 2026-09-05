@@ -21,7 +21,7 @@ from app.database_security import production_database_connect_args, validate_pro
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 LEDGER_TABLE = "topsignal_schema_migrations"
 LOCK_NAME = "topsignal-schema-migrations-v1"
-CURRENT_SCHEMA_BASELINE = "schema-20260830-v6"
+CURRENT_SCHEMA_BASELINE = "schema-20260905-v7"
 LEGACY_DATABENTO_TABLE_NAMES = frozenset(
     {
         "databento_import_batches",
@@ -289,6 +289,7 @@ def _current_model_manifest() -> tuple[dict[str, set[str]], set[str]]:
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     import app.models  # noqa: F401
+    import app.market_event_models, app.market_observation_models  # noqa: F401
     from app.db import Base
 
     columns = {
@@ -314,6 +315,7 @@ def _current_model_uniqueness_manifest() -> tuple[
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     import app.models  # noqa: F401
+    import app.market_event_models, app.market_observation_models  # noqa: F401
     from app.db import Base
     from sqlalchemy import UniqueConstraint
 
@@ -774,6 +776,7 @@ def _create_expected_model_schema(
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
     import app.models  # noqa: F401
+    import app.market_event_models, app.market_observation_models  # noqa: F401
     from app.db import Base
     from sqlalchemy import CheckConstraint, JSON, MetaData
     from sqlalchemy.dialects import postgresql

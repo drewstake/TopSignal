@@ -103,6 +103,10 @@ from .bot_schemas import (
     ProjectXMarketCandleOut,
 )
 from .trade_plan_schemas import TradeEvaluationResultOut, TradePlanEvaluationIn
+from .services.trade_excursions import attach_trade_excursions
+from .market_data_routes import router as market_data_router
+from .market_event_routes import router as market_event_router
+from .market_observation_routes import router as market_observation_router
 from .metrics_schemas import (
     BehaviorMetricsOut,
     DayPnlOut,
@@ -296,7 +300,7 @@ _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _PRACTICE_ERROR_DETAIL = "practice_accounts_are_free"
 _PAID_ACCOUNT_TYPES_FOR_150K = {"no_activation", "standard"}
 _REQUIRED_SCHEMA_MIGRATION = "20260903_add_bot_runtime_lease.sql"
-_REQUIRED_SCHEMA_BASELINE = "schema-20260830-v6"
+_REQUIRED_SCHEMA_BASELINE = "schema-20260905-v7"
 _AUTH_VERIFICATION_CAPACITY = 64
 _AUTH_VERIFICATION_EXECUTOR = ThreadPoolExecutor(
     max_workers=_AUTH_VERIFICATION_CAPACITY,
@@ -448,11 +452,18 @@ async def app_lifespan(_: FastAPI):
                 await _order_book_registry.close()
             finally:
                 _stop_streaming_runtime()
+                from .services.market_observations import writer as market_observation_writer
+                drained = await asyncio.to_thread(market_observation_writer.shutdown, timeout_seconds=5.0)
+                if not drained:
+                    logger.warning("market_observation_shutdown_incomplete")
                 if _bot_worker_runtime is None:
                     engine.dispose()
 
 
 app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
+app.include_router(market_data_router)
+app.include_router(market_event_router)
+app.include_router(market_observation_router)
 
 
 @app.exception_handler(IncompleteTradePnlError)
@@ -4173,13 +4184,14 @@ def list_projectx_account_trades(
             if include_lifecycle
             else {}
         )
-        return [
+        serialized = [
             serialize_trade_event(
                 row,
                 lifecycle=lifecycle_by_trade_id.get(int(row.id)),
             )
             for row in rows
         ]
+        return attach_trade_excursions(db, user_id=user_id, account_id=account_id, trades=serialized)
     except ProjectXClientError as exc:
         raise _to_http_exception(exc) from exc
 

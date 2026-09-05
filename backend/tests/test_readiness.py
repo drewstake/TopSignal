@@ -477,4 +477,4 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
     db = _Session()
 
     assert main_module.readiness(db=db) == {"status": "ready"}
-    assert {"version": "schema-20260830-v6"} in db.params
+    assert {"version": "schema-20260905-v7"} in db.params

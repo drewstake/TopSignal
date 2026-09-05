@@ -1951,9 +1951,11 @@ def test_full_history_route_is_deterministic_and_has_no_public_prepare_step(
     assert first["metrics"] == second["metrics"]
     assert first["input_fingerprint"] == second["input_fingerprint"]
     assert first["assumptions"]["configured_execution_mode_was_ignored"] == "live"
-    assert "/api/bots/{bot_config_id}/backtests/prepare" not in {
-        route.path for route in main_module.app.routes
-    }
+    # OpenAPI traverses included routers as well as routes registered directly
+    # on the app; router wrapper objects need not expose a .path attribute.
+    public_paths = main_module.app.openapi()["paths"]
+    assert "post" in public_paths["/api/bots/{bot_config_id}/backtests"]
+    assert "/api/bots/{bot_config_id}/backtests/prepare" not in public_paths
     assert db_session.query(BotBacktest).count() == 2
 
 

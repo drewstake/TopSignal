@@ -630,6 +630,7 @@ export function AppShell() {
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Journal", to: `/journal${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
+              { label: "Data", to: `/data${accountSuffix}` },
               { label: "Themes", to: `/themes${accountSuffix}` },
             ]}
           />
