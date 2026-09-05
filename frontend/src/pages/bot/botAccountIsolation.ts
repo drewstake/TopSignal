@@ -40,6 +40,18 @@ export function filterBotConfigsByAccount(
   return configs.filter((config) => config.account_id === accountId);
 }
 
+/** Keep chart subscriptions and memoized panels stable across unchanged polls. */
+export function reconcileBotConfigs(current: BotConfig[], incoming: BotConfig[]): BotConfig[] {
+  const byId = new Map(current.map((config) => [config.id, config]));
+  const next = incoming.map((config) => {
+    const previous = byId.get(config.id);
+    return previous && JSON.stringify(previous) === JSON.stringify(config) ? previous : config;
+  });
+  return next.length === current.length && next.every((config, index) => config === current[index])
+    ? current
+    : next;
+}
+
 export async function loadBotConfigsForProviderAccount(
   accountId: number | null,
   loader: BotConfigLoader,

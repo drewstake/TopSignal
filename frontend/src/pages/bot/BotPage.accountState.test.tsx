@@ -168,7 +168,110 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("BotPage background refresh", () => {
+  async function mountPollingPage() {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const configs = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [botA], total: 1 }, cacheScope: "user:test",
+    });
+    const activities = vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
+    const router = renderBotPage();
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    return { configs, activities, router };
+  }
+
+  it("refreshes worker activity and config without clearing the visible table or overlapping requests", async () => {
+    const { configs, activities } = await mountPollingPage();
+    const pending = deferred<BotActivity>();
+    activities.mockReturnValueOnce(pending.promise);
+    configs.mockResolvedValue({ configs: { items: [{ ...botA, enabled: true }], total: 1 }, cacheScope: "user:test" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(activities).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Live Run active")).not.toBeNull();
+    expect(screen.getByText("Decisions")).not.toBeNull();
+    expect(screen.queryByLabelText("Loading bot activity")).toBeNull();
+    const signal = activities.mock.calls[1][2]?.signal;
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(activities).toHaveBeenCalledTimes(2);
+    expect(signal?.aborted).toBe(false);
+    await act(async () => pending.resolve({ ...activity(botA), risk_events: [{
+      id: 77, bot_config_id: botA.id, account_id: accountA.id, bot_run_id: null,
+      severity: "warning", code: "WORKER_REFRESH", message: "New worker event",
+      created_at: new Date().toISOString(),
+    }] }));
+    expect(screen.getByText("WORKER_REFRESH: New worker event")).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(activities).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets a slow runtime check finish instead of repeatedly aborting it", async () => {
+    const pending = deferred<BotRuntimeStatus>();
+    vi.mocked(botsApi.getRuntimeStatus).mockReturnValue(pending.promise);
+    await mountPollingPage();
+    const signal = vi.mocked(botsApi.getRuntimeStatus).mock.calls[0][0]?.signal;
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(botsApi.getRuntimeStatus).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
+    await act(async () => pending.resolve(healthyRuntimeStatus()));
+    expect(screen.getByText("Worker admission checks passed")).not.toBeNull();
+  });
+
+  it("revokes stale runtime admission when a subsequent health check times out", async () => {
+    await mountPollingPage();
+    const pending = deferred<BotRuntimeStatus>();
+    vi.mocked(botsApi.getRuntimeStatus).mockReturnValue(pending.promise);
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    const signal = vi.mocked(botsApi.getRuntimeStatus).mock.calls[1][0]?.signal;
+    expect(signal?.aborted).toBe(true);
+    expect(screen.getByText("Runtime unavailable")).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => pending.resolve(healthyRuntimeStatus()));
+    expect(screen.getByText("Runtime unavailable")).not.toBeNull();
+  });
+
+  it("skips hidden-tab history reads while continuing runtime checks", async () => {
+    const { configs, activities } = await mountPollingPage();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(configs).toHaveBeenCalledTimes(1);
+    expect(activities).toHaveBeenCalledTimes(1);
+    expect(botsApi.getRuntimeStatus).toHaveBeenCalledTimes(3);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(activities).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels account reads on navigation and ignores late results", async () => {
+    const { configs, activities, router } = await mountPollingPage();
+    const pendingConfigs = deferred<Awaited<ReturnType<typeof botsApi.listConfigsWithCacheScope>>>();
+    const pendingActivity = deferred<BotActivity>();
+    configs.mockReturnValueOnce(pendingConfigs.promise);
+    activities.mockReturnValueOnce(pendingActivity.promise);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    const configSignal = configs.mock.calls[1][1]?.signal;
+    const activitySignal = activities.mock.calls[1][2]?.signal;
+    configs.mockResolvedValue({ configs: { items: [], total: 0 }, cacheScope: "user:test" });
+    await act(async () => { await router.navigate(`/bot?account=${accountB.id}`); });
+    expect(configSignal?.aborted).toBe(true);
+    expect(activitySignal?.aborted).toBe(true);
+    await act(async () => {
+      pendingConfigs.resolve({ configs: { items: [{ ...botA, enabled: true }], total: 1 }, cacheScope: "user:test" });
+      pendingActivity.resolve(activity(botA));
+    });
+    expect(screen.getByText("Ready for your first run.")).not.toBeNull();
+    expect(screen.queryByText("Live Run active")).toBeNull();
+    cleanup();
+    const count = configs.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(configs).toHaveBeenCalledTimes(count);
+  });
 });
 
 describe("BotPage account-scoped run controls", () => {
