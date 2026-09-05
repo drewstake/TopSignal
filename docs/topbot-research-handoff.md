@@ -23,19 +23,46 @@ machine-readable corrected reference is `topbot-fee-corrected-baseline.json`.
 
 Opening drive alone passes A06's measured historical gates: $11,413.04 full
 net, 543 trades, $2,692.84 drawdown and $1,999.74 later-period net at one tick.
-It is only retrospectively promising. A07 is running the predeclared parameter,
-entry-delay and target-fill robustness checks at $0.61; see
-[that protocol](topbot-opening-drive-robustness-2026-09-04.md). No candidate has
-been promoted or started live, and the newer reserved pool remains untouched.
+All 46 A07 parameter, entry-delay and target-fill cases passed their registered
+robustness checks at $0.61; see
+[the complete robustness results](topbot-opening-drive-robustness-results-2026-09-04.md).
+The original center was then frozen and evaluated once on the entire reserved
+ProjectX pool under the
+[predeclared newer-data protocol](topbot-unseen-opening-drive-protocol-2026-09-04.md).
+That [audited A08 evaluation](topbot-unseen-opening-drive-results-2026-09-04.md)
+failed its preliminary screen: 12 trades lost $272.64,
+$279.14 and $892.14 at 1/2/4 ticks respectively. Independent source-minute audit
+verified all 36 trade records. This small sample does not establish the absence
+of an edge, but it does not support promotion. Its 40 sessions also cannot meet
+the original six-month/200-trade confirmation requirement.
+
+**The entire July–September 2026 ProjectX pool is now exposed.** Neither a subset
+nor a different strategy's result on it may be called an untouched holdout.
+The previously declared four overnight hypotheses completed all 36 A09 cases
+on the reused Databento history, with original rules, criteria and explicit
+$0.61 fees. All four fail the unchanged numerical screens; see
+[the complete overnight results](topbot-overnight-results-2026-09-04.md).
+The 75-point long center's two-tick development/diagnostic profits are only
+$117.42/$5.02; its later-period base-cost profit factor is 1.0086, both bootstrap
+lower bounds are negative, and removing its best five trades leaves -$228.68.
+The wider neighbor also fails later-period profitability. Independent audits
+found no execution/accounting defect that would invalidate these failures.
+
+**No tested candidate qualifies for promotion.** The corrected-fee comparisons
+are complete, and the continued research has not established credible future
+profitability. Further research must declare a new bounded hypothesis before
+testing and obtain fresh reserved observations for independent confirmation;
+neither exposed pool can be relabeled. Production strategy integration remains
+unjustified, and no live run was started.
 
 Prepared September 4, 2026. Start by reading this file, `topbot-strategy.md`,
 `topbot-improvement-comparison.md`, and `topbot-replay-quality.md` in this directory.
 
 ## Active autonomous research update
 
-The research branch `feature/mnq-credible-research` is auditing the baseline and
-testing a new fixed hypothesis set. Read these newer records before relying on
-the original runtime instructions below:
+The research branch `feature/mnq-credible-research` has completed the baseline
+audit, corrected-fee comparisons and the declared hypothesis sets. Read these
+newer records before relying on the original runtime instructions below:
 
 - [Predeclared protocol](topbot-research-protocol-2026-09-04.md).
 - [Complete experiment and interruption record](topbot-experiments-2026-09-04.md).
@@ -281,6 +308,12 @@ skipped locally; all 840 frontend tests passed with four workers. Frontend lint,
 production build, 16 deployment-script tests and both dependency audits passed.
 The initial unrestricted parallel frontend run hit three dashboard test failures;
 the complete bounded-worker rerun passed. No trading run was started.
+
+The subsequent fee/research verification passed 1,672 offline backend tests,
+with the same eight database-dependent skips and zero external connection
+attempts. Thirty additional synthetic tests passed for the frozen ProjectX
+adapter. Independent audits also verified the actual A06/A07/A08/A09 and legacy
+ledgers; those evidence checks are separate from software-test counts.
 
 Deliver the chosen rules and rationale, the complete experiment summary including
 failures, realistic-cost results and uncertainty, known data/execution limitations,

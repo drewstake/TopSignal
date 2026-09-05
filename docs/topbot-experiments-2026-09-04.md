@@ -284,3 +284,142 @@ cases. All 46 use explicit 0.61 fees and the same reused v6 data. No parameter
 is chosen from interim results, and no candidate is promoted to production.
 The overnight hypotheses remain prepared but deferred while this candidate
 receives the specified robustness checks. The newer reserved pool is untouched.
+
+### A07 completion and frozen-parameter decision
+
+All 46 cases completed and passed independent source, cost, ledger and timing
+checks. All six neighbors retain positive full and diagnostic net at one and
+two ticks. The registered delayed-entry and target-trade-through checks also
+retain positive development and diagnostic net at one and two ticks. Four
+unchanged-center cases exactly reproduce A06's trades, metrics, session ledgers
+and equity curves. Every trade pays $1.22 round trip. Nine distinct parameter
+and execution groups remain separate; all 822 checked A07/reference input files
+are unchanged.
+
+Full report and all 46 CSV ledgers:
+`backend/storage/research/reports/20260905T012024.452949Z-opening-drive-robustness-complete-200de24845e4`.
+Independent audit:
+`backend/storage/research/robustness-audits/20260905T011708.987434Z-a07-final-audit-346333828b76/a07-audit.json`.
+
+Retain the **original opening-drive center**; do not choose the best-performing
+neighbor. These remain reused-history results. Prepare a frozen preliminary
+evaluation on the reserved newer ProjectX pool only after its isolated adapter
+and protocol pass review. No newer prices or strategy outcomes have been opened
+at this decision. Forty sessions cannot meet the original six-month/200-trade
+confirmation target, regardless of their eventual P&L. Production integration
+remains conditional on the evidence and parity requirements; no live run was
+started.
+
+## A08 — frozen original candidate on reserved newer observations
+
+Before viewing any new outcome, retain the unchanged opening-drive center and
+the [predeclared newer-data protocol](topbot-unseen-opening-drive-protocol-2026-09-04.md).
+Metadata-only preparation is
+`backend/storage/research/unseen-preparations/20260905T012339.618436Z-projectx-unseen-prepared-c8255427c5af`.
+Its immutable manifest SHA-256 is
+`fe880f413c5c2cd3db1addc0507cafc2ec5cf8da09cdac0c430d8cef67d3af6f`.
+All 56 A06 application/runner/fixture lineage files match. Thirty synthetic
+adapter tests passed, the independent code review found no blocker, and the
+metadata-open guard recorded zero raw-price reads or attempts during preparation.
+
+The parent now authorizes the three predeclared offline evaluation cases under
+the user's existing research authority. An internal decision receipt binds the
+frozen manifest and passed A07 audit before price access. Use all 40 complete
+ProjectX MNQU6 sessions, same-pool warmup, fresh $50,000 portfolios, one contract,
+0.61 per-side fees and 1/2/4 ticks of slippage. No strategy, date range or
+acceptance threshold changes. This is preliminary evidence: no result can meet
+the original six-month/200-trade independent confirmation target. Once evaluated,
+the whole pool is exposed and cannot be reused as untouched data. Preserve all
+outputs and report failure as well as success. No live action is authorized.
+
+### A08 observed result
+
+All three frozen cases completed. Twelve trades produced net -$272.64 / -$279.14
+/ -$892.14 at one/two/four ticks, with $14.64 total fees per case. The unchanged
+candidate fails the predeclared positive-net preliminary screen. The one-tick
+expectancy is -$22.72, profit factor 0.8182 and minute-close drawdown $856.49.
+Forty sessions and twelve trades remain too small for confirmation or a
+statistical claim that the underlying edge is absent. The original center is
+not promoted; no neighbor or date subset replaces it. Independent output audit
+and CSV export follow without rerunning or retuning.
+
+The entire newer ProjectX pool is now **exposed**, first evaluated under the
+frozen original candidate. It must never be labeled untouched in subsequent
+research. Its original collection manifest and raw files remain unchanged.
+
+### A08 audit and export completion
+
+The [completed independent audit](topbot-unseen-opening-drive-results-2026-09-04.md)
+found zero errors. It checked 77 frozen source files, 56 A06 lineage matches,
+all 55,240 raw minutes, all 40 sessions, all 36 cost-case trade records, recorded
+equity and drawdown, fees, concentration and uncertainty. All 108 input files
+retained their hashes. The complete trade/session CSV exports match their JSON
+records. No strategy was rerun or retuned during the audit.
+
+Audit and complete exports:
+`backend/storage/research/unseen-audits/20260905T013111.271967Z-a08-audit-1359ab18f0cc`.
+The audit SHA-256 is
+`7bb3766b6d1d768aef30b393e7322f83e90b93f4fa86e469da5c49208b5f8b36`.
+The candidate remains unpromoted with terminal status
+`fails_predeclared_preliminary_screen`.
+
+## A09 — previously declared overnight hypotheses
+
+After A08 fails its advancement screen, continue the bounded overnight set
+prepared before A08 outcomes. The [overnight protocol](topbot-overnight-protocol-2026-09-04.md)
+and original fixture hash remain unchanged: one fixed 75/150-point long center,
+50/100 and 100/200 neighbors, and a 75/150 short control. Monday–Thursday exact
+16:00 entry, next-local-date 09:25 independent clock, same one-contract sizing,
+calendar exclusions and daily risk controls. These rules are not derived from
+the newly exposed twelve-trade result.
+
+Replay only the original reused v6 Databento history, all three registered
+periods at 1/2/4 ticks, explicit 0.61 fees: 36 cases. Apply the unchanged original
+historical gates and disclose every failure. Do not include or reuse the newer
+pool in this stage. A later independent evaluation would require new reserved
+observations; no current result can be promoted merely by relabeling old data.
+
+### A09 completion and fixed-center decision
+
+All 36 cases completed with explicit $0.61 per-side fees. The [complete A09
+results and audit](topbot-overnight-results-2026-09-04.md) retain every variant,
+fresh period and 1/2/4-tick scenario. All four fail the unchanged numerical
+screen; the original long 75/150 center is not promoted and no neighbor replaces it.
+
+| Fixed variant | Full one-tick trades | Full one-tick net | Full one-tick DD | Full four-tick net | Numerical screen |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Long 75/150 center | 1,124 | $1,262.72 | $2,968.76 | -$2,519.90 | Fail |
+| Long 50/100 neighbor | 1,419 | $3,961.32 | $3,826.08 | -$639.68 | Fail |
+| Long 100/200 neighbor | 1,110 | $1,552.80 | $4,273.42 | -$1,657.04 | Fail |
+| Short 75/150 control | 1,099 | -$11,893.28 | $14,189.70 | -$15,858.62 | Fail |
+
+The center has only four profitable complete years, diagnostic PF 1.0086,
+negative 5/20-session bootstrap lower bounds, net -$228.68 after removing its
+best five trades and -$619.78 after removing its best year. Its development and
+diagnostic two-tick nets are just $117.42 and $5.02. The wider neighbor loses
+$497.60/$778.60 in the diagnostic period at one/two ticks, failing the required
+neighbor robustness. The tighter neighbor fails diagnostic PF and both
+uncertainty gates. No thresholds or dates were changed after these outcomes.
+
+The independent all-36 source/fee/ledger audit found zero discrepancies and
+retained all 555 A09/A07 reference file hashes. It exported 36 trade CSVs with
+28,488 overlapping period/cost records. A separate full one-tick audit verified
+all 4,752 trades and 77 carried-roll exits against raw outright minutes and
+explained every entry omission, including the center's 296 proposed-stop budget
+blocks. No late clock exits were found. These checks establish consistency with
+the specified model, while overnight gaps and live-runtime limitations remain.
+
+Complete exports:
+`backend/storage/research/reports/20260905T013704.193922Z-overnight-complete-1a59d901cd5d`.
+All-36 audit:
+`backend/storage/research/overnight-audits/20260905T013217.563827Z-a09-final-audit-d4ce7c994d71/a09-audit.json`,
+SHA-256 `f7cda17112d96d42281064af62b1fe2aa8da30978b8b3c85abf8664b566ee97a`.
+The results document links the independently verified raw-execution and
+entry-date/risk reconciliation proofs. No replay was launched by the audit.
+
+This bounded round ends without a promoted strategy. The overnight fixture has
+not passed delayed-entry, stricter target-fill or live-runtime parity checks;
+its failed necessary gates do not justify advancing it to those stages here.
+The original history and entire newer A08 ProjectX pool are now exposed. No
+independent observations remain available, and no further hypothesis or
+retuned candidate is selected in this round.

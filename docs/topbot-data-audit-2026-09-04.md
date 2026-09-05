@@ -301,7 +301,7 @@ external connection attempts were zero. The original failure log is preserved
 as `backend/storage/research/audit-backend-tests-20260904.log`; the successful
 rerun is `backend/storage/research/audit-backend-tests-20260904-corrected.log`.
 
-## Additional ProjectX data: mapped and quarantined, not evaluated
+## Additional ProjectX data: mapped collection and exposure history
 
 With explicit authorization to use the existing entitlement, a restricted
 read-only probe authenticated through the project's established credential
@@ -367,8 +367,9 @@ The scripts record only fixed error categories, never provider error text or
 authentication responses. Existing captures were preserved rather than
 overwritten. All stored artifact hashes were rechecked successfully.
 
-**The entire newer pool remains one reserved evaluation pool, with no tuning
-splits and no strategy/return evaluation permission before candidate freeze.**
+**At collection, the entire newer pool was one reserved evaluation pool, with
+no tuning splits and no strategy/return evaluation permission before candidate
+freeze. The A08 exposure update below supersedes that reservation status.**
 Nothing was inserted into application candles or the Databento replay cache.
 This source does not silently replace Databento historical replay. Before a
 separate evaluation, freeze the candidate and acceptance criteria and validate
@@ -377,7 +378,7 @@ cannot by themselves satisfy the research protocol's six-month/200-trade
 requirement, and the FirstRate overlap provides no additional independent
 market observations.
 
-### Structural QA of the reserved pool
+### Structural QA before evaluation
 
 An additional offline pass checked all **55,240 stored bars** and saved the
 additive `complete-newer-pool/structural-qa.json`. All checks passed: finite,
@@ -390,8 +391,32 @@ The checker also passed twelve fixed synthetic validity/corruption checks.
 
 Only counts, booleans, fixed error categories, file references, and hashes were
 logged. No price or volume magnitudes, returns, distributions, or strategy
-results were exposed or evaluated. No repairs were applied; the pool remains
-reserved. The recorded bar source is **ProjectX**, with Databento used only for
+results were exposed or evaluated during this structural QA. No repairs were
+applied; at that stage the pool remained reserved. The recorded bar source is
+**ProjectX**, with Databento used only for
 the separate dated-definition/reference comparison. No reusable loader, cache
 integration, frozen engine change, or further provider request was made for
 this QA step.
+
+### A08 exposure update: the entire pool is now exposed
+
+After the original opening-drive center, source, input hashes and preliminary
+criteria were frozen and the complete A07 audit passed, the parent authorized
+one evaluation on all forty sessions. Execution began at **2026-09-05
+01:26:19.809636 UTC**. The three predeclared $0.61-per-side cases produced twelve
+trades each and net P&L of **-$272.64, -$279.14 and -$892.14** at one, two and four
+ticks per fill. The candidate failed its predeclared preliminary screen.
+
+The entire 55,240-minute collection, including its warmup tail and every complete
+session, is now **exposed research evidence**. None of it may be relabeled as
+untouched or split to select/retune another candidate. Forty sessions and twelve
+setups do not meet the unchanged six-month/200-trade confirmation requirement.
+The original quarantine manifests and response files remain byte-for-byte
+unchanged; this dated update records exposure without rewriting collection
+history. No data was imported into the Databento cache or production candles.
+
+The [A08 results and audit](topbot-unseen-opening-drive-results-2026-09-04.md)
+retain the freeze/receipt chronology, full CSV/JSON ledgers, source provenance,
+reproduced uncertainty and independent raw-minute fill/accounting checks. All
+108 audited input files retained their hashes. No replay, new provider request,
+rule change or further candidate evaluation occurred during that audit.
