@@ -13,6 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
@@ -62,7 +63,7 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "5.0.0-topbot-bracket-exits"
+BACKTEST_ENGINE_VERSION = "5.3.0-entry-latency-stress"
 LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
 # Unit tests for the pre-Databento engine can opt in by monkeypatching this
 # process-local constant. It is deliberately not environment-configurable and
@@ -399,6 +400,8 @@ class _OpenTrade:
     entry_commission: float
     stop_loss: float | None
     take_profit: float | None
+    source_raw_symbol: str | None = None
+    source_instrument_id: int | None = None
     mae: float = 0.0
     mfe: float = 0.0
     bars_held: int = 0
@@ -520,9 +523,17 @@ class BacktestEngine:
         settings: BacktestSettings,
         signal_evaluator: SignalEvaluator | None = None,
         replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
+        execution_candles: Sequence[ProjectXMarketCandle] | None = None,
+        entry_delay_minutes: int = 0,
+        roll_exit_candle_resolver: Callable[[Any, datetime], Any | None] | None = None,
         progress_callback: BacktestProgressCallback | None = None,
         cancellation_callback: BacktestCancellationCallback | None = None,
     ) -> None:
+        if type(entry_delay_minutes) is not int or entry_delay_minutes not in (0, 1):
+            raise BacktestConfigurationError("entry_delay_minutes must be 0 or 1")
+        if entry_delay_minutes and execution_candles is None:
+            raise BacktestConfigurationError("entry_delay_minutes requires observed minute execution")
+        self.entry_delay_minutes = entry_delay_minutes
         if str(config.strategy_type) == _TOPBOT_STRATEGY:
             config = _SourceConfigView(config, strategy_type=_TOPBOT_STRATEGY,
                 strategy_params=bot_service_module._normalize_strategy_params(_TOPBOT_STRATEGY, config.strategy_params),
@@ -545,6 +556,26 @@ class BacktestEngine:
         _raise_if_backtest_cancelled(self.cancellation_callback)
         self.all_start_times = _candle_time_sequence(self.all_candles, close=False)
         self.all_close_times = _candle_time_sequence(self.all_candles, close=True)
+        self.separate_execution_stream = execution_candles is not None
+        self.roll_exit_candle_resolver = roll_exit_candle_resolver
+        execution_excluded_partial = 0
+        if execution_candles is not None:
+            # Signal bars may be incomplete and omitted by the strict resampler.
+            # Their observed constituent minutes must still execute resting orders.
+            execution_config = _SourceConfigView(
+                config, strategy_type=str(config.strategy_type),
+                strategy_params=config.strategy_params,
+                fast_period=int(config.fast_period), slow_period=int(config.slow_period),
+            )
+            execution_config.timeframe_unit = "minute"
+            execution_config.timeframe_unit_number = 1
+            self.all_execution_candles, execution_excluded_partial = _validate_and_sort_candles(
+                execution_candles, config=execution_config,
+            )
+        else:
+            self.all_execution_candles = self.all_candles
+        all_execution_starts = _candle_time_sequence(self.all_execution_candles, close=False)
+        all_execution_closes = _candle_time_sequence(self.all_execution_candles, close=True)
         self._sma_close_values = (
             (
                 _ScaledNanoPriceSequence(self.all_candles.close_nano_values)
@@ -575,20 +606,20 @@ class BacktestEngine:
             _raise_if_backtest_cancelled(self.cancellation_callback)
 
         execution_start = _search_candle_start(
-            self.all_candles,
+            self.all_execution_candles,
             self.settings.start,
             side="left",
-            fallback=self.all_start_times,
+            fallback=all_execution_starts,
         )
         execution_end = _search_candle_close(
-            self.all_candles,
+            self.all_execution_candles,
             self.settings.end,
             side="right",
-            fallback=self.all_close_times,
+            fallback=all_execution_closes,
         )
-        self.execution_candles = self.all_candles[execution_start:execution_end]
-        self.execution_start_times = self.all_start_times[execution_start:execution_end]
-        self.execution_close_times = self.all_close_times[execution_start:execution_end]
+        self.execution_candles = self.all_execution_candles[execution_start:execution_end]
+        self.execution_start_times = all_execution_starts[execution_start:execution_end]
+        self.execution_close_times = all_execution_closes[execution_start:execution_end]
         if len(self.execution_candles) < MIN_EXECUTION_BARS:
             raise InsufficientBacktestDataError(
                 "insufficient_backtest_data: at least 2 closed execution bars are required "
@@ -606,7 +637,16 @@ class BacktestEngine:
                 fallback=self.all_close_times,
             )
             if closed_by_first_event < hard_minimum:
-                deferred_execution_bars = hard_minimum - closed_by_first_event
+                if self.separate_execution_stream:
+                    if len(self.all_candles) < hard_minimum:
+                        raise InsufficientBacktestDataError("insufficient_strategy_warmup: signal stream is too short")
+                    ready_time = self.all_close_times[hard_minimum - 1]
+                    deferred_execution_bars = _search_candle_close(
+                        self.execution_candles, ready_time, side="left",
+                        fallback=self.execution_close_times,
+                    )
+                else:
+                    deferred_execution_bars = hard_minimum - closed_by_first_event
                 self.execution_candles = self.execution_candles[deferred_execution_bars:]
                 self.execution_start_times = self.execution_start_times[
                     deferred_execution_bars:
@@ -646,12 +686,13 @@ class BacktestEngine:
             config,
             rolling_limit=self.evaluator_history_limit,
         )
+        estimated_evaluations = min(len(self.execution_candles), len(self.all_candles))
         if self._sma_close_values is not None:
-            estimated_evaluator_work = len(self.execution_candles) * (
+            estimated_evaluator_work = estimated_evaluations * (
                 2 * int(config.fast_period) + 2 * int(config.slow_period)
             )
         else:
-            estimated_evaluator_work = len(self.execution_candles) * min(
+            estimated_evaluator_work = estimated_evaluations * min(
                 len(self.all_candles),
                 self.max_evaluator_input_bars,
             )
@@ -659,6 +700,8 @@ class BacktestEngine:
         _raise_if_backtest_cancelled(self.cancellation_callback)
 
         budget_streams: list[Sequence[ProjectXMarketCandle]] = [self.all_candles]
+        if self.separate_execution_stream:
+            budget_streams.append(self.all_execution_candles)
         if self.topbot_streams:
             primary_stream_key = _topbot_asset_stream_key(
                 str(config.timeframe_unit), int(config.timeframe_unit_number)
@@ -683,6 +726,8 @@ class BacktestEngine:
         self.data_quality: dict[str, Any] = {}
         if excluded_partial:
             self.warnings.append(f"Excluded {excluded_partial} partial candle(s); only closed bars were replayed.")
+        if execution_excluded_partial:
+            self.warnings.append(f"Excluded {execution_excluded_partial} partial execution minute(s).")
         if auxiliary_excluded_partial:
             self.warnings.append(
                 f"Excluded {auxiliary_excluded_partial} partial auxiliary candle(s); only closed bars were replayed."
@@ -778,8 +823,9 @@ class BacktestEngine:
 
             if self.pending is not None:
                 pending = self.pending
-                self.pending = None
-                self._fill_pending_signal(pending, candle=candle)
+                if candle_start >= self._pending_fill_time(pending):
+                    self.pending = None
+                    self._fill_pending_signal(pending, candle=candle)
 
             if self.position is not None:
                 self._current_bar_exposed = True
@@ -788,6 +834,7 @@ class BacktestEngine:
                 self._process_intrabar_bracket(candle)
 
             event_ns = _datetime_to_epoch_ns(event_time)
+            prior_history_cursor = history_cursor
             while history_cursor < len(self.all_candles) and (
                 int(all_close_ns[history_cursor]) <= event_ns
                 if all_close_ns is not None
@@ -812,6 +859,21 @@ class BacktestEngine:
                 and len(closed_history) > self.max_evaluator_input_bars
             ):
                 del closed_history[: -self.max_evaluator_input_bars]
+            if self.separate_execution_stream and (
+                history_cursor == prior_history_cursor
+                or history_cursor == 0
+                or self.all_close_times[history_cursor - 1] != event_time
+            ):
+                # A missing execution minute must never turn an old signal-bar
+                # close into a new decision at a later available timestamp.
+                self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+                self._report_replay_progress(completed=index + 1, total=total_bars)
+                continue
+            if self.separate_execution_stream:
+                signal_delivery = _candle_delivery_identity(self.all_candles[history_cursor - 1])
+                execution_delivery = _candle_delivery_identity(candle)
+                if signal_delivery is not None and execution_delivery is not None and signal_delivery != execution_delivery:
+                    raise MalformedBacktestDataError("signal_execution_delivery_mismatch")
             if self.strategy_type == _TOPBOT_STRATEGY and not inside_session:
                 self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
                 self._report_replay_progress(completed=index + 1, total=total_bars)
@@ -835,9 +897,16 @@ class BacktestEngine:
                     continue
                 source_signal_timestamp = (
                     _as_utc(signal.candle_timestamp)
-                    if self.strategy_type == _TOPBOT_STRATEGY and signal.candle_timestamp is not None
+                    if (self.strategy_type == _TOPBOT_STRATEGY or self.separate_execution_stream)
+                    and signal.candle_timestamp is not None
+                    else self.all_start_times[history_cursor - 1] if self.separate_execution_stream
                     else candle_start
                 )
+                if self.pending is not None:
+                    self.block_counts["pending_entry_wait"] += 1
+                    self._record_equity(event_time=event_time, mark_price=float(candle.close_price))
+                    self._report_replay_progress(completed=index + 1, total=total_bars)
+                    continue
                 if self.strategy_type == _TOPBOT_STRATEGY:
                     signal_identity = (str(signal.action), source_signal_timestamp)
                     if signal_identity in self._emitted_topbot_signal_identities:
@@ -847,7 +916,7 @@ class BacktestEngine:
                     self._emitted_topbot_signal_identities.add(signal_identity)
                 self.pending = _PendingSignal(
                     action=signal.action,
-                    signal_timestamp=candle_start,
+                    signal_timestamp=source_signal_timestamp if self.separate_execution_stream else candle_start,
                     decision_timestamp=event_time,
                     signal_price=float(signal.price) if signal.price is not None else None,
                     reason=signal.reason,
@@ -889,6 +958,10 @@ class BacktestEngine:
                 self.exposed_bar_count / len(self.execution_candles) * 100.0
             ),
         )
+        assumptions = _assumptions_snapshot(
+            self.config, self.settings, separate_execution_stream=self.separate_execution_stream,
+            entry_delay_minutes=self.entry_delay_minutes,
+        )
         return {
             "range": {
                 "start": self.execution_start_times[0].isoformat(),
@@ -900,7 +973,7 @@ class BacktestEngine:
                 "timeframe_unit_number": int(self.execution_candles[0].unit_number),
             },
             "config_snapshot": _config_snapshot(self.config),
-            "assumptions": _assumptions_snapshot(self.config, self.settings),
+            "assumptions": assumptions,
             "metrics": metrics,
             "equity_curve": self.equity_curve,
             "drawdown_series": drawdown_series,
@@ -1025,6 +1098,36 @@ class BacktestEngine:
         if self.position is None:
             return
 
+        if self.separate_execution_stream:
+            roll_time = self.execution_start_times[index]
+            old_candle = (
+                self.roll_exit_candle_resolver(previous_candle, roll_time)
+                if self.roll_exit_candle_resolver is not None else None
+            )
+            if old_candle is None:
+                raise InsufficientBacktestDataError(
+                    f"causal_roll_exit_missing:{roll_time.isoformat()}: "
+                    "an observed old-delivery minute at the roll decision time is required"
+                )
+            if (
+                _as_utc(old_candle.candle_timestamp) != roll_time
+                or _candle_delivery_identity(old_candle) != previous_delivery
+                or not math.isfinite(float(old_candle.open_price))
+                or float(old_candle.open_price) <= 0
+            ):
+                raise MalformedBacktestDataError("invalid_causal_roll_exit_candle")
+            # Resting children existed before the roll market exit was placed.
+            self._process_open_gap(old_candle)
+            if self.position is not None:
+                self._update_excursion(float(old_candle.open_price), float(old_candle.open_price))
+                self._close_position(
+                    raw_exit_price=float(old_candle.open_price),
+                    exit_timestamp=roll_time, exit_reason="contract_roll",
+                )
+            self.delivery_roll_forced_exit_count += 1
+            self._current_bar_exposed = True
+            return
+
         previous_close = float(previous_candle.close_price)
         previous_close_time = self.execution_close_times[index - 1]
         self._update_excursion(previous_close, previous_close)
@@ -1145,6 +1248,15 @@ class BacktestEngine:
 
 
 
+    def _pending_fill_time(self, pending: _PendingSignal) -> datetime:
+        is_exit = (
+            str(pending.payload.get("signal_category") or "entry") == "exit"
+            or _finite_optional_float(pending.payload.get("target_position_qty")) == 0
+        )
+        return _as_utc(pending.decision_timestamp) + timedelta(
+            minutes=0 if is_exit else self.entry_delay_minutes,
+        )
+
     def _fill_pending_signal(
         self,
         pending: _PendingSignal,
@@ -1152,6 +1264,9 @@ class BacktestEngine:
         candle: ProjectXMarketCandle,
     ) -> None:
         fill_time = _as_utc(candle.candle_timestamp)
+        if self.separate_execution_stream and fill_time != self._pending_fill_time(pending):
+            self.block_counts["missing_next_execution_minute"] += 1
+            return
         if not _signal_fill_is_in_same_session(
             pending.decision_timestamp,
             fill_time,
@@ -1229,6 +1344,25 @@ class BacktestEngine:
             self.block_counts["max_open_position"] += 1
             return
 
+        if self.separate_execution_stream:
+            # Use the same pure bracket-distance calculation as the final live
+            # preflight. Entries only occur while flat, so account unrealized
+            # P&L is zero in this isolated one-position research portfolio.
+            proposed_stop_risk = bot_service_module._proposed_order_stop_risk(
+                order_attempt=None,
+                decision=SimpleNamespace(price=pending.signal_price, raw_payload=pending.payload),
+                order_size=quantity,
+                instrument_spec=SimpleNamespace(
+                    tick_size=self.settings.tick_size, tick_value=self.settings.tick_value,
+                ),
+            )
+            if proposed_stop_risk is None or not math.isfinite(proposed_stop_risk) or proposed_stop_risk <= 0:
+                self.block_counts["proposed_stop_risk_unavailable"] += 1
+                return
+            if self.daily_net_activity[trading_day_date(fill_time)] - proposed_stop_risk <= -float(self.config.max_daily_loss):
+                self.block_counts["proposed_stop_risk_exceeds_daily_loss_budget"] += 1
+                return
+
         entry_price = self._slipped_price(float(candle.open_price), action=pending.action)
         stop_loss, take_profit = _anchor_bracket_to_fill(
             action=pending.action,
@@ -1241,8 +1375,10 @@ class BacktestEngine:
         entry_commission = self.settings.commission_per_contract * quantity
         self.cash -= entry_commission
         session_day = trading_day_date(fill_time)
-        self.daily_net_activity[session_day] -= entry_commission
+        if not self.separate_execution_stream:
+            self.daily_net_activity[session_day] -= entry_commission
         self.daily_entry_counts[session_day] += 1
+        delivery = _candle_delivery_identity(candle)
         self.position = _OpenTrade(
             side=desired_side,
             quantity=quantity,
@@ -1252,10 +1388,18 @@ class BacktestEngine:
             entry_commission=entry_commission,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            source_raw_symbol=delivery[0] if delivery is not None else None,
+            source_instrument_id=delivery[1] if delivery is not None else None,
         )
         self._current_bar_exposed = True
 
     def _can_enter(self, timestamp: datetime) -> bool:
+        if self.separate_execution_stream:
+            if not math.isfinite(self.cash):
+                raise MalformedBacktestDataError("non_finite_replay_cash")
+            if self.cash <= 0:
+                self.block_counts["nonpositive_cash"] += 1
+                return False
         if not _contract_is_allowed(self.config):
             self.block_counts["contract_not_allowed"] += 1
             return False
@@ -1276,7 +1420,8 @@ class BacktestEngine:
             return False
         if self.last_loss_at is not None:
             elapsed = (timestamp - self.last_loss_at).total_seconds()
-            if elapsed < int(self.config.cooldown_seconds):
+            cooldown = int(self.config.cooldown_seconds)
+            if elapsed < cooldown or (self.separate_execution_stream and cooldown > 0 and elapsed == cooldown):
                 self.block_counts["cooldown_after_loss"] += 1
                 return False
         return True
@@ -1346,7 +1491,12 @@ class BacktestEngine:
             self._update_excursion(exit_price, raw_high)
         self._close_position(
             raw_exit_price=exit_price,
-            exit_timestamp=_as_utc(candle.candle_timestamp),
+            # OHLC cannot reveal the instant a bracket traded. The close is the
+            # first time the loss is certain and avoids shortening cooldowns.
+            exit_timestamp=(
+                _candle_close_time(candle) if self.separate_execution_stream
+                else _as_utc(candle.candle_timestamp)
+            ),
             exit_reason="stop_loss_same_bar_conservative" if both_touched else str(exit_reason),
         )
 
@@ -1417,7 +1567,9 @@ class BacktestEngine:
         if net_pnl < 0:
             self.last_loss_at = _as_utc(exit_timestamp)
         self.cash += gross_pnl - exit_commission
-        self.daily_net_activity[trading_day_date(exit_timestamp)] += gross_pnl - exit_commission
+        self.daily_net_activity[trading_day_date(exit_timestamp)] += (
+            net_pnl if self.separate_execution_stream else gross_pnl - exit_commission
+        )
         self.trades.append(
             {
                 "id": len(self.trades) + 1,
@@ -1435,6 +1587,12 @@ class BacktestEngine:
                 "mae": _clean(position.mae),
                 "mfe": _clean(position.mfe),
                 "bars_held": position.bars_held,
+                **({
+                    "source_raw_symbol": position.source_raw_symbol,
+                    "source_instrument_id": position.source_instrument_id,
+                    "stop_loss": _clean(position.stop_loss) if position.stop_loss is not None else None,
+                    "take_profit": _clean(position.take_profit) if position.take_profit is not None else None,
+                } if self.separate_execution_stream else {}),
             }
         )
         self.position = None
@@ -1551,6 +1709,17 @@ class BacktestEngine:
             "warmup_required": requested_warmup,
             "warmup_available": min(warmup_count, requested_warmup),
         })
+        if self.separate_execution_stream:
+            signal_start = _search_candle_start(self.all_candles, self.settings.start, side="left", fallback=self.all_start_times)
+            signal_end = _search_candle_close(self.all_candles, self.settings.end, side="right", fallback=self.all_close_times)
+            signal_rows = self.all_candles[signal_start:signal_end]
+            signal_seconds = _timeframe_seconds(str(self.config.timeframe_unit), int(self.config.timeframe_unit_number))
+            self.data_quality["signal_bar_count"] = len(signal_rows)
+            if signal_seconds is not None:
+                self.data_quality["signal_gaps"] = _summarize_futures_session_gaps(
+                    signal_rows, interval_seconds=signal_seconds,
+                    in_entry_session=self._event_in_configured_session,
+                )
         if len(self.execution_candles) < 100:
             self.warnings.append(
                 f"Small bar sample ({len(self.execution_candles)} bars); performance estimates may be unstable."
@@ -1559,7 +1728,7 @@ class BacktestEngine:
         if zero_volume:
             self.warnings.append(f"{zero_volume} execution candle(s) have zero volume.")
         expected_seconds = _timeframe_seconds(
-            str(self.config.timeframe_unit), int(self.config.timeframe_unit_number)
+            str(self.execution_candles[0].unit), int(self.execution_candles[0].unit_number)
         )
         if expected_seconds is not None:
             actual_start = self.available_start
@@ -1658,8 +1827,9 @@ class BacktestEngine:
             self.notes.append(
                 f"Detected {self.delivery_roll_count} futures delivery change(s); "
                 "strategy history was segmented at each roll, "
-                f"{self.delivery_roll_forced_exit_count} open position(s) were closed at the "
-                "prior delivery's final close, and "
+                f"{self.delivery_roll_forced_exit_count} open position(s) were closed at "
+                + ("the observed prior-delivery open at the roll time" if self.separate_execution_stream
+                   else "the prior delivery's final close (legacy noncausal approximation)") + ", and "
                 f"{self.delivery_roll_discarded_signal_count} pending signal(s) were discarded."
             )
         if self.unfilled_final_signals:
@@ -2244,6 +2414,9 @@ def run_backtest(
     force_close_at_end: bool = True,
     signal_evaluator: SignalEvaluator | None = None,
     replay_streams: Mapping[str, list[ProjectXMarketCandle]] | None = None,
+    execution_candles: Sequence[ProjectXMarketCandle] | None = None,
+    entry_delay_minutes: int = 0,
+    roll_exit_candle_resolver: Callable[[Any, datetime], Any | None] | None = None,
     progress_callback: BacktestProgressCallback | None = None,
     cancellation_callback: BacktestCancellationCallback | None = None,
     include_evaluation_split: bool = True,
@@ -2265,6 +2438,9 @@ def run_backtest(
         ),
         signal_evaluator=signal_evaluator,
         replay_streams=replay_streams,
+        execution_candles=execution_candles,
+        entry_delay_minutes=entry_delay_minutes,
+        roll_exit_candle_resolver=roll_exit_candle_resolver,
         progress_callback=progress_callback,
         cancellation_callback=cancellation_callback,
     )
@@ -2324,6 +2500,9 @@ def _build_chronological_holdout_evaluation(
             force_close_at_end=True,
         ),
         replay_streams=replay_streams,
+        execution_candles=engine.all_execution_candles if engine.separate_execution_stream else None,
+        entry_delay_minutes=engine.entry_delay_minutes,
+        roll_exit_candle_resolver=engine.roll_exit_candle_resolver,
         cancellation_callback=cancellation_callback,
     )
     holdout_result = holdout_engine.run()
@@ -4456,10 +4635,15 @@ def _config_snapshot(config: BotConfig) -> dict[str, Any]:
     }
 
 
-def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict[str, Any]:
+def _assumptions_snapshot(
+    config: BotConfig, settings: BacktestSettings, *, separate_execution_stream: bool = False,
+    entry_delay_minutes: int = 0,
+) -> dict[str, Any]:
     is_topbot = str(config.strategy_type) == _TOPBOT_STRATEGY
     return {
         "fill_model": "next_bar_open_market",
+        "entry_delay_minutes": entry_delay_minutes,
+        "entry_latency_rule": "entry waits until original decision plus configured delay; missing exact minute discards; exits retain normal timing",
         "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
         "strategy_replay": "single_strategy",
         "strategy_revision": bot_service_module._normalize_strategy_params(_TOPBOT_STRATEGY, {}).get("revision") if is_topbot else None,
@@ -4493,8 +4677,27 @@ def _assumptions_snapshot(config: BotConfig, settings: BacktestSettings) -> dict
             "is_segmented_at_delivery_changes"
         ),
         "roll_gap_rule": (
-            "open_positions_close_at_the_prior_delivery_final_close; pending_cross-roll_signals_"
-            "are_discarded"
+            "old_delivery_observed_open_at_roll_time_or_fail_if_position_carried"
+            if separate_execution_stream else
+            "legacy_approximation_prior_delivery_final_close_requires_future_roll_knowledge"
+        ),
+        "execution_stream": "observed_1m" if separate_execution_stream else "legacy_signal_bars",
+        "signal_timeframe_unit": str(config.timeframe_unit),
+        "signal_timeframe_unit_number": int(config.timeframe_unit_number),
+        "intrabar_timestamp_rule": "bar_close_upper_bound" if separate_execution_stream else "legacy_bar_start_approximation",
+        "drawdown_observation_rule": "execution_bar_close_marks_not_intrabar_equity_extrema",
+        "proposed_stop_budget_rule": (
+            "live_whole_tick_stop_risk_must_be_less_than_remaining_daily_loss_budget; "
+            "fees_and_slippage_are_charged_to_fills_but_excluded_from_live_proposed_risk"
+            if separate_execution_stream else "legacy_realized_loss_only_no_proposed_stop_budget"
+        ),
+        "daily_loss_accounting": (
+            "whole_trade_net_pnl_booked_on_exit_trading_day_as_in_live_preflight"
+            if separate_execution_stream else "legacy_commissions_booked_on_each_fill_day"
+        ),
+        "capital_rule": (
+            "nonpositive_cash_blocks_new_entries; nonfinite_cash_rejects_replay; no_historical_margin_model"
+            if separate_execution_stream else "legacy_no_cash_or_margin_entry_gate"
         ),
         "historical_source": "databento",
         "roll_policy_version": ROLL_POLICY_VERSION,

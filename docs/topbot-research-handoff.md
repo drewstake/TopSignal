@@ -3,6 +3,33 @@
 Prepared September 4, 2026. Start by reading this file, `topbot-strategy.md`,
 `topbot-improvement-comparison.md`, and `topbot-replay-quality.md` in this directory.
 
+## Active autonomous research update
+
+The research branch `feature/mnq-credible-research` is auditing the baseline and
+testing a new fixed hypothesis set. Read these newer records before relying on
+the original runtime instructions below:
+
+- [Predeclared protocol](topbot-research-protocol-2026-09-04.md).
+- [Complete experiment and interruption record](topbot-experiments-2026-09-04.md).
+- [Data provenance and calendar audit](topbot-data-audit-2026-09-04.md).
+
+The original baseline was reproduced exactly before changes. Subsequent audit
+found incomplete aggregate execution, noncausal roll exits, an obsolete CME
+halt, and disagreement with the live proposed-stop daily-risk gate. New research
+uses a separate observed-minute execution stream and actual old-contract roll
+prices. Its numerical risk model reserves stop risk; runtime lifecycle and
+clock-exit integration remain separate requirements before any production
+candidate can be adopted. Preliminary batches were stopped and preserved after
+the risk defect was identified. They are not strategy-selection evidence.
+
+Cache format has changed: do not use the original format-4 cache with current
+code. Name the corrected cache from the data audit explicitly. A final verified
+default-cache migration and live/backtest integration remain outstanding.
+Research tools are `backend/tools/research_topbot.py` and
+`backend/tools/summarize_topbot_research.py`; they record immutable source/code
+snapshots, hypotheses, complete ledgers, costs, periods, interruptions and
+uncertainty. No strategy is currently certified profitable or enabled live.
+
 ## Objective and authority
 
 Develop and test a credible profitable MNQ strategy, then integrate an improvement

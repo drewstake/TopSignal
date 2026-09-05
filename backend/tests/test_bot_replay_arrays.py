@@ -59,13 +59,19 @@ def candles(count=180, flat=False):
     return output
 
 
-def test_gap_report_matches_arrays_and_excludes_weekend_and_equity_halt():
+@pytest.mark.parametrize(
+    "year,month,friday,sunday,gaps,missing",
+    [(2021, 6, 25, 27, 1, 4), (2026, 7, 10, 12, 2, 7)],
+)
+def test_gap_report_matches_arrays_and_respects_historical_halt(
+    year, month, friday, sunday, gaps, missing,
+):
     times = [
-        datetime(2026, 7, 10, 20, 10, tzinfo=timezone.utc),  # 16:10 ET, halt next
-        datetime(2026, 7, 10, 20, 30, tzinfo=timezone.utc),
-        datetime(2026, 7, 10, 20, 55, tzinfo=timezone.utc),  # four absent off-hours bars
-        datetime(2026, 7, 12, 22, 0, tzinfo=timezone.utc),
-        datetime(2026, 7, 12, 22, 5, tzinfo=timezone.utc),
+        datetime(year, month, friday, 20, 10, tzinfo=timezone.utc),
+        datetime(year, month, friday, 20, 30, tzinfo=timezone.utc),
+        datetime(year, month, friday, 20, 55, tzinfo=timezone.utc),  # four absent off-hours bars
+        datetime(year, month, sunday, 22, 0, tzinfo=timezone.utc),
+        datetime(year, month, sunday, 22, 5, tzinfo=timezone.utc),
     ]
     rows = candles(len(times))
     for row, timestamp in zip(rows, times):
@@ -74,8 +80,8 @@ def test_gap_report_matches_arrays_and_excludes_weekend_and_equity_halt():
     kwargs = dict(interval_seconds=300, in_entry_session=lambda _: False)
     scalar = replay._summarize_futures_session_gaps(rows, **kwargs)
     assert scalar == replay._summarize_futures_session_gaps(ArrayRows(rows), **kwargs)
-    assert scalar["gap_count"] == replay._count_futures_session_gaps(rows, interval_seconds=300) == 1
-    assert scalar["missing_bar_count"] == 4
+    assert scalar["gap_count"] == replay._count_futures_session_gaps(rows, interval_seconds=300) == gaps
+    assert scalar["missing_bar_count"] == missing
     assert scalar["in_session_gap_count"] == 0
 
 

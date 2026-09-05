@@ -5666,15 +5666,15 @@ def test_candles_endpoint_does_not_repair_a_weekend_market_closure(monkeypatch):
     ("last_before_close", "first_after_close"),
     [
         (
-            datetime(2026, 7, 6, 20, 10, tzinfo=timezone.utc),
-            datetime(2026, 7, 6, 20, 30, tzinfo=timezone.utc),
+            datetime(2020, 7, 6, 20, 10, tzinfo=timezone.utc),
+            datetime(2020, 7, 6, 20, 30, tzinfo=timezone.utc),
         ),
         (
             datetime(2026, 7, 3, 16, 55, tzinfo=timezone.utc),
             datetime(2026, 7, 5, 22, 0, tzinfo=timezone.utc),
         ),
     ],
-    ids=["daily-equity-halt", "independence-day-early-close"],
+    ids=["historical-equity-halt", "independence-day-early-close"],
 )
 def test_candles_endpoint_does_not_repair_scheduled_equity_closures(
     monkeypatch,

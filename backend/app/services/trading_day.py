@@ -11,9 +11,23 @@ TRADING_DAY_ROLLOVER_HOUR = 18
 
 _EQUITY_HALT_START = time(hour=16, minute=15)
 _EQUITY_HALT_END = time(hour=16, minute=30)
+# CME SER-8788 section 5 eliminated the equity-index Globex halt beginning
+# trade date June 28, 2021. Earlier history must retain the old session hours.
+# https://www.cmegroup.com/content/dam/cmegroup/notices/ser/2021/06/SER-8788.pdf
+_EQUITY_HALT_REMOVED_DATE = date(2021, 6, 28)
 _EARLY_CLOSE = time(hour=13)
 _DAY_AFTER_THANKSGIVING_CLOSE = time(hour=13, minute=15)
 _GOOD_FRIDAY_CLOSE = time(hour=9, minute=15)
+# Bounded historical exceptions, verified against dated notices and observed
+# MNQ minutes. Do not extend these dates from a weekday/settlement heuristic.
+# Source confidence and archival limits: docs/topbot-calendar-audit-2026-09-04.md.
+_INDEPENDENCE_EVE_EARLY_CLOSE_DATES = frozenset(
+    {date(2019, 7, 3), date(2023, 7, 3), date(2024, 7, 3), date(2025, 7, 3)}
+)
+_GOOD_FRIDAY_FULL_CLOSE_DATES = frozenset(
+    {date(2020, 4, 10), date(2022, 4, 15), date(2024, 3, 29), date(2025, 4, 18)}
+)
+_CARTER_DAY_OF_MOURNING = date(2025, 1, 9)
 _CME_EQUITY_ROOTS = frozenset(
     {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K", "EMD", "MME", "NKD", "NIY"}
 )
@@ -61,8 +75,8 @@ def futures_session_is_open(value: datetime, *, symbol: str | None = None) -> bo
 
     The common Globex week is used for unknown products. Every root fails closed
     for the recurring major CME holiday schedule; known equity-index roots also
-    honor the daily 16:15-16:30 ET halt. Product-specific calendars can narrow
-    this conservative fallback in the future.
+    honor the historical 16:15-16:30 ET halt before June 28, 2021.
+    Product-specific calendars can narrow this conservative fallback in the future.
     """
 
     local = as_utc(value).astimezone(TRADING_TZ)
@@ -77,14 +91,20 @@ def futures_session_is_open(value: datetime, *, symbol: str | None = None) -> bo
     if time(hour=17) <= local_time < time(hour=18):
         return False
     trading_date = trading_day_date(value)
-    holiday = _cme_equity_holiday_schedule(trading_date)
+    holiday = _cme_equity_holiday_schedule(
+        trading_date, verified_equity_overrides=_uses_cme_equity_schedule(symbol)
+    )
     if holiday is not None and holiday.full_close:
         return False
     if local.date() == trading_date:
         close_time = holiday.early_close if holiday and holiday.early_close else time(hour=17)
         if local_time >= close_time:
             return False
-        if _uses_cme_equity_schedule(symbol) and _EQUITY_HALT_START <= local_time < _EQUITY_HALT_END:
+        if (
+            _uses_cme_equity_schedule(symbol)
+            and trading_date < _EQUITY_HALT_REMOVED_DATE
+            and _EQUITY_HALT_START <= local_time < _EQUITY_HALT_END
+        ):
             return False
     return True
 
@@ -103,8 +123,26 @@ def _uses_cme_equity_schedule(symbol: str | None) -> bool:
 
 
 @lru_cache(maxsize=1_024)
-def _cme_equity_holiday_schedule(value: date) -> FuturesHolidaySchedule | None:
-    """Recurring CME equity-index exceptions for the modern schedule regime."""
+def _cme_equity_holiday_schedule(
+    value: date, *, verified_equity_overrides: bool = True,
+) -> FuturesHolidaySchedule | None:
+    """Recurring approximations plus explicitly verified historical exceptions.
+
+    Good Friday is not uniformly open or uniformly closed: the cached years
+    2021, 2023 and 2026 had an abbreviated employment-report session. The dated
+    full-closure overrides cover the audited other cache years only; future
+    calendars still require the exchange's published schedule.
+    """
+
+    if verified_equity_overrides:
+        if value in _INDEPENDENCE_EVE_EARLY_CLOSE_DATES:
+            return FuturesHolidaySchedule("Independence Day Eve", value, early_close=time(13, 15))
+        if value in _GOOD_FRIDAY_FULL_CLOSE_DATES:
+            return FuturesHolidaySchedule("Good Friday", value, full_close=True)
+        if value == _CARTER_DAY_OF_MOURNING:
+            # CME SER-9499R and its January 9, 2025 Globex schedule specify
+            # 08:30 Central, i.e. 09:30 New York, not a full-day closure.
+            return FuturesHolidaySchedule("National Day of Mourning", value, early_close=time(9, 30))
 
     year = value.year
     # Jan 1 can be observed on Dec 31 of the preceding calendar year, so both

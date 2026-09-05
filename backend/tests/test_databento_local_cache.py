@@ -666,6 +666,34 @@ def test_nonaligned_source_start_drops_partial_and_exposes_first_complete_bucket
         store.clear()
 
 
+@pytest.mark.parametrize("day,halt_present", [(25, True), (28, False)])
+def test_complete_session_tail_uses_historical_equity_halt(day, halt_present):
+    # Final two session hours include 17:00-18:00 ET maintenance. The old
+    # 16:15-16:30 halt applies on June 25, but was eliminated June 28, 2021.
+    start = datetime(2021, 6, day, 20, tzinfo=timezone.utc)
+    timestamps = np.asarray(
+        [
+            _unix_nanos(start + timedelta(minutes=minute))
+            for minute in range(60)
+            if not (halt_present and 15 <= minute < 30)
+        ],
+        dtype=np.int64,
+    )
+    assert databento_cache._covers_every_open_minute(
+        timestamps,
+        start_ns=_unix_nanos(start),
+        end_ns=_unix_nanos(start + timedelta(hours=2)),
+        root_symbol="MNQ",
+    )
+    # A real missing executable minute must still invalidate an aggregate.
+    assert not databento_cache._covers_every_open_minute(
+        timestamps[:-1],
+        start_ns=_unix_nanos(start),
+        end_ns=_unix_nanos(start + timedelta(hours=2)),
+        root_symbol="MNQ",
+    )
+
+
 @pytest.mark.parametrize(
     ("corruption", "message"),
     [

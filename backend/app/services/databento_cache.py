@@ -34,7 +34,10 @@ from .trading_day import futures_session_is_open, trading_day_bounds_utc, tradin
 DATASET = "GLBX.MDP3"
 SUPPORTED_ROOTS = frozenset({"MNQ", "MES", "NQ", "ES"})
 ROLL_POLICY_VERSION = "volume_previous_completed_session_v1"
-CACHE_FORMAT_VERSION = 4
+# Version 6 adds verified date-specific holiday closures to the historical halt
+# calendar. Reject earlier materializations rather than silently retaining
+# incorrect session completeness and holiday coverage assumptions.
+CACHE_FORMAT_VERSION = 6
 DEFAULT_TIMEFRAMES = (
     ("minute", 1),
     ("minute", 5),
@@ -1393,7 +1396,7 @@ def _series_fingerprint(
         "root_symbol": root_symbol,
         "unit": unit,
         "unit_number": int(unit_number),
-        "resampling": "globex_session_anchored_complete_ohlcv_v2",
+        "resampling": "globex_session_anchored_complete_ohlcv_v4_verified_holiday_dates",
     }
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
