@@ -158,6 +158,10 @@ export interface AccountTrade {
   pnl: number | null;
   mfe?: number | null;
   mae?: number | null;
+  position_mae?: number | null;
+  position_mfe?: number | null;
+  excursion_scope?: "trade" | "position" | "ambiguous" | "unavailable";
+  excursion_source?: string | null;
   order_id: string;
   source_trade_id: string | null;
 }
@@ -1028,6 +1032,13 @@ export interface TradeEvaluationResult {
 }
 
 export interface BotAnalysis {
+  collected_context?: {
+    as_of: string;
+    events?: { news_risk?: string; reason?: string; headlines?: { id: string; title: string; source: string; url: string | null; published_at: string | null }[] };
+    related_markets?: { items?: { symbol: string; status: string; change_pct: number | null; change_bps?: number | null }[] };
+    order_book?: { status: string; spread?: number; age_seconds?: number };
+    volume_profile?: { status: string; poc?: number; value_area_low?: number; value_area_high?: number; cumulative_delta?: number | null; reason?: string };
+  } | null;
   /** Versioned canonical contract. Fields remain optional for older API responses. */
   analysis_version?: string;
   probability_method?: BotProbabilityMethod;

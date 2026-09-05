@@ -24,6 +24,9 @@ const BotPage = lazy(() =>
 const ThemePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
 );
+const DataHubPage = lazy(() =>
+  import("../pages/data/DataHubPage").then((module) => ({ default: module.DataHubPage })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -64,6 +67,11 @@ export const router = createBrowserRouter([
       {
         path: "themes",
         element: <ThemePage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "data",
+        element: <DataHubPage />,
         errorElement: <RouteErrorPage />,
       },
     ],

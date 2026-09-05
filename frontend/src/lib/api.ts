@@ -494,7 +494,7 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
   };
 }
 
-async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
+export async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal, tracksLiveMutation = false, accessTokenOverride } = options;
   if (isDemoModeEnabled()) {
     if (method !== "GET") {

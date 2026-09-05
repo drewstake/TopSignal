@@ -113,6 +113,13 @@ function formatFee(value: number) {
   return formatCurrency(-Math.abs(value));
 }
 
+function excursionLabel(trade: AccountTrade, kind: "mae" | "mfe"): string {
+  const value = trade[kind];
+  if (value !== null && value !== undefined) return formatCurrency(value);
+  const positionValue = kind === "mae" ? trade.position_mae : trade.position_mfe;
+  return positionValue !== null && positionValue !== undefined ? `${formatCurrency(positionValue)} (position)` : "—";
+}
+
 function formatDurationCompact(minutes: number | null | undefined) {
   if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
     return "-";
@@ -969,6 +976,7 @@ export function TradesPage() {
                           <th className="px-3 py-2 text-right font-medium">Exit Price</th>
                           <th className="px-3 py-2 text-right font-medium">Fees</th>
                           <th className="px-3 py-2 text-right font-medium">PnL</th>
+                          <th className="px-3 py-2 text-right font-medium" title="Maximum adverse / favorable excursion observed while streaming">MAE / MFE</th>
                           <th className="px-3 py-2 text-right font-medium">Trade ID</th>
                         </tr>
                       </thead>
@@ -1002,6 +1010,9 @@ export function TradesPage() {
                               <td className="px-3 py-2 text-right font-mono text-slate-200">{formatTradePrice(exitPrice)}</td>
                               <td className="px-3 py-2 text-right text-slate-300">{formatFee(trade.fees)}</td>
                               <td className={cn("px-3 py-2 text-right font-semibold", pnlClass(pnlValue))}>{formatPnl(pnlValue)}</td>
+                              <td className="px-3 py-2 text-right text-slate-300" title="Observed stream coverage. Position values cover the entire position, including partial fills; — means unavailable.">
+                                {excursionLabel(trade, "mae")} / {excursionLabel(trade, "mfe")}
+                              </td>
                               <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">
                                 {getDemoTradeId(trade.source_trade_id ?? trade.order_id)}
                               </td>
@@ -1172,6 +1183,8 @@ function TradeFeedCard({ trade }: TradeFeedCardProps) {
         <CompactFeedPill label="Qty" value={formatInteger(trade.size)} />
         <CompactFeedPill label="Entry Px" value={formatTradePrice(entryPrice)} />
         <CompactFeedPill label="Exit Px" value={formatTradePrice(exitPrice)} />
+        <CompactFeedPill label="MAE" value={excursionLabel(trade, "mae")} />
+        <CompactFeedPill label="MFE" value={excursionLabel(trade, "mfe")} />
       </div>
     </article>
   );

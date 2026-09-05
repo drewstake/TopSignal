@@ -159,16 +159,21 @@ def test_migration_checksums_are_sha256_hex():
     int(checksum, 16)
 
 
-def test_latest_migration_adds_bot_runtime_lease():
-    assert (
-        migrate_db._migration_files()[-1].name
-        == "20260903_add_bot_runtime_lease.sql"
-    )
-
-    migration = migrate_db._migration_files()[-1].read_text(encoding="utf-8").lower()
+def test_bot_runtime_lease_migration_is_preserved():
+    migration = (migrate_db.MIGRATIONS_DIR / "20260903_add_bot_runtime_lease.sql").read_text(encoding="utf-8").lower()
     assert "create table if not exists bot_runtime_leases" in migration
     assert "provider_classification_observed_at" in migration
     assert "uq_bot_runs_one_live_running_per_account" in migration
+
+
+def test_market_data_migration_matches_new_private_tables():
+    migration = migrate_db._migration_files()[-1]
+    assert migration.name == "20260905_add_market_data_workspace.sql"
+    sql = migration.read_text(encoding="utf-8").lower()
+    for table in ("market_event_versions", "market_event_source_snapshots", "market_observations", "decision_research_snapshots"):
+        assert f"create table if not exists {table}" in sql
+    assert "revoke all privileges on table" in sql
+    assert "schema-20260905-v7" in sql
 
 
 def test_account_emergency_action_migration_is_durable_and_api_private():

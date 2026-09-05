@@ -153,7 +153,6 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
           />
           <BacktestInput
             label="Fees / contract / side"
-            hint={`Commission, exchange and regulatory fees. ${formatCurrency(Number(form.commissionPerContract) * 2)} round trip per contract; slippage is separate.`}
             type="number"
             min="0"
             step="0.01"
@@ -161,7 +160,8 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
             onChange={(value) => setForm((current) => ({ ...current, commissionPerContract: value }))}
           />
           <BacktestInput
-            label="Slippage (ticks)"
+            label="Slippage"
+            title="Slippage in ticks"
             type="number"
             min="0"
             step="1"
@@ -174,7 +174,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
             className="w-full xl:w-auto"
             title={demoMode ? "Backtest server jobs are disabled in Demo Mode." : undefined}
           >
-            {running ? "Stop & Run New Backtest" : "Run Stored History Replay"}
+            {running ? "Stop & Run New Backtest" : "Run Backtest"}
           </Button>
         </form>
 
@@ -192,9 +192,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
           <BacktestRunningState progress={progress} />
         ) : result ? (
           <BacktestResults result={result} />
-        ) : (
-          <BacktestEmptyState message="Set the execution costs, then replay the stored closed candles for this contract." />
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -202,19 +200,16 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
 
 function BacktestInput({
   label,
-  hint,
   onChange,
   ...inputProps
 }: {
   label: string;
-  hint?: string;
   onChange: (value: string) => void;
 } & Omit<ComponentProps<typeof Input>, "onChange">) {
   return (
     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
       <span>{label}</span>
       <Input {...inputProps} aria-label={label} onChange={(event) => onChange(event.target.value)} />
-      {hint && <span className="block text-[11px] font-normal normal-case tracking-normal">{hint}</span>}
     </label>
   );
 }

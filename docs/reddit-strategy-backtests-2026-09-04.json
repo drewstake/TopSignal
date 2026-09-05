@@ -1,0 +1,2694 @@
+{
+  "completed_simulations": 34,
+  "strategy_cases": 26,
+  "benchmark_cases": 8,
+  "futures": [
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "full",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -109.1893548387,
+        "average_mae": 84.1063311688,
+        "average_mfe": 105.9269480519,
+        "average_win": 131.6639869281,
+        "expectancy": 10.4553246753,
+        "exposure_percent": 4.8691275751,
+        "gross_pnl": 7192.0,
+        "long": {
+          "average_loss": -109.1893548387,
+          "average_win": 131.6639869281,
+          "expectancy": 10.4553246753,
+          "gross_pnl": 7192.0,
+          "losing_trades": 310,
+          "net_pnl": 6440.48,
+          "payoff_ratio": 1.2058317143,
+          "profit_factor": 1.1902725954,
+          "trade_count": 616,
+          "win_rate": 49.6753246753,
+          "winning_trades": 306
+        },
+        "losing_trades": 310,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 1386.2800000001,
+        "max_drawdown_percent": 2.623926367,
+        "net_pnl": 6440.48,
+        "payoff_ratio": 1.2058317143,
+        "profit_factor": 1.1902725954,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 751.52,
+        "trade_count": 616,
+        "win_rate": 49.6753246753,
+        "winning_trades": 306
+      },
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__full__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__full__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "full",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -109.2851465798,
+        "average_mae": 84.1980360065,
+        "average_mfe": 105.8076923077,
+        "average_win": 131.4000657895,
+        "expectancy": 10.4665793781,
+        "exposure_percent": 4.8387389965,
+        "gross_pnl": 7140.5,
+        "long": {
+          "average_loss": -109.2851465798,
+          "average_win": 131.4000657895,
+          "expectancy": 10.4665793781,
+          "gross_pnl": 7140.5,
+          "losing_trades": 307,
+          "net_pnl": 6395.08,
+          "payoff_ratio": 1.2023597891,
+          "profit_factor": 1.1906103449,
+          "trade_count": 611,
+          "win_rate": 49.7545008183,
+          "winning_trades": 304
+        },
+        "losing_trades": 307,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 1405.7800000001,
+        "max_drawdown_percent": 2.6937576854,
+        "net_pnl": 6395.08,
+        "payoff_ratio": 1.2023597891,
+        "profit_factor": 1.1906103449,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 745.42,
+        "trade_count": 611,
+        "win_rate": 49.7545008183,
+        "winning_trades": 304
+      },
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__full__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__full__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "development",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -104.095,
+        "average_mae": 80.025,
+        "average_mfe": 99.6793478261,
+        "average_win": 123.4357017544,
+        "expectancy": 8.6810869565,
+        "exposure_percent": 5.832323821,
+        "gross_pnl": 4554.5,
+        "long": {
+          "average_loss": -104.095,
+          "average_win": 123.4357017544,
+          "expectancy": 8.6810869565,
+          "gross_pnl": 4554.5,
+          "losing_trades": 232,
+          "net_pnl": 3993.3,
+          "payoff_ratio": 1.1857985663,
+          "profit_factor": 1.1653537634,
+          "trade_count": 460,
+          "win_rate": 49.5652173913,
+          "winning_trades": 228
+        },
+        "losing_trades": 232,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 5,
+        "max_drawdown_dollars": 1357.9000000001,
+        "max_drawdown_percent": 2.623926367,
+        "net_pnl": 3993.3,
+        "payoff_ratio": 1.1857985663,
+        "profit_factor": 1.1653537634,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 561.2,
+        "trade_count": 460,
+        "win_rate": 49.5652173913,
+        "winning_trades": 228
+      },
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__development__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__development__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "development",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -103.816069869,
+        "average_mae": 79.8673245614,
+        "average_mfe": 99.5010964912,
+        "average_win": 122.639030837,
+        "expectancy": 8.9148684211,
+        "exposure_percent": 5.8018399088,
+        "gross_pnl": 4621.5,
+        "long": {
+          "average_loss": -103.816069869,
+          "average_win": 122.639030837,
+          "expectancy": 8.9148684211,
+          "gross_pnl": 4621.5,
+          "losing_trades": 229,
+          "net_pnl": 4065.18,
+          "payoff_ratio": 1.1813106679,
+          "profit_factor": 1.1709935442,
+          "trade_count": 456,
+          "win_rate": 49.7807017544,
+          "winning_trades": 227
+        },
+        "losing_trades": 229,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 5,
+        "max_drawdown_dollars": 1390.4000000001,
+        "max_drawdown_percent": 2.6937576854,
+        "net_pnl": 4065.18,
+        "payoff_ratio": 1.1813106679,
+        "profit_factor": 1.1709935442,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 556.32,
+        "trade_count": 456,
+        "win_rate": 49.7807017544,
+        "winning_trades": 227
+      },
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__development__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__development__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "diagnostic",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -124.3417948718,
+        "average_mae": 96.141025641,
+        "average_mfe": 124.3493589744,
+        "average_win": 155.7158974359,
+        "expectancy": 15.6870512821,
+        "exposure_percent": 3.1047629492,
+        "gross_pnl": 2637.5,
+        "long": {
+          "average_loss": -124.3417948718,
+          "average_win": 155.7158974359,
+          "expectancy": 15.6870512821,
+          "gross_pnl": 2637.5,
+          "losing_trades": 78,
+          "net_pnl": 2447.18,
+          "payoff_ratio": 1.2523214547,
+          "profit_factor": 1.2523214547,
+          "trade_count": 156,
+          "win_rate": 50.0,
+          "winning_trades": 78
+        },
+        "losing_trades": 78,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 1386.28,
+        "max_drawdown_percent": 2.7540762924,
+        "net_pnl": 2447.18,
+        "payoff_ratio": 1.2523214547,
+        "profit_factor": 1.2523214547,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 190.32,
+        "trade_count": 156,
+        "win_rate": 50.0,
+        "winning_trades": 78
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__diagnostic__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__diagnostic__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Opening range breakout (MNQ adaptation)",
+      "period": "diagnostic",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -125.3417948718,
+        "average_mae": 96.9387096774,
+        "average_mfe": 124.3612903226,
+        "average_win": 157.2280519481,
+        "expectancy": 15.0316129032,
+        "exposure_percent": 3.0745490009,
+        "gross_pnl": 2519.0,
+        "long": {
+          "average_loss": -125.3417948718,
+          "average_win": 157.2280519481,
+          "expectancy": 15.0316129032,
+          "gross_pnl": 2519.0,
+          "losing_trades": 78,
+          "net_pnl": 2329.9,
+          "payoff_ratio": 1.2543944509,
+          "profit_factor": 1.2383124707,
+          "trade_count": 155,
+          "win_rate": 49.6774193548,
+          "winning_trades": 77
+        },
+        "losing_trades": 78,
+        "max_consecutive_losses": 7,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 1405.78,
+        "max_drawdown_percent": 2.792927265,
+        "net_pnl": 2329.9,
+        "payoff_ratio": 1.2543944509,
+        "profit_factor": 1.2383124707,
+        "short": {
+          "average_loss": 0.0,
+          "average_win": 0.0,
+          "expectancy": 0.0,
+          "gross_pnl": 0.0,
+          "losing_trades": 0,
+          "net_pnl": 0.0,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 0,
+          "win_rate": 0.0,
+          "winning_trades": 0
+        },
+        "total_commission": 189.1,
+        "trade_count": 155,
+        "win_rate": 49.6774193548,
+        "winning_trades": 77
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__diagnostic__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\reddit_orb15_long__diagnostic__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "full",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -106.6339784946,
+        "average_mae": 92.5993589744,
+        "average_mfe": 87.3846153846,
+        "average_win": 126.1926984127,
+        "expectancy": -12.6078205128,
+        "exposure_percent": 1.2184549185,
+        "gross_pnl": -1776.5,
+        "long": {
+          "average_loss": -123.1290909091,
+          "average_win": 137.5577777778,
+          "expectancy": 38.6765517241,
+          "gross_pnl": 1157.0,
+          "losing_trades": 11,
+          "net_pnl": 1121.62,
+          "payoff_ratio": 1.117183411,
+          "profit_factor": 1.8281183089,
+          "trade_count": 29,
+          "win_rate": 62.0689655172,
+          "winning_trades": 18
+        },
+        "losing_trades": 93,
+        "max_consecutive_losses": 12,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 3304.74,
+        "max_drawdown_percent": 6.5384631365,
+        "net_pnl": -1966.82,
+        "payoff_ratio": 1.1834192083,
+        "profit_factor": 0.8016710766,
+        "short": {
+          "average_loss": -104.4212195122,
+          "average_win": 121.6466666667,
+          "expectancy": -24.3184251969,
+          "gross_pnl": -2933.5,
+          "losing_trades": 82,
+          "net_pnl": -3088.44,
+          "payoff_ratio": 1.1649611759,
+          "profit_factor": 0.6393079624,
+          "trade_count": 127,
+          "win_rate": 35.4330708661,
+          "winning_trades": 45
+        },
+        "total_commission": 190.32,
+        "trade_count": 156,
+        "win_rate": 40.3846153846,
+        "winning_trades": 63
+      },
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__full__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__full__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "full",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -107.6339784946,
+        "average_mae": 93.0993589744,
+        "average_mfe": 87.0128205128,
+        "average_win": 125.5022222222,
+        "expectancy": -13.4828205128,
+        "exposure_percent": 1.2184947607,
+        "gross_pnl": -1913.0,
+        "long": {
+          "average_loss": -124.1290909091,
+          "average_win": 136.8633333333,
+          "expectancy": 37.8662068966,
+          "gross_pnl": 1133.5,
+          "losing_trades": 11,
+          "net_pnl": 1098.12,
+          "payoff_ratio": 1.1025887029,
+          "profit_factor": 1.8042360592,
+          "trade_count": 29,
+          "win_rate": 62.0689655172,
+          "winning_trades": 18
+        },
+        "losing_trades": 93,
+        "max_consecutive_losses": 12,
+        "max_consecutive_wins": 6,
+        "max_drawdown_dollars": 3359.5800000001,
+        "max_drawdown_percent": 6.6542926246,
+        "net_pnl": -2103.32,
+        "payoff_ratio": 1.1660093214,
+        "profit_factor": 0.7898772822,
+        "short": {
+          "average_loss": -105.4212195122,
+          "average_win": 120.9577777778,
+          "expectancy": -25.2081889764,
+          "gross_pnl": -3046.5,
+          "losing_trades": 82,
+          "net_pnl": -3201.44,
+          "payoff_ratio": 1.1473760059,
+          "profit_factor": 0.6296575642,
+          "trade_count": 127,
+          "win_rate": 35.4330708661,
+          "winning_trades": 45
+        },
+        "total_commission": 190.32,
+        "trade_count": 156,
+        "win_rate": 40.3846153846,
+        "winning_trades": 63
+      },
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__full__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__full__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "development",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -104.26375,
+        "average_mae": 92.4153846154,
+        "average_mfe": 83.3153846154,
+        "average_win": 124.17,
+        "expectancy": -16.4046153846,
+        "exposure_percent": 1.6061643052,
+        "gross_pnl": -1974.0,
+        "long": {
+          "average_loss": -123.1290909091,
+          "average_win": 145.4564705882,
+          "expectancy": 39.9407142857,
+          "gross_pnl": 1152.5,
+          "losing_trades": 11,
+          "net_pnl": 1118.34,
+          "payoff_ratio": 1.1813330994,
+          "profit_factor": 1.8256966081,
+          "trade_count": 28,
+          "win_rate": 60.7142857143,
+          "winning_trades": 17
+        },
+        "losing_trades": 80,
+        "max_consecutive_losses": 12,
+        "max_consecutive_wins": 5,
+        "max_drawdown_dollars": 3304.74,
+        "max_drawdown_percent": 6.5384631365,
+        "net_pnl": -2132.6,
+        "payoff_ratio": 1.1909220606,
+        "profit_factor": 0.7443262879,
+        "short": {
+          "average_loss": -101.2562318841,
+          "average_win": 113.2042424242,
+          "expectancy": -31.8719607843,
+          "gross_pnl": -3126.5,
+          "losing_trades": 69,
+          "net_pnl": -3250.94,
+          "payoff_ratio": 1.1179977797,
+          "profit_factor": 0.5346945903,
+          "trade_count": 102,
+          "win_rate": 32.3529411765,
+          "winning_trades": 33
+        },
+        "total_commission": 158.6,
+        "trade_count": 130,
+        "win_rate": 38.4615384615,
+        "winning_trades": 50
+      },
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__development__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__development__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "development",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -105.26375,
+        "average_mae": 92.9153846154,
+        "average_mfe": 82.9384615385,
+        "average_win": 123.48,
+        "expectancy": -17.2853846154,
+        "exposure_percent": 1.6062261759,
+        "gross_pnl": -2088.5,
+        "long": {
+          "average_loss": -124.1290909091,
+          "average_win": 144.78,
+          "expectancy": 39.1371428571,
+          "gross_pnl": 1130.0,
+          "losing_trades": 11,
+          "net_pnl": 1095.84,
+          "payoff_ratio": 1.1663663928,
+          "profit_factor": 1.8025662434,
+          "trade_count": 28,
+          "win_rate": 60.7142857143,
+          "winning_trades": 17
+        },
+        "losing_trades": 80,
+        "max_consecutive_losses": 12,
+        "max_consecutive_wins": 5,
+        "max_drawdown_dollars": 3359.5800000001,
+        "max_drawdown_percent": 6.6542926246,
+        "net_pnl": -2247.1,
+        "payoff_ratio": 1.1730534016,
+        "profit_factor": 0.733158376,
+        "short": {
+          "average_loss": -102.2562318841,
+          "average_win": 112.5072727273,
+          "expectancy": -32.7739215686,
+          "gross_pnl": -3218.5,
+          "losing_trades": 69,
+          "net_pnl": -3342.94,
+          "payoff_ratio": 1.1002485683,
+          "profit_factor": 0.526205837,
+          "trade_count": 102,
+          "win_rate": 32.3529411765,
+          "winning_trades": 33
+        },
+        "total_commission": 158.6,
+        "trade_count": 130,
+        "win_rate": 38.4615384615,
+        "winning_trades": 50
+      },
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__development__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__development__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "diagnostic",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -121.22,
+        "average_mae": 93.5192307692,
+        "average_mfe": 107.7307692308,
+        "average_win": 133.9723076923,
+        "expectancy": 6.3761538462,
+        "exposure_percent": 0.5172180339,
+        "gross_pnl": 197.5,
+        "long": {
+          "average_loss": 0.0,
+          "average_win": 3.28,
+          "expectancy": 3.28,
+          "gross_pnl": 4.5,
+          "losing_trades": 0,
+          "net_pnl": 3.28,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 1,
+          "win_rate": 100.0,
+          "winning_trades": 1
+        },
+        "losing_trades": 13,
+        "max_consecutive_losses": 6,
+        "max_consecutive_wins": 3,
+        "max_drawdown_dollars": 925.74,
+        "max_drawdown_percent": 1.8355449005,
+        "net_pnl": 165.78,
+        "payoff_ratio": 1.1051997005,
+        "profit_factor": 1.1051997005,
+        "short": {
+          "average_loss": -121.22,
+          "average_win": 144.8633333333,
+          "expectancy": 6.5,
+          "gross_pnl": 193.0,
+          "losing_trades": 13,
+          "net_pnl": 162.5,
+          "payoff_ratio": 1.1950448221,
+          "profit_factor": 1.1031182973,
+          "trade_count": 25,
+          "win_rate": 48.0,
+          "winning_trades": 12
+        },
+        "total_commission": 31.72,
+        "trade_count": 26,
+        "win_rate": 50.0,
+        "winning_trades": 13
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__diagnostic__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__diagnostic__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "Hourly range reversal (MNQ adaptation)",
+      "period": "diagnostic",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -122.22,
+        "average_mae": 94.0192307692,
+        "average_mfe": 107.3846153846,
+        "average_win": 133.28,
+        "expectancy": 5.53,
+        "exposure_percent": 0.5172180339,
+        "gross_pnl": 175.5,
+        "long": {
+          "average_loss": 0.0,
+          "average_win": 2.28,
+          "expectancy": 2.28,
+          "gross_pnl": 3.5,
+          "losing_trades": 0,
+          "net_pnl": 2.28,
+          "payoff_ratio": null,
+          "profit_factor": null,
+          "trade_count": 1,
+          "win_rate": 100.0,
+          "winning_trades": 1
+        },
+        "losing_trades": 13,
+        "max_consecutive_losses": 6,
+        "max_consecutive_wins": 3,
+        "max_drawdown_dollars": 941.74,
+        "max_drawdown_percent": 1.8674546249,
+        "net_pnl": 143.78,
+        "payoff_ratio": 1.0904925544,
+        "profit_factor": 1.0904925544,
+        "short": {
+          "average_loss": -122.22,
+          "average_win": 144.1966666667,
+          "expectancy": 5.66,
+          "gross_pnl": 172.0,
+          "losing_trades": 13,
+          "net_pnl": 141.5,
+          "payoff_ratio": 1.1798123602,
+          "profit_factor": 1.0890575633,
+          "trade_count": 25,
+          "win_rate": 48.0,
+          "winning_trades": 12
+        },
+        "total_commission": 31.72,
+        "trade_count": 26,
+        "win_rate": 50.0,
+        "winning_trades": 13
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__diagnostic__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\reddit_hourly_range_mnq__diagnostic__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "full",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -21.2970770326,
+        "average_mae": 18.5937244388,
+        "average_mfe": 16.5848859402,
+        "average_win": 17.5957748049,
+        "expectancy": -2.2730537126,
+        "exposure_percent": 4.7910411157,
+        "gross_pnl": -23173.5,
+        "long": {
+          "average_loss": -24.1242350248,
+          "average_win": 18.352579169,
+          "expectancy": -2.4473703877,
+          "gross_pnl": -13139.0,
+          "losing_trades": 5242,
+          "net_pnl": -26199.1,
+          "payoff_ratio": 0.7607527928,
+          "profit_factor": 0.7928257358,
+          "trade_count": 10705,
+          "win_rate": 51.0322279309,
+          "winning_trades": 5463
+        },
+        "losing_trades": 11242,
+        "max_consecutive_losses": 14,
+        "max_consecutive_wins": 14,
+        "max_drawdown_dollars": 50063.8900000214,
+        "max_drawdown_percent": 100.0416041622,
+        "net_pnl": -50020.82,
+        "payoff_ratio": 0.8262060929,
+        "profit_factor": 0.791076533,
+        "short": {
+          "average_loss": -18.8270833333,
+          "average_win": 16.8158422939,
+          "expectancy": -2.1079302717,
+          "gross_pnl": -10034.5,
+          "losing_trades": 6000,
+          "net_pnl": -23821.72,
+          "payoff_ratio": 0.8931729889,
+          "profit_factor": 0.7891183357,
+          "trade_count": 11301,
+          "win_rate": 46.9073533316,
+          "winning_trades": 5301
+        },
+        "total_commission": 26847.32,
+        "trade_count": 22006,
+        "win_rate": 48.9139325638,
+        "winning_trades": 10764
+      },
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__full__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__full__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "full",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -20.4368425883,
+        "average_mae": 18.2678461538,
+        "average_mfe": 15.6234769231,
+        "average_win": 17.001595434,
+        "expectancy": -3.0792307692,
+        "exposure_percent": 3.5270315047,
+        "gross_pnl": -30212.5,
+        "long": {
+          "average_loss": -23.3345396198,
+          "average_win": 17.6003468807,
+          "expectancy": -3.3533080617,
+          "gross_pnl": -16883.0,
+          "losing_trades": 4051,
+          "net_pnl": -26538.08,
+          "payoff_ratio": 0.7542615868,
+          "profit_factor": 0.7192575931,
+          "trade_count": 7914,
+          "win_rate": 48.8122314885,
+          "winning_trades": 3863
+        },
+        "losing_trades": 8716,
+        "max_consecutive_losses": 19,
+        "max_consecutive_wins": 14,
+        "max_drawdown_dollars": 50074.5700000148,
+        "max_drawdown_percent": 100.0749444362,
+        "net_pnl": -50037.5,
+        "payoff_ratio": 0.8319091054,
+        "profit_factor": 0.7190916934,
+        "short": {
+          "average_loss": -17.9205359057,
+          "average_win": 16.371528194,
+          "expectancy": -2.8190283109,
+          "gross_pnl": -13329.5,
+          "losing_trades": 4665,
+          "net_pnl": -23499.42,
+          "payoff_ratio": 0.9135624225,
+          "profit_factor": 0.7189041057,
+          "trade_count": 8336,
+          "win_rate": 44.0379078695,
+          "winning_trades": 3671
+        },
+        "total_commission": 19825.0,
+        "trade_count": 16250,
+        "win_rate": 46.3630769231,
+        "winning_trades": 7534
+      },
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__full__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__full__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "development",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -21.2970770326,
+        "average_mae": 18.5937244388,
+        "average_mfe": 16.5848859402,
+        "average_win": 17.5957748049,
+        "expectancy": -2.2730537126,
+        "exposure_percent": 7.4040845323,
+        "gross_pnl": -23173.5,
+        "long": {
+          "average_loss": -24.1242350248,
+          "average_win": 18.352579169,
+          "expectancy": -2.4473703877,
+          "gross_pnl": -13139.0,
+          "losing_trades": 5242,
+          "net_pnl": -26199.1,
+          "payoff_ratio": 0.7607527928,
+          "profit_factor": 0.7928257358,
+          "trade_count": 10705,
+          "win_rate": 51.0322279309,
+          "winning_trades": 5463
+        },
+        "losing_trades": 11242,
+        "max_consecutive_losses": 14,
+        "max_consecutive_wins": 14,
+        "max_drawdown_dollars": 50063.8900000214,
+        "max_drawdown_percent": 100.0416041622,
+        "net_pnl": -50020.82,
+        "payoff_ratio": 0.8262060929,
+        "profit_factor": 0.791076533,
+        "short": {
+          "average_loss": -18.8270833333,
+          "average_win": 16.8158422939,
+          "expectancy": -2.1079302717,
+          "gross_pnl": -10034.5,
+          "losing_trades": 6000,
+          "net_pnl": -23821.72,
+          "payoff_ratio": 0.8931729889,
+          "profit_factor": 0.7891183357,
+          "trade_count": 11301,
+          "win_rate": 46.9073533316,
+          "winning_trades": 5301
+        },
+        "total_commission": 26847.32,
+        "trade_count": 22006,
+        "win_rate": 48.9139325638,
+        "winning_trades": 10764
+      },
+      "range": {
+        "bar_count": 1638474,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__development__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__development__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "development",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -20.4368425883,
+        "average_mae": 18.2678461538,
+        "average_mfe": 15.6234769231,
+        "average_win": 17.001595434,
+        "expectancy": -3.0792307692,
+        "exposure_percent": 5.4506815488,
+        "gross_pnl": -30212.5,
+        "long": {
+          "average_loss": -23.3345396198,
+          "average_win": 17.6003468807,
+          "expectancy": -3.3533080617,
+          "gross_pnl": -16883.0,
+          "losing_trades": 4051,
+          "net_pnl": -26538.08,
+          "payoff_ratio": 0.7542615868,
+          "profit_factor": 0.7192575931,
+          "trade_count": 7914,
+          "win_rate": 48.8122314885,
+          "winning_trades": 3863
+        },
+        "losing_trades": 8716,
+        "max_consecutive_losses": 19,
+        "max_consecutive_wins": 14,
+        "max_drawdown_dollars": 50074.5700000148,
+        "max_drawdown_percent": 100.0749444362,
+        "net_pnl": -50037.5,
+        "payoff_ratio": 0.8319091054,
+        "profit_factor": 0.7190916934,
+        "short": {
+          "average_loss": -17.9205359057,
+          "average_win": 16.371528194,
+          "expectancy": -2.8190283109,
+          "gross_pnl": -13329.5,
+          "losing_trades": 4665,
+          "net_pnl": -23499.42,
+          "payoff_ratio": 0.9135624225,
+          "profit_factor": 0.7189041057,
+          "trade_count": 8336,
+          "win_rate": 44.0379078695,
+          "winning_trades": 3671
+        },
+        "total_commission": 19825.0,
+        "trade_count": 16250,
+        "win_rate": 46.3630769231,
+        "winning_trades": 7534
+      },
+      "range": {
+        "bar_count": 1638474,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__development__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__development__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "diagnostic",
+      "slippage_ticks": 1,
+      "metrics": {
+        "average_loss": -31.7111512668,
+        "average_mae": 27.7442816635,
+        "average_mfe": 25.6302930057,
+        "average_win": 27.9002033768,
+        "expectancy": -2.344952741,
+        "exposure_percent": 6.4263949053,
+        "gross_pnl": -11902.0,
+        "long": {
+          "average_loss": -36.5613835448,
+          "average_win": 30.2608336435,
+          "expectancy": -1.5611306043,
+          "gross_pnl": -1750.0,
+          "losing_trades": 2443,
+          "net_pnl": -8008.6,
+          "payoff_ratio": 0.8276720055,
+          "profit_factor": 0.9103375681,
+          "trade_count": 5130,
+          "win_rate": 52.3781676413,
+          "winning_trades": 2687
+        },
+        "losing_trades": 5368,
+        "max_consecutive_losses": 15,
+        "max_consecutive_wins": 12,
+        "max_drawdown_dollars": 25957.310000012,
+        "max_drawdown_percent": 51.6467386958,
+        "net_pnl": -24809.6,
+        "payoff_ratio": 0.8798230989,
+        "profit_factor": 0.8542544693,
+        "short": {
+          "average_loss": -27.6601709402,
+          "average_win": 25.3881188119,
+          "expectancy": -3.0827522936,
+          "gross_pnl": -10152.0,
+          "losing_trades": 2925,
+          "net_pnl": -16801.0,
+          "payoff_ratio": 0.9178583483,
+          "profit_factor": 0.7923392579,
+          "trade_count": 5450,
+          "win_rate": 46.3302752294,
+          "winning_trades": 2525
+        },
+        "total_commission": 12907.6,
+        "trade_count": 10580,
+        "win_rate": 49.2627599244,
+        "winning_trades": 5212
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__diagnostic__slip-1.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__diagnostic__slip-1.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    },
+    {
+      "label": "One-minute scalper (independent proxy)",
+      "period": "diagnostic",
+      "slippage_ticks": 2,
+      "metrics": {
+        "average_loss": -31.9310599078,
+        "average_mae": 28.1019910022,
+        "average_mfe": 25.2353785776,
+        "average_win": 27.7261369972,
+        "expectancy": -3.2531195559,
+        "exposure_percent": 6.3299340776,
+        "gross_pnl": -21240.0,
+        "long": {
+          "average_loss": -36.6699795835,
+          "average_win": 29.8970253651,
+          "expectancy": -2.378285488,
+          "gross_pnl": -5850.5,
+          "losing_trades": 2449,
+          "net_pnl": -12012.72,
+          "payoff_ratio": 0.8152997549,
+          "profit_factor": 0.8662351826,
+          "trade_count": 5051,
+          "win_rate": 51.5145515739,
+          "winning_trades": 2602
+        },
+        "losing_trades": 5425,
+        "max_consecutive_losses": 15,
+        "max_consecutive_wins": 12,
+        "max_drawdown_dollars": 34881.5800000119,
+        "max_drawdown_percent": 69.4853990658,
+        "net_pnl": -33985.34,
+        "payoff_ratio": 0.8683124543,
+        "profit_factor": 0.8038092434,
+        "short": {
+          "average_loss": -28.0313239247,
+          "average_win": 25.3919834711,
+          "expectancy": -4.0720200148,
+          "gross_pnl": -15389.5,
+          "losing_trades": 2976,
+          "net_pnl": -21972.62,
+          "payoff_ratio": 0.9058431753,
+          "profit_factor": 0.7366063455,
+          "trade_count": 5396,
+          "win_rate": 44.8480355819,
+          "winning_trades": 2420
+        },
+        "total_commission": 12745.34,
+        "trade_count": 10447,
+        "win_rate": 48.0712166172,
+        "winning_trades": 5022
+      },
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      },
+      "summary_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__diagnostic__slip-2.summary.json",
+      "trades_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\reddit_scalper_1m_proxy__diagnostic__slip-2.trades.json",
+      "manifest_path": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\research\\experiments\\20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad\\manifest.json"
+    }
+  ],
+  "etfs": [
+    {
+      "requested_start": "2006-03-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2006-03-01",
+      "actual_end": "2026-09-04",
+      "sessions": 5162,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 279731.33306287375,
+      "net_pnl": 179731.33306287375,
+      "total_return_pct": 179.73133306287374,
+      "cagr_pct": 5.142688217431091,
+      "max_close_equity_drawdown_dollars": 53509.844653422915,
+      "max_close_equity_drawdown_pct": 24.117325363469654,
+      "closed_trades": 241,
+      "winning_trades": 176,
+      "losing_trades": 65,
+      "win_rate_pct": 73.02904564315352,
+      "profit_factor": 1.7346211628350998,
+      "expectancy": 745.7731662359906,
+      "gross_price_pnl": 183325.8530883789,
+      "commission": 8402.331596123791,
+      "slippage": 8402.333429381499,
+      "cash_dividends": 13210.145,
+      "calendar_exposure_pct": 17.058195408435665,
+      "prior_close_exposed_sessions": 888,
+      "mean_holding_calendar_days": 5.3029045643153525,
+      "longest_holding_calendar_days": 29,
+      "cancelled_unaffordable_entries": 1,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2006,
+          "net": 5696.7610496402485,
+          "return_pct": 5.696761049640253
+        },
+        {
+          "year": 2007,
+          "net": 11420.02185227121,
+          "return_pct": 10.804514479784121
+        },
+        {
+          "year": 2008,
+          "net": 17570.600015945223,
+          "return_pct": 15.002632057150244
+        },
+        {
+          "year": 2009,
+          "net": 975.6334891406004,
+          "return_pct": 0.7243688814828397
+        },
+        {
+          "year": 2010,
+          "net": 9307.85733032829,
+          "return_pct": 6.8610131020558685
+        },
+        {
+          "year": 2011,
+          "net": 11335.21512461995,
+          "return_pct": 7.8189603417568865
+        },
+        {
+          "year": 2012,
+          "net": -937.6348424627795,
+          "return_pct": -0.5998709642661026
+        },
+        {
+          "year": 2013,
+          "net": 12841.291059871583,
+          "return_pct": 8.2650568552747
+        },
+        {
+          "year": 2014,
+          "net": 11719.074672929477,
+          "return_pct": 6.966941580822739
+        },
+        {
+          "year": 2015,
+          "net": 25793.663086086046,
+          "return_pct": 14.33548173194119
+        },
+        {
+          "year": 2016,
+          "net": 3513.4350691146683,
+          "return_pct": 1.7078517722708408
+        },
+        {
+          "year": 2017,
+          "net": 12637.129153007147,
+          "return_pct": 6.039655752887874
+        },
+        {
+          "year": 2018,
+          "net": -33119.875426429906,
+          "return_pct": -14.927399188509849
+        },
+        {
+          "year": 2019,
+          "net": 15115.230556117807,
+          "return_pct": 8.007934608601918
+        },
+        {
+          "year": 2020,
+          "net": -3762.4597390949493,
+          "return_pct": -1.8455335396140082
+        },
+        {
+          "year": 2021,
+          "net": 17489.70610258277,
+          "return_pct": 8.74022324792183
+        },
+        {
+          "year": 2022,
+          "net": 19489.32514698236,
+          "return_pct": 8.956670446548731
+        },
+        {
+          "year": 2023,
+          "net": 1385.6874694173166,
+          "return_pct": 0.5844687024184614
+        },
+        {
+          "year": 2024,
+          "net": 19063.729123513534,
+          "return_pct": 7.994161223010199
+        },
+        {
+          "year": 2025,
+          "net": 11924.911717822775,
+          "return_pct": 4.630415263852239
+        },
+        {
+          "year": 2026,
+          "net": 10272.031051470374,
+          "return_pct": 3.8120899797460472
+        }
+      ],
+      "symbol": "SPY",
+      "period": "full",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2006-03-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2006-03-01",
+      "actual_end": "2026-09-04",
+      "sessions": 5162,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 642613.3211165403,
+      "net_pnl": 542613.3211165403,
+      "total_return_pct": 542.6133211165403,
+      "cagr_pct": 9.493504913061358,
+      "max_close_equity_drawdown_dollars": 86292.1354833984,
+      "max_close_equity_drawdown_pct": 50.71300392830338,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 542613.3211165403,
+      "gross_price_pnl": 474776.59729003906,
+      "commission": 66.50571286635133,
+      "slippage": 66.51046063232627,
+      "cash_dividends": 67969.74000000003,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 5161,
+      "mean_holding_calendar_days": 7492.0,
+      "longest_holding_calendar_days": 7492,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2006,
+          "net": 11425.798117573824,
+          "return_pct": 11.425798117573827
+        },
+        {
+          "year": 2007,
+          "net": 5395.348581542974,
+          "return_pct": 4.842100009775052
+        },
+        {
+          "year": 2008,
+          "net": -39404.26654907227,
+          "return_pct": -33.73042266958862
+        },
+        {
+          "year": 2009,
+          "net": 17298.983387451182,
+          "return_pct": 22.345234468146202
+        },
+        {
+          "year": 2010,
+          "net": 12266.238193359372,
+          "return_pct": 12.95056364924918
+        },
+        {
+          "year": 2011,
+          "net": 1721.2399999999907,
+          "return_pct": 1.608904641199027
+        },
+        {
+          "year": 2012,
+          "net": 14809.622709960939,
+          "return_pct": 13.623889085791818
+        },
+        {
+          "year": 2013,
+          "net": 33766.93909667969,
+          "return_pct": 27.338781195604668
+        },
+        {
+          "year": 2014,
+          "net": 18267.63322509767,
+          "return_pct": 11.614728146589082
+        },
+        {
+          "year": 2015,
+          "net": 1876.641354980471,
+          "return_pct": 1.069021753075572
+        },
+        {
+          "year": 2016,
+          "net": 17907.262709960924,
+          "return_pct": 10.092910053157645
+        },
+        {
+          "year": 2017,
+          "net": 35617.670063476544,
+          "return_pct": 18.23447874678028
+        },
+        {
+          "year": 2018,
+          "net": -8760.850515136699,
+          "return_pct": -3.793411666031954
+        },
+        {
+          "year": 2019,
+          "net": 57393.650515136746,
+          "return_pct": 25.831090453673934
+        },
+        {
+          "year": 2020,
+          "net": 42706.15445312497,
+          "return_pct": 15.275006282424686
+        },
+        {
+          "year": 2021,
+          "net": 79028.29006347654,
+          "return_pct": 24.5210104131814
+        },
+        {
+          "year": 2022,
+          "net": -63795.39909667964,
+          "return_pct": -15.89653604620308
+        },
+        {
+          "year": 2023,
+          "net": 73639.62361328123,
+          "return_pct": 21.817793009996823
+        },
+        {
+          "year": 2024,
+          "net": 87198.65445312503,
+          "return_pct": 21.207931574860005
+        },
+        {
+          "year": 2025,
+          "net": 76309.5147070312,
+          "return_pct": 15.31215024085466
+        },
+        {
+          "year": 2026,
+          "net": 67944.57203216967,
+          "return_pct": 11.823258553806326
+        }
+      ],
+      "symbol": "SPY",
+      "period": "full",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2006-03-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2006-03-01",
+      "actual_end": "2026-09-04",
+      "sessions": 5162,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 222502.16678449392,
+      "net_pnl": 122502.16678449392,
+      "total_return_pct": 122.50216678449392,
+      "cagr_pct": 3.975948813506025,
+      "max_close_equity_drawdown_dollars": 49865.067856314854,
+      "max_close_equity_drawdown_pct": 25.717248550663893,
+      "closed_trades": 241,
+      "winning_trades": 174,
+      "losing_trades": 67,
+      "win_rate_pct": 72.19917012448133,
+      "profit_factor": 1.5419886512469194,
+      "expectancy": 508.3077459937507,
+      "gross_price_pnl": 162441.16722106934,
+      "commission": 14774.66137893931,
+      "slippage": 36936.69405763599,
+      "cash_dividends": 11772.355,
+      "calendar_exposure_pct": 17.058195408435665,
+      "prior_close_exposed_sessions": 888,
+      "mean_holding_calendar_days": 5.3029045643153525,
+      "longest_holding_calendar_days": 29,
+      "cancelled_unaffordable_entries": 1,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2006,
+          "net": 5095.93889494834,
+          "return_pct": 5.095938894948349
+        },
+        {
+          "year": 2007,
+          "net": 9703.070425881568,
+          "return_pct": 9.232583606851396
+        },
+        {
+          "year": 2008,
+          "net": 15240.051941213373,
+          "return_pct": 13.275421130701437
+        },
+        {
+          "year": 2009,
+          "net": -414.7156571919186,
+          "return_pct": -0.3189162188399819
+        },
+        {
+          "year": 2010,
+          "net": 7589.979351594535,
+          "return_pct": 5.8553656075780225
+        },
+        {
+          "year": 2011,
+          "net": 8491.1396122757,
+          "return_pct": 6.18823115951701
+        },
+        {
+          "year": 2012,
+          "net": -2174.3230590646563,
+          "return_pct": -1.4922728296433485
+        },
+        {
+          "year": 2013,
+          "net": 10467.990857692086,
+          "return_pct": 7.293184425059285
+        },
+        {
+          "year": 2014,
+          "net": 8633.048187749315,
+          "return_pct": 5.60590703014876
+        },
+        {
+          "year": 2015,
+          "net": 20250.102435987617,
+          "return_pct": 12.451473236643395
+        },
+        {
+          "year": 2016,
+          "net": 1628.5112712669652,
+          "return_pct": 0.8904696751551144
+        },
+        {
+          "year": 2017,
+          "net": 9386.572938803525,
+          "return_pct": 5.08727577501884
+        },
+        {
+          "year": 2018,
+          "net": -30272.02891994902,
+          "return_pct": -15.6123981242838
+        },
+        {
+          "year": 2019,
+          "net": 11350.757007788547,
+          "return_pct": 6.9370411251838515
+        },
+        {
+          "year": 2020,
+          "net": -5162.6576874836755,
+          "return_pct": -2.950493139623944
+        },
+        {
+          "year": 2021,
+          "net": 13259.939565869368,
+          "return_pct": 7.808533737468659
+        },
+        {
+          "year": 2022,
+          "net": 12453.469065791403,
+          "return_pct": 6.80244678853843
+        },
+        {
+          "year": 2023,
+          "net": -1271.1957506500767,
+          "return_pct": -0.6501387278216142
+        },
+        {
+          "year": 2024,
+          "net": 13534.97475914433,
+          "return_pct": 6.967609295031574
+        },
+        {
+          "year": 2025,
+          "net": 7970.341948280926,
+          "return_pct": 3.8357562758238872
+        },
+        {
+          "year": 2026,
+          "net": 6741.199594545673,
+          "return_pct": 3.124383285050336
+        }
+      ],
+      "symbol": "SPY",
+      "period": "full",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2006-03-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2006-03-01",
+      "actual_end": "2026-09-04",
+      "sessions": 5162,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 642280.8115432726,
+      "net_pnl": 542280.8115432726,
+      "total_return_pct": 542.2808115432725,
+      "cagr_pct": 9.49074221622821,
+      "max_close_equity_drawdown_dollars": 86292.13548339845,
+      "max_close_equity_drawdown_pct": 50.73249878755496,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 542280.8115432726,
+      "gross_price_pnl": 474776.59729003906,
+      "commission": 132.97344360491945,
+      "slippage": 332.55230316156826,
+      "cash_dividends": 67969.74000000003,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 5161,
+      "mean_holding_calendar_days": 7492.0,
+      "longest_holding_calendar_days": 7492,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2006,
+          "net": 11378.207550555118,
+          "return_pct": 11.37820755055512
+        },
+        {
+          "year": 2007,
+          "net": 5395.348581542974,
+          "return_pct": 4.844168980807129
+        },
+        {
+          "year": 2008,
+          "net": -39404.26654907227,
+          "return_pct": -33.7441693601391
+        },
+        {
+          "year": 2009,
+          "net": 17298.983387451182,
+          "return_pct": 22.358979228945163
+        },
+        {
+          "year": 2010,
+          "net": 12266.238193359372,
+          "return_pct": 12.957074010618829
+        },
+        {
+          "year": 2011,
+          "net": 1721.2399999999907,
+          "return_pct": 1.609620674622847
+        },
+        {
+          "year": 2012,
+          "net": 14809.622709960939,
+          "return_pct": 13.62985626746096
+        },
+        {
+          "year": 2013,
+          "net": 33766.93909667968,
+          "return_pct": 27.349319114519723
+        },
+        {
+          "year": 2014,
+          "net": 18267.63322509767,
+          "return_pct": 11.61824365486992
+        },
+        {
+          "year": 2015,
+          "net": 1876.641354980471,
+          "return_pct": 1.0693116412065162
+        },
+        {
+          "year": 2016,
+          "net": 17907.262709960924,
+          "return_pct": 10.09561800531149
+        },
+        {
+          "year": 2017,
+          "net": 35617.67006347657,
+          "return_pct": 18.238922479232798
+        },
+        {
+          "year": 2018,
+          "net": -8760.850515136728,
+          "return_pct": -3.794193517151301
+        },
+        {
+          "year": 2019,
+          "net": 57393.650515136746,
+          "return_pct": 25.836624407643114
+        },
+        {
+          "year": 2020,
+          "net": 42706.15445312497,
+          "return_pct": 15.277606843992043
+        },
+        {
+          "year": 2021,
+          "net": 79028.2900634766,
+          "return_pct": 24.52463183532041
+        },
+        {
+          "year": 2022,
+          "net": -63795.3990966797,
+          "return_pct": -15.898421379003347
+        },
+        {
+          "year": 2023,
+          "net": 73639.62361328123,
+          "return_pct": 21.820869759885376
+        },
+        {
+          "year": 2024,
+          "net": 87198.65445312503,
+          "return_pct": 21.210386611589737
+        },
+        {
+          "year": 2025,
+          "net": 76309.51470703131,
+          "return_pct": 15.313612606667903
+        },
+        {
+          "year": 2026,
+          "net": 67659.6530259205,
+          "return_pct": 11.774653965144122
+        }
+      ],
+      "symbol": "SPY",
+      "period": "full",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 117297.27264014698,
+      "net_pnl": 17297.272640146984,
+      "total_return_pct": 17.297272640146986,
+      "cagr_pct": 6.152246991116561,
+      "max_close_equity_drawdown_dollars": 11995.010249711791,
+      "max_close_equity_drawdown_pct": 10.73839821025771,
+      "closed_trades": 25,
+      "winning_trades": 20,
+      "losing_trades": 5,
+      "win_rate_pct": 80.0,
+      "profit_factor": 2.5496657953503874,
+      "expectancy": 691.8909056058794,
+      "gross_price_pnl": 17687.788146972656,
+      "commission": 512.5861649739253,
+      "slippage": 512.5863418517415,
+      "cash_dividends": 634.6569999999999,
+      "calendar_exposure_pct": 15.061475409836065,
+      "prior_close_exposed_sessions": 98,
+      "mean_holding_calendar_days": 5.88,
+      "longest_holding_calendar_days": 21,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 7989.374394825689,
+          "return_pct": 7.989374394825699
+        },
+        {
+          "year": 2025,
+          "net": 5008.613173996477,
+          "return_pct": 4.638061107460656
+        },
+        {
+          "year": 2026,
+          "net": 4299.285071324819,
+          "return_pct": 3.8047448134475026
+        }
+      ],
+      "symbol": "SPY",
+      "period": "later_diagnostic",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 162850.07681991687,
+      "net_pnl": 62850.07681991687,
+      "total_return_pct": 62.85007681991687,
+      "cagr_pct": 20.02068843640503,
+      "max_close_equity_drawdown_dollars": 22836.04235620117,
+      "max_close_equity_drawdown_pct": 17.647559473091665,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 62850.07681991687,
+      "gross_price_pnl": 59307.96975708008,
+      "commission": 24.72217204176239,
+      "slippage": 24.722765121466296,
+      "cash_dividends": 3591.5519999999997,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 671,
+      "mean_holding_calendar_days": 976.0,
+      "longest_holding_calendar_days": 976,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 24057.42376437498,
+          "return_pct": 24.057423764374985
+        },
+        {
+          "year": 2025,
+          "net": 20521.072198242182,
+          "return_pct": 16.54159144656937
+        },
+        {
+          "year": 2026,
+          "net": 18271.580857299705,
+          "return_pct": 12.637827455352756
+        }
+      ],
+      "symbol": "SPY",
+      "period": "later_diagnostic",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 114548.66776960023,
+      "net_pnl": 14548.66776960023,
+      "total_return_pct": 14.54866776960023,
+      "cagr_pct": 5.214472510909984,
+      "max_close_equity_drawdown_dollars": 12010.758332017052,
+      "max_close_equity_drawdown_pct": 10.875997753395055,
+      "closed_trades": 25,
+      "winning_trades": 20,
+      "losing_trades": 5,
+      "win_rate_pct": 80.0,
+      "profit_factor": 2.2626846730200656,
+      "expectancy": 581.9467107840092,
+      "gross_price_pnl": 17467.66827392578,
+      "commission": 1012.1523249738951,
+      "slippage": 2530.385179351611,
+      "cash_dividends": 623.537,
+      "calendar_exposure_pct": 15.061475409836065,
+      "prior_close_exposed_sessions": 98,
+      "mean_holding_calendar_days": 5.88,
+      "longest_holding_calendar_days": 21,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 6968.068939472258,
+          "return_pct": 6.968068939472261
+        },
+        {
+          "year": 2025,
+          "net": 4108.096244416927,
+          "return_pct": 3.8404883673664125
+        },
+        {
+          "year": 2026,
+          "net": 3472.502585711045,
+          "return_pct": 3.1262355699462896
+        }
+      ],
+      "symbol": "SPY",
+      "period": "later_diagnostic",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 162726.46833202685,
+      "net_pnl": 62726.46833202685,
+      "total_return_pct": 62.726468332026855,
+      "cagr_pct": 19.986588693839646,
+      "max_close_equity_drawdown_dollars": 22836.04235620117,
+      "max_close_equity_drawdown_pct": 17.65397004301828,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 62726.46833202685,
+      "gross_price_pnl": 59307.96975708008,
+      "commission": 49.439599445944225,
+      "slippage": 123.61382560728623,
+      "cash_dividends": 3591.5519999999997,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 671,
+      "mean_holding_calendar_days": 976.0,
+      "longest_holding_calendar_days": 976,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 24010.435387624937,
+          "return_pct": 24.01043538762493
+        },
+        {
+          "year": 2025,
+          "net": 20521.072198242196,
+          "return_pct": 16.54785916531829
+        },
+        {
+          "year": 2026,
+          "net": 18194.96074615972,
+          "return_pct": 12.588923377381889
+        }
+      ],
+      "symbol": "SPY",
+      "period": "later_diagnostic",
+      "data_sha256": "72f788e51dee4199c2513a4bea160aba874430b0d5b578de912ad935c5a372cb"
+    },
+    {
+      "requested_start": "2011-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2011-01-03",
+      "actual_end": "2026-09-04",
+      "sessions": 3942,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 380364.4026917663,
+      "net_pnl": 280364.4026917663,
+      "total_return_pct": 280.3644026917663,
+      "cagr_pct": 8.900135545225819,
+      "max_close_equity_drawdown_dollars": 42910.84431847505,
+      "max_close_equity_drawdown_pct": 13.328431122767388,
+      "closed_trades": 195,
+      "winning_trades": 147,
+      "losing_trades": 48,
+      "win_rate_pct": 75.38461538461539,
+      "profit_factor": 2.253684827187053,
+      "expectancy": 1437.7661676500838,
+      "gross_price_pnl": 291734.59774398804,
+      "commission": 8359.043567438337,
+      "slippage": 8359.046484783521,
+      "cash_dividends": 5347.895,
+      "calendar_exposure_pct": 17.700506727240956,
+      "prior_close_exposed_sessions": 713,
+      "mean_holding_calendar_days": 5.194871794871795,
+      "longest_holding_calendar_days": 20,
+      "cancelled_unaffordable_entries": 1,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2011,
+          "net": 13749.876788816415,
+          "return_pct": 13.749876788816406
+        },
+        {
+          "year": 2012,
+          "net": -2852.6583045426814,
+          "return_pct": -2.5078341929449466
+        },
+        {
+          "year": 2013,
+          "net": 15959.353182855324,
+          "return_pct": 14.391121257129203
+        },
+        {
+          "year": 2014,
+          "net": 17548.226995803678,
+          "return_pct": 13.833124106372763
+        },
+        {
+          "year": 2015,
+          "net": 30829.593845308205,
+          "return_pct": 21.3494247634181
+        },
+        {
+          "year": 2016,
+          "net": 13014.308400065609,
+          "return_pct": 7.426800306597103
+        },
+        {
+          "year": 2017,
+          "net": 18264.256422716775,
+          "return_pct": 9.702195199537144
+        },
+        {
+          "year": 2018,
+          "net": 13231.47862578521,
+          "return_pct": 6.407093674309383
+        },
+        {
+          "year": 2019,
+          "net": 8135.495653154154,
+          "return_pct": 3.702253309728043
+        },
+        {
+          "year": 2020,
+          "net": 27364.982502503786,
+          "return_pct": 12.00850917813221
+        },
+        {
+          "year": 2021,
+          "net": 38526.66433303899,
+          "return_pct": 15.093998823445043
+        },
+        {
+          "year": 2022,
+          "net": 6623.194880473893,
+          "return_pct": 2.2545390250209296
+        },
+        {
+          "year": 2023,
+          "net": 24792.764224724902,
+          "return_pct": 8.253394008896597
+        },
+        {
+          "year": 2024,
+          "net": 37513.16456532286,
+          "return_pct": 11.535855539812534
+        },
+        {
+          "year": 2025,
+          "net": 24770.71445078909,
+          "return_pct": 6.82951929959732
+        },
+        {
+          "year": 2026,
+          "net": -7107.013875049888,
+          "return_pct": -1.834203394413314
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "full",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2011-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2011-01-03",
+      "actual_end": "2026-09-04",
+      "sessions": 3942,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 1301731.5249793024,
+      "net_pnl": 1201731.5249793024,
+      "total_return_pct": 1201.7315249793025,
+      "cagr_pct": 17.795549334586823,
+      "max_close_equity_drawdown_dollars": 246826.57600000006,
+      "max_close_equity_drawdown_pct": 33.75931772538094,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 1201731.5249793024,
+      "gross_price_pnl": 1157998.5961914062,
+      "commission": 134.96181605895998,
+      "slippage": 134.97339604491674,
+      "cash_dividends": 44002.864,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 3941,
+      "mean_holding_calendar_days": 5723.0,
+      "longest_holding_calendar_days": 5723,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2011,
+          "net": 2373.59456935052,
+          "return_pct": 2.3735945693505123
+        },
+        {
+          "year": 2012,
+          "net": 17654.504016601568,
+          "return_pct": 17.245173514584323
+        },
+        {
+          "year": 2013,
+          "net": 41372.91519335938,
+          "return_pct": 34.4693581592749
+        },
+        {
+          "year": 2014,
+          "net": 29199.793596679665,
+          "return_pct": 18.09145612716252
+        },
+        {
+          "year": 2015,
+          "net": 16941.217064453143,
+          "return_pct": 8.888323873169025
+        },
+        {
+          "year": 2016,
+          "net": 13732.260790039058,
+          "return_pct": 6.6166169608602
+        },
+        {
+          "year": 2017,
+          "net": 67283.5045654297,
+          "return_pct": 30.407285914558923
+        },
+        {
+          "year": 2018,
+          "net": -163.93599999998696,
+          "return_pct": -0.05681219006977711
+        },
+        {
+          "year": 2019,
+          "net": 104521.41864453122,
+          "return_pct": 36.24259576575359
+        },
+        {
+          "year": 2020,
+          "net": 178721.61390429683,
+          "return_pct": 45.4860440507276
+        },
+        {
+          "year": 2021,
+          "net": 149647.43567578134,
+          "return_pct": 26.178757748241676
+        },
+        {
+          "year": 2022,
+          "net": -225734.65277343756,
+          "return_pct": -31.296209536496043
+        },
+        {
+          "year": 2023,
+          "net": 254233.32696874999,
+          "return_pct": 51.30329868951791
+        },
+        {
+          "year": 2024,
+          "net": 182347.44632031256,
+          "return_pct": 24.320029560635902
+        },
+        {
+          "year": 2025,
+          "net": 184645.97658203111,
+          "return_pct": 19.809027594855166
+        },
+        {
+          "year": 2026,
+          "net": 184955.10586112388,
+          "return_pct": 16.561516046978042
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "full",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2011-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2011-01-03",
+      "actual_end": "2026-09-04",
+      "sessions": 3942,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 316058.91135462734,
+      "net_pnl": 216058.91135462734,
+      "total_return_pct": 216.05891135462736,
+      "cagr_pct": 7.620561149841398,
+      "max_close_equity_drawdown_dollars": 39154.622823319136,
+      "max_close_equity_drawdown_pct": 14.098026189057622,
+      "closed_trades": 195,
+      "winning_trades": 143,
+      "losing_trades": 52,
+      "win_rate_pct": 73.33333333333333,
+      "profit_factor": 2.0339831613445423,
+      "expectancy": 1107.9944172032172,
+      "gross_price_pnl": 263544.16232299805,
+      "commission": 14946.302023524124,
+      "slippage": 37365.82094484658,
+      "cash_dividends": 4826.871999999999,
+      "calendar_exposure_pct": 17.700506727240956,
+      "prior_close_exposed_sessions": 713,
+      "mean_holding_calendar_days": 5.194871794871795,
+      "longest_holding_calendar_days": 20,
+      "cancelled_unaffordable_entries": 1,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2011,
+          "net": 12031.83151052898,
+          "return_pct": 12.031831510528978
+        },
+        {
+          "year": 2012,
+          "net": -3895.126393256811,
+          "return_pct": -3.476803280584362
+        },
+        {
+          "year": 2013,
+          "net": 14449.65886163991,
+          "return_pct": 13.362399793825364
+        },
+        {
+          "year": 2014,
+          "net": 15248.79146645304,
+          "return_pct": 12.439223231285501
+        },
+        {
+          "year": 2015,
+          "net": 26281.774637374474,
+          "return_pct": 19.067540898731018
+        },
+        {
+          "year": 2016,
+          "net": 10189.63693098689,
+          "return_pct": 6.208766472691019
+        },
+        {
+          "year": 2017,
+          "net": 15281.476855458925,
+          "return_pct": 8.767011545959447
+        },
+        {
+          "year": 2018,
+          "net": 9492.92158423859,
+          "return_pct": 5.007130930043591
+        },
+        {
+          "year": 2019,
+          "net": 6004.539165088645,
+          "return_pct": 3.016129217282426
+        },
+        {
+          "year": 2020,
+          "net": 22669.510915864143,
+          "return_pct": 11.053687562186587
+        },
+        {
+          "year": 2021,
+          "net": 31635.526687591395,
+          "return_pct": 13.890155882348253
+        },
+        {
+          "year": 2022,
+          "net": 392.37270809171605,
+          "return_pct": 0.15126716060291923
+        },
+        {
+          "year": 2023,
+          "net": 18522.731748221297,
+          "return_pct": 7.130080803507832
+        },
+        {
+          "year": 2024,
+          "net": 28291.504605533904,
+          "return_pct": 10.16562363832978
+        },
+        {
+          "year": 2025,
+          "net": 17529.820231406833,
+          "return_pct": 5.717541783413238
+        },
+        {
+          "year": 2026,
+          "net": -8068.060160594585,
+          "return_pct": -2.489166551884958
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "full",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2011-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2011-01-03",
+      "actual_end": "2026-09-04",
+      "sessions": 3942,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 1300368.0828828167,
+      "net_pnl": 1200368.0828828167,
+      "total_return_pct": 1200.3680828828167,
+      "cagr_pct": 17.787671357075,
+      "max_close_equity_drawdown_dollars": 246685.04700000002,
+      "max_close_equity_drawdown_pct": 33.75888231793957,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 1200368.0828828167,
+      "gross_price_pnl": 1157334.6061706543,
+      "commission": 269.676272624588,
+      "slippage": 674.480015212987,
+      "cash_dividends": 43977.633,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 3941,
+      "mean_holding_calendar_days": 5723.0,
+      "longest_holding_calendar_days": 5723,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2011,
+          "net": 2324.3185840821825,
+          "return_pct": 2.3243185840821745
+        },
+        {
+          "year": 2012,
+          "net": 17644.3810211792,
+          "return_pct": 17.2435851665901
+        },
+        {
+          "year": 2013,
+          "net": 41349.19219152833,
+          "return_pct": 34.466650324277516
+        },
+        {
+          "year": 2014,
+          "net": 29183.050595764158,
+          "return_pct": 18.090399192995733
+        },
+        {
+          "year": 2015,
+          "net": 16931.50306384277,
+          "return_pct": 8.887884149650581
+        },
+        {
+          "year": 2016,
+          "net": 13724.38678729246,
+          "return_pct": 6.616316341976214
+        },
+        {
+          "year": 2017,
+          "net": 67244.92457427981,
+          "return_pct": 30.405990125678663
+        },
+        {
+          "year": 2018,
+          "net": -163.8420000000042,
+          "return_pct": -0.056810333545720404
+        },
+        {
+          "year": 2019,
+          "net": 104461.48663842771,
+          "return_pct": 36.24141074722884
+        },
+        {
+          "year": 2020,
+          "net": 178619.1359146728,
+          "return_pct": 45.484952422191505
+        },
+        {
+          "year": 2021,
+          "net": 149561.62865991215,
+          "return_pct": 26.178325903465716
+        },
+        {
+          "year": 2022,
+          "net": -225605.2177661133,
+          "return_pct": -31.295800383612903
+        },
+        {
+          "year": 2023,
+          "net": 254087.5509785156,
+          "return_pct": 51.30232245113113
+        },
+        {
+          "year": 2024,
+          "net": 182242.88929833984,
+          "return_pct": 24.319723696121276
+        },
+        {
+          "year": 2025,
+          "net": 184540.10159545892,
+          "return_pct": 19.80882719928514
+        },
+        {
+          "year": 2026,
+          "net": 184222.59274563403,
+          "return_pct": 16.505249035499105
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "full",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 116921.9490112792,
+      "net_pnl": 16921.949011279197,
+      "total_return_pct": 16.9219490112792,
+      "cagr_pct": 6.025009817809157,
+      "max_close_equity_drawdown_dollars": 13169.16745742751,
+      "max_close_equity_drawdown_pct": 11.604916707179648,
+      "closed_trades": 31,
+      "winning_trades": 22,
+      "losing_trades": 9,
+      "win_rate_pct": 70.96774193548387,
+      "profit_factor": 2.0457492846967034,
+      "expectancy": 545.8693229444902,
+      "gross_price_pnl": 17910.759185791016,
+      "commission": 651.7879977021003,
+      "slippage": 651.788176809624,
+      "cash_dividends": 314.76599999999996,
+      "calendar_exposure_pct": 17.93032786885246,
+      "prior_close_exposed_sessions": 121,
+      "mean_holding_calendar_days": 5.645161290322581,
+      "longest_holding_calendar_days": 20,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 11510.146902387583,
+          "return_pct": 11.510146902387586
+        },
+        {
+          "year": 2025,
+          "net": 7594.026014367526,
+          "return_pct": 6.81016591343484
+        },
+        {
+          "year": 2026,
+          "net": -2182.223905475912,
+          "return_pct": -1.832197690505033
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "later_diagnostic",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "base_1bp_fee_1bp_slippage",
+        "commission_rate": 0.0001,
+        "slippage_rate": 0.0001
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 173939.18888409217,
+      "net_pnl": 73939.18888409217,
+      "total_return_pct": 73.93918888409218,
+      "cagr_pct": 23.016243567611095,
+      "max_close_equity_drawdown_dollars": 28353.869075683586,
+      "max_close_equity_drawdown_pct": 21.55876404470714,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 73939.18888409217,
+      "gross_price_pnl": 72330.72592163086,
+      "commission": 25.982157115714415,
+      "slippage": 25.982880422971448,
+      "cash_dividends": 1660.4279999999999,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 671,
+      "mean_holding_calendar_days": 976.0,
+      "longest_holding_calendar_days": 976,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 24983.999638467867,
+          "return_pct": 24.983999638467868
+        },
+        {
+          "year": 2025,
+          "net": 24457.121898193363,
+          "return_pct": 19.56820230504601
+        },
+        {
+          "year": 2026,
+          "net": 24498.067347430944,
+          "return_pct": 16.393123322097814
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "later_diagnostic",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "ibs_daily_reddit",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 113541.65684760951,
+      "net_pnl": 13541.656847609513,
+      "total_return_pct": 13.541656847609511,
+      "cagr_pct": 4.867376386689171,
+      "max_close_equity_drawdown_dollars": 13231.169188124462,
+      "max_close_equity_drawdown_pct": 11.815066136668696,
+      "closed_trades": 31,
+      "winning_trades": 20,
+      "losing_trades": 11,
+      "win_rate_pct": 64.51612903225806,
+      "profit_factor": 1.7989745037452298,
+      "expectancy": 436.82764024546816,
+      "gross_price_pnl": 17725.359375,
+      "commission": 1283.6523131574215,
+      "slippage": 3209.1352142330356,
+      "cash_dividends": 309.08500000000004,
+      "calendar_exposure_pct": 17.93032786885246,
+      "prior_close_exposed_sessions": 121,
+      "mean_holding_calendar_days": 5.645161290322581,
+      "longest_holding_calendar_days": 20,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 0,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 10150.955670435476,
+          "return_pct": 10.150955670435469
+        },
+        {
+          "year": 2025,
+          "net": 6281.24895580759,
+          "return_pct": 5.7024007804350685
+        },
+        {
+          "year": 2026,
+          "net": -2890.547778633554,
+          "return_pct": -2.4826016031496145
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "later_diagnostic",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    },
+    {
+      "requested_start": "2024-01-01",
+      "requested_end": "2026-09-04",
+      "actual_start": "2024-01-02",
+      "actual_end": "2026-09-04",
+      "sessions": 672,
+      "strategy": "buy_and_hold",
+      "costs": {
+        "name": "stress_2bp_fee_5bp_slippage",
+        "commission_rate": 0.0002,
+        "slippage_rate": 0.0005
+      },
+      "initial_cash": 100000.0,
+      "ending_equity": 173809.28099174265,
+      "net_pnl": 73809.28099174265,
+      "total_return_pct": 73.80928099174265,
+      "cagr_pct": 22.98185345776438,
+      "max_close_equity_drawdown_dollars": 28353.869075683586,
+      "max_close_equity_drawdown_pct": 21.566451900464642,
+      "closed_trades": 1,
+      "winning_trades": 1,
+      "losing_trades": 0,
+      "win_rate_pct": 100.0,
+      "profit_factor": null,
+      "expectancy": 73809.28099174265,
+      "gross_price_pnl": 72330.72592163086,
+      "commission": 51.9585277733551,
+      "slippage": 129.91440211485724,
+      "cash_dividends": 1660.4279999999999,
+      "calendar_exposure_pct": 100.0,
+      "prior_close_exposed_sessions": 671,
+      "mean_holding_calendar_days": 976.0,
+      "longest_holding_calendar_days": 976,
+      "cancelled_unaffordable_entries": 0,
+      "terminal_liquidations": 1,
+      "unexecuted_final_signal": null,
+      "yearly": [
+        {
+          "year": 2024,
+          "net": 24937.11668147733,
+          "return_pct": 24.937116681477335
+        },
+        {
+          "year": 2025,
+          "net": 24457.121898193363,
+          "return_pct": 19.575545320567866
+        },
+        {
+          "year": 2026,
+          "net": 24415.042412071954,
+          "return_pct": 16.342693429272792
+        }
+      ],
+      "symbol": "QQQ",
+      "period": "later_diagnostic",
+      "data_sha256": "fba53e4d814992a9f25a934cf3302c87a22f6d0c8fc02c10fe95e8dfd3fc99f7"
+    }
+  ],
+  "interpretation": "Retrospective research. Source adaptations/proxy are not exact replicas; no independent validation or live deployment."
+}

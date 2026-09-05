@@ -21,6 +21,7 @@ from app.main import (
 from app.models import (
     DEFAULT_USER_ID,
     Account,
+    PositionLifecycle,
     ProjectXTradeDaySync,
     ProjectXTradeEvent,
     TradeImportBatch,
@@ -53,6 +54,7 @@ def db_session():
             TradeImportBatch.__table__,
             ProjectXTradeEvent.__table__,
             ProjectXTradeDaySync.__table__,
+            PositionLifecycle.__table__,
         ],
     )
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -64,6 +66,7 @@ def db_session():
         Base.metadata.drop_all(
             bind=engine,
             tables=[
+                PositionLifecycle.__table__,
                 ProjectXTradeDaySync.__table__,
                 ProjectXTradeEvent.__table__,
                 TradeImportBatch.__table__,

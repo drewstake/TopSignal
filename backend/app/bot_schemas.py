@@ -487,6 +487,7 @@ class BotMarketAnalysisOut(BaseModel):
     candle_timestamp: str | None = None
     generated_at: str | None = None
     trade_evaluation: TradeEvaluationResultOut | None = None
+    collected_context: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_legacy_weight_aliases(self):

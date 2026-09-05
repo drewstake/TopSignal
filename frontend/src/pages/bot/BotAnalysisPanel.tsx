@@ -76,6 +76,7 @@ export function BotAnalysisPanel({
     [analysis, bot, hasDirectionalRead, marketSnapshot, minimumDirectionalBars],
   );
   const botLabel = bot?.symbol ?? bot?.contract_id ?? "Bot";
+  const collected = evaluation?.config.id === bot?.id ? evaluation?.analysis?.collected_context : null;
 
   return (
     <Card className="min-w-0">
@@ -128,6 +129,20 @@ export function BotAnalysisPanel({
         ) : (
           <AnalysisContent analysis={analysis} isStale={isStale} liveBarsBehind={liveBarsBehind} />
         )}
+        {collected && !loading && <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Collected decision context</h3><span className="text-xs text-app-muted">{formatTimestamp(collected.as_of)}</span></div>
+          <p className="mt-2 text-xs text-app-muted">Captured with this evaluation. Source freshness and missing data remain explicit.</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <Metric label="Scheduled event risk" value={collected.events?.news_risk ?? "Unknown"} />
+            <Metric label="Recorded order book" value={collected.order_book?.status === "fresh" ? `${formatPrice(collected.order_book.spread ?? null)} spread` : labelize(collected.order_book?.status ?? "missing")} />
+            <Metric label="Observed profile POC" value={formatPrice(collected.volume_profile?.poc ?? null)} />
+          </div>
+          {collected.events?.reason && <p className="mt-3 text-xs text-app-muted">{collected.events.reason}</p>}
+          <div className="mt-3 flex flex-wrap gap-2">{collected.related_markets?.items?.map(item => <span key={item.symbol} className="rounded-lg border border-app-border px-2 py-1 text-xs">{item.symbol} · {item.status}{item.status === "fresh" ? item.change_bps != null ? ` · ${item.change_bps.toFixed(2)} bps` : item.change_pct != null ? ` · ${item.change_pct.toFixed(2)}%` : "" : ""}</span>)}</div>
+          {Boolean(collected.events?.headlines?.length) && <div className="mt-3 space-y-2"><p className="text-xs font-medium">Recent publications available at this decision</p>{collected.events?.headlines?.slice(0, 3).map(headline => <p key={headline.id} className="text-xs text-app-muted">{headline.title}<span className="ml-2">{labelize(headline.source)} · {formatTimestamp(headline.published_at)}</span></p>)}</div>}
+          {collected.volume_profile?.poc !== undefined && <p className="mt-3 text-xs text-app-muted">{collected.volume_profile.reason} Value area: {formatPrice(collected.volume_profile.value_area_low ?? null)}–{formatPrice(collected.volume_profile.value_area_high ?? null)}. Delta: {formatPrice(collected.volume_profile.cumulative_delta ?? null)}.</p>}
+          <a href={`/data?account=${bot?.account_id}`} className="mt-3 inline-block text-xs text-app-accent underline">Manage market data and review decision outcomes</a>
+        </section>}
       </CardContent>
     </Card>
   );

@@ -1303,6 +1303,11 @@ def _evaluate_bot_config_impl(
             raise ValueError("bot_run_changed_during_market_fetch")
 
     analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    from .market_context_bundle import build_collected_context
+    collected_context = build_collected_context(
+        db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
+    )
+    analysis["collected_context"] = collected_context
     evaluation_day_pnl = (
         _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
         if signal.action in {"BUY", "SELL"}
@@ -1314,6 +1319,7 @@ def _evaluate_bot_config_impl(
         signal=signal,
         analysis=analysis,
         current_day_pnl=evaluation_day_pnl,
+        collected_context=collected_context,
         tick_size=float(instrument_spec.tick_size) if instrument_spec is not None else None,
         tick_value=float(instrument_spec.tick_value) if instrument_spec is not None else None,
         point_value=instrument_spec.point_value if instrument_spec is not None else None,
@@ -1362,6 +1368,14 @@ def _evaluate_bot_config_impl(
     )
     db.add(decision)
     db.flush()
+
+    # Capture the analysis before risk gates/order submission. The auxiliary
+    # writer receives it only after this transaction successfully commits.
+    try:
+        from .decision_research import stage_decision_snapshot
+        stage_decision_snapshot(db, decision=decision, config=config, signal=signal, analysis=analysis, candles=candles)
+    except Exception:
+        pass
 
     risk_events: list[BotRiskEvent] = []
     order_attempt: BotOrderAttempt | None = None
@@ -1718,6 +1732,12 @@ def _evaluate_bot_config_impl(
         order_attempt_id=int(order_attempt.id) if order_attempt is not None else None,
         duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
     )
+    try:
+        from .decision_research import stage_routing_disposition
+        stage_routing_disposition(db, decision=decision, evaluation_status=evaluation_status,
+                                  order_attempt=order_attempt, risk_events=risk_events)
+    except Exception:
+        pass
     return EvaluationResult(
         status=evaluation_status,
         correlation_id=correlation_id,
@@ -11703,6 +11723,7 @@ def build_signal_trade_evaluation(
     signal: SignalResult,
     analysis: dict[str, Any],
     current_day_pnl: float | None = None,
+    collected_context: dict[str, Any] | None = None,
     tick_size: float | None = None,
     tick_value: float | None = None,
     point_value: float | None = None,
@@ -11749,7 +11770,7 @@ def build_signal_trade_evaluation(
         current_price=float(closed_candles[-1].close_price),
         timestamp=closed_candles[-1].candle_timestamp,
         market_regime=_infer_trade_plan_market_regime(config=config, signal=signal, analysis=analysis),
-        news_risk="unknown",
+        news_risk=(collected_context or {}).get("events", {}).get("news_risk", "unknown"),
     )
     if market_context is None:
         return None

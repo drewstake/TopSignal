@@ -166,6 +166,7 @@ def init_db(*, force: bool = False):
 
     # Import models so SQLAlchemy can register all mapped tables before create_all.
     from . import models  # noqa: F401
+    from . import market_event_models, market_observation_models  # noqa: F401
 
     application_tables = [
         table

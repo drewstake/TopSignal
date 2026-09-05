@@ -33,7 +33,7 @@ describe("BotBacktestPanel", () => {
   it("offers TopBot Adaptive replay without a strategy picker or date inputs", () => {
     const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} />);
 
-    expect(markup).toContain("Run Stored History Replay");
+    expect(markup).toContain("Run Backtest");
     expect(markup).not.toContain("Full History");
     expect(markup).not.toContain("Backtest strategy");
     expect(markup).not.toContain("<select");
@@ -46,7 +46,6 @@ describe("BotBacktestPanel", () => {
     expect(markup).not.toContain('type="date"');
     expect(markup).toContain("Fees / contract / side");
     expect(markup).toContain('value="0.61"');
-    expect(markup).toContain("$1.22 round trip per contract; slippage is separate.");
   });
 
   it("explains and disables server replay jobs in Demo Mode", () => {

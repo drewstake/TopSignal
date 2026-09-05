@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+from uuid import uuid4
 from typing import Any, AsyncContextManager, Callable, Mapping
 
 from .projectx_client import ProjectXClient, ProjectXClientError, validate_projectx_url
@@ -233,6 +234,18 @@ class MarketByPriceBook:
             "reset": bool(reset),
         }
 
+    def capture_bbo(self) -> dict[str, Any]:
+        # A two-sided spread is usable only when both sides were observed
+        # recently relative to the latest provider update. No depth is inferred.
+        if not self._bids or not self._asks or self._last_timestamp is None:
+            return {}
+        bid = self._bids[max(self._bids)]
+        ask = self._asks[min(self._asks)]
+        if max((self._last_timestamp - bid.timestamp).total_seconds(),
+               (self._last_timestamp - ask.timestamp).total_seconds()) > 2:
+            return {}
+        return {"bids": [{"price": _json_number(bid.price)}], "asks": [{"price": _json_number(ask.price)}]}
+
     def _is_duplicate(self, fingerprint: tuple[Any, ...]) -> bool:
         return fingerprint in self._recent_fingerprint_set
 
@@ -333,6 +346,22 @@ class ProjectXMarketDepthSession:
         self._next_invocation_id = 1
         self._connection_state = "disconnected"
         self._closed = False
+        self._observation_user_id: str | None = None
+        self._observation_epoch = uuid4().hex
+
+    def set_observation_user(self, user_id: str) -> None:
+        self._observation_user_id = user_id
+
+    def _observe(self, method: str, **kwargs: Any) -> None:
+        # Research storage is an auxiliary nonblocking queue. Even import or
+        # persistence failures must not affect book state or order execution.
+        if not self._observation_user_id:
+            return
+        try:
+            from . import market_observations
+            getattr(market_observations, method)(user_id=self._observation_user_id, **kwargs)
+        except Exception:
+            pass
 
     def update_client(self, client: ProjectXClient) -> None:
         # A newly resolved client carries any credential rotation into the next reconnect.
@@ -541,6 +570,27 @@ class ProjectXMarketDepthSession:
         connection_generation: int | None = None,
     ) -> None:
         frame_type = frame.get("type")
+        if frame_type == 1 and str(frame.get("target") or "").casefold() == "gatewaytrade":
+            arguments = frame.get("arguments")
+            if not isinstance(arguments, list) or len(arguments) < 2 or not isinstance(arguments[0], str):
+                return
+            contract_id = arguments[0].strip()
+            async with self._send_lock:
+                if connection_generation is not None and (self._websocket is None or self._connection_generation != connection_generation):
+                    return
+                async with self._lock:
+                    if contract_id not in self._channels or not futures_session_is_open(self._now(), symbol=contract_id):
+                        return
+                    for entry in _depth_entries(arguments[1]):
+                        self._observe("capture_trade", contract_id=contract_id, payload=entry)
+            return
+        if frame_type == 3 and str(frame.get("invocationId") or "").startswith("observations-"):
+            if connection_generation is not None and not await self._connection_is_active(connection_generation):
+                return
+            if frame.get("error"):
+                contract_id = str(frame.get("invocationId")).split("|", 1)[-1]
+                self._observe("capture_gap", contract_id=contract_id, reason="trade_subscription_rejected", source_epoch=self._observation_epoch)
+            return
         if frame_type == 1 and str(frame.get("target") or "").casefold() == _DEPTH_TARGET.casefold():
             arguments = frame.get("arguments")
             if not isinstance(arguments, list) or len(arguments) < 2:
@@ -795,6 +845,13 @@ class ProjectXMarketDepthSession:
             event_data = channel.book.apply(entry)
             if event_data is None:
                 return
+            if event_data.get("reset"):
+                # Provider resets can reuse timestamps and level values. The
+                # archive must retain each accepted rebuild, just as the live
+                # book clears its duplicate window at this epoch boundary.
+                self._observation_epoch = uuid4().hex
+            self._observe("capture_depth", contract_id=contract_id, entry=entry,
+                          snapshot=channel.book.capture_bbo(), source_epoch=self._observation_epoch)
             event_name = "snapshot" if "bids" in event_data else "update"
             event = {"event": event_name, "data": event_data}
             self._broadcast_to_channel_locked(channel, event)
@@ -802,12 +859,14 @@ class ProjectXMarketDepthSession:
     async def _clear_books_for_reconnect(self) -> None:
         async with self._lock:
             for channel in self._channels.values():
+                self._observe("capture_gap", contract_id=channel.book.contract_id, reason="connection_reset", source_epoch=self._observation_epoch)
                 snapshot = channel.book.clear_for_reconnect()
                 if snapshot is not None:
                     self._broadcast_to_channel_locked(
                         channel,
                         {"event": "snapshot", "data": snapshot},
                     )
+            self._observation_epoch = uuid4().hex
 
     async def _broadcast_state(self, state: str, *, message: str | None = None) -> None:
         async with self._lock:
@@ -927,6 +986,7 @@ class ProjectXMarketDepthSession:
                     contract_id,
                     current_generation,
                 )
+                await self._send_observation_subscription_locked(current_websocket, contract_id, current_generation, subscribe=True)
             except BaseException:
                 if (
                     self._websocket is current_websocket
@@ -950,6 +1010,21 @@ class ProjectXMarketDepthSession:
                 contract_id,
                 connection_generation,
             )
+            await self._send_observation_subscription_locked(websocket, contract_id, connection_generation, subscribe=False)
+
+    async def _send_observation_subscription_locked(self, websocket: Any, contract_id: str, generation: int, *, subscribe: bool) -> None:
+        if not self._observation_user_id:
+            return
+        try:
+            from .market_observations import enabled
+            if not enabled():
+                return
+            payload = {"type": 1, "target": "SubscribeContractTrades" if subscribe else "UnsubscribeContractTrades",
+                       "arguments": [contract_id], "invocationId": f"observations-{generation}-{int(subscribe)}|{contract_id}"}
+            async with asyncio.timeout(self._send_timeout_seconds):
+                await websocket.send(json.dumps(payload, separators=(",", ":")) + _SIGNALR_RECORD_SEPARATOR)
+        except Exception:
+            self._observe("capture_gap", contract_id=contract_id, reason="trade_subscription_transport_error", source_epoch=self._observation_epoch)
 
     async def _send_invocation_locked(
         self,
@@ -1082,6 +1157,8 @@ class ProjectXOrderBookRegistry:
                 session = self._sessions.get(user_id)
                 if session is None:
                     session = self._session_factory(client=client)
+                    if hasattr(session, "set_observation_user"):
+                        session.set_observation_user(user_id)
                     self._sessions[user_id] = session
                 else:
                     session.update_client(client)

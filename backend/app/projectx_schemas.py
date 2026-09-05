@@ -116,6 +116,12 @@ class ProjectXTradeOut(BaseModel):
     pnl: float | None = None
     order_id: str
     source_trade_id: str | None = None
+    mae: float | None = None
+    mfe: float | None = None
+    position_mae: float | None = None
+    position_mfe: float | None = None
+    excursion_scope: str = "unavailable"
+    excursion_source: str | None = None
 
 
 class ProjectXSizingBenchmarkOut(BaseModel):

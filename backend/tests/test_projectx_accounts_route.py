@@ -30,7 +30,7 @@ from app.main import (
     unarchive_topstep_live_account,
     update_projectx_account_trade_data_source,
 )
-from app.models import Account, ProjectXTradeEvent, ProviderCredential
+from app.models import Account, PositionLifecycle, ProjectXTradeEvent, ProviderCredential
 from app.projectx_schemas import (
     ProjectXAccountArchiveIn,
     ProjectXAccountRenameIn,
@@ -47,14 +47,14 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__, PositionLifecycle.__table__])
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine, tables=[ProjectXTradeEvent.__table__, Account.__table__])
+        Base.metadata.drop_all(bind=engine, tables=[PositionLifecycle.__table__, ProjectXTradeEvent.__table__, Account.__table__])
         engine.dispose()
 
 
