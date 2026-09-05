@@ -107,10 +107,12 @@ a separate replay and subsequent evaluation on new data.
 
 These generated files remain in ignored local storage. The UI export buttons
 produce the same ledger fields and derived statistics for any result it displays.
-To capture the current v4 ledger from the repository root without overwriting v3:
+To capture the current code-owned strategy at corrected $0.61-per-side fees,
+choose fresh output paths from the repository root. This does not reproduce the
+historical v3/v4 strategy or its higher fee assumption:
 
 ```powershell
-backend\.venv\Scripts\python backend\tools\benchmark_topbot_replay.py --days 3000 --holdout --output backend/storage/databento/topbot-v4-replay-report.json --trades-output backend/storage/databento/topbot-v4-trades.json
+backend\.venv\Scripts\python backend\tools\benchmark_topbot_replay.py --days 3000 --holdout --commission-per-side 0.61 --output backend/storage/research/current-fee061-replay-report.json --trades-output backend/storage/research/current-fee061-trades.json
 ```
 
 Implementation: `frontend/src/pages/bot/backtestAnalytics.ts` and

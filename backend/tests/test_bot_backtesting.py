@@ -895,6 +895,31 @@ def test_fees_slippage_quantity_and_tick_value_are_applied_to_both_sides():
     assert result["equity_curve"][-1]["equity"] == 50_008
 
 
+@pytest.mark.parametrize("quantity", [1, 5, 10, 20])
+def test_default_mnq_fees_charge_122_cents_round_trip_per_contract(quantity):
+    request = BotBacktestIn()
+    assert request.commission_per_contract == 0.61
+    assert BotBacktestIn(commission_per_contract=0).commission_per_contract == 0
+    bars = [
+        _candle(BASE_TIME, close_price=100),
+        _candle(BASE_TIME + timedelta(minutes=5), open_price=100,
+                high_price=100, low_price=100, close_price=100),
+    ]
+    result = _run(
+        bars,
+        config=_config(order_size=quantity, max_contracts=quantity, max_open_position=quantity),
+        evaluator=_scripted_evaluator({BASE_TIME: {"action": "BUY", "price": 100}}),
+        commission_per_contract=request.commission_per_contract,
+        slippage_ticks=0, tick_size=0.25, tick_value=0.5,
+    )
+    trade = result["trades"][0]
+    assert trade["gross_pnl"] == 0
+    assert trade["commission"] == pytest.approx(1.22 * quantity)
+    assert trade["net_pnl"] == pytest.approx(-1.22 * quantity)
+    assert result["metrics"]["total_commission"] == pytest.approx(1.22 * quantity)
+    assert result["equity_curve"][-1]["equity"] == pytest.approx(50_000 - 1.22 * quantity)
+
+
 def test_opposite_targetless_signal_flattens_without_fictitious_reversal_entry():
     bars = [
         _candle(BASE_TIME, close_price=100),

@@ -345,6 +345,9 @@ def make_engine_class(replay, fixture, variant):
 
 
 def main() -> int:
+    sys.path.insert(0, str(BACKEND))
+    from app.trading_costs import MNQ_FEES_PER_CONTRACT_PER_SIDE
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=BACKEND / "tools/fixtures/topbot_research.py")
     parser.add_argument("--cache-dir", type=Path, default=BACKEND / "storage/databento")
@@ -353,7 +356,8 @@ def main() -> int:
     parser.add_argument("--variants", nargs="+", required=True)
     parser.add_argument("--periods", nargs="+", choices=("full", "development", "diagnostic"), default=["full", "development", "diagnostic"])
     parser.add_argument("--slippage-ticks", type=float, nargs="+", default=[1, 2, 4])
-    parser.add_argument("--commission-per-side", type=float, default=1.2)
+    parser.add_argument("--commission-per-side", type=float, default=MNQ_FEES_PER_CONTRACT_PER_SIDE,
+                        help="all transaction fees per contract per side; default 0.61 ($1.22 round trip)")
     parser.add_argument("--execution-minutes", type=int, choices=(1, 5), default=1)
     parser.add_argument("--entry-delay-minutes", type=int, choices=(0, 1), default=0,
                         help="additional observed-minute entry delay stress; exits keep normal timing")

@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .trade_plan_schemas import TradeEvaluationResultOut
+from .trading_costs import MNQ_FEES_PER_CONTRACT_PER_SIDE
 
 
 TimeframeUnit = Literal["second", "minute", "hour", "day", "week", "month"]
@@ -533,7 +534,10 @@ class BotBacktestIn(BaseModel):
     strategy_type: BotStrategyType | None = None
     instrument: BotBacktestInstrument | None = None
     starting_balance: float = Field(default=50_000, gt=0, le=1_000_000_000)
-    commission_per_contract: float = Field(default=0, ge=0, le=10_000)
+    commission_per_contract: float = Field(
+        default=MNQ_FEES_PER_CONTRACT_PER_SIDE, ge=0, le=10_000,
+        description="Total transaction fees per contract per side, charged on entry and exit; excludes slippage. Defaults to TopstepX MNQ.",
+    )
     slippage_ticks: float = Field(default=0, ge=0, le=1_000)
     force_close_at_end: bool = True
 

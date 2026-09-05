@@ -152,7 +152,8 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
             onChange={(value) => setForm((current) => ({ ...current, startingBalance: value }))}
           />
           <BacktestInput
-            label="Commission / contract"
+            label="Fees / contract / side"
+            hint={`Commission, exchange and regulatory fees. ${formatCurrency(Number(form.commissionPerContract) * 2)} round trip per contract; slippage is separate.`}
             type="number"
             min="0"
             step="0.01"
@@ -201,16 +202,19 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
 
 function BacktestInput({
   label,
+  hint,
   onChange,
   ...inputProps
 }: {
   label: string;
+  hint?: string;
   onChange: (value: string) => void;
 } & Omit<ComponentProps<typeof Input>, "onChange">) {
   return (
     <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
       <span>{label}</span>
-      <Input {...inputProps} onChange={(event) => onChange(event.target.value)} />
+      <Input {...inputProps} aria-label={label} onChange={(event) => onChange(event.target.value)} />
+      {hint && <span className="block text-[11px] font-normal normal-case tracking-normal">{hint}</span>}
     </label>
   );
 }
@@ -468,7 +472,7 @@ function Assumptions({ result }: { result: BotBacktestResult }) {
         <Assumption label="Bracket placement" value={humanize(assumptions.bracket_rule)} />
         <Assumption label="Final position" value={humanize(assumptions.final_position_handling)} />
         <Assumption label="Session timezone" value={assumptions.timezone} />
-        <Assumption label="Commission" value={`${formatCurrency(assumptions.commission_per_contract)} / contract`} />
+        <Assumption label="Transaction fees" value={`${formatCurrency(assumptions.commission_per_contract)} / contract / side (${formatCurrency(assumptions.commission_per_contract * 2)} round trip)`} />
         <Assumption label="Slippage" value={`${numberFormatter.format(assumptions.slippage_ticks)} tick${assumptions.slippage_ticks === 1 ? "" : "s"}`} />
         <Assumption label="Tick size" value={numberFormatter.format(assumptions.tick_size)} />
         <Assumption label="Tick value" value={formatCurrency(assumptions.tick_value)} />
@@ -519,7 +523,8 @@ function PeriodResults({ title, rows }: { title: string; rows: BotBacktestPeriod
 }
 
 function buildDefaultForm(): BotBacktestFormState {
-  return { startingBalance: "50000", commissionPerContract: "1.20", slippageTicks: "1" };
+  // TopstepX MNQ total fees: $1.22 round trip, charged half on each side.
+  return { startingBalance: "50000", commissionPerContract: "0.61", slippageTicks: "1" };
 }
 
 function formatCurrency(value: number): string {

@@ -1,5 +1,11 @@
 # TopBot Adaptive v5
 
+**Fee correction:** TopstepX MNQ defaults are now $0.61 per side ($1.22 round
+trip). The corrected app replay returns -$5,357.50 net, with +$2,186.78 on longs
+and -$7,544.28 on shorts. The comparisons below retain their original, overstated
+$1.20-per-side costs. See [the corrected fee report](topbot-fee-correction.md)
+for both application and observed-minute research results.
+
 TopBot runs one MNQ trend-pullback setup with a long bias. There are no votes,
 quality-score thresholds, benchmark instruments or operator tuning controls.
 The code preset is in `backend/app/services/topbot_strategy.py`, revision

@@ -2,12 +2,17 @@
 
 Audited from commit `592791b43c57a8593451837ce2acb15a7a706465`, with the
 calendar and research roll-reader changes described below in the working tree.
-No broker credentials, orders, subscriptions, or paid data requests were used.
+The initial local audit used no broker credentials or provider requests. The
+separately authorized ProjectX capture and structural QA are recorded below;
+no orders, purchases, or subscription changes were made.
 
 ## Available data and prior exposure
 
-The original cache is `backend/storage/databento`. Its only root is MNQ. Both
-source ZIPs were rehashed and match the current manifest:
+The original cache was `backend/storage/databento`; its initial format-4 state
+is now preserved at `backend/storage/databento-format4-reference`. The default
+directory now uses format 6, as documented in the migration section below.
+Its only root is MNQ. Both source ZIPs remain in the default directory and were
+rehashed against their original manifest:
 
 | Schema | Source archive | Bytes | SHA-256 |
 | --- | --- | ---: | --- |
@@ -99,7 +104,8 @@ other source/holiday issues. All six original timestamp arrays were strictly
 increasing. Lower-timeframe row equality does not mean replay behavior is
 unchanged, because replay session checks also use the calendar.
 
-Rebuild from repository root, without changing the original cache:
+The original v5 build command, run from the repository root with the v5 source
+state, was:
 
 ```powershell
 & backend/.venv/Scripts/python.exe backend/tools/build_databento_cache.py `
@@ -108,9 +114,85 @@ Rebuild from repository root, without changing the original cache:
   --cache-dir backend/storage/databento-calendar-v5 --json
 ```
 
-Current code rejects the original format-4 cache by design. Reproducing the
-original baseline requires its original source revision and original cache;
-new research commands must name the corrected cache explicitly.
+Later dated holiday corrections raised the cache format to 6; see the
+[calendar audit](topbot-calendar-audit-2026-09-04.md). Reproducing the original
+baseline still requires its original source revision and preserved format-4
+cache. The current default has since been migrated as follows.
+
+## Verified default-cache migration
+
+The default `backend/storage/databento/current.json` now publishes format 6,
+source fingerprint
+`e900ae486308de577f0945e21cd54821ed2b206c027761d1973563a9085b4d6a`, version
+`versions/e900ae486308-c79709614b36`. It was rebuilt offline from the same two
+original archives. The separate research cache remains
+`backend/storage/databento-calendar-v6`, version
+`versions/e900ae486308-02fc39a270fc`.
+
+Before publication, the old `current.json` and its entire referenced version
+were copied to the new `backend/storage/databento-format4-reference` directory.
+The resolved destination was verified inside the workspace and did not exist;
+the copy refused overwrites. Its **244 files, 279,712,883 bytes**, match the
+original hashes, including both copies of the original manifest. Archives were
+not duplicated: the preserved manifest keeps their original absolute paths in
+`backend/storage/databento/sources`. The original version also remains in place
+at `backend/storage/databento/versions/cd56b8dbe08a-63dce188103d`.
+
+Verification established:
+
+- All **60 NPY files across six timeframes** in the new default are byte-for-byte
+  identical to research v6. Their manifests differ only in build time and the
+  generated version-directory name.
+- The current cache reader opens all six default timeframes. Counts are
+  2,532,300 (1m), 504,384 (5m), 167,208 (15m), 41,472 (1h), 10,593 (4h), and
+  1,659 (session day).
+- All **272 pre-existing default files other than `current.json`** remain
+  unchanged, including source archives, old version files, and reports. No
+  pre-existing file was deleted or moved.
+- The entire research-v6 cache inventory remains unchanged. Settings,
+  credentials, services, and frozen source code were not changed for migration.
+- Exact cache/calendar modules from Git revision
+  `592791b43c57a8593451837ce2acb15a7a706465`, loaded in memory in an offline
+  process, successfully read all six original timeframes from the preserved
+  format-4 reference. This was a reader check, not another strategy replay.
+
+The first build failed when Windows denied the final new-directory publication;
+the default pointer remained on format 4. A bounded wrapper collected temporary
+objects before publication and allowed up to eight short permission retries.
+The second build succeeded in **60.90 seconds**, on its first publication
+attempt. This does not establish whether the first failure was an unreleased
+handle or a transient external lock. The wrapper changed no frozen source.
+Network access was disabled for both builds.
+
+The preserved failure log, successful build log, source hashes, complete
+before-inventory, and both reader/hash verification reports are under
+`backend/storage/research/default-cache-v6-migration-20260904`:
+`build.log`, `build-retry.log`, `before.json`, `verification.json`, and
+`legacy-reader-verification.json`. Current pointer hashes are:
+
+| Pointer | SHA-256 |
+| --- | --- |
+| Default v6 | `bb0e33e59f9cba705a872af16f63c22471005fc7883b4a9062c25d55dc91c8ee` |
+| Preserved v4 | `ad83c33ff31978dfbbc12cfb48d23219a9c51d3d4c7e0adb6aadaaded29b76a4` |
+| Separate research v6 | `14f9ac4c53b72c81c4c8900e3b22489c1b4111cf8cd921bc875b1bbfc79e9074` |
+
+For the original baseline, use a separate clean checkout of
+`592791b43c57a8593451837ce2acb15a7a706465`, the existing interpreter, and the
+preserved reference cache. From that original checkout's root, choose fresh
+output names and run:
+
+```powershell
+$legacyPython = 'C:\Users\drews\Development\TopSignal\backend\.venv\Scripts\python.exe'
+$legacyCache = 'C:\Users\drews\Development\TopSignal\backend\storage\databento-format4-reference'
+& $legacyPython backend/tools/benchmark_topbot_replay.py --cache-dir $legacyCache --days 3000 --holdout --output backend/storage/research/original-format4-baseline.json --trades-output backend/storage/research/original-format4-trades.json
+```
+
+That original CLI hardcodes **$1.20 per side** and has no commission override
+flag. It reproduces the historical higher-cost baseline, not today's base fee.
+For current-source comparisons, use format 6 and explicit **$0.61 per side**;
+the [fee correction](topbot-fee-correction.md) supplies current commands and
+paired $1.20 stress controls. Changing cache paths alone cannot reproduce an
+old engine, calendar, or risk policy.
 
 ## Contract selection and causal liquidation support
 

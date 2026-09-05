@@ -23,6 +23,8 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from app.trading_costs import MNQ_FEES_PER_CONTRACT_PER_SIDE
+
 CANDIDATES = {
     "baseline": "V4 EMA/VWAP pullback, long bias, opposite-signal exits.",
     "bracket_only": "Same entries; hold for the 50/50 bracket, rollover or replay end. No opposite-signal exits.",
@@ -38,10 +40,14 @@ def main():
     parser.add_argument("--period", choices=["selection", "diagnostic", "full"], required=True)
     parser.add_argument("--variants", nargs="+", choices=list(CANDIDATES), default=list(CANDIDATES))
     parser.add_argument("--slippage", type=float, default=1)
+    parser.add_argument("--commission-per-side", type=float, default=MNQ_FEES_PER_CONTRACT_PER_SIDE,
+                        help="all transaction fees per contract per side; default 0.61 ($1.22 round trip)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not math.isfinite(args.slippage) or args.slippage < 0:
         parser.error("--slippage must be a finite nonnegative number")
+    if not math.isfinite(args.commission_per_side) or args.commission_per_side < 0:
+        parser.error("--commission-per-side must be a finite nonnegative number")
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
     os.environ["DATABASE_URL"] = "sqlite:///:memory:"
     from app.models import BotConfig
@@ -81,7 +87,7 @@ def main():
         report = {
             "period": args.period, "requested_start": start.isoformat(), "requested_end": end.isoformat(),
             "baseline_source": source, "baseline_source_sha256": hashlib.sha256(source.encode()).hexdigest(),
-            "candidates": CANDIDATES, "commission_per_side": 1.2, "slippage_ticks": args.slippage,
+            "candidates": CANDIDATES, "commission_per_side": args.commission_per_side, "slippage_ticks": args.slippage,
             "source_fingerprint": primary[0].source_file_sha256, "results": {},
             "limitation": "Previously examined history; later periods are retrospective diagnostics, not independent validation.",
         }
@@ -111,7 +117,7 @@ def main():
             engine = ComparisonEngine(
                 config=config, candles=primary, replay_streams=streams,
                 settings=replay.BacktestSettings(
-                    start=start, end=end, starting_balance=50_000, commission_per_contract=1.2,
+                    start=start, end=end, starting_balance=50_000, commission_per_contract=args.commission_per_side,
                     slippage_ticks=args.slippage, tick_size=.25, tick_value=.5,
                 ),
             )

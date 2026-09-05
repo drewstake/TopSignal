@@ -1,5 +1,10 @@
 # TopBot improvement comparison — September 4, 2026
 
+**Fee correction:** These experiments used the original $1.20 per side. The
+current TopstepX MNQ base fee is $0.61 per side ($1.22 round trip); see
+[the corrected baseline report](topbot-fee-correction.md). The tool now defaults
+to $0.61; pass `--commission-per-side 1.20` to reproduce these historical costs.
+
 The v4 baseline lost $16,658.60 across the stored 2019–2026 history. Shorts lost
 $12,833.10. Commissions totaled $12,801.60; gross P&L was already negative at
 -$3,857.00. Opposite-signal exits accounted for 1,014 trades and -$48,796.10 net,

@@ -1,5 +1,33 @@
 # TopBot strategy research handoff
 
+## Fee correction — read before new research
+
+The verified TopstepX MNQ rate is **$0.61 per contract per side ($1.22 round
+trip)**. UI, API and TopBot CLI defaults have been corrected. Read
+[the fee correction and fresh comparisons](topbot-fee-correction.md) first.
+The original $1.20-per-side baselines below and `topbot-research-baseline.json`
+are preserved historical higher-cost runs. Use explicit `--commission-per-side
+1.20` to reproduce that cost scenario; use `0.61` for the current base case.
+Earlier experiments retain their captured $1.20 fee. The fixed 72-case A06
+rerun is complete: all matched cases passed source/control/accounting checks
+at explicit $0.61 per side. Read
+[the complete matched-fee audit](topbot-fee-comparison-audit-2026-09-04.md).
+All 72 original A04 cases finished and remain preserved as higher-cost stress.
+The separate [48-case legacy reconsideration](topbot-legacy-fee-audit-2026-09-04.md)
+also completed, including unchanged older rejected filters at both fee rates.
+
+The corrected application baseline loses $5,357.50 on 4,800 trades; the separate
+observed-minute research baseline loses $3,449.28 on 4,224 trades. Both use one
+tick of slippage. Neither establishes a profitable combined strategy. The
+machine-readable corrected reference is `topbot-fee-corrected-baseline.json`.
+
+Opening drive alone passes A06's measured historical gates: $11,413.04 full
+net, 543 trades, $2,692.84 drawdown and $1,999.74 later-period net at one tick.
+It is only retrospectively promising. A07 is running the predeclared parameter,
+entry-delay and target-fill robustness checks at $0.61; see
+[that protocol](topbot-opening-drive-robustness-2026-09-04.md). No candidate has
+been promoted or started live, and the newer reserved pool remains untouched.
+
 Prepared September 4, 2026. Start by reading this file, `topbot-strategy.md`,
 `topbot-improvement-comparison.md`, and `topbot-replay-quality.md` in this directory.
 
@@ -22,9 +50,14 @@ clock-exit integration remain separate requirements before any production
 candidate can be adopted. Preliminary batches were stopped and preserved after
 the risk defect was identified. They are not strategy-selection evidence.
 
-Cache format has changed: do not use the original format-4 cache with current
-code. Name the corrected cache from the data audit explicitly. A final verified
-default-cache migration and live/backtest integration remain outstanding.
+The default `backend/storage/databento` now contains verified format 6, with
+source fingerprint `e900ae486308de577f0945e21cd54821ed2b206c027761d1973563a9085b4d6a`.
+All 60 arrays match the separate `backend/storage/databento-calendar-v6` cache,
+which remains unchanged. The original format-4 cache is preserved at
+`backend/storage/databento-format4-reference` and requires the original source
+revision. The older cache paths/fingerprint below describe the pre-migration
+baseline; use [the data audit's migration and reproduction instructions](topbot-data-audit-2026-09-04.md#verified-default-cache-migration)
+for that historical run. Live/backtest integration remains outstanding.
 Research tools are `backend/tools/research_topbot.py` and
 `backend/tools/summarize_topbot_research.py`; they record immutable source/code
 snapshots, hypotheses, complete ledgers, costs, periods, interruptions and
@@ -139,11 +172,12 @@ $researchPython = 'C:\Users\drews\Development\TopSignal\backend\.venv\Scripts\py
 $researchCache = 'C:\Users\drews\Development\TopSignal\backend\storage\databento'
 git status --short --branch
 git rev-parse HEAD
-& $researchPython backend/tools/benchmark_topbot_replay.py --cache-dir $researchCache --days 3000 --holdout --output backend/storage/research/baseline.json --trades-output backend/storage/research/baseline-trades.json
+& $researchPython backend/tools/benchmark_topbot_replay.py --cache-dir $researchCache --days 3000 --holdout --commission-per-side 0.61 --output backend/storage/research/baseline-fee061.json --trades-output backend/storage/research/baseline-fee061-trades.json
 ```
 
 `--days 3000` covers this cache's full history, ending at the stored last bar. The
-benchmark runs the current code-owned preset and fixed costs listed above. It
+benchmark runs the current code-owned preset at $0.61 per side. Use the corrected
+reference at the top of this handoff; the original $1.20 checkpoint is historical. It
 does not optimize. Expect roughly 25–40 seconds on the existing machine when
 idle; runtime varies. Check metrics and source fingerprint against this document
 before treating a mismatch as a strategy change.
@@ -152,8 +186,8 @@ The old evaluator is preserved in `backend/tools/fixtures/topbot_v4.py` for thes
 fixed historical comparisons:
 
 ```powershell
-& $researchPython backend/tools/compare_topbot_variants.py --cache-dir $researchCache --period selection --output backend/storage/research/selection.json
-& $researchPython backend/tools/compare_topbot_variants.py --cache-dir $researchCache --period diagnostic --variants baseline bracket_only --slippage 2 --output backend/storage/research/cost-stress.json
+& $researchPython backend/tools/compare_topbot_variants.py --cache-dir $researchCache --period selection --commission-per-side 1.20 --output backend/storage/research/selection-fee120-stress.json
+& $researchPython backend/tools/compare_topbot_variants.py --cache-dir $researchCache --period diagnostic --variants baseline bracket_only --slippage 2 --commission-per-side 1.20 --output backend/storage/research/cost-stress-fee120.json
 ```
 
 The comparison tool still uses the current shared indicators, replay engine and

@@ -34,7 +34,7 @@ All failures, execution errors and abandoned runs remain in the experiment log.
 Any later hypotheses or parameter neighbors must be registered before testing,
 and the running count of inspected alternatives must remain visible.
 
-Use one MNQ, $50,000 starting balance, $1.20 commission per contract per side,
+Use one MNQ, $50,000 starting balance, $0.61 total fees per contract per side,
 and one tick adverse slippage per fill, plus full replays at two and four ticks.
 Costs may alter fills, positions, stop levels and subsequent opportunities, so
 stress is rerun instead of simply subtracting a fee from the old ledger.
@@ -92,3 +92,14 @@ then complete ledgers and results to a unique ignored storage directory. Reports
 include net/gross P&L, expectancy, drawdown, exposure, trade counts, long/short,
 yearly returns, concentration, uncertainty, gaps and risk-blocked opportunities.
 Concise results and rejected hypotheses belong in a tracked experiment summary.
+
+
+## September 4 fee amendment
+
+The original protocol and already captured A04 manifests used $1.20 per side.
+Topstep's published MNQ fee was verified as $0.61 per side, including exchange,
+NFA and commission ($1.22 round trip). The base cost above and CLI defaults are
+corrected on that external evidence; candidate rules, split dates and acceptance
+criteria are unchanged. Historical manifests are immutable. Their $1.20 runs can
+serve as fee stress cases, but the matrix needs a new explicitly $0.61 comparison
+before strategy selection. See [the correction and baseline reruns](topbot-fee-correction.md).

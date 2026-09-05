@@ -25,6 +25,7 @@ describe("BacktestResults", () => {
     expect(markup).toContain("Chronological holdout diagnostic (not strategy validation)");
     expect(markup).toContain("Final 20% (holdout)");
     expect(markup).toContain("diagnostic only");
+    expect(markup).toContain("$1.20 / contract / side ($2.40 round trip)");
   });
 });
 
@@ -43,6 +44,9 @@ describe("BotBacktestPanel", () => {
     expect(markup).not.toContain("Start date");
     expect(markup).not.toContain("End date");
     expect(markup).not.toContain('type="date"');
+    expect(markup).toContain("Fees / contract / side");
+    expect(markup).toContain('value="0.61"');
+    expect(markup).toContain("$1.22 round trip per contract; slippage is separate.");
   });
 
   it("explains and disables server replay jobs in Demo Mode", () => {

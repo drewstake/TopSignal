@@ -1,0 +1,568 @@
+{
+  "recorded_on_et": "2026-09-04",
+  "purpose": "Corrected TopstepX MNQ transaction fees. Reused history, no strategy tuning; neither combined baseline is profitable.",
+  "fee_source": "https://help.topstep.com/en/articles/8284213-topstepx-commissions-and-fees",
+  "source_commit_before_fee_edits": "63b061146cd84ea4ef278315c5a54b51e8a30e43",
+  "source_sha256_lf_utf8": {
+    "backend/app/trading_costs.py": "1898d5454a0914a817d56bf23192a34a2b31ac89b8a301306110967ad50d58b7",
+    "backend/app/services/topbot_strategy.py": "37e224a7e17f1f421f019fcba95e1d6e619fb56844fcb959a30351457a54ed5f",
+    "backend/app/services/bot_backtesting.py": "dbce7ee22b1b4b9d36561241240fe551d45ba4f8230fb35e74bca2f0b835309e",
+    "backend/tools/benchmark_topbot_replay.py": "64aacbf970dd35292afb3d94b11cefd037edb9d33f79c8a22673af80407dbaa0",
+    "backend/tools/research_topbot.py": "57fc67b564465abbceba9209fa0f6af2c198b2aa0bc5de18697351a5e882865e"
+  },
+  "application_replay": {
+    "strategy": "topbot_adaptive",
+    "strategy_params": {
+      "revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+      "ema_period": 20,
+      "ema_slope_bars": 3,
+      "directional_bias": "long",
+      "short_trend_ema_period": 50,
+      "short_trend_slope_bars": 3,
+      "position_size": 1,
+      "exit_policy": "bracket_only",
+      "stop_points": 50.0,
+      "target_points": 50.0,
+      "tick_size": 0.25,
+      "session_start": "09:30",
+      "session_end": "15:45"
+    },
+    "config_snapshot": {
+      "id": 1,
+      "account_id": 1,
+      "name": "TopBot",
+      "provider": "projectx",
+      "enabled": false,
+      "execution_mode_at_run": "dry_run",
+      "strategy_type": "topbot_adaptive",
+      "strategy_params": {
+        "directional_bias": "long",
+        "ema_period": 20,
+        "ema_slope_bars": 3,
+        "exit_policy": "bracket_only",
+        "position_size": 1,
+        "revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+        "session_end": "15:45",
+        "session_start": "09:30",
+        "short_trend_ema_period": 50,
+        "short_trend_slope_bars": 3,
+        "stop_points": 50.0,
+        "target_points": 50.0,
+        "tick_size": 0.25
+      },
+      "contract_id": "CON.F.US.MNQ.U26",
+      "symbol": "MNQ",
+      "timeframe_unit": "minute",
+      "timeframe_unit_number": 5,
+      "lookback_bars": 200,
+      "fast_period": 9,
+      "slow_period": 21,
+      "order_size": 1.0,
+      "max_contracts": 1.0,
+      "max_daily_loss": 250.0,
+      "max_trades_per_day": 30,
+      "max_open_position": 1.0,
+      "allowed_contracts": [
+        "MNQ",
+        "F.US.MNQ"
+      ],
+      "trading_start_time": "09:30",
+      "trading_end_time": "15:45",
+      "cooldown_seconds": 300,
+      "max_data_staleness_seconds": 600,
+      "allow_market_depth": false,
+      "created_at": null,
+      "updated_at": null
+    },
+    "assumptions": {
+      "fill_model": "next_bar_open_market",
+      "entry_delay_minutes": 0,
+      "entry_latency_rule": "entry waits until original decision plus configured delay; missing exact minute discards; exits retain normal timing",
+      "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
+      "strategy_replay": "single_strategy",
+      "strategy_revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+      "source_synchronization": "not_applicable",
+      "synchronized_stream_count": 1,
+      "event_order": "resting_gap_brackets_then_pending_open_fill_then_intrabar_brackets_then_close_signal",
+      "same_bar_exit_rule": "stop_first_when_stop_and_target_are_both_touched",
+      "bracket_rule": "evaluator_levels_become_whole_tick_distances_anchored_to_actual_entry_fill",
+      "gap_rule": "stops_fill_at_adverse_gap_open; targets receive no favorable price improvement",
+      "final_position_handling": "forced_close_at_last_bar_close",
+      "position_rule": "same-side_duplicates_do_not_pyramid; target-less opposite signals flatten an equal-size position; target-aware atomic reversals are blocked to match live routing; oversized_entries_are_blocked_not_capped",
+      "session_rule": "TopBot signals are evaluated only during the configured session while resting brackets are processed on every execution candle; entries obey bot session after-loss cooldown, daily-trade, and daily-loss limits; counters_reset_at_requested_start_and_loss_uses_isolated_simulated_realized_net_pnl",
+      "commission_rule": "commission_per_contract_is_charged_per_side",
+      "slippage_rule": "configured_ticks_are_applied_adversely_to_every_entry_and_exit_fill",
+      "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
+      "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
+      "market_data": "databento_global_ohlcv_1m_resampled_on_session_anchored_buckets; continuous_delivery_uses_only_previous_completed_session_volume; evaluator_history_is_segmented_at_delivery_changes",
+      "roll_gap_rule": "legacy_approximation_prior_delivery_final_close_requires_future_roll_knowledge",
+      "execution_stream": "legacy_signal_bars",
+      "signal_timeframe_unit": "minute",
+      "signal_timeframe_unit_number": 5,
+      "intrabar_timestamp_rule": "legacy_bar_start_approximation",
+      "drawdown_observation_rule": "execution_bar_close_marks_not_intrabar_equity_extrema",
+      "proposed_stop_budget_rule": "legacy_realized_loss_only_no_proposed_stop_budget",
+      "daily_loss_accounting": "legacy_commissions_booked_on_each_fill_day",
+      "capital_rule": "legacy_no_cash_or_margin_entry_gate",
+      "historical_source": "databento",
+      "roll_policy_version": "volume_previous_completed_session_v1",
+      "live_order_routing": "disabled_by_architecture",
+      "timezone": "America/New_York",
+      "commission_per_contract": 0.61,
+      "slippage_ticks": 1.0,
+      "tick_size": 0.25,
+      "tick_value": 0.5,
+      "engine_version": "5.3.0-entry-latency-stress",
+      "configured_execution_mode_was_ignored": "dry_run"
+    },
+    "range": {
+      "start": "2019-05-07T13:00:00+00:00",
+      "end": "2026-07-10T20:20:00+00:00",
+      "bar_count": 504185,
+      "contract_id": "CON.F.US.MNQ.U26",
+      "symbol": "MNQ",
+      "timeframe_unit": "minute",
+      "timeframe_unit_number": 5
+    },
+    "trades": 4800,
+    "metrics": {
+      "gross_pnl": 498.5,
+      "net_pnl": -5357.5,
+      "total_commission": 5856.0,
+      "trade_count": 4800,
+      "winning_trades": 2417,
+      "losing_trades": 2383,
+      "win_rate": 50.3541666667,
+      "profit_factor": 0.977934992,
+      "expectancy": -1.1161458333,
+      "average_win": 98.2406950765,
+      "average_loss": -101.8905832984,
+      "payoff_ratio": 0.9641783558,
+      "max_drawdown_dollars": 12222.0200000031,
+      "max_drawdown_percent": 21.9424237631,
+      "average_mae": 70.0189583333,
+      "average_mfe": 67.57875,
+      "max_consecutive_wins": 11,
+      "max_consecutive_losses": 14,
+      "exposure_percent": 23.0760534328,
+      "long": {
+        "trade_count": 3026,
+        "winning_trades": 1553,
+        "losing_trades": 1473,
+        "win_rate": 51.3218770654,
+        "gross_pnl": 5878.5,
+        "net_pnl": 2186.78,
+        "profit_factor": 1.0145448804,
+        "expectancy": 0.7226635823,
+        "average_win": 98.2188280747,
+        "average_loss": -102.0686082824,
+        "payoff_ratio": 0.9622824268
+      },
+      "short": {
+        "trade_count": 1774,
+        "winning_trades": 864,
+        "losing_trades": 910,
+        "win_rate": 48.7034949267,
+        "gross_pnl": -5380.0,
+        "net_pnl": -7544.28,
+        "profit_factor": 0.9184033433,
+        "expectancy": -4.2526944758,
+        "average_win": 98.28,
+        "average_loss": -101.6024175824,
+        "payoff_ratio": 0.9672998176
+      }
+    },
+    "evaluation_split": {
+      "method": "chronological_80_20_fixed_parameters",
+      "label": "Chronological holdout diagnostic (not strategy validation)",
+      "validation_status": "diagnostic_only",
+      "split_timestamp": "2025-02-06T08:20:00+00:00",
+      "in_sample": {
+        "start": "2019-05-07T13:00:00+00:00",
+        "end": "2025-02-06T08:20:00+00:00",
+        "bar_count": 403348,
+        "metrics": {
+          "trade_count": 3585,
+          "winning_trades": 1811,
+          "losing_trades": 1774,
+          "win_rate": 50.5160390516,
+          "gross_pnl": 1867.5,
+          "net_pnl": -2506.2,
+          "profit_factor": 0.9861072523,
+          "expectancy": -0.6990794979,
+          "average_win": 98.227542794,
+          "average_loss": -101.6889966178,
+          "payoff_ratio": 0.9659603896
+        }
+      },
+      "holdout": {
+        "start": "2025-02-06T08:20:00+00:00",
+        "end": "2026-07-10T20:20:00+00:00",
+        "bar_count": 100837,
+        "metrics": {
+          "trade_count": 1215,
+          "winning_trades": 606,
+          "losing_trades": 609,
+          "win_rate": 49.8765432099,
+          "gross_pnl": -1369.0,
+          "net_pnl": -2851.3,
+          "profit_factor": 0.9543126646,
+          "expectancy": -2.3467489712,
+          "average_win": 98.28,
+          "average_loss": -102.4777996716,
+          "payoff_ratio": 0.9590369847
+        }
+      },
+      "notes": [
+        "Strategy parameters were fixed before the holdout replay; this workflow did not optimize them.",
+        "The holdout used a fresh cash, position, pending-signal, cooldown, and daily-risk state.",
+        "Only candles closed before each holdout decision were available; pre-split candles were used solely as causal indicator warmup.",
+        "The holdout final position was closed at its last bar so holdout trade metrics are self-contained.",
+        "0 full-replay trade(s) crossed the split and were excluded from the in-sample summary.",
+        "This diagnostic is not proof of future performance and is not a substitute for forward paper trading."
+      ]
+    },
+    "warnings": [
+      "Stored candles began after the requested start; the first complete candle is at 2019-05-05T23:25:00+00:00.",
+      "1,561 gap(s) in complete candles; 19 overlap the configured entry hours. The engine used the next available bar without interpolation. See candle coverage below for dates and missing-bar counts."
+    ],
+    "notes": [
+      "Used the first 199 candle(s) for warmup; replay begins at 2019-05-07T13:00:00+00:00 after the required closed bars became available.",
+      "Warmup ready: 200 of 200 required closed bars were available at the first replay evaluation.",
+      "Equity and drawdown output was deterministically sampled to bound replay memory; trade metrics and maximum drawdown still use every replay bar.",
+      "Detected 29 futures delivery change(s); strategy history was segmented at each roll, 7 open position(s) were closed at the prior delivery's final close (legacy noncausal approximation), and 0 pending signal(s) were discarded.",
+      "Blocked 1040 replay signal(s) due to atomic reversal not supported.",
+      "Blocked 504 replay signal(s) due to max daily loss.",
+      "Blocked 6 replay signal(s) due to stale session signal."
+    ],
+    "data_quality": {
+      "available_start": "2019-05-05T23:25:00+00:00",
+      "first_evaluation": "2019-05-07T13:05:00+00:00",
+      "warmup_required": 200,
+      "warmup_available": 200,
+      "gaps": {
+        "gap_count": 1561,
+        "missing_bar_count": 3158,
+        "in_session_gap_count": 19,
+        "in_session_missing_bar_count": 47,
+        "by_year": [
+          {
+            "year": 2019,
+            "gap_count": 1490,
+            "missing_bar_count": 2416,
+            "in_session_gap_count": 15
+          },
+          {
+            "year": 2020,
+            "gap_count": 57,
+            "missing_bar_count": 600,
+            "in_session_gap_count": 4
+          },
+          {
+            "year": 2021,
+            "gap_count": 9,
+            "missing_bar_count": 9,
+            "in_session_gap_count": 0
+          },
+          {
+            "year": 2022,
+            "gap_count": 1,
+            "missing_bar_count": 1,
+            "in_session_gap_count": 0
+          },
+          {
+            "year": 2023,
+            "gap_count": 1,
+            "missing_bar_count": 1,
+            "in_session_gap_count": 0
+          },
+          {
+            "year": 2025,
+            "gap_count": 3,
+            "missing_bar_count": 131,
+            "in_session_gap_count": 0
+          }
+        ],
+        "largest_gaps": [
+          {
+            "start": "2020-03-15T22:40:00+00:00",
+            "end": "2020-03-16T13:45:00+00:00",
+            "missing_bar_count": 181,
+            "in_session_missing_bar_count": 3
+          },
+          {
+            "start": "2025-11-28T02:45:00+00:00",
+            "end": "2025-11-28T13:30:00+00:00",
+            "missing_bar_count": 129,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-18T05:40:00+00:00",
+            "end": "2020-03-18T13:30:00+00:00",
+            "missing_bar_count": 94,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-09T10:35:00+00:00",
+            "end": "2020-03-09T13:50:00+00:00",
+            "missing_bar_count": 39,
+            "in_session_missing_bar_count": 4
+          },
+          {
+            "start": "2020-03-09T06:20:00+00:00",
+            "end": "2020-03-09T09:15:00+00:00",
+            "missing_bar_count": 35,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-17T05:40:00+00:00",
+            "end": "2020-03-17T08:25:00+00:00",
+            "missing_bar_count": 33,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-06-17T02:50:00+00:00",
+            "end": "2019-06-17T05:10:00+00:00",
+            "missing_bar_count": 28,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-17T03:20:00+00:00",
+            "end": "2020-03-17T05:35:00+00:00",
+            "missing_bar_count": 27,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-13T11:30:00+00:00",
+            "end": "2020-03-13T13:30:00+00:00",
+            "missing_bar_count": 24,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-06-30T22:00:00+00:00",
+            "end": "2020-07-01T00:00:00+00:00",
+            "missing_bar_count": 24,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-09T04:05:00+00:00",
+            "end": "2020-03-09T05:55:00+00:00",
+            "missing_bar_count": 22,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-06-16T23:40:00+00:00",
+            "end": "2019-06-17T01:20:00+00:00",
+            "missing_bar_count": 20,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-06-17T07:20:00+00:00",
+            "end": "2019-06-17T09:00:00+00:00",
+            "missing_bar_count": 20,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-07-04T04:05:00+00:00",
+            "end": "2019-07-04T05:25:00+00:00",
+            "missing_bar_count": 16,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-06-17T05:15:00+00:00",
+            "end": "2019-06-17T06:25:00+00:00",
+            "missing_bar_count": 14,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-06-17T22:45:00+00:00",
+            "end": "2019-06-17T23:50:00+00:00",
+            "missing_bar_count": 13,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-05-30T22:35:00+00:00",
+            "end": "2019-05-30T23:35:00+00:00",
+            "missing_bar_count": 12,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2020-03-22T22:35:00+00:00",
+            "end": "2020-03-22T23:35:00+00:00",
+            "missing_bar_count": 12,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-05-08T07:20:00+00:00",
+            "end": "2019-05-08T08:15:00+00:00",
+            "missing_bar_count": 11,
+            "in_session_missing_bar_count": 0
+          },
+          {
+            "start": "2019-05-27T16:00:00+00:00",
+            "end": "2019-05-27T16:55:00+00:00",
+            "missing_bar_count": 11,
+            "in_session_missing_bar_count": 11
+          }
+        ]
+      }
+    },
+    "source_fingerprint": "e900ae486308de577f0945e21cd54821ed2b206c027761d1973563a9085b4d6a",
+    "trades_sha256": "769109e2a57464619b1dd6ff0546f50573dd6208ef3e71dbf003dbd8561f147f"
+  },
+  "application_control_metrics_at_120_cents_per_side": {
+    "gross_pnl": 499.5,
+    "net_pnl": -11015.7,
+    "total_commission": 11515.2,
+    "trade_count": 4798,
+    "winning_trades": 2416,
+    "losing_trades": 2382,
+    "win_rate": 50.3543142976,
+    "profit_factor": 0.9551321451,
+    "expectancy": -2.2958941226,
+    "average_win": 97.0606788079,
+    "average_loss": -103.0706549118,
+    "payoff_ratio": 0.9416907159,
+    "max_drawdown_dollars": 16039.2999999762,
+    "max_drawdown_percent": 29.7639195077,
+    "average_mae": 70.0211546478,
+    "average_mfe": 67.5684660275,
+    "max_consecutive_wins": 11,
+    "max_consecutive_losses": 14,
+    "exposure_percent": 23.0728799944,
+    "long": {
+      "trade_count": 3026,
+      "winning_trades": 1553,
+      "losing_trades": 1473,
+      "win_rate": 51.3218770654,
+      "gross_pnl": 5878.5,
+      "net_pnl": -1383.9,
+      "profit_factor": 0.9909004952,
+      "expectancy": -0.4573364177,
+      "average_win": 97.0388280747,
+      "average_loss": -103.2486082824,
+      "payoff_ratio": 0.9398560396
+    },
+    "short": {
+      "trade_count": 1772,
+      "winning_trades": 863,
+      "losing_trades": 909,
+      "win_rate": 48.7020316027,
+      "gross_pnl": -5379.0,
+      "net_pnl": -9631.8,
+      "profit_factor": 0.8969079227,
+      "expectancy": -5.4355530474,
+      "average_win": 97.1,
+      "average_loss": -102.7822882288,
+      "payoff_ratio": 0.9447152975
+    }
+  },
+  "research_replay": {
+    "run_id": "20260905T004802.745634Z-fee-corrected-baseline-1c25d5260c60",
+    "metrics": {
+      "average_loss": -102.0519770225,
+      "average_mae": 69.6908143939,
+      "average_mfe": 68.7032433712,
+      "average_win": 98.2376112412,
+      "expectancy": -0.8165909091,
+      "exposure_percent": 20.5604222945,
+      "gross_pnl": 1704.0,
+      "long": {
+        "average_loss": -102.2375038052,
+        "average_win": 98.2154493581,
+        "expectancy": 1.2363696613,
+        "gross_pnl": 6671.5,
+        "losing_trades": 1314,
+        "net_pnl": 3357.98,
+        "payoff_ratio": 0.9606596963,
+        "profit_factor": 1.0249961143,
+        "trade_count": 2716,
+        "win_rate": 51.6200294551,
+        "winning_trades": 1402
+      },
+      "losing_trades": 2089,
+      "max_consecutive_losses": 10,
+      "max_consecutive_wins": 11,
+      "max_drawdown_dollars": 11263.9600000023,
+      "max_drawdown_percent": 19.8402033628,
+      "net_pnl": -3449.28,
+      "payoff_ratio": 0.9626233034,
+      "profit_factor": 0.9838203699,
+      "short": {
+        "average_loss": -101.7374193548,
+        "average_win": 98.28,
+        "expectancy": -4.5140981432,
+        "gross_pnl": -4967.5,
+        "losing_trades": 775,
+        "net_pnl": -6807.26,
+        "payoff_ratio": 0.9660162468,
+        "profit_factor": 0.9136643985,
+        "trade_count": 1508,
+        "win_rate": 48.6074270557,
+        "winning_trades": 733
+      },
+      "total_commission": 5153.28,
+      "trade_count": 4224,
+      "win_rate": 50.5445075758,
+      "winning_trades": 2135
+    },
+    "trades_sha256": "9774d5bd9a3735188f3184ef7b07dc30d426c820af2359dfb95a57d40fe7d9ee",
+    "source_fingerprint": "e900ae486308de577f0945e21cd54821ed2b206c027761d1973563a9085b4d6a",
+    "commission_per_side": 0.61,
+    "execution_minutes": 1,
+    "slippage_ticks": 1
+  },
+  "research_control": {
+    "run_id": "20260905T003843.383966Z-parity-controls-b0cf5c51afd3",
+    "case": "baseline_v5__full__slip-1",
+    "metrics": {
+      "average_loss": -103.2319770225,
+      "average_mae": 69.6908143939,
+      "average_mfe": 68.7032433712,
+      "average_win": 97.0576112412,
+      "expectancy": -1.9965909091,
+      "exposure_percent": 20.5604222945,
+      "gross_pnl": 1704.0,
+      "long": {
+        "average_loss": -103.4175038052,
+        "average_win": 97.0354493581,
+        "expectancy": 0.0563696613,
+        "gross_pnl": 6671.5,
+        "losing_trades": 1314,
+        "net_pnl": 153.1,
+        "payoff_ratio": 0.9382884501,
+        "profit_factor": 1.0011266416,
+        "trade_count": 2716,
+        "win_rate": 51.6200294551,
+        "winning_trades": 1402
+      },
+      "losing_trades": 2089,
+      "max_consecutive_losses": 10,
+      "max_consecutive_wins": 11,
+      "max_drawdown_dollars": 13635.2999999864,
+      "max_drawdown_percent": 25.1639728489,
+      "net_pnl": -8433.6,
+      "payoff_ratio": 0.9401894068,
+      "profit_factor": 0.9608924766,
+      "short": {
+        "average_loss": -102.9174193548,
+        "average_win": 97.1,
+        "expectancy": -5.6940981432,
+        "gross_pnl": -4967.5,
+        "losing_trades": 775,
+        "net_pnl": -8586.7,
+        "payoff_ratio": 0.9434748812,
+        "profit_factor": 0.8923446296,
+        "trade_count": 1508,
+        "win_rate": 48.6074270557,
+        "winning_trades": 733
+      },
+      "total_commission": 10137.6,
+      "trade_count": 4224,
+      "win_rate": 50.5445075758,
+      "winning_trades": 2135
+    },
+    "commission_per_side": 1.2
+  },
+  "research_control_comparison": "Identical core engine, strategy, calendar, effective configuration and cache; all trade fields except commission and net_pnl exactly match."
+}

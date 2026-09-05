@@ -670,8 +670,10 @@ ten known MNQ, MES, NQ, and ES jobs in your Downloads folder, validates them, an
 partitioned Parquet plus memory-mapped arrays without connecting to PostgreSQL or Supabase:
 
 The Backtest card always runs the current code-owned TopBot Adaptive preset on
-5-minute MNQ candles. Starting balance, commission, and slippage remain replay
-assumptions. Old saved source/vote settings do not change new replays. The indicator
+5-minute MNQ candles. Starting balance, transaction fees, and slippage remain replay
+assumptions. MNQ defaults to $0.61 per contract per side ($1.22 round trip),
+including commission, exchange and regulatory fees; slippage is separate. See
+[the fee correction and rerun results](docs/topbot-fee-correction.md). Old saved source/vote settings do not change new replays. The indicator
 library remains available to chart and analysis tools; TopBot does not vote across it.
 
 Replay results include long/short performance, average/median/90th-percentile holding

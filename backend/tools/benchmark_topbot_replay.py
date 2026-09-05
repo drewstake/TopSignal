@@ -21,11 +21,15 @@ from time import perf_counter
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.trading_costs import MNQ_FEES_PER_CONTRACT_PER_SIDE
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=BACKEND_ROOT / "storage/databento")
     parser.add_argument("--days", type=float, default=30)
+    parser.add_argument("--commission-per-side", type=float, default=MNQ_FEES_PER_CONTRACT_PER_SIDE,
+                        help="all transaction fees per contract per side; default 0.61 ($1.22 round trip)")
     parser.add_argument("--end", help="UTC ISO timestamp; defaults to the cached history end")
     parser.add_argument("--profile", type=Path, help="optional cProfile output file")
     parser.add_argument("--holdout", action="store_true", help="also replay the final 20% with fresh portfolio state")
@@ -34,6 +38,8 @@ def main() -> None:
     args = parser.parse_args()
     if not 0 < args.days < float("inf"):
         parser.error("--days must be a finite positive number")
+    if not 0 <= args.commission_per_side < float("inf"):
+        parser.error("--commission-per-side must be finite and nonnegative")
 
     # Imports need database configuration; this command never opens a session.
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
@@ -79,7 +85,7 @@ def main() -> None:
             config=config, candles=primary, replay_streams=streams,
             settings=replay.BacktestSettings(
                 start=start, end=end, starting_balance=50_000,
-                commission_per_contract=1.2, slippage_ticks=1, tick_size=0.25, tick_value=0.5,
+                commission_per_contract=args.commission_per_side, slippage_ticks=1, tick_size=0.25, tick_value=0.5,
             ),
         )
         initialization = perf_counter() - before

@@ -13,7 +13,7 @@ import {
 
 const validForm: BotBacktestFormState = {
   startingBalance: "50000",
-  commissionPerContract: "1.20",
+  commissionPerContract: "0.61",
   slippageTicks: "1",
 };
 
@@ -62,7 +62,7 @@ describe("buildBacktestPayload", () => {
       strategy_type: "topbot_adaptive",
       instrument: "MNQ",
       starting_balance: 50_000,
-      commission_per_contract: 1.2,
+      commission_per_contract: 0.61,
       slippage_ticks: 1,
       force_close_at_end: true,
     });
