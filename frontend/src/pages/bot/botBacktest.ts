@@ -3,8 +3,6 @@ import type {
   BotBacktestEquityPoint,
   BotBacktestInput,
   BotBacktestProgress,
-  BotBacktestInstrument,
-  BotStrategyType,
 } from "../../lib/types";
 
 export const BACKTEST_CHART_WIDTH = 720;
@@ -15,8 +13,6 @@ export const BACKTEST_DRAWDOWN_HEIGHT = 58;
 export const BACKTEST_MAX_RENDERED_CHART_POINTS = 2_000;
 
 export interface BotBacktestFormState {
-  strategyType: BotStrategyType;
-  instrument: BotBacktestInstrument;
   startingBalance: string;
   commissionPerContract: string;
   slippageTicks: string;
@@ -71,10 +67,11 @@ export function describeBacktestProgress(
     };
   }
   if (progress.phase === "replaying") {
-    const percent = Math.max(0, Math.min(100, Math.round(progress.percent ?? 0)));
-    const remaining = Math.max(0, Math.min(100, Math.round(progress.remaining_percent ?? (100 - percent))));
     const completed = Math.max(0, Math.round(progress.completed ?? 0));
     const total = Math.max(completed, Math.round(progress.total ?? completed));
+    const rawPercent = total > 0 ? completed * 100 / total : (progress.percent ?? 0);
+    const percent = Math.max(0, Math.min(completed < total ? 99.9 : 100, Math.round(rawPercent * 10) / 10));
+    const remaining = Math.round((100 - percent) * 10) / 10;
     return {
       title: `Replaying closed candles — ${percent}%`,
       detail: `${remaining}% remaining · ${completed.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} candles`,
@@ -113,8 +110,8 @@ export function validateBacktestForm(form: BotBacktestFormState): string | null 
 
 export function buildBacktestPayload(form: BotBacktestFormState): BotBacktestInput {
   return {
-    strategy_type: form.strategyType,
-    instrument: form.instrument,
+    strategy_type: "topbot_adaptive",
+    instrument: "MNQ",
     starting_balance: Number(form.startingBalance),
     commission_per_contract: Number(form.commissionPerContract),
     slippage_ticks: Number(form.slippageTicks),

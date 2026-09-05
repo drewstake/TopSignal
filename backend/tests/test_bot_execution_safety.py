@@ -3069,6 +3069,68 @@ def test_sma_entry_stop_risk_must_fit_remaining_account_loss_budget(db_session, 
     assert client.place_order_calls == []
 
 
+@pytest.mark.parametrize("position_qty", [0, 1, -1])
+def test_topbot_blocked_short_target_only_closes_a_provider_long(db_session, monkeypatch, position_qty):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "topbot_adaptive"
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch, action="SELL", raw_payload={
+        "strategy_type": "topbot_adaptive", "short_entry_allowed": False,
+        "signal_category": "exit", "target_position_qty": 0.0,
+        "exit_reason": "opposite_signal_flatten",
+    })
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(positions=[{
+        "account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": float(position_qty),
+    }] if position_qty else [])
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert client.place_order_calls == []
+    if position_qty == 1:
+        assert result.status == "submitted"
+        assert len(client.close_position_calls) == 1
+    else:
+        assert result.status == "risk_blocked"
+        assert client.close_position_calls == []
+        assert ("authoritative_target_already_reached" if position_qty == 0
+                else "authoritative_target_direction_conflict") in _risk_codes(result)
+
+
+@pytest.mark.parametrize("action,target", [("BUY", 1.0), ("SELL", -1.0)])
+@pytest.mark.parametrize("position_qty", [0, 1, -1, 2, -2])
+def test_topbot_bracket_entry_only_routes_when_provider_is_flat(db_session, monkeypatch, action, target, position_qty):
+    _, config = _add_account_and_config(db_session, execution_mode="live")
+    config.strategy_type = "topbot_adaptive"
+    config.max_contracts = config.max_open_position = 1
+    _add_mnq_tick_metadata(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch, action=action, raw_payload={
+        "strategy_type": "topbot_adaptive", "signal_category": "entry",
+        "target_position_qty": target, "exit_policy": "bracket_only",
+        "entry_price": 101.0, "stop_loss": 101 - target * 50, "take_profit": 101 + target * 50,
+    })
+    _enable_live_test_routing(monkeypatch)
+    client = RecordingClient(positions=[{
+        "account_id": 9001, "contract_id": CONTRACT_ID, "signed_size": float(position_qty),
+    }] if position_qty else [])
+    result = evaluate_bot_config(
+        db_session, user_id=USER_A, config=config, account=None, client=client,
+        dry_run=False, confirm_live_order_routing=True,
+    )
+    assert client.close_position_calls == []
+    if position_qty:
+        assert result.status == "risk_blocked"
+        assert client.place_order_calls == []
+    else:
+        assert result.status == "submitted"
+        assert len(client.place_order_calls) == 1
+        assert client.place_order_calls[0]["size"] == 1
+        assert client.place_order_calls[0]["stop_loss_bracket"]["ticks"] == 200
+        assert client.place_order_calls[0]["take_profit_bracket"]["ticks"] == 200
+
+
 def test_exit_label_cannot_bypass_protection_for_exposure_increasing_order(db_session, monkeypatch):
     _, config = _add_account_and_config(db_session, execution_mode="live")
     config.strategy_type = "donchian_breakout"

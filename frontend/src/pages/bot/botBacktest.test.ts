@@ -12,8 +12,6 @@ import {
 } from "./botBacktest";
 
 const validForm: BotBacktestFormState = {
-  strategyType: "sma_cross",
-  instrument: "MNQ",
   startingBalance: "50000",
   commissionPerContract: "1.20",
   slippageTicks: "1",
@@ -61,7 +59,7 @@ describe("buildBacktestPayload", () => {
     const payload = buildBacktestPayload(validForm);
 
     expect(payload).toEqual({
-      strategy_type: "sma_cross",
+      strategy_type: "topbot_adaptive",
       instrument: "MNQ",
       starting_balance: 50_000,
       commission_per_contract: 1.2,
@@ -74,6 +72,19 @@ describe("buildBacktestPayload", () => {
 });
 
 describe("describeBacktestProgress", () => {
+  it("shows progress within the first percent of a large replay", () => {
+    expect(describeBacktestProgress({
+      phase: "replaying", completed: 504, total: 504_360, percent: 0, remaining_percent: 100,
+    })).toEqual({
+      title: "Replaying closed candles — 0.1%",
+      detail: "99.9% remaining · 504 of 504,360 candles",
+      percent: 0.1,
+    });
+    expect(describeBacktestProgress({
+      phase: "replaying", completed: 504_359, total: 504_360, percent: 99, remaining_percent: 1,
+    }).percent).toBe(99.9);
+  });
+
   it("reports exact replay completion and remaining percentages", () => {
     expect(describeBacktestProgress({
       phase: "replaying",

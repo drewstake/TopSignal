@@ -199,3 +199,75 @@ backend\.venv\Scripts\python backend\tools\benchmark_databento_cache.py `
 
 `--profile PATH` writes one additional warm direct input-preparation-and-replay
 cProfile sample. It does not profile the SQLite persistence samples.
+
+## Historical TopBot v1 ensemble optimization (2026-09-04)
+
+The code-owned MNQ TopBot preset was measured against the newly processed
+OHLCV/Definition cache with fingerprint
+`cd56b8dbe08abc26b6bbbb9351e337984c603fe2562942ecb85ad0b9383a897d`.
+It selects every registered source; unavailable benchmark streams still follow
+the existing explicit source-failure handling. These measurements use one
+contract, a 50,000 starting balance, 1.20 commission, one tick of slippage,
+and the preset's session/risk limits.
+
+| Window | Execution bars | Before | After | Trades |
+| --- | ---: | ---: | ---: | ---: |
+| Final 7 days (first optimization pass) | 1,372 | 9.250 s | 5.181 s | 9 |
+| Final 30 days | 5,976 | 35.495 s | 18.495 s | 55 |
+
+The complete serialized results matched exactly, including warnings, trade
+payloads, portfolio metrics, and equity/drawdown series. The 30-day interval
+includes a delivery roll. Both versions produced SHA-256
+`fcd0d1e55083cdfad4ccad2f2c02ecb1c72147ed990007d229739c24af2236c8`.
+A subsequent run using the standalone tool below took 14.073 seconds with the
+same result hash; timings vary with concurrent development activity.
+
+The changes replace repeated scalar delivery/session scans with NumPy column
+operations, reuse each window's FVG volume thresholds, and calculate ATR/ADX
+inputs directly from cached price arrays while retaining the scalar smoothing
+arithmetic. No source strategy or history range was removed. Replay progress
+now emits updated candle counts at least once per second when bars are advancing,
+even before a whole percentage point changes; the UI displays tenths of a percent.
+
+These are direct engine timings, excluding the additional chronological holdout
+pass, persistence, and result-LRU hits. A full seven-year run was not timed after
+this change. The command below now measures the v2 preset; it no longer reproduces
+these historical v1 results:
+
+```powershell
+backend\.venv\Scripts\python backend\tools\benchmark_topbot_replay.py --days 30
+```
+
+Add `--profile tmp/topbot.prof` to capture the replay with cProfile (profiling
+adds overhead). Validation: 269 backend tests for replay, strategy evaluators,
+array/scalar parity, and the local Databento cache; 17 frontend backtest tests;
+frontend build and lint.
+
+## TopBot v2 single-setup replay (2026-09-04)
+
+The v2 preset replaced ensemble voting with one MNQ 5-minute EMA/VWAP pullback
+setup. This changes trading behavior, so its results are not expected to match v1.
+All indicator-library functions remain available outside the TopBot entry path.
+
+Using the same `cd56b8dbe08a` cache, engine initialization took 2.507 seconds and the
+full 504,185-bar replay plus a fresh final-20% diagnostic took 44.522 seconds. The
+final-30-day replay alone took 0.432 seconds and produced 19 trades. These are direct
+offline engine timings; they exclude API persistence and result-cache hits.
+
+The full replay produced 4,453 trades, **-$20,539.20 net P&L** and **0.8736 profit
+factor** with $1.20 commission per contract per side and one tick of slippage.
+The final-20% diagnostic also lost money. Faster execution and simpler rules do not
+establish an edge. See [TopBot strategy](topbot-strategy.md) for rules, the complete
+measurement context, and the current-preset measurement command. These v2 results
+used structural stops and 2R targets; the subsequent v3 preset uses fixed 50-point
+stops and 50-point targets, so it has separate results.
+
+## TopBot v3 fixed 50-point bracket (2026-09-04)
+
+With the requested 50-point stop and 50-point target, initialization took 2.195
+seconds and the full replay plus final-20% diagnostic took 29.410 seconds on the
+same cache. The 504,185-bar replay produced 6,101 trades, -$12,951.90 net P&L and
+0.9539 profit factor under the same costs. These results remain negative after
+costs. The separate local report is
+`backend/storage/databento/topbot-v3-replay-report.json`; current rules and the
+comparison diagnostic are recorded in [TopBot strategy](topbot-strategy.md).

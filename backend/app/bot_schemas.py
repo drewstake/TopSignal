@@ -251,6 +251,19 @@ class BotTradeLevelsOut(BaseModel):
     target: float | None = None
 
 
+class TopBotStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dry_run: StrictBool = True
+    confirm_live_order_routing: StrictBool = False
+
+    @model_validator(mode="after")
+    def require_live_confirmation(self):
+        if not self.dry_run and not self.confirm_live_order_routing:
+            raise ValueError("Live Run requires explicit order-routing confirmation")
+        return self
+
+
 class BotStartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -669,6 +682,37 @@ class BotBacktestTradeOut(BaseModel):
     bars_held: int
 
 
+class BotBacktestGapYearOut(BaseModel):
+    year: int
+    gap_count: int
+    missing_bar_count: int
+    in_session_gap_count: int
+
+
+class BotBacktestGapExampleOut(BaseModel):
+    start: datetime
+    end: datetime
+    missing_bar_count: int
+    in_session_missing_bar_count: int
+
+
+class BotBacktestGapsOut(BaseModel):
+    gap_count: int
+    missing_bar_count: int
+    in_session_gap_count: int
+    in_session_missing_bar_count: int
+    by_year: list[BotBacktestGapYearOut]
+    largest_gaps: list[BotBacktestGapExampleOut]
+
+
+class BotBacktestDataQualityOut(BaseModel):
+    available_start: datetime
+    first_evaluation: datetime
+    warmup_required: int
+    warmup_available: int
+    gaps: BotBacktestGapsOut | None = None
+
+
 class BotBacktestOut(BaseModel):
     id: int
     bot_config_id: int | None = None
@@ -686,3 +730,5 @@ class BotBacktestOut(BaseModel):
     monthly_results: list[BotBacktestPeriodOut]
     trades: list[BotBacktestTradeOut]
     warnings: list[str]
+    notes: list[str] = Field(default_factory=list)
+    data_quality: BotBacktestDataQualityOut | None = None

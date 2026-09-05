@@ -98,6 +98,7 @@ from .bot_schemas import (
     BotEvaluationOut,
     BotRunOut,
     BotStartIn,
+    TopBotStartIn,
     ProjectXContractOut,
     ProjectXMarketCandleOut,
 )
@@ -241,6 +242,7 @@ from .services.trade_imports import (
     get_trade_import_status,
     preview_trade_import,
 )
+from .services.topbot import prepare_topbot, resolve_topbot_contract
 from .services.bot_service import (
     _looks_like_projectx_contract_id,
     AccountEmergencyLatchActiveError,
@@ -3111,16 +3113,7 @@ def _backtest_stream_error(exc: Exception) -> dict[str, object]:
     return {"status": 500, "detail": "Backtest failed."}
 
 
-@app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)
-def start_trading_bot(
-    bot_config_id: int,
-    payload: BotStartIn | None = None,
-    db: Session = Depends(get_db),
-):
-    user_id = get_authenticated_user_id()
-    if bot_config_id <= 0:
-        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
-    body = payload or BotStartIn()
+def _validate_bot_start_admission(db: Session, body: BotStartIn) -> None:
     if body.poll_interval_seconds is not None:
         raise HTTPException(
             status_code=422,
@@ -3146,6 +3139,61 @@ def start_trading_bot(
                 detail=reason or "bot_worker_unavailable",
                 headers={"Retry-After": "5"},
             )
+
+
+@app.post("/api/accounts/{account_id}/topbot/start", response_model=BotEvaluationOut)
+def start_account_topbot(
+    account_id: int,
+    payload: TopBotStartIn,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if account_id <= 0:
+        raise HTTPException(status_code=400, detail="account_id must be a positive integer")
+    body = BotStartIn(
+        dry_run=payload.dry_run,
+        confirm_live_order_routing=payload.confirm_live_order_routing,
+        continuous=True,
+    )
+    _validate_bot_start_admission(db, body)
+    try:
+        account = _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+        if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
+            raise HTTPException(status_code=409, detail="csv_import_accounts_cannot_run_bots")
+        client = _projectx_client_for_user(db, user_id=user_id)
+        # Release the read transaction before resolving the active delivery.
+        db.commit()
+        contract_id = resolve_topbot_contract(client)
+        config = prepare_topbot(
+            db, user_id=user_id, account_id=account_id,
+            dry_run=payload.dry_run, contract_id=contract_id,
+        )
+        return start_trading_bot(config.id, body, db=db)
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
+@app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)
+def start_trading_bot(
+    bot_config_id: int,
+    payload: BotStartIn | None = None,
+    db: Session = Depends(get_db),
+):
+    user_id = get_authenticated_user_id()
+    if bot_config_id <= 0:
+        raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
+    body = payload or BotStartIn()
+    _validate_bot_start_admission(db, body)
     try:
         config = get_bot_config(
             db,

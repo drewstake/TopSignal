@@ -333,7 +333,7 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
     db_session,
     tmp_path,
 ):
-    source_start = datetime(2024, 3, 4, 13, 30, tzinfo=timezone.utc)
+    source_start = datetime(2024, 3, 4, 23, 0, tzinfo=timezone.utc)
     definition_archive = _write_dbn_archive(
         tmp_path / "parity-definition.zip",
         job_id="parity-definition",
@@ -350,7 +350,7 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
                 price_nano=18_000_000_000_000 + index * 250_000_000,
                 volume=10 + index,
             )
-            for index in range(150)
+            for index in range(1200)
         ],
     )
 
@@ -372,15 +372,15 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
     store = DatabentoReplayStore(cache_root, build_missing_timeframes=False)
 
     load_options = {
-        "max_rows": 100,
+        "max_rows": 500,
         "user_id": OWNER_ID,
         "contract_id": CONTRACT_ID,
         "root_symbol": "MNQ",
         "unit": "minute",
         "unit_number": 5,
         "start": source_start,
-        "end": source_start + timedelta(minutes=150),
-        "closed_by": source_start + timedelta(minutes=150),
+        "end": source_start + timedelta(minutes=1200),
+        "closed_by": source_start + timedelta(minutes=1200),
     }
     relational = load_databento_replay_candles(db_session, **load_options)
     local = store.open_candles(
@@ -437,7 +437,7 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
     replay_options = {
         "config": config,
         "start": source_start,
-        "end": source_start + timedelta(minutes=150),
+        "end": source_start + timedelta(minutes=1200),
         "starting_balance": 25_000.0,
         "commission_per_contract": 1.25,
         "slippage_ticks": 1.0,
@@ -480,6 +480,7 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
         assert lazy_topbot == eager_topbot
     finally:
         store.clear()
+
 
 
 def test_generated_dbn_rejects_mnq_bars_before_the_exchange_launch(db_session, tmp_path):
@@ -811,7 +812,7 @@ def test_create_bot_backtest_is_deterministic_and_never_reads_projectx(
     assert first.assumptions_snapshot["roll_policy_version"] == ROLL_POLICY_VERSION
     assert any(
         "ProjectX market history was not read" in warning
-        for warning in first.result_snapshot["warnings"]
+        for warning in first.result_snapshot["notes"]
     )
     assert db_session.query(BotBacktest).count() == 2
 

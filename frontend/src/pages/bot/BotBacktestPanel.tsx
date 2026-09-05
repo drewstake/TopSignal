@@ -5,19 +5,14 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Progress } from "../../components/ui/Progress";
-import { Select } from "../../components/ui/Select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/Table";
 import { botsApi } from "../../lib/api";
 import type {
-  BotBacktestBreakdown,
   BotBacktestDrawdownPoint,
   BotBacktestEquityPoint,
   BotBacktestPeriodResult,
   BotBacktestProgress,
   BotBacktestResult,
-  BotBacktestInstrument,
   BotConfig,
-  BotStrategyType,
 } from "../../lib/types";
 import { cn } from "../../components/ui/cn";
 import {
@@ -34,24 +29,10 @@ import {
   type BotBacktestFormState,
 } from "./botBacktest";
 
-const EASTERN_TIME_ZONE = "America/New_York";
-const BACKTEST_STRATEGY_OPTIONS: Array<{ value: BotStrategyType; label: string }> = [
-  { value: "topbot_adaptive", label: "TopBot Adaptive (all configured sources)" },
-  { value: "sma_cross", label: "SMA Cross" },
-  { value: "ema_trend_pullback", label: "EMA Trend Pullback" },
-  { value: "pullback_trap_reversal", label: "Pullback Trap Reversal" },
-  { value: "bollinger_mean_reversion", label: "Bollinger Mean Reversion" },
-  { value: "bollinger_rsi_reversal", label: "Bollinger RSI Reversal" },
-  { value: "vwap_atr_mean_reversion", label: "VWAP ATR Mean Reversion" },
-  { value: "orb_fibonacci_pullback", label: "ORB Fibonacci Pullback" },
-];
-const BACKTEST_INSTRUMENT_OPTIONS: Array<{ value: BotBacktestInstrument; label: string }> = [
-  { value: "MNQ", label: "MNQ — Micro Nasdaq-100" },
-  { value: "MES", label: "MES — Micro S&P 500" },
-  { value: "NQ", label: "NQ — E-mini Nasdaq-100" },
-  { value: "ES", label: "ES — E-mini S&P 500" },
-];
+import { BacktestTradeAnalysis } from "./BacktestTradeAnalysis";
+import { BacktestDiagnostics } from "./BacktestDiagnostics";
 
+const EASTERN_TIME_ZONE = "America/New_York";
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -81,10 +62,7 @@ interface BotBacktestPanelProps {
 
 export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProps) {
   const [form, setForm] = useState<BotBacktestFormState>(() =>
-    buildDefaultForm(
-      bot?.strategy_type ?? "sma_cross",
-      backtestInstrumentForBot(bot),
-    ),
+    buildDefaultForm(),
   );
   const [result, setResult] = useState<BotBacktestResult | null>(null);
   const [progress, setProgress] = useState<BotBacktestProgress | null>(null);
@@ -154,7 +132,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>Backtest</CardTitle>
-            <CardDescription>Deterministic historical replay plus a chronological holdout diagnostic</CardDescription>
+            <CardDescription>TopBot Adaptive · MNQ 5m · EMA/VWAP pullback · Long bias · Hold for 50-point stop / 50-point target</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             {demoMode ? <Badge variant="accent">Demo snapshot</Badge> : null}
@@ -164,35 +142,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.4fr_1.4fr_1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
-          <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
-            <span>Instrument</span>
-            <Select
-              value={form.instrument}
-              onChange={(event) => setForm((current) => ({
-                ...current,
-                instrument: event.target.value as BotBacktestInstrument,
-              }))}
-            >
-              {BACKTEST_INSTRUMENT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </Select>
-          </label>
-          <label className="block space-y-1.5 text-xs font-medium uppercase tracking-wide text-app-muted">
-            <span>Backtest strategy</span>
-            <Select
-              value={form.strategyType}
-              onChange={(event) => setForm((current) => ({
-                ...current,
-                strategyType: event.target.value as BotStrategyType,
-              }))}
-            >
-              {BACKTEST_STRATEGY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </Select>
-          </label>
+        <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end" onSubmit={handleSubmit}>
           <BacktestInput
             label="Starting balance"
             type="number"
@@ -327,19 +277,7 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         </div>
       </div>
 
-      {result.warnings.length > 0 ? (
-        <div role="status" className="rounded-xl border border-app-warning/35 bg-app-warning/10 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-app-warning">Sample-quality warnings</p>
-          <ul className="mt-2 space-y-1.5 text-sm text-app-text-soft">
-            {result.warnings.map((warning, index) => (
-              <li key={`${warning}-${index}`} className="flex gap-2">
-                <span className="text-app-warning" aria-hidden="true">•</span>
-                <span>{warning}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <BacktestDiagnostics result={result} />
 
       {result.evaluation_split ? (
         <ChronologicalHoldout split={result.evaluation_split} />
@@ -376,10 +314,8 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.7fr)]">
-        <EquityDrawdownChart equity={result.equity_curve} drawdown={result.drawdown_series} />
-        <DirectionBreakdown long={metrics.long} short={metrics.short} />
-      </div>
+      <EquityDrawdownChart equity={result.equity_curve} drawdown={result.drawdown_series} />
+      <BacktestTradeAnalysis key={result.id} result={result} />
 
       <Assumptions result={result} />
 
@@ -393,7 +329,6 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
         </details>
       ) : null}
 
-      <TradeLedger result={result} />
     </div>
   );
 }
@@ -514,40 +449,6 @@ function EquityDrawdownChart({ equity, drawdown }: { equity: BotBacktestEquityPo
   );
 }
 
-function DirectionBreakdown({ long, short }: { long: BotBacktestBreakdown; short: BotBacktestBreakdown }) {
-  return (
-    <div className="rounded-xl border border-app-border bg-app-bg/30 p-4">
-      <h5 className="text-sm font-semibold text-app-text">Long / short</h5>
-      <p className="mt-0.5 text-xs text-app-muted">Direction-level accounting</p>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[300px] text-sm">
-          <thead className="border-b border-app-border text-left text-[10px] uppercase tracking-wide text-app-muted">
-            <tr><th className="pb-2 font-medium">Metric</th><th className="pb-2 text-right font-medium">Long</th><th className="pb-2 text-right font-medium">Short</th></tr>
-          </thead>
-          <tbody className="divide-y divide-app-border text-app-text-soft">
-            <BreakdownRow label="Trades" long={integerFormatter.format(long.trade_count)} short={integerFormatter.format(short.trade_count)} />
-            <BreakdownRow label="Win rate" long={formatPercent(long.win_rate)} short={formatPercent(short.win_rate)} />
-            <BreakdownRow label="Net P&L" long={formatCurrency(long.net_pnl)} short={formatCurrency(short.net_pnl)} />
-            <BreakdownRow label="Profit factor" long={formatRatio(long.profit_factor)} short={formatRatio(short.profit_factor)} />
-            <BreakdownRow label="Expectancy" long={formatCurrency(long.expectancy)} short={formatCurrency(short.expectancy)} />
-            <BreakdownRow label="Payoff" long={formatRatio(long.payoff_ratio)} short={formatRatio(short.payoff_ratio)} />
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function BreakdownRow({ label, long, short }: { label: string; long: string; short: string }) {
-  return (
-    <tr>
-      <td className="py-2 text-xs text-app-muted">{label}</td>
-      <td className="py-2 text-right font-mono text-xs">{long}</td>
-      <td className="py-2 text-right font-mono text-xs">{short}</td>
-    </tr>
-  );
-}
-
 function Assumptions({ result }: { result: BotBacktestResult }) {
   const assumptions = result.assumptions;
   return (
@@ -617,84 +518,8 @@ function PeriodResults({ title, rows }: { title: string; rows: BotBacktestPeriod
   );
 }
 
-function TradeLedger({ result }: { result: BotBacktestResult }) {
-  return (
-    <div className="min-w-0">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h5 className="text-sm font-semibold text-app-text">Trade ledger</h5>
-          <p className="mt-0.5 text-xs text-app-muted">Signal, next-bar execution, excursions, costs, and exit reason</p>
-        </div>
-        <span className="text-xs text-app-muted">{integerFormatter.format(result.trades.length)} closed trade{result.trades.length === 1 ? "" : "s"}</span>
-      </div>
-      {result.trades.length > 0 ? (
-        <div className="max-h-[34rem] overflow-auto rounded-xl border border-app-border">
-          <Table className="min-w-[1320px]">
-            <TableHeader className="sticky top-0 bg-app-surface">
-              <TableRow>
-                <TableHead>#</TableHead><TableHead>Side</TableHead><TableHead>Signal</TableHead><TableHead>Entry</TableHead><TableHead>Exit</TableHead>
-                <TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Entry px</TableHead><TableHead className="text-right">Exit px</TableHead>
-                <TableHead>Exit reason</TableHead><TableHead className="text-right">Gross</TableHead><TableHead className="text-right">Fees</TableHead>
-                <TableHead className="text-right">Net</TableHead><TableHead className="text-right">MAE</TableHead><TableHead className="text-right">MFE</TableHead><TableHead className="text-right">Bars</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {result.trades.map((trade) => (
-                <TableRow key={trade.id}>
-                  <TableCell className="font-mono text-xs">{trade.id}</TableCell>
-                  <TableCell><Badge variant={trade.side === "long" ? "positive" : "negative"}>{trade.side}</Badge></TableCell>
-                  <TableCell className="whitespace-nowrap text-xs">{formatTimestamp(trade.signal_timestamp)}</TableCell>
-                  <TableCell className="whitespace-nowrap text-xs">{formatTimestamp(trade.entry_timestamp)}</TableCell>
-                  <TableCell className="whitespace-nowrap text-xs">{formatTimestamp(trade.exit_timestamp)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{trade.quantity}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{formatPrice(trade.entry_price)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{formatPrice(trade.exit_price)}</TableCell>
-                  <TableCell className="max-w-52 text-xs">{humanize(trade.exit_reason)}</TableCell>
-                  <TableCell className={cn("text-right font-mono text-xs", pnlClassName(trade.gross_pnl))}>{formatCurrency(trade.gross_pnl)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{formatCurrency(trade.commission)}</TableCell>
-                  <TableCell className={cn("text-right font-mono text-xs font-semibold", pnlClassName(trade.net_pnl))}>{formatCurrency(trade.net_pnl)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs text-app-negative">{formatCurrency(trade.mae)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs text-app-positive">{formatCurrency(trade.mfe)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs">{trade.bars_held}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : (
-        <div className="rounded-xl border border-dashed border-app-border px-4 py-6 text-center text-sm text-app-muted">
-          No trades met the strategy and session rules in this sample.
-        </div>
-      )}
-    </div>
-  );
-}
-
-function buildDefaultForm(
-  strategyType: BotStrategyType,
-  instrument: BotBacktestInstrument,
-): BotBacktestFormState {
-  return {
-    strategyType,
-    instrument,
-    startingBalance: "50000",
-    commissionPerContract: "1.20",
-    slippageTicks: "1",
-  };
-}
-
-function backtestInstrumentForBot(bot: BotConfig | null): BotBacktestInstrument {
-  const candidates = [bot?.symbol, bot?.contract_id];
-  for (const candidate of candidates) {
-    const tokens = String(candidate ?? "").toUpperCase().split(/[^A-Z0-9]+/);
-    const match = tokens.find((token) =>
-      BACKTEST_INSTRUMENT_OPTIONS.some((option) => option.value === token),
-    );
-    if (match) {
-      return match as BotBacktestInstrument;
-    }
-  }
-  return "MNQ";
+function buildDefaultForm(): BotBacktestFormState {
+  return { startingBalance: "50000", commissionPerContract: "1.20", slippageTicks: "1" };
 }
 
 function formatCurrency(value: number): string {
@@ -714,10 +539,6 @@ function formatPercent(value: number): string {
 
 function formatRatio(value: number | null): string {
   return value !== null && Number.isFinite(value) ? `${numberFormatter.format(value)}×` : "—";
-}
-
-function formatPrice(value: number): string {
-  return Number.isFinite(value) ? numberFormatter.format(value) : "—";
 }
 
 function formatTimestamp(value: string): string {

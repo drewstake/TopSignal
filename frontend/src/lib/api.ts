@@ -2412,6 +2412,11 @@ async function runBacktestRequest(
 }
 
 export const botsApi = {
+  startTopBot: (accountId: number, dryRun: boolean) =>
+    requestJson<BotEvaluation>(`/api/accounts/${accountId}/topbot/start`, {
+      method: "POST",
+      body: { dry_run: dryRun, confirm_live_order_routing: !dryRun },
+    }),
   searchContracts: (query: ContractSearchQuery) =>
     requestJson<ProjectXContract[]>("/api/projectx/contracts/search", {
       query: {

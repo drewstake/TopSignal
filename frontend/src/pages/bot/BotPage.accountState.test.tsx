@@ -12,7 +12,7 @@ import type {
   BotActivity,
   BotConfig,
   BotRuntimeStatus,
-  ProjectXContract,
+  BotEvaluation,
 } from "../../lib/types";
 
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart stub</div> }));
@@ -50,9 +50,9 @@ function bot(id: number, accountId: number): BotConfig {
     name: `Bot ${id}`,
     account_id: accountId,
     provider: "projectx",
-    enabled: true,
+    enabled: false,
     execution_mode: "live",
-    strategy_type: "sma_cross",
+    strategy_type: "topbot_adaptive",
     strategy_params: {},
     contract_id: "CON.F.US.MNQ.U26",
     symbol: "MNQ",
@@ -171,7 +171,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("BotPage account-scoped edit state", () => {
+describe("BotPage account-scoped run controls", () => {
   it("requires confirmation before arming a continuous live run", async () => {
     const user = userEvent.setup();
     vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
@@ -180,29 +180,24 @@ describe("BotPage account-scoped edit state", () => {
     });
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const start = vi.spyOn(botsApi, "start").mockImplementation(() => new Promise(() => undefined));
+    const start = vi.spyOn(botsApi, "startTopBot").mockImplementation(() => new Promise(() => undefined));
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     await waitFor(() => expect((armButton as HTMLButtonElement).disabled).toBe(false));
     await user.click(armButton);
 
     expect(confirm).toHaveBeenCalledOnce();
-    expect(String(confirm.mock.calls[0]?.[0])).toContain("eligible to attempt order routing");
-    expect(String(confirm.mock.calls[0]?.[0])).toContain("restart automatically disarms routing");
-    expect(String(confirm.mock.calls[0]?.[0])).toContain("before explicitly rearming");
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("MNQ orders");
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("restart disarms routing");
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("start a new Live Run");
     expect(String(confirm.mock.calls[0]?.[0])).not.toContain("will resume");
     expect(start).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
     await user.click(armButton);
     await waitFor(() =>
-      expect(start).toHaveBeenCalledWith(botA.id, {
-        dryRun: false,
-        confirmLiveOrderRouting: true,
-        continuous: true,
-        stopAtSessionEnd: false,
-      }),
+      expect(start).toHaveBeenCalledWith(accountA.id, false),
     );
   });
 
@@ -215,10 +210,10 @@ describe("BotPage account-scoped edit state", () => {
       cacheScope: "user:test",
     });
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
-    const start = vi.spyOn(botsApi, "start");
+    const start = vi.spyOn(botsApi, "startTopBot");
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     expect((await screen.findAllByText("No healthy worker lease is currently confirmed.")).length).toBeGreaterThan(0);
     fireEvent.click(armButton);
@@ -235,7 +230,7 @@ describe("BotPage account-scoped edit state", () => {
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
 
     renderBotPage();
-    const unknownButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const unknownButton = await screen.findByRole("button", { name: "Live Run" });
     expect((unknownButton as HTMLButtonElement).disabled).toBe(true);
     expect(await screen.findByText(/ProjectX has not verified this account as simulated Practice/)).not.toBeNull();
     cleanup();
@@ -243,7 +238,7 @@ describe("BotPage account-scoped edit state", () => {
     accountA.provider_simulated = true;
     accountA.provider_classification_observed_at = new Date(Date.now() - 6 * 60 * 1_000).toISOString();
     renderBotPage();
-    const staleButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const staleButton = await screen.findByRole("button", { name: "Live Run" });
     expect((staleButton as HTMLButtonElement).disabled).toBe(true);
     expect(await screen.findByText(/classification is stale/)).not.toBeNull();
   });
@@ -265,7 +260,7 @@ describe("BotPage account-scoped edit state", () => {
     });
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     await user.click(await screen.findByRole("button", { name: "Verify Practice account" }));
 
@@ -288,7 +283,7 @@ describe("BotPage account-scoped edit state", () => {
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     expect((await screen.findAllByText("ProjectX provider health is throttled.")).length).toBeGreaterThan(0);
   });
@@ -305,7 +300,7 @@ describe("BotPage account-scoped edit state", () => {
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     expect((await screen.findAllByText("2 live submission(s) still require reconciliation.")).length).toBeGreaterThan(0);
   });
@@ -322,7 +317,7 @@ describe("BotPage account-scoped edit state", () => {
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
 
     renderBotPage();
-    const armButton = await screen.findByRole("button", { name: "Request Continuous Live Arming" });
+    const armButton = await screen.findByRole("button", { name: "Live Run" });
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     expect(
       (await screen.findAllByText(/1 account emergency-flatten outcome\(s\) remain unresolved/)).length,
@@ -502,199 +497,83 @@ describe("BotPage account-scoped edit state", () => {
     });
 
     renderBotPage();
-    expect(await screen.findByText("No bot configuration saved.")).not.toBeNull();
+    expect(await screen.findByText("Ready for your first run.")).not.toBeNull();
     await user.click(screen.getByRole("button", { name: `Emergency: Flatten Account ${accountA.id}` }));
     await waitFor(() => expect(flatten).toHaveBeenCalledWith(accountA.id, true));
   });
 
-  it("persists execution mode changes without starting the bot", async () => {
+  it("starts a dry run without any saved configuration or setup form", async () => {
     const user = userEvent.setup();
     vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
-      configs: { items: [botA], total: 1 },
-      cacheScope: "user:test",
+      configs: { items: [], total: 0 }, cacheScope: "user:test",
     });
-    vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
-    const update = vi.spyOn(botsApi, "updateConfig").mockResolvedValue({
-      ...botA,
-      execution_mode: "dry_run",
-    });
-    const start = vi.spyOn(botsApi, "start");
-
+    const start = vi.spyOn(botsApi, "startTopBot").mockImplementation(() => new Promise(() => undefined));
+    const save = vi.spyOn(botsApi, "createConfig");
     renderBotPage();
-    await screen.findByRole("button", { name: "Update Bot" });
-    fireEvent.change(screen.getByLabelText(/^Execution/), { target: { value: "dry_run" } });
-    await user.click(screen.getByRole("button", { name: "Update Bot" }));
-
-    await waitFor(() => expect(update).toHaveBeenCalled());
-    expect(update.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
-      execution_mode: "dry_run",
-      strategy_params: {
-        protective_stop_ticks: 8,
-        take_profit_ticks: 16,
-      },
-    }));
-    expect(start).not.toHaveBeenCalled();
+    const dryRun = await screen.findByRole("button", { name: "Dry Run" });
+    await waitFor(() => expect((dryRun as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText("Configuration")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await user.click(dryRun);
+    expect(start).toHaveBeenCalledWith(accountA.id, true);
+    expect(save).not.toHaveBeenCalled();
   });
 
-  it("clears the old edit ID when switching to an account with no bots", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockImplementation(async (accountId) => ({
-      configs: {
-        items: accountId === accountA.id ? [botA] : [],
-        total: accountId === accountA.id ? 1 : 0,
-      },
-      cacheScope: "user:test",
-    }));
-    vi.spyOn(botsApi, "getActivity").mockResolvedValue({
-      config: botA,
-      runs: [],
-      decisions: [],
-      order_attempts: [],
-      risk_events: [],
-    } satisfies BotActivity);
-    const updateConfig = vi.spyOn(botsApi, "updateConfig");
-    const createConfig = vi.spyOn(botsApi, "createConfig");
-
-    renderBotPage();
-    expect(await screen.findByRole("button", { name: "Update Bot" })).not.toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Switch to empty account" }));
-
-    expect(await screen.findByRole("button", { name: "Save Bot" })).not.toBeNull();
-    const accountSelect = screen.getByLabelText(/^Account/) as HTMLSelectElement;
-    expect(accountSelect.value).toBe(String(accountB.id));
-    expect(accountSelect.disabled).toBe(true);
-    expect(screen.queryByText("Bot 41")).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Save Bot" }));
-    expect(updateConfig).not.toHaveBeenCalled();
-    expect(createConfig).not.toHaveBeenCalled();
-  });
-
-  it("rejects a partially parsed strategy integer instead of updating", async () => {
+  it("keeps Dry Run available when live routing is blocked", async () => {
+    accountA.provider_simulated = false;
     vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
-      configs: { items: [botA], total: 1 },
-      cacheScope: "user:test",
+      configs: { items: [], total: 0 }, cacheScope: "user:test",
     });
-    vi.spyOn(botsApi, "getActivity").mockResolvedValue({
-      config: botA,
-      runs: [],
-      decisions: [],
-      order_attempts: [],
-      risk_events: [],
-    } satisfies BotActivity);
-    const updateConfig = vi.spyOn(botsApi, "updateConfig");
-
     renderBotPage();
-    await screen.findByRole("button", { name: "Update Bot" });
-    const barsInput = screen.getByLabelText("Bars") as HTMLInputElement;
-    fireEvent.change(barsInput, { target: { value: "100bars" } });
-    fireEvent.click(screen.getByRole("button", { name: "Update Bot" }));
-
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Numeric settings"));
-    expect(updateConfig).not.toHaveBeenCalled();
+    const dryRun = await screen.findByRole("button", { name: "Dry Run" });
+    await waitFor(() => expect((dryRun as HTMLButtonElement).disabled).toBe(false));
+    expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("does not let an old account delete completion replace the new account config list", async () => {
-    const user = userEvent.setup();
-    const pendingDelete = deferred<void>();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockImplementation(async (accountId) => ({
-      configs: {
-        items: accountId === accountA.id ? [botA] : [botB],
-        total: 1,
-      },
-      cacheScope: "user:test",
-    }));
-    vi.spyOn(botsApi, "getActivity").mockImplementation(async (botId) => (
-      activity(botId === botA.id ? botA : botB)
-    ));
-    vi.spyOn(botsApi, "deleteConfig").mockReturnValue(pendingDelete.promise);
-
-    renderBotPage();
-    await screen.findByRole("button", { name: "Delete Bot 41" });
-    await user.click(screen.getByRole("button", { name: "Delete Bot 41" }));
-    await waitFor(() => expect(botsApi.deleteConfig).toHaveBeenCalledWith(botA.id));
-
-    await user.click(screen.getByRole("button", { name: "Switch to empty account" }));
-    await screen.findByRole("option", { name: "Bot 42" });
-
-    await act(async () => {
-      pendingDelete.resolve();
-      await pendingDelete.promise;
+  it("prevents mode changes while automation is already running", async () => {
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [{ ...botA, enabled: true }], total: 1 }, cacheScope: "user:test",
     });
-
-    await waitFor(() => expect(screen.getByRole("option", { name: "Bot 42" })).not.toBeNull());
-    expect(screen.queryByRole("option", { name: "Bot 41" })).toBeNull();
-  });
-
-  it("invalidates an old contract search after switching away and back to the same account", async () => {
-    const user = userEvent.setup();
-    const pendingSearch = deferred<ProjectXContract[]>();
-    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockImplementation(async (accountId) => ({
-      configs: {
-        items: accountId === accountA.id ? [botA] : [],
-        total: accountId === accountA.id ? 1 : 0,
-      },
-      cacheScope: "user:test",
-    }));
     vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
-    vi.spyOn(botsApi, "searchContracts").mockReturnValue(pendingSearch.promise);
-
     renderBotPage();
-    await screen.findByRole("button", { name: "Update Bot" });
-    fireEvent.change(screen.getByDisplayValue("MNQ"), { target: { value: "ES" } });
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    await waitFor(() => expect(botsApi.searchContracts).toHaveBeenCalled());
-
-    await user.click(screen.getByRole("button", { name: "Switch to empty account" }));
-    await screen.findByRole("button", { name: "Save Bot" });
-    await user.click(screen.getByRole("button", { name: "Switch to first account" }));
-    await screen.findByRole("button", { name: "Update Bot" });
-
-    await act(async () => {
-      pendingSearch.resolve([{
-        id: "CON.F.US.ES.U26",
-        name: "Stale ES Contract",
-        description: null,
-        tick_size: 0.25,
-        tick_value: 12.5,
-        active_contract: true,
-        symbol_id: "ES",
-      }]);
-      await pendingSearch.promise;
-    });
-
-    expect(screen.queryByDisplayValue("Stale ES Contract")).toBeNull();
-    expect(screen.getByDisplayValue("MNQ")).not.toBeNull();
+    await screen.findByRole("button", { name: "Dry Run" });
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("does not surface a stale save error on the next account", async () => {
+  it("does not apply a late start result after switching accounts", async () => {
     const user = userEvent.setup();
-    const pendingSave = deferred<BotConfig>();
-    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockImplementation(async (accountId) => ({
-      configs: {
-        items: accountId === accountA.id ? [botA] : [],
-        total: accountId === accountA.id ? 1 : 0,
-      },
-      cacheScope: "user:test",
-    }));
-    vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
-    vi.spyOn(botsApi, "updateConfig").mockReturnValue(pendingSave.promise);
-
-    renderBotPage();
-    await user.click(await screen.findByRole("button", { name: "Update Bot" }));
-    await waitFor(() => expect(botsApi.updateConfig).toHaveBeenCalled());
-
-    await user.click(screen.getByRole("button", { name: "Switch to empty account" }));
-    await screen.findByRole("button", { name: "Save Bot" });
-
-    await act(async () => {
-      pendingSave.reject(new Error("Account A save failed"));
-      await pendingSave.promise.catch(() => undefined);
+    const pending = deferred<BotEvaluation>();
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [], total: 0 }, cacheScope: "user:test",
     });
+    const start = vi.spyOn(botsApi, "startTopBot").mockReturnValue(pending.promise);
+    renderBotPage();
+    await user.click(await screen.findByRole("button", { name: "Dry Run" }));
+    expect(start).toHaveBeenCalledWith(accountA.id, true);
+    await user.click(screen.getByRole("button", { name: "Switch to empty account" }));
+    await screen.findByText(`MNQ · TopBot Adaptive · ${accountB.name} (${accountB.id})`);
+    await act(async () => pending.resolve({ config: { ...botA, enabled: true } } as BotEvaluation));
+    expect(screen.getByText("Ready for your first run.")).not.toBeNull();
+    expect(screen.queryByText("Live Run active")).toBeNull();
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 
-    expect(screen.queryByText("Account A save failed")).toBeNull();
-    expect((screen.getByLabelText(/^Account/) as HTMLSelectElement).value).toBe(String(accountB.id));
+  it("refreshes a persisted run after a failed start and keeps the error visible", async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [], total: 0 }, cacheScope: "user:test",
+    });
+    vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(botA));
+    vi.spyOn(botsApi, "startTopBot").mockImplementation(async () => {
+      list.mockResolvedValue({ configs: { items: [{ ...botA, enabled: true }], total: 1 }, cacheScope: "user:test" });
+      throw new Error("Provider unavailable after start");
+    });
+    renderBotPage();
+    await user.click(await screen.findByRole("button", { name: "Dry Run" }));
+    expect(await screen.findByText("Provider unavailable after start")).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

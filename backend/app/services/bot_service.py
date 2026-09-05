@@ -411,43 +411,6 @@ _PULLBACK_TRAP_REVERSAL_DEFAULTS = {
     "pullback_range_multiplier": 1.25,
     "prior_swing_window": 10,
 }
-_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES = (
-    _STRATEGY_SMA_CROSS,
-    _STRATEGY_EMA_SCALPING,
-    _STRATEGY_EMA_TREND_PULLBACK,
-    _STRATEGY_SUPPORT_RESISTANCE,
-    _STRATEGY_LIQUIDITY_SWEEP_RETEST,
-    _STRATEGY_FVG_SWEEP_MSS,
-    _STRATEGY_DONCHIAN_BREAKOUT,
-    _STRATEGY_OPENING_RVOL_BREAKOUT,
-    _STRATEGY_SUPERTREND_PIVOT,
-    _STRATEGY_VWAP_ATR_MEAN_REVERSION,
-    _STRATEGY_BOLLINGER_RSI_REVERSAL,
-    _STRATEGY_BOLLINGER_MEAN_REVERSION,
-    _STRATEGY_MACD_SUPPORT_RESISTANCE,
-    _STRATEGY_ORB_FIBONACCI_PULLBACK,
-    _STRATEGY_DELAYED_ORB_CONFIRMATION,
-    _STRATEGY_ATR_ADJUSTED_RELATIVE_STRENGTH,
-    _STRATEGY_RELATIVE_STRENGTH_SPY,
-    _STRATEGY_VWAP_GAP_RETRACE,
-    _STRATEGY_PULLBACK_TRAP_REVERSAL,
-    _STRATEGY_FISHER_MEAN_REVERSION,
-)
-_TOPBOT_ADAPTIVE_DEFAULTS = {
-    "source_strategies": list(_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES),
-    "source_strategy_params": {},
-    "minimum_score": 70.0,
-    "minimum_confidence": 55.0,
-    "minimum_directional_votes": 2,
-    "max_opposing_votes": 1,
-    "minimum_reward_risk": 1.5,
-    "time_stop_bars": 6,
-    "enable_trailing_stop": True,
-    "trailing_stop_mode": _TRAILING_STOP_MODE_ATR,
-    "trailing_atr_multiplier": 2.0,
-    "move_to_breakeven_at_r": 1.0,
-    "block_expired_contracts": False,
-}
 
 
 @dataclass
@@ -3961,164 +3924,10 @@ def evaluate_sma_cross(
     )
 
 
-def evaluate_topbot_adaptive(
-    source_results: list[dict[str, Any]],
-    *,
-    strategy_params: dict[str, Any] | None = None,
-) -> SignalResult:
-    """Choose the strongest bracketed plan after source strategies reach consensus."""
-
-    params = _normalize_strategy_params(_STRATEGY_TOPBOT_ADAPTIVE, strategy_params)
-    successful = [result for result in source_results if not result.get("error")]
-    buy_results = [result for result in successful if result.get("action") == "BUY"]
-    sell_results = [result for result in successful if result.get("action") == "SELL"]
-    hold_count = sum(result.get("action") == "HOLD" for result in successful)
-    failures = [
-        {
-            "strategy_type": str(result.get("strategy_type") or "unknown"),
-            "error": str(result.get("error") or "evaluation failed")[:300],
-        }
-        for result in source_results
-        if result.get("error")
-    ]
-
-    if len(buy_results) == len(sell_results):
-        winning_action = None
-        directional_results: list[dict[str, Any]] = []
-        opposing_results: list[dict[str, Any]] = []
-    elif len(buy_results) > len(sell_results):
-        winning_action = "BUY"
-        directional_results = buy_results
-        opposing_results = sell_results
-    else:
-        winning_action = "SELL"
-        directional_results = sell_results
-        opposing_results = buy_results
-
-    directional_vote_count = len(directional_results)
-    opposing_vote_count = len(opposing_results)
-    directional_total = len(buy_results) + len(sell_results)
-    agreement_confidence = (
-        round((directional_vote_count / directional_total) * 100, 2)
-        if winning_action is not None and directional_total
-        else 0.0
-    )
-
-    audit = {
-        "source_count": len(source_results),
-        "successful_source_count": len(successful),
-        "failed_source_count": len(failures),
-        "buy_votes": len(buy_results),
-        "sell_votes": len(sell_results),
-        "hold_votes": hold_count,
-        "winning_action": winning_action,
-        "directional_votes": directional_vote_count,
-        "opposing_votes": opposing_vote_count,
-        "agreement_confidence": agreement_confidence,
-        "minimum_directional_votes": int(params["minimum_directional_votes"]),
-        "max_opposing_votes": int(params["max_opposing_votes"]),
-        "minimum_confidence": float(params["minimum_confidence"]),
-        "minimum_score": float(params["minimum_score"]),
-        "minimum_reward_risk": float(params["minimum_reward_risk"]),
-        "failures": failures,
-        "sources": [
-            {
-                "strategy_type": str(result.get("strategy_type") or "unknown"),
-                "action": str(result.get("action") or "ERROR"),
-                "score": result.get("score"),
-                "reward_risk": result.get("reward_risk"),
-                "eligible": bool(result.get("eligible")),
-            }
-            for result in source_results
-        ],
-    }
-
-    def hold(reason: str) -> SignalResult:
-        timestamps = [
-            result.get("candle_timestamp")
-            for result in successful
-            if isinstance(result.get("candle_timestamp"), datetime)
-        ]
-        prices = [
-            float(result["price"])
-            for result in successful
-            if _finite_optional_float(result.get("price")) is not None
-        ]
-        return SignalResult(
-            action="HOLD",
-            reason=reason,
-            candle_timestamp=max(timestamps) if timestamps else None,
-            price=prices[-1] if prices else None,
-            raw_payload={"strategy_type": _STRATEGY_TOPBOT_ADAPTIVE, "ensemble": audit},
-        )
-
-    if winning_action is None:
-        return hold("TopBot held because BUY and SELL votes were tied or no source was directional.")
-    if directional_vote_count < int(params["minimum_directional_votes"]):
-        return hold(
-            f"TopBot held because {directional_vote_count} {winning_action} vote(s) did not meet the "
-            f"minimum of {int(params['minimum_directional_votes'])}."
-        )
-    if opposing_vote_count > int(params["max_opposing_votes"]):
-        return hold(
-            f"TopBot held because {opposing_vote_count} opposing vote(s) exceeded the maximum of "
-            f"{int(params['max_opposing_votes'])}."
-        )
-    if agreement_confidence < float(params["minimum_confidence"]):
-        return hold(
-            f"TopBot held because {agreement_confidence:.1f}% directional agreement was below the "
-            f"{float(params['minimum_confidence']):.1f}% minimum."
-        )
-
-    eligible = [
-        result
-        for result in directional_results
-        if bool(result.get("eligible"))
-        and _finite_optional_float(result.get("score")) is not None
-        and float(result["score"]) >= float(params["minimum_score"])
-        and _finite_optional_float(result.get("reward_risk")) is not None
-        and float(result["reward_risk"]) >= float(params["minimum_reward_risk"])
-    ]
-    if not eligible:
-        return hold(
-            "TopBot held because no consensus source supplied a valid bracket that passed the score "
-            "and reward/risk gates."
-        )
-
-    selected = max(
-        eligible,
-        key=lambda result: (float(result["score"]), float(result["reward_risk"])),
-    )
-    selected_payload = dict(selected.get("raw_payload") or {})
-    selected_payload.update(
-        {
-            "strategy_type": _STRATEGY_TOPBOT_ADAPTIVE,
-            "source_strategy": str(selected.get("strategy_type") or "unknown"),
-            "source_reason": str(selected.get("reason") or ""),
-            "topbot_score": float(selected["score"]),
-            "topbot_confidence": agreement_confidence,
-            "ensemble": audit,
-            "topbot_management": {
-                "time_stop_bars": int(params["time_stop_bars"]),
-                "enable_trailing_stop": bool(params["enable_trailing_stop"]),
-                "trailing_stop_mode": str(params["trailing_stop_mode"]),
-                "trailing_atr_multiplier": float(params["trailing_atr_multiplier"]),
-                "move_to_breakeven_at_r": float(params["move_to_breakeven_at_r"]),
-                "advisory_only": True,
-            },
-        }
-    )
-    return SignalResult(
-        action=winning_action,
-        reason=(
-            f"TopBot selected {selected_payload['source_strategy']} after {directional_vote_count} "
-            f"{winning_action} vote(s), {agreement_confidence:.1f}% agreement, and a "
-            f"{float(selected['score']):.0f} quality score."
-        ),
-        candle_timestamp=selected.get("candle_timestamp"),
-        price=_finite_optional_float(selected.get("price")),
-        raw_payload=selected_payload,
-    )
+def evaluate_topbot_adaptive(candles, *, strategy_params=None) -> SignalResult:
+    """Evaluate the single code-owned MNQ trend-pullback strategy."""
+    from .topbot_strategy import evaluate
+    return evaluate(candles)
 
 
 def evaluate_ema_scalping(
@@ -5399,19 +5208,23 @@ def _find_fvg_invalidation_candle(
                 np.minimum(open_prices[first_index:], close_prices[first_index:])
                 > gap.upper_price
             )
-        for relative_index in np.flatnonzero(closes_through):
-            index = first_index + int(relative_index)
-            start = max(0, index - volume_lookback_bars)
-            prior_volumes = [
-                float(int(volume))
-                for volume in volumes[start:index]
-                if int(volume) > 0
-            ]
-            average_volume = _average(prior_volumes) if prior_volumes else 0.0
-            if average_volume <= 0:
-                continue
-            if float(int(volumes[index])) >= average_volume * strong_volume_multiplier:
-                return candles[index]
+        cache = _sequence_indicator_cache(candles)
+        cache_key = ("fvg_strong_volume", volume_lookback_bars, strong_volume_multiplier)
+        strong = cache.get(cache_key) if cache is not None else None
+        if strong is None:
+            # Every gap in this window uses the same prior-volume threshold.
+            # Keep the scalar arithmetic/order, but calculate it only once.
+            volume_values = [float(int(value)) for value in volumes]
+            strong = np.zeros(len(candles), dtype=bool)
+            for index in range(1, len(candles)):
+                prior = [value for value in volume_values[max(0, index - volume_lookback_bars):index] if value > 0]
+                average = _average(prior) if prior else 0.0
+                strong[index] = average > 0 and volume_values[index] >= average * strong_volume_multiplier
+            if cache is not None:
+                cache[cache_key] = strong
+        matches = np.flatnonzero(closes_through & strong[first_index:])
+        if matches.size:
+            return candles[first_index + int(matches[0])]
         return None
 
     for index in range(gap.source_index + 1, len(candles)):
@@ -10252,7 +10065,10 @@ def _candle_close_values(candles: list[ProjectXMarketCandle]) -> list[float]:
         cached = cache.get(cache_key, _INDICATOR_CACHE_MISS)
         if cached is not _INDICATOR_CACHE_MISS:
             return cached
-    values = _IndicatorValues(float(candle.close_price) for candle in candles)
+    prices = _mmap_price_values(candles, "close_nano_values")
+    values = _IndicatorValues(
+        prices.tolist() if prices is not None else (float(candle.close_price) for candle in candles)
+    )
     if cache is not None:
         cache[cache_key] = values
     return values
@@ -10353,17 +10169,27 @@ def _atr_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[flo
             cache[cache_key] = output
         return output
 
-    true_ranges: list[float] = []
-    previous_close: float | None = None
-    for candle in candles:
-        high = float(candle.high_price)
-        low = float(candle.low_price)
-        if previous_close is None:
-            true_range = high - low
-        else:
-            true_range = max(high - low, abs(high - previous_close), abs(low - previous_close))
-        true_ranges.append(true_range)
-        previous_close = float(candle.close_price)
+    highs = _mmap_price_values(candles, "high_nano_values")
+    lows = _mmap_price_values(candles, "low_nano_values")
+    closes = _mmap_price_values(candles, "close_nano_values")
+    if highs is not None and lows is not None and closes is not None:
+        ranges = highs - lows
+        ranges[1:] = np.maximum(
+            ranges[1:], np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
+        )
+        true_ranges = ranges.tolist()
+    else:
+        true_ranges = []
+        previous_close: float | None = None
+        for candle in candles:
+            high = float(candle.high_price)
+            low = float(candle.low_price)
+            if previous_close is None:
+                true_range = high - low
+            else:
+                true_range = max(high - low, abs(high - previous_close), abs(low - previous_close))
+            true_ranges.append(true_range)
+            previous_close = float(candle.close_price)
 
     atr = _average(true_ranges[:normalized_period])
     output[normalized_period - 1] = atr
@@ -10445,22 +10271,35 @@ def _adx_series(candles: list[ProjectXMarketCandle], *, period: int) -> list[flo
     true_ranges = [0.0] * len(candles)
     plus_dm = [0.0] * len(candles)
     minus_dm = [0.0] * len(candles)
-    for index in range(1, len(candles)):
-        current_high = float(candles[index].high_price)
-        current_low = float(candles[index].low_price)
-        previous_high = float(candles[index - 1].high_price)
-        previous_low = float(candles[index - 1].low_price)
-        previous_close = float(candles[index - 1].close_price)
+    highs = _mmap_price_values(candles, "high_nano_values")
+    lows = _mmap_price_values(candles, "low_nano_values")
+    closes = _mmap_price_values(candles, "close_nano_values")
+    if highs is not None and lows is not None and closes is not None:
+        up = highs[1:] - highs[:-1]
+        down = lows[:-1] - lows[1:]
+        plus_dm[1:] = np.where((up > down) & (up > 0), up, 0.0).tolist()
+        minus_dm[1:] = np.where((down > up) & (down > 0), down, 0.0).tolist()
+        true_ranges[1:] = np.maximum(
+            highs[1:] - lows[1:],
+            np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1])),
+        ).tolist()
+    else:
+        for index in range(1, len(candles)):
+            current_high = float(candles[index].high_price)
+            current_low = float(candles[index].low_price)
+            previous_high = float(candles[index - 1].high_price)
+            previous_low = float(candles[index - 1].low_price)
+            previous_close = float(candles[index - 1].close_price)
 
-        up_move = current_high - previous_high
-        down_move = previous_low - current_low
-        plus_dm[index] = up_move if up_move > down_move and up_move > 0 else 0.0
-        minus_dm[index] = down_move if down_move > up_move and down_move > 0 else 0.0
-        true_ranges[index] = max(
-            current_high - current_low,
-            abs(current_high - previous_close),
-            abs(current_low - previous_close),
-        )
+            up_move = current_high - previous_high
+            down_move = previous_low - current_low
+            plus_dm[index] = up_move if up_move > down_move and up_move > 0 else 0.0
+            minus_dm[index] = down_move if down_move > up_move and down_move > 0 else 0.0
+            true_ranges[index] = max(
+                current_high - current_low,
+                abs(current_high - previous_close),
+                abs(current_low - previous_close),
+            )
 
     smoothed_tr = sum(true_ranges[1 : normalized_period + 1])
     smoothed_plus_dm = sum(plus_dm[1 : normalized_period + 1])
@@ -13910,8 +13749,8 @@ def _validate_strategy_configuration(
     slow_period: int,
 ) -> None:
     _validate_strategy_periods(fast_period, slow_period)
-    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE and str(timeframe_unit) == "month":
-        raise ValueError("TopBot Adaptive does not support month candles.")
+    if strategy_type == _STRATEGY_TOPBOT_ADAPTIVE and (str(timeframe_unit) != "minute" or int(timeframe_unit_number) != 5):
+        raise ValueError("TopBot Adaptive requires 5-minute candles.")
     if strategy_type != _STRATEGY_EMA_SCALPING:
         return
     if str(timeframe_unit) != "minute" or int(timeframe_unit_number) not in _EMA_SCALPING_ALLOWED_MINUTE_BUCKETS:
@@ -13946,62 +13785,8 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         return {}
 
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
-        raw_sources = raw_params.get("source_strategies", _TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES)
-        if not isinstance(raw_sources, (list, tuple)):
-            raw_sources = _TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES
-        source_strategies: list[str] = []
-        for source in raw_sources:
-            identifier = str(source or "").strip()
-            if (
-                identifier
-                and identifier != _STRATEGY_TOPBOT_ADAPTIVE
-                and identifier in _SUPPORTED_STRATEGY_TYPES
-                and identifier not in source_strategies
-            ):
-                source_strategies.append(identifier)
-        if not source_strategies:
-            source_strategies = list(_TOPBOT_ADAPTIVE_DEFAULT_SOURCE_STRATEGIES)
-
-        raw_source_params = raw_params.get("source_strategy_params")
-        source_strategy_params: dict[str, dict[str, Any]] = {}
-        if isinstance(raw_source_params, dict):
-            for identifier in source_strategies:
-                override = raw_source_params.get(identifier)
-                if isinstance(override, dict):
-                    source_strategy_params[identifier] = dict(override)
-
-        trailing_stop_mode = str(
-            raw_params.get("trailing_stop_mode", _TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
-        ).strip().lower()
-        if trailing_stop_mode not in _MACD_SUPPORT_RESISTANCE_TRAILING_STOP_MODES:
-            trailing_stop_mode = str(_TOPBOT_ADAPTIVE_DEFAULTS["trailing_stop_mode"])
-        return {
-            "source_strategies": source_strategies,
-            "source_strategy_params": source_strategy_params,
-            "minimum_score": _bounded_float_param(raw_params, "minimum_score", 70.0, minimum=0, maximum=100),
-            "minimum_confidence": _bounded_float_param(
-                raw_params, "minimum_confidence", 55.0, minimum=0, maximum=100
-            ),
-            "minimum_directional_votes": _bounded_int_param(
-                raw_params, "minimum_directional_votes", 2, minimum=1, maximum=20
-            ),
-            "max_opposing_votes": _bounded_int_param(
-                raw_params, "max_opposing_votes", 1, minimum=0, maximum=20
-            ),
-            "minimum_reward_risk": _bounded_float_param(
-                raw_params, "minimum_reward_risk", 1.5, minimum=0.1, maximum=20
-            ),
-            "time_stop_bars": _bounded_int_param(raw_params, "time_stop_bars", 6, minimum=1, maximum=500),
-            "enable_trailing_stop": _boolean_param(raw_params, "enable_trailing_stop", True),
-            "trailing_stop_mode": trailing_stop_mode,
-            "trailing_atr_multiplier": _bounded_float_param(
-                raw_params, "trailing_atr_multiplier", 2.0, minimum=0.1, maximum=20
-            ),
-            "move_to_breakeven_at_r": _bounded_float_param(
-                raw_params, "move_to_breakeven_at_r", 1.0, minimum=0.1, maximum=20
-            ),
-            "block_expired_contracts": _boolean_param(raw_params, "block_expired_contracts", False),
-        }
+        from .topbot_strategy import normalize_params
+        return normalize_params(raw_params)
 
     if normalized_strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
         long_rsi_min = _bounded_float_param(

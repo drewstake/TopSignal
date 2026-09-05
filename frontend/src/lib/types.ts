@@ -1621,6 +1621,21 @@ export interface BotBacktestTrade {
   bars_held: number;
 }
 
+export interface BotBacktestDataQuality {
+  available_start: string;
+  first_evaluation: string;
+  warmup_required: number;
+  warmup_available: number;
+  gaps: {
+    gap_count: number;
+    missing_bar_count: number;
+    in_session_gap_count: number;
+    in_session_missing_bar_count: number;
+    by_year: { year: number; gap_count: number; missing_bar_count: number; in_session_gap_count: number }[];
+    largest_gaps: { start: string; end: string; missing_bar_count: number; in_session_missing_bar_count: number }[];
+  } | null;
+}
+
 export interface BotBacktestResult {
   id: number;
   bot_config_id: number | null;
@@ -1638,6 +1653,8 @@ export interface BotBacktestResult {
   monthly_results: BotBacktestPeriodResult[];
   trades: BotBacktestTrade[];
   warnings: string[];
+  notes?: string[];
+  data_quality?: BotBacktestDataQuality | null;
 }
 
 export interface BotActivity {

@@ -3821,7 +3821,7 @@ def test_create_bot_config_rejects_monthly_topbot_timeframe():
             }
         )
 
-        with pytest.raises(ValueError, match="does not support month candles"):
+        with pytest.raises(ValueError, match="requires 5-minute candles"):
             create_bot_config(db, user_id=user_id, payload=payload)
     finally:
         db.close()

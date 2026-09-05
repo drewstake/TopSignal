@@ -52,7 +52,7 @@ Core features in the current routed app:
 - Expense CRUD, spend summaries, and payout-minus-spend net ranges
 - Payout tracking, payout totals, and spend-since-last-payout context
 - Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
-- Trading bot configuration, dry-run execution controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
+- One-click TopBot MNQ dry/live run controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
 - Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 
@@ -244,12 +244,8 @@ Bot control page:
 
 A user can:
 
-- create, edit, select, and delete named bot configurations
-- bind a bot to a ProjectX account and contract
-- search ProjectX contracts from the configuration form
-- choose from multiple strategy types, including SMA Cross, EMA Scalping, Support/Resistance, Donchian Breakout, FVG Sweep + MSS, Liquidity Sweep + Retest, Supertrend Pivot, RVOL Breakout, relative-strength strategies, Bollinger/VWAP/Fisher mean reversion, ORB variants, and pullback/trap strategies
-- set risk controls such as order size, max contracts, max daily loss, max trades per day, max open position, trading session, cooldown, and max data staleness
-- start a continuously armed dry-run, explicitly arm eligible live routing, evaluate once, or stop future automation
+- press **Dry Run** or **Live Run** to start TopBot Adaptive on MNQ for the active account
+- stop future automation or use the account-wide emergency control
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
 - inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
 - review trade-plan grades when a strategy produces entry, stop, and target prices
@@ -264,7 +260,8 @@ When a strategy emits a complete trade idea, bot evaluation can attach a trade-p
 Important bot behaviors:
 
 - The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
-- New configurations default to dry-run mode and are saved disabled.
+- Run settings are code-owned in `backend/app/services/topbot.py` (`TOPBOT_SETTINGS`). Each start creates or refreshes a stopped account-scoped configuration, resolves the active MNQ delivery through the existing market-data path, and records the run server-side. Stop existing automation before changing modes.
+- TopBot evaluates one MNQ setup: a 20 EMA trend pullback confirmed by regular-session VWAP, with a fixed 50-point stop and 50-point target (1:1). Its long bias requires new shorts to have the 20 EMA below a falling 50 EMA; positions hold for their bracket, with no opposite-signal exits or pyramiding. Tune its rules in `backend/app/services/topbot_strategy.py`; sizing and account risk limits live in `topbot.py`. There is no configuration form or source voting. Defaults are 5-minute bars, one contract, a $250 daily loss entry gate, and 09:30–15:45 ET. See [the rules and measured baselines](docs/topbot-strategy.md). For autonomous strategy work, start with [the research handoff](docs/topbot-research-handoff.md).
 - Dry-run is the default. Live routing requires a live-mode configuration, an explicit confirmation, both server-side live gates, a healthy leased worker, and a fresh provider-hub classification proving the account is simulated.
 - **Stop Automation** is local-only: it prevents future evaluations but does not cancel working broker orders or close positions. The separately typed-confirmation emergency control cancels and flattens the entire account, then reports success only after ProjectX verifies no orders or positions remain.
 - Live/funded accounts are fail-closed. This supports Topstep's simulated account workflows; ProjectX API automation must not be used for a Live Funded Account.
@@ -297,7 +294,7 @@ The current router includes these product surfaces:
 - `/trades`: execution review
 - `/expenses`: expenses and payouts
 - `/journal`: daily journal
-- `/bot`: bot configuration and dry-run review
+- `/bot`: TopBot MNQ run controls and activity review
 - `/themes`: appearance and palette selection
 
 There are no separate `overview/` or `analytics/` prototype route directories in the current tree.
@@ -672,9 +669,15 @@ Databento ZIPs are the canonical backtest market-data source. This command disco
 ten known MNQ, MES, NQ, and ES jobs in your Downloads folder, validates them, and builds
 partitioned Parquet plus memory-mapped arrays without connecting to PostgreSQL or Supabase:
 
-The Backtest card can select MNQ, MES, NQ, or ES independently for each run. This changes
-only the Databento replay instrument and its contract economics; it never rewrites the
-saved bot's ProjectX trading contract.
+The Backtest card always runs the current code-owned TopBot Adaptive preset on
+5-minute MNQ candles. Starting balance, commission, and slippage remain replay
+assumptions. Old saved source/vote settings do not change new replays. The indicator
+library remains available to chart and analysis tools; TopBot does not vote across it.
+
+Replay results include long/short performance, average/median/90th-percentile holding
+time for winners and losers, entry-hour/weekday/year groups, exit reasons, duration
+groups, and a sortable paginated trade ledger. Direction filters apply to detailed
+analysis and CSV/JSON exports. See [the current detailed analysis](docs/topbot-backtest-analysis.md).
 
 ```powershell
 backend\.venv\Scripts\python backend\tools\build_databento_cache.py --downloads

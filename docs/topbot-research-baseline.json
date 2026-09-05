@@ -1,0 +1,406 @@
+{
+  "recorded_on": "2026-09-04",
+  "purpose": "Reproducible losing baseline before further strategy research. All cached dates were previously examined.",
+  "source_sha256_lf_utf8": {
+    "backend/app/services/topbot_strategy.py": "37e224a7e17f1f421f019fcba95e1d6e619fb56844fcb959a30351457a54ed5f",
+    "backend/app/services/topbot.py": "36ef797db07a7a55be454dd0d474f790dec073d47480eab78051cf71ff91f6f8",
+    "backend/app/services/bot_backtesting.py": "121a5bf39868bde67ad8dc79384bc5db9b2a6d3d320f2b425a48585156ce86f4",
+    "backend/app/services/bot_service.py": "aa287e0f1983f669df36250f1c73d71f17030c7b4e21cd393214dc874ab4413e",
+    "backend/app/services/databento_cache.py": "63f96f878fa8bfec0094e3d0daa50bb768b9db6d33207ef20f37d8fc4a167d71",
+    "backend/tools/fixtures/topbot_v4.py": "0d986b19a7eab29c5ce7861d8792ef8b746513d830db56b30561d125726dd5f5"
+  },
+  "strategy": "topbot_adaptive",
+  "strategy_params": {
+    "revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+    "ema_period": 20,
+    "ema_slope_bars": 3,
+    "directional_bias": "long",
+    "short_trend_ema_period": 50,
+    "short_trend_slope_bars": 3,
+    "position_size": 1,
+    "exit_policy": "bracket_only",
+    "stop_points": 50.0,
+    "target_points": 50.0,
+    "tick_size": 0.25,
+    "session_start": "09:30",
+    "session_end": "15:45"
+  },
+  "config_snapshot": {
+    "id": 1,
+    "account_id": 1,
+    "name": "TopBot",
+    "provider": "projectx",
+    "enabled": false,
+    "execution_mode_at_run": "dry_run",
+    "strategy_type": "topbot_adaptive",
+    "strategy_params": {
+      "directional_bias": "long",
+      "ema_period": 20,
+      "ema_slope_bars": 3,
+      "exit_policy": "bracket_only",
+      "position_size": 1,
+      "revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+      "session_end": "15:45",
+      "session_start": "09:30",
+      "short_trend_ema_period": 50,
+      "short_trend_slope_bars": 3,
+      "stop_points": 50.0,
+      "target_points": 50.0,
+      "tick_size": 0.25
+    },
+    "contract_id": "CON.F.US.MNQ.U26",
+    "symbol": "MNQ",
+    "timeframe_unit": "minute",
+    "timeframe_unit_number": 5,
+    "lookback_bars": 200,
+    "fast_period": 9,
+    "slow_period": 21,
+    "order_size": 1.0,
+    "max_contracts": 1.0,
+    "max_daily_loss": 250.0,
+    "max_trades_per_day": 30,
+    "max_open_position": 1.0,
+    "allowed_contracts": [
+      "MNQ",
+      "F.US.MNQ"
+    ],
+    "trading_start_time": "09:30",
+    "trading_end_time": "15:45",
+    "cooldown_seconds": 300,
+    "max_data_staleness_seconds": 600,
+    "allow_market_depth": false,
+    "created_at": null,
+    "updated_at": null
+  },
+  "assumptions": {
+    "fill_model": "next_bar_open_market",
+    "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
+    "strategy_replay": "single_strategy",
+    "strategy_revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+    "source_synchronization": "not_applicable",
+    "synchronized_stream_count": 1,
+    "event_order": "resting_gap_brackets_then_pending_open_fill_then_intrabar_brackets_then_close_signal",
+    "same_bar_exit_rule": "stop_first_when_stop_and_target_are_both_touched",
+    "bracket_rule": "evaluator_levels_become_whole_tick_distances_anchored_to_actual_entry_fill",
+    "gap_rule": "stops_fill_at_adverse_gap_open; targets receive no favorable price improvement",
+    "final_position_handling": "forced_close_at_last_bar_close",
+    "position_rule": "same-side_duplicates_do_not_pyramid; target-less opposite signals flatten an equal-size position; target-aware atomic reversals are blocked to match live routing; oversized_entries_are_blocked_not_capped",
+    "session_rule": "TopBot signals are evaluated only during the configured session while resting brackets are processed on every execution candle; entries obey bot session after-loss cooldown, daily-trade, and daily-loss limits; counters_reset_at_requested_start_and_loss_uses_isolated_simulated_realized_net_pnl",
+    "commission_rule": "commission_per_contract_is_charged_per_side",
+    "slippage_rule": "configured_ticks_are_applied_adversely_to_every_entry_and_exit_fill",
+    "pnl_rule": "price_delta_divided_by_tick_size_times_tick_value_times_quantity",
+    "metric_basis": "profit_factor_expectancy_average_win_and_average_loss_use_net_trade_pnl",
+    "market_data": "databento_global_ohlcv_1m_resampled_on_session_anchored_buckets; continuous_delivery_uses_only_previous_completed_session_volume; evaluator_history_is_segmented_at_delivery_changes",
+    "roll_gap_rule": "open_positions_close_at_the_prior_delivery_final_close; pending_cross-roll_signals_are_discarded",
+    "historical_source": "databento",
+    "roll_policy_version": "volume_previous_completed_session_v1",
+    "live_order_routing": "disabled_by_architecture",
+    "timezone": "America/New_York",
+    "commission_per_contract": 1.2,
+    "slippage_ticks": 1.0,
+    "tick_size": 0.25,
+    "tick_value": 0.5,
+    "engine_version": "5.0.0-topbot-bracket-exits",
+    "configured_execution_mode_was_ignored": "dry_run"
+  },
+  "range": {
+    "start": "2019-05-07T13:00:00+00:00",
+    "end": "2026-07-10T20:20:00+00:00",
+    "bar_count": 504185,
+    "contract_id": "CON.F.US.MNQ.U26",
+    "symbol": "MNQ",
+    "timeframe_unit": "minute",
+    "timeframe_unit_number": 5
+  },
+  "trades": 4798,
+  "metrics": {
+    "gross_pnl": 499.5,
+    "net_pnl": -11015.7,
+    "total_commission": 11515.2,
+    "trade_count": 4798,
+    "winning_trades": 2416,
+    "losing_trades": 2382,
+    "win_rate": 50.3543142976,
+    "profit_factor": 0.9551321451,
+    "expectancy": -2.2958941226,
+    "average_win": 97.0606788079,
+    "average_loss": -103.0706549118,
+    "payoff_ratio": 0.9416907159,
+    "max_drawdown_dollars": 16039.2999999762,
+    "max_drawdown_percent": 29.7639195077,
+    "average_mae": 70.0211546478,
+    "average_mfe": 67.5684660275,
+    "max_consecutive_wins": 11,
+    "max_consecutive_losses": 14,
+    "exposure_percent": 23.0728799944,
+    "long": {
+      "trade_count": 3026,
+      "winning_trades": 1553,
+      "losing_trades": 1473,
+      "win_rate": 51.3218770654,
+      "gross_pnl": 5878.5,
+      "net_pnl": -1383.9,
+      "profit_factor": 0.9909004952,
+      "expectancy": -0.4573364177,
+      "average_win": 97.0388280747,
+      "average_loss": -103.2486082824,
+      "payoff_ratio": 0.9398560396
+    },
+    "short": {
+      "trade_count": 1772,
+      "winning_trades": 863,
+      "losing_trades": 909,
+      "win_rate": 48.7020316027,
+      "gross_pnl": -5379.0,
+      "net_pnl": -9631.8,
+      "profit_factor": 0.8969079227,
+      "expectancy": -5.4355530474,
+      "average_win": 97.1,
+      "average_loss": -102.7822882288,
+      "payoff_ratio": 0.9447152975
+    }
+  },
+  "evaluation_split": {
+    "method": "chronological_80_20_fixed_parameters",
+    "label": "Chronological holdout diagnostic (not strategy validation)",
+    "validation_status": "diagnostic_only",
+    "split_timestamp": "2025-02-06T08:20:00+00:00",
+    "in_sample": {
+      "start": "2019-05-07T13:00:00+00:00",
+      "end": "2025-02-06T08:20:00+00:00",
+      "bar_count": 403348,
+      "metrics": {
+        "trade_count": 3585,
+        "winning_trades": 1811,
+        "losing_trades": 1774,
+        "win_rate": 50.5160390516,
+        "gross_pnl": 1867.5,
+        "net_pnl": -6736.5,
+        "profit_factor": 0.9630855676,
+        "expectancy": -1.8790794979,
+        "average_win": 97.047542794,
+        "average_loss": -102.8689966178,
+        "payoff_ratio": 0.9434090541
+      }
+    },
+    "holdout": {
+      "start": "2025-02-06T08:20:00+00:00",
+      "end": "2026-07-10T20:20:00+00:00",
+      "bar_count": 100837,
+      "metrics": {
+        "trade_count": 1213,
+        "winning_trades": 605,
+        "losing_trades": 608,
+        "win_rate": 49.8763396538,
+        "gross_pnl": -1368.0,
+        "net_pnl": -4279.2,
+        "profit_factor": 0.9321028105,
+        "expectancy": -3.5277823578,
+        "average_win": 97.1,
+        "average_loss": -103.6590460526,
+        "payoff_ratio": 0.9367248079
+      }
+    },
+    "notes": [
+      "Strategy parameters were fixed before the holdout replay; this workflow did not optimize them.",
+      "The holdout used a fresh cash, position, pending-signal, cooldown, and daily-risk state.",
+      "Only candles closed before each holdout decision were available; pre-split candles were used solely as causal indicator warmup.",
+      "The holdout final position was closed at its last bar so holdout trade metrics are self-contained.",
+      "0 full-replay trade(s) crossed the split and were excluded from the in-sample summary.",
+      "This diagnostic is not proof of future performance and is not a substitute for forward paper trading."
+    ]
+  },
+  "warnings": [
+    "Stored candles began after the requested start; the first complete candle is at 2019-05-05T23:25:00+00:00.",
+    "1,570 gap(s) in complete candles; 24 overlap the configured entry hours. The engine used the next available bar without interpolation. See candle coverage below for dates and missing-bar counts."
+  ],
+  "notes": [
+    "Used the first 199 candle(s) for warmup; replay begins at 2019-05-07T13:00:00+00:00 after the required closed bars became available.",
+    "Warmup ready: 200 of 200 required closed bars were available at the first replay evaluation.",
+    "Equity and drawdown output was deterministically sampled to bound replay memory; trade metrics and maximum drawdown still use every replay bar.",
+    "Detected 29 futures delivery change(s); strategy history was segmented at each roll, 7 open position(s) were closed at the prior delivery's final close, and 0 pending signal(s) were discarded.",
+    "Blocked 1040 replay signal(s) due to atomic reversal not supported.",
+    "Blocked 506 replay signal(s) due to max daily loss.",
+    "Blocked 6 replay signal(s) due to stale session signal."
+  ],
+  "data_quality": {
+    "available_start": "2019-05-05T23:25:00+00:00",
+    "first_evaluation": "2019-05-07T13:05:00+00:00",
+    "warmup_required": 200,
+    "warmup_available": 200,
+    "gaps": {
+      "gap_count": 1570,
+      "missing_bar_count": 4145,
+      "in_session_gap_count": 24,
+      "in_session_missing_bar_count": 247,
+      "by_year": [
+        {
+          "year": 2019,
+          "gap_count": 1491,
+          "missing_bar_count": 2458,
+          "in_session_gap_count": 16
+        },
+        {
+          "year": 2020,
+          "gap_count": 58,
+          "missing_bar_count": 783,
+          "in_session_gap_count": 4
+        },
+        {
+          "year": 2021,
+          "gap_count": 9,
+          "missing_bar_count": 9,
+          "in_session_gap_count": 0
+        },
+        {
+          "year": 2022,
+          "gap_count": 2,
+          "missing_bar_count": 184,
+          "in_session_gap_count": 0
+        },
+        {
+          "year": 2023,
+          "gap_count": 2,
+          "missing_bar_count": 43,
+          "in_session_gap_count": 1
+        },
+        {
+          "year": 2024,
+          "gap_count": 2,
+          "missing_bar_count": 225,
+          "in_session_gap_count": 1
+        },
+        {
+          "year": 2025,
+          "gap_count": 6,
+          "missing_bar_count": 443,
+          "in_session_gap_count": 2
+        }
+      ],
+      "largest_gaps": [
+        {
+          "start": "2020-04-09T22:00:00+00:00",
+          "end": "2020-04-12T22:00:00+00:00",
+          "missing_bar_count": 183,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2022-04-14T22:00:00+00:00",
+          "end": "2022-04-17T22:00:00+00:00",
+          "missing_bar_count": 183,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2024-03-28T22:00:00+00:00",
+          "end": "2024-03-31T22:00:00+00:00",
+          "missing_bar_count": 183,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2025-04-17T22:00:00+00:00",
+          "end": "2025-04-20T22:00:00+00:00",
+          "missing_bar_count": 183,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-15T22:40:00+00:00",
+          "end": "2020-03-16T13:45:00+00:00",
+          "missing_bar_count": 181,
+          "in_session_missing_bar_count": 3
+        },
+        {
+          "start": "2025-11-28T02:45:00+00:00",
+          "end": "2025-11-28T13:30:00+00:00",
+          "missing_bar_count": 129,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-18T05:40:00+00:00",
+          "end": "2020-03-18T13:30:00+00:00",
+          "missing_bar_count": 94,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2025-01-09T14:30:00+00:00",
+          "end": "2025-01-09T23:00:00+00:00",
+          "missing_bar_count": 87,
+          "in_session_missing_bar_count": 76
+        },
+        {
+          "start": "2019-07-03T17:15:00+00:00",
+          "end": "2019-07-03T22:00:00+00:00",
+          "missing_bar_count": 42,
+          "in_session_missing_bar_count": 31
+        },
+        {
+          "start": "2023-07-03T17:15:00+00:00",
+          "end": "2023-07-03T22:00:00+00:00",
+          "missing_bar_count": 42,
+          "in_session_missing_bar_count": 31
+        },
+        {
+          "start": "2024-07-03T17:15:00+00:00",
+          "end": "2024-07-03T22:00:00+00:00",
+          "missing_bar_count": 42,
+          "in_session_missing_bar_count": 31
+        },
+        {
+          "start": "2025-07-03T17:15:00+00:00",
+          "end": "2025-07-03T22:00:00+00:00",
+          "missing_bar_count": 42,
+          "in_session_missing_bar_count": 31
+        },
+        {
+          "start": "2020-03-09T10:35:00+00:00",
+          "end": "2020-03-09T13:50:00+00:00",
+          "missing_bar_count": 39,
+          "in_session_missing_bar_count": 4
+        },
+        {
+          "start": "2020-03-09T06:20:00+00:00",
+          "end": "2020-03-09T09:15:00+00:00",
+          "missing_bar_count": 35,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-17T05:40:00+00:00",
+          "end": "2020-03-17T08:25:00+00:00",
+          "missing_bar_count": 33,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2019-06-17T02:50:00+00:00",
+          "end": "2019-06-17T05:10:00+00:00",
+          "missing_bar_count": 28,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-17T03:20:00+00:00",
+          "end": "2020-03-17T05:35:00+00:00",
+          "missing_bar_count": 27,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-13T11:30:00+00:00",
+          "end": "2020-03-13T13:30:00+00:00",
+          "missing_bar_count": 24,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-06-30T22:00:00+00:00",
+          "end": "2020-07-01T00:00:00+00:00",
+          "missing_bar_count": 24,
+          "in_session_missing_bar_count": 0
+        },
+        {
+          "start": "2020-03-09T04:05:00+00:00",
+          "end": "2020-03-09T05:55:00+00:00",
+          "missing_bar_count": 22,
+          "in_session_missing_bar_count": 0
+        }
+      ]
+    }
+  },
+  "source_fingerprint": "cd56b8dbe08abc26b6bbbb9351e337984c603fe2562942ecb85ad0b9383a897d",
+  "trades_sha256": "6c76cb6d116e58bb4ea01f8b9e698bcd163c1fd3a31dd3d3edc3761bac56f39a"
+}

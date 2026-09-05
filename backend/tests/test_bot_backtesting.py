@@ -288,10 +288,11 @@ def test_real_strategy_reports_an_isolated_chronological_holdout():
         "payoff_ratio",
     }
     assert any("fresh cash, position" in note for note in split["notes"])
-    assert any("not independent validation" in warning for warning in result["warnings"])
+    assert any("not independent validation" in warning for warning in result["notes"])
 
 
-def test_replay_progress_is_exact_monotonic_and_throttled_to_percent_changes():
+def test_fast_replay_progress_is_exact_monotonic_and_throttled_to_percent_changes(monkeypatch):
+    monkeypatch.setattr(backtesting_module, "monotonic", lambda: 10.0)
     bars = [
         _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100 + index)
         for index in range(250)
@@ -321,6 +322,20 @@ def test_replay_progress_is_exact_monotonic_and_throttled_to_percent_changes():
     assert replay[-1]["completed"] == result["range"]["bar_count"]
     assert replay[-1]["total"] == result["range"]["bar_count"]
     assert replay[-1]["remaining_percent"] == 0
+
+
+def test_slow_replay_reports_candle_counts_before_first_percent(monkeypatch):
+    clock = iter([10.0, 10.2, 11.0, 11.2, 12.0])
+    monkeypatch.setattr(backtesting_module, "monotonic", lambda: next(clock))
+    engine = object.__new__(backtesting_module.BacktestEngine)
+    events = []
+    engine.progress_callback = events.append
+    engine._last_replay_progress_percent = -1
+    engine._last_replay_progress_at = 0.0
+    for completed in [0, 1, 50, 51, 100]:
+        engine._report_replay_progress(completed=completed, total=504_360)
+    assert [event["completed"] for event in events] == [0, 50, 100]
+    assert all(event["percent"] == 0 for event in events)
 
 
 def test_streamed_backtest_emits_progress_then_result_after_commit(monkeypatch):
@@ -481,11 +496,12 @@ def test_backtest_strategy_override_does_not_mutate_saved_config():
 
     assert effective is not config
     assert effective.strategy_type == "ema_trend_pullback"
-    assert effective.strategy_params["rsi_period"] == 9
+    assert effective.strategy_params["rsi_period"] == 14
     assert config.strategy_type == "topbot_adaptive"
     assert config.strategy_params["source_strategy_params"]["ema_trend_pullback"] == {
         "rsi_period": 9
     }
+
 
 
 def test_backtest_instrument_override_does_not_mutate_saved_config():
@@ -545,7 +561,7 @@ def test_backtest_instrument_override_can_open_a_replay_trade():
 def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
     bars = [
         _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
-        for index in range(30)
+        for index in range(230)
     ]
     result = _run(
         bars,
@@ -555,12 +571,18 @@ def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
             lookback_bars=25,
         ),
         start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=150),
+        end=BASE_TIME + timedelta(minutes=1150),
     )
 
-    assert result["range"]["start"] == (BASE_TIME + timedelta(minutes=120)).isoformat()
-    assert result["range"]["bar_count"] == 6
-    assert any("Deferred replay by 24 candle(s)" in warning for warning in result["warnings"])
+    assert result["range"]["start"] == (BASE_TIME + timedelta(minutes=995)).isoformat()
+    assert result["range"]["bar_count"] == 31
+    assert any("Used the first 199 candle(s) for warmup" in note for note in result["notes"])
+    assert result["data_quality"]["warmup_available"] == 200
+    assert result["data_quality"]["warmup_required"] == 200
+    assert result["data_quality"]["available_start"] == BASE_TIME.isoformat()
+    assert not any("warmup" in warning for warning in result["warnings"])
+    assert not any("Stored candles began" in warning for warning in result["warnings"])
+
 
 
 def test_topbot_only_evaluates_signals_inside_the_configured_session():
@@ -708,7 +730,7 @@ def test_pending_signal_expires_at_session_end_instead_of_filling_next_day():
     )
 
     assert result["trades"] == []
-    assert any("stale session signal" in warning for warning in result["warnings"])
+    assert any("stale session signal" in warning for warning in result["notes"])
 
 
 def test_signal_available_at_session_open_fills_on_the_opening_bar():
@@ -749,8 +771,8 @@ def test_off_session_decision_is_not_misclassified_as_stale():
     )
 
     assert result["trades"] == []
-    assert any("outside session" in warning for warning in result["warnings"])
-    assert not any("stale session signal" in warning for warning in result["warnings"])
+    assert any("outside session" in warning for warning in result["notes"])
+    assert not any("stale session signal" in warning for warning in result["notes"])
 
 
 def test_missing_required_session_open_is_rejected_instead_of_approximated():
@@ -928,7 +950,7 @@ def test_target_aware_atomic_reversal_is_blocked_like_live_routing():
 
     assert [trade["side"] for trade in result["trades"]] == ["long"]
     assert result["trades"][0]["exit_reason"] == "forced_end_of_test"
-    assert any("atomic reversal not supported" in warning for warning in result["warnings"])
+    assert any("atomic reversal not supported" in warning for warning in result["notes"])
 
 
 def test_delivery_change_segments_history_and_flattens_before_new_contract_prices():
@@ -966,7 +988,7 @@ def test_delivery_change_segments_history_and_flattens_before_new_contract_price
     assert result["trades"][0]["gross_pnl"] == 0
     assert observed_histories[2] == ["MNQU6"]
     assert all("MNQM6" not in history for history in observed_histories[2:])
-    assert any("delivery change" in warning for warning in result["warnings"])
+    assert any("delivery change" in warning for warning in result["notes"])
 
 
 def test_resting_target_executes_before_a_queued_gap_reversal():
@@ -1032,9 +1054,9 @@ def test_daily_trade_and_position_limits_block_entries_without_silent_sizing():
     )
 
     assert [trade["side"] for trade in limited["trades"]] == ["long"]
-    assert any("max trades per day" in warning for warning in limited["warnings"])
+    assert any("max trades per day" in warning for warning in limited["notes"])
     assert oversized["trades"] == []
-    assert any("max contracts" in warning for warning in oversized["warnings"])
+    assert any("max contracts" in warning for warning in oversized["notes"])
 
 
 @pytest.mark.parametrize(
@@ -1268,292 +1290,16 @@ def test_unsupported_strategy_fails_explicitly_without_approximation():
         )
 
 
-def test_topbot_replay_synchronizes_slower_source_streams_without_lookahead(monkeypatch):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": ["support_resistance"],
-            "minimum_directional_votes": 1,
-            "minimum_score": 70,
-            "minimum_reward_risk": 1.5,
-        },
-        lookback_bars=25,
-    )
-    main_bars = [
-        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-25, 26)
-    ]
-    one_hour = [
-        _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1),
-        _candle(BASE_TIME, unit="hour", unit_number=1),
-    ]
-    four_hour = [
-        _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4),
-        _candle(BASE_TIME, unit="hour", unit_number=4),
-    ]
-    observed: list[tuple[list[datetime], list[datetime]]] = []
-    topbot_actions: list[tuple[str, str, dict[str, Any]]] = []
-
-    def fake_dispatch(identifier, *args, **kwargs):
-        assert identifier == "support_resistance"
-        higher = kwargs["higher_timeframe_candles"]
-        lower = kwargs["lower_timeframe_candles"]
-        observed.append(
-            (
-                [_utc(row.candle_timestamp) for row in higher],
-                [_utc(row.candle_timestamp) for row in lower],
-            )
-        )
-        latest = lower[-1]
-        return SignalResult(
-            action="BUY",
-            reason="synchronized support source",
-            candle_timestamp=_utc(latest.candle_timestamp),
-            price=float(latest.close_price),
-                raw_payload={"stop_loss": 90.0, "take_profit": 120.0},
-        )
-
-    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
-    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "build_signal_trade_evaluation",
-        lambda **_kwargs: {"total_score": 85},
-    )
-    real_topbot_evaluator = backtesting_module.bot_service_module.evaluate_topbot_adaptive
-
-    def topbot_spy(*args, **kwargs):
-        signal = real_topbot_evaluator(*args, **kwargs)
-        topbot_actions.append((signal.action, signal.reason, signal.raw_payload))
-        return signal
-
-    monkeypatch.setattr(backtesting_module.bot_service_module, "evaluate_topbot_adaptive", topbot_spy)
-
-    result = _run(
-        main_bars,
-        config=config,
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=130),
-        replay_streams={
-            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
-            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
-        },
-        include_evaluation_split=False,
-    )
-
-    assert observed == [
-        ([BASE_TIME - timedelta(hours=4)], [BASE_TIME - timedelta(hours=1)]),
-        ([BASE_TIME - timedelta(hours=4)], [BASE_TIME - timedelta(hours=1), BASE_TIME]),
-    ]
-    assert {row[0] for row in topbot_actions} == {"BUY"}, topbot_actions[:2]
-    assert result["metrics"]["trade_count"] == 1, (result["warnings"], topbot_actions[:2])
-    assert not any("TopBot source support_resistance failed" in warning for warning in result["warnings"])
 
 
-def test_topbot_replay_deduplicates_repeated_signal_from_unchanged_slow_stream(monkeypatch):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": ["support_resistance"],
-            "minimum_directional_votes": 1,
-            "minimum_score": 70,
-            "minimum_reward_risk": 1.5,
-        },
-        lookback_bars=25,
-    )
-    main_bars = [
-        _candle(
-            BASE_TIME + timedelta(minutes=5 * index),
-            close_price=100,
-            high_price=121 if index == 3 else 101,
-            low_price=99,
-        )
-        for index in range(-25, 10)
-    ]
-    one_hour = [_candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)]
-    four_hour = [_candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)]
-
-    def fake_dispatch(identifier, *args, **kwargs):
-        assert identifier == "support_resistance"
-        latest = kwargs["lower_timeframe_candles"][-1]
-        return SignalResult(
-            action="BUY",
-            reason="one slow source signal",
-            candle_timestamp=_utc(latest.candle_timestamp),
-            price=100.0,
-            raw_payload={"stop_loss": 90.0, "take_profit": 120.0},
-        )
-
-    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
-    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "build_signal_trade_evaluation",
-        lambda **_kwargs: {"total_score": 85},
-    )
-
-    result = _run(
-        main_bars,
-        config=config,
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=50),
-        replay_streams={
-            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
-            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
-        },
-    )
-
-    assert result["metrics"]["trade_count"] == 1, result["warnings"]
-    assert result["trades"][0]["exit_reason"] == "take_profit"
 
 
-def test_topbot_replay_records_missing_auxiliary_stream_as_source_failure():
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": ["support_resistance"],
-            "minimum_directional_votes": 1,
-        },
-        lookback_bars=25,
-    )
-    bars = [
-        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-25, 4)
-    ]
-
-    result = _run(
-        bars,
-        config=config,
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=20),
-    )
-
-    assert result["metrics"]["trade_count"] == 0
-    assert any("asset:hour:1" in warning for warning in result["warnings"])
-    assert not any("TopBot source support_resistance failed" in warning for warning in result["warnings"])
-    assert any("TopBot excluded source(s)" in warning for warning in result["warnings"])
 
 
-def test_topbot_replay_excludes_a_benchmark_that_stops_before_the_replay_tail(
-    monkeypatch,
-):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": ["atr_adjusted_relative_strength"],
-            "minimum_directional_votes": 1,
-        },
-        lookback_bars=25,
-    )
-    bars = [
-        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-25, 4)
-    ]
-    benchmark = _candle(
-        BASE_TIME - timedelta(minutes=5),
-        contract_id="CON.F.US.MES.M26",
-        symbol="F.US.MES",
-    )
-
-    def unexpected_dispatch(identifier, *_args, **_kwargs):
-        raise AssertionError(f"stale source {identifier} should have been excluded")
-
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "dispatch_strategy_evaluator",
-        unexpected_dispatch,
-    )
-
-    result = _run(
-        bars,
-        config=config,
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=20),
-        replay_streams={
-            backtesting_module._topbot_benchmark_stream_key(
-                "atr_adjusted_relative_strength"
-            ): [benchmark],
-        },
-    )
-
-    assert result["metrics"]["trade_count"] == 0
-    assert any(
-        "benchmark:atr_adjusted_relative_strength" in warning
-        and "TopBot excluded source(s)" in warning
-        for warning in result["warnings"]
-    )
 
 
-def test_topbot_benchmark_specs_use_mes_with_the_asset_delivery():
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": [
-                "atr_adjusted_relative_strength",
-                "relative_strength_spy",
-            ],
-            "source_strategy_params": {
-                "atr_adjusted_relative_strength": {"benchmark_symbol": "SPY"},
-                "relative_strength_spy": {"benchmark_symbol": "SPY"},
-            },
-        },
-        contract_id="CON.F.US.MNQ.M26",
-    )
-
-    specs = backtesting_module._topbot_stream_specs(config)
-
-    for source in ("atr_adjusted_relative_strength", "relative_strength_spy"):
-        spec = specs[backtesting_module._topbot_benchmark_stream_key(source)]
-        assert spec.contract_id == "CON.F.US.MES.M26"
-        assert spec.symbol == "F.US.MES"
-        assert spec.unit == "minute"
-        assert spec.unit_number == 5
 
 
-def test_topbot_cache_preparation_deduplicates_shared_mes_benchmark(
-    db_session,
-):
-    config = _persist_config(
-        db_session,
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": [
-                "atr_adjusted_relative_strength",
-                "relative_strength_spy",
-            ],
-        },
-        lookback_bars=25,
-    )
-
-    class StubClient:
-        def __init__(self):
-            self.calls: list[dict[str, Any]] = []
-
-        def search_contracts(self, **_kwargs):
-            raise AssertionError("exact historical deliveries should not be re-resolved")
-
-        def retrieve_bars(self, **kwargs):
-            self.calls.append(kwargs)
-            return []
-
-    client = StubClient()
-    prepared = backtesting_module.prepare_bot_backtest_data(
-        db_session,
-        user_id=OWNER_ID,
-        bot_config_id=config.id,
-        payload=BotBacktestIn(
-            start=BASE_TIME,
-            end=BASE_TIME + timedelta(minutes=20),
-        ),
-        client=client,
-    )
-
-    assert prepared == 2
-    assert {call["contract_id"] for call in client.calls} == {
-        CONTRACT_ID,
-        "CON.F.US.MES.M26",
-    }
-    assert sum(call["contract_id"] == "CON.F.US.MES.M26" for call in client.calls) == 1
 
 
 def test_topbot_cache_preparation_skips_streams_that_already_cover_the_replay(
@@ -1736,59 +1482,6 @@ def test_topbot_cache_preparation_pages_the_entire_provider_range(
     )
 
 
-def test_topbot_replay_loader_queries_a_shared_benchmark_identity_once(db_session):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": [
-                "atr_adjusted_relative_strength",
-                "relative_strength_spy",
-            ],
-        },
-        lookback_bars=25,
-    )
-    benchmark_rows = [
-        _candle(
-            BASE_TIME + timedelta(minutes=5 * index),
-            contract_id="CON.F.US.MES.M26",
-            symbol="F.US.MES",
-        )
-        for index in range(-3, 2)
-    ]
-    db_session.add_all(benchmark_rows)
-    db_session.commit()
-    select_count = 0
-
-    def count_candle_selects(_conn, _cursor, statement, _parameters, _context, _many):
-        nonlocal select_count
-        if statement.lstrip().upper().startswith("SELECT") and "projectx_market_candles" in statement:
-            select_count += 1
-
-    from sqlalchemy import event
-
-    event.listen(db_session.bind, "before_cursor_execute", count_candle_selects)
-    try:
-        streams = backtesting_module._load_topbot_replay_streams(
-            db_session,
-            user_id=OWNER_ID,
-            config=config,
-            start=BASE_TIME,
-            end=BASE_TIME + timedelta(minutes=10),
-            primary_rows=[_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=5))],
-        )
-    finally:
-        event.remove(db_session.bind, "before_cursor_execute", count_candle_selects)
-
-    left = streams[
-        backtesting_module._topbot_benchmark_stream_key("atr_adjusted_relative_strength")
-    ]
-    right = streams[
-        backtesting_module._topbot_benchmark_stream_key("relative_strength_spy")
-    ]
-    assert left is not right
-    assert left[-1] is right[-1]
-    assert left._topsignal_physical_stream == right._topsignal_physical_stream
-    assert select_count == 2
 
 
 def test_topbot_cache_coverage_rejects_overlapping_candles(db_session):
@@ -1868,48 +1561,6 @@ def test_topbot_cache_coverage_accepts_a_weekend_market_closure(db_session):
     )
 
 
-def test_topbot_replay_excludes_legacy_unmarked_four_hour_tail_snapshot():
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["support_resistance"]},
-    )
-    fetched_after_close = datetime(2026, 7, 10, tzinfo=timezone.utc)
-    canonical = [
-        _candle(
-            timestamp,
-            unit="hour",
-            unit_number=4,
-        )
-        for timestamp in (
-            datetime(2026, 4, 26, 22, 0, tzinfo=timezone.utc),
-            datetime(2026, 4, 27, 2, 0, tzinfo=timezone.utc),
-        )
-    ]
-    for row in canonical:
-        row.fetched_at = fetched_after_close
-        row.raw_payload = {"t": row.candle_timestamp.isoformat()}
-    stale_tail = _candle(
-        datetime(2026, 4, 27, 0, 0, tzinfo=timezone.utc),
-        unit="hour",
-        unit_number=4,
-    )
-    stale_tail.fetched_at = datetime(2026, 4, 27, 3, 39, tzinfo=timezone.utc)
-    stale_tail.raw_payload = {"t": stale_tail.candle_timestamp.isoformat()}
-    spec = backtesting_module._topbot_stream_specs(config)[
-        backtesting_module._topbot_asset_stream_key("hour", 4)
-    ]
-
-    rows, excluded = backtesting_module._validate_topbot_replay_stream(
-        [canonical[0], stale_tail, canonical[1]],
-        spec=spec,
-        config=config,
-    )
-
-    assert [_utc(row.candle_timestamp) for row in rows] == [
-        datetime(2026, 4, 26, 22, 0, tzinfo=timezone.utc),
-        datetime(2026, 4, 27, 2, 0, tzinfo=timezone.utc),
-    ]
-    assert excluded == 1
 
 
 def test_topbot_cache_preparation_rejects_monthly_primary_candles(db_session):
@@ -1922,7 +1573,7 @@ def test_topbot_cache_preparation_rejects_monthly_primary_candles(db_session):
 
     with pytest.raises(
         backtesting_module.BacktestConfigurationError,
-        match="TopBot Adaptive does not support month candles",
+        match="TopBot Adaptive requires 5-minute candles",
     ):
         backtesting_module.prepare_bot_backtest_data(
             db_session,
@@ -1936,176 +1587,13 @@ def test_topbot_cache_preparation_rejects_monthly_primary_candles(db_session):
         )
 
 
-@pytest.mark.parametrize(
-    "event_start",
-    [
-        datetime(2026, 7, 6, 13, 20, tzinfo=timezone.utc),  # Before 09:30 ET.
-        datetime(2026, 7, 6, 20, 0, tzinfo=timezone.utc),   # After 15:45 ET.
-        datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc),   # Sunday.
-    ],
-)
-def test_topbot_orb_skips_events_outside_the_configured_session(
-    event_start,
-    monkeypatch,
-):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["orb_fibonacci_pullback"]},
-        lookback_bars=25,
-        trading_start_time="09:30",
-        trading_end_time="15:45",
-    )
-    bars = [
-        _candle(event_start + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-25, 2)
-    ]
-
-    def unexpected_dispatch(identifier, *_args, **_kwargs):
-        raise AssertionError(f"closed-session source {identifier} should not be dispatched")
-
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "dispatch_strategy_evaluator",
-        unexpected_dispatch,
-    )
-
-    result = _run(
-        bars,
-        config=config,
-        start=event_start,
-        end=event_start + timedelta(minutes=10),
-    )
-
-    assert not any(
-        "TopBot source orb_fibonacci_pullback failed" in warning
-        for warning in result["warnings"]
-    )
 
 
-def test_topbot_delayed_orb_does_not_dispatch_during_a_sunday_closure(monkeypatch):
-    event_start = datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc)
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["delayed_orb_confirmation"]},
-        lookback_bars=25,
-        trading_start_time="09:30",
-        trading_end_time="15:45",
-    )
-    bars = [
-        _candle(event_start + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-25, 2)
-    ]
-    one_minute = [
-        _candle(
-            event_start + timedelta(minutes=index),
-            unit="minute",
-            unit_number=1,
-        )
-        for index in range(10)
-    ]
-
-    def unexpected_dispatch(identifier, *_args, **_kwargs):
-        raise AssertionError(f"closed-session source {identifier} should not be dispatched")
-
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "dispatch_strategy_evaluator",
-        unexpected_dispatch,
-    )
-
-    result = _run(
-        bars,
-        config=config,
-        start=event_start,
-        end=event_start + timedelta(minutes=10),
-        replay_streams={
-            backtesting_module._topbot_asset_stream_key("minute", 1): one_minute,
-        },
-    )
-
-    assert not any(
-        "TopBot source delayed_orb_confirmation failed" in warning
-        for warning in result["warnings"]
-    )
 
 
-def test_topbot_orb_still_reports_a_genuinely_missing_session_open():
-    event_start = datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc)
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["orb_fibonacci_pullback"]},
-        lookback_bars=25,
-        trading_start_time="09:30",
-        trading_end_time="15:45",
-    )
-    bars = [
-        *[
-            _candle(event_start - timedelta(days=1) + timedelta(minutes=5 * index))
-            for index in range(25)
-        ],
-        _candle(event_start),
-        _candle(event_start + timedelta(minutes=5)),
-    ]
-
-    result = _run(
-        bars,
-        config=config,
-        start=event_start,
-        end=event_start + timedelta(minutes=10),
-    )
-
-    assert any(
-        "TopBot source orb_fibonacci_pullback failed" in warning
-        and "requires the session-opening candle" in warning
-        for warning in result["warnings"]
-    )
 
 
-def test_topbot_delayed_orb_excludes_a_truncated_one_minute_tail():
-    session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["delayed_orb_confirmation"]},
-        lookback_bars=25,
-        trading_start_time="09:30",
-        trading_end_time="15:45",
-    )
-    bars = [
-        *[
-            _candle(session_open - timedelta(days=1) + timedelta(minutes=5 * index))
-            for index in range(25)
-        ],
-        _candle(session_open),
-        _candle(session_open + timedelta(minutes=5)),
-    ]
-    one_minute = [
-        _candle(
-            session_open + timedelta(minutes=index),
-            unit="minute",
-            unit_number=1,
-        )
-        for index in range(5)
-    ]
 
-    result = _run(
-        bars,
-        config=config,
-        start=session_open,
-        end=session_open + timedelta(minutes=10),
-        replay_streams={
-            backtesting_module._topbot_asset_stream_key("minute", 1): one_minute,
-        },
-    )
-
-    assert any(
-        "TopBot excluded source(s)" in warning
-        and "delayed_orb_confirmation (asset:minute:1)" in warning
-        for warning in result["warnings"]
-    )
-    assert not any(
-        "TopBot source delayed_orb_confirmation failed" in warning
-        for warning in result["warnings"]
-    )
 
 
 def test_futures_gap_detection_ignores_weekends_but_flags_open_session_holes():
@@ -2142,87 +1630,6 @@ def test_backtest_range_reports_actual_stored_coverage():
     assert any("Stored candles ended before the requested end" in warning for warning in result["warnings"])
 
 
-def test_topbot_replay_has_an_adapter_for_every_default_source(monkeypatch):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            # Keep the VWAP-gap adapter inside its actionable window for this
-            # dispatch-coverage test; production replay deliberately bypasses
-            # its expensive 2,000-bar scan outside that window.
-            "source_strategy_params": {
-                "vwap_gap_retrace": {
-                    "wait_start_minutes": 30,
-                    "wait_end_minutes": 45,
-                }
-            }
-        },
-        lookback_bars=25,
-        trading_start_time="10:00",
-    )
-    main_bars = [
-        _candle(BASE_TIME + timedelta(minutes=5 * index), close_price=100)
-        for index in range(-192, 3)
-    ]
-    expected_sources = set(
-        bot_service_module._normalize_strategy_params("topbot_adaptive", {})["source_strategies"]
-    )
-    observed_sources: set[str] = set()
-
-    def fake_dispatch(identifier, *args, **kwargs):
-        observed_sources.add(str(identifier))
-        return SignalResult(
-            action="HOLD",
-            reason=f"{identifier} held",
-            candle_timestamp=BASE_TIME,
-            price=100.0,
-            raw_payload={},
-        )
-
-    benchmark = [
-        _candle(
-            BASE_TIME + timedelta(minutes=5 * index),
-            contract_id="CON.F.US.MES.M26",
-            symbol="F.US.MES",
-        )
-        for index in range(-5, 3)
-    ]
-    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
-
-    result = _run(
-        main_bars,
-        config=config,
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=15),
-        replay_streams={
-            backtesting_module._topbot_asset_stream_key("minute", 1): [
-                _candle(
-                    BASE_TIME + timedelta(minutes=index),
-                    unit="minute",
-                    unit_number=1,
-                )
-                for index in range(15)
-            ],
-            backtesting_module._topbot_asset_stream_key("hour", 1): [
-                _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)
-            ],
-            backtesting_module._topbot_asset_stream_key("hour", 4): [
-                _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)
-            ],
-            backtesting_module._topbot_asset_stream_key("day", 1): [
-                _candle(BASE_TIME - timedelta(days=1), unit="day", unit_number=1)
-            ],
-            backtesting_module._topbot_benchmark_stream_key(
-                "atr_adjusted_relative_strength"
-            ): benchmark,
-            backtesting_module._topbot_benchmark_stream_key(
-                "relative_strength_spy"
-            ): benchmark,
-        },
-    )
-
-    assert observed_sources == expected_sources
-    assert result["metrics"]["trade_count"] == 0
-    assert not any("topbot_replay_adapter_missing" in warning for warning in result["warnings"])
 
 
 def test_orb_rejects_an_incompatible_non_minute_timeframe():
@@ -2343,106 +1750,6 @@ def test_authenticated_backtest_does_not_use_the_legacy_bar_cap(
     assert db_session.query(BotBacktest).count() == 1
 
 
-def test_authenticated_topbot_route_loads_and_fingerprints_synchronized_streams(
-    db_session,
-    monkeypatch,
-):
-    config = _persist_config(
-        db_session,
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": ["support_resistance"],
-            "minimum_directional_votes": 1,
-            "minimum_score": 70,
-            "minimum_reward_risk": 1.5,
-        },
-        lookback_bars=25,
-    )
-    for index in range(-25, 4):
-        db_session.add(
-            _candle(
-                BASE_TIME + timedelta(minutes=5 * index),
-                close_price=100,
-            )
-        )
-    one_hour = _candle(BASE_TIME - timedelta(hours=1), unit="hour", unit_number=1)
-    four_hour = _candle(BASE_TIME - timedelta(hours=4), unit="hour", unit_number=4)
-    db_session.add_all([one_hour, four_hour])
-    db_session.commit()
-
-    def fake_dispatch(identifier, *args, **kwargs):
-        assert identifier == "support_resistance"
-        latest = kwargs["lower_timeframe_candles"][-1]
-        price = float(latest.close_price)
-        return SignalResult(
-            action="BUY",
-            reason="stored synchronized source",
-            candle_timestamp=_utc(latest.candle_timestamp),
-            price=price,
-            raw_payload={"stop_loss": price - 10, "take_profit": price + 20},
-        )
-
-    class StubHistoryClient:
-        def __init__(self):
-            self.calls: list[dict[str, Any]] = []
-
-        def search_contracts(self, **_kwargs):
-            raise AssertionError("configured deliveries must not be re-resolved")
-
-        def retrieve_bars(self, **kwargs):
-            self.calls.append(kwargs)
-            return []
-
-    history_client = StubHistoryClient()
-
-    def unexpected_order_call(*_args, **_kwargs):
-        raise AssertionError("TopBot backtest invoked an order path")
-
-    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
-    monkeypatch.setattr(backtesting_module.bot_service_module, "dispatch_strategy_evaluator", fake_dispatch)
-    monkeypatch.setattr(backtesting_module.bot_service_module, "build_bot_market_analysis", lambda **_kwargs: {})
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "build_signal_trade_evaluation",
-        lambda **_kwargs: {"total_score": 85},
-    )
-    monkeypatch.setattr(
-        main_module,
-        "_projectx_client_for_user",
-        lambda *_args, **_kwargs: history_client,
-    )
-    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
-    payload = BotBacktestIn(
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(minutes=20),
-        commission_per_contract=0,
-        slippage_ticks=0,
-    )
-
-    first = main_module.create_trading_bot_backtest(
-        bot_config_id=config.id,
-        payload=payload,
-        db=db_session,
-    )
-    first_validated = BotBacktestOut.model_validate(first)
-
-    assert first_validated.engine_version == "1.3.0"
-    assert first_validated.metrics.trade_count == 1
-    assert not any("strategy_not_supported" in warning for warning in first["warnings"])
-    assert history_client.calls
-    assert all(call["contract_id"] == CONTRACT_ID for call in history_client.calls)
-
-    one_hour.close_price = 101
-    one_hour.high_price = 102
-    db_session.commit()
-    second = main_module.create_trading_bot_backtest(
-        bot_config_id=config.id,
-        payload=payload,
-        db=db_session,
-    )
-
-    assert second["input_fingerprint"] != first["input_fingerprint"]
-    assert db_session.query(BotBacktest).count() == 2
 
 
 def test_backtest_route_scopes_bots_and_candles_to_authenticated_user(
@@ -2627,7 +1934,7 @@ def test_full_history_route_is_deterministic_and_has_no_public_prepare_step(
 
 @pytest.mark.parametrize(
     "cached_count",
-    [0, 25],
+    [0, 200],
     ids=["empty-primary-cache", "stale-primary-cache"],
 )
 def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history(
@@ -2652,7 +1959,7 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
             "is_partial": False,
             "raw_payload": {"isPartial": False},
         }
-        for index in range(30)
+        for index in range(230)
     ]
     for bar in provider_bars[:cached_count]:
         db_session.add(
@@ -2697,7 +2004,7 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
     def unexpected_order_call(*_args, **_kwargs):
         raise AssertionError("TopBot full-history replay invoked an order path")
 
-    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 5)
+    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 50)
     monkeypatch.setattr(
         backtesting_module,
         "_MAX_PROVIDER_EMPTY_SPAN",
@@ -2729,16 +2036,17 @@ def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history
     assert client.calls
     assert all(call["contract_id"] == CONTRACT_ID for call in client.calls)
     assert validated.range.contract_id == CONTRACT_ID
-    assert validated.range.start == BASE_TIME + timedelta(minutes=120)
-    assert validated.range.end == BASE_TIME + timedelta(minutes=150)
-    assert validated.range.bar_count == 6
+    assert validated.range.start == BASE_TIME + timedelta(minutes=995)
+    assert validated.range.end == BASE_TIME + timedelta(minutes=1150)
+    assert validated.range.bar_count == 31
     assert primary_history_loads == 2
     assert (
         db_session.query(ProjectXMarketCandle)
         .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
         .count()
-        == 30
+        == 230
     )
+
 
 
 def test_topbot_full_history_fails_explicitly_before_persisting_when_provider_budget_is_exhausted(
@@ -2883,7 +2191,7 @@ def test_prepared_sma_replay_exactly_matches_legacy_evaluator_path():
     assert legacy_calls == optimized["range"]["bar_count"]
     assert optimized["trades"]
     assert any(float(trade["commission"]) > 0 for trade in optimized["trades"])
-    assert any("max trades per day" in warning for warning in optimized["warnings"])
+    assert any("max trades per day" in warning for warning in optimized["notes"])
     for key in (
         "range",
         "metrics",
@@ -2893,6 +2201,8 @@ def test_prepared_sma_replay_exactly_matches_legacy_evaluator_path():
         "monthly_results",
         "trades",
         "warnings",
+        "notes",
+        "data_quality",
     ):
         assert optimized[key] == legacy[key]
     assert optimized == legacy
@@ -3109,396 +2419,10 @@ def test_projected_loader_avoids_candle_identities_and_matches_orm_replay(
         start=start,
         end=end,
     )
-def test_topbot_cached_replay_exactly_matches_legacy_bisect_reference(
-    monkeypatch,
-):
-    session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": [
-                "support_resistance",
-                "liquidity_sweep_retest",
-            ],
-            "minimum_directional_votes": 1,
-            "minimum_score": 70,
-            "minimum_reward_risk": 1.5,
-        },
-        lookback_bars=25,
-        trading_start_time="09:30",
-        trading_end_time="11:30",
-    )
-    primary = backtesting_module._ClosedCandleList(
-        _candle(
-            session_open + timedelta(minutes=5 * index),
-            open_price=100,
-            high_price=101,
-            low_price=99,
-            close_price=100,
-        )
-        for index in range(-30, 27)
-    )
-    one_hour = backtesting_module._ClosedCandleList(
-        _candle(
-            datetime(2026, 7, 6, hour, tzinfo=timezone.utc),
-            unit="hour",
-            unit_number=1,
-            close_price=100 + hour / 100,
-        )
-        for hour in range(10, 15)
-    )
-    four_hour = backtesting_module._ClosedCandleList(
-        _candle(
-            datetime(2026, 7, 6, hour, tzinfo=timezone.utc),
-            unit="hour",
-            unit_number=4,
-            close_price=100 + hour / 100,
-        )
-        for hour in (6, 10)
-    )
-    active_run = {"name": "optimized"}
-    dispatch_counts = {"optimized": 0, "reference": 0}
-    observed_slow_states: dict[str, set[tuple[datetime, datetime]]] = {
-        "optimized": set(),
-        "reference": set(),
-    }
-
-    def fake_dispatch(identifier, *args, **kwargs):
-        assert identifier in {"support_resistance", "liquidity_sweep_retest"}
-        higher = kwargs["higher_timeframe_candles"]
-        lower = kwargs["lower_timeframe_candles"]
-        latest_higher = _utc(higher[-1].candle_timestamp)
-        latest_lower = _utc(lower[-1].candle_timestamp)
-        run_name = active_run["name"]
-        dispatch_counts[run_name] += 1
-        observed_slow_states[run_name].add((latest_higher, latest_lower))
-        action = "BUY" if latest_lower.hour % 2 == 0 else "SELL"
-        payload = (
-            {"stop_loss": 90.0, "take_profit": 120.0}
-            if action == "BUY"
-            else {"stop_loss": 110.0, "take_profit": 80.0}
-        )
-        return SignalResult(
-            action=action,
-            reason=f"{identifier} synchronized {action.lower()}",
-            candle_timestamp=latest_lower,
-            price=100.0,
-            raw_payload=payload,
-        )
-
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "dispatch_strategy_evaluator",
-        fake_dispatch,
-    )
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "build_bot_market_analysis",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        backtesting_module.bot_service_module,
-        "build_signal_trade_evaluation",
-        lambda **_kwargs: {"total_score": 85},
-    )
-    run_options = {
-        "config": config,
-        "start": session_open - timedelta(minutes=10),
-        "end": session_open + timedelta(minutes=130),
-        "commission_per_contract": 1.25,
-        "slippage_ticks": 1,
-        "tick_size": 0.25,
-        "tick_value": 0.50,
-        "replay_streams": {
-            backtesting_module._topbot_asset_stream_key("hour", 1): one_hour,
-            backtesting_module._topbot_asset_stream_key("hour", 4): four_hour,
-        },
-        "include_evaluation_split": False,
-    }
-
-    optimized = _run(primary, **run_options)
-    prepared_streams, _excluded = backtesting_module._prepare_topbot_replay_streams(
-        config,
-        primary_candles=primary,
-        replay_streams=run_options["replay_streams"],
-    )
-    in_session_events = [
-        backtesting_module._candle_close_time(row)
-        for row in primary
-        if run_options["start"] <= _utc(row.candle_timestamp)
-        and backtesting_module._candle_close_time(row) <= run_options["end"]
-        and backtesting_module._event_timestamp_is_in_configured_session(
-            config,
-            row.candle_timestamp,
-        )
-    ]
-    cached_evaluations = (
-        backtesting_module._topbot_cached_source_evaluation_counts(
-            config,
-            streams=prepared_streams,
-            event_times=in_session_events,
-            unavailable_sources={},
-        )
-    )
-    assert cached_evaluations == {
-        "support_resistance": 3,
-        "liquidity_sweep_retest": 3,
-    }
-    assert backtesting_module._estimate_topbot_evaluator_operations(
-        config,
-        execution_bars=len(in_session_events),
-        source_evaluations=cached_evaluations,
-        unavailable_sources={},
-    ) < backtesting_module._estimate_topbot_evaluator_operations(
-        config,
-        execution_bars=len(in_session_events),
-    )
-    optimized_signature = (
-        backtesting_module.BacktestEngine._topbot_source_cache_signature
-    )
-
-    def legacy_closed_count(self, key: str, event_time: datetime) -> int:
-        stream = self.topbot_streams.get(key)
-        if stream is None:
-            return 0
-        return backtesting_module.bisect_right(
-            stream.close_times,
-            _utc(event_time),
-        )
-
-    def legacy_stream_history(
-        self,
-        key: str,
-        *,
-        event_time: datetime,
-        limit: int,
-        not_before: datetime | None = None,
-    ) -> list[ProjectXMarketCandle]:
-        stream = self.topbot_streams.get(key)
-        if stream is None or not stream.candles:
-            raise ValueError(f"missing_stored_replay_stream:{key}")
-        end_index = backtesting_module.bisect_right(
-            stream.close_times,
-            _utc(event_time),
-        )
-        start_index = max(0, end_index - max(1, int(limit)))
-        if not_before is not None:
-            start_index = max(
-                start_index,
-                backtesting_module.bisect_left(
-                    stream.start_times,
-                    _utc(not_before),
-                ),
-            )
-        return backtesting_module._ClosedCandleList(
-            stream.candles[start_index:end_index]
-        )
-
-    def legacy_source_signature(
-        self,
-        source_strategy: str,
-        *,
-        source_params: dict[str, Any],
-        event_time: datetime,
-        event_timestamp: datetime,
-    ) -> tuple[Any, ...]:
-        signature = optimized_signature(
-            self,
-            source_strategy,
-            source_params=source_params,
-            event_time=event_time,
-            event_timestamp=event_timestamp,
-        )
-        return (*signature, ("uncached_primary_event", _utc(event_timestamp)))
-
-    def legacy_session_check(self, event_timestamp: datetime) -> bool:
-        return backtesting_module._event_timestamp_is_in_configured_session(
-            self.config,
-            event_timestamp,
-        )
-
-    monkeypatch.setattr(
-        backtesting_module.BacktestEngine,
-        "_topbot_closed_count",
-        legacy_closed_count,
-    )
-    monkeypatch.setattr(
-        backtesting_module.BacktestEngine,
-        "_topbot_stream_history",
-        legacy_stream_history,
-    )
-    monkeypatch.setattr(
-        backtesting_module.BacktestEngine,
-        "_topbot_source_cache_signature",
-        legacy_source_signature,
-    )
-    monkeypatch.setattr(
-        backtesting_module.BacktestEngine,
-        "_event_in_configured_session",
-        legacy_session_check,
-    )
-    active_run["name"] = "reference"
-
-    reference = _run(primary, **run_options)
-
-    assert dispatch_counts == {"optimized": 6, "reference": 50}
-    assert len(observed_slow_states["optimized"]) == 3
-    assert observed_slow_states["optimized"] == observed_slow_states["reference"]
-    assert optimized["trades"]
-    assert optimized["metrics"]["total_commission"] > 0
-    assert optimized == reference
 
 
-def test_donchian_topbot_cache_signature_tracks_position_state():
-    engine = object.__new__(backtesting_module.BacktestEngine)
-    engine._topbot_source_keys = {"donchian_breakout": ()}
-    engine.position = None
-    signature_options = {
-        "source_strategy": "donchian_breakout",
-        "source_params": {},
-        "event_time": BASE_TIME,
-        "event_timestamp": BASE_TIME,
-    }
-
-    flat_signature = engine._topbot_source_cache_signature(**signature_options)
-    engine.position = backtesting_module._OpenTrade(
-        side="long",
-        quantity=2,
-        signal_timestamp=BASE_TIME - timedelta(minutes=5),
-        entry_timestamp=BASE_TIME,
-        entry_price=100,
-        entry_commission=2.50,
-        stop_loss=90,
-        take_profit=120,
-    )
-    long_signature = engine._topbot_source_cache_signature(**signature_options)
-    engine.position.stop_loss = 95
-    adjusted_signature = engine._topbot_source_cache_signature(**signature_options)
-
-    assert flat_signature[-1] == ("position", "flat")
-    assert long_signature[-1][:3] == ("position", "long", 2)
-    assert flat_signature != long_signature
-    assert long_signature != adjusted_signature
 
 
-def test_topbot_loader_shares_one_physical_benchmark_query_group(
-    db_session,
-    monkeypatch,
-):
-    config = _config(
-        strategy_type="topbot_adaptive",
-        strategy_params={
-            "source_strategies": [
-                "atr_adjusted_relative_strength",
-                "relative_strength_spy",
-            ],
-        },
-        lookback_bars=25,
-    )
-    benchmark_contract = "CON.F.US.MES.M26"
-    benchmark_rows = [
-        _candle(
-            BASE_TIME + timedelta(minutes=5 * index),
-            contract_id=benchmark_contract,
-            symbol="F.US.MES",
-            close_price=5000 + index,
-        )
-        for index in range(-80, 5)
-    ]
-    db_session.add_all(benchmark_rows)
-    db_session.commit()
-    db_session.expunge_all()
-    primary_rows = backtesting_module._ClosedCandleList(
-        _candle(
-            BASE_TIME + timedelta(minutes=5 * index),
-            close_price=20_000 + index,
-        )
-        for index in range(-25, 4)
-    )
-    projected_query_calls = 0
-    real_projected_query = backtesting_module._projected_candle_query
-
-    def projected_query_spy(db):
-        nonlocal projected_query_calls
-        projected_query_calls += 1
-        return real_projected_query(db)
-
-    monkeypatch.setattr(
-        backtesting_module,
-        "_projected_candle_query",
-        projected_query_spy,
-    )
-    start = BASE_TIME
-    end = BASE_TIME + timedelta(minutes=20)
-
-    streams = backtesting_module._load_topbot_replay_streams(
-        db_session,
-        user_id=OWNER_ID,
-        config=config,
-        start=start,
-        end=end,
-        primary_rows=primary_rows,
-    )
-
-    atr_key = backtesting_module._topbot_benchmark_stream_key(
-        "atr_adjusted_relative_strength"
-    )
-    relative_key = backtesting_module._topbot_benchmark_stream_key(
-        "relative_strength_spy"
-    )
-    specs = backtesting_module._topbot_stream_specs(config)
-    assert specs[atr_key].warmup_bars < specs[relative_key].warmup_bars
-    assert projected_query_calls == 1
-    assert streams[atr_key]._topsignal_physical_stream == (
-        "contract",
-        benchmark_contract,
-        "minute",
-        5,
-    )
-    assert (
-        streams[atr_key]._topsignal_physical_stream
-        == streams[relative_key]._topsignal_physical_stream
-    )
-    assert (
-        streams[atr_key]._topsignal_physical_row_count
-        == streams[relative_key]._topsignal_physical_row_count
-    )
-    assert streams[atr_key][-1] is streams[relative_key][-1]
-
-    stored_rows = (
-        db_session.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.contract_id == benchmark_contract)
-        .order_by(ProjectXMarketCandle.candle_timestamp.asc())
-        .all()
-    )
-    execution_rows = [
-        row
-        for row in stored_rows
-        if _utc(row.candle_timestamp) >= start
-        and _utc(row.candle_timestamp) <= end
-        and backtesting_module._candle_close_time(row) <= end
-    ]
-    max_warmup = max(specs[atr_key].warmup_bars, specs[relative_key].warmup_bars)
-    physical_warmup = [
-        row for row in stored_rows if _utc(row.candle_timestamp) < start
-    ][-(max_warmup + 1) :]
-
-    for key in (atr_key, relative_key):
-        expected = [
-            *physical_warmup[-(specs[key].warmup_bars + 1) :],
-            *execution_rows,
-        ]
-        assert [_utc(row.candle_timestamp) for row in streams[key]] == [
-            _utc(row.candle_timestamp) for row in expected
-        ]
-        assert backtesting_module.candle_input_fingerprint(
-            streams[key]
-        ) == backtesting_module.candle_input_fingerprint(expected)
-
-    assert len(streams[atr_key]) < len(streams[relative_key])
-    assert backtesting_module.candle_input_fingerprint(
-        streams[atr_key]
-    ) != backtesting_module.candle_input_fingerprint(streams[relative_key])
 
 
 def test_evaluator_work_budget_failure_occurs_before_backtest_persistence(
@@ -3577,138 +2501,8 @@ def test_cache_coverage_budget_includes_retained_primary_rows(
         )
 
 
-def test_topbot_auxiliary_cache_corruption_is_a_configuration_error(monkeypatch):
-    primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
-    auxiliary_key = "benchmark:synthetic"
-    specs = {
-        primary_key: backtesting_module._TopBotReplayStreamSpec(
-            key=primary_key,
-            unit="minute",
-            unit_number=5,
-            warmup_bars=25,
-            contract_id=CONTRACT_ID,
-            symbol="MNQ",
-        ),
-        auxiliary_key: backtesting_module._TopBotReplayStreamSpec(
-            key=auxiliary_key,
-            unit="minute",
-            unit_number=5,
-            warmup_bars=25,
-            contract_id="CON.F.US.MES.M26",
-            symbol="MES",
-        ),
-    }
-    monkeypatch.setattr(backtesting_module, "_topbot_stream_specs", lambda _config: specs)
-
-    class StaleAuxiliaryStore:
-        def history_bounds(self, _root):
-            return BASE_TIME - timedelta(days=2), BASE_TIME + timedelta(days=2)
-
-        def open_candles(self, **_kwargs):
-            raise backtesting_module.DatabentoCacheStaleError(
-                "databento_source_changed"
-            )
-
-    window = backtesting_module._ResolvedBacktestWindow(
-        requested_start=BASE_TIME,
-        requested_end=BASE_TIME + timedelta(hours=1),
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(hours=1),
-        full_history=False,
-    )
-    config = SimpleNamespace(timeframe_unit="minute", timeframe_unit_number=5)
-
-    with pytest.raises(
-        backtesting_module.BacktestConfigurationError,
-        match="databento_source_changed",
-    ):
-        backtesting_module._load_databento_topbot_replay_streams(
-            object(),
-            user_id=OWNER_ID,
-            config=config,
-            root_symbol="MNQ",
-            window=window,
-            closed_by=window.end,
-            primary_rows=[],
-            max_rows=1_000,
-            replay_store=StaleAuxiliaryStore(),
-        )
 
 
-def test_topbot_lazy_auxiliary_open_ignores_retired_aggregate_row_ceiling(monkeypatch):
-    primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
-    auxiliary_key = "asset:minute:1"
-    auxiliary_contract = "CON.F.US.MNQ.M26"
-    specs = {
-        primary_key: backtesting_module._TopBotReplayStreamSpec(
-            key=primary_key,
-            unit="minute",
-            unit_number=5,
-            warmup_bars=25,
-            contract_id=CONTRACT_ID,
-            symbol="MNQ",
-        ),
-        auxiliary_key: backtesting_module._TopBotReplayStreamSpec(
-            key=auxiliary_key,
-            unit="minute",
-            unit_number=1,
-            warmup_bars=25,
-            contract_id=auxiliary_contract,
-            symbol="MNQ",
-        ),
-    }
-    monkeypatch.setattr(backtesting_module, "_topbot_stream_specs", lambda _config: specs)
-    auxiliary_rows = backtesting_module._ClosedCandleList(
-        _candle(
-            BASE_TIME + timedelta(minutes=index),
-            contract_id=auxiliary_contract,
-            unit="minute",
-            unit_number=1,
-        )
-        for index in range(3)
-    )
-    opened: list[dict] = []
-
-    class LazyAuxiliaryStore:
-        def history_bounds(self, _root):
-            return BASE_TIME - timedelta(days=2), BASE_TIME + timedelta(days=2)
-
-        def open_candles(self, **kwargs):
-            # The lazy API deliberately has no max_rows argument. Previously
-            # this request received max_rows-total_rows == 1 and failed.
-            assert "max_rows" not in kwargs
-            opened.append(kwargs)
-            return auxiliary_rows
-
-        def load_candles(self, **_kwargs):
-            raise AssertionError("TopBot local replay must not materialize auxiliary history")
-
-    window = backtesting_module._ResolvedBacktestWindow(
-        requested_start=BASE_TIME,
-        requested_end=BASE_TIME + timedelta(hours=1),
-        start=BASE_TIME,
-        end=BASE_TIME + timedelta(hours=1),
-        full_history=False,
-    )
-    config = SimpleNamespace(timeframe_unit="minute", timeframe_unit_number=5)
-    primary_rows = backtesting_module._ClosedCandleList(
-        _candle(BASE_TIME + timedelta(minutes=5 * index)) for index in range(4)
-    )
-
-    streams = backtesting_module._load_databento_topbot_replay_streams(
-        object(),
-        user_id=OWNER_ID,
-        config=config,
-        root_symbol="MNQ",
-        window=window,
-        closed_by=window.end,
-        primary_rows=primary_rows,
-        max_rows=5,
-        replay_store=LazyAuxiliaryStore(),
-    )
-
-    assert opened
-    assert streams[auxiliary_key] is auxiliary_rows
 
 
 def test_backtest_result_lru_is_bounded_and_returns_defensive_copies(monkeypatch):

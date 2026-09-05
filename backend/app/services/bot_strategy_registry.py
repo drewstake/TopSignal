@@ -207,8 +207,8 @@ _DEFINITIONS = (
     _definition(
         "topbot_adaptive",
         "evaluate_topbot_adaptive",
-        (_configured(notes="Primary chart stream; configured source strategies may acquire auxiliary streams."),),
-        ("dynamic_source_strategies", "source_trade_plan_scores"),
+        (_fixed("signal", "minute", 5, notes="MNQ EMA/VWAP trend pullback."),),
+        ("regular_session_vwap",),
     ),
     _definition("sma_cross", "evaluate_sma_cross", (_configured(),)),
     _definition(
@@ -417,14 +417,8 @@ def _resolve_minimum_history(
     timeframe_unit_number: int,
 ) -> tuple[HistoryRequirement, ...]:
     if identifier == "topbot_adaptive":
-        return (
-            _history(
-                "signal",
-                300,
-                hard=25,
-                notes="Source strategies can require additional fixed or benchmark candle streams.",
-            ),
-        )
+        from .topbot_strategy import HISTORY_BARS
+        return (_history("signal", HISTORY_BARS, notes="One 5-minute MNQ stream; fixed EMA warmup and regular-session VWAP."),)
 
     if identifier == "sma_cross":
         hard = slow_period + 1
