@@ -14,6 +14,7 @@ import {
   getBotProviderAccountId,
   getProjectXBotAccounts,
   loadBotConfigsForProviderAccount,
+  reconcileBotConfigs,
   resolveActiveBotAccount,
 } from "./botAccountIsolation";
 
@@ -81,6 +82,17 @@ function bot(id: number, accountId: number): BotConfig {
 }
 
 describe("Bot Live/ProjectX isolation", () => {
+  it("preserves unchanged configs without overlooking nested changes or removals", () => {
+    const current = [bot(1, 2001), bot(2, 2001)];
+    expect(reconcileBotConfigs(current, structuredClone(current))).toBe(current);
+    const incoming = structuredClone(current);
+    incoming[1].allowed_contracts.push("CON.F.US.MNQ.Z26");
+    const next = reconcileBotConfigs(current, incoming);
+    expect(next[0]).toBe(current[0]);
+    expect(next[1]).toBe(incoming[1]);
+    expect(reconcileBotConfigs(current, [incoming[1]])).toEqual([incoming[1]]);
+  });
+
   it("mounts the production Bot page without any provider request while Live is active", async () => {
     const live = account(9001, "csv_import", true);
     const express = account(2001, "projectx");

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ComponentProps, type FormEvent } from "react";
 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -260,7 +260,7 @@ export function BacktestRunningState({ progress }: { progress: BotBacktestProgre
   );
 }
 
-export function BacktestResults({ result }: { result: BotBacktestResult }) {
+export const BacktestResults = memo(function BacktestResults({ result }: { result: BotBacktestResult }) {
   const metrics = result.metrics;
 
   return (
@@ -335,7 +335,7 @@ export function BacktestResults({ result }: { result: BotBacktestResult }) {
 
     </div>
   );
-}
+});
 
 function ChronologicalHoldout({
   split,

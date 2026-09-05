@@ -2436,13 +2436,14 @@ export const botsApi = {
         account_id: accountId,
       },
     }),
-  listConfigsWithCacheScope: async (accountId?: number) => {
+  listConfigsWithCacheScope: async (accountId?: number, options: RequestSignalOptions = {}) => {
     const auth = await getRequestAuthContext();
     const configs = await requestJson<BotConfigListResponse>("/api/bots", {
       query: {
         account_id: accountId,
       },
       accessTokenOverride: auth.accessToken,
+      signal: options.signal,
     });
     return { configs, cacheScope: auth.cacheScope };
   },

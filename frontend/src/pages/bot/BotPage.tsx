@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
@@ -20,22 +20,17 @@ import type {
   BotEvaluation,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { BotSignalChart } from "./BotSignalChart";
-import { OrderBookPanel } from "./OrderBookPanel";
+import { BotMarketPanels } from "./BotMarketPanels";
 import { BotExpressAccountRequired, BotProviderWorkspaceBoundary } from "./BotAccountGate";
 import {
   getBotProviderAccountId,
   getProjectXBotAccounts,
   loadBotConfigsForProviderAccount,
+  reconcileBotConfigs,
   resolveActiveBotAccount,
 } from "./botAccountIsolation";
-import type { BotMarketSnapshot } from "./botMarketContext";
-
-const BotAnalysisPanel = lazy(() =>
-  import("./BotAnalysisPanel").then((module) => ({ default: module.BotAnalysisPanel })),
-);
 const BotBacktestPanel = lazy(() =>
-  import("./BotBacktestPanel").then((module) => ({ default: module.BotBacktestPanel })),
+  import("./BotBacktestPanel").then((module) => ({ default: memo(module.BotBacktestPanel) })),
 );
 
 const PROVIDER_CLASSIFICATION_MAX_AGE_MS = 5 * 60 * 1_000;
@@ -132,8 +127,8 @@ function evaluationStatusLabel(status: string) {
 }
 
 function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
-  const closes = candles.map((candle) => candle.close).filter((value) => Number.isFinite(value));
   const path = useMemo(() => {
+    const closes = candles.map((candle) => candle.close).filter((value) => Number.isFinite(value));
     if (closes.length < 2) {
       return "";
     }
@@ -147,7 +142,7 @@ function Sparkline({ candles }: { candles: ProjectXMarketCandle[] }) {
         return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
       })
       .join(" ");
-  }, [closes]);
+  }, [candles]);
 
   return (
     <svg viewBox="0 0 100 40" className="h-16 w-full overflow-visible" aria-hidden="true">
@@ -178,7 +173,6 @@ export function BotPage() {
   const [error, setError] = useState<string | null>(null);
   const [configWarnings, setConfigWarnings] = useState<string[]>([]);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
-  const [marketSnapshot, setMarketSnapshot] = useState<BotMarketSnapshot | null>(null);
   const [authenticatedCacheScope, setAuthenticatedCacheScope] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<BotRuntimeStatus | null>(null);
   const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null);
@@ -189,6 +183,7 @@ export function BotPage() {
   const [classificationVerification, setClassificationVerification] = useState<AccountClassificationVerification | null>(null);
   const accountRequestGate = useAccountRequestGate(activeProjectXAccountId);
   const configsRequestSequence = useRef(0);
+  const configsRequestController = useRef<AbortController | null>(null);
   const activityRequestSequence = useRef(0);
   const activityRequestController = useRef<AbortController | null>(null);
   const selectedBotIdRef = useRef<number | null>(null);
@@ -315,10 +310,18 @@ export function BotPage() {
   }, [activeAccountClassificationFresh, activeProviderSimulated, runtimeContinuousBlockReason, runtimeStatus]);
   const runtimeCanArmContinuous = runtimeContinuousBlockReason === null;
 
-  const loadRuntimeStatus = useCallback(async () => {
+  const loadRuntimeStatus = useCallback(async ({ background = false }: { background?: boolean } = {}) => {
+    if (background && runtimeRequestController.current) return;
     runtimeRequestController.current?.abort();
     const controller = new AbortController();
     runtimeRequestController.current = controller;
+    const timeoutId = window.setTimeout(() => {
+      if (runtimeRequestController.current !== controller || controller.signal.aborted) return;
+      setRuntimeStatus(null);
+      setRuntimeStatusError("Runtime status check timed out. Waiting for a fresh health check.");
+      controller.abort();
+    }, 30_000);
+    controller.signal.addEventListener("abort", () => window.clearTimeout(timeoutId), { once: true });
     try {
       const nextStatus = await botsApi.getRuntimeStatus({ signal: controller.signal });
       if (!controller.signal.aborted) {
@@ -332,12 +335,17 @@ export function BotPage() {
       }
     } finally {
       if (runtimeRequestController.current === controller) {
+        window.clearTimeout(timeoutId);
         runtimeRequestController.current = null;
       }
     }
   }, []);
 
-  const loadConfigs = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}) => {
+  const loadConfigs = useCallback(async ({ showLoading = false, background = false }: { showLoading?: boolean; background?: boolean } = {}) => {
+    if (activeProjectXAccountId !== null && !accountRequestGate.isActive(accountRequestGate.capture(activeProjectXAccountId))) return;
+    if (background && configsRequestController.current) return;
+    configsRequestController.current?.abort();
+    configsRequestController.current = null;
     if (activeProjectXAccountId === null) {
       setAuthenticatedCacheScope(null);
       setConfigs([]);
@@ -353,17 +361,19 @@ export function BotPage() {
     const requestToken = accountRequestGate.begin(activeProjectXAccountId, "configs");
     const sequence = configsRequestSequence.current + 1;
     configsRequestSequence.current = sequence;
+    const controller = new AbortController();
+    configsRequestController.current = controller;
     if (showLoading) {
       setLoading(true);
     }
-    setError(null);
+    if (!background) setError(null);
     try {
       const result = await loadBotConfigsForProviderAccount(
         activeProjectXAccountId,
-        botsApi.listConfigsWithCacheScope,
+        (accountId) => botsApi.listConfigsWithCacheScope(accountId, { signal: controller.signal }),
       );
       if (
-        configsRequestSequence.current !== sequence ||
+        controller.signal.aborted || configsRequestSequence.current !== sequence ||
         !accountRequestGate.isCurrent(requestToken)
       ) {
         return;
@@ -373,7 +383,7 @@ export function BotPage() {
       }
       const { configs: botRows, cacheScope } = result;
       setAuthenticatedCacheScope(cacheScope);
-      setConfigs(botRows.items);
+      setConfigs((current) => reconcileBotConfigs(current, botRows.items));
       setConfigWarnings(botRows.warnings ?? []);
       setSelectedBotId((current) => {
         if (current && botRows.items.some((item) => item.id === current)) {
@@ -383,7 +393,7 @@ export function BotPage() {
       });
     } catch (err) {
       if (
-        configsRequestSequence.current === sequence &&
+        !controller.signal.aborted && configsRequestSequence.current === sequence &&
         accountRequestGate.isCurrent(requestToken)
       ) {
         setConfigWarnings([]);
@@ -391,16 +401,18 @@ export function BotPage() {
       }
     } finally {
       if (
-        showLoading &&
         configsRequestSequence.current === sequence &&
         accountRequestGate.isCurrent(requestToken)
       ) {
         setLoading(false);
       }
+      if (configsRequestController.current === controller) configsRequestController.current = null;
     }
   }, [accountRequestGate, activeProjectXAccountId]);
 
-  const loadActivity = useCallback(async (botId: number | null) => {
+  const loadActivity = useCallback(async (botId: number | null, { background = false }: { background?: boolean } = {}) => {
+    if (activeProjectXAccountId !== null && !accountRequestGate.isActive(accountRequestGate.capture(activeProjectXAccountId))) return;
+    if (background && activityRequestController.current) return;
     const sequence = activityRequestSequence.current + 1;
     activityRequestSequence.current = sequence;
     activityRequestController.current?.abort();
@@ -424,20 +436,25 @@ export function BotPage() {
     const requestToken = accountRequestGate.begin(requestAccountId, "activity");
     const controller = new AbortController();
     activityRequestController.current = controller;
-    setActivity(null);
-    setActivityLoading(true);
+    if (!background) {
+      setActivity(null);
+      setActivityLoading(true);
+    }
     try {
       const payload = await botsApi.getActivity(botId, 50, { signal: controller.signal });
       if (
-        activityRequestSequence.current === sequence &&
+        !controller.signal.aborted && activityRequestSequence.current === sequence &&
         selectedBotIdRef.current === botId &&
         accountRequestGate.isCurrent(requestToken)
       ) {
+        if (payload.config.id !== botId || payload.config.account_id !== requestAccountId) {
+          throw new Error("Bot activity response did not match the requested bot and account.");
+        }
         setActivity(payload);
       }
     } catch (err) {
       if (
-        activityRequestSequence.current === sequence &&
+        !controller.signal.aborted && activityRequestSequence.current === sequence &&
         selectedBotIdRef.current === botId &&
         accountRequestGate.isCurrent(requestToken) &&
         !(err instanceof Error && err.name === "AbortError")
@@ -467,17 +484,48 @@ export function BotPage() {
       setRuntimeStatusError(null);
       return undefined;
     }
-    void loadRuntimeStatus();
-    const intervalId = window.setInterval(() => void loadRuntimeStatus(), 15_000);
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const refresh = async () => {
+      // A slow response must not be aborted on every polling tick.
+      await loadRuntimeStatus({ background: true });
+      if (!cancelled) timeoutId = window.setTimeout(() => void refresh(), 15_000);
+    };
+    void refresh();
     return () => {
-      window.clearInterval(intervalId);
+      cancelled = true;
+      window.clearTimeout(timeoutId);
       runtimeRequestController.current?.abort();
       runtimeRequestController.current = null;
     };
   }, [activeProjectXAccountId, demoModeEnabled, loadRuntimeStatus]);
 
+  useEffect(() => {
+    if (demoModeEnabled || activeProjectXAccountId === null || actionLoading !== null || emergencyFlattenAccountId !== null) return;
+    let cancelled = false;
+    let timeoutId: number;
+    const refresh = async () => {
+      if (!document.hidden) {
+        await Promise.allSettled([
+          loadConfigs({ background: true }),
+          loadActivity(selectedBotIdRef.current, { background: true }),
+        ]);
+      }
+      if (!cancelled) timeoutId = window.setTimeout(() => void refresh(), 15_000);
+    };
+    // Initial reads already run above/below. Runtime health polls independently
+    // so a slow history query cannot delay the admission checks.
+    timeoutId = window.setTimeout(() => void refresh(), 15_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [actionLoading, activeProjectXAccountId, demoModeEnabled, emergencyFlattenAccountId, loadActivity, loadConfigs]);
+
   useEffect(() => () => {
     configsRequestSequence.current += 1;
+    configsRequestController.current?.abort();
+    configsRequestController.current = null;
     activityRequestSequence.current += 1;
     activityRequestController.current?.abort();
     activityRequestController.current = null;
@@ -491,12 +539,15 @@ export function BotPage() {
     }
 
     previousProjectXAccountIdRef.current = activeProjectXAccountId;
+    configsRequestController.current?.abort();
+    configsRequestController.current = null;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
     setConfigs([]);
     setConfigWarnings([]);
     setSelectedBotId(null);
     setActivity(null);
     setLastEvaluation(null);
-    setMarketSnapshot(null);
     setAuthenticatedCacheScope(null);
     setLoading(activeProjectXAccountId !== null);
     setActivityLoading(false);
@@ -548,6 +599,9 @@ export function BotPage() {
     const requestAccountId = activeProjectXAccountId;
     let requestBotId = selectedBot?.id ?? null;
     const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
+    // Reads started before a mutation cannot overwrite its resulting state.
+    configsRequestController.current?.abort();
+    activityRequestController.current?.abort();
     setActionLoading(kind);
     setError(null);
     try {
@@ -652,6 +706,8 @@ export function BotPage() {
     }
 
     const requestBotId = selectedBot?.account_id === requestAccountId ? selectedBot.id : null;
+    configsRequestController.current?.abort();
+    activityRequestController.current?.abort();
     setEmergencyFlattenAccountId(requestAccountId);
     setError(null);
     try {
@@ -1081,32 +1137,17 @@ export function BotPage() {
             </CardContent>
           </Card>
 
-          <div className="order-1 min-w-0 space-y-5">
-            <BotSignalChart
-              bot={selectedBot}
-              authenticatedCacheScope={authenticatedCacheScope}
-              activity={selectedBotActivity}
-              lastEvaluation={selectedBotEvaluation}
-              refreshToken={chartRefreshToken}
-              demoMode={demoModeEnabled}
-              onMarketData={setMarketSnapshot}
-            />
-            <OrderBookPanel
-              key={selectedBot?.contract_id ?? "no-contract"}
-              contractId={selectedBot?.contract_id}
-              symbol={selectedBot?.symbol}
-              demoMode={demoModeEnabled}
-            />
-            <Suspense fallback={<Skeleton className="h-[360px]" />}>
-              <BotAnalysisPanel
-                bot={selectedBot}
-                evaluation={selectedBotEvaluation}
-                marketSnapshot={marketSnapshot}
-                loading={actionLoading === "dry_run" || actionLoading === "live" || actionLoading === "evaluate"}
-                onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
-              />
-            </Suspense>
-          </div>
+          <BotMarketPanels
+            key={`${activeProjectXAccountId}:${selectedBot?.id ?? "no-bot"}:${authenticatedCacheScope}`}
+            bot={selectedBot}
+            authenticatedCacheScope={authenticatedCacheScope}
+            activity={selectedBotActivity}
+            evaluation={selectedBotEvaluation}
+            refreshToken={chartRefreshToken}
+            demoMode={demoModeEnabled}
+            evaluating={actionLoading === "dry_run" || actionLoading === "live" || actionLoading === "evaluate"}
+            onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
+          />
         </div>
       </div>
       <Suspense fallback={<Skeleton className="h-[420px]" />}>
