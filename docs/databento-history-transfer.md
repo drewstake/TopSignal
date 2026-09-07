@@ -1,5 +1,10 @@
 # Transfer saved Databento history to another Windows laptop
 
+Follow the [Supabase storage policy](supabase-storage-policy.md): keep source
+archives and generated replay data on the backend filesystem. Use
+`build_databento_cache.py` below; the legacy `import_databento.py` is restricted
+to SQLite fixtures and must not be used to populate Supabase.
+
 The MNQ OHLCV-1m download is saved in the app's local data directory:
 
 ```text

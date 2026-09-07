@@ -42,6 +42,19 @@ class DatabentoIngestionError(ValueError):
     """Raised when an archive is invalid, incomplete, or unsupported."""
 
 
+def _require_sqlite_fixture_database(db: Session) -> None:
+    # Production replay reads local Parquet/mmap files. Relational imports
+    # remain solely for SQLite fixtures; cloud history exhausted Supabase's
+    # quota and blocked Auth on 2026-09-07. Check before any file or DB work.
+    bind = db.get_bind(mapper=DatabentoOhlcv1m)
+    if bind.dialect.name != "sqlite":
+        raise DatabentoIngestionError(
+            "databento_relational_import_disabled: database imports are only "
+            "supported for SQLite fixtures. Use backend/tools/build_databento_cache.py "
+            "for local backtest history. See docs/supabase-storage-policy.md."
+        )
+
+
 @dataclass(frozen=True)
 class DatabentoArchiveInfo:
     path: Path
@@ -123,8 +136,9 @@ def import_databento_archives(
     *,
     commit_batches: bool = False,
 ) -> list[DatabentoImportResult]:
-    """Import definitions before OHLCV regardless of caller path ordering."""
+    """Import SQLite fixture definitions before OHLCV regardless of path order."""
 
+    _require_sqlite_fixture_database(db)
     infos = [inspect_databento_archive(path) for path in paths]
     infos.sort(key=lambda item: (item.schema_name != "definition", item.job_id))
     results: list[DatabentoImportResult] = []
@@ -141,8 +155,9 @@ def import_databento_archive(
     *,
     commit_batches: bool = False,
 ) -> DatabentoImportResult:
-    """Stream one Databento batch ZIP into idempotent global market-data tables."""
+    """Stream one Databento batch ZIP into SQLite fixture market-data tables."""
 
+    _require_sqlite_fixture_database(db)
     info = archive if isinstance(archive, DatabentoArchiveInfo) else inspect_databento_archive(archive)
     existing = db.execute(
         select(DatabentoImportBatch).where(

@@ -591,6 +591,13 @@ On Windows PowerShell 5.1, use `Invoke-WebRequest` inside `try/catch` and inspec
 
 ## 9. Backup, retention, recovery, and updates
 
+Follow the [Supabase storage policy](supabase-storage-policy.md) and run its
+read-only storage report weekly and before bulk writes or retention increases.
+Keep historical Databento inputs and replay caches on persistent backend disk;
+do not refill legacy cloud candle tables. The policy defines internal 350 MB
+warning / 400 MB stop thresholds for optional bulk writes on the current Free
+plan, and explains quota recovery without losing backtesting.
+
 Back up daily and immediately before an update: PostgreSQL custom archive,
 private journal images, release version/dependency locks, settings, and recent
 logs. Keep the exact Fernet key/auth configuration separately encrypted. Keep

@@ -11,15 +11,16 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.db import SessionLocal  # noqa: E402
-from app.services.databento_ingestion import import_databento_archives  # noqa: E402
+from app.services.databento_ingestion import DatabentoIngestionError, import_databento_archives  # noqa: E402
 from app.services.databento_market_data import rebuild_volume_roll_schedule  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Idempotently import Databento MNQ definition/OHLCV DBN+zstd ZIP archives "
-            "and rebuild the no-lookahead continuous-contract roll schedule."
+            "Legacy SQLite fixture importer only; PostgreSQL/Supabase imports are "
+            "disabled. For application history use build_databento_cache.py. "
+            "Imports MNQ definition/OHLCV ZIPs and rebuilds the fixture roll schedule."
         )
     )
     parser.add_argument("archives", nargs="+", type=Path)
@@ -58,4 +59,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except DatabentoIngestionError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from None

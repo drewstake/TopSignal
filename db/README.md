@@ -1,5 +1,10 @@
 # Database Setup And Migrations
 
+Read the [Supabase storage policy](../docs/supabase-storage-policy.md) before
+bulk data changes. Databento history belongs in the local replay cache, even
+when legacy table definitions exist. Use [the storage report](diagnostics/storage_usage.sql)
+to check capacity; do not refill historical candle tables through migrations.
+
 This folder contains:
 
 - `schema.sql`: full schema for a fresh PostgreSQL database

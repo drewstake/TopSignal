@@ -15,6 +15,12 @@ loopback control UI, single-worker supervisor, safe dry-run defaults,
 migrations, health checks, local logs, reboot recovery, power settings, and
 backup/restore drills.
 
+Before importing history or expanding database storage, read the
+[Supabase storage policy](docs/supabase-storage-policy.md). Databento backtest
+history stays in the local filesystem cache; cloud imports previously exhausted
+the database quota and blocked sign-in. The policy includes a read-only storage
+report, capacity thresholds, backup requirements, and recovery steps.
+
 ## Why This Project Exists
 
 ProjectX exposes account and trade data, but the raw provider API is not a good day-to-day analytics workspace by itself. TopSignal exists to solve that gap.
