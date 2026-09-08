@@ -666,3 +666,40 @@ def test_duplicate_insert_returns_conflict(db_session):
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "duplicate_expense"
+
+
+def test_import_source_identity_preserves_repeated_charges_and_rejects_replay(db_session):
+    values = dict(expense_date=date(2026, 6, 1), amount_cents=5194, category="other")
+    first = create_expense(payload=ExpenseCreateIn(**values, source_id="statement:row-1"), db=db_session)
+    second = create_expense(payload=ExpenseCreateIn(**values, source_id="statement:row-2"), db=db_session)
+    assert first.id != second.id
+    assert first.source_id == "statement:row-1"
+    assert second.source_id == "statement:row-2"
+    with pytest.raises(HTTPException) as exc:
+        create_expense(payload=ExpenseCreateIn(**values, source_id="statement:row-1"), db=db_session)
+    assert exc.value.status_code == 409
+    assert db_session.query(Expense).count() == 2
+
+
+def test_refund_is_a_separate_negative_expense(db_session):
+    refund = create_expense(
+        payload=ExpenseCreateIn(expense_date=date(2026, 6, 3), amount_cents=-22900,
+                                category="refund", source_id="statement:refund-1"),
+        db=db_session,
+    )
+    assert refund.amount == -229.0
+    assert refund.category == "refund"
+    updated = update_expense(expense_id=refund.id, payload=ExpenseUpdateIn(description="Refund proof"), db=db_session)
+    assert updated.amount_cents == -22900
+    with pytest.raises(HTTPException):
+        update_expense(expense_id=refund.id, payload=ExpenseUpdateIn(category="other"), db=db_session)
+    assert db_session.get(Expense, refund.id).category == "refund"
+
+
+@pytest.mark.parametrize("amount_cents", [0, 1, 22900])
+def test_refund_must_have_a_negative_amount(db_session, amount_cents):
+    with pytest.raises(HTTPException) as exc:
+        create_expense(payload=ExpenseCreateIn(expense_date=date(2026, 6, 3),
+                       amount_cents=amount_cents, category="refund"), db=db_session)
+    assert exc.value.status_code == 400
+    assert db_session.query(Expense).count() == 0

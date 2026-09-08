@@ -1,6 +1,22 @@
 # TopSignal
 
-TopSignal is a trading analytics and journaling application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider or imports reviewed Topstep Live trade exports, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, trading-bot controls, and a daily trading journal.
+TopSignal is a trading analytics application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider or imports reviewed Topstep Live trade exports, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, and trading-bot controls.
+
+The app focuses on forward testing through the Bot workspace. The Data tab and
+Databento backtest panel have been removed; old `/data` links redirect to the
+dashboard with their account selection preserved. Existing market data still
+supports bot analysis and forward testing. On September 8, 2026, the local
+Databento caches and research directories were removed after a verified recovery
+archive was created under `backend/storage/backups/retired-databento-research-20260908T154039Z`.
+Saved database backtest records and historical replay tools remain for reference;
+running those tools again requires an explicit restore or new history import.
+
+The Journal page, calendar journal shortcuts, and account journal-merge controls
+have also been removed. Old `/journal` links redirect to the dashboard with their
+account selection preserved. Calendars continue to select trade days without
+loading or creating journal entries. Existing journal records and images remain
+in storage; the retained journal APIs and historical notes below describe that
+data rather than a currently routed feature.
 
 This repository contains:
 
@@ -30,9 +46,8 @@ It is built for traders who want to:
 - keep a local or cloud-backed history of their ProjectX trades
 - analyze performance without re-querying the provider for every page load
 - understand risk, drawdown, expectancy, and pacing in plain numbers
-- journal trading days per account with autosave and trade-stat snapshots
 - track real cash costs such as evaluation fees, activations, resets, data fees, and actual payouts
-- test rule-based bot decisions against imported Databento history with a server-side audit trail
+- forward-test rule-based bot decisions with recorded evaluations and a server-side audit trail
 
 ## What The App Does
 
@@ -57,9 +72,7 @@ Core features in the current routed app:
 - Trade event feed with lifecycle-derived entry/exit fields
 - Expense CRUD, spend summaries, and payout-minus-spend net ranges
 - Payout tracking, payout totals, and spend-since-last-payout context
-- Daily journal entries with autosave, optimistic concurrency, trade-stat pulls, and image uploads
 - One-click TopBot MNQ dry/live run controls, signal charting, market analysis, trade-plan evaluation, and bot activity review
-- [Market-data workspace](docs/market-data-workspace-2026-09-05.md) with coverage checks, related-market collection, economic events, recorded flow, and decision outcomes
 - Workspace theme selection with live palette previews
 - Optional Supabase authentication for multi-user deployments
 
@@ -618,6 +631,11 @@ The simplest path is:
 5. build the local Databento Parquet/mmap cache for backtesting
 6. run the root dev command
 
+For development while Supabase is unavailable, run `npm run dev:offline` and
+open `http://127.0.0.1:5174`. This uses a separate local SQLite workspace without
+Google sign-in. See [offline development](docs/offline-development.md) for storage,
+supported workflows, and switching back.
+
 #### 1. Start PostgreSQL
 
 ```powershell
@@ -752,10 +770,15 @@ npm run dev
 
 That starts:
 
-- backend on `http://localhost:8000` when available, otherwise the next open port
-- frontend on `http://localhost:5173` when available, otherwise Vite's next open port
+- the regular cloud/login app on `http://localhost:5173` when available, otherwise Vite's next open port
+- the connected local workspace on `http://127.0.0.1:5174`, with ProjectX and the dry-run bot enabled, saved SQLite data, and live orders disabled
+- a separate loopback backend for each app, using available ports starting at `8000`
 
-`npm run dev` runs a small supervisor that prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops the sibling process if one side exits permanently. Before Uvicorn starts accepting requests, the backend wrapper transactionally applies any pending database migrations using the same environment snapshot as the backend. The supervisor waits for the backend `/ready` check before starting Vite, so the frontend cannot issue its initial API requests against a backend that is still starting. It also selects the first open backend port at or above `TOPSIGNAL_DEV_BACKEND_PORT` (default `8000`) and passes the matching `VITE_API_BASE_URL` to the frontend process.
+`npm run dev` starts the local backend first, then starts the cloud profile once the local port is bound. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles. Stop any separately launched `dev:local` or `dev:offline` process first to release local port `5174`.
+
+Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
+
+Each profile's supervisor prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops its sibling server if one side exits permanently. Before the cloud backend starts accepting requests, its wrapper transactionally applies pending database migrations using the same environment snapshot as the backend. Each supervisor waits for its backend `/ready` check before starting Vite, and passes that backend's matching `VITE_API_BASE_URL` to its frontend.
 
 `npm run dev:backend` loads `backend/.env`, applies pending transactional migrations, and only then starts Uvicorn. It defaults `TOPSIGNAL_DB_SCHEMA_INIT=skip` because the migration runner establishes the required schema before application startup. If the preferred backend port is busy, it uses the next open port. On Windows, the wrapper manages reload itself to avoid Uvicorn reload control-event issues; set `TOPSIGNAL_DEV_BACKEND_UVICORN_RELOAD=1` to force Uvicorn's native reload there.
 
@@ -868,7 +891,10 @@ Frontend auth behavior:
 | `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
 | `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
 | `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Run backend and frontend together |
+| `npm run dev` | Run both the cloud app and the local ProjectX workspace |
+| `npm run dev:cloud` | Run only the regular cloud/login app |
+| `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |
+| `npm run dev:offline` | Run only the local workspace without broker connections |
 | `npm run dev:backend` | Run backend dev script |
 | `npm run dev:frontend` | Run frontend dev script |
 | `npm run prod` | From an ACL-hardened non-Git release, apply migrations and supervise the loopback API, bot worker, and prebuilt control UI on Windows |

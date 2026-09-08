@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_authenticated_user_id
 from ..models import Account
+from .local_account_exclusions import excluded_local_projectx_accounts
 
 ACCOUNT_PROVIDER = "projectx"
 
@@ -129,6 +130,8 @@ def sync_projectx_accounts(
     now = _as_utc(now_utc or datetime.now(timezone.utc))
     normalized_rows = [_normalize_provider_account(row) for row in provider_accounts]
     normalized_rows = [row for row in normalized_rows if row is not None]
+    excluded_ids = excluded_local_projectx_accounts(db, user_id=resolved_user_id)
+    normalized_rows = [row for row in normalized_rows if row["external_id"] not in excluded_ids]
 
     seen_external_ids = {row["external_id"] for row in normalized_rows}
     existing_by_external_id: dict[str, Account] = {}

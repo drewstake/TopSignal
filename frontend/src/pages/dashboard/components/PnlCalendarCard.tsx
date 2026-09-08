@@ -12,12 +12,8 @@ interface PnlCalendarCardProps {
   loading: boolean;
   error: string | null;
   scopeKey?: string;
-  journalDays?: Set<string>;
-  journalDaysLoading?: boolean;
   selectedDate?: string | null;
   onDaySelect?: (date: string | null) => void;
-  onJournalDayOpen?: (date: string) => void;
-  onAddJournalForSelectedDay?: (date: string) => void;
   onVisibleRangeChange?: (startDate: string, endDate: string) => void;
 }
 
@@ -186,12 +182,8 @@ export function PnlCalendarCard({
   loading,
   error,
   scopeKey = "default",
-  journalDays,
-  journalDaysLoading = false,
   selectedDate,
   onDaySelect,
-  onJournalDayOpen,
-  onAddJournalForSelectedDay,
   onVisibleRangeChange,
 }: PnlCalendarCardProps) {
   const dayMap = useMemo(() => {
@@ -526,7 +518,6 @@ export function PnlCalendarCard({
                             ? tileBackground(netPnl, maxAbsMonthPnl)
                             : "var(--dashboard-calendar-empty)";
                           const isSelected = selectedDate === cell.key;
-                          const hasJournalEntry = journalDays?.has(cell.key) ?? false;
 
                           return (
                             <button
@@ -545,28 +536,6 @@ export function PnlCalendarCard({
                             >
                               <div className="flex items-start justify-between gap-1">
                                 <p className="text-xs font-medium text-app-muted">{cell.dayNumber}</p>
-                                {hasJournalEntry ? (
-                                  <span
-                                    role="button"
-                                    tabIndex={0}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onJournalDayOpen?.(cell.key);
-                                    }}
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter" || event.key === " ") {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        onJournalDayOpen?.(cell.key);
-                                      }
-                                    }}
-                                    className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-app-accent/65 bg-app-accent/15 px-1 text-[10px] font-semibold text-app-accent"
-                                    aria-label={`Open journal entry for ${cell.key}`}
-                                    title="Open journal entry"
-                                  >
-                                    J
-                                  </span>
-                                ) : null}
                               </div>
                               {point ? (
                                 <>
@@ -596,14 +565,6 @@ export function PnlCalendarCard({
                   })}
                 </div>
               </div>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
-              <div>{journalDaysLoading ? "Loading journal markers..." : "J marker indicates a journal entry for that day."}</div>
-              {selectedDate && onAddJournalForSelectedDay ? (
-                <Button variant="secondary" size="sm" onClick={() => onAddJournalForSelectedDay(selectedDate)}>
-                  {journalDays?.has(selectedDate) ? "Open Journal Entry" : "Add Journal Entry"}
-                </Button>
-              ) : null}
             </div>
           </div>
         )}

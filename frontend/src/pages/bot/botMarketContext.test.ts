@@ -4,6 +4,7 @@ import {
   aggregateCandles,
   averageTrueRange,
   buildMarketContext,
+  candleEndMs,
   buildTimeframeTrends,
   classifyTrend,
   computeRelativeVolume,
@@ -103,6 +104,13 @@ describe("classifyTrend", () => {
 });
 
 describe("averageTrueRange / computeRelativeVolume", () => {
+  it("keeps a measured zero volume and does not replace missing latest volume with an older bar", () => {
+    const candles = seriesFiveMinute(20, () => 100);
+    candles[candles.length - 1].volume = 0;
+    expect(computeRelativeVolume(candles)).toBe(0);
+    candles[candles.length - 1].volume = Number.NaN;
+    expect(computeRelativeVolume(candles)).toBeNull();
+  });
   it("computes ATR over the trailing period", () => {
     const candles = seriesFiveMinute(20, (index) => 100 + index * 0.1);
     const atr = averageTrueRange(candles, 14);
@@ -158,6 +166,43 @@ describe("buildTimeframeTrends", () => {
 });
 
 describe("buildMarketContext", () => {
+  it("does not promote a candle fetched while forming into a confirmed close", () => {
+    const candles = seriesFiveMinute(40, index => 100 + index * .1);
+    const nowMs = Date.parse(candles[candles.length - 1].timestamp) + 300_000;
+    const base = buildMarketContext(snapshot(candles), nowMs);
+    const premature = candle(new Date(nowMs).toISOString(), 9999, { fetched_at: new Date(nowMs + 60_000).toISOString() });
+    const result = buildMarketContext(snapshot([...candles, premature]), nowMs + 600_000);
+    expect(result?.lastPrice).toBe(base?.lastPrice);
+    expect(result?.atr).toBe(base?.atr);
+    expect(result?.provenance.closedCandleCount).toBe(40);
+  });
+
+  it("includes September's monthly candle at the October calendar boundary", () => {
+    const candles = ["2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z"].map(timestamp => candle(timestamp, 100, { unit: "month", unit_number: 1 }));
+    const monthly: BotMarketSnapshot = { ...snapshot(candles), unit: "month", unitNumber: 1, contractKey: "CON.F.US.MNQ.M26:month:1" };
+    const context = buildMarketContext(monthly, Date.parse("2026-10-01T00:00:00Z"), 90);
+    expect(context?.provenance.closedCandleCount).toBe(2);
+    expect(context?.provenance.dataAgeSeconds).toBe(0);
+    expect(context?.provenance.isStale).toBe(false);
+  });
+  it("excludes foreign contracts and candles whose intervals have not closed", () => {
+    const candles = seriesFiveMinute(40, index => 100 + index * .1);
+    const last = candles[candles.length - 1];
+    const end = Date.parse(last.timestamp) + 300_000;
+    const foreign = { ...last, contract_id: "OTHER", close: 9999 };
+    const unclosed = { ...last, timestamp: new Date(end).toISOString(), close: 9999 };
+    const base = buildMarketContext(snapshot(candles), end);
+    const result = buildMarketContext(snapshot([...candles, foreign, unclosed]), end);
+    expect(result?.lastPrice).toBe(base?.lastPrice);
+    expect(result?.atr).toBe(base?.atr);
+    expect(result?.provenance.closedCandleCount).toBe(40);
+    expect(result?.provenance.partialCandleCount).toBe(1);
+  });
+
+  it("does not age local candles through the weekend closure", () => {
+    const candles = seriesFiveMinute(2, () => 100, "2026-07-10T20:50:00Z");
+    expect(buildMarketContext(snapshot(candles), Date.parse("2026-07-11T14:00:00Z"), 90)?.provenance.isStale).toBe(false);
+  });
   it("returns null without a snapshot or with too few candles", () => {
     expect(buildMarketContext(null)).toBeNull();
     expect(buildMarketContext(snapshot([candle("2026-06-09T14:00:00Z", 100)]))).toBeNull();
@@ -263,6 +308,13 @@ describe("buildMarketContext", () => {
 });
 
 describe("timeframeLabel", () => {
+  it.each([
+    ["2026-09-01T00:00:00Z", "2026-10-01T00:00:00.000Z"],
+    ["2026-12-01T00:00:00Z", "2027-01-01T00:00:00.000Z"],
+    ["2024-02-01T00:00:00Z", "2024-03-01T00:00:00.000Z"],
+  ])("uses calendar-month close from %s", (start, expected) => {
+    expect(new Date(candleEndMs(Date.parse(start), "month", 1)).toISOString()).toBe(expected);
+  });
   it("uses ladder labels and falls back to a compact form", () => {
     expect(timeframeLabel("minute", 5)).toBe("5m");
     expect(timeframeLabel("hour", 4)).toBe("4H");

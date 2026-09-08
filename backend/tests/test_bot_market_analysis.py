@@ -7,11 +7,14 @@ from app.bot_schemas import BotMarketAnalysisOut
 from app.services.bot_market_analysis import (
     ANALYSIS_VERSION,
     PROBABILITY_METHOD,
+    _candle_end,
     _execution_risk_score,
+    _multi_timeframe_alignment,
+    _normalize_rows,
     _setup_quality_score,
     build_market_analysis,
 )
-from app.services.bot_service import build_signal_trade_evaluation
+from app.services.bot_service import _candle_delivery_delay_seconds, _market_candle_close_timestamp, build_signal_trade_evaluation
 
 
 BASE = datetime(2026, 7, 9, 13, 30, tzinfo=timezone.utc)
@@ -26,6 +29,8 @@ def _candle(index: int, close: float, *, partial: bool = False, volume: float = 
         close_price=close,
         volume=volume,
         is_partial=partial,
+        unit="minute",
+        unit_number=5,
     )
 
 
@@ -253,3 +258,263 @@ def test_signal_trade_evaluation_refuses_partial_only_context_and_is_advisory_on
 
     assert result is None
     assert any("Invalid trade geometry" in note for note in analysis["risk_notes"])
+
+
+def test_high_atr_rank_and_cooling_ranges_are_explicitly_different_windows():
+    candles = []
+    for index in range(140):
+        candle = _candle(index, 100)
+        width = 1 if index < 120 else 30 if index < 134 else 5
+        candle.high_price = 100 + width / 2
+        candle.low_price = 100 - width / 2
+        candles.append(candle)
+    payload = _analyze(candles)
+    volatility = payload["features"]["volatility"]
+
+    assert volatility["percentile"] > 85
+    assert volatility["recent_range_state"] == "cooling"
+    assert volatility["state_basis"] == "recent_range_change"
+    assert volatility["period"] == 14
+    assert volatility["reference_observations"] == 100
+    assert volatility["reference_window_end"] == payload["provenance"]["latest_candle_end_timestamp"]
+    assert "separately from the ATR percentile" in " ".join(payload["reasoning"])
+    assert "percentile (low)" not in " ".join(payload["reasoning"])
+
+
+def test_unavailable_context_is_separate_from_candle_quality():
+    payload = _analyze([_candle(index, 100 + index * 0.1) for index in range(420)])
+
+    assert {"news_context", "macro_context", "cross_market_context", "level_1_quotes", "observed_volume_profile"} <= set(payload["data_quality"]["missing_inputs"])
+    assert "candle-only" in payload["score_definitions"]["data_quality"]["missing_data"]
+    assert "predictive confidence" in payload["score_definitions"]["data_quality"]["interpretation"]
+    assert "%" not in payload["summary"]
+    assert "conviction" not in payload["summary"]
+
+
+def test_missing_and_zero_latest_volume_never_reuse_an_older_observation():
+    candles = [_candle(index, 100, volume=100) for index in range(60)]
+    candles[-1].volume = 0
+    zero = _analyze(candles)
+    assert zero["features"]["volume"] == {"relative_volume": 0.0, "state": "low"}
+
+    candles[-1].volume = None
+    missing = _analyze(candles)
+    assert missing["features"]["volume"] == {"relative_volume": None, "state": "unavailable"}
+    assert missing["features"]["vwap"]["value"] is None
+    assert any("no confirmation" in value for value in missing["explanation"]["limitations"])
+
+
+def test_missing_feature_history_is_unavailable_not_normal_or_confirmation():
+    payload = _analyze([_candle(index, 100) for index in range(12)])
+    assert payload["features"]["volatility"]["atr"] is None
+    assert payload["features"]["volatility"]["state"] == "unavailable"
+    assert payload["market_regime"] == "unknown"
+    insufficient = _analyze([_candle(0, 100)])
+    assert insufficient["features"]["trend"]["agreement"] == "unavailable"
+    assert insufficient["features"]["volume"]["state"] == "unavailable"
+    assert insufficient["explanation"]["supporting_evidence"] == []
+    BotMarketAnalysisOut.model_validate(insufficient)
+
+
+def test_candle_marked_complete_is_excluded_until_its_interval_ends():
+    candles = [_candle(index, 100 + index * 0.1) for index in range(60)]
+    end = candles[-1].candle_timestamp + timedelta(minutes=5)
+    baseline = _analyze(candles, now=end)
+    contaminated = _analyze([*candles, _candle(60, 10_000)], now=end + timedelta(minutes=1))
+
+    assert contaminated["current_price"] == baseline["current_price"]
+    assert contaminated["features"] == baseline["features"]
+    assert contaminated["provenance"]["unconfirmed_closed_candle_count"] == 1
+    assert contaminated["provenance"]["latest_candle_end_timestamp"] == end.isoformat()
+
+
+def test_indicators_do_not_stitch_prices_across_contracts():
+    old = [_candle(index, 10_000 + index) for index in range(30)]
+    active = [_candle(index + 30, 100 + index * 0.1) for index in range(30)]
+    for candle in old:
+        candle.contract_id = "CON.F.US.MNQ.M26"
+    for candle in active:
+        candle.contract_id = "CON.F.US.MNQ.U26"
+
+    baseline = _analyze(active)
+    mixed = _analyze([*old, *active])
+    assert mixed["features"] == baseline["features"]
+    assert mixed["provenance"]["excluded_contract_candle_count"] == 30
+    assert mixed["provenance"]["resolved_contract_id"] == "CON.F.US.MNQ.U26"
+
+
+def test_market_closures_pause_candle_age_but_do_not_hide_prior_missing_bars():
+    friday_close = datetime(2026, 7, 10, 21, 0, tzinfo=timezone.utc)
+    candles = [_candle(index, 100 + index * 0.1) for index in range(30)]
+    for index, candle in enumerate(candles):
+        candle.candle_timestamp = friday_close - timedelta(minutes=(30 - index) * 5)
+    saturday = datetime(2026, 7, 11, 15, tzinfo=timezone.utc)
+    closed = _analyze(candles, now=saturday)
+    assert closed["provenance"]["freshness_status"] == "market_closed"
+    assert closed["provenance"]["open_session_age_seconds"] == 0
+    assert closed["provenance"]["is_stale"] is False
+
+    old = _analyze(candles[:-12], now=saturday)
+    assert old["provenance"]["freshness_status"] == "stale"
+    assert old["provenance"]["open_session_age_seconds"] == 3600
+
+
+def test_quiet_interval_is_not_stale_before_another_bar_could_close():
+    candles = [_candle(index, 100) for index in range(30)]
+    end = candles[-1].candle_timestamp + timedelta(minutes=5)
+    payload = build_market_analysis(candles=candles, timeframe_unit="minute", timeframe_unit_number=5,
+        fast_period=5, slow_period=13, signal_action="HOLD", stale_after_seconds=30,
+        now=end + timedelta(minutes=4))
+    assert payload["provenance"]["is_stale"] is False
+    stale = build_market_analysis(candles=candles, timeframe_unit="minute", timeframe_unit_number=5,
+        fast_period=5, slow_period=13, signal_action="HOLD", stale_after_seconds=30,
+        now=end + timedelta(minutes=6))
+    assert stale["provenance"]["is_stale"] is True
+
+
+def test_observed_vwap_is_scoped_to_available_globex_candles():
+    payload = _analyze([_candle(index, 100 + index) for index in range(30)])
+    vwap = payload["features"]["vwap"]
+    assert vwap["scope"] == "observed_session_candles"
+    assert vwap["complete_session"] is False
+    assert vwap["window_start"] == BASE.isoformat()
+    assert vwap["window_start"] != vwap["session_start"]
+    assert any("strategy's RTH VWAP" in item for item in payload["explanation"]["limitations"])
+
+
+def test_direction_strength_and_component_agreement_are_independent_of_bot_signal():
+    candles = [_candle(index, 100 + index * 0.15) for index in range(60)]
+    buy, sell, hold = [_analyze(candles, action=action) for action in ("BUY", "SELL", "HOLD")]
+    for key in ("summary", "explanation", "features", "scenario_weights", "score_drivers", "invalidation_level"):
+        assert buy[key] == sell[key] == hold[key]
+    trend = hold["features"]["trend"]
+    assert trend["direction"] == "bullish"
+    assert trend["agreement"] == "aligned"
+    assert trend["strength_label"] in {"weak", "moderate", "strong"}
+    assert len(trend["components"]) == 3
+    assert hold["features"]["multi_timeframe_alignment"]["timeframes"][0]["direction"] == trend["direction"]
+
+
+def test_mismatched_timeframes_are_excluded_and_aggregate_close_times_are_available():
+    candles = [_candle(index, 100 + index * 0.1) for index in range(420)]
+    wrong_timeframe = _candle(419, 9000)
+    wrong_timeframe.unit = "minute"
+    wrong_timeframe.unit_number = 1
+    payload = _analyze([*candles, wrong_timeframe])
+    assert payload["current_price"] == candles[-1].close_price
+    assert payload["provenance"]["excluded_timeframe_candle_count"] == 1
+    frames = payload["features"]["multi_timeframe_alignment"]["timeframes"]
+    assert len(frames) > 1
+    assert frames[0]["fast_period"] == 5
+    assert frames[0]["slow_period"] == 13
+    assert frames[0]["latest_candle_end_timestamp"] == payload["provenance"]["latest_candle_end_timestamp"]
+    assert all(datetime.fromisoformat(frame["latest_candle_end_timestamp"]) <= datetime.fromisoformat(payload["provenance"]["latest_candle_end_timestamp"]) for frame in frames)
+
+
+def test_flat_or_outdated_higher_timeframes_do_not_confirm_a_direction():
+    rows = _normalize_rows([_candle(index, 100) for index in range(420)])
+    source_trend = {"direction": "bullish", "fast_period": 5, "slow_period": 13}
+    alignment = _multi_timeframe_alignment(rows, source_unit="minute", source_number=5, base_trend=source_trend)
+    assert alignment["status"] == "neutral"
+    assert alignment["aligned_timeframes"] == 1
+
+    # The only recent bar cannot form any higher-timeframe aggregate. Old
+    # complete aggregates are not evidence about this newer snapshot.
+    rows.append({**rows[-1], "timestamp": rows[-1]["timestamp"] + timedelta(days=2)})
+    outdated = _multi_timeframe_alignment(rows, source_unit="minute", source_number=5, base_trend=source_trend)
+    assert outdated["status"] == "unavailable"
+    assert len(outdated["timeframes"]) == 1
+
+
+def test_mixed_direction_evidence_supports_neutral_read_and_vwap_is_separate_counterpoint():
+    closes = [100 + index * 0.5 for index in range(60)]
+    closes[-4:] = [closes[-5] - index * 0.5 for index in range(1, 5)]
+    payload = _analyze([_candle(index, close) for index, close in enumerate(closes)])
+
+    assert payload["features"]["trend"]["direction"] == "neutral"
+    assert payload["features"]["trend"]["agreement"] == "mixed"
+    explanation = payload["explanation"]
+    evidence = explanation["supporting_evidence"]
+    assert any("Fast versus slow EMA: upward" in item for item in evidence)
+    assert any("Price change per bar over five bars: downward" in item for item in evidence)
+    assert any("Upward evidence:" in item and "VWAP" in item for item in explanation["conflicting_evidence"])
+    assert not any("EMA" in item for item in explanation["conflicting_evidence"])
+    assert "Check the" not in payload["summary"]
+
+
+def test_a_snapshot_fetched_while_forming_does_not_become_closed_after_time_passes():
+    candles = [_candle(index, 100 + index * 0.1) for index in range(60)]
+    forming_snapshot = _candle(60, 9000)
+    forming_snapshot.fetched_at = forming_snapshot.candle_timestamp + timedelta(minutes=2)
+    now = forming_snapshot.candle_timestamp + timedelta(minutes=10)
+
+    baseline = _analyze(candles, now=now)
+    result = _analyze([*candles, forming_snapshot], now=now)
+    assert result["features"] == baseline["features"]
+    assert result["provenance"]["unconfirmed_closed_candle_count"] == 1
+    assert any("fetch preceded the close" in item for item in result["data_quality"]["warnings"])
+
+
+@pytest.mark.parametrize("opened, number, expected", [
+    ("2026-09-01T00:00:00+00:00", 1, "2026-10-01T00:00:00+00:00"),
+    ("2024-02-01T00:00:00+00:00", 1, "2024-03-01T00:00:00+00:00"),
+    ("2026-02-01T00:00:00+00:00", 1, "2026-03-01T00:00:00+00:00"),
+    ("2026-12-01T00:00:00+00:00", 1, "2027-01-01T00:00:00+00:00"),
+    ("2026-11-01T00:00:00+00:00", 3, "2027-02-01T00:00:00+00:00"),
+    ("2024-01-31T12:00:00+00:00", 1, "2024-02-01T12:00:00+00:00"),
+])
+def test_calendar_month_ends_match_execution_in_leap_years_and_year_rollovers(opened, number, expected):
+    candle = _candle(0, 100)
+    candle.candle_timestamp = datetime.fromisoformat(opened)
+    candle.unit, candle.unit_number = "month", number
+    actual = _candle_end(candle.candle_timestamp, "month", number)
+    assert actual.isoformat() == expected
+    assert _market_candle_close_timestamp(candle) == actual
+
+
+def _monthly_analysis(candles, now):
+    return build_market_analysis(candles=candles, timeframe_unit="month", timeframe_unit_number=1,
+        fast_period=5, slow_period=13, signal_action="HOLD", stale_after_seconds=30,
+        configured_symbol="MNQ", now=now)
+
+
+def test_monthly_eligibility_and_reference_windows_use_actual_calendar_close():
+    candles = []
+    timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    for index in range(17):
+        candle = _candle(index, 100 + index)
+        candle.candle_timestamp = timestamp
+        candle.unit, candle.unit_number = "month", 1
+        candles.append(candle)
+        timestamp = _candle_end(timestamp, "month", 1)
+    result = _monthly_analysis(candles, timestamp)
+    assert result["provenance"]["closed_candle_count"] == 17
+    assert result["provenance"]["gap_count"] == 0
+    assert result["provenance"]["latest_candle_end_timestamp"] == timestamp.isoformat()
+    assert result["features"]["volatility"]["reference_window_end"] == timestamp.isoformat()
+    assert result["features"]["multi_timeframe_alignment"]["timeframes"][0]["latest_candle_end_timestamp"] == timestamp.isoformat()
+    assert result["features"]["vwap"]["window_end"] == timestamp.isoformat()
+    BotMarketAnalysisOut.model_validate(result)
+
+    before_close = _monthly_analysis(candles, timestamp - timedelta(seconds=1))
+    assert before_close["provenance"]["closed_candle_count"] == 16
+    candles[-1].fetched_at = timestamp - timedelta(seconds=1)
+    fetched_early = _monthly_analysis(candles, timestamp + timedelta(days=2))
+    assert fetched_early["provenance"]["closed_candle_count"] == 16
+
+
+def test_monthly_freshness_uses_next_calendar_boundary_on_the_open_session_clock():
+    candle = _candle(0, 100)
+    candle.candle_timestamp = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    candle.unit, candle.unit_number = "month", 1
+    next_due = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    at_boundary = _monthly_analysis([candle], next_due)
+    assert at_boundary["provenance"]["latest_candle_end_timestamp"] == "2026-10-01T00:00:00+00:00"
+    assert at_boundary["provenance"]["next_expected_candle_end_timestamp"] == next_due.isoformat()
+    assert at_boundary["provenance"]["is_stale"] is False
+    assert _candle_delivery_delay_seconds(candle, symbol="MNQ", now=next_due) == 0
+    # November 1 is Sunday; its closed hours do not consume delivery grace.
+    after_reopen = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    stale = _monthly_analysis([candle], after_reopen)
+    assert stale["provenance"]["is_stale"] is True
+    assert _candle_delivery_delay_seconds(candle, symbol="MNQ", now=after_reopen) == 3600

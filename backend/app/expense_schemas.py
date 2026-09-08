@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 
 from .payout_schemas import PayoutTotalsOut
 
-ExpenseCategory = Literal["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"]
+ExpenseCategory = Literal["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other", "refund"]
 ExpenseAccountType = Literal["no_activation", "standard", "practice"]
 ExpensePlanSize = Literal["50k", "100k", "150k"]
 ExpenseRange = Literal["week", "month", "ytd", "all_time"]
@@ -34,6 +34,7 @@ class ExpenseCreateIn(BaseModel):
     )
     category: ExpenseCategory
     provider: str = "topstep"
+    source_id: str | None = Field(default=None, min_length=1, max_length=200)
     account_id: int | None = None
     account_type: ExpenseAccountType | None = None
     plan_size: ExpensePlanSize | None = None
@@ -86,6 +87,7 @@ class ExpenseOut(BaseModel):
     id: int
     account_id: int | None
     provider: str
+    source_id: str | None = None
     expense_date: date
     amount_cents: int
     currency: str

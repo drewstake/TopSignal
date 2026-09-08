@@ -550,7 +550,9 @@ def test_bot_market_analysis_leans_bullish_for_rising_candles():
     assert analysis["bullish_probability"] + analysis["bearish_probability"] + analysis["sideways_probability"] == 100
     assert analysis["nearest_support"] is not None
     assert analysis["invalidation_level"] is not None
-    assert "not financial advice" in analysis["summary"]
+    assert "%" not in analysis["summary"]
+    assert "conviction" not in analysis["summary"]
+    assert analysis["explanation"]["headline"] == analysis["summary"]
 
 
 def test_bot_market_analysis_leans_bearish_for_falling_candles():

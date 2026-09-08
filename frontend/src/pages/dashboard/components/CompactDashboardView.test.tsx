@@ -104,13 +104,9 @@ function viewProps(overrides: Partial<CompactDashboardViewProps> = {}): CompactD
     daysError: null,
     tradesLoading: false,
     tradesError: null,
-    journalDays: new Set(),
-    journalDaysLoading: false,
-    journalDaysError: null,
     selectedDate: null,
     calendarScopeKey: "demo:july",
     onDaySelect: vi.fn(),
-    onJournalDayOpen: vi.fn(),
     onCalendarVisibleRangeChange: vi.fn(),
     ...overrides,
   };
@@ -316,37 +312,25 @@ describe("CompactDashboardView", () => {
     expect(screen.getByRole("heading", { name: "July 2026" })).toBeTruthy();
   });
 
-  it("disables exact-range dates and exposes journal failures without hiding calendar data", () => {
-    const onJournalDayOpen = vi.fn();
-    const { rerender } = render(
+  it("disables dates outside the range while keeping trade-day selection", () => {
+    const onDaySelect = vi.fn();
+    render(
       <CompactDashboardView
         {...viewProps({
           rangeEndDate: "2026-07-02",
-          journalDays: new Set(["2026-07-02"]),
-          journalDaysError: "Journal service timed out",
           selectedDate: "2026-07-02",
-          onJournalDayOpen,
+          onDaySelect,
         })}
       />,
     );
 
     expect(screen.getByRole("gridcell", { name: /July 3, 2026, outside selected range/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /July 3, 2026/i })).toBeNull();
-    expect(screen.getByText(/Journal markers unavailable.*timed out/i)).toBeTruthy();
-    rerender(
-      <CompactDashboardView
-        {...viewProps({
-          rangeEndDate: "2026-07-02",
-          journalDays: new Set(["2026-07-02"]),
-          selectedDate: "2026-07-02",
-          onJournalDayOpen,
-        })}
-      />,
-    );
-    const journalButton = screen.getByRole("button", { name: "Open journal for Jul 2" });
-    expect(journalButton.className).toContain("min-h-11");
-    fireEvent.click(journalButton);
-    expect(onJournalDayOpen).toHaveBeenCalledWith("2026-07-02");
+    const selectedDay = screen.getByRole("button", { name: /July 2, 2026/i });
+    expect(selectedDay.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(selectedDay);
+    expect(onDaySelect).toHaveBeenCalledWith(null);
+    expect(screen.queryByRole("button", { name: /journal/i })).toBeNull();
   });
 
   it("uses a 44px agenda layout below 400px without an undersized calendar grid", () => {

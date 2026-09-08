@@ -23,13 +23,9 @@ function props(overrides: Partial<CompactCalendarProps> = {}): CompactCalendarPr
     rangeEndDate: "2026-07-31",
     loading: false,
     error: null,
-    journalDays: new Set(),
-    journalDaysLoading: false,
-    journalDaysError: null,
     scopeKey: "july",
     selectedDate: null,
     onDaySelect: vi.fn(),
-    onJournalDayOpen: vi.fn(),
     onVisibleRangeChange: vi.fn(),
     ...overrides,
   };

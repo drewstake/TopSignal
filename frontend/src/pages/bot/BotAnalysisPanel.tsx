@@ -1,27 +1,11 @@
-import { useMemo, type ReactNode } from "react";
-
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Progress } from "../../components/ui/Progress";
 import { Skeleton } from "../../components/ui/Skeleton";
-import { cn } from "../../components/ui/cn";
-import type {
-  BotConfig,
-  BotDataQualityStatus,
-  BotEvaluation,
-  BotMarketBias,
-  TradeEvaluationDimension,
-  TradeEvaluationResult,
-} from "../../lib/types";
-import {
-  buildDisplayAnalysis,
-  SCENARIO_WEIGHT_DISCLAIMER,
-  SCENARIO_WEIGHT_LABELS,
-  type DisplayAnalysis,
-} from "./botAnalysisContract";
-import { intervalSecondsFor } from "./botCandleGaps";
-import { buildMarketContext, type BotMarketSnapshot, type MarketContext } from "./botMarketContext";
+import type { BotAnalysis, BotCollectedContext, BotConfig, BotEvaluation } from "../../lib/types";
+import { buildDisplayAnalysis, currentAnalysisFreshness, type DisplayAnalysis } from "./botAnalysisContract";
+import { buildMarketContext, candleEndMs, isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
 
 interface BotAnalysisPanelProps {
   bot: BotConfig | null;
@@ -30,750 +14,227 @@ interface BotAnalysisPanelProps {
   loading?: boolean;
   onEvaluate?: () => void;
 }
-
-type BadgeVariant = "positive" | "negative" | "neutral" | "accent" | "warning";
-type Tone = "positive" | "negative" | "neutral" | "warning";
-type FreshnessState = "fresh" | "stale" | "unknown";
-
-const MIN_DIRECTIONAL_BARS = 10;
-const MIN_CONFIDENT_BARS = 25;
-
 const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-const percentFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 1 });
-const timestampFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  timeZoneName: "short",
-});
+const timestampFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
 
-export function BotAnalysisPanel({
-  bot,
-  evaluation,
-  marketSnapshot = null,
-  loading = false,
-  onEvaluate,
-}: BotAnalysisPanelProps) {
-  const analysis = useMemo(() => buildDisplayAnalysis(evaluation), [evaluation]);
-  const liveBarsBehind = useMemo(
-    () => barsBehindLiveChart(analysis, bot ? marketSnapshot : null, bot),
-    [analysis, bot, marketSnapshot],
-  );
-  const isStale = Boolean(
-    analysis?.provenance.is_stale || analysis?.dataQuality.status === "stale" || (liveBarsBehind ?? 0) > 0,
-  );
-  const freshnessState = analysis ? analysisFreshness(analysis, isStale) : null;
-  const minimumDirectionalBars = analysis?.provenance.minimum_feature_bars ?? MIN_DIRECTIONAL_BARS;
-  const hasDirectionalRead = Boolean(
-    analysis && analysis.provenance.closed_candle_count >= minimumDirectionalBars,
-  );
-  const localChartContext = useMemo(
-    () =>
-      analysis?.source === "backend" && !hasDirectionalRead
-        ? buildSeparateChartContext(marketSnapshot, bot, minimumDirectionalBars)
-        : null,
-    [analysis, bot, hasDirectionalRead, marketSnapshot, minimumDirectionalBars],
-  );
-  const botLabel = bot?.symbol ?? bot?.contract_id ?? "Bot";
-  const collected = evaluation?.config.id === bot?.id ? evaluation?.analysis?.collected_context : null;
-
-  return (
-    <Card className="min-w-0">
-      <CardHeader className="space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle>Evaluation &amp; market analysis</CardTitle>
-            <CardDescription>{bot ? `${botLabel} — closed-candle decision context` : "Select a bot to evaluate"}</CardDescription>
-          </div>
-          {analysis ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={freshnessBadgeVariant(freshnessState!)}>{freshnessLabel(freshnessState!)}</Badge>
-              <Badge variant={qualityBadgeVariant(analysis.dataQuality.status)}>
-                {labelize(analysis.dataQuality.status)} data · {Math.round(analysis.dataQuality.confidence)}/100
-              </Badge>
-              {hasDirectionalRead || analysis.marketRegime !== "unknown" ? (
-                <Badge variant="neutral">{labelize(analysis.marketRegime)} regime</Badge>
-              ) : null}
-              <Badge variant={analysis.source === "backend" ? "accent" : "warning"}>
-                {analysis.source === "backend" ? "Canonical backend" : "Local fallback analysis"}
-              </Badge>
+export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loading = false, onEvaluate }: BotAnalysisPanelProps) {
+  const [nowMs, setNowMs] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  // A previous bot's response or chart must never supply this bot's explanation.
+  const selectedEvaluation = bot && evaluation?.config.id === bot.id ? evaluation : null;
+  const analysis = useMemo(() => buildDisplayAnalysis(selectedEvaluation, nowMs), [selectedEvaluation, nowMs]);
+  const snapshot = matchingSnapshot(marketSnapshot, bot) ? marketSnapshot : null;
+  const raw = selectedEvaluation?.analysis;
+  const freshness = analysis ? currentAnalysisFreshness(analysis, nowMs) : null;
+  const newerBars = analysis ? newerClosedBars(analysis, snapshot, nowMs) : 0;
+  const freshnessStatus = newerBars ? "stale" : freshness?.status;
+  const hasRead = Boolean(analysis && analysis.provenance.closed_candle_count >= (analysis.provenance.minimum_feature_bars ?? 10));
+  return <Card className="min-w-0">
+    <CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3">
+      <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and TopBot decision` : "Select a bot to evaluate"}</CardDescription></div>
+      {analysis && <div className="flex flex-wrap gap-2">
+        <Badge variant={freshnessStatus === "stale" ? "warning" : "neutral"}>{freshnessLabel(freshnessStatus)}</Badge>
+        <Badge variant={analysis.dataQuality.status === "good" ? "positive" : "warning"}>Candles: {analysis.dataQuality.status === "good" ? "good quality" : labelize(analysis.dataQuality.status).toLowerCase()}</Badge>
+        <Badge variant="neutral">{raw?.context_coverage?.missing.length || raw?.context_coverage?.limited.length ? "Context incomplete" : raw?.context_coverage ? "Context recorded" : "Context coverage unverified"}</Badge>
+      </div>}
+    </div></CardHeader>
+    <CardContent className="space-y-4">
+      {loading ? <Skeleton className="h-56" /> : !bot ? <EmptyState title="No bot selected" description="Select a bot to load its evaluation." /> : !selectedEvaluation ?
+        <EmptyState title="No evaluation yet" description="Evaluate this bot to explain its latest closed-candle signal and checks." action={onEvaluate && <Button onClick={onEvaluate}>Evaluate bot</Button>} /> : <>
+          {analysis && hasRead ? <>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
+                <p className="text-xs font-medium text-app-muted">Market interpretation</p>
+                <h3 className="mt-2 text-lg font-semibold leading-7">{raw?.explanation?.headline ?? legacyHeadline(analysis)}</h3>
+                <p className="mt-2 text-xs leading-5 text-app-muted">Based on the {analysis.provenance.timeframe.label} candle closed {formatTimestamp(candleClose(analysis))}. This describes the observed market; entry permission comes from TopBot’s checks.</p>
+                <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                  <span><span className="text-app-muted">Direction: </span>{analysis.marketBias === "neutral" ? "No clear direction" : labelize(analysis.marketBias)}</span>
+                  <span><span className="text-app-muted">Strength: </span>{labelize(raw?.features?.trend.strength_label ?? "unavailable")}</span>
+                  <span><span className="text-app-muted">Indicator agreement: </span>{agreementLabel(raw?.features?.trend.agreement)}</span>
+                </div>
+              </section>
+              <BotDecisionSummary evaluation={selectedEvaluation} />
             </div>
-          ) : null}
-        </div>
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        {loading ? (
-          <LoadingState />
-        ) : !bot ? (
-          <EmptyState title="No bot selected" description="Select a bot to load its evaluation context." />
-        ) : !evaluation ? (
-          <EmptyState
-            title="No evaluation yet"
-            description="Run Evaluate to calculate the versioned market read from closed candles."
-            action={onEvaluate ? <Button onClick={onEvaluate}>Evaluate bot</Button> : null}
-          />
-        ) : !analysis ? (
-          <EmptyState
-            title="Insufficient closed-candle data"
-            description="Neither canonical backend analysis nor enough closed bars for a local fallback were available. Partial candles are never used."
-            action={onEvaluate ? <Button onClick={onEvaluate}>Evaluate again</Button> : null}
-          />
-        ) : !hasDirectionalRead ? (
-          <InsufficientAnalysisState
-            analysis={analysis}
-            localChartContext={localChartContext}
-            onEvaluate={onEvaluate}
-          />
-        ) : (
-          <AnalysisContent analysis={analysis} isStale={isStale} liveBarsBehind={liveBarsBehind} />
-        )}
-        {collected && !loading && <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Collected decision context</h3><span className="text-xs text-app-muted">{formatTimestamp(collected.as_of)}</span></div>
-          <p className="mt-2 text-xs text-app-muted">Captured with this evaluation. Source freshness and missing data remain explicit.</p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <Metric label="Scheduled event risk" value={collected.events?.news_risk ?? "Unknown"} />
-            <Metric label="Recorded order book" value={collected.order_book?.status === "fresh" ? `${formatPrice(collected.order_book.spread ?? null)} spread` : labelize(collected.order_book?.status ?? "missing")} />
-            <Metric label="Observed profile POC" value={formatPrice(collected.volume_profile?.poc ?? null)} />
-          </div>
-          {collected.events?.reason && <p className="mt-3 text-xs text-app-muted">{collected.events.reason}</p>}
-          <div className="mt-3 flex flex-wrap gap-2">{collected.related_markets?.items?.map(item => <span key={item.symbol} className="rounded-lg border border-app-border px-2 py-1 text-xs">{item.symbol} · {item.status}{item.status === "fresh" ? item.change_bps != null ? ` · ${item.change_bps.toFixed(2)} bps` : item.change_pct != null ? ` · ${item.change_pct.toFixed(2)}%` : "" : ""}</span>)}</div>
-          {Boolean(collected.events?.headlines?.length) && <div className="mt-3 space-y-2"><p className="text-xs font-medium">Recent publications available at this decision</p>{collected.events?.headlines?.slice(0, 3).map(headline => <p key={headline.id} className="text-xs text-app-muted">{headline.title}<span className="ml-2">{labelize(headline.source)} · {formatTimestamp(headline.published_at)}</span></p>)}</div>}
-          {collected.volume_profile?.poc !== undefined && <p className="mt-3 text-xs text-app-muted">{collected.volume_profile.reason} Value area: {formatPrice(collected.volume_profile.value_area_low ?? null)}–{formatPrice(collected.volume_profile.value_area_high ?? null)}. Delta: {formatPrice(collected.volume_profile.cumulative_delta ?? null)}.</p>}
-          <a href={`/data?account=${bot?.account_id}`} className="mt-3 inline-block text-xs text-app-accent underline">Manage market data and review decision outcomes</a>
-        </section>}
-      </CardContent>
-    </Card>
-  );
+            {freshnessStatus === "stale" && <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 text-sm text-amber-200">This is a saved, stale evaluation{newerBars ? `; the matching chart has ${newerBars} newer closed bar${newerBars === 1 ? "" : "s"}` : ""}. Evaluate again to refresh the market read and bot checks.</p>}
+            {freshnessStatus === "market_closed" && <p className="text-xs leading-5 text-app-muted">The scheduled market session is closed. The last completed candle is retained; closed-session time does not count as a feed delay. TopBot’s configured entry window is checked separately.</p>}
+            {freshnessStatus === "unavailable" && <p className="text-xs text-amber-200">The candle close time cannot be verified. Treat this as a recorded interpretation until a fresh evaluation is available.</p>}
+            <section className="grid gap-4 md:grid-cols-2">
+              <EvidenceList title="What supports this read" items={raw?.explanation?.supporting_evidence ?? analysis.scoreDrivers[analysis.marketBias]} empty="No supporting evidence was returned." />
+              <EvidenceList title="What conflicts with it" items={raw?.explanation?.conflicting_evidence ?? conflictingEvidence(analysis)} empty="No conflicting evidence was identified in the available inputs. Missing context is not confirmation." />
+            </section>
+            <section className="rounded-xl border border-app-border p-4"><h3 className="text-sm font-semibold">What would change the read</h3>
+              {raw?.explanation?.change_levels.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{raw.explanation.change_levels.map((level, index) => <li key={index}>{level.condition}</li>)}</ul> : <p className="mt-2 text-sm leading-6 text-app-muted">{levelText(analysis)}</p>}
+              <p className="mt-2 text-xs text-app-muted">These are interpretation boundaries, not orders or guaranteed reversal points.</p>
+            </section>
+          </> : <>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <EmptyState title="No directional read yet" description={`This evaluation received ${analysis?.provenance.closed_candle_count ?? 0} closed ${analysis?.provenance.timeframe.label ?? ""} candles. At least ${analysis?.provenance.minimum_feature_bars ?? 10} are needed for the first feature set; partial candles are excluded.`} action={onEvaluate && <Button onClick={onEvaluate}>Retry evaluation</Button>} />
+              <BotDecisionSummary evaluation={selectedEvaluation} />
+            </div>
+            {snapshot && <SeparateChartContext snapshot={snapshot} bot={bot} nowMs={nowMs} />}
+          </>}
+          <ContextCoverage analysis={raw} />
+          {analysis && <Details title="Calculations and candle provenance"><CalculationDetails analysis={analysis} raw={raw} ageSeconds={freshness?.ageSeconds ?? null} /></Details>}
+          {raw?.collected_context && <Details title="Observed quotes, profile and external context"><CollectedContextDetails collected={raw.collected_context} /></Details>}
+          {snapshot?.lastPrice != null && <Details title="Live chart quote — separate from this evaluation"><p className="text-sm">Latest chart quote: {formatPrice(snapshot.lastPrice)}. It is not an input to the saved closed-candle interpretation.</p><p className="mt-2 text-xs text-app-muted">Chart refreshed {formatTimestamp(snapshot.updatedAt)}. A quote event timestamp is not supplied by this chart snapshot, so quote freshness is unverified.</p></Details>}
+        </>}
+    </CardContent>
+  </Card>;
 }
 
-function InsufficientAnalysisState({
-  analysis,
-  localChartContext,
-  onEvaluate,
-}: {
-  analysis: DisplayAnalysis;
-  localChartContext: MarketContext | null;
-  onEvaluate?: () => void;
-}) {
-  const provenance = analysis.provenance;
-  const closedCount = Math.max(0, provenance.closed_candle_count);
-  const minimumDirectionalBars = provenance.minimum_feature_bars ?? MIN_DIRECTIONAL_BARS;
-  const minimumConfidentBars = provenance.minimum_sufficient_bars ?? MIN_CONFIDENT_BARS;
-  const firstReadProgress = clamp((closedCount / minimumDirectionalBars) * 100, 0, 100);
-  const barLabel = `${closedCount} closed ${provenance.timeframe.label} candle${closedCount === 1 ? "" : "s"}`;
+function BotDecisionSummary({ evaluation }: { evaluation: BotEvaluation }) {
+  const decision = evaluation.decision;
+  const explanation = evaluation.analysis?.bot_decision;
+  const matches = explanation?.status === evaluation.status && explanation.action === decision.action && explanation.contract_id === decision.contract_id && sameTimestamp(explanation.candle_timestamp, decision.candle_timestamp);
+  const detail = matches ? explanation : null;
+  const blocked = evaluation.status === "risk_blocked" || evaluation.order_attempt?.status === "rejected" || evaluation.order_attempt?.status === "blocked";
+  const failed = detail?.checks.filter(check => check.status === "failed") ?? [];
+  const reasons = uniqueStrings(failed.length ? failed.map(check => check.detail) : evaluation.risk_events.map(event => event.message));
+  const mode = detail?.execution_mode ?? evaluation.order_attempt?.execution_mode ?? (evaluation.run?.dry_run ? "dry_run" : evaluation.config.execution_mode);
+  return <section className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">TopBot decision</h3><Badge variant={blocked ? "negative" : "neutral"}>{mode === "dry_run" ? "Dry run" : mode ? labelize(mode) : "Mode unavailable"}</Badge></div>
+    <p className="mt-2 text-lg font-semibold">{decisionHeadline(evaluation)}</p>
+    <p className="mt-2 text-sm leading-6">{detail?.summary ?? (decision.reason ? humanReason(decision.reason) : "No strategy reason was returned.")}</p>
+    {!detail && reasons.length > 0 && <ul className="mt-2 space-y-1 text-sm text-amber-200">{reasons.slice(0, 2).map(reason => <li key={reason}>{reason}</li>)}</ul>}
+    {explanation && !matches && <p className="mt-2 text-xs text-amber-200">The saved explanation does not match this decision’s action, contract, timestamp or outcome. The recorded decision is shown; evaluate again for aligned checks.</p>}
+    <p className="mt-3 text-xs leading-5 text-app-muted">{detail?.strategy.name ?? labelize(evaluation.config.strategy_type ?? "Configured strategy")} · {evaluation.config.trading_start_time ?? "Unknown"}–{evaluation.config.trading_end_time ?? "Unknown"} America/New_York entry window.</p>
+    <Details title="Strategy, session and risk checks" compact>
+      <p className="text-sm leading-6">{detail?.strategy_reason ?? humanReason(decision.reason || "Strategy explanation unavailable")}</p>
+      {detail?.checks.length ? <ul className="mt-3 space-y-3">{detail.checks.map(check => <li key={check.id} className="text-xs leading-5"><div className="flex flex-wrap justify-between gap-2"><span className="font-medium">{check.label}</span><span className={check.status === "failed" ? "text-amber-200" : "text-app-muted"}>{labelize(check.status)}</span></div><p className="text-app-muted">{check.detail}</p></li>)}</ul> : <p className="mt-3 text-xs text-app-muted">{decision.action === "HOLD" ? "No entry was requested. Entry risk checks were not evaluated for this hold." : "This older response does not include the completed check list. An entry signal alone does not establish permission."}</p>}
+      <p className="mt-3 text-xs text-app-muted">Decision contract: {decision.contract_id ?? "Unavailable"}. Signal candle opened {formatTimestamp(decision.candle_timestamp)}; decision recorded {formatTimestamp(decision.created_at)}.</p>
+      {detail?.basis && <p className="mt-2 text-xs text-app-muted">{detail.basis}</p>}
+      {detail?.limits && <p className="mt-2 text-xs text-app-muted">Configured limits: {detail.limits.max_contracts} contracts per order; {detail.limits.max_open_position} maximum open position; ${detail.limits.max_daily_loss} daily loss; {detail.limits.max_trades_per_day} trades per day. Candle delivery grace: {detail.limits.delivery_grace_seconds}s.</p>}
+    </Details>
+  </section>;
+}
 
-  return (
-    <div className="space-y-3">
-      <section className="rounded-xl border border-amber-400/25 bg-amber-950/10 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="max-w-2xl">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-amber-200/80">Data prerequisite</p>
-            <h3 className="mt-1 text-lg font-semibold text-amber-100">No directional read yet</h3>
-            <p className="mt-1 text-sm leading-6 text-slate-300">
-              {closedCount === 0
-                ? `This evaluation received no closed ${provenance.timeframe.label} candles.`
-                : `This evaluation received only ${barLabel}.`}{" "}
-              Partial candles are excluded from analysis.
-            </p>
-          </div>
-          {onEvaluate ? <Button onClick={onEvaluate}>Retry evaluation</Button> : null}
-        </div>
+function ContextCoverage({ analysis }: { analysis: BotAnalysis | null | undefined }) {
+  const coverage = analysis?.context_coverage;
+  return <section className="border-t border-app-border pt-3"><h3 className="text-sm font-semibold">Scope and missing context</h3>
+    <p className="mt-1 text-xs leading-5 text-app-muted">{coverage ? `${coverage.summary}. ${coverage.missing.length ? `Missing: ${coverage.missing.join(", ")}. ` : ""}${coverage.limited.length ? `Partial: ${coverage.limited.join(", ")}. ` : ""}` : "Candle quality describes the price history only. News, macro, related markets and observation coverage have not been verified in this response. "}Missing observations are unknown, never neutral evidence.</p>
+    <Details title="Context availability" compact>
+      {coverage ? <ul className="space-y-2 text-xs leading-5">{coverage.items.map(item => <li key={item.id}><span className="font-medium">{item.label} · {labelize(item.status)}. </span><span className="text-app-muted">{item.detail}</span></li>)}</ul> : <p className="text-xs text-app-muted">{uniqueStrings(analysis?.data_quality?.missing_inputs ?? []).map(labelize).join("; ") || "No coverage assessment was returned."}</p>}
+      {analysis?.explanation?.limitations.map(item => <p key={item} className="mt-2 text-xs text-app-muted">{item}</p>)}
+      {analysis?.explanation?.context_evidence?.map(item => <p key={item} className="mt-2 text-xs text-app-muted">{item}</p>)}
+    </Details>
+  </section>;
+}
 
-        <div className="mt-4 rounded-lg border border-slate-800/80 bg-slate-950/45 p-3">
-          <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="font-medium text-slate-300">Closed-bar history</span>
-            <span className="font-mono text-amber-100">{closedCount} / {minimumDirectionalBars} closed bars</span>
-          </div>
-          <Progress
-            value={firstReadProgress}
-            className="mt-2 h-2 bg-slate-900"
-            indicatorClassName="bg-amber-300"
-            role="progressbar"
-            aria-label="Closed bars available for a directional read"
-            aria-valuemin={0}
-            aria-valuemax={minimumDirectionalBars}
-            aria-valuenow={Math.min(closedCount, minimumDirectionalBars)}
-          />
-          <p className="mt-2 text-[11px] leading-5 text-slate-400">
-            {minimumDirectionalBars} closed bars unlock the first directional feature set; {minimumConfidentBars} are needed for normal confidence.
-          </p>
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
-          <Metric label="Latest closed bar" value={formatTimestamp(provenance.latest_candle_timestamp)} />
-          <Metric label="Timeframe" value={provenance.timeframe.label} />
-          <Metric label="Partial excluded" value={String(provenance.partial_candle_count)} />
-          <Metric label="Detected gaps" value={String(provenance.gap_count)} />
-          <Metric label="Data age" value={formatDuration(provenance.data_age_seconds)} />
-        </div>
-      </section>
-
-      {localChartContext ? <LocalChartContextSummary context={localChartContext} /> : null}
+function CalculationDetails({ analysis, raw, ageSeconds }: { analysis: DisplayAnalysis; raw: BotAnalysis | null | undefined; ageSeconds: number | null }) {
+  const p = analysis.provenance;
+  const volatility = raw?.features?.volatility;
+  const vwap = raw?.features?.vwap;
+  const definitions = Object.entries(raw?.score_definitions ?? {});
+  return <div className="space-y-4">
+    <p className="text-xs leading-5 text-app-muted">{analysis.source === "backend" ? "Calculated by the backend from this evaluation’s closed candles." : "Local fallback calculated from evaluation candles; this is not a new TopBot decision."} Candle quality is separate from context coverage. Heuristic scores are not calibrated probabilities or forecasts.</p>
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <Metric label={analysis.priceSource === "decision" ? "Decision/reference price" : "Last analyzed close"} value={formatPrice(analysis.currentPrice)} />
+      <Metric label="Candle opened" value={formatTimestamp(p.latest_candle_timestamp)} />
+      <Metric label="Candle closed" value={formatTimestamp(candleClose(analysis))} />
+      <Metric label="Wall-clock age since close" value={formatDuration(ageSeconds)} />
+      <Metric label="Closed candles / partial excluded" value={`${p.closed_candle_count} / ${p.partial_candle_count}`} />
+      <Metric label="In-session gaps" value={String(p.gap_count)} />
+      <Metric label="Analyzed contract" value={p.resolved_contract_id ?? "Unavailable"} />
+      <Metric label="Configured contract" value={p.configured_contract_id ?? "Unavailable"} />
+      <Metric label="Timeframe" value={p.timeframe.label} />
+      <Metric label={`ATR${volatility?.period ? ` (${volatility.period})` : ""}`} value={formatPrice(analysis.expectedMove)} />
+      <Metric label="Historical ATR rank" value={analysis.atrPercentile == null ? "Unavailable" : `${Math.round(analysis.atrPercentile)}th percentile`} />
+      <Metric label="Recent range change" value={volatility?.recent_range_state ? labelize(volatility.recent_range_state) : "Not separately reported"} />
+      <Metric label="Relative candle volume" value={analysis.relativeVolume == null ? "Unavailable" : `${analysis.relativeVolume.toFixed(2)}× prior-bar baseline`} />
+      <Metric label="Observed-window VWAP" value={analysis.vwap == null ? "Unavailable" : `${formatPrice(analysis.vwap)} · close ${analysis.vwapLocation}`} />
+      <Metric label="Timeframe agreement" value={labelize(analysis.multiTimeframeStatus)} />
     </div>
-  );
+    {volatility?.recent_range_ratio != null && <p className="text-xs leading-5 text-app-muted">Recent range change compares the last 6 true ranges with up to 28 preceding true ranges ({volatility.recent_range_ratio.toFixed(2)}×). Historical ATR rank compares rolling ATR values across a longer window. A high ATR rank can coexist with cooling recent ranges.</p>}
+    {volatility?.reference_observations != null && <p className="text-xs text-app-muted">ATR reference: {volatility.reference_observations} observations, {formatTimestamp(volatility.reference_window_start)}–{formatTimestamp(volatility.reference_window_end)}.</p>}
+    {vwap?.window_start && <p className="text-xs text-app-muted">VWAP uses the observed candle window {formatTimestamp(vwap.window_start)}–{formatTimestamp(vwap.window_end)}. {vwap.complete_session ? "Session coverage is reported complete through the analysis cutoff." : "Full session coverage is not established."}</p>}
+    {raw?.features?.trend.components?.length ? <ul className="space-y-1 text-xs text-app-muted">{raw.features.trend.components.map(component => <li key={component.label}>{component.label}: {labelize(component.direction)}{component.value == null ? " · unavailable" : ` (${formatPrice(component.value)})`}.</li>)}</ul> : null}
+    {raw?.features?.multi_timeframe_alignment.timeframes?.length ? <Details title="Timeframe input windows"><ul className="space-y-2 text-xs text-app-muted">{raw.features.multi_timeframe_alignment.timeframes.map(item => <li key={item.timeframe}>{item.timeframe}: {labelize(item.direction)}; {item.closed_candle_count ?? "unknown count of"} closed candles ending {formatTimestamp(item.latest_candle_end_timestamp)}. Contract: {item.contract_id ?? "not reported"}; EMA periods: {item.fast_period ?? "unknown"}/{item.slow_period ?? "unknown"}.</li>)}</ul></Details> : null}
+    {definitions.length > 0 && <Details title="Metric definitions, scales and missing-data rules"><dl className="space-y-4 text-xs leading-5">{definitions.map(([name, definition]) => <div key={name}><dt className="font-semibold">{labelize(name)}</dt><dd className="text-app-muted">{definition.interpretation}<br />Inputs: {definition.inputs.join("; ")}<br />Scale: {definition.scale}<br />Reference window: {definition.reference_window}<br />Missing data: {definition.missing_data}</dd></div>)}</dl></Details>}
+    {analysis.tradeEvaluation && <Details title="Advisory trade geometry"><p className="text-xs text-app-muted">This descriptive trade-plan assessment is separate from TopBot’s strategy and completed risk checks.</p><p className="mt-2 text-sm">Risk: {formatPrice(analysis.tradeEvaluation.features.risk_points)} points; reward: {formatPrice(analysis.tradeEvaluation.features.reward_points)} points. Estimated dollar risk: {formatPrice(analysis.tradeEvaluation.features.estimated_dollar_risk)}.</p><p className="mt-2 text-xs text-app-muted">{analysis.tradeEvaluation.summary}</p></Details>}
+    {uniqueStrings(analysis.dataQuality.warnings).map(warning => <p key={warning} className="text-xs text-app-muted">{warning}</p>)}
+    <p className="text-xs text-app-muted">Calculated {formatTimestamp(analysis.generatedAt)} · version {analysis.analysisVersion}. {p.contract_rollover ? "The analyzed contract differs from the configured contract after rollover." : ""}</p>
+  </div>;
 }
 
-function LocalChartContextSummary({ context }: { context: MarketContext }) {
-  const trend = context.trend;
-  return (
-    <section className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-cyan-200/80">Local chart context</p>
-          <Badge variant="neutral">Separate from evaluation</Badge>
-        </div>
-        <span className="text-xs text-slate-500">As of {formatTimestamp(context.asOfTimestamp)}</span>
-      </div>
-      <p className="mt-2 text-sm leading-6 text-slate-300">
-        The chart has {context.provenance.closedCandleCount} closed bars, but they were not included in the canonical evaluation above. This local summary does not replace that evaluation.
-      </p>
-      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
-        <Metric label="Latest chart close" value={formatPrice(context.lastPrice)} />
-        <Metric label="Chart closed bars" value={String(context.provenance.closedCandleCount)} />
-        <Metric
-          label="Chart trend"
-          value={trend ? `${labelize(trend.direction)} · ${Math.round(trend.strength * 100)}/100` : "Needs more history"}
-        />
-        <Metric label="Chart ATR" value={formatPrice(context.atr)} />
-        <Metric label="Chart VWAP" value={context.vwap === null ? "Unavailable" : `${labelize(context.vwapLocation)} · ${formatPrice(context.vwap)}`} />
-        <Metric
-          label="Chart levels"
-          value={
-            context.nearestSupport === null && context.nearestResistance === null
-              ? "Unavailable"
-              : `${formatPrice(context.nearestSupport)} / ${formatPrice(context.nearestResistance)}`
-          }
-        />
-      </div>
+function CollectedContextDetails({ collected }: { collected: BotCollectedContext }) {
+  const book = collected.order_book;
+  const profile = collected.volume_profile;
+  const cutoff = Date.parse(collected.as_of);
+  const quoteEligible = book?.eligible === true && book.status === "fresh" && book.contract_id === collected.contract_id && atCutoff(book.received_at, cutoff, book.freshness_limit_seconds ?? 10) && atCutoff(book.provider_timestamp, cutoff, book.freshness_limit_seconds ?? 10);
+  const profileEligible = profile?.eligible === true && profile.status === "partial" && profile.contract_id === collected.contract_id && atCutoff(profile.observation_end, cutoff, profile.freshness_limit_seconds ?? 300) && atCutoff(profile.received_through, cutoff, Infinity) && Number.isFinite(Date.parse(profile.observation_start ?? "")) && Date.parse(profile.observation_start!) <= Date.parse(profile.observation_end!);
+  return <div className="space-y-4 text-xs leading-5">
+    <p className="text-app-muted">Analysis cutoff: {formatTimestamp(collected.as_of)}. Collection ran {formatTimestamp(collected.captured_at)} for {collected.contract_id ?? "an unspecified contract"}. Only observations explicitly eligible for that contract and cutoff support this interpretation.</p>
+    <section><h4 className="font-semibold">Level 1 quote · {quoteEligible ? "eligible at cutoff" : "not eligible for this read"}</h4>
+      <p className="mt-1 text-app-muted">{book?.reason ?? "No eligible quote was supplied."}</p>
+      <p className="mt-1">Recorded best bid {formatPrice(book?.bid)} / ask {formatPrice(book?.ask)}; spread {formatPrice(book?.spread)}. Available sizes: bid {formatNumber(book?.bid_size)}, ask {formatNumber(book?.ask_size)}.</p>
+      <p className="mt-1 text-app-muted">Received {formatTimestamp(book?.received_at)}; provider time {formatTimestamp(book?.provider_timestamp)}. Contract: {book?.contract_id ?? "Unavailable"}.</p>
+      <p className="mt-1 text-app-muted">Level 1 covers the best bid and ask only. It does not establish deeper liquidity, queue position, full-book imbalance or order-flow delta.</p>
     </section>
-  );
-}
-
-function AnalysisContent({
-  analysis,
-  isStale,
-  liveBarsBehind,
-}: {
-  analysis: DisplayAnalysis;
-  isStale: boolean;
-  liveBarsBehind: number | null;
-}) {
-  const warnings = uniqueStrings([...analysis.dataQuality.warnings, ...analysis.riskNotes]);
-  return (
-    <>
-      <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("text-2xl font-semibold", biasTextClass(analysis.marketBias))}>
-              {labelize(analysis.marketBias)} bias
-            </span>
-            <Badge variant={biasBadgeVariant(analysis.marketBias)}>{Math.round(analysis.trendStrength)}/100 trend</Badge>
-          </div>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{analysis.summary}</p>
-          {isStale ? (
-            <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs leading-5 text-amber-200">
-              This evaluation is stale
-              {liveBarsBehind !== null && liveBarsBehind > 0
-                ? ` — the chart has ${liveBarsBehind} newer closed bar${liveBarsBehind === 1 ? "" : "s"}`
-                : ""}
-              . Rerun Evaluate before relying on the read.
-            </p>
-          ) : null}
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-          <ScenarioWeight label={SCENARIO_WEIGHT_LABELS.bullish} value={analysis.scenarioWeights.bullish} tone="positive" />
-          <ScenarioWeight label={SCENARIO_WEIGHT_LABELS.bearish} value={analysis.scenarioWeights.bearish} tone="negative" />
-          <ScenarioWeight label={SCENARIO_WEIGHT_LABELS.sideways} value={analysis.scenarioWeights.sideways} tone="warning" />
-          <p className="font-mono text-[9px] text-slate-600">method: {analysis.probabilityMethod}</p>
-          <p className="pt-1 text-[10px] leading-4 text-slate-500">{SCENARIO_WEIGHT_DISCLAIMER}</p>
-        </div>
-      </section>
-
-      <ProvenanceSection analysis={analysis} />
-      <FeatureSection analysis={analysis} />
-      <DimensionSection analysis={analysis} />
-
-      {analysis.tradeEvaluation ? <TradeEvaluationSummary evaluation={analysis.tradeEvaluation} /> : null}
-
-      <section className="rounded-xl border border-amber-400/20 bg-amber-950/10 p-3">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-amber-200/80">What invalidates the setup?</p>
-        <p className="mt-1 text-sm leading-6 text-amber-100">{analysis.invalidationReason}</p>
-      </section>
-
-      <section className="grid gap-3 lg:grid-cols-3">
-        <TextList title="Bullish score drivers" items={analysis.scoreDrivers.bullish} tone="positive" />
-        <TextList title="Bearish score drivers" items={analysis.scoreDrivers.bearish} tone="negative" />
-        <TextList title="Neutral score drivers" items={analysis.scoreDrivers.neutral} tone="neutral" />
-      </section>
-
-      <section className="grid gap-3 lg:grid-cols-2">
-        <TextList title="Why this read" items={analysis.reasoning} tone="neutral" />
-        <TextList title="Warnings & execution risks" items={warnings} tone="warning" />
-      </section>
-
-      <MissingInformation analysis={analysis} />
-    </>
-  );
-}
-
-function ProvenanceSection({ analysis }: { analysis: DisplayAnalysis }) {
-  const provenance = analysis.provenance;
-  return (
-    <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Freshness &amp; provenance</p>
-        <div className="flex flex-wrap items-center gap-2">
-          {provenance.contract_rollover ? <Badge variant="warning">Active contract rollover</Badge> : null}
-          <span className="font-mono text-[10px] text-slate-500">{analysis.analysisVersion}</span>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
-        <Metric label="Latest closed bar" value={formatTimestamp(provenance.latest_candle_timestamp)} />
-        <Metric label="Data age" value={formatDuration(provenance.data_age_seconds)} />
-        <Metric label="Closed candles" value={String(provenance.closed_candle_count)} />
-        <Metric label="Partial excluded" value={String(provenance.partial_candle_count)} />
-        <Metric label="Detected gaps" value={String(provenance.gap_count)} />
-        <Metric label="Timeframe" value={provenance.timeframe.label} />
-        <Metric label="Analyzed contract" value={provenance.resolved_contract_id ?? "Unavailable"} />
-        <Metric label="Configured contract" value={provenance.configured_contract_id ?? "Unavailable"} />
-      </div>
+    <section><h4 className="font-semibold">Viewer-observed volume profile · {profileEligible ? "partial window eligible" : "not eligible for this read"}</h4>
+      <p className="mt-1 text-app-muted">{profile?.reason ?? "No profile observation was supplied."}</p>
+      <p className="mt-1">Recorded POC {formatPrice(profile?.poc)}; value area {formatPrice(profile?.value_area_low)}–{formatPrice(profile?.value_area_high)}.</p>
+      <p className="mt-1 text-app-muted">Observation window: {formatTimestamp(profile?.observation_start)}–{formatTimestamp(profile?.observation_end)}. Received through: {formatTimestamp(profile?.received_through)}. Contract: {profile?.contract_id ?? "Unavailable"}. This viewer-driven sample is not a complete session profile.</p>
     </section>
-  );
-}
-
-function FeatureSection({ analysis }: { analysis: DisplayAnalysis }) {
-  return (
-    <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">Deterministic market features</p>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-        <Metric
-          label={analysis.priceSource === "decision" ? "Decision/reference price" : "Current price"}
-          value={formatPrice(analysis.currentPrice)}
-        />
-        <Metric label="Trend" value={`${labelize(analysis.marketBias)} · ${Math.round(analysis.trendStrength)}/100`} />
-        <Metric label="Regime" value={labelize(analysis.marketRegime)} />
-        <Metric
-          label="ATR / percentile"
-          value={`${formatPrice(analysis.expectedMove)}${analysis.atrPercentile !== null ? ` · p${Math.round(analysis.atrPercentile)}` : ""}${analysis.volatilityState ? ` · ${analysis.volatilityState}` : ""}`}
-        />
-        <Metric
-          label="Relative volume"
-          value={analysis.relativeVolume !== null ? `${analysis.relativeVolume.toFixed(2)}x · ${analysis.volumeState ?? "unknown"}` : "Missing"}
-        />
-        <Metric
-          label="VWAP location"
-          value={`${labelize(analysis.vwapLocation)}${analysis.vwap !== null ? ` · ${formatPrice(analysis.vwap)}` : ""}`}
-        />
-        <Metric label="MTF alignment" value={labelize(analysis.multiTimeframeStatus)} />
-        <Metric label="Nearby support" value={formatPrice(analysis.nearestSupport)} />
-        <Metric label="Nearby resistance" value={formatPrice(analysis.nearestResistance)} />
-      </div>
+    <section><h4 className="font-semibold">News, scheduled events and related markets</h4><p className="mt-1 text-app-muted">{collected.events?.reason ?? "Event and news context unavailable."}</p>
+      {collected.related_markets?.items?.map(item => <p key={item.symbol} className="mt-1 text-app-muted">{item.symbol}: {labelize(item.status)}{item.reason ? `. ${item.reason}` : ""}</p>)}
+      {collected.events?.headlines?.slice(0, 3).map(headline => <p key={headline.id} className="mt-2">{headline.title} <span className="text-app-muted">· {headline.source} · {formatTimestamp(headline.published_at)}</span></p>)}
     </section>
-  );
+  </div>;
 }
 
-function DimensionSection({ analysis }: { analysis: DisplayAnalysis }) {
-  return (
-    <section className="grid grid-cols-2 gap-2 md:grid-cols-4">
-      <DimensionCard
-        label="Setup quality"
-        score={analysis.setupQuality?.score ?? null}
-        state={analysis.setupQuality?.label ?? "not scored"}
-        drivers={analysis.setupQuality?.drivers ?? []}
-      />
-      <DimensionCard
-        label="Market direction"
-        score={analysis.marketBiasDimension.strength}
-        state={analysis.marketBiasDimension.direction}
-        drivers={analysis.marketBiasDimension.drivers}
-      />
-      <DimensionCard
-        label="Execution risk"
-        score={analysis.executionRisk?.risk_score ?? null}
-        state={analysis.executionRisk?.label ?? "not scored"}
-        drivers={analysis.executionRisk?.drivers ?? []}
-        inverse
-      />
-      <DimensionCard
-        label="Data confidence"
-        score={analysis.dataConfidence.score}
-        state={analysis.dataConfidence.label}
-        drivers={analysis.dataConfidence.drivers}
-      />
-    </section>
-  );
+function SeparateChartContext({ snapshot, bot, nowMs }: { snapshot: BotMarketSnapshot; bot: BotConfig; nowMs: number }) {
+  const context = useMemo(() => buildMarketContext(snapshot, nowMs, bot.max_data_staleness_seconds), [snapshot, bot.max_data_staleness_seconds, nowMs]);
+  if (!context || context.provenance.closedCandleCount < 10) return null;
+  return <Details title="Local chart context — separate from evaluation"><p className="text-xs leading-5 text-app-muted">The chart has {context.provenance.closedCandleCount} closed bars. They were not included in this evaluation and do not replace its bot decision. Last chart close: {formatPrice(context.lastPrice)} at {formatTimestamp(context.asOfTimestamp)}.</p></Details>;
 }
-
-function DimensionCard({
-  label,
-  score,
-  state,
-  drivers,
-  inverse = false,
-}: {
-  label: string;
-  score: number | null;
-  state: string;
-  drivers: string[];
-  inverse?: boolean;
-}) {
-  const value = score === null ? null : clamp(score, 0, 100);
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3" title={drivers.join("\n") || undefined}>
-      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
-      <div className="mt-1 flex items-baseline justify-between gap-2">
-        <span className="text-sm font-semibold text-slate-100">{labelize(state)}</span>
-        <span className="font-mono text-xs text-slate-400">{value === null ? "—" : `${Math.round(value)}/100`}</span>
-      </div>
-      {value !== null ? (
-        <Progress
-          value={value}
-          className="mt-2 h-1.5 bg-slate-900"
-          indicatorClassName={inverse ? "bg-amber-400" : "bg-cyan-400"}
-        />
-      ) : null}
-    </div>
-  );
+function Details({ title, children, compact = false }: { title: string; children: ReactNode; compact?: boolean }) { return <details className={compact ? "mt-3" : "rounded-xl border border-app-border p-3"}><summary className="cursor-pointer text-xs font-medium text-app-muted">{title}</summary><div className="mt-3">{children}</div></details>; }
+function EvidenceList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  const entries = uniqueStrings(items);
+  return <div className="rounded-xl border border-app-border p-4"><h3 className="text-sm font-semibold">{title}</h3>{entries.length ? <ul className="mt-2 list-disc space-y-2 pl-4 text-sm leading-6">{entries.slice(0, 4).map(item => <li key={item}>{item}</li>)}</ul> : <p className="mt-2 text-sm leading-6 text-app-muted">{empty}</p>}{entries.length > 4 && <Details title="More evidence" compact><ul className="list-disc space-y-2 pl-4 text-xs">{entries.slice(4).map(item => <li key={item}>{item}</li>)}</ul></Details>}</div>;
 }
-
-function TradeEvaluationSummary({ evaluation }: { evaluation: TradeEvaluationResult }) {
-  const features = evaluation.features;
-  const categories = evaluation.category_awarded_points ?? evaluation.category_scores;
-  const categoryRows = Object.entries(categories).map(([name, awarded]) => ({
-    name,
-    awarded,
-    maximum: evaluation.category_maximums?.[name] ?? null,
-  }));
-  const appliedCaps = (evaluation.caps ?? []).filter((cap) => cap.applied);
-  const geometryIssues = features.geometry_issues ?? [];
-
-  return (
-    <section className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wide text-cyan-200/80">Trade-plan score</p>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="text-2xl font-semibold text-cyan-200">{Math.round(evaluation.total_score)}/100</span>
-            <Badge variant={decisionVariant(evaluation.decision)}>{labelize(evaluation.decision)}</Badge>
-            <Badge variant="neutral">Grade {evaluation.grade}</Badge>
-            {evaluation.scoring_model_version ? <Badge variant="neutral">{evaluation.scoring_model_version}</Badge> : null}
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <MiniMetric label="Risk" value={`${formatNumber(features.risk_points)} pts`} />
-          <MiniMetric label="Reward" value={`${formatNumber(features.reward_points)} pts`} />
-          <MiniMetric label="R multiple" value={formatR(features.r_multiple ?? features.risk_reward_ratio)} />
-          <MiniMetric label="Break-even" value={formatPercent(features.breakeven_win_rate)} />
-          <MiniMetric label="Dollar risk" value={formatCurrency(features.estimated_dollar_risk)} />
-          <MiniMetric label="Risk ticks" value={formatNumber(features.risk_ticks)} />
-          <MiniMetric label="Account risk" value={formatPercent(features.account_risk_percent)} />
-          <MiniMetric label="Data confidence" value={evaluation.data_confidence ? labelize(evaluation.data_confidence) : "Missing"} />
-        </div>
-      </div>
-
-      <p className="mt-3 text-sm leading-6 text-slate-300">{evaluation.summary}</p>
-
-      {features.geometry_valid === false || geometryIssues.length > 0 ? (
-        <div className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-200">
-          Invalid trade geometry: {geometryIssues.join("; ") || "entry, stop, and target are not directionally valid."}
-        </div>
-      ) : null}
-
-      {evaluation.evaluation_dimensions ? (
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <EvaluationDimension label="Setup quality" dimension={evaluation.evaluation_dimensions.setup_quality} />
-          <EvaluationDimension label="Direction / bias" dimension={evaluation.evaluation_dimensions.market_direction_bias} />
-          <EvaluationDimension label="Execution risk control" dimension={evaluation.evaluation_dimensions.execution_risk} />
-        </div>
-      ) : null}
-
-      {categoryRows.length > 0 ? (
-        <div className="mt-3 rounded-lg border border-slate-800/80 p-2.5">
-          <p className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">Category points</p>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs md:grid-cols-3">
-            {categoryRows.map((row) => (
-              <div key={row.name} className="flex justify-between gap-2">
-                <span className="truncate text-slate-400">{labelize(row.name)}</span>
-                <span className="font-mono text-slate-200">{row.maximum === null ? row.awarded : `${row.awarded}/${row.maximum}`}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        <TextList title="Top positive score drivers" items={evaluation.top_positive_drivers ?? evaluation.positives} tone="positive" compact />
-        <TextList title="Top negative score drivers" items={evaluation.top_negative_drivers ?? evaluation.warnings} tone="negative" compact />
-      </div>
-
-      {(evaluation.penalties?.length ?? 0) > 0 || appliedCaps.length > 0 ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <TextList
-            title="Penalties"
-            items={(evaluation.penalties ?? []).map((penalty) => `−${penalty.points_deducted} ${labelize(penalty.category ?? "uncategorized")}: ${penalty.reason}`)}
-            tone="warning"
-            compact
-          />
-          <TextList
-            title="Applied score caps"
-            items={appliedCaps.map((cap) => `${cap.score_before} → ${cap.score_after} (max ${cap.maximum}): ${cap.reason}`)}
-            tone="warning"
-            compact
-          />
-        </div>
-      ) : null}
-
-      {(evaluation.missing_inputs?.length ?? 0) > 0 ? (
-        <p className="mt-3 text-xs leading-5 text-amber-200">
-          Missing evaluation inputs: {evaluation.missing_inputs!.map(labelize).join(", ")}
-        </p>
-      ) : null}
-    </section>
-  );
+function Metric({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><p className="text-xs text-app-muted">{label}</p><p className="mt-1 break-words text-sm font-medium">{value}</p></div>; }
+function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) { return <section className="rounded-xl border border-dashed border-app-border p-4"><h3 className="font-semibold">{title}</h3><p className="mt-2 text-sm leading-6 text-app-muted">{description}</p>{action && <div className="mt-3">{action}</div>}</section>; }
+function matchingSnapshot(snapshot: BotMarketSnapshot | null, bot: BotConfig | null): boolean { return Boolean(snapshot && bot && snapshot.contractKey === `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}` && snapshot.unit === bot.timeframe_unit && snapshot.unitNumber === bot.timeframe_unit_number); }
+function newerClosedBars(analysis: DisplayAnalysis, snapshot: BotMarketSnapshot | null, nowMs: number): number {
+  if (!snapshot) return 0;
+  const analyzed = Date.parse(analysis.provenance.latest_candle_timestamp ?? "");
+  const contract = analysis.provenance.resolved_contract_id ?? analysis.provenance.configured_contract_id;
+  if (!Number.isFinite(analyzed) || !contract) return 0;
+  return new Set(snapshot.candles.filter(candle => isConfirmedClosedCandle(candle, nowMs) && candle.contract_id === contract && candle.unit === snapshot.unit && candle.unit_number === snapshot.unitNumber && Date.parse(candle.timestamp) > analyzed).map(candle => candle.timestamp)).size;
 }
-
-function EvaluationDimension({ label, dimension }: { label: string; dimension: TradeEvaluationDimension }) {
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="text-slate-400">{label}</span>
-        <span className="font-mono text-slate-200">{dimension.awarded_points}/{dimension.maximum_points}</span>
-      </div>
-      <Progress value={clamp(dimension.score_percent, 0, 100)} className="mt-2 h-1.5 bg-slate-900" indicatorClassName="bg-cyan-400" />
-    </div>
-  );
+function decisionHeadline(evaluation: BotEvaluation): string {
+  if (evaluation.status === "risk_blocked" || ["blocked", "rejected"].includes(evaluation.order_attempt?.status ?? "")) return "Entry rejected by checks";
+  if (evaluation.status === "error" || evaluation.order_attempt?.status === "error") return "Evaluation or routing failed";
+  if (evaluation.status === "duplicate_skipped") return "Entry skipped — already processed";
+  if (evaluation.status === "dry_run_attempt") return "Entry permitted for dry run";
+  if (evaluation.status === "submitted") return "Entry submitted";
+  if (evaluation.decision.action === "HOLD" || evaluation.status === "held") return "Holding — no new entry";
+  return `${evaluation.decision.action === "BUY" ? "Buy" : "Sell"} signal — permission not established`;
 }
-
-function MissingInformation({ analysis }: { analysis: DisplayAnalysis }) {
-  const missing = analysis.dataQuality.missing_inputs;
-  return (
-    <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Missing information</p>
-      {missing.length > 0 ? (
-        <ul className="mt-2 flex flex-wrap gap-1.5">
-          {missing.map((item) => (
-            <li key={item}><Badge variant="warning">{labelize(item)}</Badge></li>
-          ))}
-        </ul>
-      ) : (
-        <p className="mt-1 text-sm text-emerald-300">No required analysis inputs are missing.</p>
-      )}
-      <p className="mt-2 text-[11px] leading-5 text-slate-500">
-        No account, news, macro, or order-book context is implied unless it appears explicitly above.
-      </p>
-    </section>
-  );
+function legacyHeadline(analysis: DisplayAnalysis): string { return analysis.marketBias === "neutral" ? "Closed candles do not establish a clear direction." : `Closed candles lean ${analysis.marketBias}.`; }
+function conflictingEvidence(analysis: DisplayAnalysis): string[] { return analysis.marketBias === "neutral" ? [...analysis.scoreDrivers.bullish, ...analysis.scoreDrivers.bearish] : analysis.scoreDrivers[analysis.marketBias === "bullish" ? "bearish" : "bullish"]; }
+function levelText(analysis: DisplayAnalysis): string {
+  const { nearestSupport: support, nearestResistance: resistance } = analysis;
+  if (support == null && resistance == null) return "No supported price boundaries are available from this candle history.";
+  return [support == null ? "" : `A closed candle below ${formatPrice(support)} support would weaken the bullish case.`, resistance == null ? "" : `A closed candle above ${formatPrice(resistance)} resistance would weaken the bearish case.`].filter(Boolean).join(" ");
 }
-
-function ScenarioWeight({ label, value, tone }: { label: string; value: number; tone: Tone }) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex justify-between gap-3 text-xs">
-        <span className={toneTextClass(tone)}>{label}</span>
-        <span className="font-mono text-slate-300">{value}%</span>
-      </div>
-      <Progress value={value} className="h-2 bg-slate-900" indicatorClassName={toneBarClass(tone)} />
-    </div>
-  );
+function candleClose(analysis: DisplayAnalysis): string | null {
+  const p = analysis.provenance;
+  if (p.latest_candle_end_timestamp) return p.latest_candle_end_timestamp;
+  const start = Date.parse(p.latest_candle_timestamp ?? "");
+  return Number.isFinite(start) ? new Date(candleEndMs(start, p.timeframe.unit, p.timeframe.unit_number)).toISOString() : null;
 }
-
-function TextList({
-  title,
-  items,
-  tone,
-  compact = false,
-}: {
-  title: string;
-  items: string[];
-  tone: Tone;
-  compact?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
-      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">{title}</p>
-      {items.length > 0 ? (
-        <ul className={cn("space-y-1.5 text-slate-300", compact ? "text-xs leading-5" : "text-sm leading-5")}>
-          {items.map((item, index) => (
-            <li key={`${title}-${index}-${item}`} className="flex gap-2">
-              <span className={cn("mt-2 h-1.5 w-1.5 shrink-0 rounded-full", toneDotClass(tone))} />
-              <span>{item}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-slate-500">No {title.toLowerCase()} returned.</p>
-      )}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-slate-800/80 bg-slate-950/55 px-2.5 py-2">
-      <p className="truncate text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-0.5 truncate text-[13px] font-semibold text-slate-100" title={value}>{value}</p>
-    </div>
-  );
-}
-
-function MiniMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/45 px-2 py-1.5">
-      <p className="text-[9px] uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-0.5 whitespace-nowrap font-mono text-xs text-slate-100">{value}</p>
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="space-y-3">
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_20rem]"><Skeleton className="h-32" /><Skeleton className="h-32" /></div>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
-    </div>
-  );
-}
-
-function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
-  return (
-    <div className="rounded-xl border border-dashed border-slate-800 bg-slate-950/35 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><p className="font-semibold text-slate-200">{title}</p><p className="mt-1 text-sm text-slate-400">{description}</p></div>
-        {action}
-      </div>
-    </div>
-  );
-}
-
-function barsBehindLiveChart(
-  analysis: DisplayAnalysis | null,
-  snapshot: BotMarketSnapshot | null,
-  bot: BotConfig | null,
-): number | null {
-  if (!analysis || !snapshot || !bot || !analysis.provenance.latest_candle_timestamp) return null;
-  const analyzedMs = Date.parse(analysis.provenance.latest_candle_timestamp);
-  const latestClosedMs = snapshot.candles.reduce<number | null>((latest, candle) => {
-    const timestamp = Date.parse(candle.timestamp);
-    return candle.is_partial || !Number.isFinite(timestamp) ? latest : Math.max(latest ?? timestamp, timestamp);
-  }, null);
-  if (!Number.isFinite(analyzedMs) || latestClosedMs === null) return null;
-  const intervalMs = intervalSecondsFor(bot.timeframe_unit, bot.timeframe_unit_number) * 1000;
-  return intervalMs > 0 ? Math.max(0, Math.floor((latestClosedMs - analyzedMs) / intervalMs)) : null;
-}
-
-function buildSeparateChartContext(
-  snapshot: BotMarketSnapshot | null,
-  bot: BotConfig | null,
-  minimumDirectionalBars = MIN_DIRECTIONAL_BARS,
-): MarketContext | null {
-  if (!snapshot || !bot) return null;
-  const expectedKey = `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}`;
-  if (
-    snapshot.contractKey !== expectedKey ||
-    snapshot.unit !== bot.timeframe_unit ||
-    snapshot.unitNumber !== bot.timeframe_unit_number
-  ) {
-    return null;
-  }
-  const closedCount = snapshot.candles.filter((candle) => !candle.is_partial).length;
-  if (closedCount < minimumDirectionalBars) return null;
-  const updatedAtMs = Date.parse(snapshot.updatedAt);
-  const context = buildMarketContext(
-    snapshot,
-    Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
-    bot.max_data_staleness_seconds,
-  );
-  return context && context.provenance.closedCandleCount >= minimumDirectionalBars ? context : null;
-}
-
-function analysisFreshness(analysis: DisplayAnalysis, isStale: boolean): FreshnessState {
-  const latestTimestamp = analysis.provenance.latest_candle_timestamp;
-  if (!latestTimestamp || !Number.isFinite(Date.parse(latestTimestamp))) return "unknown";
-  return isStale ? "stale" : "fresh";
-}
-
-function freshnessLabel(state: FreshnessState): string {
-  return state === "unknown" ? "Freshness unknown" : state === "stale" ? "Stale" : "Fresh";
-}
-
-function freshnessBadgeVariant(state: FreshnessState): BadgeVariant {
-  return state === "fresh" ? "positive" : state === "stale" ? "warning" : "neutral";
-}
-
-function formatPrice(value: number | null): string {
-  return value === null || !Number.isFinite(value) ? "Missing" : priceFormatter.format(value);
-}
-
-function formatNumber(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "—" : percentFormatter.format(value);
-}
-
-function formatR(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "—" : `${percentFormatter.format(value)}R`;
-}
-
-function formatPercent(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "—" : `${percentFormatter.format(value)}%`;
-}
-
-function formatCurrency(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "—" : `$${priceFormatter.format(value)}`;
-}
-
-function formatTimestamp(value: string | null): string {
-  if (!value) return "Missing";
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestampFormatter.format(new Date(timestamp)) : "Invalid";
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds)) return "Unknown";
-  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  return `${(seconds / 3600).toFixed(1)}h`;
-}
-
-function labelize(value: string): string {
-  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-}
-
-function qualityBadgeVariant(status: BotDataQualityStatus): BadgeVariant {
-  if (status === "good") return "positive";
-  if (status === "limited") return "warning";
-  return "negative";
-}
-
-function biasBadgeVariant(bias: BotMarketBias): BadgeVariant {
-  return bias === "bullish" ? "positive" : bias === "bearish" ? "negative" : "warning";
-}
-
-function decisionVariant(decision: TradeEvaluationResult["decision"]): BadgeVariant {
-  return decision === "take" ? "positive" : decision === "avoid" ? "negative" : "warning";
-}
-
-function biasTextClass(bias: BotMarketBias): string {
-  return bias === "bullish" ? "text-emerald-300" : bias === "bearish" ? "text-rose-300" : "text-amber-200";
-}
-
-function toneTextClass(tone: Tone): string {
-  return tone === "positive" ? "text-emerald-300" : tone === "negative" ? "text-rose-300" : tone === "warning" ? "text-amber-200" : "text-cyan-200";
-}
-
-function toneBarClass(tone: Tone): string {
-  return tone === "positive" ? "bg-emerald-400" : tone === "negative" ? "bg-rose-400" : tone === "warning" ? "bg-amber-300" : "bg-cyan-400";
-}
-
-function toneDotClass(tone: Tone): string {
-  return tone === "positive" ? "bg-emerald-300/80" : tone === "negative" ? "bg-rose-300/80" : tone === "warning" ? "bg-amber-300/80" : "bg-cyan-300/75";
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
-}
+function agreementLabel(value: string | undefined): string { return value === "aligned" ? "Aligned" : value === "mixed" ? "Mixed" : value === "flat" ? "Flat readings" : "Unavailable"; }
+function freshnessLabel(value: string | undefined): string { return value === "fresh" ? "Current closed-candle read" : value === "stale" ? "Stale evaluation" : value === "market_closed" ? "Market closed" : "Freshness unknown"; }
+function formatPrice(value: number | null | undefined): string { return value == null || !Number.isFinite(value) ? "Unavailable" : priceFormatter.format(value); }
+function formatNumber(value: number | null | undefined): string { return value == null || !Number.isFinite(value) ? "unavailable" : String(value); }
+function formatTimestamp(value: string | null | undefined): string { const ms = Date.parse(value ?? ""); return Number.isFinite(ms) ? timestampFormatter.format(new Date(ms)) : "unavailable"; }
+function formatDuration(seconds: number | null): string { return seconds == null ? "Unknown" : seconds < 60 ? `${Math.round(seconds)}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${(seconds / 3600).toFixed(1)}h`; }
+function labelize(value: string): string { return value.replace(/[_-]+/g, " ").replace(/\b\w/g, character => character.toUpperCase()); }
+function humanReason(value: string): string { return value.includes(" ") ? value : labelize(value); }
+function sameTimestamp(left: string | null | undefined, right: string | null | undefined): boolean { return !left && !right ? true : Number.isFinite(Date.parse(left ?? "")) && Date.parse(left!) === Date.parse(right ?? ""); }
+function atCutoff(timestamp: string | null | undefined, cutoff: number, maxAgeSeconds: number): boolean { const ms = Date.parse(timestamp ?? ""); return Number.isFinite(ms) && ms <= cutoff && cutoff - ms <= maxAgeSeconds * 1000; }
+function uniqueStrings(values: string[]): string[] { return Array.from(new Set(values.map(value => value.trim()).filter(Boolean))); }

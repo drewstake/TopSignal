@@ -120,6 +120,25 @@ const LOCAL_CONTEXT_VERSION = "local_fallback_market_analysis_v2";
 
 export { LOCAL_CONTEXT_VERSION };
 
+/** Match backend candle boundaries, including UTC calendar months (never 31 days). */
+export function candleEndMs(startMs: number, unit: BotTimeframeUnit, unitNumber: number): number {
+  if (unit !== "month") return startMs + intervalSecondsFor(unit, unitNumber) * 1000;
+  const end = new Date(startMs);
+  end.setUTCDate(1);
+  end.setUTCMonth(end.getUTCMonth() + Math.max(1, Math.trunc(unitNumber)));
+  return end.getTime();
+}
+
+/** A cached forming candle does not become final merely because time passes. */
+export function isConfirmedClosedCandle(candle: ProjectXMarketCandle, nowMs: number): boolean {
+  const end = candleEndMs(Date.parse(candle.timestamp), candle.unit, candle.unit_number);
+  return !candle.is_partial && Number.isFinite(end) && end <= nowMs && (candle.fetched_at == null || Date.parse(candle.fetched_at) >= end);
+}
+
+export function freshnessIntervalSeconds(endMs: number, unit: BotTimeframeUnit, unitNumber: number, symbol?: string | null): number {
+  return unit === "month" ? openSessionElapsedSeconds(endMs, candleEndMs(endMs, unit, unitNumber), symbol, Infinity) : intervalSecondsFor(unit, unitNumber);
+}
+
 export function timeframeLabel(unit: BotTimeframeUnit, unitNumber: number): string {
   const preset = TIMEFRAME_LADDER.find((step) => step.unit === unit && step.unitNumber === unitNumber);
   if (preset) {
@@ -234,9 +253,10 @@ export function buildMarketContext(
     return null;
   }
 
-  const allSorted = sortedValidCandles(snapshot.candles);
-  const partialCandleCount = allSorted.filter((row) => row.candle.is_partial).length;
-  const sorted = allSorted.filter((row) => !row.candle.is_partial).slice(-MAX_CONTEXT_BARS);
+  const contractId = snapshot.contractKey.split(":")[0];
+  const allSorted = sortedValidCandles(snapshot.candles.filter(candle => candle.contract_id === contractId && candle.unit === snapshot.unit && candle.unit_number === snapshot.unitNumber));
+  const partialCandleCount = allSorted.filter((row) => !isConfirmedClosedCandle(row.candle, nowMs)).length;
+  const sorted = allSorted.filter((row) => isConfirmedClosedCandle(row.candle, nowMs)).slice(-MAX_CONTEXT_BARS);
   if (sorted.length < 2) {
     return null;
   }
@@ -278,14 +298,17 @@ export function buildMarketContext(
   const missingGapBars = dataGaps.reduce((total, gap) => total + gap.missingSessionBars, 0);
   const intervalSeconds = intervalSecondsFor(snapshot.unit, snapshot.unitNumber);
   const latestTimestampMs = Date.parse(latest.timestamp);
+  const latestEndMs = candleEndMs(latestTimestampMs, snapshot.unit, snapshot.unitNumber);
   const dataAgeSeconds = Number.isFinite(latestTimestampMs)
-    ? Math.max(0, Math.floor((nowMs - (latestTimestampMs + intervalSeconds * 1000)) / 1000))
+    ? Math.max(0, Math.floor((nowMs - latestEndMs) / 1000))
     : null;
   const staleAfterSeconds =
     typeof staleAfterSecondsOverride === "number" && Number.isFinite(staleAfterSecondsOverride) && staleAfterSecondsOverride > 0
       ? staleAfterSecondsOverride
       : Math.max(intervalSeconds * 2, 60);
-  const isStale = dataAgeSeconds !== null && dataAgeSeconds > staleAfterSeconds;
+  const staleThreshold = freshnessIntervalSeconds(latestEndMs, snapshot.unit, snapshot.unitNumber, latest.symbol ?? latest.contract_id) + staleAfterSeconds;
+  const openSessionAge = openSessionElapsedSeconds(latestEndMs, nowMs, latest.symbol ?? latest.contract_id, staleThreshold);
+  const isStale = dataAgeSeconds !== null && openSessionAge > staleThreshold;
   const missingInputs = buildMissingInputs({
     closedCandleCount: candles.length,
     trend,
@@ -479,14 +502,14 @@ function classifyVolatility(candles: ProjectXMarketCandle[]): VolatilityState | 
 
 /** Last closed bar volume vs the average of the prior baseline bars. */
 export function computeRelativeVolume(candles: ProjectXMarketCandle[]): number | null {
-  const closed = candles.filter((candle) => !candle.is_partial && Number.isFinite(candle.volume) && candle.volume > 0);
+  const closed = candles.filter((candle) => !candle.is_partial);
   if (closed.length < 6) {
     return null;
   }
 
   const lastVolume = closed[closed.length - 1].volume;
   const baselineRows = closed.slice(0, -1).slice(-VOLUME_BASELINE_BARS);
-  if (baselineRows.length === 0) {
+  if (!Number.isFinite(lastVolume) || lastVolume < 0 || baselineRows.length === 0 || baselineRows.some(candle => !Number.isFinite(candle.volume) || candle.volume < 0)) {
     return null;
   }
   const baseline = baselineRows.reduce((sum, candle) => sum + candle.volume, 0) / baselineRows.length;
@@ -494,6 +517,17 @@ export function computeRelativeVolume(candles: ProjectXMarketCandle[]): number |
     return null;
   }
   return lastVolume / baseline;
+}
+
+/** Closed-session time does not age a candle; quiet open-market time does. */
+export function openSessionElapsedSeconds(startMs: number, endMs: number, symbol: string | null | undefined, stopAfter: number): number {
+  let seconds = 0;
+  for (let cursor = startMs; cursor < endMs && seconds <= stopAfter; ) {
+    const next = Math.min(endMs, (Math.floor(cursor / 60_000) + 1) * 60_000);
+    if (isFuturesSessionOpen(cursor, symbol)) seconds += (next - cursor) / 1000;
+    cursor = next;
+  }
+  return seconds;
 }
 
 function classifyVolume(relativeVolume: number | null): VolumeState | null {

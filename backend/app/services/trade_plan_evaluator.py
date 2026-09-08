@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from math import isclose, isfinite
 from typing import Any, Mapping, Sequence
@@ -11,7 +11,7 @@ from .instruments import DEFAULT_INSTRUMENT_SPECS, normalize_symbol_key
 
 _NEW_YORK_TZ = ZoneInfo("America/New_York")
 _EPSILON = 1e-9
-TRADE_PLAN_SCORING_MODEL_VERSION = "trade_plan_v2.0.0"
+TRADE_PLAN_SCORING_MODEL_VERSION = "trade_plan_v2.1.0"
 
 TradeDirection = str
 TrendDirection = str
@@ -934,8 +934,17 @@ def build_market_context_from_ohlcv(
     timestamp: datetime | None = None,
     market_regime: MarketRegime = "unknown",
     news_risk: NewsRisk = "unknown",
+    timeframe_unit: str = "minute",
+    timeframe_unit_number: int = 5,
 ) -> MarketContext | None:
-    rows = _normalize_candles(candles)
+    # The advisory evaluator must not label samples of a base series as actual
+    # higher-timeframe observations. Share the complete-bucket rule with analysis.
+    from .bot_market_analysis import _aggregate, _interval_seconds
+
+    source_seconds = _interval_seconds(timeframe_unit, timeframe_unit_number)
+    cutoff = _ensure_aware_datetime(timestamp) if timestamp is not None else datetime.now(timezone.utc)
+    rows = [row for row in _normalize_candles([c for c in candles if not c.get("is_partial", False)])
+            if row["timestamp"] + timedelta(seconds=source_seconds) <= cutoff]
     if not rows:
         return None
     latest = rows[-1]
@@ -949,16 +958,31 @@ def build_market_context_from_ohlcv(
     previous_day_low = min((row["low"] for row in previous_rows), default=None)
     previous_close = previous_rows[-1]["close"] if previous_rows else (rows[-2]["close"] if len(rows) >= 2 else None)
     session_open = session_rows[0]["open"] if session_rows else latest["open"]
-    session_vwap = _vwap(session_rows) or _vwap(rows)
-    true_ranges = _true_ranges(rows)
-    atr5m = _average(true_ranges[-14:]) if true_ranges else None
-    closes = [row["close"] for row in rows]
-    ema21_5m = _ema(closes, 21)
-    ma200_5m = _sma(closes, min(200, len(closes))) if closes else None
+    session_vwap = _vwap(session_rows)
+    timeframe_rows = {
+        label: rows if seconds == source_seconds else _aggregate(rows, source_seconds, seconds)
+        for label, seconds in (("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 14400))
+    }
+    timeframe_closes = {label: [row["close"] for row in bars] for label, bars in timeframe_rows.items()}
+    atr5m = _average(_true_ranges(timeframe_rows["5m"])[-14:]) if len(timeframe_rows["5m"]) >= 14 else None
+
+    def ema21(label):
+        values = timeframe_closes[label]
+        return _ema(values, 21) if len(values) >= 21 else None
+
+    def ma200(label):
+        values = timeframe_closes[label]
+        return _sma(values, 200) if len(values) >= 200 else None
+
+    def trend(label):
+        bars = timeframe_rows[label]
+        return (_classify_trend(timeframe_closes[label], 12, _average(_true_ranges(bars)[-14:]))
+                if len(bars) >= 14 else "unknown")
     current_day_range = high_of_day - low_of_day if high_of_day is not None and low_of_day is not None else None
     latest_volume = latest["volume"]
-    average_volume = _average([row["volume"] for row in rows[-21:-1]]) if len(rows) > 1 else None
-    relative_volume = latest_volume / average_volume if average_volume and average_volume > _EPSILON else None
+    baseline_volume = [row["volume"] for row in rows[-21:-1]]
+    average_volume = _average(baseline_volume) if baseline_volume and all(value is not None for value in baseline_volume) else None
+    relative_volume = latest_volume / average_volume if latest_volume is not None and average_volume and average_volume > _EPSILON else None
 
     return MarketContext(
         current_price=latest_price,
@@ -969,18 +993,18 @@ def build_market_context_from_ohlcv(
         previous_close=previous_close,
         open_price=session_open,
         vwap=session_vwap,
-        ema21_5m=ema21_5m,
-        ema21_15m=_ema(_sample_every(closes, 3), 21),
-        ema21_1h=_ema(_sample_every(closes, 12), 21),
-        ema21_4h=_ema(_sample_every(closes, 48), 21),
-        ma200_5m=ma200_5m,
-        ma200_15m=_sma(_sample_every(closes, 3), 200),
-        ma200_1h=_sma(_sample_every(closes, 12), 200),
-        ma200_4h=_sma(_sample_every(closes, 48), 200),
-        trend5m=_classify_trend(closes, 12, atr5m),
-        trend15m=_classify_trend(closes, 36, atr5m),
-        trend1h=_classify_trend(closes, 144, atr5m),
-        trend4h=_classify_trend(closes, 288, atr5m),
+        ema21_5m=ema21("5m"),
+        ema21_15m=ema21("15m"),
+        ema21_1h=ema21("1h"),
+        ema21_4h=ema21("4h"),
+        ma200_5m=ma200("5m"),
+        ma200_15m=ma200("15m"),
+        ma200_1h=ma200("1h"),
+        ma200_4h=ma200("4h"),
+        trend5m=trend("5m"),
+        trend15m=trend("15m"),
+        trend1h=trend("1h"),
+        trend4h=trend("4h"),
         atr5m=atr5m,
         current_day_range=current_day_range,
         current_volume=latest_volume,
@@ -1150,9 +1174,9 @@ def _trend_alignment(plan: TradePlan, context: MarketContext) -> tuple[int, int,
         if trend == desired:
             score += weight
             aligned += 1
-        elif trend == "neutral" or trend == "unknown":
+        elif trend == "neutral":
             score += weight * 0.45
-        else:
+        elif trend != "unknown":
             conflicting += 1
             if name in {"1h", "4h"}:
                 higher_conflict = True
@@ -1615,12 +1639,16 @@ def _normalize_candles(candles: Sequence[Mapping[str, Any]]) -> list[dict[str, A
                 "high": float(candle.get("high")),
                 "low": float(candle.get("low")),
                 "close": float(candle.get("close")),
-                "volume": float(candle.get("volume", 0) or 0),
+                "volume": float(candle["volume"]) if candle.get("volume") is not None else None,
             }
         except (TypeError, ValueError):
             continue
-        if row["high"] < row["low"]:
+        if (not all(isfinite(row[key]) for key in ("open", "high", "low", "close"))
+                or row["high"] < max(row["open"], row["close"], row["low"])
+                or row["low"] > min(row["open"], row["close"])):
             continue
+        if row["volume"] is not None and (not isfinite(row["volume"]) or row["volume"] < 0):
+            row["volume"] = None
         rows.append(row)
     return sorted(rows, key=lambda row: row["timestamp"])
 
@@ -1641,6 +1669,8 @@ def _session_rows(rows: list[dict[str, Any]], latest_timestamp: datetime) -> lis
 
 
 def _vwap(rows: Sequence[dict[str, Any]]) -> float | None:
+    if any(row["volume"] is None for row in rows):
+        return None
     total_volume = sum(max(row["volume"], 0.0) for row in rows)
     if total_volume <= _EPSILON:
         return None

@@ -83,7 +83,7 @@ def stage_decision_snapshot(db: Session, *, decision, config, signal, analysis: 
         return
 
 
-def stage_routing_disposition(db: Session, *, decision, evaluation_status: str, order_attempt=None, risk_events=()) -> None:
+def stage_routing_disposition(db: Session, *, decision, evaluation_status: str, order_attempt=None, risk_events=(), explanation=None) -> None:
     try:
         if not observations.enabled():
             return
@@ -93,6 +93,8 @@ def stage_routing_disposition(db: Session, *, decision, evaluation_status: str, 
             "execution_mode": str(order_attempt.execution_mode) if order_attempt is not None else None,
             "risk_codes": [str(item.code)[:100] for item in list(risk_events)[:30]],
             "observed_at": datetime.now(timezone.utc).isoformat()}
+        if explanation is not None:
+            routing["explanation"] = _safe_json(explanation)
         pending = db.info.setdefault(_ROUTING_KEY, [])
         if len(pending) < 256:
             values = {"user_id": str(decision.user_id), "decision_id": int(decision.id), "routing": routing,

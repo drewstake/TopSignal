@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { CopyFullStatsMetrics } from "../../components/dashboard/CopyFullStatsButton";
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
@@ -27,7 +27,6 @@ import {
   writeStoredAccountId,
 } from "../../lib/accountSelection";
 import { getAccountRiskRuleForAccount } from "../../lib/accountRiskRules";
-import { useAccountRequestGate } from "../../lib/accountRequestGate";
 import {
   describeAccountProviderSync,
   describeProviderRefreshException,
@@ -746,7 +745,6 @@ function DashboardLoadingState() {
 }
 
 export function DashboardPage() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const shellContext = useOutletContext<AppShellOutletContext | null>();
   const standaloneCompactMode = useMemo(
@@ -779,12 +777,10 @@ export function DashboardPage() {
   const beginProviderAccountsRequest = useLatestRequestGuard();
   const beginSummaryRequest = useLatestRequestGuard();
   const beginTradesRequest = useLatestRequestGuard();
-  const beginJournalDaysRequest = useLatestRequestGuard();
   const beginMetricsTradesRequest = useLatestRequestGuard();
   const beginCompactAnalysisRequest = useLatestRequestGuard();
   const beginCompactCalendarRequest = useLatestRequestGuard();
   const beginCompactCopyRefreshRequest = useLatestRequestGuard();
-  const beginCompactJournalDaysRequest = useLatestRequestGuard();
   const standardCalendarMonthRefreshAttemptedKeysRef = useRef(new Set<string>());
   const compactCalendarMonthRefreshAttemptedKeysRef = useRef(new Set<string>());
   const standardCalendarMonthRefreshCompletedKeysRef = useRef(new Set<string>());
@@ -815,9 +811,6 @@ export function DashboardPage() {
   const [copyTradeAccountDataById, setCopyTradeAccountDataById] = useState<Record<number, CopyTradeLoadedAccountData>>({});
   const [pnlCalendarLoading, setPnlCalendarLoading] = useState(false);
   const [pnlCalendarError, setPnlCalendarError] = useState<string | null>(null);
-  const [journalDays, setJournalDays] = useState<Set<string>>(new Set());
-  const [journalDaysLoading, setJournalDaysLoading] = useState(false);
-  const [journalDaysError, setJournalDaysError] = useState<string | null>(null);
   const [standardCalendarVisibleRange, setStandardCalendarVisibleRange] = useState<{
     startDate: string;
     endDate: string;
@@ -841,10 +834,6 @@ export function DashboardPage() {
   const compactAnalysisStartedKeyRef = useRef<string | null>(null);
   const compactCalendarStartedKeyRef = useRef<string | null>(null);
   const compactCopyRefreshInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
-  const [compactJournalDays, setCompactJournalDays] = useState<Set<string>>(new Set());
-  const [compactJournalDaysLoading, setCompactJournalDaysLoading] = useState(false);
-  const [compactJournalDaysError, setCompactJournalDaysError] = useState<string | null>(null);
-  const [compactJournalActionError, setCompactJournalActionError] = useState<string | null>(null);
 
   const setActiveAccount = useCallback(
     (accountId: number) => {
@@ -969,14 +958,10 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
-  const journalOpenRequestGate = useAccountRequestGate(selectedAccountId);
   const {
     selectedDate: activeSelectedTradeDate,
     setSelectedDate: handleSelectedTradeDateChange,
   } = useAccountScopedDaySelection(selectedAccountId);
-  useEffect(() => {
-    setCompactJournalActionError(null);
-  }, [selectedAccountId]);
   const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
   const liveAccountModeEnabled = selectedAccountIsCsvImport
     || pendingLiveAccountSetup?.accountId === selectedAccountId;
@@ -1360,53 +1345,6 @@ export function DashboardPage() {
     }
   }, [activeSelectedTradeDate, beginTradesRequest, compactMode.enabled, selectedAccountId]);
 
-  const loadJournalDays = useCallback(async () => {
-    const isCurrent = beginJournalDaysRequest();
-    if (compactMode.enabled) {
-      setJournalDaysLoading(false);
-      setJournalDays(new Set());
-      setJournalDaysError(null);
-      return;
-    }
-    if (
-      !selectedAccountId ||
-      !standardCalendarVisibleRange ||
-      standardCalendarVisibleRange.scopeKey !== standardCalendarScopeKey
-    ) {
-      setJournalDaysLoading(false);
-      setJournalDays(new Set());
-      setJournalDaysError(null);
-      return;
-    }
-
-    setJournalDaysLoading(true);
-    setJournalDaysError(null);
-    try {
-      const payload = await accountsApi.getJournalDays(selectedAccountId, {
-        start_date: standardCalendarVisibleRange.startDate,
-        end_date: standardCalendarVisibleRange.endDate,
-      });
-      if (isCurrent()) {
-        setJournalDays(new Set(payload.days));
-      }
-    } catch (err) {
-      if (isCurrent()) {
-        setJournalDays(new Set());
-        setJournalDaysError(err instanceof Error ? err.message : "Failed to load journal markers");
-      }
-    } finally {
-      if (isCurrent()) {
-        setJournalDaysLoading(false);
-      }
-    }
-  }, [
-    beginJournalDaysRequest,
-    compactMode.enabled,
-    selectedAccountId,
-    standardCalendarScopeKey,
-    standardCalendarVisibleRange,
-  ]);
-
   const loadMetricsTrades = useCallback(async () => {
     const isCurrent = beginMetricsTradesRequest();
     if (compactMode.enabled || !selectedAccountId) {
@@ -1465,12 +1403,8 @@ export function DashboardPage() {
   }, [loadMetricsTrades]);
 
   useEffect(() => {
-    void loadJournalDays();
-  }, [loadJournalDays]);
-
-  useEffect(() => {
     const isDashboardLoading =
-      summaryLoading || pnlCalendarLoading || tradesLoading || (!compactMode.enabled && metricsTradesLoading) || journalDaysLoading;
+      summaryLoading || pnlCalendarLoading || tradesLoading || (!compactMode.enabled && metricsTradesLoading);
     if (!selectedAccountId) {
       dashboardWasLoadingRef.current = false;
       dashboardLoadPerfRef.current = null;
@@ -1511,18 +1445,13 @@ export function DashboardPage() {
       pnl_calendar_error: pnlCalendarError,
       trades_error: tradesError,
       metrics_trades_error: metricsTradesError,
-      journal_days_error: journalDaysError,
       trades_count: trades.length,
       metrics_trades_count: metricsTrades.length,
       pnl_calendar_day_count: pnlCalendarDays.length,
-      journal_day_count: journalDays.size,
     });
     dashboardLoadPerfRef.current = null;
   }, [
     compactMode.enabled,
-    journalDays.size,
-    journalDaysError,
-    journalDaysLoading,
     metricsTrades.length,
     metricsTradesError,
     metricsTradesLoading,
@@ -1978,55 +1907,6 @@ export function DashboardPage() {
     void loadCompactCalendarData();
   }, [loadCompactCalendarData]);
 
-  const loadCompactJournalDays = useCallback(async () => {
-    const isCurrent = beginCompactJournalDaysRequest();
-    if (
-      !compactMode.enabled ||
-      !selectedAccountId ||
-      !compactCalendarVisibleRange ||
-      compactCalendarVisibleRange.scopeKey !== compactCalendarScopeKey
-    ) {
-      setCompactJournalDays(new Set());
-      setCompactJournalDaysLoading(false);
-      setCompactJournalDaysError(null);
-      return;
-    }
-
-    setCompactJournalDays(new Set());
-    setCompactJournalDaysLoading(true);
-    setCompactJournalDaysError(null);
-    try {
-      const payload = await accountsApi.getJournalDays(selectedAccountId, {
-        start_date: compactCalendarVisibleRange.startDate,
-        end_date: compactCalendarVisibleRange.endDate,
-      });
-      if (isCurrent()) {
-        setCompactJournalDays(new Set(payload.days));
-      }
-    } catch (error) {
-      if (isCurrent()) {
-        setCompactJournalDays(new Set());
-        setCompactJournalDaysError(
-          error instanceof Error && error.message ? error.message : "Failed to load Compact journal markers",
-        );
-      }
-    } finally {
-      if (isCurrent()) {
-        setCompactJournalDaysLoading(false);
-      }
-    }
-  }, [
-    beginCompactJournalDaysRequest,
-    compactCalendarScopeKey,
-    compactCalendarVisibleRange,
-    compactMode.enabled,
-    selectedAccountId,
-  ]);
-
-  useEffect(() => {
-    void loadCompactJournalDays();
-  }, [loadCompactJournalDays]);
-
   const compactPrimaryState = selectedAccountId === null ? undefined : compactAccountDataById[selectedAccountId];
   const compactSummaryLoading =
     selectedAccountId !== null &&
@@ -2149,13 +2029,6 @@ export function DashboardPage() {
     orderedAccounts,
     selectedAccountId,
   ]);
-  const compactViewWarnings = useMemo(
-    () =>
-      compactJournalActionError
-        ? [...compactDataWarnings, `Journal entry was not opened: ${compactJournalActionError}`]
-        : compactDataWarnings,
-    [compactDataWarnings, compactJournalActionError],
-  );
   const compactAccountName = compactCopyTradeModeActive
     ? `${selectedAccount?.name ?? "Active account"} copy group (${1 + copyTradeFollowerAccountIds.length} accounts)`
     : selectedAccount?.name ?? "Active account";
@@ -3119,63 +2992,6 @@ export function DashboardPage() {
     ],
   );
 
-  const openJournalForDate = useCallback(
-    async (date: string) => {
-      if (!selectedAccountId) {
-        return;
-      }
-
-      const requestAccountId = selectedAccountId;
-
-      setCompactJournalActionError(null);
-      const next = new URLSearchParams();
-      next.set(ACCOUNT_QUERY_PARAM, String(requestAccountId));
-      next.set("date", date);
-
-      if (demoModeEnabled) {
-        navigate(`/journal?${next.toString()}`);
-        return;
-      }
-
-      const requestToken = journalOpenRequestGate.begin(requestAccountId, "open-journal");
-      try {
-        await accountsApi.createJournalEntry(requestAccountId, {
-          entry_date: date,
-          title: "New Entry",
-          mood: "Neutral",
-          tags: [],
-          body: "",
-        });
-        if (!journalOpenRequestGate.isCurrent(requestToken)) {
-          return;
-        }
-        setJournalDays((current) => {
-          const next = new Set(current);
-          next.add(date);
-          return next;
-        });
-        setCompactJournalDays((current) => {
-          const next = new Set(current);
-          next.add(date);
-          return next;
-        });
-
-        navigate(`/journal?${next.toString()}`);
-      } catch (err) {
-        if (!journalOpenRequestGate.isCurrent(requestToken)) {
-          return;
-        }
-        const message = err instanceof Error ? err.message : "Failed to open journal entry";
-        if (compactMode.enabled) {
-          setCompactJournalActionError(message);
-        } else {
-          setTradesError(message);
-        }
-      }
-    },
-    [compactMode.enabled, demoModeEnabled, journalOpenRequestGate, navigate, selectedAccountId],
-  );
-
   const handleStandardCalendarVisibleRangeChange = useCallback(
     (startDate: string, endDate: string) => {
       setStandardCalendarVisibleRange((current) => {
@@ -3834,17 +3650,13 @@ export function DashboardPage() {
           daysError={compactDaysError}
           tradesLoading={compactTradesLoading}
           tradesError={compactTradesError}
-          journalDays={compactJournalDays}
-          journalDaysLoading={compactJournalDaysLoading}
-          journalDaysError={compactJournalDaysError}
           selectedDate={activeSelectedTradeDate}
           selectedDateLabel={selectedTradeDateLabel}
           calendarScopeKey={compactCalendarScopeKey}
-          dataWarnings={compactViewWarnings}
+          dataWarnings={compactDataWarnings}
           accountNameById={compactAccountNameById}
           onDaySelect={handleSelectedTradeDateChange}
           onClearDayFilter={clearSelectedTradeDate}
-          onJournalDayOpen={openJournalForDate}
           onCalendarVisibleRangeChange={handleCompactCalendarVisibleRangeChange}
         />
       ) : (
@@ -4685,7 +4497,7 @@ export function DashboardPage() {
 
       <ViewportDeferredDashboardCard
         title="PnL Calendar"
-        description="Loading calendar performance and journal markers."
+        description="Loading calendar performance."
         bodyHeightClassName="h-[520px]"
       >
         <PnlCalendarCard
@@ -4693,12 +4505,8 @@ export function DashboardPage() {
           loading={pnlCalendarLoading}
           error={pnlCalendarError}
           scopeKey={standardCalendarScopeKey}
-          journalDays={journalDays}
-          journalDaysLoading={journalDaysLoading}
           selectedDate={activeSelectedTradeDate}
           onDaySelect={handleSelectedTradeDateChange}
-          onJournalDayOpen={openJournalForDate}
-          onAddJournalForSelectedDay={openJournalForDate}
           onVisibleRangeChange={handleStandardCalendarVisibleRangeChange}
         />
       </ViewportDeferredDashboardCard>

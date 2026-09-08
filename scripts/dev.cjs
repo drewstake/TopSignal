@@ -1,6 +1,9 @@
 const { spawn } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const path = require("node:path");
 const readline = require("node:readline");
+const fs = require("node:fs");
+const { offlineEnvironment } = require("./offline-env.cjs");
 const {
   createEnvironmentSnapshot,
   findAvailablePort,
@@ -12,6 +15,7 @@ const {
 
 const repoRoot = path.resolve(__dirname, "..");
 const backendDir = path.join(repoRoot, "backend");
+const offline = process.argv.includes("--offline");
 
 const children = new Map();
 const states = new Map();
@@ -157,7 +161,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 async function resolveBackendPort() {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   const preferredPort = parsePort(
-    backendEnv.TOPSIGNAL_DEV_BACKEND_PORT ?? process.env.TOPSIGNAL_DEV_BACKEND_PORT,
+    offline ? process.env.TOPSIGNAL_DEV_BACKEND_PORT : backendEnv.TOPSIGNAL_DEV_BACKEND_PORT ?? process.env.TOPSIGNAL_DEV_BACKEND_PORT,
     8000,
     "TOPSIGNAL_DEV_BACKEND_PORT",
   );
@@ -174,14 +178,27 @@ async function resolveBackendPort() {
 
 async function main() {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
-  console.log("Applying pending database migrations before dev server startup...");
-  runDatabaseMigrations({
-    repoRoot,
-    environment: createEnvironmentSnapshot(process.env, backendEnv),
-  });
+  if (offline) {
+    process.env = offlineEnvironment(createEnvironmentSnapshot(process.env, backendEnv), repoRoot, {
+      projectx: process.argv.includes("--topstep"),
+    });
+    fs.mkdirSync(path.join(backendDir, "storage", "offline"), { recursive: true });
+    console.log("[OFFLINE] Local SQLite workspace; Google sign-in and cloud storage are disabled.");
+    console.log("[OFFLINE] Saved locally in backend/storage/offline; changes do not sync to Supabase.");
+    if (process.env.TOPSIGNAL_LOCAL_PROJECTX === "1") {
+      console.log("[LOCAL] Topstep API and dry-run bot worker enabled; live orders remain disabled.");
+    }
+  } else {
+    console.log("Applying pending database migrations before dev server startup...");
+    runDatabaseMigrations({
+      repoRoot,
+      environment: createEnvironmentSnapshot(process.env, backendEnv),
+    });
+  }
 
   const backendPort = await resolveBackendPort();
-  const apiBaseUrl = process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
+  const backendInstanceId = randomUUID();
+  const apiBaseUrl = offline ? `http://127.0.0.1:${backendPort}` : process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
   const commands = [
     {
       name: "BACKEND",
@@ -191,6 +208,7 @@ async function main() {
         TOPSIGNAL_DEV_MIGRATIONS_APPLIED: "1",
         TOPSIGNAL_DEV_BACKEND_PORT: String(backendPort),
         TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "1",
+        TOPSIGNAL_DEV_INSTANCE_ID: backendInstanceId,
       },
     },
     {
@@ -223,7 +241,7 @@ async function main() {
 
   const readinessUrl = `http://127.0.0.1:${backendPort}/ready`;
   process.stdout.write(`[DEV] Waiting for backend readiness at ${readinessUrl}...\n`);
-  await waitForHttpReady(readinessUrl);
+  await waitForHttpReady(readinessUrl, { expectedInstanceId: backendInstanceId });
 
   if (shuttingDown) {
     return;
@@ -231,6 +249,9 @@ async function main() {
 
   process.stdout.write("[DEV] Backend is ready; starting frontend.\n");
   startCommand(frontendCommand);
+  if (process.connected) {
+    process.send({ type: "topsignal-dev-ready", backendPort });
+  }
 }
 
 main().catch((error) => {

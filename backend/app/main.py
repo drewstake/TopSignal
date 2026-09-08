@@ -657,8 +657,26 @@ class _ReadinessFailure(RuntimeError):
         super().__init__(reason)
 
 
+def _offline_workspace_has_disabled_automation(db: Session) -> bool:
+    """The disconnected SQLite UI does not promise an active bot worker."""
+
+    return (
+        os.getenv("TOPSIGNAL_OFFLINE_DEV") == "1"
+        and os.getenv("TOPSIGNAL_LOCAL_PROJECTX") == "0"
+        and os.getenv("TOPSIGNAL_ENV") == "development"
+        and not auth_required()
+        and resolve_supabase_mode() == "disabled"
+        and _runtime_is_local_only()
+        and db.get_bind().dialect.name == "sqlite"
+        and not _read_bool_env("TOPSIGNAL_BOT_WORKER_ENABLED", True)
+        and not _read_bool_env("TOPSIGNAL_LIVE_EXECUTION_ENABLED", True)
+        and not _read_bool_env("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", True)
+        and (_bot_worker_runtime is None or not _bot_worker_runtime.settings.enabled)
+    )
+
+
 @app.get("/ready")
-def readiness(db: Session = Depends(get_db)):
+def readiness(db: Session = Depends(get_db), response: Response = None):
     failed_checks: list[str] = []
     try:
         db.execute(text("select 1"))
@@ -857,9 +875,19 @@ def readiness(db: Session = Depends(get_db)):
             ).scalar_one_or_none()
             if baseline_applied is None:
                 raise _ReadinessFailure("schema_outdated")
-        else:
+        elif not (
+            os.getenv("TOPSIGNAL_OFFLINE_DEV") == "1"
+            and db.get_bind().dialect.name == "sqlite"
+            and _runtime_is_local_only()
+            and not auth_required()
+        ):
             raise _ReadinessFailure("schema_outdated")
-        if _bot_worker_runtime is not None:
+        # Saved dry-run state may belong to a previous connected-local session.
+        # An explicitly disconnected workspace still serves local pages without
+        # changing that state. Bot status and start admission retain every check.
+        if _offline_workspace_has_disabled_automation(db):
+            pass
+        elif _bot_worker_runtime is not None:
             runtime_readiness = inspect_bot_runtime(db, runtime=_bot_worker_runtime)
             failed_checks = list(runtime_readiness.failed_checks)
             if not runtime_readiness.ready:
@@ -879,6 +907,12 @@ def readiness(db: Session = Depends(get_db)):
             content={"status": "not_ready", "reason": reason, "failed_checks": failed_checks},
             headers={"Retry-After": "5", "Cache-Control": "no-store"},
         )
+    # A dev port can be claimed by another profile between its availability
+    # probe and bind (for example during reload). Identify this launch so the
+    # supervisor never connects an offline frontend to a different backend.
+    dev_instance_id = os.getenv("TOPSIGNAL_DEV_INSTANCE_ID", "")
+    if response is not None and dev_instance_id:
+        response.headers["X-TopSignal-Dev-Instance"] = dev_instance_id
     return {"status": "ready"}
 
 
@@ -1055,6 +1089,7 @@ def create_expense(
         account_id=payload.account_id,
         provider=payload.provider,
         expense_date=payload.expense_date,
+        source_id=payload.source_id,
         amount_cents=amount_cents,
         currency=payload.currency,
         category=payload.category,
@@ -4596,6 +4631,10 @@ def _validate_expense_amount(*, amount_cents: int | None, category: str | None) 
         raise HTTPException(status_code=400, detail="amount_cents is required")
     if category is None:
         raise HTTPException(status_code=400, detail="category is required")
+    if category == "refund":
+        if amount_cents >= 0:
+            raise HTTPException(status_code=400, detail="refund amount_cents must be < 0")
+        return
     if amount_cents < 0:
         raise HTTPException(status_code=400, detail="amount_cents must be >= 0")
     if category != "other" and amount_cents <= 0:

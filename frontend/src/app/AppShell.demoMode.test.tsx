@@ -212,7 +212,7 @@ describe("AppShell Demo Mode policy", () => {
 
     expect(hasActiveLiveMutationRequestsMock).toHaveBeenCalled();
     expect(
-      await screen.findByText("Finish the current live save, import, provider refresh, or backtest before entering Demo Mode."),
+      await screen.findByText("Finish the current live save, import, or provider refresh before entering Demo Mode."),
     ).toBeTruthy();
     expect(window.localStorage.getItem("topsignal.demoMode")).toBe("false");
     expect(reloadPageMock).not.toHaveBeenCalled();

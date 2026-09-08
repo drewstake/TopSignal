@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BotAnalysis, BotEvaluation, ProjectXMarketCandle } from "../../lib/types";
 import {
   buildDisplayAnalysis,
+  currentAnalysisFreshness,
   CANONICAL_ANALYSIS_VERSION,
   HEURISTIC_SCENARIO_WEIGHT_METHOD,
   normalizeScenarioWeights,
@@ -139,6 +140,20 @@ describe("canonical scenario-weight contract", () => {
 });
 
 describe("buildDisplayAnalysis", () => {
+  it.each([
+    ["2026-09-01T00:00:00Z", "2026-10-01T00:00:00Z"],
+    ["2026-12-01T00:00:00Z", "2027-01-01T00:00:00Z"],
+  ])("recognizes calendar-month close %s without waiting 31 fixed days", (start, end) => {
+    const row = legacyAnalysis({ provenance: {
+      closed_candle_count: 80, partial_candle_count: 0, latest_candle_timestamp: start,
+      data_age_seconds: 0, is_stale: false, stale_after_seconds: 90,
+      timeframe: { unit: "month", unit_number: 1, label: "1M" }, detected_gaps: [], gap_count: 0, resolved_symbol: "MNQ",
+    } });
+    const result = buildDisplayAnalysis(evaluation(row), Date.parse(end))!;
+    expect(currentAnalysisFreshness(result, Date.parse(end)).ageSeconds).toBe(0);
+    expect(currentAnalysisFreshness(result, Date.parse(end)).status).not.toBe("unavailable");
+    expect(currentAnalysisFreshness(result, Date.parse(end) - 1).status).toBe("unavailable");
+  });
   it("prefers the canonical v2 backend contract and preserves its provenance", () => {
     const analysis = legacyAnalysis({
       analysis_version: CANONICAL_ANALYSIS_VERSION,

@@ -6,7 +6,7 @@ import type {
 } from "../../lib/types";
 
 export type OrderBookSide = "ask" | "bid";
-export type OrderBookLevelCount = 10 | 20 | 50;
+export type OrderBookLevelCount = 1 | 10 | 20 | 50;
 export type OrderBookConnectionState = ProjectXMarketDepthConnectionState | "loading";
 export type OrderBookUpdateResult = "applied" | "ignored" | "gap";
 

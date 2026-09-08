@@ -23,6 +23,8 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(hasSupabaseConfig && !demoModeAtStartup);
   const [error, setError] = useState<string | null>(null);
+  const canOpenOfflineWorkspace = import.meta.env.DEV &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
 
   useEffect(() => {
     if (!hasSupabaseConfig || demoModeAtStartup) {
@@ -60,7 +62,16 @@ export default function App() {
   }, [demoModeAtStartup]);
 
   if (!hasSupabaseConfig || demoModeAtStartup) {
-    return <RouterProvider router={router} />;
+    return <>
+      {import.meta.env.DEV && import.meta.env.VITE_OFFLINE_MODE === "true" ? (
+        <div role="status" className="border-b border-app-border bg-app-surface px-4 py-2 text-center text-sm text-app-text">
+          {import.meta.env.VITE_LOCAL_PROJECTX === "true"
+            ? "Local workspace · Topstep API enabled · Dry-run bot enabled · Saved on this computer · Live orders disabled"
+            : "Offline workspace · Saved on this computer · Cloud data and broker connections are unavailable"}
+        </div>
+      ) : null}
+      <RouterProvider router={router} />
+    </>;
   }
 
   if (loading) {
@@ -83,6 +94,24 @@ export default function App() {
           >
             Continue with Google
           </button>
+          {canOpenOfflineWorkspace ? (
+            <div className="space-y-2">
+              <a
+                href="http://127.0.0.1:5174"
+                className="block w-full rounded-lg border border-app-border px-4 py-2 text-center text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
+              >
+                Continue offline
+              </a>
+              <p className="text-xs leading-5 text-app-muted">
+                Open your local workspace without Google. Data is saved on this computer and does not automatically sync to the cloud.
+              </p>
+              <details className="text-xs leading-5 text-app-muted">
+                <summary className="cursor-pointer">If the offline workspace isn’t running</summary>
+                <p className="mt-2">For local storage with Topstep account refreshes and dry-run automation, run <code>npm run dev:local</code> from the TopSignal folder. Live orders stay disabled.</p>
+                <p className="mt-2">To work without broker connections, use <code>npm run dev:offline</code> instead. Both modes open with Continue offline and save to the same local workspace.</p>
+              </details>
+            </div>
+          ) : null}
         </div>
       </div>
     );

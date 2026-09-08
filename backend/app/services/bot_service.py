@@ -1263,7 +1263,8 @@ def _evaluate_bot_config_impl(
         client=client,
     )
     _commit_evaluation_market_cache(db, candles)
-    latest_candle = candles[-1] if candles else None
+    decision_candles = _closed_candles(candles)
+    latest_candle = decision_candles[-1] if decision_candles else None
     execution_contract_id = _execution_contract_id(market_config, latest_candle)
     execution_symbol = _execution_symbol(market_config, latest_candle)
     instrument_spec = None
@@ -1303,11 +1304,26 @@ def _evaluate_bot_config_impl(
             raise ValueError("bot_run_changed_during_market_fetch")
 
     analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
-    from .market_context_bundle import build_collected_context
+    from .market_context_bundle import build_collected_context, integrate_collected_context
+    evaluation_time = datetime.now(timezone.utc)
     collected_context = build_collected_context(
         db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
+        as_of=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else evaluation_time,
+        captured_at=evaluation_time,
     )
-    analysis["collected_context"] = collected_context
+    if latest_candle is None:
+        # Quotes cannot create a closed-candle decision when no candle exists.
+        for key in ("order_book", "volume_profile"):
+            collected_context[key]["eligible"] = False
+            collected_context[key]["reason"] = "No closed decision candle; recorded observations remain separate context."
+    try:
+        integrate_collected_context(analysis, collected_context)
+    except Exception:
+        # Optional explanation inputs must never retry or prevent an order.
+        collected_context = {"as_of": collected_context.get("as_of"), "contract_id": execution_contract_id,
+            "events": {"news_risk": "unknown"}, "status": "unavailable",
+            "reason": "Optional context could not be aligned with this closed-candle analysis."}
+        analysis["collected_context"] = collected_context
     evaluation_day_pnl = (
         _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
         if signal.action in {"BUY", "SELL"}
@@ -1435,7 +1451,13 @@ def _evaluate_bot_config_impl(
                 blocks.append(
                     RiskBlock(
                         code="missing_actionable_candle_timestamp",
-                        message="Actionable signals require a closed candle timestamp.",
+                        message=(
+                            "The strategy signal timestamp does not match the latest closed decision candle; "
+                            "older signals cannot use newer candles or observations for routing."
+                            if signal.candle_timestamp is not None and latest_candle is not None
+                            and _as_utc(signal.candle_timestamp) != _as_utc(latest_candle.candle_timestamp)
+                            else "Actionable signals require an eligible closed candle timestamp."
+                        ),
                         severity="critical",
                     )
                 )
@@ -1733,9 +1755,32 @@ def _evaluate_bot_config_impl(
         duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
     )
     try:
+        from .bot_decision_explanation import build_bot_decision_explanation
+        analysis["bot_decision"] = build_bot_decision_explanation(
+            config=config, signal=signal, decision=decision, status=evaluation_status,
+            risk_events=risk_events, dry_run=resolved_dry_run, analysis=analysis,
+            latest_candle=latest_candle, evaluated_at=datetime.now(timezone.utc), order_attempt=order_attempt,
+        )
+    except Exception:
+        analysis.setdefault("bot_decision", {
+            "status": evaluation_status, "action": str(decision.action), "execution_mode": execution_mode,
+            "strategy_action": str(signal.action),
+            "strategy": {"name": str(config.strategy_type).replace("_", " ").title(), "revision": None},
+            "contract_id": str(decision.contract_id), "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "candle_timestamp": _as_utc(decision.candle_timestamp).isoformat() if decision.candle_timestamp else None,
+            "candle_close_timestamp": _market_candle_close_timestamp(latest_candle).isoformat() if latest_candle is not None else None,
+            "summary": f"Recorded outcome: {evaluation_status.replace('_', ' ')}. {decision.reason}",
+            "strategy_reason": signal.reason, "checks": [],
+            "limits": {"max_contracts": float(config.max_contracts), "max_open_position": float(config.max_open_position),
+                       "max_daily_loss": float(config.max_daily_loss), "max_trades_per_day": int(config.max_trades_per_day),
+                       "delivery_grace_seconds": int(config.max_data_staleness_seconds)},
+            "basis": "Detailed explanation unavailable; the recorded strategy and routing outcome remain authoritative.",
+        })
+    try:
         from .decision_research import stage_routing_disposition
         stage_routing_disposition(db, decision=decision, evaluation_status=evaluation_status,
-                                  order_attempt=order_attempt, risk_events=risk_events)
+                                  order_attempt=order_attempt, risk_events=risk_events,
+                                  explanation=analysis["bot_decision"])
     except Exception:
         pass
     return EvaluationResult(
@@ -9979,6 +10024,17 @@ def _closed_candles(candles: list[ProjectXMarketCandle]) -> list[ProjectXMarketC
         ):
             closed.append(candle)
     closed.sort(key=lambda candle: _as_utc(candle.candle_timestamp))
+    # A provider contract roll must not stitch prices from separate deliveries
+    # into a strategy warmup. Match the descriptive analysis' latest identified
+    # stream. Engine-owned, verified replay sequences keep the fast path above.
+    identified = [row for row in closed if getattr(row, "contract_id", None)]
+    if identified:
+        contract_id = str(identified[-1].contract_id)
+        closed = [row for row in closed if str(getattr(row, "contract_id", "")) == contract_id]
+    if closed:
+        unit, number = getattr(closed[-1], "unit", None), getattr(closed[-1], "unit_number", None)
+        if unit is not None and number is not None:
+            closed = [row for row in closed if getattr(row, "unit", unit) == unit and getattr(row, "unit_number", number) == number]
     return closed
 
 
@@ -11075,11 +11131,7 @@ def evaluate_risk_gates(
                     )
                 )
 
-    latest_candle_age_seconds = (
-        (datetime.now(timezone.utc) - _market_candle_close_timestamp(latest_candle)).total_seconds()
-        if latest_candle is not None
-        else None
-    )
+    latest_candle_age_seconds = _candle_delivery_delay_seconds(latest_candle, symbol=symbol or contract_id)
     if order_attempt is not None and not position_reducing:
         protection_block = _order_attempt_protection_block(
             config=config,
@@ -11627,19 +11679,31 @@ def _recent_live_submission_count(
 
 
 def _market_candle_close_timestamp(candle: ProjectXMarketCandle) -> datetime:
+    from .bot_market_analysis import _candle_end
     opened_at = _as_utc(candle.candle_timestamp)
     unit = str(candle.unit).strip().lower()
     unit_number = max(1, int(candle.unit_number))
-    if unit == "month":
-        year = opened_at.year
-        month_index = opened_at.month - 1 + unit_number
-        year += month_index // 12
-        month = month_index % 12 + 1
-        return opened_at.replace(year=year, month=month, day=1)
-    seconds = _UNIT_SECONDS_BY_NAME.get(unit)
-    if seconds is None:
+    if unit != "month" and unit not in _UNIT_SECONDS_BY_NAME:
         return opened_at
-    return opened_at + timedelta(seconds=seconds * unit_number)
+    return _candle_end(opened_at, unit, unit_number)
+
+
+def _candle_delivery_delay_seconds(candle, *, symbol: str | None, now: datetime | None = None) -> float | None:
+    """Apply the configured staleness grace only after the next bar is due.
+
+    A quiet quote stream between scheduled closes is not stale candle data.
+    Exchange closures pause this clock; the separate session gate still blocks
+    entry during a closure. Analysis and routing share the same open-time clock.
+    """
+    if candle is None:
+        return None
+    from .bot_market_analysis import _candle_expected_interval_seconds, _open_session_seconds
+    observed = _as_utc(now or datetime.now(timezone.utc))
+    closed_at = _market_candle_close_timestamp(candle)
+    if bool(candle.is_partial) or closed_at > observed:
+        return None
+    interval = _candle_expected_interval_seconds(closed_at, str(candle.unit), int(candle.unit_number), symbol=symbol)
+    return max(0, _open_session_seconds(closed_at, observed, symbol=symbol) - interval)
 
 
 def _trade_payload_is_voided(event: dict[str, Any]) -> bool:
@@ -11751,9 +11815,10 @@ def build_signal_trade_evaluation(
     if not closed_candles:
         return None
 
-    timestamp = signal.candle_timestamp
-    if timestamp is None:
-        timestamp = closed_candles[-1].candle_timestamp
+    if signal.candle_timestamp is not None and _as_utc(signal.candle_timestamp) != _as_utc(closed_candles[-1].candle_timestamp):
+        analysis.setdefault("risk_notes", []).append("Advisory plan omitted: the signal timestamp differs from the latest closed candle.")
+        return None
+    timestamp = _market_candle_close_timestamp(closed_candles[-1])
 
     market_context = build_market_context_from_ohlcv(
         [
@@ -11763,12 +11828,14 @@ def build_signal_trade_evaluation(
                 "high": float(candle.high_price),
                 "low": float(candle.low_price),
                 "close": float(candle.close_price),
-                "volume": float(candle.volume or 0),
+                "volume": float(candle.volume) if candle.volume is not None else None,
             }
             for candle in closed_candles
         ],
         current_price=float(closed_candles[-1].close_price),
-        timestamp=closed_candles[-1].candle_timestamp,
+        timestamp=_market_candle_close_timestamp(closed_candles[-1]),
+        timeframe_unit=str(closed_candles[-1].unit),
+        timeframe_unit_number=int(closed_candles[-1].unit_number),
         market_regime=_infer_trade_plan_market_regime(config=config, signal=signal, analysis=analysis),
         news_risk=(collected_context or {}).get("events", {}).get("news_risk", "unknown"),
     )
@@ -11859,10 +11926,24 @@ def build_bot_market_analysis(
     config: BotConfig,
     signal: SignalResult,
 ) -> dict[str, Any]:
+    # Special strategies can request a fixed signal timeframe different from
+    # the configuration's generic chart timeframe. Describe the actual input.
+    candidates = []
+    observed_at = datetime.now(timezone.utc)
+    for row in candles:
+        try:
+            close_at = _market_candle_close_timestamp(row)
+            fetched_at = getattr(row, "fetched_at", None)
+            if not bool(row.is_partial) and close_at <= observed_at and (fetched_at is None or _as_utc(fetched_at) >= close_at):
+                candidates.append(row)
+        except (AttributeError, TypeError, ValueError):
+            continue  # canonical normalization reports invalid input records
+    identified = [row for row in candidates if getattr(row, "contract_id", None)]
+    latest = max(identified or candidates, key=lambda row: _as_utc(row.candle_timestamp)) if candidates else None
     return build_canonical_market_analysis(
         candles=candles,
-        timeframe_unit=str(config.timeframe_unit),
-        timeframe_unit_number=int(config.timeframe_unit_number),
+        timeframe_unit=str(latest.unit if latest is not None else config.timeframe_unit),
+        timeframe_unit_number=int(latest.unit_number if latest is not None else config.timeframe_unit_number),
         fast_period=int(config.fast_period),
         slow_period=int(config.slow_period),
         signal_action=str(signal.action),
@@ -11943,16 +12024,14 @@ def _actionable_candle_timestamp(
     candles: list[ProjectXMarketCandle],
     latest_candle: ProjectXMarketCandle | None,
 ) -> datetime | None:
+    eligible = _closed_candles(candles)
     if signal.candle_timestamp is not None:
         signal_timestamp = _as_utc(signal.candle_timestamp)
-        if any(
-            not bool(candle.is_partial) and _as_utc(candle.candle_timestamp) == signal_timestamp
-            for candle in candles
-        ):
+        if eligible and _as_utc(eligible[-1].candle_timestamp) == signal_timestamp:
             return signal_timestamp
         return None
-    if latest_candle is not None and not bool(latest_candle.is_partial):
-        return _as_utc(latest_candle.candle_timestamp)
+    if eligible:
+        return _as_utc(eligible[-1].candle_timestamp)
     return None
 
 

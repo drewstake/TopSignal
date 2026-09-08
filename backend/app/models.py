@@ -1261,9 +1261,13 @@ class Expense(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, onupdate=func.now())
 
     __table_args__ = (
-        CheckConstraint("amount_cents >= 0", name="expenses_amount_cents_nonnegative_check"),
         CheckConstraint(
-            "category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other')",
+            "(category = 'refund' and amount_cents < 0) or "
+            "(category <> 'refund' and amount_cents >= 0)",
+            name="expenses_amount_cents_sign_check",
+        ),
+        CheckConstraint(
+            "category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other', 'refund')",
             name="expenses_category_check",
         ),
         CheckConstraint(

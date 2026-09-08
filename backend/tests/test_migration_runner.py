@@ -167,8 +167,8 @@ def test_bot_runtime_lease_migration_is_preserved():
 
 
 def test_market_data_migration_matches_new_private_tables():
-    migration = migrate_db._migration_files()[-1]
-    assert migration.name == "20260905_add_market_data_workspace.sql"
+    migration = migrate_db.MIGRATIONS_DIR / "20260905_add_market_data_workspace.sql"
+    assert migration in migrate_db._migration_files()
     sql = migration.read_text(encoding="utf-8").lower()
     for table in ("market_event_versions", "market_event_source_snapshots", "market_observations", "decision_research_snapshots"):
         assert f"create table if not exists {table}" in sql

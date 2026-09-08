@@ -131,7 +131,7 @@ def test_unavailable_worker_does_not_prepare_a_config(monkeypatch):
 def test_contract_resolution_ignores_other_instruments_and_expired_deliveries():
     class Client:
         def search_contracts(self, **kwargs):
-            assert kwargs == {"search_text": "F.US.MNQ", "live": False}
+            assert kwargs == {"search_text": "MNQ", "live": False}
             return [
                 {"id": "CON.F.US.NQ.U26", "active_contract": True},
                 {"id": "CON.F.US.MNQ.M26", "active_contract": False},

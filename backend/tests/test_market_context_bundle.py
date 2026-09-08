@@ -126,7 +126,7 @@ def test_profile_does_not_mix_contracts_users_sources_or_future_observations(db)
     assert result["recorded_volume"] == 15
     assert result["recorded_trade_count"] == 2
     assert result["classification_coverage"] == 1
-    assert result["cumulative_delta"] == 5
+    assert result["cumulative_delta"] is None  # this analysis never infers order flow from Level 1
 
 
 def test_optional_read_error_rolls_back_savepoint_and_preserves_outer_transaction(db, monkeypatch):
@@ -191,3 +191,76 @@ def test_decision_context_excludes_candles_collected_after_cutoff(db, monkeypatc
     result = bundle.build_collected_context(db, user_id=USER, contract_id=CONTRACT, live=False, as_of=AS_OF)
     mnq = next(item for item in result["related_markets"]["items"] if item["symbol"] == "MNQ")
     assert mnq["close"] == 100
+
+
+def test_profile_reports_actual_observation_window_and_excludes_stale_prints_from_evidence(db):
+    observation(db, event_type="trade", price=100, size=5, provider_time=AS_OF-timedelta(minutes=20))
+    observation(db, event_type="trade", price=101, size=7, provider_time=AS_OF-timedelta(minutes=10))
+    result = bundle._profile_context(db, user_id=USER, contract_id=CONTRACT, as_of=AS_OF)
+    assert result["observation_start"] == (AS_OF-timedelta(minutes=20)).isoformat()
+    assert result["observation_end"] == (AS_OF-timedelta(minutes=10)).isoformat()
+    assert result["status"] == "stale"
+    assert result["eligible"] is False
+    assert result["partial"] is True
+    assert result["cumulative_delta"] is None
+    assert "not a complete session profile" in result["reason"]
+
+
+def test_level_one_uses_only_known_best_side_size_and_does_not_infer_missing_size(db):
+    observation(db, bid=100, ask=100.25, price=100, size=8, side="bid")
+    result = bundle._book_context(db, user_id=USER, contract_id=CONTRACT, as_of=AS_OF)
+    assert result["bid_size"] == 8
+    assert result["ask_size"] is None
+    assert result["full_depth_verified"] is False
+    observation(db, bid=100, ask=100.25, price=99, size=500, side="bid")
+    result = bundle._book_context(db, user_id=USER, contract_id=CONTRACT, as_of=AS_OF)
+    assert result["bid_size"] is None  # a deeper row cannot supply the best quote size
+
+
+def test_context_integrates_eligible_quote_without_directional_confirmation_or_complete_coverage(db, monkeypatch):
+    observation(db, bid=100, ask=100.25)
+    observation(db, event_type="trade", price=100, size=10, side="buy")
+    monkeypatch.setattr(bundle, "get_market_event_context", lambda *args, **kwargs: {"news_risk": "unknown"})
+    collected = bundle.build_collected_context(db, user_id=USER, contract_id=CONTRACT, as_of=AS_OF)
+    analysis = {"provenance": {"closed_candle_count": 100, "resolved_contract_id": CONTRACT, "latest_candle_end_timestamp": AS_OF.isoformat()}, "data_quality": {"confidence": 100,
+        "missing_inputs": ["level_1_quotes", "observed_volume_profile", "news_context", "macro_context", "cross_market_context"]},
+        "explanation": {"supporting_evidence": ["The EMA slopes upward."]}}
+    bundle.integrate_collected_context(analysis, collected)
+    assert analysis["context_coverage"]["summary"] == "Context is incomplete"
+    assert "News" in analysis["context_coverage"]["missing"]
+    assert "Level 1 quote" in analysis["context_coverage"]["limited"]
+    assert "level_1_quotes" not in analysis["data_quality"]["missing_inputs"]
+    assert analysis["explanation"]["supporting_evidence"] == ["The EMA slopes upward."]
+    assert len(analysis["explanation"]["context_evidence"]) == 2
+    assert analysis["data_quality"]["confidence"] == 100
+
+
+def test_quote_after_candle_close_stays_separate_even_if_available_at_evaluation(db):
+    observation(db, bid=100, ask=100.25, provider_time=AS_OF+timedelta(seconds=1), received=AS_OF+timedelta(seconds=1))
+    result = bundle.build_collected_context(db, user_id=USER, contract_id=CONTRACT,
+        as_of=AS_OF, captured_at=AS_OF+timedelta(seconds=5))
+    assert result["order_book"]["status"] == "missing"
+    assert result["order_book"]["eligible"] is False
+    assert result["as_of"] == AS_OF.isoformat()
+    assert result["captured_at"] == (AS_OF+timedelta(seconds=5)).isoformat()
+
+
+@pytest.mark.parametrize("mismatch", ["bundle_contract", "bundle_cutoff", "quote_contract", "quote_timestamp"])
+def test_context_integration_revalidates_eligible_flag_against_analysis_provenance(db, monkeypatch, mismatch):
+    observation(db, bid=100, ask=100.25)
+    monkeypatch.setattr(bundle, "get_market_event_context", lambda *args, **kwargs: {"news_risk": "unknown"})
+    collected = bundle.build_collected_context(db, user_id=USER, contract_id=CONTRACT, as_of=AS_OF)
+    if mismatch == "bundle_contract":
+        collected["contract_id"] = OTHER_CONTRACT
+    elif mismatch == "bundle_cutoff":
+        collected["as_of"] = (AS_OF+timedelta(seconds=1)).isoformat()
+    elif mismatch == "quote_contract":
+        collected["order_book"]["contract_id"] = OTHER_CONTRACT
+    else:
+        collected["order_book"]["provider_timestamp"] = (AS_OF+timedelta(seconds=1)).isoformat()
+    analysis = {"provenance": {"closed_candle_count": 20, "resolved_contract_id": CONTRACT,
+        "latest_candle_end_timestamp": AS_OF.isoformat()}, "explanation": {}}
+    bundle.integrate_collected_context(analysis, collected)
+    assert collected["order_book"]["eligible"] is False
+    assert "Level 1 quote" in analysis["context_coverage"]["missing"]
+    assert not analysis["explanation"]["context_evidence"]

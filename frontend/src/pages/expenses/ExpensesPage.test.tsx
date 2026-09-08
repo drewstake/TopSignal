@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../../lib/api";
-import type { AccountInfo, FinancialSummary, PayoutRecord } from "../../lib/types";
+import type { AccountInfo, ExpenseRecord, FinancialSummary, PayoutRecord } from "../../lib/types";
 import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildAnniversaryYearRangeOptions, formatLocalIsoDate } from "./expenseNetRanges";
 import { ExpensesPage } from "./ExpensesPage";
@@ -171,6 +171,68 @@ describe("buildAnniversaryYearRangeOptions", () => {
 });
 
 describe("ExpensesPage consolidated startup", () => {
+  it("keeps expense rows in place while the next page loads and disables stale row actions", async () => {
+    const user = userEvent.setup();
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    mockExpenseStartup(financialSummary(25));
+    const nextPage = deferred<Awaited<ReturnType<typeof api.listExpenses>>>();
+    const firstPageItems: ExpenseRecord[] = Array.from({ length: 50 }, (_, index) => ({
+      id: index + 1,
+      account_id: null,
+      provider: "topstep",
+      expense_date: "2026-07-20",
+      amount_cents: 4900,
+      amount: 49,
+      currency: "USD",
+      category: "other",
+      account_type: null,
+      plan_size: null,
+      description: `Expense ${index + 1}`,
+      tags: [],
+      created_at: "2026-07-20T12:00:00Z",
+      updated_at: "2026-07-20T12:00:00Z",
+    }));
+    vi.mocked(api.listExpenses)
+      .mockResolvedValueOnce({ items: firstPageItems, total: 51 })
+      .mockReturnValueOnce(nextPage.promise)
+      .mockResolvedValue({ items: firstPageItems, total: 51 });
+
+    render(<ExpensesPage />);
+    await screen.findByText("Page 1 of 2 (51 total)");
+    const table = screen.getByRole("table", { name: "Expenses" });
+    const paginationElement = screen.getByRole("navigation", { name: "Expense pagination" });
+    const pagination = within(paginationElement);
+    let paginationTop = 600;
+    vi.spyOn(paginationElement, "getBoundingClientRect").mockImplementation(() => ({ top: paginationTop }) as DOMRect);
+    const firstRow = within(table).getByText("Expense 1").closest("tr");
+    await user.click(pagination.getByRole("button", { name: "Next" }));
+
+    expect(screen.getByText("Loading expenses...")).not.toBeNull();
+    expect(table.getAttribute("aria-busy")).toBe("true");
+    expect(within(table).getAllByRole("row")).toHaveLength(51);
+    expect(within(table).getByText("Expense 1").closest("tr")).toBe(firstRow);
+    expect(within(table).getAllByRole("button", { name: "Delete" }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect((pagination.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.listPayouts).toHaveBeenCalledOnce();
+    expect(scrollBy).not.toHaveBeenCalled();
+
+    paginationTop = -2000;
+    await act(async () => {
+      nextPage.resolve({ items: [{ ...firstPageItems[0]!, id: 51, description: "Expense 51" }], total: 51 });
+      await nextPage.promise;
+    });
+    expect(screen.getByText("Page 2 of 2 (51 total)")).not.toBeNull();
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(table.getAttribute("aria-busy")).toBe("false");
+    expect(screen.queryByText("Expense 1")).toBeNull();
+    expect((within(table).getByRole("button", { name: "Delete" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(scrollBy).toHaveBeenLastCalledWith({ top: -2600, behavior: "instant" });
+
+    await user.click(pagination.getByRole("button", { name: "Previous" }));
+    await screen.findByText("Page 1 of 2 (51 total)");
+    expect(within(table).getAllByRole("row")).toHaveLength(51);
+  });
+
   it("reuses saved data across visits and refreshes on demand without reconciling", async () => {
     api.clearFinancialReadCache();
     const user = userEvent.setup();

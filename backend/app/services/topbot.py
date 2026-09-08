@@ -46,7 +46,8 @@ TOPBOT_SETTINGS = {
 
 def resolve_topbot_contract(client: ProjectXClient) -> str:
     """Select only the provider's active MNQ delivery, never a search near-match."""
-    rows = client.search_contracts(search_text="F.US.MNQ", live=False)
+    # Contract search matches display symbols (e.g. MNQU6), not symbol IDs.
+    rows = client.search_contracts(search_text="MNQ", live=False)
     for row in rows:
         contract_id = str(row.get("id") or "").strip()
         if row.get("active_contract") is True and re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id):

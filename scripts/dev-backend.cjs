@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { offlineEnvironment } = require("./offline-env.cjs");
 const {
   classifyBackendDevChange,
   createEnvironmentSnapshot,
@@ -24,8 +25,19 @@ if (!fs.existsSync(pythonPath)) {
 }
 
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
-const childEnv = createEnvironmentSnapshot(process.env, backendEnv);
+const snapshot = createEnvironmentSnapshot(process.env, backendEnv);
+const childEnv = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
+  ? offlineEnvironment(snapshot, repoRoot, { projectx: process.env.TOPSIGNAL_LOCAL_PROJECTX === "1" })
+  : snapshot;
+if (process.env.TOPSIGNAL_OFFLINE_DEV === "1") {
+  childEnv.TOPSIGNAL_DEV_BACKEND_PORT = process.env.TOPSIGNAL_DEV_BACKEND_PORT;
+  childEnv.TOPSIGNAL_DEV_BACKEND_PORT_STRICT = "1";
+}
 const supervisorAppliedMigrations = process.env.TOPSIGNAL_DEV_MIGRATIONS_APPLIED === "1";
+if (supervisorAppliedMigrations) {
+  // This startup identity belongs to the supervisor, never to a .env snapshot.
+  childEnv.TOPSIGNAL_DEV_INSTANCE_ID = process.env.TOPSIGNAL_DEV_INSTANCE_ID;
+}
 delete childEnv.TOPSIGNAL_DEV_MIGRATIONS_APPLIED;
 let backendPort = 8000;
 

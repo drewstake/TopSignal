@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
@@ -29,9 +29,6 @@ import {
   reconcileBotConfigs,
   resolveActiveBotAccount,
 } from "./botAccountIsolation";
-const BotBacktestPanel = lazy(() =>
-  import("./BotBacktestPanel").then((module) => ({ default: memo(module.BotBacktestPanel) })),
-);
 
 const PROVIDER_CLASSIFICATION_MAX_AGE_MS = 5 * 60 * 1_000;
 const PROVIDER_CLASSIFICATION_FUTURE_TOLERANCE_MS = 30 * 1_000;
@@ -1150,9 +1147,6 @@ export function BotPage() {
           />
         </div>
       </div>
-      <Suspense fallback={<Skeleton className="h-[420px]" />}>
-        <BotBacktestPanel key={selectedBot?.id ?? "no-bot"} bot={selectedBot} demoMode={demoModeEnabled} />
-      </Suspense>
     </div>
     </BotProviderWorkspaceBoundary>
   );

@@ -1,5 +1,12 @@
 # Transfer saved Databento history to another Windows laptop
 
+Status on the original workspace as of September 8, 2026: the active Databento
+and research directories were retired at the user's request. Their verified
+recovery archive is under
+`backend/storage/backups/retired-databento-research-20260908T154039Z`.
+Paths below describe the former installed layout and are instructions for an
+explicit future restore/import, not the current forward-testing setup.
+
 Follow the [Supabase storage policy](supabase-storage-policy.md): keep source
 archives and generated replay data on the backend filesystem. Use
 `build_databento_cache.py` below; the legacy `import_databento.py` is restricted

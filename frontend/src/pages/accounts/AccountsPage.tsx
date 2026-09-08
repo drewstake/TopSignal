@@ -32,23 +32,12 @@ import {
   useAccountProviderFreshness,
 } from "../../lib/accountProviderState";
 import { getDemoAccountId, getDemoAccountName } from "../../lib/demoMode";
-import type { AccountInfo, JournalMergeResult } from "../../lib/types";
+import type { AccountInfo } from "../../lib/types";
 import {
   AccountSelectionButton,
   AccountTableScrollArea,
 } from "./accountManagement";
 import { filterAccountManagementRows, loadAccountManagementRows } from "./accountManagementData";
-import { MergeJournalCard } from "./components/MergeJournalCard";
-import {
-  type MergeJournalFormState,
-  approveMergeJournalSubmission,
-  buildMergeJournalSuccessMessage,
-  filterMergeSourceAccounts,
-  getMergeDestinationAccounts,
-  reconcileMergeJournalForm,
-  validateMergeJournalForm,
-} from "./mergeJournal";
-
 const lastTradeFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
@@ -131,7 +120,6 @@ export function AccountsPage() {
   const accountFromQuery = parseAccountId(searchParams.get(ACCOUNT_QUERY_PARAM));
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
-  const [mergeAccounts, setMergeAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [refreshingExpressAccounts, setRefreshingExpressAccounts] = useState(false);
   const [accountsError, setAccountsError] = useState<string | null>(null);
@@ -148,17 +136,6 @@ export function AccountsPage() {
   const [editingName, setEditingName] = useState("");
   const [renamingAccountId, setRenamingAccountId] = useState<number | null>(null);
   const [renameErrorById, setRenameErrorById] = useState<Record<number, string | null>>({});
-  const [mergeForm, setMergeForm] = useState<MergeJournalFormState>({
-    fromAccountId: "",
-    toAccountId: "",
-    onConflict: "skip",
-    includeImages: true,
-  });
-  const [mergeJournalLoading, setMergeJournalLoading] = useState(false);
-  const [mergeJournalError, setMergeJournalError] = useState<string | null>(null);
-  const [mergeJournalSuccess, setMergeJournalSuccess] = useState<string | null>(null);
-  const [mergeJournalResult, setMergeJournalResult] = useState<JournalMergeResult | null>(null);
-  const [mergeOldAccountSearch, setMergeOldAccountSearch] = useState("");
   const editInputRef = useRef<HTMLInputElement | null>(null);
   const accountsVersionRef = useRef(0);
   const lastTradeRequestVersionByIdRef = useRef<Record<number, number>>({});
@@ -206,7 +183,6 @@ export function AccountsPage() {
         return null;
       }
       setAccounts(savedAccounts);
-      setMergeAccounts(savedAccounts.filter((account) => !account.is_archived));
       setEditingAccountId(null);
       setEditingName("");
       setRenameErrorById({});
@@ -226,7 +202,6 @@ export function AccountsPage() {
       );
       if (!preserveRowsOnError) {
         setAccounts([]);
-        setMergeAccounts([]);
         setLastTradeOverridesById({});
         setLastTradeLoadingById({});
         setLastTradeResolvedById({});
@@ -520,16 +495,6 @@ export function AccountsPage() {
     () => orderedAccounts.filter((account) => !account.is_archived),
     [orderedAccounts],
   );
-  const orderedMergeAccounts = useMemo(() => sortAccountsForSelection(mergeAccounts), [mergeAccounts]);
-  const orderedMergeDestinationAccounts = useMemo(
-    () => sortAccountsForSelection(getMergeDestinationAccounts(mergeAccounts)),
-    [mergeAccounts],
-  );
-  const filteredMergeSourceAccounts = useMemo(
-    () => filterMergeSourceAccounts(orderedMergeAccounts, mergeOldAccountSearch),
-    [mergeOldAccountSearch, orderedMergeAccounts],
-  );
-
   useEffect(() => {
     if (selectableAccounts.length === 0) {
       return;
@@ -580,71 +545,13 @@ export function AccountsPage() {
     () => accounts.find((account) => account.id === accountFromQuery && !account.is_archived) ?? null,
     [accounts, accountFromQuery],
   );
-  const mergeAccountNamesById = useMemo(
-    () => new Map(orderedMergeAccounts.map((account) => [account.id, getDemoAccountName(account)] as const)),
-    [orderedMergeAccounts],
-  );
-  const mergeValidationMessage = useMemo(() => validateMergeJournalForm(mergeForm), [mergeForm]);
-  const mergeSubmitDisabled = mergeJournalLoading || mergeValidationMessage !== null;
-
-  useEffect(() => {
-    setMergeForm((current) =>
-      reconcileMergeJournalForm(
-        current,
-        orderedMergeAccounts,
-        orderedMergeDestinationAccounts,
-        selectedAccount?.id ?? null,
-      ),
-    );
-  }, [orderedMergeAccounts, orderedMergeDestinationAccounts, selectedAccount?.id]);
-
-  const updateMergeForm = useCallback((updater: (current: MergeJournalFormState) => MergeJournalFormState) => {
-    setMergeForm((current) => updater(current));
-    setMergeJournalError(null);
-    setMergeJournalSuccess(null);
-    setMergeJournalResult(null);
-  }, []);
-
-  const handleMergeJournal = useCallback(async () => {
-    const validationMessage = validateMergeJournalForm(mergeForm);
-    if (validationMessage) {
-      return;
-    }
-
-    const fromAccountId = Number.parseInt(mergeForm.fromAccountId, 10);
-    const toAccountId = Number.parseInt(mergeForm.toAccountId, 10);
-    if (!approveMergeJournalSubmission(mergeForm, mergeAccountNamesById, (message) => window.confirm(message))) {
-      return;
-    }
-
-    setMergeJournalLoading(true);
-    setMergeJournalError(null);
-    setMergeJournalSuccess(null);
-    setMergeJournalResult(null);
-    try {
-      const result = await accountsApi.mergeJournalEntries({
-        from_account_id: fromAccountId,
-        to_account_id: toAccountId,
-        on_conflict: mergeForm.onConflict,
-        include_images: mergeForm.includeImages,
-      });
-      setMergeJournalResult(result);
-      setMergeJournalSuccess(buildMergeJournalSuccessMessage(result, mergeAccountNamesById));
-      await loadAccounts();
-    } catch (err) {
-      setMergeJournalError(err instanceof Error ? err.message : "Failed to merge journal history.");
-    } finally {
-      setMergeJournalLoading(false);
-    }
-  }, [loadAccounts, mergeAccountNamesById, mergeForm]);
-
   return (
     <div className="space-y-6 pb-10">
       <h1 className="sr-only">Accounts</h1>
       <DemoModeNotice>
         <p>
           These are isolated sample accounts. Selecting an account and filtering rows are simulated locally;
-          provider refresh, renaming, Main-account changes, archiving, and journal merges are disabled.
+          provider refresh, renaming, Main-account changes, and archiving are disabled.
         </p>
       </DemoModeNotice>
       <section>
@@ -962,60 +869,6 @@ export function AccountsPage() {
             </p>
           </CardContent>
         </Card>
-      </section>
-      <section>
-        {demoModeEnabled ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>Merge Journal</CardTitle>
-              <CardDescription>Journal history changes are unavailable while viewing sample accounts.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="rounded-xl border border-app-border bg-app-bg/35 px-4 py-4 text-sm text-app-muted" role="status">
-                Turn off Demo Mode to merge journal history between your connected accounts.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-        <MergeJournalCard
-          sourceAccounts={filteredMergeSourceAccounts}
-          destinationAccounts={orderedMergeDestinationAccounts}
-          form={mergeForm}
-          oldAccountSearch={mergeOldAccountSearch}
-          loading={mergeJournalLoading}
-          submitDisabled={mergeSubmitDisabled}
-          validationMessage={mergeValidationMessage}
-          errorMessage={mergeJournalError}
-          successMessage={mergeJournalSuccess}
-          successResult={mergeJournalResult}
-          onOldAccountSearchChange={(value) => setMergeOldAccountSearch(value)}
-          onFromAccountChange={(value) =>
-            updateMergeForm((current) => ({
-              ...current,
-              fromAccountId: value,
-            }))
-          }
-          onToAccountChange={(value) =>
-            updateMergeForm((current) => ({
-              ...current,
-              toAccountId: value,
-            }))
-          }
-          onConflictChange={(value) =>
-            updateMergeForm((current) => ({
-              ...current,
-              onConflict: value,
-            }))
-          }
-          onIncludeImagesChange={(value) =>
-            updateMergeForm((current) => ({
-              ...current,
-              includeImages: value,
-            }))
-          }
-          onSubmit={() => void handleMergeJournal()}
-        />
-        )}
       </section>
     </div>
   );

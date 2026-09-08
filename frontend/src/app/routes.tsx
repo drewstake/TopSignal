@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { Navigate, createBrowserRouter } from "react-router-dom";
+import { Navigate, createBrowserRouter, redirect } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
 
@@ -15,17 +15,11 @@ const TradesPage = lazy(() =>
 const ExpensesPage = lazy(() =>
   import("../pages/expenses/ExpensesPage").then((module) => ({ default: module.ExpensesPage })),
 );
-const JournalPage = lazy(() =>
-  import("../pages/journal/JournalPage").then((module) => ({ default: module.JournalPage })),
-);
 const BotPage = lazy(() =>
   import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
 );
 const ThemePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
-);
-const DataHubPage = lazy(() =>
-  import("../pages/data/DataHubPage").then((module) => ({ default: module.DataHubPage })),
 );
 
 export const router = createBrowserRouter([
@@ -56,8 +50,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "journal",
-        element: <JournalPage />,
-        errorElement: <RouteErrorPage />,
+        loader: ({ request }) => redirect(`/${new URL(request.url).search}`),
       },
       {
         path: "bot",
@@ -71,8 +64,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "data",
-        element: <DataHubPage />,
-        errorElement: <RouteErrorPage />,
+        loader: ({ request }) => redirect(`/${new URL(request.url).search}`),
       },
     ],
   },

@@ -2578,14 +2578,16 @@ def test_higher_timeframe_staleness_is_measured_from_bar_close(db_session):
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-@pytest.mark.parametrize("closed_age_seconds, expected_block", [(30, False), (120, True)])
+@pytest.mark.parametrize("closed_age_seconds, expected_block", [(30, False), (120, False), (420, True)])
 def test_configured_positive_staleness_threshold_controls_order_routing(
     db_session, monkeypatch, dry_run, closed_age_seconds, expected_block,
 ):
     _, config = _add_account_and_config(db_session, execution_mode="live")
     config.max_data_staleness_seconds = 60
     db_session.commit()
-    # Five-minute candle's age is measured from close, not its opening time.
+    # A five-minute candle is due after the next five-minute interval, then the
+    # configured 60-second delivery grace. Quiet time mid-bar is not stale data.
+    monkeypatch.setattr("app.services.bot_market_analysis.futures_session_is_open", lambda *_args, **_kwargs: True)
     timestamp = datetime.now(timezone.utc) - timedelta(minutes=5, seconds=closed_age_seconds)
     _patch_actionable_signal(monkeypatch, candle_timestamp=timestamp)
     _enable_live_test_routing(monkeypatch)

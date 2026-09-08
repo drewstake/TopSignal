@@ -1,5 +1,7 @@
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BotAnalysis, BotConfig, BotEvaluation, ProjectXMarketCandle } from "../../lib/types";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
@@ -13,6 +15,10 @@ const bot = {
   timeframe_unit: "minute",
   timeframe_unit_number: 5,
   max_data_staleness_seconds: 600,
+  execution_mode: "dry_run",
+  strategy_type: "topbot_adaptive",
+  trading_start_time: "09:30",
+  trading_end_time: "15:45",
 } as BotConfig;
 
 const analysis = {
@@ -29,6 +35,9 @@ const analysis = {
     timeframe: { unit: "minute", unit_number: 5, label: "5m" },
     detected_gaps: [],
     gap_count: 0,
+    resolved_contract_id: bot.contract_id,
+    configured_contract_id: bot.contract_id,
+    resolved_symbol: "MNQ",
   },
   data_quality: {
     status: "limited",
@@ -38,7 +47,7 @@ const analysis = {
   },
   market_regime: "trend",
   features: {
-    trend: { direction: "bullish", strength: 72, fast_ema: 105, slow_ema: 103, slow_ema_slope: 0.4 },
+    trend: { direction: "bullish", strength: 72, strength_label: "strong", agreement: "mixed", fast_ema: 105, slow_ema: 103, slow_ema_slope: 0.4 },
     volatility: { atr: 2, atr_percent: 1.9, percentile: 64, state: "normal" },
     volume: { relative_volume: 1.2, state: "normal" },
     vwap: { value: 104, location: "above" },
@@ -80,6 +89,19 @@ const analysis = {
   summary: "Closed-bar trend and VWAP support a bullish bias.",
   reasoning: ["Trend is bullish."],
   risk_notes: ["Resistance remains overhead."],
+  generated_at: "2026-07-09T15:05:20Z",
+  explanation: {
+    headline: "Price is rising, with conflicting directional indicators.",
+    supporting_evidence: ["The fast EMA is above the slow EMA."],
+    conflicting_evidence: ["The latest close is below the recent high."],
+    limitations: ["Higher-timeframe history is incomplete."],
+    change_levels: [{ direction: "bearish", price: 102, condition: "A closed candle below 102 would weaken this bullish read." }],
+    scope: "Closed candles only.",
+  },
+  context_coverage: {
+    summary: "Context is incomplete", available: ["Closed candles"], limited: ["Level 1 quote"], missing: ["News", "Economic calendar", "Related markets"],
+    items: [{ id: "news", label: "News", status: "missing", detail: "No recorded news coverage." }], scope: "Availability only.",
+  },
 } satisfies BotAnalysis;
 
 const evaluation = {
@@ -88,7 +110,7 @@ const evaluation = {
   idempotency_key: null,
   duplicate_of_order_attempt_id: null,
   config: bot,
-  decision: { action: "HOLD", price: 105 },
+  decision: { action: "HOLD", price: 105, contract_id: bot.contract_id, candle_timestamp: "2026-07-09T15:00:00Z", created_at: "2026-07-09T15:05:20Z", reason: "Waiting for a pullback to the 20 EMA." },
   analysis,
   candles: [],
   risk_events: [],
@@ -186,138 +208,163 @@ function chartCandle(timestamp: string): ProjectXMarketCandle {
   };
 }
 
-describe("BotAnalysisPanel canonical labels", () => {
-  it("renders freshness, quality, regime, invalidation, missing inputs, and scenario-weight language", () => {
-    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} />);
+function withDecisionExplanation(status: BotEvaluation["status"] = "held", action: "HOLD" | "BUY" = "HOLD"): BotEvaluation {
+  return { ...evaluation, status, decision: { ...evaluation.decision, action }, analysis: { ...analysis,
+    bot_decision: {
+      status, action, strategy: { name: "TopBot EMA/VWAP pullback", revision: "v1" },
+      summary: status === "risk_blocked" ? "BUY setup rejected: the daily loss limit is reached." : "Waiting for a pullback to the 20 EMA.",
+      strategy_reason: "Previous candle did not touch the 20 EMA.", execution_mode: "dry_run",
+      contract_id: bot.contract_id, candle_timestamp: evaluation.decision.candle_timestamp,
+      candle_close_timestamp: "2026-07-09T15:05:00Z", evaluated_at: "2026-07-09T15:05:20Z",
+      checks: [{ id: "risk", label: "Account and routing checks", status: action === "HOLD" ? "not_evaluated" : "failed", detail: action === "HOLD" ? "No new order considered; account risk checks were not evaluated." : "Daily loss limit reached." }],
+      limits: { max_contracts: 1, max_open_position: 1, max_daily_loss: 250, max_trades_per_day: 30, delivery_grace_seconds: 600 },
+      basis: "Recorded strategy result and final routing outcome.",
+    },
+  } };
+}
 
-    expect(html).toContain("Canonical backend");
-    expect(html).toContain("Fresh");
-    expect(html).toContain("Limited data");
-    expect(html).toContain("Trend regime");
-    expect(html).toContain("Bullish scenario weight");
-    expect(html).toContain("not calibrated probabilities");
-    expect(html).toContain("Bullish setup invalidates below 102");
-    expect(html).toContain("News Context");
-    expect(html).not.toContain("Bullish probability");
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-07-09T15:05:20Z")); });
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+describe("BotAnalysisPanel evidence and decision", () => {
+  it("answers the first-screen questions without probability bars or overlapping scores", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={withDecisionExplanation()} />);
+    expect(html).toContain("Price is rising, with conflicting directional indicators.");
+    expect(html).toContain("What supports this read");
+    expect(html).toContain("What conflicts with it");
+    expect(html).toContain("What would change the read");
+    expect(html).toContain("Holding — no new entry");
+    expect(html).toContain("Waiting for a pullback to the 20 EMA.");
+    expect(html).toContain("Not Evaluated");
+    expect(html).toContain("Configured limits: 1 contracts per order");
+    expect(html).toContain("Current closed-candle read");
+    expect(html).toContain("Indicator agreement:");
+    expect(html).not.toContain("scenario weight");
+    expect(html).not.toContain("/100");
+    expect(html).not.toContain("Moderate-conviction");
+    expect(html).toContain("<details");
+    expect(html).not.toContain(" open=");
   });
 
-  it("marks an evaluation stale when the chart has one newer closed bar", () => {
-    const snapshot: BotMarketSnapshot = {
-      contractKey: "MNQ:minute:5",
-      unit: "minute",
-      unitNumber: 5,
-      candles: [chartCandle("2026-07-09T15:05:00Z")],
-      lastPrice: 105.5,
-      updatedAt: "2026-07-09T15:05:00Z",
-    };
-    const html = renderToStaticMarkup(
-      <BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={snapshot} />,
-    );
-
-    expect(html).toContain("Stale");
-    expect(html).toContain("the chart has 1 newer closed bar");
+  it("separates good candles from missing context", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluationWithAnalysis({ ...analysis, data_quality: { status: "good", confidence: 100, warnings: [], missing_inputs: ["news_context"] } })} />);
+    expect(html).toContain("Candles: good quality");
+    expect(html).toContain("Context incomplete");
+    expect(html).toContain("Missing: News, Economic calendar, Related markets");
+    expect(html).toContain("Missing observations are unknown, never neutral evidence");
+    expect(html).not.toContain("100/100");
   });
 
-  it("renders a compact threshold state for a canonical zero-bar analysis", () => {
-    const html = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis(insufficientAnalysis(), 30_275)}
-        onEvaluate={() => undefined}
-      />,
-    );
+  it("explains a high ATR rank and cooling ranges as different measurements", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluationWithAnalysis({ ...analysis, features: { ...analysis.features, volatility: { atr: 2, atr_percent: 1.9, percentile: 92, state: "low", recent_range_state: "cooling", recent_range_ratio: 0.6 } } })} />);
+    expect(html).toContain("92th percentile");
+    expect(html).toContain("Cooling");
+    expect(html).toContain("A high ATR rank can coexist with cooling recent ranges");
+    expect(html).not.toContain("p92");
+    expect(html).not.toContain("· low");
+  });
 
-    expect(html).toContain("Freshness unknown");
-    expect(html).not.toContain(">Fresh<");
+  it("shows actual rejection even when descriptive evidence is bullish", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={withDecisionExplanation("risk_blocked", "BUY")} />);
+    expect(html).toContain("Entry rejected by checks");
+    expect(html).toContain("daily loss limit is reached");
+    expect(html).toContain("Price is rising");
+    expect(html).not.toContain("Entry permitted");
+  });
+
+  it("labels a completed dry-run attempt without implying live submission", () => {
+    const row = withDecisionExplanation("dry_run_attempt", "BUY");
+    row.analysis!.bot_decision!.summary = "BUY permitted for a dry-run attempt. No order was sent.";
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={row} />);
+    expect(html).toContain("Entry permitted for dry run");
+    expect(html).toContain("No order was sent");
+    expect(html).not.toContain("Entry submitted");
+  });
+
+  it("rejects an explanation from a different decision timestamp", () => {
+    const row = withDecisionExplanation();
+    row.analysis!.bot_decision!.candle_timestamp = "2026-07-09T14:55:00Z";
+    row.analysis!.bot_decision!.summary = "WRONG EVALUATION";
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={row} />);
+    expect(html).not.toContain("WRONG EVALUATION");
+    expect(html).toContain("does not match this decision");
+    expect(html).toContain("Holding — no new entry");
+  });
+
+  it("keeps a zero-bar response unknown rather than neutral and still explains the hold", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluationWithAnalysis(insufficientAnalysis(), 30_275)} onEvaluate={() => undefined} />);
     expect(html).toContain("No directional read yet");
-    expect(html).toContain("received no closed 5m candles");
-    expect(html).toContain("0 / 10 closed bars");
-    expect(html).toContain("10 closed bars unlock");
-    expect(html).toContain("25 are needed for normal confidence");
-    expect(html).toContain("Retry evaluation");
-    expect(html).not.toContain("Bullish scenario weight");
-    expect(html).not.toContain("Setup quality");
-    expect(html).not.toContain("Execution risk");
-    expect(html).not.toContain("What invalidates the setup?");
-    expect(html).not.toContain("Missing · normal");
-    expect(html).not.toContain("Decision/reference price");
-  });
-
-  it("switches from the compact state to the full layout at the 9-to-10-bar boundary", () => {
-    const nineBarHtml = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis(insufficientAnalysis(9, "2026-07-09T14:55:00Z"))}
-      />,
-    );
-    const tenBarHtml = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis(insufficientAnalysis(10, "2026-07-09T15:00:00Z"))}
-      />,
-    );
-
-    expect(nineBarHtml).toContain("No directional read yet");
-    expect(nineBarHtml).toContain("9 / 10 closed bars");
-    expect(nineBarHtml).not.toContain("Bullish scenario weight");
-    expect(tenBarHtml).toContain("Bullish scenario weight");
-    expect(tenBarHtml).toContain("Setup quality");
-    expect(tenBarHtml).not.toContain("No directional read yet");
-  });
-
-  it("does not call a timestamp-less otherwise healthy analysis fresh", () => {
-    const html = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis({
-          ...analysis,
-          provenance: { ...analysis.provenance, latest_candle_timestamp: null, data_age_seconds: null },
-        })}
-      />,
-    );
-
+    expect(html).toContain("0 closed 5m candles");
     expect(html).toContain("Freshness unknown");
-    expect(html).not.toContain(">Fresh<");
-    expect(html).toContain("Bullish scenario weight");
+    expect(html).toContain("Holding — no new entry");
+    expect(html).not.toContain("What supports this read");
+    expect(html).not.toContain("neutral evidence confirms");
   });
 
-  it("shows sufficiently populated chart bars only as separate local context", () => {
-    const candles = Array.from({ length: 10 }, (_, index) =>
-      chartCandle(new Date(Date.parse("2026-07-09T14:15:00Z") + index * 5 * 60_000).toISOString()),
-    );
-    const snapshot: BotMarketSnapshot = {
-      contractKey: `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}`,
-      unit: bot.timeframe_unit,
-      unitNumber: bot.timeframe_unit_number,
-      candles,
-      lastPrice: candles[candles.length - 1].close,
-      updatedAt: "2026-07-09T15:05:00Z",
-    };
-    const html = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis(insufficientAnalysis())}
-        marketSnapshot={snapshot}
-      />,
-    );
-
-    expect(html).toContain("Local chart context");
-    expect(html).toContain("Separate from evaluation");
-    expect(html).toContain("The chart has 10 closed bars");
-    expect(html).toContain("Latest chart close");
-    expect(html).toContain("were not included in the canonical evaluation");
-    expect(html).not.toContain("Bullish scenario weight");
+  it("ages without new quotes and permits a whole candle interval plus delivery grace", () => {
+    vi.setSystemTime(new Date("2026-07-09T15:19:50Z"));
+    render(<BotAnalysisPanel bot={bot} evaluation={evaluation} />);
+    expect(screen.getByText("Current closed-candle read")).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(15_000); });
+    expect(screen.getByText("Stale evaluation")).toBeTruthy();
   });
 
-  it("labels a decision-price fallback instead of calling it the current price", () => {
-    const html = renderToStaticMarkup(
-      <BotAnalysisPanel
-        bot={bot}
-        evaluation={evaluationWithAnalysis({ ...analysis, current_price: null }, 30_275)}
-      />,
-    );
+  it("uses only matching, actually closed chart candles to detect newer data", () => {
+    vi.setSystemTime(new Date("2026-07-09T15:10:20Z"));
+    const snapshot: BotMarketSnapshot = { contractKey: `${bot.contract_id}:minute:5`, unit: "minute", unitNumber: 5, candles: [chartCandle("2026-07-09T15:05:00Z"), chartCandle("2026-07-09T15:10:00Z")], lastPrice: 106, updatedAt: "2026-07-09T15:10:20Z" };
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={snapshot} />);
+    expect(html).toContain("matching chart has 1 newer closed bar");
+    expect(html).toContain("Live chart quote — separate");
+    expect(html).toContain("quote freshness is unverified");
+    const wrong = { ...snapshot, contractKey: "OTHER:minute:5" };
+    const otherHtml = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={wrong} />);
+    expect(otherHtml).not.toContain("newer closed bar");
+    expect(otherHtml).not.toContain("Latest chart quote");
+    const formingCache = { ...snapshot, candles: [{ ...chartCandle("2026-07-09T15:05:00Z"), fetched_at: "2026-07-09T15:06:00Z" }] };
+    expect(renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={formingCache} />)).not.toContain("newer closed bar");
+  });
 
-    expect(html).toContain("Decision/reference price");
-    expect(html).toContain("30,275.00");
+  it.each([
+    ["2026-07-09T15:04:59Z", true],
+    ["2026-07-09T15:05:01Z", false],
+  ])("checks profile receipt cutoff %s", (receivedThrough, eligible) => {
+    const row = evaluationWithAnalysis({ ...analysis, collected_context: {
+      as_of: "2026-07-09T15:05:00Z", captured_at: "2026-07-09T15:05:20Z", contract_id: bot.contract_id,
+      volume_profile: { status: "partial", eligible: true, contract_id: bot.contract_id, poc: 105,
+        observation_start: "2026-07-09T15:00:00Z", observation_end: "2026-07-09T15:04:59Z", received_through: receivedThrough },
+    } });
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={row} />);
+    expect(html).toContain(`Viewer-observed volume profile · ${eligible ? "partial window eligible" : "not eligible for this read"}`);
+    expect(html).toContain("Received through:");
+  });
+
+  it("does not silently combine observations with a mismatching contract or unknown cutoff", () => {
+    const row = evaluationWithAnalysis({ ...analysis, collected_context: {
+      as_of: "2026-07-09T15:05:00Z", captured_at: "2026-07-09T15:05:20Z", contract_id: bot.contract_id,
+      order_book: { status: "fresh", eligible: true, contract_id: "OTHER", bid: 105, ask: 105.25, spread: 0.25, bid_size: 2, ask_size: null, received_at: "2026-07-09T15:05:01Z" },
+      volume_profile: { status: "partial", eligible: false, poc: 105, observation_start: "2026-07-09T14:57:00Z", observation_end: "2026-07-09T15:04:00Z", cumulative_delta: 999 },
+    } });
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={row} />);
+    expect(html).toContain("Level 1 quote · not eligible for this read");
+    expect(html).toContain("Recorded best bid 105.00 / ask 105.25");
+    expect(html).toContain("ask unavailable");
+    expect(html).toContain("not a complete session profile");
+    expect(html).toContain("does not establish deeper liquidity");
+    expect(html).not.toContain("999");
+  });
+
+  it("does not display another selected bot's evaluation", () => {
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={{ ...bot, id: 2 }} evaluation={evaluation} />);
+    expect(html).toContain("No evaluation yet");
+    expect(html).not.toContain("Price is rising");
+  });
+
+  it("distinguishes a closed market from stale missing open-session bars", () => {
+    vi.setSystemTime(new Date("2026-07-11T14:00:00Z"));
+    const latest = "2026-07-10T20:55:00Z";
+    const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluationWithAnalysis({ ...analysis, provenance: { ...analysis.provenance, latest_candle_timestamp: latest, is_stale: false } })} />);
+    expect(html).toContain("Market closed");
+    expect(html).not.toContain("Stale evaluation");
+    expect(html).toContain("closed-session time does not count as a feed delay");
   });
 });

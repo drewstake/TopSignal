@@ -106,13 +106,19 @@ function isPortAvailable(port, host = "127.0.0.1") {
   });
 }
 
-function requestHttpStatus(url, timeoutMs) {
+function requestHttpStatus(url, timeoutMs, expectedInstanceId) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
     const request = client.get(parsedUrl, (response) => {
       response.resume();
-      resolve(response.statusCode ?? 0);
+      const status = response.statusCode ?? 0;
+      if (status >= 200 && status < 300 && expectedInstanceId
+        && response.headers["x-topsignal-dev-instance"] !== expectedInstanceId) {
+        reject(new Error("Backend readiness response belongs to a different development process"));
+        return;
+      }
+      resolve(status);
     });
 
     request.setTimeout(timeoutMs, () => {
@@ -132,7 +138,7 @@ async function waitForHttpReady(url, options = {}) {
 
   while (true) {
     try {
-      const status = await requestStatus(url, requestTimeoutMs);
+      const status = await requestStatus(url, requestTimeoutMs, options.expectedInstanceId);
       if (status >= 200 && status < 300) {
         return;
       }

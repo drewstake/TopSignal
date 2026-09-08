@@ -3,6 +3,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 
 import app.main as main_module
@@ -329,6 +331,20 @@ def test_readiness_requires_current_migration_ledger(monkeypatch):
     assert {"version": "20260903_add_bot_runtime_lease.sql"} in db.params
 
 
+def test_readiness_identifies_dev_launch_without_changing_response_payload(monkeypatch):
+    monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
+    monkeypatch.setenv("TOPSIGNAL_DEV_INSTANCE_ID", "unique-offline-launch")
+    response = main_module.Response()
+
+    assert main_module.readiness(db=_Session(), response=response) == {"status": "ready"}
+    assert response.headers["x-topsignal-dev-instance"] == "unique-offline-launch"
+
+    monkeypatch.delenv("TOPSIGNAL_DEV_INSTANCE_ID")
+    response = main_module.Response()
+    assert main_module.readiness(db=_Session(), response=response) == {"status": "ready"}
+    assert "x-topsignal-dev-instance" not in response.headers
+
+
 def test_readiness_fails_closed_for_pending_migration(monkeypatch):
     monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
     db = _Session(migration_applied=False)
@@ -478,3 +494,59 @@ def test_readiness_accepts_validated_fresh_schema_baseline(monkeypatch):
 
     assert main_module.readiness(db=db) == {"status": "ready"}
     assert {"version": "schema-20260905-v7"} in db.params
+
+
+@pytest.mark.parametrize(
+    "override,value",
+    [
+        ("TOPSIGNAL_OFFLINE_DEV", "0"),
+        ("TOPSIGNAL_LOCAL_PROJECTX", "1"),
+        ("TOPSIGNAL_ENV", "production"),
+        ("AUTH_REQUIRED", "true"),
+        ("SUPABASE_URL", "https://cloud.invalid"),
+        ("SUPABASE_URL", "http://127.0.0.1:54321"),
+        ("TOPSIGNAL_BOT_WORKER_ENABLED", "true"),
+        ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "true"),
+        ("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "true"),
+        ("TOPSIGNAL_BOT_WORKER_ENABLED", None),
+        ("TOPSIGNAL_LIVE_EXECUTION_ENABLED", None),
+        ("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "invalid"),
+        ("database_dialect", "postgresql"),
+        ("runtime_enabled", True),
+    ],
+)
+def test_offline_readiness_exception_does_not_mask_other_runtime_failures(monkeypatch, override, value):
+    for name, configured in {
+        "TOPSIGNAL_OFFLINE_DEV": "1",
+        "TOPSIGNAL_LOCAL_PROJECTX": "0",
+        "TOPSIGNAL_ENV": "development",
+        "AUTH_REQUIRED": "false",
+        "SUPABASE_URL": "",
+        "TOPSIGNAL_BOT_WORKER_ENABLED": "false",
+        "TOPSIGNAL_LIVE_EXECUTION_ENABLED": "false",
+        "TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION": "false",
+    }.items():
+        monkeypatch.setenv(name, configured)
+    if override not in {"database_dialect", "runtime_enabled"}:
+        if value is None:
+            monkeypatch.delenv(override)
+        else:
+            monkeypatch.setenv(override, value)
+    db = _Session()
+    monkeypatch.setattr(db, "get_bind", lambda: SimpleNamespace(
+        dialect=SimpleNamespace(name=value if override == "database_dialect" else "sqlite")
+    ))
+    monkeypatch.setattr(main_module, "inspect", lambda _bind: _Inspector())
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", _worker_runtime(enabled=override == "runtime_enabled"))
+    monkeypatch.setattr(main_module, "inspect_bot_runtime", lambda *_args, **_kwargs: SimpleNamespace(
+        ready=False,
+        failed_checks=("worker_task_healthy", "provider_healthy"),
+    ))
+
+    response = main_module.readiness(db=db)
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "status": "not_ready", "reason": "bot_runtime_not_ready",
+        "failed_checks": ["worker_task_healthy", "provider_healthy"],
+    }

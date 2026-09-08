@@ -81,6 +81,25 @@ cloud candle backup would recreate the storage problem and is not required to
 use local backtests. Do not run the incident cleanup or restore scripts as
 routine maintenance.
 
+## September 8, 2026 local history retirement
+
+At the user's request, the five local `databento`, `databento-calendar-v5`,
+`databento-calendar-v6`, `databento-format4-reference`, and `research` directories
+were removed after creating and verifying a complete recovery ZIP. All 5,670
+archived files were decompressed and SHA-256 checked against their originals;
+the original files were rechecked immediately before deletion.
+
+Recovery records are in
+`backend/storage/backups/retired-databento-research-20260908T154039Z`.
+The removed files totaled 7,366,517,902 bytes. The archive plus its manifest uses
+about 998 MB, reclaiming about 6.37 GB net. This recovery copy is local, not an
+off-device backup. No application database records were removed.
+
+The Data tab and backtest panel have also been removed from the app. Forward
+testing continues to use ProjectX market data. Do not automatically restore or
+rebuild the retired history; the retained replay tools need an explicit restore
+or new import before reuse. The filesystem/cloud boundary above still applies.
+
 ## If sign-in or service health fails again
 
 1. Capture the actual HTTP status and error from Auth/PostgREST. An unhealthy

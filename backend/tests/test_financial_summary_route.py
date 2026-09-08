@@ -80,6 +80,23 @@ def _payout(
     )
 
 
+def test_refund_reduces_spend_and_monthly_totals_without_inflating_payouts(db_session, monkeypatch):
+    _expense(db_session, expense_date=date(2026, 6, 1), amount_cents=10000, category="other")
+    _expense(db_session, expense_date=date(2026, 6, 3), amount_cents=-2290, category="refund")
+    _payout(db_session, payout_date=date(2026, 6, 2), amount_cents=20000)
+    db_session.commit()
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: CURRENT_USER)
+    summary = FinancialSummaryOut.model_validate(get_financial_summary(as_of_date=date(2026, 6, 30), db=db_session))
+    assert summary.expense_totals.total_amount_cents == 7710
+    assert summary.expense_totals.count == 2
+    assert summary.expense_months[0].total_amount_cents == 7710
+    assert summary.expense_totals.by_category["refund"].amount_cents == -2290
+    assert summary.payout_totals.total_amount_cents == 20000
+    assert summary.payout_totals.count == 1
+    assert summary.spend_since_last_payout.total_amount_cents == -2290
+    assert summary.payout_totals.total_amount_cents - summary.expense_totals.total_amount_cents == 12290
+
+
 def test_financial_summary_preserves_ranges_totals_and_account_filter(db_session, monkeypatch):
     _expense(db_session, expense_date=date(2025, 3, 31), amount_cents=10_000)
     _expense(db_session, expense_date=date(2026, 7, 1), amount_cents=5_000, category="data_fee")

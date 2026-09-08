@@ -23,8 +23,8 @@ BotEvaluationStatus = Literal[
 ]
 BotAction = Literal["BUY", "SELL", "HOLD", "NONE", "STOP"]
 BotMarketTrend = Literal["bullish", "bearish", "neutral"]
-BotVolatilityState = Literal["low", "normal", "elevated", "extreme"]
-BotVolumeState = Literal["low", "normal", "elevated"]
+BotVolatilityState = Literal["low", "normal", "elevated", "extreme", "unavailable"]
+BotVolumeState = Literal["low", "normal", "elevated", "unavailable"]
 BotMarketRegime = Literal["trend", "range", "chop", "volatile", "quiet", "unknown"]
 BotDataQualityStatus = Literal["good", "limited", "insufficient", "stale"]
 BotVwapLocation = Literal["above", "below", "at", "unavailable"]
@@ -360,6 +360,16 @@ class BotAnalysisProvenanceOut(BaseModel):
     contract_rollover: bool = False
     minimum_feature_bars: int = Field(default=10, gt=0)
     minimum_sufficient_bars: int = Field(default=25, gt=0)
+    latest_candle_end_timestamp: str | None = None
+    market_session_open: bool | None = None
+    freshness_status: Literal["fresh", "stale", "market_closed", "unavailable"] | None = None
+    open_session_age_seconds: int | None = Field(default=None, ge=0)
+    freshness_interval_seconds: int | None = Field(default=None, ge=0)
+    next_expected_candle_end_timestamp: str | None = None
+    excluded_contract_candle_count: int = Field(default=0, ge=0)
+    excluded_timeframe_candle_count: int = Field(default=0, ge=0)
+    unconfirmed_closed_candle_count: int = Field(default=0, ge=0)
+    invalid_candle_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_gap_count(self):
@@ -381,6 +391,11 @@ class BotAnalysisTrendFeatureOut(BaseModel):
     fast_ema: float | None = None
     slow_ema: float | None = None
     slow_ema_slope: float | None = None
+    strength_label: Literal["weak", "moderate", "strong", "unavailable"] | None = None
+    agreement: Literal["aligned", "mixed", "flat", "unavailable"] | None = None
+    components: list[dict[str, Any]] = Field(default_factory=list)
+    fast_period: int | None = Field(default=None, gt=0)
+    slow_period: int | None = Field(default=None, gt=0)
 
 
 class BotAnalysisVolatilityFeatureOut(BaseModel):
@@ -388,6 +403,13 @@ class BotAnalysisVolatilityFeatureOut(BaseModel):
     atr_percent: float | None = None
     percentile: float | None = Field(default=None, ge=0, le=100)
     state: BotVolatilityState
+    period: int | None = Field(default=None, gt=0)
+    reference_observations: int | None = Field(default=None, ge=0)
+    reference_window_start: str | None = None
+    reference_window_end: str | None = None
+    recent_range_ratio: float | None = None
+    recent_range_state: Literal["cooling", "stable", "expanding", "sharply_expanding", "unavailable"] | None = None
+    state_basis: str | None = None
 
 
 class BotAnalysisVolumeFeatureOut(BaseModel):
@@ -398,11 +420,21 @@ class BotAnalysisVolumeFeatureOut(BaseModel):
 class BotAnalysisVwapFeatureOut(BaseModel):
     value: float | None = None
     location: BotVwapLocation
+    scope: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    session_start: str | None = None
+    complete_session: bool | None = None
 
 
 class BotAnalysisTimeframeTrendOut(BaseModel):
     timeframe: str
     direction: BotMarketTrend
+    latest_candle_end_timestamp: str | None = None
+    contract_id: str | None = None
+    closed_candle_count: int | None = Field(default=None, ge=0)
+    fast_period: int | None = Field(default=None, gt=0)
+    slow_period: int | None = Field(default=None, gt=0)
 
 
 class BotAnalysisMtfFeatureOut(BaseModel):
@@ -450,6 +482,83 @@ class BotAnalysisExecutionRiskOut(BaseModel):
     drivers: list[str]
 
 
+class BotAnalysisChangeLevelOut(BaseModel):
+    direction: Literal["bullish", "bearish"]
+    price: float
+    condition: str
+
+
+class BotAnalysisExplanationOut(BaseModel):
+    headline: str
+    supporting_evidence: list[str]
+    conflicting_evidence: list[str]
+    limitations: list[str]
+    change_levels: list[BotAnalysisChangeLevelOut]
+    scope: str
+    context_evidence: list[str] = Field(default_factory=list)
+
+
+class BotAnalysisScoreDefinitionOut(BaseModel):
+    inputs: list[str]
+    scale: str
+    reference_window: str
+    missing_data: str
+    interpretation: str
+
+
+class BotDecisionCheckOut(BaseModel):
+    id: str
+    label: str
+    status: Literal["passed", "failed", "not_evaluated"]
+    detail: str
+
+
+class BotDecisionStrategyOut(BaseModel):
+    name: str
+    revision: str | None = None
+
+
+class BotDecisionLimitsOut(BaseModel):
+    max_contracts: float
+    max_open_position: float
+    max_daily_loss: float
+    max_trades_per_day: int
+    delivery_grace_seconds: int
+
+
+class BotDecisionExplanationOut(BaseModel):
+    status: BotEvaluationStatus
+    action: BotAction
+    strategy_action: BotAction
+    strategy: BotDecisionStrategyOut
+    summary: str
+    strategy_reason: str
+    execution_mode: BotExecutionMode
+    contract_id: str
+    candle_timestamp: str | None = None
+    candle_close_timestamp: str | None = None
+    evaluated_at: str
+    checks: list[BotDecisionCheckOut]
+    limits: BotDecisionLimitsOut
+    basis: str
+
+
+class BotContextCoverageItemOut(BaseModel):
+    id: str
+    label: str
+    status: Literal["available", "limited", "missing"]
+    detail: str
+
+
+class BotContextCoverageOut(BaseModel):
+    summary: str
+    available: list[str]
+    limited: list[str]
+    missing: list[str]
+    items: list[BotContextCoverageItemOut]
+    scope: str
+
+
 class BotMarketAnalysisOut(BaseModel):
     analysis_version: Literal["market_analysis_v2"]
     probability_method: Literal["heuristic_scenario_weight"]
@@ -488,6 +597,10 @@ class BotMarketAnalysisOut(BaseModel):
     generated_at: str | None = None
     trade_evaluation: TradeEvaluationResultOut | None = None
     collected_context: dict[str, Any] | None = None
+    explanation: BotAnalysisExplanationOut | None = None
+    score_definitions: dict[str, BotAnalysisScoreDefinitionOut] = Field(default_factory=dict)
+    bot_decision: BotDecisionExplanationOut | None = None
+    context_coverage: BotContextCoverageOut | None = None
 
     @model_validator(mode="after")
     def validate_legacy_weight_aliases(self):

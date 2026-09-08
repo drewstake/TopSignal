@@ -32,7 +32,10 @@ function killProcessTree(pid) {
   timeout.unref();
 }
 
-const child = spawn(process.execPath, [vitePath], {
+const args = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
+  ? [vitePath, "--host", "127.0.0.1", "--port", "5174", "--strictPort"]
+  : [vitePath];
+const child = spawn(process.execPath, args, {
   cwd: frontendDir,
   env: process.env,
   stdio: ["inherit", "pipe", "pipe"],

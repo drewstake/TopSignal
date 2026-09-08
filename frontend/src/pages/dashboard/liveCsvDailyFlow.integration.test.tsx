@@ -16,7 +16,6 @@ import type {
   TradeImportPreview,
   TradeImportPreviewTrade,
 } from "../../lib/types";
-import { JournalPage } from "../journal/JournalPage";
 import { TradesPage } from "../trades/TradesPage";
 import { DashboardPage } from "./DashboardPage";
 
@@ -468,7 +467,6 @@ function mountDailyFlow(accounts: AccountInfo[] = [liveAccount]) {
         children: [
           { path: "dashboard", element: <DashboardPage /> },
           { path: "trades", element: <TradesPage /> },
-          { path: "journal", element: <JournalPage /> },
         ],
       },
     ],
@@ -531,7 +529,7 @@ describe("Live CSV daily-flow production page bridge", () => {
     expect(screen.queryByText("Loading dashboard...")).toBeNull();
   });
 
-  it("commits through Dashboard, reloads its local reads, and exposes imported trades plus date-scoped Journal stats", async () => {
+  it("commits through Dashboard, reloads local reads, and filters imported trades by day", async () => {
     const user = userEvent.setup();
     const {
       router,
@@ -575,72 +573,37 @@ describe("Live CSV daily-flow production page bridge", () => {
       name: /Jul 24, 2026\..*2 total trades\./,
     });
     await user.click(importedDay);
-    await user.click(await screen.findByRole("button", { name: "Add Journal Entry" }));
-
-    await waitFor(() => {
-      expect(router.state.location.pathname).toBe("/journal");
-      expect(router.state.location.search).toContain(`account=${LIVE_ACCOUNT_ID}`);
-      expect(router.state.location.search).toContain(`date=${TRADE_DAY}`);
-    });
-    expect(createJournalEntry).toHaveBeenCalledWith(LIVE_ACCOUNT_ID, {
-      entry_date: TRADE_DAY,
-      title: "New Entry",
-      mood: "Neutral",
-      tags: [],
-      body: "",
-    });
-    expect(await screen.findByDisplayValue("New Entry")).not.toBeNull();
-    await waitFor(() => expect(pullJournalTradeStats).toHaveBeenCalledWith(LIVE_ACCOUNT_ID, 501));
-    await waitFor(() => expect(screen.getAllByText("2 trades")).not.toHaveLength(0));
+    await waitFor(() => expect(screen.getByRole("button", {
+      name: /Jul 24, 2026\..*2 total trades\./,
+    }).getAttribute("aria-pressed")).toBe("true"));
+    expect(router.state.location.pathname).toBe("/dashboard");
+    expect(router.state.location.search).toContain(`account=${LIVE_ACCOUNT_ID}`);
+    expect(screen.queryByRole("button", { name: /journal/i })).toBeNull();
+    expect(createJournalEntry).not.toHaveBeenCalled();
+    expect(pullJournalTradeStats).not.toHaveBeenCalled();
+    expect(await screen.findAllByText("FLOW-1001")).not.toHaveLength(0);
   });
 
-  it("does not let a stale journal-create completion override a newer account selection", async () => {
+  it("clears the selected trade day when switching accounts", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<JournalEntry & { already_existed: boolean }>();
     const { router, createJournalEntry } = mountDailyFlow([liveAccount, secondLiveAccount]);
 
     await waitForImportReady();
     importFile("fresh.csv");
     await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
     await screen.findByText(/Imported 2 trades from fresh\.csv/);
-
     const importedDay = await screen.findByRole("button", {
       name: /Jul 24, 2026\..*2 total trades\./,
     });
     await user.click(importedDay);
-    createJournalEntry.mockReturnValueOnce(pendingCreate.promise);
-    await user.click(await screen.findByRole("button", { name: "Add Journal Entry" }));
-    await waitFor(() => expect(createJournalEntry).toHaveBeenCalled());
 
     await act(async () => {
       await router.navigate(`/dashboard?account=${secondLiveAccount.id}`);
     });
     await waitFor(() => expect(router.state.location.search).toContain(`account=${secondLiveAccount.id}`));
-
-    await act(async () => {
-      pendingCreate.resolve({
-        id: 777,
-        account_id: LIVE_ACCOUNT_ID,
-        entry_date: TRADE_DAY,
-        title: "New Entry",
-        mood: "Neutral",
-        tags: [],
-        body: "",
-        version: 1,
-        stats_source: null,
-        stats_json: null,
-        stats_pulled_at: null,
-        is_archived: false,
-        created_at: "2026-07-24T16:05:00Z",
-        updated_at: "2026-07-24T16:05:00Z",
-        already_existed: false,
-      });
-      await pendingCreate.promise;
-    });
-
     expect(router.state.location.pathname).toBe("/dashboard");
-    expect(router.state.location.search).toContain(`account=${secondLiveAccount.id}`);
-    expect(router.state.location.search).not.toContain(`account=${LIVE_ACCOUNT_ID}&`);
+    expect(screen.queryByRole("button", { name: /Jul 24, 2026/, pressed: true })).toBeNull();
+    expect(createJournalEntry).not.toHaveBeenCalled();
   });
 
   it("keeps duplicates compact, stores only the new overlap row, and blocks a conflicting identity", async () => {

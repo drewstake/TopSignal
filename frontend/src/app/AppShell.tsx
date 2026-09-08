@@ -103,7 +103,7 @@ export function AppShell() {
       }
 
       if (blockedByLiveMutation) {
-        setDemoModeMessage("Finish the current live save, import, provider refresh, or backtest before entering Demo Mode.");
+        setDemoModeMessage("Finish the current live save, import, or provider refresh before entering Demo Mode.");
         return;
       }
 
@@ -402,7 +402,7 @@ export function AppShell() {
       return;
     }
     if (enabled && hasActiveLiveMutationRequests()) {
-      setDemoModeMessage("Finish the current live save, import, provider refresh, or backtest before entering Demo Mode.");
+      setDemoModeMessage("Finish the current live save, import, or provider refresh before entering Demo Mode.");
       return;
     }
     setDemoModeMessage(null);
@@ -628,9 +628,7 @@ export function AppShell() {
               { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
-              { label: "Journal", to: `/journal${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
-              { label: "Data", to: `/data${accountSuffix}` },
               { label: "Themes", to: `/themes${accountSuffix}` },
             ]}
           />

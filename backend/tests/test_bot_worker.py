@@ -169,6 +169,48 @@ def test_continuous_start_rejects_disabled_worker_without_mutating_runs(session_
         assert db.query(BotRun).count() == 0
 
 
+def test_disconnected_workspace_serves_saved_runs_without_claiming_bot_readiness(session_factory, monkeypatch):
+    import app.main as main_module
+
+    _seed_run(session_factory)
+    for name, value in {
+        "TOPSIGNAL_OFFLINE_DEV": "1",
+        "TOPSIGNAL_LOCAL_PROJECTX": "0",
+        "TOPSIGNAL_ENV": "development",
+        "AUTH_REQUIRED": "false",
+        "SUPABASE_URL": "",
+        "TOPSIGNAL_BOT_WORKER_ENABLED": "false",
+        "TOPSIGNAL_LIVE_EXECUTION_ENABLED": "false",
+        "TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION": "false",
+    }.items():
+        monkeypatch.setenv(name, value)
+    runtime = BotWorkerRuntime(
+        session_factory=session_factory,
+        client_factory=lambda *_args, **_kwargs: pytest.fail("offline readiness must not contact broker"),
+        settings=_settings(enabled=False),
+    )
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "user-a")
+    with session_factory() as db:
+        original_state = dict(db.get(BotRun, 1).raw_state)
+
+        assert main_module.readiness(db=db) == {"status": "ready"}
+        status = main_module.get_bot_runtime_status(db=db)
+        assert status["ready"] is False
+        assert status["checks"]["worker_enabled"] is False
+        assert status["checks"]["provider_healthy"] is False
+        assert continuous_start_availability(db, runtime=runtime) == (False, "bot_worker_disabled")
+        assert db.get(BotRun, 1).status == "running"
+        assert db.get(BotRun, 1).raw_state == original_state
+        assert db.get(BotConfig, 1).enabled is True
+
+        # The offline exception is after all structural schema validation.
+        db.execute(text("drop table expense_suppressions"))
+        response = main_module.readiness(db=db)
+        assert response.status_code == 503
+        assert b"schema_outdated" in response.body
+
+
 def test_idle_runtime_status_exposes_real_worker_and_lease_capability(session_factory):
     disabled_runtime = BotWorkerRuntime(
         session_factory=session_factory,

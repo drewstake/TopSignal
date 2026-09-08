@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
 import { useDemoInteractionPolicy } from "../../components/demo/useDemoInteractionPolicy";
@@ -58,7 +58,7 @@ import {
   reconcileCombineExpenses as runCombineExpenseReconciliation,
 } from "./expenseReconciliation";
 
-const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other"];
+const CATEGORY_OPTIONS: ExpenseCategory[] = ["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other", "refund"];
 const COMBINE_EXPENSE_PAGE_SIZE = 200;
 const PAYOUT_PAGE_SIZE = 50;
 
@@ -226,6 +226,26 @@ export function ExpensesPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const expensePaginationRef = useRef<HTMLElement>(null);
+  const expensePaginationTopRef = useRef<number | null>(null);
+
+  const handleExpensePageChange = (nextOffset: number) => {
+    expensePaginationTopRef.current = expensePaginationRef.current?.getBoundingClientRect().top ?? null;
+    setOffset(nextOffset);
+  };
+
+  useLayoutEffect(() => {
+    if (loading || expensePaginationTopRef.current === null) {
+      return;
+    }
+    const previousTop = expensePaginationTopRef.current;
+    expensePaginationTopRef.current = null;
+    const pagination = expensePaginationRef.current;
+    if (pagination) {
+      // A shorter page must not leave the viewport down in the payouts table.
+      window.scrollBy({ top: pagination.getBoundingClientRect().top - previousTop, behavior: "instant" });
+    }
+  }, [items, loading]);
 
   const [totals, setTotals] = useState<ExpenseTotals | null>(null);
   const [totalsLoading, setTotalsLoading] = useState(true);
@@ -967,8 +987,13 @@ export function ExpensesPage() {
             </div>
           </div>
 
-          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
-            <Table className="min-w-[760px]">
+          <div className="relative mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
+            {loading && items.length > 0 ? (
+              <div className="absolute inset-x-0 top-0 z-10 bg-app-surface/95 py-3 text-center text-sm text-app-muted" role="status" aria-live="polite">
+                Loading expenses...
+              </div>
+            ) : null}
+            <Table className="min-w-[760px]" aria-label="Expenses" aria-busy={loading}>
               <TableHeader>
                 <tr>
                   <TableHead>Date</TableHead>
@@ -980,7 +1005,7 @@ export function ExpensesPage() {
                 </tr>
               </TableHeader>
               <TableBody>
-                {loading ? (
+                {loading && items.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-slate-400">
                       <span role="status" aria-live="polite">Loading expenses...</span>
@@ -1011,7 +1036,7 @@ export function ExpensesPage() {
                         {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeleteExpense(expense)}>
+                        <Button variant="danger" size="sm" disabled={demoModeEnabled || loading} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeleteExpense(expense)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1023,7 +1048,7 @@ export function ExpensesPage() {
           </div>
           <p className="mt-2 text-xs text-slate-500 md:hidden">Swipe horizontally to review every expense column.</p>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
+          <nav ref={expensePaginationRef} className="mt-4 flex items-center justify-between gap-3" aria-label="Expense pagination">
             <p className="text-xs text-slate-400">
               {loading
                 ? "Loading expense total..."
@@ -1034,7 +1059,7 @@ export function ExpensesPage() {
                 variant="secondary"
                 size="sm"
                 disabled={offset === 0 || loading}
-                onClick={() => setOffset((current) => Math.max(0, current - limit))}
+                onClick={() => handleExpensePageChange(Math.max(0, offset - limit))}
               >
                 Previous
               </Button>
@@ -1042,12 +1067,12 @@ export function ExpensesPage() {
                 variant="secondary"
                 size="sm"
                 disabled={offset + limit >= total || loading}
-                onClick={() => setOffset((current) => current + limit)}
+                onClick={() => handleExpensePageChange(offset + limit)}
               >
                 Next
               </Button>
             </div>
-          </div>
+          </nav>
         </CardContent>
       </Card>
 

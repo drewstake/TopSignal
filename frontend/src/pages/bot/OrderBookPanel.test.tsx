@@ -63,22 +63,21 @@ describe("OrderBookPanel", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("renders aggregate depth, spread, state, and the supported level counts without trading controls", () => {
+  it("renders best bid and ask, spread, and state without level or trading controls", () => {
     const markup = renderToStaticMarkup(
       <OrderBookPanel contractId="CON.F.US.MNQ.U26" symbol="MNQ" />,
     );
 
     expect(markup).toContain("Order Book");
     expect(markup).toContain("MNQ · CON.F.US.MNQ.U26 · aggregate size by price");
-    expect(markup).toContain("Level 1 shows best bid/ask; Level 2 supplies market depth.");
+    expect(markup).toContain("Level 1 · Best bid and ask.");
     expect(markup).toContain("Loading");
     expect(markup).toContain("Loading order book…");
     expect(markup).toContain("Ask price");
     expect(markup).toContain("Bid price");
     expect(markup).toContain("Spread");
-    expect(markup).toContain('<option value="10">10</option>');
-    expect(markup).toContain('<option value="20" selected="">20</option>');
-    expect(markup).toContain('<option value="50">50</option>');
+    expect(markup).not.toContain("<select");
+    expect(markup).not.toContain("Levels / side");
     expect(markup).not.toContain("Buy");
     expect(markup).not.toContain("Sell");
   });

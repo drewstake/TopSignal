@@ -18,7 +18,6 @@ import type {
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart stub</div> }));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book stub</div> }));
 vi.mock("./BotAnalysisPanel", () => ({ default: () => <div>Analysis stub</div>, BotAnalysisPanel: () => <div>Analysis stub</div> }));
-vi.mock("./BotBacktestPanel", () => ({ default: () => <div>Backtest stub</div>, BotBacktestPanel: () => <div>Backtest stub</div> }));
 
 import { BotPage } from "./BotPage";
 

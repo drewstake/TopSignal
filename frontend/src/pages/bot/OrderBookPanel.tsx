@@ -3,20 +3,15 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
-  useState,
   useSyncExternalStore,
-  type RefObject,
 } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
-import { Select } from "../../components/ui/Select";
 import { streamProjectXMarketDepth } from "../../lib/api";
 import {
   normalizeOrderBookContractId,
   OrderBookStore,
   type OrderBookConnectionState,
-  type OrderBookLevelCount,
   type OrderBookLevelView,
   type OrderBookSide,
 } from "./orderBook";
@@ -42,13 +37,7 @@ export function OrderBookPanel({
   streamFactory = streamProjectXMarketDepth,
 }: OrderBookPanelProps) {
   const normalizedContractId = normalizeOrderBookContractId(contractId);
-  const store = useMemo(() => new OrderBookStore(normalizedContractId), [normalizedContractId]);
-  const [visibleLevelCount, setVisibleLevelCount] = useState<OrderBookLevelCount>(20);
-  const ladderRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    store.setVisibleLevelCount(visibleLevelCount);
-  }, [store, visibleLevelCount]);
+  const store = useMemo(() => new OrderBookStore(normalizedContractId, 1), [normalizedContractId]);
 
   useEffect(() => {
     if (demoMode || !normalizedContractId) {
@@ -57,10 +46,6 @@ export function OrderBookPanel({
     return connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
   }, [demoMode, normalizedContractId, store, streamFactory]);
 
-  const rowIndexes = useMemo(
-    () => Array.from({ length: visibleLevelCount }, (_, index) => index),
-    [visibleLevelCount],
-  );
   const displaySymbol = symbol?.trim();
   const displayMarket =
     displaySymbol && normalizedContractId
@@ -84,27 +69,8 @@ export function OrderBookPanel({
           ) : <OrderBookConnectionStatus store={store} />}
         </div>
         {!demoMode ? <p className="text-xs text-app-muted">
-          Available levels depend on your data subscription. Level 1 shows best bid/ask; Level 2 supplies market depth.
+          Level 1 · Best bid and ask.
         </p> : null}
-        {!demoMode ? <label className="flex items-center justify-between gap-3 text-xs text-app-muted">
-          <span>Levels / side</span>
-          <Select
-            className="h-11 w-24 py-0 text-xs sm:h-9"
-            aria-label="Visible order book levels per side"
-            value={visibleLevelCount}
-            onChange={(event) => {
-              const next = Number.parseInt(event.target.value, 10);
-              if (next === 10 || next === 20 || next === 50) {
-                store.setVisibleLevelCount(next);
-                setVisibleLevelCount(next);
-              }
-            }}
-          >
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-          </Select>
-        </label> : null}
       </CardHeader>
       <CardContent className="relative">
         {demoMode ? (
@@ -117,22 +83,17 @@ export function OrderBookPanel({
         ) : (
         <>
         <div
-          ref={ladderRef}
-          className="relative h-[430px] overflow-y-auto rounded-xl border border-app-border bg-app-bg/35 font-mono text-xs [scrollbar-color:rgb(var(--theme-border-strong))_transparent]"
-          aria-label={`${displayMarket} market depth`}
+          className="relative overflow-hidden rounded-xl border border-app-border bg-app-bg/35 font-mono text-xs"
+          aria-label={`${displayMarket} best bid and ask`}
         >
           <OrderBookSectionHeader side="ask" />
           <div className="flex flex-col-reverse" data-order-book-side="asks">
-            {rowIndexes.map((index) => (
-              <OrderBookLevelRow key={`ask:${index}`} store={store} side="ask" index={index} />
-            ))}
+            <OrderBookLevelRow store={store} side="ask" index={0} />
           </div>
-          <OrderBookSpread store={store} ladderRef={ladderRef} layoutToken={visibleLevelCount} />
+          <OrderBookSpread store={store} />
           <OrderBookSectionHeader side="bid" />
           <div data-order-book-side="bids">
-            {rowIndexes.map((index) => (
-              <OrderBookLevelRow key={`bid:${index}`} store={store} side="bid" index={index} />
-            ))}
+            <OrderBookLevelRow store={store} side="bid" index={0} />
           </div>
         </div>
         <OrderBookStateOverlay store={store} />
@@ -235,28 +196,13 @@ function OrderBookLevel({ side, level }: { side: OrderBookSide; level: OrderBook
 
 function OrderBookSpread({
   store,
-  ladderRef,
-  layoutToken,
 }: {
   store: OrderBookStore;
-  ladderRef: RefObject<HTMLDivElement | null>;
-  layoutToken: OrderBookLevelCount;
 }) {
   const spread = useSyncExternalStore(store.subscribeSpread, store.getSpreadSnapshot, store.getSpreadSnapshot);
-  const spreadRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const ladder = ladderRef.current;
-    const marker = spreadRef.current;
-    if (!ladder || !marker || spread.bestAsk === null || spread.bestBid === null) {
-      return;
-    }
-    ladder.scrollTop = Math.max(0, marker.offsetTop - (ladder.clientHeight - marker.offsetHeight) / 2);
-  }, [ladderRef, layoutToken, spread.bestAsk, spread.bestBid]);
 
   return (
     <div
-      ref={spreadRef}
       className="sticky z-20 flex h-9 items-center justify-center gap-2 border-y border-app-accent/30 bg-app-accent/10 px-3 font-sans text-[11px] text-app-accent backdrop-blur"
       aria-live="polite"
       aria-label={spread.spread === null ? "Spread unavailable" : `Spread ${priceFormatter.format(spread.spread)}`}

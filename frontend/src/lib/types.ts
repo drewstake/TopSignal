@@ -362,7 +362,7 @@ export interface AccountPnlCalendarDay {
   net_pnl: number;
 }
 
-export type ExpenseCategory = "evaluation_fee" | "activation_fee" | "reset_fee" | "data_fee" | "other";
+export type ExpenseCategory = "evaluation_fee" | "activation_fee" | "reset_fee" | "data_fee" | "other" | "refund";
 export type ExpenseAccountType = "no_activation" | "standard" | "practice";
 export type ExpensePlanSize = "50k" | "100k" | "150k";
 export type ExpenseRange = "week" | "month" | "ytd" | "all_time";
@@ -389,6 +389,7 @@ export interface CombineTrackerSuppressionsResponse {
 }
 
 export interface ExpenseCreateInput {
+  source_id?: string;
   expense_date: string;
   amount?: number;
   amount_cents?: number;
@@ -741,8 +742,8 @@ export type BotProbabilityMethod = "heuristic_scenario_weight";
 export type BotDataQualityStatus = "good" | "limited" | "insufficient" | "stale";
 export type BotMarketRegime = "trend" | "range" | "chop" | "volatile" | "quiet" | "unknown";
 export type BotVwapLocation = "above" | "below" | "at" | "unavailable";
-export type BotVolatilityState = "low" | "normal" | "elevated" | "extreme";
-export type BotVolumeState = "low" | "normal" | "elevated";
+export type BotVolatilityState = "low" | "normal" | "elevated" | "extreme" | "unavailable";
+export type BotVolumeState = "low" | "normal" | "elevated" | "unavailable";
 export type BotMultiTimeframeAlignmentStatus = "bullish" | "bearish" | "mixed" | "neutral" | "unavailable";
 
 export interface BotAnalysisTimeframe {
@@ -773,6 +774,16 @@ export interface BotAnalysisProvenance {
   contract_rollover?: boolean;
   minimum_feature_bars?: number;
   minimum_sufficient_bars?: number;
+  latest_candle_end_timestamp?: string | null;
+  market_session_open?: boolean;
+  freshness_status?: "fresh" | "stale" | "market_closed" | "unavailable";
+  open_session_age_seconds?: number | null;
+  freshness_interval_seconds?: number;
+  next_expected_candle_end_timestamp?: string | null;
+  excluded_contract_candle_count?: number;
+  excluded_timeframe_candle_count?: number;
+  unconfirmed_closed_candle_count?: number;
+  invalid_candle_count?: number;
 }
 
 export interface BotAnalysisDataQuality {
@@ -789,12 +800,23 @@ export interface BotAnalysisFeatures {
     fast_ema: number | null;
     slow_ema: number | null;
     slow_ema_slope: number | null;
+    strength_label?: "weak" | "moderate" | "strong" | "unavailable";
+    agreement?: "aligned" | "mixed" | "flat" | "unavailable";
+    components?: { label: string; direction: BotMarketBias; value: number | null }[];
+    fast_period?: number;
+    slow_period?: number;
   };
   volatility: {
     atr: number | null;
     atr_percent: number | null;
     percentile: number | null;
     state: BotVolatilityState;
+    period?: number;
+    reference_observations?: number;
+    reference_window_start?: string | null;
+    reference_window_end?: string | null;
+    recent_range_ratio?: number | null;
+    recent_range_state?: "cooling" | "stable" | "expanding" | "sharply_expanding" | "unavailable";
   };
   volume: {
     relative_volume: number | null;
@@ -803,6 +825,11 @@ export interface BotAnalysisFeatures {
   vwap: {
     value: number | null;
     location: BotVwapLocation;
+    scope?: string;
+    window_start?: string | null;
+    window_end?: string | null;
+    session_start?: string | null;
+    complete_session?: boolean;
   };
   multi_timeframe_alignment: {
     status: BotMultiTimeframeAlignmentStatus;
@@ -811,6 +838,11 @@ export interface BotAnalysisFeatures {
     timeframes: Array<{
       timeframe: string;
       direction: BotMarketBias;
+      latest_candle_end_timestamp?: string | null;
+      contract_id?: string | null;
+      closed_candle_count?: number;
+      fast_period?: number;
+      slow_period?: number;
     }>;
   };
   nearby_levels: {
@@ -1031,14 +1063,73 @@ export interface TradeEvaluationResult {
   data_confidence_score?: number;
 }
 
+export interface BotCollectedObservation {
+  status: string;
+  reason?: string;
+  contract_id?: string | null;
+  observed_at?: string | null;
+  age_seconds?: number | null;
+  eligible?: boolean;
+}
+
+export interface BotCollectedContext {
+  as_of: string;
+  captured_at?: string;
+  contract_id?: string;
+  events?: { status?: string; news_risk?: string; reason?: string; headlines?: { id: string; title: string; source: string; url: string | null; published_at: string | null }[] };
+  related_markets?: { status?: string; reason?: string; items?: { symbol: string; status: string; change_pct: number | null; change_bps?: number | null; reason?: string; observed_at?: string | null }[] };
+  scope?: string;
+  order_book?: BotCollectedObservation & { bid?: number | null; ask?: number | null; bid_size?: number | null; ask_size?: number | null; spread?: number | null; data_level?: string; received_at?: string | null; provider_timestamp?: string | null; freshness_limit_seconds?: number };
+  volume_profile?: BotCollectedObservation & { poc?: number | null; value_area_low?: number | null; value_area_high?: number | null; cumulative_delta?: number | null; observation_start?: string | null; observation_end?: string | null; received_through?: string | null; partial?: boolean; scope?: string; freshness_limit_seconds?: number };
+}
+
+export interface BotAnalysisExplanation {
+  headline: string;
+  supporting_evidence: string[];
+  conflicting_evidence: string[];
+  limitations: string[];
+  change_levels: { direction: "bullish" | "bearish"; price: number; condition: string }[];
+  scope: string;
+  context_evidence?: string[];
+}
+
+export interface BotScoreDefinition {
+  inputs: string[];
+  scale: string;
+  reference_window: string;
+  missing_data: string;
+  interpretation: string;
+}
+
+export interface BotDecisionExplanation {
+  status: string;
+  action: BotAction;
+  strategy: { name: string; revision?: string | null };
+  summary: string;
+  strategy_reason: string;
+  execution_mode: string;
+  candle_timestamp: string | null;
+  candle_close_timestamp: string | null;
+  contract_id: string;
+  checks: { id: string; label: string; status: "passed" | "failed" | "not_evaluated"; detail: string }[];
+  evaluated_at?: string | null;
+  basis: string;
+  limits: { max_contracts: number; max_open_position: number; max_daily_loss: number; max_trades_per_day: number; delivery_grace_seconds: number };
+}
+
 export interface BotAnalysis {
-  collected_context?: {
-    as_of: string;
-    events?: { news_risk?: string; reason?: string; headlines?: { id: string; title: string; source: string; url: string | null; published_at: string | null }[] };
-    related_markets?: { items?: { symbol: string; status: string; change_pct: number | null; change_bps?: number | null }[] };
-    order_book?: { status: string; spread?: number; age_seconds?: number };
-    volume_profile?: { status: string; poc?: number; value_area_low?: number; value_area_high?: number; cumulative_delta?: number | null; reason?: string };
-  } | null;
+  collected_context?: BotCollectedContext | null;
+  explanation?: BotAnalysisExplanation;
+  score_definitions?: Record<string, BotScoreDefinition>;
+  bot_decision?: BotDecisionExplanation;
+  context_coverage?: {
+    summary: string;
+    available: string[];
+    limited: string[];
+    missing: string[];
+    items: { id: string; label: string; status: "available" | "limited" | "missing"; detail: string }[];
+    scope: string;
+  };
   /** Versioned canonical contract. Fields remain optional for older API responses. */
   analysis_version?: string;
   probability_method?: BotProbabilityMethod;

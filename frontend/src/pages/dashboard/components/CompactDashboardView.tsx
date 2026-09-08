@@ -129,9 +129,6 @@ export interface CompactDashboardViewProps {
   daysError: string | null;
   tradesLoading: boolean;
   tradesError: string | null;
-  journalDays: ReadonlySet<string>;
-  journalDaysLoading: boolean;
-  journalDaysError?: string | null;
   selectedDate: string | null;
   selectedDateLabel?: string | null;
   calendarScopeKey?: string;
@@ -139,7 +136,6 @@ export interface CompactDashboardViewProps {
   accountNameById?: Readonly<Record<number, string>>;
   onDaySelect: (date: string | null) => void;
   onClearDayFilter?: () => void;
-  onJournalDayOpen: (date: string) => void;
   onCalendarVisibleRangeChange: (startDate: string, endDate: string) => void;
 }
 
@@ -161,9 +157,6 @@ export function CompactDashboardView({
   daysError,
   tradesLoading,
   tradesError,
-  journalDays,
-  journalDaysLoading,
-  journalDaysError = null,
   selectedDate,
   selectedDateLabel,
   calendarScopeKey,
@@ -171,7 +164,6 @@ export function CompactDashboardView({
   accountNameById,
   onDaySelect,
   onClearDayFilter,
-  onJournalDayOpen,
   onCalendarVisibleRangeChange,
 }: CompactDashboardViewProps) {
   const greeting = useGreeting();
@@ -394,13 +386,9 @@ export function CompactDashboardView({
             rangeEndDate={rangeEndDate}
             loading={daysLoading}
             error={daysError}
-            journalDays={journalDays}
-            journalDaysLoading={journalDaysLoading}
-            journalDaysError={journalDaysError}
             scopeKey={resolvedCalendarScopeKey}
             selectedDate={selectedDate}
             onDaySelect={onDaySelect}
-            onJournalDayOpen={onJournalDayOpen}
             onVisibleRangeChange={onCalendarVisibleRangeChange}
           />
         </div>

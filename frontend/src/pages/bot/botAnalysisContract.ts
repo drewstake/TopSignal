@@ -17,10 +17,14 @@ import type {
 import {
   buildMarketContext,
   LOCAL_CONTEXT_VERSION,
+  candleEndMs,
+  freshnessIntervalSeconds,
+  openSessionElapsedSeconds,
   timeframeLabel,
   type BotMarketSnapshot,
   type MarketContext,
 } from "./botMarketContext";
+import { isFuturesSessionOpen } from "./botCandleGaps";
 
 export const CANONICAL_ANALYSIS_VERSION = "market_analysis_v2";
 export const HEURISTIC_SCENARIO_WEIGHT_METHOD: BotProbabilityMethod = "heuristic_scenario_weight";
@@ -129,6 +133,27 @@ export function buildDisplayAnalysis(evaluation: BotEvaluation | null, nowMs = D
     return localContext ? buildLocalFallback(evaluation, localContext) : null;
   }
   return normalizeBackendAnalysis(evaluation.analysis, evaluation, localContext);
+}
+
+export interface AnalysisFreshness {
+  status: "fresh" | "stale" | "market_closed" | "unavailable";
+  ageSeconds: number | null;
+  openSessionAgeSeconds: number | null;
+}
+
+/** Age from candle close, accruing only while this instrument's market is open. */
+export function currentAnalysisFreshness(analysis: DisplayAnalysis, nowMs: number): AnalysisFreshness {
+  const p = analysis.provenance;
+  const start = Date.parse(p.latest_candle_timestamp ?? "");
+  const explicitEnd = Date.parse(p.latest_candle_end_timestamp ?? "");
+  const end = Number.isFinite(explicitEnd) ? explicitEnd : candleEndMs(start, p.timeframe.unit, p.timeframe.unit_number);
+  if (!Number.isFinite(end) || end > nowMs) return { status: "unavailable", ageSeconds: null, openSessionAgeSeconds: null };
+  const symbol = p.resolved_symbol ?? p.resolved_contract_id ?? p.configured_contract_id;
+  const ageSeconds = Math.max(0, (nowMs - end) / 1000);
+  const threshold = (p.freshness_interval_seconds ?? freshnessIntervalSeconds(end, p.timeframe.unit, p.timeframe.unit_number, symbol)) + p.stale_after_seconds;
+  const openSeconds = openSessionElapsedSeconds(end, nowMs, symbol, threshold);
+  const status = p.is_stale || openSeconds > threshold ? "stale" : isFuturesSessionOpen(nowMs, symbol) ? "fresh" : "market_closed";
+  return { status, ageSeconds, openSessionAgeSeconds: openSeconds };
 }
 
 function buildEvaluationMarketContext(evaluation: BotEvaluation, nowMs: number): MarketContext | null {
@@ -383,12 +408,12 @@ function localScoreDrivers(context: MarketContext): BotAnalysisScoreDrivers {
   const bullish: string[] = [];
   const bearish: string[] = [];
   const neutral: string[] = [];
-  if (context.trend?.direction === "bullish") bullish.push(`Closed-bar trend is bullish (${Math.round(context.trend.strength * 100)}/100 strength).`);
-  if (context.trend?.direction === "bearish") bearish.push(`Closed-bar trend is bearish (${Math.round(context.trend.strength * 100)}/100 strength).`);
+  if (context.trend?.direction === "bullish") bullish.push("Closed-bar EMA gap and slope lean bullish in this local fallback.");
+  if (context.trend?.direction === "bearish") bearish.push("Closed-bar EMA gap and slope lean bearish in this local fallback.");
   if (context.trend?.direction === "neutral") neutral.push("Closed-bar trend is neutral.");
-  if (context.vwapLocation === "above") bullish.push("Latest closed price is above session VWAP.");
-  if (context.vwapLocation === "below") bearish.push("Latest closed price is below session VWAP.");
-  if (context.vwapLocation === "at") neutral.push("Latest closed price is at session VWAP.");
+  if (context.vwapLocation === "above") bullish.push("Latest closed price is above VWAP for the observed session candles.");
+  if (context.vwapLocation === "below") bearish.push("Latest closed price is below VWAP for the observed session candles.");
+  if (context.vwapLocation === "at") neutral.push("Latest closed price is at VWAP for the observed session candles.");
   if (context.marketRegime === "range" || context.marketRegime === "quiet") neutral.push(`Market regime is ${context.marketRegime}.`);
   if (context.multiTimeframeAlignment.status === "mixed") neutral.push("Timeframe trends conflict.");
   if (context.relativeVolume !== null && context.relativeVolume < 0.7) neutral.push("Relative volume is below average.");
@@ -415,6 +440,9 @@ function provenanceFromContext(context: MarketContext | null, evaluation: BotEva
         missing_bars: gap.missingBars,
       })),
       gap_count: context.provenance.detectedGapCount,
+      configured_contract_id: evaluation.config.contract_id,
+      resolved_contract_id: evaluation.decision.contract_id ?? evaluation.config.contract_id,
+      resolved_symbol: evaluation.config.symbol,
     };
   }
   const closed = evaluation.candles.filter((candle) => !candle.is_partial);

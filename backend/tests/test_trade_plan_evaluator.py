@@ -412,7 +412,7 @@ def test_scoring_contract_is_versioned_auditable_and_schema_valid():
     result = _evaluate(_plan(), _context(market_regime="chop"))
     payload = result.to_payload()
 
-    assert result.scoring_model_version == "trade_plan_v2.0.0"
+    assert result.scoring_model_version == "trade_plan_v2.1.0"
     assert sum(result.category_maximums.values()) == 100
     assert result.category_scores == payload["category_awarded_points"]
     assert all(

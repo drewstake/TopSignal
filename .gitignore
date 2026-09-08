@@ -32,4 +32,4 @@ backend/journal_images/
 *.pdf
 
 # Local audit tools, test logs, and disposable verification artifacts
-tmp/audit-*/
+/tmp/

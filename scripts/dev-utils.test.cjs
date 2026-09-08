@@ -1,6 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const http = require("node:http");
+const { once } = require("node:events");
 
 const {
   classifyBackendDevChange,
@@ -96,4 +98,32 @@ test("backend readiness polling reports the last connection failure", async () =
     }),
     /Timed out waiting for http:\/\/127\.0\.0\.1:8000\/ready \(connection refused\)\./,
   );
+});
+
+test("a healthy backend from another launch cannot satisfy startup readiness", async () => {
+  let instanceId;
+  const server = http.createServer((_request, response) => {
+    if (instanceId) response.setHeader("X-TopSignal-Dev-Instance", instanceId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end('{"status":"ready"}');
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/ready`;
+    for (const otherInstance of [undefined, "original-cloud-backend"]) {
+      instanceId = otherInstance;
+      await assert.rejects(
+        waitForHttpReady(url, { timeoutMs: 0, expectedInstanceId: "new-offline-backend" }),
+        /Backend readiness response belongs to a different development process/,
+      );
+    }
+    instanceId = "new-offline-backend";
+    await waitForHttpReady(url, { timeoutMs: 0, expectedInstanceId: instanceId });
+    // Existing health polling without an instance requirement keeps working.
+    instanceId = undefined;
+    await waitForHttpReady(url, { timeoutMs: 0 });
+  } finally {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 });

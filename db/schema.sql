@@ -905,16 +905,20 @@ create table if not exists expenses (
   account_id bigint,
   provider text not null default 'topstep',
   expense_date date not null,
-  amount_cents integer not null check (amount_cents >= 0),
+  amount_cents integer not null,
   currency text not null default 'USD',
-  category text not null check (category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other')),
+  category text not null check (category in ('evaluation_fee', 'activation_fee', 'reset_fee', 'data_fee', 'other', 'refund')),
   account_type text check (account_type in ('no_activation', 'standard', 'practice')),
   plan_size text check (plan_size in ('50k', '100k', '150k')),
   source_id text,
   description text,
   tags text[] not null default '{}',
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint expenses_amount_cents_sign_check check (
+    (category = 'refund' and amount_cents < 0)
+    or (category <> 'refund' and amount_cents >= 0)
+  )
 );
 
 create index if not exists idx_expenses_expense_date
