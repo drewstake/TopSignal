@@ -30,6 +30,7 @@ function startBothProfiles({
   let cloudStarted = false;
   let stopping = false;
   let exitCode = 0;
+  let localBackendPort;
 
   function startCloud() {
     if (cloudStarted || stopping) {
@@ -43,7 +44,12 @@ function startBothProfiles({
     write(`[BOTH] Starting ${name === "LOCAL" ? "local ProjectX workspace at http://127.0.0.1:5174" : "regular cloud app (use the Vite URL printed below)"}.`);
     const child = spawnProcess(process.execPath, [devScript, ...args], {
       cwd: repoRoot,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        ...(name === "CLOUD" && localBackendPort
+          ? { TOPSIGNAL_DEV_RESERVED_BACKEND_PORT: String(localBackendPort) }
+          : {}),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
       windowsHide: true,
     });
@@ -75,8 +81,8 @@ function startBothProfiles({
     child.on("exit", (code, signal) => finish(code ?? (signal ? 1 : 0)));
     child.on("message", (message) => {
       if (name === "LOCAL" && message?.type === "topsignal-dev-ready") {
-        // Wait for the local backend to bind before the cloud supervisor picks
-        // its port, preventing both profiles from choosing the same free port.
+        // Reserve this port even while the local backend is restarting.
+        localBackendPort = message.backendPort;
         startCloud();
       }
     });

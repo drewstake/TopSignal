@@ -2,17 +2,87 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const http = require("node:http");
+const net = require("node:net");
+const { spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 
 const {
   classifyBackendDevChange,
+  createBackendEnvironmentSnapshot,
   createEnvironmentSnapshot,
+  findAvailablePort,
+  isPortAvailable,
   parseDotEnvFile,
   runDatabaseMigrations,
   waitForHttpReady,
 } = require("./dev-utils.cjs");
 
+test("supervised cloud backend retains the port and identity selected for frontend readiness", () => {
+  const parent = {
+    TOPSIGNAL_DEV_MIGRATIONS_APPLIED: "1",
+    TOPSIGNAL_DEV_BACKEND_PORT: "8003",
+    TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "1",
+    TOPSIGNAL_DEV_INSTANCE_ID: "current-launch",
+    DATABASE_URL: "parent-database",
+  };
+  const file = {
+    TOPSIGNAL_DEV_BACKEND_PORT: "8000",
+    TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "0",
+    TOPSIGNAL_DEV_INSTANCE_ID: "old-launch",
+    DATABASE_URL: "configured-database",
+  };
+  const environment = createBackendEnvironmentSnapshot(parent, file);
+  assert.equal(environment.TOPSIGNAL_DEV_BACKEND_PORT, "8003");
+  assert.equal(environment.TOPSIGNAL_DEV_BACKEND_PORT_STRICT, "1");
+  assert.equal(environment.TOPSIGNAL_DEV_INSTANCE_ID, "current-launch");
+  assert.equal(environment.DATABASE_URL, "configured-database");
+  assert.equal(file.TOPSIGNAL_DEV_BACKEND_PORT, "8000");
+  assert.equal(createBackendEnvironmentSnapshot({}, file).TOPSIGNAL_DEV_BACKEND_PORT, "8000");
+});
+
+test("backend port selection skips occupied ports and ports reserved during a sibling reload", async () => {
+  const server = net.createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  try {
+    assert.equal(await isPortAvailable(port), false);
+    await assert.rejects(findAvailablePort(port, { maxPort: port }), /No available TCP port/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+  // The sibling temporarily releases its socket while reloading, but still owns the port.
+  await assert.rejects(findAvailablePort(port, { maxPort: port, excludedPorts: [port] }), /No available TCP port/);
+  assert.equal(await findAvailablePort(port, { maxPort: port }), port);
+});
+
+test("an occupied local frontend fails once before backend startup", async () => {
+  let server;
+  if (await isPortAvailable(5174)) {
+    server = net.createServer();
+    server.listen(5174, "127.0.0.1");
+    await once(server, "listening");
+  }
+  try {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "dev.cjs"), "--offline", "--topstep"], {
+      encoding: "utf8",
+      timeout: 10000,
+      windowsHide: true,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Local frontend port 5174 is already in use/);
+    assert.match(result.stderr, /http:\/\/127\.0\.0\.1:5174/);
+    assert.doesNotMatch(result.stdout + result.stderr, /\[BACKEND\]|restarting \(|Applying pending/);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("backend code reload and environment restart are intentionally different", () => {
+  assert.equal(classifyBackendDevChange(null), "ignore");
+  assert.equal(classifyBackendDevChange(undefined), "ignore");
+  assert.equal(classifyBackendDevChange(""), "ignore");
   assert.equal(classifyBackendDevChange("app/main.py"), "code_reload");
   assert.equal(classifyBackendDevChange("app\\main.py"), "code_reload");
   assert.equal(classifyBackendDevChange(".env"), "supervisor_restart");

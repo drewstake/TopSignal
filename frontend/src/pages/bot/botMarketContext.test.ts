@@ -13,6 +13,7 @@ import {
   type BotMarketSnapshot,
 } from "./botMarketContext";
 import type { ProjectXMarketCandle } from "../../lib/types";
+import { buildCandlestickData, buildMarketLevels } from "./botChartData";
 
 function candle(timestamp: string, close: number, overrides: Partial<ProjectXMarketCandle> = {}): ProjectXMarketCandle {
   return {
@@ -166,6 +167,35 @@ describe("buildTimeframeTrends", () => {
 });
 
 describe("buildMarketContext", () => {
+  it("uses the chart's confirmed swing levels even when the source swing is over 600 bars old", () => {
+    const rows = seriesFiveMinute(800, () => 100);
+    rows[10] = { ...rows[10], high: 110, low: 90 };
+    const chartLevels = buildMarketLevels(buildCandlestickData(rows));
+    const nowMs = Date.parse(rows.at(-1)!.timestamp) + 5 * 60_000;
+    const context = buildMarketContext(snapshot(rows), nowMs)!;
+    expect(chartLevels.support).toBe(90);
+    expect(chartLevels.resistance).toBe(110);
+    expect(context.nearestSupport).toBe(chartLevels.support);
+    expect(context.nearestResistance).toBe(chartLevels.resistance);
+  });
+
+  it("does not invent a fallback level when no confirmed swing exists", () => {
+    const rows = seriesFiveMinute(80, index => 100 + index);
+    const context = buildMarketContext(snapshot(rows), Date.parse(rows.at(-1)!.timestamp) + 5 * 60_000)!;
+    expect(context.nearestSupport).toBeNull();
+    expect(context.nearestResistance).toBeNull();
+  });
+
+  it("keeps a partial candle and live price from sweeping computed levels", () => {
+    const rows = seriesFiveMinute(40, () => 100);
+    rows[10] = { ...rows[10], high: 110, low: 90 };
+    const nowMs = Date.parse(rows.at(-1)!.timestamp) + 5 * 60_000;
+    const partial = candle(new Date(nowMs).toISOString(), 120, { high: 150, low: 50, is_partial: true });
+    const context = buildMarketContext(snapshot([...rows, partial], 120), nowMs)!;
+    expect(context.nearestSupport).toBe(90);
+    expect(context.nearestResistance).toBe(110);
+    expect(context.lastPrice).toBe(100);
+  });
   it("does not promote a candle fetched while forming into a confirmed close", () => {
     const candles = seriesFiveMinute(40, index => 100 + index * .1);
     const nowMs = Date.parse(candles[candles.length - 1].timestamp) + 300_000;

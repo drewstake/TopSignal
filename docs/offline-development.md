@@ -4,8 +4,11 @@
 ProjectX workspace. Each uses its own backend and settings; a cloud failure
 does not stop the local workspace. Ctrl+C stops both. Use `npm run dev:cloud`
 to start just the regular cloud/login app, or `npm run dev:local` to start just
-the connected local workspace. Stop an existing standalone local/offline
-server before starting both because they use the same local port `5174`.
+the connected local workspace. If local port `5174` is already occupied, the
+launcher reports the conflict before starting another local backend; the cloud
+profile can still start. Use the existing local workspace, or stop its terminal
+with Ctrl+C before relaunching it. The cloud profile avoids the local backend's
+selected port even while that backend is reloading.
 
 Run from the repository root with the existing dependencies installed:
 
@@ -74,6 +77,12 @@ The dashboard refreshes broker accounts automatically. Use **Sync Latest Trades*
 to fetch trades into SQLite. API market-data requests and account-scoped
 streams can use the broker connection. Internet access and valid Topstep API
 credentials are required. The old process-global streamer remains disabled.
+The Bot page can load an MNQ Signal Chart, stream the order book, and display
+market context through that connection without a saved trading account or bot.
+Market analysis uses completed chart candles; bot decisions and account risk
+checks remain tied to a configured bot. Bot run controls still require a selected ProjectX
+account. With a Live CSV account selected, use **Load ProjectX chart** to connect
+the chart, order book, and market analysis explicitly; the CSV account remains selected and execution stays disabled.
 The recurring bot worker is enabled in this profile. Choose **Dry Run** on the
 Bot page to start the selected account's TopBot. It evaluates closed candles
 without sending orders; dry runs can resume when this local server restarts.

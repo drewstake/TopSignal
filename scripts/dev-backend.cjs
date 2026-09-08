@@ -2,9 +2,10 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { offlineEnvironment } = require("./offline-env.cjs");
+const { watchBackendSources } = require("./backend-source-watcher.cjs");
 const {
   classifyBackendDevChange,
-  createEnvironmentSnapshot,
+  createBackendEnvironmentSnapshot,
   findAvailablePort,
   isPortAvailable,
   parseDotEnvFile,
@@ -25,7 +26,7 @@ if (!fs.existsSync(pythonPath)) {
 }
 
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
-const snapshot = createEnvironmentSnapshot(process.env, backendEnv);
+const snapshot = createBackendEnvironmentSnapshot(process.env, backendEnv);
 const childEnv = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
   ? offlineEnvironment(snapshot, repoRoot, { projectx: process.env.TOPSIGNAL_LOCAL_PROJECTX === "1" })
   : snapshot;
@@ -86,7 +87,7 @@ let environmentRestartNoticeTimer = null;
 function startBackend() {
   const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(backendPort)];
   if (!useWrapperReload) {
-    args.splice(3, 0, "--reload");
+    args.splice(3, 0, "--reload", "--reload-dir", path.join(backendDir, "app"));
   }
 
   child = spawn(pythonPath, args, {
@@ -177,11 +178,7 @@ function handleBackendChange(fileName) {
 }
 
 function startBackendWatcher() {
-  const options = useWrapperReload ? { recursive: true } : undefined;
-
-  watcher = fs.watch(backendDir, options, (_eventType, fileName) => {
-    handleBackendChange(fileName);
-  });
+  watcher = watchBackendSources(backendDir, handleBackendChange);
 }
 
 function shutdown() {

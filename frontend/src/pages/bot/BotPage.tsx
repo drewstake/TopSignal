@@ -21,7 +21,7 @@ import type {
   ProjectXMarketCandle,
 } from "../../lib/types";
 import { BotMarketPanels } from "./BotMarketPanels";
-import { BotExpressAccountRequired, BotProviderWorkspaceBoundary } from "./BotAccountGate";
+import { BotMarketAccountPreview, BotProjectXAccountNotice, BotProviderWorkspaceBoundary } from "./BotAccountGate";
 import {
   getBotProviderAccountId,
   getProjectXBotAccounts,
@@ -240,6 +240,9 @@ export function BotPage() {
   );
   const activeAccountClassificationFresh = providerClassificationIsFresh(effectiveActiveAccount);
   const runtimeContinuousBlockReason = useMemo(() => {
+    if (activeProjectXAccountId === null) {
+      return "Select a ProjectX account to enable bot controls.";
+    }
     if (runtimeStatusError) {
       return `Runtime status could not be verified: ${runtimeStatusError}`;
     }
@@ -280,7 +283,7 @@ export function BotPage() {
         : "Live-submission reconciliation is not confirmed.";
     }
     return null;
-  }, [runtimeStatus, runtimeStatusError]);
+  }, [activeProjectXAccountId, runtimeStatus, runtimeStatusError]);
   const liveRunBlockReason = useMemo(() => {
     if (runtimeContinuousBlockReason) {
       return runtimeContinuousBlockReason;
@@ -757,7 +760,7 @@ export function BotPage() {
     }
   }
 
-  function handleSelectExpressAccount(accountId: number) {
+  function handleSelectProjectXAccount(accountId: number) {
     if (!projectXAccounts.some((account) => account.id === accountId)) {
       return;
     }
@@ -778,24 +781,7 @@ export function BotPage() {
     );
   }
 
-  if (activeProjectXAccountId === null) {
-    return (
-      <BotProviderWorkspaceBoundary
-        activeAccount={activeAccount}
-        fallback={
-          <BotExpressAccountRequired
-            activeAccount={activeAccount}
-            expressAccounts={projectXAccounts}
-            onSelectAccount={handleSelectExpressAccount}
-          />
-        }
-      >
-        {null}
-      </BotProviderWorkspaceBoundary>
-    );
-  }
-
-  if (loading) {
+  if (loading && activeProjectXAccountId !== null) {
     return (
       <div className="grid gap-5 lg:grid-cols-[1fr_1.4fr]" role="status" aria-live="polite" aria-busy="true">
         <h1 className="sr-only">Trading Bot</h1>
@@ -807,23 +793,19 @@ export function BotPage() {
   }
 
   return (
-    <BotProviderWorkspaceBoundary
-      activeAccount={activeAccount}
-      fallback={
-        <BotExpressAccountRequired
-          activeAccount={activeAccount}
-          expressAccounts={projectXAccounts}
-          onSelectAccount={handleSelectExpressAccount}
-        />
-      }
-    >
     <div className="space-y-5 pb-8">
       <h1 className="sr-only">Trading Bot</h1>
-      <DemoModeNotice>
+      {activeProjectXAccountId === null ? (
+        <BotProjectXAccountNotice
+          activeAccount={activeAccount}
+          projectXAccounts={projectXAccounts}
+          onSelectAccount={handleSelectProjectXAccount}
+        />
+      ) : <DemoModeNotice>
         <p>
           Signals, activity, and charts are a fixed read-only snapshot. Run controls and live market streams are disabled.
         </p>
-      </DemoModeNotice>
+      </DemoModeNotice>}
       {error ? <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200" role="alert">{error}</div> : null}
       {configWarnings.map((warning) => (
         <div key={warning} className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="status">
@@ -836,11 +818,11 @@ export function BotPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <CardTitle>TopBot</CardTitle>
-              <CardDescription>MNQ · TopBot Adaptive · {activeAccount?.name} ({activeProjectXAccountId})</CardDescription>
+              <CardDescription>MNQ · TopBot Adaptive · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
               <p className="mt-2 text-sm text-app-muted">5-minute EMA/VWAP pullback · Long bias: shorts need a falling 50 EMA · 1 contract · Hold for 50-point stop / 50-point target</p>
             </div>
             <Badge variant={selectedBot?.enabled ? "positive" : "neutral"}>
-              {selectedBot?.enabled ? (selectedBot.execution_mode === "live" ? "Live Run active" : "Dry Run active") : "Stopped"}
+              {activeProjectXAccountId === null ? "View only" : selectedBot?.enabled ? (selectedBot.execution_mode === "live" ? "Live Run active" : "Dry Run active") : "Stopped"}
             </Badge>
           </div>
         </CardHeader>
@@ -899,7 +881,7 @@ export function BotPage() {
                   </div>
                 ) : null}
               </div>
-              <div
+              {activeProjectXAccountId !== null ? <div
                 className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-300"
                 role="status"
                 aria-label="Automation runtime status"
@@ -957,10 +939,11 @@ export function BotPage() {
                   </Button>
                 ) : null}
                 {runtimeStatusError ? <span>{runtimeStatusError}</span> : null}
-              </div>
+              </div> : null}
             </CardHeader>
             <CardContent>
               <div className="space-y-5">
+                {activeProjectXAccountId !== null ? <>
                 {classificationVerification ? (
                   <div
                     className={
@@ -1023,6 +1006,7 @@ export function BotPage() {
                     </p>
                   </div>
                 ) : null}
+                </> : null}
                 {selectedBot ? (
                   <div className="space-y-4">
                     {selectedBotEvaluation ? (
@@ -1073,7 +1057,7 @@ export function BotPage() {
                     ) : null}
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-400">Ready for your first run.</p>
+                  <p className="text-sm text-slate-400">{activeProjectXAccountId === null ? "Select a ProjectX account to view its run activity." : "Ready for your first run."}</p>
                 )}
 
                 <div className="border-t border-slate-800 pt-5">
@@ -1134,6 +1118,7 @@ export function BotPage() {
             </CardContent>
           </Card>
 
+          <BotProviderWorkspaceBoundary activeAccount={activeAccount} fallback={<BotMarketAccountPreview key={activeAccount?.id ?? "no-account"} activeAccount={activeAccount} demoMode={demoModeEnabled} />}>
           <BotMarketPanels
             key={`${activeProjectXAccountId}:${selectedBot?.id ?? "no-bot"}:${authenticatedCacheScope}`}
             bot={selectedBot}
@@ -1145,10 +1130,10 @@ export function BotPage() {
             evaluating={actionLoading === "dry_run" || actionLoading === "live" || actionLoading === "evaluate"}
             onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
           />
+          </BotProviderWorkspaceBoundary>
         </div>
       </div>
     </div>
-    </BotProviderWorkspaceBoundary>
   );
 }
 

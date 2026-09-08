@@ -300,6 +300,9 @@ class OrderBookSubscription:
 class ProjectXMarketDepthSession:
     """One server-side ProjectX market-hub connection for one TopSignal user."""
 
+    _subscribe_target = _SUBSCRIBE_TARGET
+    _unsubscribe_target = _UNSUBSCRIBE_TARGET
+
     def __init__(
         self,
         *,
@@ -982,7 +985,7 @@ class ProjectXMarketDepthSession:
             try:
                 await self._send_invocation_locked(
                     current_websocket,
-                    _SUBSCRIBE_TARGET,
+                    self._subscribe_target,
                     contract_id,
                     current_generation,
                 )
@@ -1006,7 +1009,7 @@ class ProjectXMarketDepthSession:
             self._provider_subscribed.discard(contract_id)
             await self._send_invocation_locked(
                 websocket,
-                _UNSUBSCRIBE_TARGET,
+                self._unsubscribe_target,
                 contract_id,
                 connection_generation,
             )
@@ -1086,14 +1089,14 @@ class ProjectXMarketDepthSession:
                 return
             self._latest_contract_invocation.pop(contract_id, None)
             has_error = bool(frame.get("error"))
-            if target == _SUBSCRIBE_TARGET:
+            if target == self._subscribe_target:
                 if has_error:
                     if self._connection_generation == pending_generation:
                         self._provider_subscribed.discard(contract_id)
                     unavailable_contract = contract_id
                 else:
                     connected_contract = contract_id
-            elif target == _UNSUBSCRIBE_TARGET and has_error:
+            elif target == self._unsubscribe_target and has_error:
                 unsubscribe_failed = True
 
         if unavailable_contract is not None:

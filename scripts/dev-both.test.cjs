@@ -30,7 +30,10 @@ test("starts connected local first, then cloud only after the local backend has 
   assert.equal(h.launches.length, 2);
   assert.deepEqual(h.launches[1].args.slice(1), []);
   assert.notEqual(h.launches[0].options.env, h.launches[1].options.env);
-  assert.deepEqual(h.launches[0].options.env, h.launches[1].options.env);
+  assert.deepEqual(h.launches[1].options.env, {
+    ...h.launches[0].options.env,
+    TOPSIGNAL_DEV_RESERVED_BACKEND_PORT: "8000",
+  });
   h.launches[0].child.emit("message", { type: "topsignal-dev-ready" });
   assert.equal(h.launches.length, 2);
 });

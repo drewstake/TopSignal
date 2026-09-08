@@ -226,6 +226,51 @@ function withDecisionExplanation(status: BotEvaluation["status"] = "held", actio
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-07-09T15:05:20Z")); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
+function accountFreeSnapshot(unitNumber = 5): BotMarketSnapshot {
+  const end = Date.parse("2026-07-09T15:05:00Z");
+  return {
+    contractKey: `${bot.contract_id}:minute:${unitNumber}`, unit: "minute", unitNumber,
+    candles: Array.from({ length: 40 }, (_, index) => ({
+      ...chartCandle(new Date(end - (40 - index) * unitNumber * 60_000).toISOString()), unit_number: unitNumber,
+      open: 100 + index, high: 102 + index, low: 99 + index, close: 101 + index,
+    })),
+    lastPrice: 888888, updatedAt: new Date().toISOString(),
+  };
+}
+
+it("shows account-free context from closed candles without turning it into a bot decision", () => {
+  const snapshot = accountFreeSnapshot();
+  snapshot.candles.push({ ...chartCandle("2026-07-09T15:05:00Z"), close: 999999, high: 999999, is_partial: true });
+  render(<BotAnalysisPanel bot={null} market={bot} evaluation={null} marketSnapshot={snapshot} />);
+  expect(screen.getByRole("heading", { name: "Chart market context" })).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "5m trend leans bullish" })).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "What supports this read" })).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "What conflicts with it" })).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "Computed levels · 5m" })).not.toBeNull();
+  expect(screen.getByText("140.00")).not.toBeNull();
+  expect(screen.getByText(/Based on 40 completed 5m candles/)).not.toBeNull();
+  expect(screen.getByText("Excluded 1 partial candle.")).not.toBeNull();
+  expect(screen.queryByText(/888,888|999,999/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "Evaluate bot" })).toBeNull();
+});
+
+it("rejects another market's snapshot and follows chart timeframe changes without a bot", () => {
+  const snapshot = accountFreeSnapshot(1);
+  const view = render(<BotAnalysisPanel bot={null} market={{ ...bot, contract_id: "different-contract" }} evaluation={null} marketSnapshot={snapshot} />);
+  expect(screen.getByText("Waiting for chart candles")).not.toBeNull();
+  expect(screen.queryByText("140.00")).toBeNull();
+  view.rerender(<BotAnalysisPanel bot={null} market={bot} evaluation={null} marketSnapshot={snapshot} />);
+  expect(screen.getByText(/Based on 40 completed 1m candles/)).not.toBeNull();
+});
+
+it("labels stale chart context without claiming a fresh bot evaluation", () => {
+  const snapshot = accountFreeSnapshot();
+  vi.setSystemTime(new Date("2026-07-09T17:00:00Z"));
+  render(<BotAnalysisPanel bot={null} market={bot} evaluation={null} marketSnapshot={snapshot} />);
+  expect(screen.getByText("Stale candles")).not.toBeNull();
+  expect(screen.queryByRole("heading", { name: "TopBot decision" })).toBeNull();
+});
+
 describe("BotAnalysisPanel evidence and decision", () => {
   it("answers the first-screen questions without probability bars or overlapping scores", () => {
     const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={withDecisionExplanation()} />);

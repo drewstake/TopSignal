@@ -6,7 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
+import { Card, CardTitle } from "../../components/ui/Card";
 import { streamProjectXMarketDepth } from "../../lib/api";
 import {
   normalizeOrderBookContractId,
@@ -53,53 +53,35 @@ export function OrderBookPanel({
       : displaySymbol || normalizedContractId || "No contract selected";
 
   return (
-    <Card aria-label="Order book">
-      <CardHeader className="space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle>Order Book</CardTitle>
-            <CardDescription className="truncate" title={normalizedContractId ?? undefined}>
-              {displayMarket} · aggregate size by price
-            </CardDescription>
-          </div>
+    <Card aria-label="Order book" className="!p-3 md:!p-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <header className="flex items-center gap-2" title={`${displayMarket} · Level 1 best bid and ask`}>
+          <CardTitle className="md:!text-sm">Order Book</CardTitle>
+          {displaySymbol ? <span className="text-xs text-app-muted">{displaySymbol.split(".").at(-1)}</span> : null}
           {demoMode ? (
-            <span className="inline-flex min-h-7 items-center rounded-md border border-app-accent/35 bg-app-accent/10 px-2 text-[11px] font-semibold text-app-accent">
+            <span className="text-[10px] text-app-muted">
               Demo · stream off
             </span>
           ) : <OrderBookConnectionStatus store={store} />}
-        </div>
-        {!demoMode ? <p className="text-xs text-app-muted">
-          Level 1 · Best bid and ask.
-        </p> : null}
-      </CardHeader>
-      <CardContent className="relative">
+        </header>
         {demoMode ? (
-          <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-app-accent/35 bg-app-accent/5 px-6 text-center" role="note">
-            <p className="text-sm font-semibold text-app-text">Live market depth is paused in Demo Mode</p>
-            <p className="mt-2 max-w-lg text-xs leading-5 text-app-muted">
-              TopSignal does not open a ProjectX depth stream while sample data is active. Return to live mode to view bid and ask liquidity.
-            </p>
-          </div>
+          <p className="text-xs text-app-muted" role="note">Live market depth is paused in Demo Mode</p>
         ) : (
-        <>
         <div
-          className="relative overflow-hidden rounded-xl border border-app-border bg-app-bg/35 font-mono text-xs"
+          className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 font-mono text-xs sm:w-auto sm:flex-1"
           aria-label={`${displayMarket} best bid and ask`}
         >
-          <OrderBookSectionHeader side="ask" />
-          <div className="flex flex-col-reverse" data-order-book-side="asks">
-            <OrderBookLevelRow store={store} side="ask" index={0} />
-          </div>
-          <OrderBookSpread store={store} />
-          <OrderBookSectionHeader side="bid" />
           <div data-order-book-side="bids">
             <OrderBookLevelRow store={store} side="bid" index={0} />
           </div>
+          <OrderBookSpread store={store} />
+          <div data-order-book-side="asks">
+            <OrderBookLevelRow store={store} side="ask" index={0} />
+          </div>
         </div>
-        <OrderBookStateOverlay store={store} />
-        </>
         )}
-      </CardContent>
+      </div>
+      {!demoMode ? <OrderBookStateOverlay store={store} /> : null}
     </Card>
   );
 }
@@ -110,28 +92,16 @@ function OrderBookConnectionStatus({ store }: { store: OrderBookStore }) {
   const tone = connectionTone(meta.connection);
   return (
     <span
-      className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] ${tone}`}
-      title={meta.message ?? undefined}
+      className={`inline-flex items-center gap-1.5 text-[10px] ${tone}`}
+      title={meta.message ? `${label}: ${meta.message}` : label}
       aria-live="polite"
       aria-atomic="true"
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${meta.connection === "connected" ? "animate-pulse bg-app-positive" : "bg-current opacity-70"}`}
       />
-      {label}
+      <span className={meta.connection === "connected" ? "sr-only" : undefined}>{label}</span>
     </span>
-  );
-}
-
-function OrderBookSectionHeader({ side }: { side: OrderBookSide }) {
-  return (
-    <div
-      className="sticky top-0 z-20 grid grid-cols-[minmax(0,1fr)_5rem] border-b border-app-border bg-app-surface/95 px-3 py-1.5 text-[10px] uppercase tracking-wide text-app-muted backdrop-blur"
-      aria-hidden="true"
-    >
-      <span>{side === "ask" ? "Ask price" : "Bid price"}</span>
-      <span className="text-right">Size</span>
-    </div>
   );
 }
 
@@ -165,7 +135,7 @@ function OrderBookLevel({ side, level }: { side: OrderBookSide; level: OrderBook
       : "border-app-positive/45 bg-app-positive/10";
   return (
     <div
-      className={`relative grid h-7 grid-cols-[minmax(0,1fr)_5rem] items-center overflow-hidden border-b px-3 tabular-nums ${
+      className={`relative flex min-h-8 flex-wrap items-center justify-center gap-x-2 gap-y-0.5 overflow-hidden rounded-md border px-2 py-1 tabular-nums ${
         level?.isBest ? bestTone : "border-app-border/35"
       }`}
       data-price={level?.price}
@@ -184,11 +154,12 @@ function OrderBookLevel({ side, level }: { side: OrderBookSide; level: OrderBook
           aria-hidden="true"
         />
       ) : null}
-      <span className={`relative z-10 ${level ? sideTone : "text-app-muted-strong"}`}>
+      <span className={`relative z-10 font-sans text-[10px] uppercase ${sideTone}`}>{side}</span>
+      <span className={`relative z-10 font-semibold ${level ? sideTone : "text-app-muted-strong"}`}>
         {level ? priceFormatter.format(level.price) : "—"}
       </span>
-      <span className="relative z-10 text-right text-app-text-soft">
-        {level ? sizeFormatter.format(level.size) : "—"}
+      <span className="relative z-10 text-[10px] text-app-muted" title="Size (contracts)">
+        ×{level ? sizeFormatter.format(level.size) : "—"}
       </span>
     </div>
   );
@@ -203,11 +174,11 @@ function OrderBookSpread({
 
   return (
     <div
-      className="sticky z-20 flex h-9 items-center justify-center gap-2 border-y border-app-accent/30 bg-app-accent/10 px-3 font-sans text-[11px] text-app-accent backdrop-blur"
+      className="flex flex-col items-center justify-center px-1 font-sans text-[10px] leading-tight text-app-muted sm:flex-row sm:gap-1.5"
       aria-live="polite"
       aria-label={spread.spread === null ? "Spread unavailable" : `Spread ${priceFormatter.format(spread.spread)}`}
     >
-      <span className="uppercase tracking-wide text-app-muted">Spread</span>
+      <span>Spread</span>
       <span className="font-mono font-semibold tabular-nums">
         {spread.spread === null ? "—" : priceFormatter.format(spread.spread)}
       </span>
@@ -224,7 +195,7 @@ function OrderBookStateOverlay({ store }: { store: OrderBookStore }) {
   const isUnavailable = meta.connection === "unavailable";
   return (
     <div
-      className={`absolute inset-x-3 top-1/2 z-30 -translate-y-1/2 rounded-lg border px-3 py-2 text-center font-sans text-xs backdrop-blur ${
+      className={`mt-2 rounded-md border px-2 py-1 text-center font-sans text-xs ${
         isUnavailable
           ? "border-app-negative/35 bg-app-bg/90 text-app-negative"
           : "border-app-border bg-app-bg/90 text-app-muted"

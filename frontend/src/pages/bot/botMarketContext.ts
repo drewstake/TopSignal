@@ -6,7 +6,7 @@ import type {
   BotVwapLocation,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { buildCandlestickData, buildLiquidityLevels, buildVwapData } from "./botChartData";
+import { BOT_CHART_MAX_BARS, buildCandlestickData, buildMarketLevels, buildVwapData } from "./botChartData";
 import { findCandleGaps, intervalSecondsFor, isFuturesSessionOpen } from "./botCandleGaps";
 
 /**
@@ -114,8 +114,7 @@ const EASTERN_TIME_ZONE = "America/New_York";
 const VWAP_SESSION_START_TIME = "18:00";
 const MAX_HIGHER_TIMEFRAMES = 2;
 /** Cap context computations; recent bars carry the read and deep history is paged in for charting, not context. */
-const MAX_CONTEXT_BARS = 2_000;
-const MAX_LEVEL_SCAN_BARS = 600;
+const MAX_CONTEXT_BARS = BOT_CHART_MAX_BARS;
 const LOCAL_CONTEXT_VERSION = "local_fallback_market_analysis_v2";
 
 export { LOCAL_CONTEXT_VERSION };
@@ -289,7 +288,7 @@ export function buildMarketContext(
       ? ((lastPrice - sessionLevels.priorSessionClose) / Math.abs(sessionLevels.priorSessionClose)) * 100
       : null;
 
-  const { nearestSupport, nearestResistance } = computeNearestLevels(candles, lastPrice);
+  const { support: nearestSupport, resistance: nearestResistance } = buildMarketLevels(buildCandlestickData(candles));
   const trends = buildTimeframeTrends(candles, snapshot.unit, snapshot.unitNumber);
   const trend = trends[0] ?? null;
   const multiTimeframeAlignment = classifyTimeframeAlignment(trends);
@@ -753,37 +752,6 @@ function easternHourOf(timestampMs: number): number {
   }
   easternHourMemo.set(hourKey, hour);
   return hour;
-}
-
-function computeNearestLevels(
-  allCandles: ProjectXMarketCandle[],
-  referencePrice: number,
-): { nearestSupport: number | null; nearestResistance: number | null } {
-  // Liquidity scanning is quadratic in the worst case; bound the window.
-  const candles = allCandles.slice(-MAX_LEVEL_SCAN_BARS);
-  const closedCandles = candles.filter((candle) => !candle.is_partial);
-  const chartCandles = buildCandlestickData(closedCandles.length >= 5 ? closedCandles : candles, {
-    bridgeConsecutiveGaps: false,
-  });
-  const liquidityLevels = buildLiquidityLevels(chartCandles);
-  const liquiditySupport = liquidityLevels.find((level) => level.side === "sell")?.price ?? null;
-  const liquidityResistance = liquidityLevels.find((level) => level.side === "buy")?.price ?? null;
-
-  let swingSupport: number | null = null;
-  let swingResistance: number | null = null;
-  for (const candle of candles) {
-    if (Number.isFinite(candle.low) && candle.low < referencePrice) {
-      swingSupport = swingSupport === null ? candle.low : Math.max(swingSupport, candle.low);
-    }
-    if (Number.isFinite(candle.high) && candle.high > referencePrice) {
-      swingResistance = swingResistance === null ? candle.high : Math.min(swingResistance, candle.high);
-    }
-  }
-
-  return {
-    nearestSupport: liquiditySupport ?? swingSupport,
-    nearestResistance: liquidityResistance ?? swingResistance,
-  };
 }
 
 /** Re-exported so UI code can mark in/out-of-session timestamps consistently. */

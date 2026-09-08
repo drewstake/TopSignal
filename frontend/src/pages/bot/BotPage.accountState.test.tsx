@@ -16,6 +16,7 @@ import type {
 } from "../../lib/types";
 
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart stub</div> }));
+vi.mock("./ProjectXSignalChart", () => ({ ProjectXSignalChart: () => <div>Market chart stub</div> }));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book stub</div> }));
 vi.mock("./BotAnalysisPanel", () => ({ default: () => <div>Analysis stub</div>, BotAnalysisPanel: () => <div>Analysis stub</div> }));
 

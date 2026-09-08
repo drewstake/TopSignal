@@ -6,18 +6,21 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import type { BotAnalysis, BotCollectedContext, BotConfig, BotEvaluation } from "../../lib/types";
 import { buildDisplayAnalysis, currentAnalysisFreshness, type DisplayAnalysis } from "./botAnalysisContract";
 import { buildMarketContext, candleEndMs, isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
+import type { BotChartMarket } from "./botChartData";
+import { buildMarketExplanation } from "./botMarketExplanation";
 
 interface BotAnalysisPanelProps {
   bot: BotConfig | null;
   evaluation: BotEvaluation | null;
   marketSnapshot?: BotMarketSnapshot | null;
+  market?: BotChartMarket | null;
   loading?: boolean;
   onEvaluate?: () => void;
 }
 const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 const timestampFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
 
-export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loading = false, onEvaluate }: BotAnalysisPanelProps) {
+export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, market = null, loading = false, onEvaluate }: BotAnalysisPanelProps) {
   const [nowMs, setNowMs] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);
@@ -26,7 +29,7 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loadi
   // A previous bot's response or chart must never supply this bot's explanation.
   const selectedEvaluation = bot && evaluation?.config.id === bot.id ? evaluation : null;
   const analysis = useMemo(() => buildDisplayAnalysis(selectedEvaluation, nowMs), [selectedEvaluation, nowMs]);
-  const snapshot = matchingSnapshot(marketSnapshot, bot) ? marketSnapshot : null;
+  const snapshot = (bot ? matchingSnapshot(marketSnapshot, bot) : matchingMarketSnapshot(marketSnapshot, market)) ? marketSnapshot : null;
   const raw = selectedEvaluation?.analysis;
   const freshness = analysis ? currentAnalysisFreshness(analysis, nowMs) : null;
   const newerBars = analysis ? newerClosedBars(analysis, snapshot, nowMs) : 0;
@@ -34,7 +37,7 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loadi
   const hasRead = Boolean(analysis && analysis.provenance.closed_candle_count >= (analysis.provenance.minimum_feature_bars ?? 10));
   return <Card className="min-w-0">
     <CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3">
-      <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and TopBot decision` : "Select a bot to evaluate"}</CardDescription></div>
+      <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and TopBot decision` : "Market context from the chart · No trading account required"}</CardDescription></div>
       {analysis && <div className="flex flex-wrap gap-2">
         <Badge variant={freshnessStatus === "stale" ? "warning" : "neutral"}>{freshnessLabel(freshnessStatus)}</Badge>
         <Badge variant={analysis.dataQuality.status === "good" ? "positive" : "warning"}>Candles: {analysis.dataQuality.status === "good" ? "good quality" : labelize(analysis.dataQuality.status).toLowerCase()}</Badge>
@@ -42,8 +45,13 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, loadi
       </div>}
     </div></CardHeader>
     <CardContent className="space-y-4">
-      {loading ? <Skeleton className="h-56" /> : !bot ? <EmptyState title="No bot selected" description="Select a bot to load its evaluation." /> : !selectedEvaluation ?
-        <EmptyState title="No evaluation yet" description="Evaluate this bot to explain its latest closed-candle signal and checks." action={onEvaluate && <Button onClick={onEvaluate}>Evaluate bot</Button>} /> : <>
+      {loading ? <Skeleton className="h-56" /> : !bot ? <>
+        <ChartMarketAnalysis snapshot={snapshot} nowMs={nowMs} />
+        <p className="text-xs text-app-muted">Bot-specific decisions and account risk checks require a configured bot. Viewing market data does not run a bot or place orders.</p>
+      </> : !selectedEvaluation ? <>
+        <ChartMarketAnalysis snapshot={snapshot} nowMs={nowMs} />
+        <EmptyState title="No evaluation yet" description="Evaluate this bot to explain its latest closed-candle signal and checks." action={onEvaluate && <Button onClick={onEvaluate}>Evaluate bot</Button>} />
+      </> : <>
           {analysis && hasRead ? <>
             <div className="grid gap-4 xl:grid-cols-2">
               <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
@@ -183,6 +191,72 @@ function CollectedContextDetails({ collected }: { collected: BotCollectedContext
       {collected.events?.headlines?.slice(0, 3).map(headline => <p key={headline.id} className="mt-2">{headline.title} <span className="text-app-muted">· {headline.source} · {formatTimestamp(headline.published_at)}</span></p>)}
     </section>
   </div>;
+}
+
+function ChartMarketAnalysis({ snapshot, nowMs }: { snapshot: BotMarketSnapshot | null; nowMs: number }) {
+  const context = useMemo(() => snapshot ? buildMarketContext(snapshot, nowMs) : null, [snapshot, nowMs]);
+  if (!context || context.provenance.closedCandleCount < 10) {
+    return <EmptyState title="Waiting for chart candles" description="Market analysis updates automatically after the chart has at least 10 completed candles. A working ProjectX market-data connection is required." />;
+  }
+  const closedAt = snapshot && context.asOfTimestamp
+    ? new Date(candleEndMs(Date.parse(context.asOfTimestamp), snapshot.unit, snapshot.unitNumber)).toISOString()
+    : null;
+  const explanation = buildMarketExplanation(context);
+  return <section className="space-y-4" aria-label="Chart market context">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h3 className="text-base font-semibold">Chart market context</h3>
+      <Badge variant={context.provenance.isStale ? "warning" : "neutral"}>
+        {context.provenance.isStale ? "Stale candles" : "Closed-candle analysis"}
+      </Badge>
+    </div>
+    <p className="text-xs text-app-muted">Based on {context.provenance.closedCandleCount} completed {context.provenance.timeframe} candles. Latest candle closed {formatTimestamp(closedAt)}. Partial candles are excluded.</p>
+    <section className="rounded-xl border border-app-border bg-app-bg/40 p-4" aria-label="Market interpretation">
+      <h3 className="text-lg font-semibold">{explanation.headline}</h3>
+      <p className="mt-2 text-sm text-app-muted">{explanation.summary}</p>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <EvidenceList title="What supports this read" items={explanation.supporting} empty="No directional evidence is available yet." />
+        <EvidenceList title="What conflicts with it" items={explanation.conflicting} empty="No opposing signal was found in the available candle indicators." />
+      </div>
+    </section>
+    <section className="rounded-xl border border-app-border p-4" aria-label="Computed chart levels">
+      <h3 className="text-sm font-semibold">Computed levels · {context.provenance.timeframe}</h3>
+      <div className="mt-3 grid grid-cols-2 gap-4">
+        <Metric label="Nearest support" value={formatPrice(context.nearestSupport)} />
+        <Metric label="Nearest resistance" value={formatPrice(context.nearestResistance)} />
+      </div>
+      <p className="mt-3 text-xs leading-5 text-app-muted">Same confirmed swing levels as the chart’s automatic Buy liq and Sell liq lines. Only completed candles are used; a level is unavailable if no qualifying swing remains. Manually moved lines do not change these calculations.</p>
+      <p className="mt-1 text-xs text-app-muted">Inferred from candle highs and lows; resting order size is not measured.</p>
+      {explanation.changes.length > 0 && <div className="mt-4 border-t border-app-border pt-3">
+        <h4 className="text-sm font-medium">What would change the read</h4>
+        <ul className="mt-2 space-y-1 text-sm text-app-text-soft">{explanation.changes.map(change => <li key={change}>{change}</li>)}</ul>
+      </div>}
+    </section>
+    <Details title="Market measurements">
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+      <Metric label="Direction" value={context.trend ? labelize(context.trend.direction) : "Insufficient trend history"} />
+      <Metric label="Market regime" value={labelize(context.marketRegime)} />
+      <Metric label="Last closed price" value={formatPrice(context.lastPrice)} />
+      <Metric label="VWAP" value={formatPrice(context.vwap)} />
+      <Metric label="Price versus VWAP" value={context.vwapLocation ? labelize(context.vwapLocation) : "Unavailable"} />
+      <Metric label="Volatility (ATR)" value={formatPrice(context.atr)} />
+      <Metric label="Relative volume" value={context.relativeVolume === null ? "Unavailable" : `${context.relativeVolume.toFixed(2)}×`} />
+    </div>
+    </Details>
+    {context.dataQuality.warnings.length > 0 && <div className="space-y-1 text-xs text-amber-200" role="status">
+      {context.dataQuality.warnings.map(warning => <p key={warning}>{warning}</p>)}
+    </div>}
+    <Details title="Data coverage">
+      <p className="text-sm">Candle quality: {labelize(context.dataQuality.status)}.</p>
+      {context.dataQuality.missingInputs.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-app-muted">
+        {context.dataQuality.missingInputs.map(input => <li key={input}>{input}</li>)}
+      </ul>}
+      <p className="mt-2 text-xs text-app-muted">Calculated from the chart’s loaded history. Account risk, news, and order-book depth are not inputs to this read.</p>
+    </Details>
+  </section>;
+}
+
+function matchingMarketSnapshot(snapshot: BotMarketSnapshot | null, market: BotChartMarket | null): boolean {
+  return Boolean(snapshot && market && snapshot.contractKey === `${market.contract_id}:${snapshot.unit}:${snapshot.unitNumber}`);
 }
 
 function SeparateChartContext({ snapshot, bot, nowMs }: { snapshot: BotMarketSnapshot; bot: BotConfig; nowMs: number }) {

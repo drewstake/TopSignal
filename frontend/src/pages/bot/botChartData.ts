@@ -2,6 +2,11 @@ import type { CandlestickData, LineData, SeriesMarker, UTCTimestamp } from "ligh
 
 import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 
+// Charting needs a market and timeframe, not a persisted bot or trading account.
+export type BotChartMarket = Pick<BotConfig,
+  "contract_id" | "symbol" | "timeframe_unit" | "timeframe_unit_number" | "lookback_bars"
+> & Partial<Pick<BotConfig, "id" | "strategy_type" | "fast_period" | "slow_period">>;
+
 export const BOT_CHART_MAX_BARS = 2_000;
 export const BOT_CHART_MIN_BARS = 300;
 export const BOT_CHART_INITIAL_BARS = BOT_CHART_MIN_BARS;
@@ -49,7 +54,7 @@ export interface LiquidityLevel {
 }
 
 interface BuildLiveCandleFromPriceOptions {
-  config: BotConfig;
+  config: BotChartMarket;
   price: ProjectXMarketPrice;
   closedCandles: ProjectXMarketCandle[];
   currentLiveCandle: ProjectXMarketCandle | null;
@@ -274,17 +279,29 @@ export function buildLiquidityLevels(
   return [buySide, sellSide].filter((level): level is LiquidityLevel => level !== null);
 }
 
-export function buildBotChartQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
+export function buildBotChartQuery(config: BotChartMarket, now: Date = new Date()): BotChartQueryWindow {
   const lookbackBars = Math.trunc(config.lookback_bars);
   const limit = Math.min(BOT_CHART_MAX_BARS, Math.max(BOT_CHART_MIN_BARS, lookbackBars * 4));
   return buildBotChartQueryForLimit(config, limit, now);
 }
 
-export function buildInitialBotChartQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
+/** Shared computed levels for chart lines and analysis; input is closed candles. */
+export function buildMarketLevels(candles: CandlestickData<UTCTimestamp>[]) {
+  const history = candles.filter(isFiniteCandlestick).slice().sort((a, b) => Number(a.time) - Number(b.time))
+    .slice(-BOT_CHART_MAX_BARS);
+  const liquidity = buildLiquidityLevels(history);
+  return {
+    liquidity,
+    support: liquidity.find(level => level.side === "sell")?.price ?? null,
+    resistance: liquidity.find(level => level.side === "buy")?.price ?? null,
+  };
+}
+
+export function buildInitialBotChartQuery(config: BotChartMarket, now: Date = new Date()): BotChartQueryWindow {
   return buildBotChartQueryForLimit(config, BOT_CHART_INITIAL_BARS, now);
 }
 
-function buildBotChartQueryForLimit(config: BotConfig, limit: number, now: Date): BotChartQueryWindow {
+function buildBotChartQueryForLimit(config: BotChartMarket, limit: number, now: Date): BotChartQueryWindow {
   const normalizedLimit = Math.min(BOT_CHART_MAX_BARS, Math.max(1, Math.trunc(limit)));
   const timeframeSeconds =
     UNIT_SECONDS_BY_NAME[config.timeframe_unit] * Math.max(1, Math.trunc(config.timeframe_unit_number));
@@ -306,7 +323,7 @@ export const BOT_CHART_HISTORY_PAGE_BARS = 500;
  * not starve the page of bars.
  */
 export function buildOlderCandlesQuery(
-  config: BotConfig,
+  config: BotChartMarket,
   earliestLoadedTimestamp: string,
   pageBars: number = BOT_CHART_HISTORY_PAGE_BARS,
 ): BotChartQueryWindow | null {
@@ -331,7 +348,7 @@ export function buildOlderCandlesQuery(
   };
 }
 
-export function buildBotLivePriceQuery(config: BotConfig, now: Date = new Date()): BotChartQueryWindow {
+export function buildBotLivePriceQuery(config: BotChartMarket, now: Date = new Date()): BotChartQueryWindow {
   const timeframeSeconds =
     UNIT_SECONDS_BY_NAME[config.timeframe_unit] * Math.max(1, Math.trunc(config.timeframe_unit_number));
   const end = Number.isFinite(now.getTime()) ? now : new Date();

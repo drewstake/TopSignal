@@ -5,6 +5,7 @@ const readline = require("node:readline");
 const fs = require("node:fs");
 const { offlineEnvironment } = require("./offline-env.cjs");
 const {
+  assertLocalFrontendAvailable,
   createEnvironmentSnapshot,
   findAvailablePort,
   parseDotEnvFile,
@@ -165,11 +166,14 @@ async function resolveBackendPort() {
     8000,
     "TOPSIGNAL_DEV_BACKEND_PORT",
   );
-  const availablePort = await findAvailablePort(preferredPort);
+  const reservedPort = process.env.TOPSIGNAL_DEV_RESERVED_BACKEND_PORT;
+  const availablePort = await findAvailablePort(preferredPort, {
+    excludedPorts: reservedPort ? [parsePort(reservedPort, 8000, "TOPSIGNAL_DEV_RESERVED_BACKEND_PORT")] : [],
+  });
 
   if (availablePort !== preferredPort) {
     process.stdout.write(
-      `[DEV] Backend port ${preferredPort} is in use; using http://127.0.0.1:${availablePort}.\n`,
+      `[DEV] Backend port ${preferredPort} is in use or reserved; using http://127.0.0.1:${availablePort}.\n`,
     );
   }
 
@@ -179,6 +183,7 @@ async function resolveBackendPort() {
 async function main() {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   if (offline) {
+    await assertLocalFrontendAvailable();
     process.env = offlineEnvironment(createEnvironmentSnapshot(process.env, backendEnv), repoRoot, {
       projectx: process.argv.includes("--topstep"),
     });

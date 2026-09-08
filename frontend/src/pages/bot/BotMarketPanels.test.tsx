@@ -9,6 +9,10 @@ import { OrderBookPanel } from "./OrderBookPanel";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: vi.fn(() => <div>Chart</div>) }));
+vi.mock("./ProjectXSignalChart", () => ({
+  ProjectXSignalChart: ({ onMarketData }: Pick<ComponentProps<typeof BotSignalChart>, "onMarketData">) =>
+    <BotSignalChart bot={null} authenticatedCacheScope="test" activity={null} lastEvaluation={null} refreshToken={0} onMarketData={onMarketData} />,
+}));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: vi.fn(() => <div>Depth</div>) }));
 vi.mock("./BotAnalysisPanel", () => ({
   BotAnalysisPanel: ({ marketSnapshot }: { marketSnapshot: BotMarketSnapshot | null }) =>

@@ -343,7 +343,6 @@ describe("Demo Mode transport isolation", () => {
     );
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
 
-    setDemoModeEnabled(true);
     priceController.enqueue(
       encoder.encode(
         'event: price\ndata: {"contract_id":"CON.F.US.MNQ.U26","symbol":"MNQ","price":19875.25,"timestamp":"2026-07-24T15:30:00.000Z"}\n\n',
@@ -356,6 +355,9 @@ describe("Demo Mode transport isolation", () => {
     );
     priceController.close();
     depthController.close();
+    // Buffer frames, then activate Demo before the reader's microtask runs.
+    // The transport now actively cancels its reader when Demo activates.
+    setDemoModeEnabled(true);
     await Promise.resolve();
     await Promise.resolve();
 

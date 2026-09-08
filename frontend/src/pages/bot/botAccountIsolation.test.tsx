@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Outlet, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { botsApi } from "../../lib/api";
 import type { AccountInfo, BotConfig } from "../../lib/types";
-import { BotExpressAccountRequired, BotProviderWorkspaceBoundary } from "./BotAccountGate";
+import { BotProjectXAccountNotice, BotProviderWorkspaceBoundary } from "./BotAccountGate";
 import { BotPage } from "./BotPage";
 import {
   filterBotConfigsByAccount,
@@ -20,6 +20,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -93,26 +94,33 @@ describe("Bot Live/ProjectX isolation", () => {
     expect(reconcileBotConfigs(current, [incoming[1]])).toEqual([incoming[1]]);
   });
 
-  it("mounts the production Bot page without any provider request while Live is active", async () => {
-    const live = account(9001, "csv_import", true);
-    const express = account(2001, "projectx");
+  it.each([
+    { name: "no saved accounts", accounts: [] },
+    { name: "only a Live CSV account", accounts: [account(9001, "csv_import", true)] },
+    { name: "a Live CSV account active alongside a saved ProjectX account", accounts: [account(9001, "csv_import", true), account(2001, "projectx")] },
+  ])("keeps bot execution disabled and CSV accounts disconnected for $name", async ({ accounts }) => {
+    vi.useFakeTimers();
     const fetchSpy = vi.fn(() => Promise.reject(new Error("provider request must not start")));
     vi.stubGlobal("fetch", fetchSpy);
+    const webSocketSpy = vi.fn();
+    vi.stubGlobal("WebSocket", webSocketSpy);
+    const search = vi.spyOn(botsApi, "searchContracts").mockRejectedValue(new Error("ProjectX connection unavailable"));
     const providerCalls = [
+      vi.spyOn(botsApi, "getRuntimeStatus"),
       vi.spyOn(botsApi, "listConfigsWithCacheScope"),
       vi.spyOn(botsApi, "getActivity"),
-      vi.spyOn(botsApi, "searchContracts"),
       vi.spyOn(botsApi, "getCandles"),
       vi.spyOn(botsApi, "createConfig"),
       vi.spyOn(botsApi, "updateConfig"),
       vi.spyOn(botsApi, "start"),
+      vi.spyOn(botsApi, "startTopBot"),
       vi.spyOn(botsApi, "evaluate"),
     ];
     const router = createMemoryRouter(
       [
         {
           path: "/",
-          element: <Outlet context={{ accounts: [live, express], accountsLoading: false }} />,
+          element: <Outlet context={{ accounts, accountsLoading: false }} />,
           children: [{ index: true, element: <BotPage /> }],
         },
       ],
@@ -120,15 +128,29 @@ describe("Bot Live/ProjectX isolation", () => {
     );
 
     render(<RouterProvider router={router} />);
+    await act(async () => { await import("./BotAnalysisPanel"); });
 
-    expect(await screen.findByText("Select an Express account to use Bot")).not.toBeNull();
-    await waitFor(() => {
-      expect(fetchSpy).not.toHaveBeenCalled();
-      for (const call of providerCalls) {
-        expect(call).not.toHaveBeenCalled();
-      }
-    });
-    expect(screen.queryByText("ProjectX candles, server-side audit trail")).toBeNull();
+    for (const title of ["Explore Bot without an account", "TopBot", "Signal Chart", "Order Book", "Evaluation & market analysis", "Run activity"]) {
+      expect(screen.getByRole("heading", { name: title })).not.toBeNull();
+    }
+    expect(screen.getByText("View only")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /Emergency|Verify Practice/ })).toBeNull();
+    for (const name of ["Dry Run", "Live Run", "Stop Automation"]) {
+      const button = screen.getByRole("button", { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    if (!accounts.length) {
+      expect(screen.getByText(/No account is selected/)).not.toBeNull();
+      expect(screen.getByRole("link", { name: "Open Accounts" }).getAttribute("href")).toBe("/accounts");
+      expect(screen.queryByText(/Live CSV account/)).toBeNull();
+    }
+    // No-account browsing may discover a market, but cannot start account/bot reads or mutations.
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(webSocketSpy).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledTimes(accounts.length ? 0 : 1);
+    for (const call of providerCalls) expect(call).not.toHaveBeenCalled();
   });
 
   it("does not load configs or mount any provider workspace child while Live is active", async () => {
@@ -192,20 +214,22 @@ describe("Bot Live/ProjectX isolation", () => {
     expect(filterBotConfigsByAccount([bot(1, 2001), bot(2, 2002)], 2002).map(({ id }) => id)).toEqual([2]);
   });
 
-  it("renders a concise Live-safe message with an explicit Express selector", () => {
+  it("offers an explicit ProjectX selector that also accepts Practice accounts", () => {
     const live = account(9001, "csv_import", true);
-    const markup = renderToStaticMarkup(
-      <BotExpressAccountRequired
+    const practice = { ...account(2001, "projectx"), name: "Practice 2001" };
+    const onSelectAccount = vi.fn();
+    render(
+      <BotProjectXAccountNotice
         activeAccount={live}
-        expressAccounts={[account(2001, "projectx")]}
-        onSelectAccount={() => undefined}
+        projectXAccounts={[practice]}
+        onSelectAccount={onSelectAccount}
       />,
     );
 
-    expect(markup).toContain("Select an Express account to use Bot");
-    expect(markup).toContain("no ProjectX charts, searches, polling, or streams start");
-    expect(markup).toContain('aria-label="Select an Express account for Bot"');
-    expect(markup).toContain("Express 2001");
-    expect(markup).not.toContain("Live 9001 (9001)");
+    expect(screen.queryByText(/Express account/)).toBeNull();
+    expect(screen.getByRole("option", { name: "Practice 2001 (2001)" })).not.toBeNull();
+    expect(screen.queryByRole("option", { name: "Live 9001 (9001)" })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Select a ProjectX account for Bot" }), { target: { value: "2001" } });
+    expect(onSelectAccount).toHaveBeenCalledExactlyOnceWith(2001);
   });
 });

@@ -1584,7 +1584,7 @@ export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbac
     }
   });
 
-  void runProjectXMarketPriceStream(query, guardedCallbacks, controller.signal)
+  void reconnectProjectXMarketPriceStream(query, guardedCallbacks, controller.signal)
     .catch((error) => {
       if (!closed && !blockedByDemo && !isAbortError(error)) {
         callbacks.onError?.(error);
@@ -1599,15 +1599,43 @@ export function streamProjectXMarketPrice(query: MarketPriceStreamQuery, callbac
   };
 }
 
+async function reconnectProjectXMarketPriceStream(
+  query: MarketPriceStreamQuery,
+  callbacks: MarketPriceStreamCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  let delayMs = 1_000;
+  while (!signal.aborted) {
+    try {
+      await runProjectXMarketPriceStream(query, {
+        ...callbacks,
+        onPrice: (price) => {
+          delayMs = 1_000;
+          callbacks.onPrice(price);
+        },
+      }, signal);
+      if (!signal.aborted) callbacks.onError?.(new Error("Market price stream disconnected."));
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return;
+      callbacks.onError?.(error);
+      if (error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status)) return;
+    }
+    if (!(await waitForAbortableDelay(delayMs, signal))) return;
+    delayMs = Math.min(delayMs * 2, 15_000);
+  }
+}
+
 async function runProjectXMarketPriceStream(
   query: MarketPriceStreamQuery,
   callbacks: MarketPriceStreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
+  if (signal.aborted) return;
   if (isDemoModeEnabled()) {
     throw demoLiveTransportUnavailableError("Live market price streaming");
   }
   const accessToken = await getAccessToken();
+  if (signal.aborted) return;
   if (isDemoModeEnabled()) {
     throw demoLiveTransportUnavailableError("Live market price streaming");
   }
@@ -1641,30 +1669,35 @@ async function runProjectXMarketPriceStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const price = parseMarketPriceSseFrame(frame);
-      if (price && marketPriceMatchesStreamQuery(price, query)) {
-        callbacks.onPrice(price);
+  const cancelReader = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", cancelReader, { once: true });
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
       }
-      boundary = buffer.indexOf("\n\n");
+
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const price = parseMarketPriceSseFrame(frame);
+        if (price && marketPriceMatchesStreamQuery(price, query)) {
+          callbacks.onPrice(price);
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
     }
+  } finally {
+    signal.removeEventListener("abort", cancelReader);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 
 function marketPriceMatchesStreamQuery(price: ProjectXMarketPrice, query: MarketPriceStreamQuery): boolean {
-  if (query.symbol && price.symbol) {
-    return price.symbol.trim().toUpperCase() === query.symbol.trim().toUpperCase();
-  }
   return price.contract_id.trim().toUpperCase() === query.contractId.trim().toUpperCase();
 }
 
@@ -2417,12 +2450,13 @@ export const botsApi = {
       method: "POST",
       body: { dry_run: dryRun, confirm_live_order_routing: !dryRun },
     }),
-  searchContracts: (query: ContractSearchQuery) =>
+  searchContracts: (query: ContractSearchQuery, options: RequestSignalOptions = {}) =>
     requestJson<ProjectXContract[]>("/api/projectx/contracts/search", {
       query: {
         search_text: query.searchText,
         live: query.live ?? false,
       },
+      signal: options.signal,
     }),
   getCandles: (query: CandleQuery, options: RequestSignalOptions = {}) =>
     requestJson<ProjectXMarketCandle[]>("/api/projectx/candles", {

@@ -65,9 +65,32 @@ function createEnvironmentSnapshot(parentEnvironment, fileEnvironment) {
   };
 }
 
+function createBackendEnvironmentSnapshot(parentEnvironment, fileEnvironment) {
+  const snapshot = createEnvironmentSnapshot(parentEnvironment, fileEnvironment);
+  if (parentEnvironment.TOPSIGNAL_DEV_MIGRATIONS_APPLIED === "1") {
+    // The supervisor has already selected the port used by frontend and readiness.
+    // Loading .env again must not change that port or the startup identity.
+    for (const key of ["TOPSIGNAL_DEV_BACKEND_PORT", "TOPSIGNAL_DEV_BACKEND_PORT_STRICT", "TOPSIGNAL_DEV_INSTANCE_ID"]) {
+      snapshot[key] = parentEnvironment[key];
+    }
+  }
+  return snapshot;
+}
+
+async function assertLocalFrontendAvailable() {
+  if (!(await isPortAvailable(5174))) {
+    throw new Error(
+      "Local frontend port 5174 is already in use; no additional local backend was started. " +
+      "If your local workspace is already running, open http://127.0.0.1:5174. " +
+      "To replace it, stop its terminal with Ctrl+C and rerun this command. " +
+      "The combined launcher will still try to start the cloud app.",
+    );
+  }
+}
+
 function classifyBackendDevChange(fileName) {
   if (!fileName) {
-    return "code_reload";
+    return "ignore";
   }
 
   const normalized = String(fileName).replaceAll("\\", "/");
@@ -158,8 +181,12 @@ async function waitForHttpReady(url, options = {}) {
 async function findAvailablePort(preferredPort, options = {}) {
   const host = options.host ?? "127.0.0.1";
   const maxPort = options.maxPort ?? 65535;
+  const excludedPorts = new Set(options.excludedPorts ?? []);
 
   for (let port = preferredPort; port <= maxPort; port += 1) {
+    if (excludedPorts.has(port)) {
+      continue;
+    }
     if (await isPortAvailable(port, host)) {
       return port;
     }
@@ -193,7 +220,9 @@ function runDatabaseMigrations({
 }
 
 module.exports = {
+  assertLocalFrontendAvailable,
   classifyBackendDevChange,
+  createBackendEnvironmentSnapshot,
   createEnvironmentSnapshot,
   findAvailablePort,
   isPortAvailable,

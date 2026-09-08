@@ -222,6 +222,7 @@ from .services.projectx_client import (
     projectx_error_reason_code,
 )
 from .services.projectx_order_book import ProjectXOrderBookRegistry
+from .services.projectx_market_price import ProjectXMarketPriceSession, stream_market_prices
 from .services.projectx_streaming_runtime import (
     ProjectXAccountClassificationProbeTimeout,
     ProjectXAccountClassificationProbeUnavailable,
@@ -313,6 +314,7 @@ _TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
 _bot_worker_runtime: BotWorkerRuntime | None = None
 _order_book_registry = ProjectXOrderBookRegistry()
+_market_price_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketPriceSession)
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0
 _backtest_active_by_user: dict[str, "_BacktestCapacityLease"] = {}
@@ -449,7 +451,7 @@ async def app_lifespan(_: FastAPI):
             except asyncio.CancelledError:
                 pass
             try:
-                await _order_book_registry.close()
+                await asyncio.gather(_order_book_registry.close(), _market_price_registry.close())
             finally:
                 _stop_streaming_runtime()
                 from .services.market_observations import writer as market_observation_writer
@@ -2737,34 +2739,23 @@ async def stream_projectx_market_price(
     symbol: str | None = Query(default=None, max_length=40),
     throttle_ms: int = Query(default=250, ge=50, le=5000),
 ):
-    get_authenticated_user_id()
-    runtime = _streaming_runtime
-    if runtime is None:
-        raise HTTPException(status_code=503, detail="ProjectX streaming is not enabled.")
-
+    user_id = get_authenticated_user_id()
+    with SessionLocal() as db:
+        try:
+            client = _projectx_client_for_user(db, user_id=user_id)
+        except ProjectXClientError as exc:
+            raise _to_http_exception(exc) from exc
+    subscription = await _market_price_registry.subscribe(user_id=user_id, client=client, contract_id=contract_id)
     interval_seconds = max(throttle_ms, 50) / 1000.0
 
     async def events():
-        last_event_key = None
-        yield ": connected\n\n"
-        while True:
-            if await request.is_disconnected():
-                break
-
-            update = runtime.tracker.get_market_price_update(contract_id=contract_id, symbol=symbol)
-            if update is not None:
-                event_key = (update.contract_id, update.mark_price, update.timestamp.isoformat())
-                if event_key != last_event_key:
-                    payload = {
-                        "contract_id": update.contract_id,
-                        "symbol": update.symbol,
-                        "price": update.mark_price,
-                        "timestamp": update.timestamp.isoformat(),
-                    }
-                    yield f"event: price\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
-                    last_event_key = event_key
-
-            await asyncio.sleep(interval_seconds)
+        prices = stream_market_prices(request, subscription, interval_seconds=interval_seconds)
+        try:
+            async for event in prices:
+                yield _serialize_sse_event(event) if event is not None else ": keepalive\n\n"
+        finally:
+            await prices.aclose()
+            await subscription.close()
 
     return StreamingResponse(
         events(),

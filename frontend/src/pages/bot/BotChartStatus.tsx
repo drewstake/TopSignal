@@ -9,7 +9,6 @@ export interface BotChartStatusProps {
   connection: BotChartConnectionState;
   connectionTitle?: string;
   barState: BotChartBarState;
-  lastRefreshText: string | null;
   lastRefreshTitle?: string;
   stale: boolean;
   unrepairedGapCount: number;
@@ -21,7 +20,6 @@ export function BotChartStatus({
   connection,
   connectionTitle,
   barState,
-  lastRefreshText,
   lastRefreshTitle,
   stale,
   unrepairedGapCount,
@@ -56,12 +54,12 @@ export function BotChartStatus({
           {barState === "partial" ? "Partial bar" : "Closed bar"}
         </StatusPill>
       ) : null}
-      {lastRefreshText ? (
+      {stale ? (
         <StatusPill
-          className={stale ? "border-app-warning/35 bg-app-warning/10 font-semibold text-app-warning" : "border-app-border bg-app-bg/55 text-app-muted"}
+          className="border-app-warning/35 bg-app-warning/10 font-semibold text-app-warning"
           title={lastRefreshTitle}
         >
-          {stale ? "Stale · " : ""}{lastRefreshText}
+          Stale candles
         </StatusPill>
       ) : null}
       {unrepairedGapCount > 0 ? (

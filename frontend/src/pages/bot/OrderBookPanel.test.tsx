@@ -69,12 +69,13 @@ describe("OrderBookPanel", () => {
     );
 
     expect(markup).toContain("Order Book");
-    expect(markup).toContain("MNQ · CON.F.US.MNQ.U26 · aggregate size by price");
-    expect(markup).toContain("Level 1 · Best bid and ask.");
+    expect(markup).toContain('title="MNQ · CON.F.US.MNQ.U26 · Level 1 best bid and ask"');
+    expect(markup).not.toContain("aggregate size by price");
+    expect(markup).not.toContain("Level 1 · Best bid and ask.");
     expect(markup).toContain("Loading");
     expect(markup).toContain("Loading order book…");
-    expect(markup).toContain("Ask price");
-    expect(markup).toContain("Bid price");
+    expect(markup).toContain(">ask</span>");
+    expect(markup).toContain(">bid</span>");
     expect(markup).toContain("Spread");
     expect(markup).not.toContain("<select");
     expect(markup).not.toContain("Levels / side");

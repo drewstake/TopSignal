@@ -50,7 +50,6 @@ describe("BotChartStatus", () => {
       <BotChartStatus
         connection="delayed"
         barState="closed"
-        lastRefreshText="Refreshed 15s ago"
         stale
         unrepairedGapCount={2}
         timeframeLabel="5m"
@@ -60,7 +59,7 @@ describe("BotChartStatus", () => {
 
     expect(markup).toContain("Delayed / polling");
     expect(markup).toContain("Closed bar");
-    expect(markup).toContain("Stale · Refreshed 15s ago");
+    expect(markup).toContain("Stale candles");
     expect(markup).toContain("2 unrepaired gaps");
     expect(markup).toContain("5m · ET");
     expect(markup.match(/aria-live="polite"/g)).toHaveLength(1);
@@ -72,7 +71,6 @@ describe("BotChartStatus", () => {
       <BotChartStatus
         connection="stale"
         barState="partial"
-        lastRefreshText="Refreshed 2m ago"
         stale
         unrepairedGapCount={0}
         timeframeLabel="1m"
