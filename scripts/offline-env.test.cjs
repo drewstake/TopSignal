@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 const { offlineEnvironment } = require("./offline-env.cjs");
 
@@ -66,7 +67,10 @@ test("connected local profile retains Topstep settings without enabling cloud st
 });
 
 test("offline app boots, saves across restarts and retains normal readiness safeguards", () => {
-  const python = path.join(repoRoot, "backend", ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  const venvPython = path.join(repoRoot, "backend", ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  // CI installs backend dependencies into setup-python's interpreter rather
+  // than a repository virtualenv. Local development keeps using its virtualenv.
+  const python = process.env.TOPSIGNAL_TEST_PYTHON || (fs.existsSync(venvPython) ? venvPython : "python");
   const result = spawnSync(python, ["-c", `
 import asyncio, json, os
 from pathlib import Path
@@ -128,5 +132,6 @@ print('offline persistence and isolation passed')
     timeout: 60000,
     windowsHide: true,
   });
+  assert.ifError(result.error);
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });

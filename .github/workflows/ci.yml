@@ -505,6 +505,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies for offline startup regression
+        run: python -m pip install --disable-pip-version-check -r backend/requirements.txt
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
