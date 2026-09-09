@@ -4,6 +4,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const fs = require("node:fs");
 const { offlineEnvironment } = require("./offline-env.cjs");
+const { startReadyBackend } = require("./dev-startup.cjs");
 const {
   assertLocalFrontendAvailable,
   createEnvironmentSnapshot,
@@ -11,7 +12,6 @@ const {
   parseDotEnvFile,
   parsePort,
   runDatabaseMigrations,
-  waitForHttpReady,
 } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -78,7 +78,7 @@ function formatExitReason(code, signal) {
   return `code ${code ?? 0}`;
 }
 
-function startCommand(command) {
+function startCommand(command, { startingBackend = false } = {}) {
   if (shuttingDown) {
     return;
   }
@@ -97,6 +97,17 @@ function startCommand(command) {
   prefixStream(command.name, child.stdout, (line) => process.stdout.write(line));
   prefixStream(command.name, child.stderr, (line) => process.stderr.write(line));
 
+  child.on("error", (error) => {
+    state.child = null;
+    if (!startingBackend) {
+      process.stderr.write(`[${command.name}] Could not start: ${error.message}\n`);
+      shuttingDown = true;
+      exitCode = 1;
+      for (const sibling of children.values()) stopChild(sibling);
+      maybeExit();
+    }
+  });
+
   child.on("exit", (code, signal) => {
     const runtimeMs = Date.now() - state.startedAt;
     process.stderr.write(
@@ -112,6 +123,11 @@ function startCommand(command) {
 
     if (shuttingDown) {
       maybeExit();
+      return;
+    }
+
+    if (startingBackend && !state.ready) {
+      // Startup owns retries so it can update the port and frontend together.
       return;
     }
 
@@ -140,6 +156,7 @@ function startCommand(command) {
 
     maybeExit();
   });
+  return child;
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -159,7 +176,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-async function resolveBackendPort() {
+async function resolveBackendPort(failedPorts = []) {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   const preferredPort = parsePort(
     offline ? process.env.TOPSIGNAL_DEV_BACKEND_PORT : backendEnv.TOPSIGNAL_DEV_BACKEND_PORT ?? process.env.TOPSIGNAL_DEV_BACKEND_PORT,
@@ -168,7 +185,7 @@ async function resolveBackendPort() {
   );
   const reservedPort = process.env.TOPSIGNAL_DEV_RESERVED_BACKEND_PORT;
   const availablePort = await findAvailablePort(preferredPort, {
-    excludedPorts: reservedPort ? [parsePort(reservedPort, 8000, "TOPSIGNAL_DEV_RESERVED_BACKEND_PORT")] : [],
+    excludedPorts: [...failedPorts, ...(reservedPort ? [parsePort(reservedPort, 8000, "TOPSIGNAL_DEV_RESERVED_BACKEND_PORT")] : [])],
   });
 
   if (availablePort !== preferredPort) {
@@ -201,9 +218,7 @@ async function main() {
     });
   }
 
-  const backendPort = await resolveBackendPort();
   const backendInstanceId = randomUUID();
-  const apiBaseUrl = offline ? `http://127.0.0.1:${backendPort}` : process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
   const commands = [
     {
       name: "BACKEND",
@@ -211,7 +226,6 @@ async function main() {
       env: {
         ...process.env,
         TOPSIGNAL_DEV_MIGRATIONS_APPLIED: "1",
-        TOPSIGNAL_DEV_BACKEND_PORT: String(backendPort),
         TOPSIGNAL_DEV_BACKEND_PORT_STRICT: "1",
         TOPSIGNAL_DEV_INSTANCE_ID: backendInstanceId,
       },
@@ -221,16 +235,9 @@ async function main() {
       script: path.join(__dirname, "dev-frontend.cjs"),
       env: {
         ...process.env,
-        VITE_API_BASE_URL: apiBaseUrl,
       },
     },
   ];
-
-  if (process.env.VITE_API_BASE_URL) {
-    process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL is set to ${process.env.VITE_API_BASE_URL}.\n`);
-  } else if (backendPort !== 8000) {
-    process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL set to ${apiBaseUrl}.\n`);
-  }
 
   for (const command of commands) {
     states.set(command.name, {
@@ -242,16 +249,26 @@ async function main() {
 
   const backendCommand = commands.find((command) => command.name === "BACKEND");
   const frontendCommand = commands.find((command) => command.name === "FRONTEND");
-  startCommand(backendCommand);
+  const backendPort = await startReadyBackend({
+    selectPort: resolveBackendPort,
+    start(port) {
+      backendCommand.env.TOPSIGNAL_DEV_BACKEND_PORT = String(port);
+      return startCommand(backendCommand, { startingBackend: true });
+    },
+    instanceId: backendInstanceId,
+    write: (message) => process.stdout.write(`${message}\n`),
+    isStopping: () => shuttingDown,
+    retries: earlyExitRestartLimit,
+  });
 
-  const readinessUrl = `http://127.0.0.1:${backendPort}/ready`;
-  process.stdout.write(`[DEV] Waiting for backend readiness at ${readinessUrl}...\n`);
-  await waitForHttpReady(readinessUrl, { expectedInstanceId: backendInstanceId });
-
-  if (shuttingDown) {
+  if (shuttingDown || backendPort === null) {
     return;
   }
 
+  states.get("BACKEND").ready = true;
+  const apiBaseUrl = offline ? `http://127.0.0.1:${backendPort}` : process.env.VITE_API_BASE_URL ?? `http://127.0.0.1:${backendPort}`;
+  frontendCommand.env.VITE_API_BASE_URL = apiBaseUrl;
+  process.stdout.write(`[DEV] Frontend VITE_API_BASE_URL set to ${apiBaseUrl}.\n`);
   process.stdout.write("[DEV] Backend is ready; starting frontend.\n");
   startCommand(frontendCommand);
   if (process.connected) {

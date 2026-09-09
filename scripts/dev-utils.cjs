@@ -129,11 +129,11 @@ function isPortAvailable(port, host = "127.0.0.1") {
   });
 }
 
-function requestHttpStatus(url, timeoutMs, expectedInstanceId) {
+function requestHttpStatus(url, timeoutMs, expectedInstanceId, signal) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
-    const request = client.get(parsedUrl, (response) => {
+    const request = client.get(parsedUrl, { signal }, (response) => {
       response.resume();
       const status = response.statusCode ?? 0;
       if (status >= 200 && status < 300 && expectedInstanceId
@@ -160,13 +160,15 @@ async function waitForHttpReady(url, options = {}) {
   let lastResult = "no response";
 
   while (true) {
+    options.signal?.throwIfAborted();
     try {
-      const status = await requestStatus(url, requestTimeoutMs, options.expectedInstanceId);
+      const status = await requestStatus(url, requestTimeoutMs, options.expectedInstanceId, options.signal);
       if (status >= 200 && status < 300) {
         return;
       }
       lastResult = `HTTP ${status}`;
     } catch (error) {
+      options.signal?.throwIfAborted();
       lastResult = error instanceof Error ? error.message : String(error);
     }
 
