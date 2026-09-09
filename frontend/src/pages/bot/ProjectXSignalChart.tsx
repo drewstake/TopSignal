@@ -48,7 +48,12 @@ function ProjectXChartConnection({ enabled, onMarketData, onMarketResolved, onRe
         row.symbol_id?.split(".").at(-1)?.toUpperCase() === "MNQ"
         || /^MNQ(?:[FGHJKMNQUVXZ]\d+)?$/i.test(row.name)
       ));
-      if (!contract) throw new Error("ProjectX returned no active MNQ contract. Check your market-data access.");
+      if (!contracts.length) {
+        throw new Error("ProjectX returned no MNQ contracts for the configured connection.");
+      }
+      if (!contract) {
+        throw new Error("ProjectX returned contracts, but no active MNQ contract is available.");
+      }
       setConnection({
         scope,
         market: {
@@ -83,8 +88,8 @@ function ProjectXChartConnection({ enabled, onMarketData, onMarketResolved, onRe
       </CardHeader>
       <CardContent className="space-y-3">
         {enabled ? error ? <>
-          <p className="text-sm text-rose-200" role="alert">{error}</p>
-          <p className="text-sm text-app-muted">Chart data requires a working ProjectX connection. Configure it in <a className="underline" href="/accounts">Accounts</a>.</p>
+          <p className="text-sm text-app-negative-text" role="alert">{error}</p>
+          <p className="text-sm leading-6 text-app-muted">Verify that the configured ProjectX username and API key belong to the intended TopstepX login and that it has market-data access. Then retry the connection.</p>
           <Button variant="secondary" onClick={onRetry}>Retry chart connection</Button>
         </> : <p className="text-sm text-app-muted" role="status">Connecting to ProjectX market data…</p>
           : <p className="text-sm text-app-muted">Market data is disconnected. Turn off Demo mode to connect to ProjectX.</p>}

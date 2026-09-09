@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
@@ -267,30 +267,67 @@ function TradesPageLoadingState() {
   );
 }
 
-function TradesAccountState({ error }: { error?: string }) {
+function TradesAccountState({ error, hasAccounts = false, onRetry }: {
+  error?: string;
+  hasAccounts?: boolean;
+  onRetry?: () => void;
+}) {
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>Trades</CardTitle>
-        <CardDescription>
-          {error ? "The saved account list could not be loaded." : "Select an active account to review trade history."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div
-          className={cn(
-            "rounded-2xl border px-4 py-8 text-center",
-            error
-              ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
-              : "border-dashed border-slate-700/80 bg-slate-950/35 text-slate-300",
-          )}
-          role={error ? "alert" : "status"}
-        >
-          <p className="text-sm font-medium">{error ?? "No active account selected."}</p>
-          {!error ? <p className="mt-2 text-sm text-slate-400">Choose an account from the header to load trades.</p> : null}
+    <div className="w-full space-y-5 pb-8">
+      <header>
+        <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-3xl">Trades</h1>
+        <p className="mt-2 text-sm text-app-muted">Review your executions, track performance, and explore trade history.</p>
+      </header>
+
+      <Card className="relative isolate overflow-hidden !p-0">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-64 bg-gradient-to-b from-app-accent/5 to-transparent" />
+        <div className="flex min-h-[360px] flex-col items-center justify-center px-5 py-12 text-center sm:min-h-[420px] sm:px-8">
+          <div className={cn(
+            "mb-6 flex h-16 w-16 items-center justify-center rounded-2xl border",
+            error ? "border-app-negative/25 bg-app-negative/10 text-app-negative-text" : "border-app-accent/25 bg-app-accent/10 text-app-accent-text",
+          )}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8">
+              {error ? (
+                <><circle cx="12" cy="12" r="9" /><path d="M12 8v5m0 3h.01" /></>
+              ) : (
+                <><rect x="4" y="3" width="16" height="18" rx="3" /><path d="M8 8h8M8 12h3m-3 4h3m3-2 2 2 3-4" /></>
+              )}
+            </svg>
+          </div>
+          <div className="max-w-md" role={error ? "alert" : "status"}>
+            <h2 className="text-xl font-semibold tracking-tight text-app-text sm:text-2xl">
+              {error ? "Unable to load accounts" : hasAccounts ? "Choose an account to get started" : "No accounts available yet"}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-app-muted">
+              {error
+                ? "We couldn't load your saved accounts. Try again or review your accounts to continue."
+                : hasAccounts
+                  ? "Select an active account from the header or Accounts page to see its trades and performance."
+                  : "Open Accounts to refresh your account list and select an account. Its trade history will appear here."}
+            </p>
+            {error ? <p className="mt-3 break-words text-sm text-app-negative-text">{error}</p> : null}
+          </div>
+          <div className="mt-6 flex w-full flex-col items-center justify-center gap-3 sm:w-auto sm:flex-row">
+            {error && onRetry ? <Button onClick={onRetry} className="w-full sm:w-auto">Try again</Button> : null}
+            <Link
+              to="/accounts"
+              className={cn(
+                "inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border px-5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent focus-visible:ring-offset-2 focus-visible:ring-offset-app-surface sm:w-auto",
+                error ? "border-app-border text-app-text hover:bg-app-accent/10" : "border-app-accent/70 bg-app-accent/90 text-app-accent-contrast hover:bg-app-accent",
+              )}
+            >
+              {hasAccounts ? "Choose an account" : "Go to Accounts"}
+              <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M4 10h12m-5-5 5 5-5 5" />
+              </svg>
+            </Link>
+          </div>
         </div>
-      </CardContent>
-    </Card>
+        <div className="border-t border-app-border bg-app-bg/25 px-5 py-4 text-center text-xs leading-5 text-app-muted">
+          Trade history, performance summaries, and execution details in one place.
+        </div>
+      </Card>
+    </div>
   );
 }
 
@@ -300,6 +337,7 @@ export function TradesPage() {
     accounts: orderedAccounts,
     accountsLoading,
     accountsError,
+    reloadAccounts,
     selectedAccountId: shellSelectedAccountId,
   } = useOutletContext<AppShellOutletContext>();
 
@@ -581,11 +619,11 @@ export function TradesPage() {
   }
 
   if (accountsError) {
-    return <TradesAccountState error={accountsError} />;
+    return <TradesAccountState error={accountsError} onRetry={reloadAccounts} />;
   }
 
   if (!selectedAccountId) {
-    return <TradesAccountState />;
+    return <TradesAccountState hasAccounts={orderedAccounts.length > 0} />;
   }
 
   if (

@@ -203,7 +203,9 @@ describe("TradesPage account-switch races", () => {
 
     const emptyRouter = createTradesRouter({ accounts: [], initialEntry: "/" });
     render(<RouterProvider router={emptyRouter} />);
-    expect(screen.getByText("No active account selected.")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("No accounts available yet");
+    expect(screen.getByRole("link", { name: "Go to Accounts" }).getAttribute("href")).toBe("/accounts");
+    expect(screen.queryByText("Choose an account from the header to load trades.")).toBeNull();
   });
 
   it("requires a fresh data scope when switching Express to Live and back to Express", async () => {

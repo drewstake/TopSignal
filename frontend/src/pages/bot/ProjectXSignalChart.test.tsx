@@ -78,6 +78,16 @@ it("reports missing active contracts instead of guessing a contract", async () =
   expect(BotSignalChart).not.toHaveBeenCalled();
 });
 
+it("explains an empty provider response and reconnects after access is restored", async () => {
+  vi.mocked(api.botsApi.searchContracts).mockResolvedValueOnce([]);
+  render(<ProjectXSignalChart enabled />);
+  expect((await screen.findByRole("alert")).textContent).toContain("no MNQ contracts for the configured connection");
+  expect(screen.queryByRole("link", { name: "Accounts" })).toBeNull();
+  expect(BotSignalChart).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Retry chart connection" }));
+  await screen.findByText("Connected market chart");
+});
+
 it("aborts discovery on unmount and ignores a late response", async () => {
   let resolve!: (rows: typeof contract[]) => void;
   vi.mocked(api.botsApi.searchContracts).mockReturnValue(new Promise(done => { resolve = done; }));
