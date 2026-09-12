@@ -21,6 +21,8 @@ import type {
   ProjectXMarketCandle,
 } from "../../lib/types";
 import { BotMarketPanels } from "./BotMarketPanels";
+import { boundedBotRequest, BotRequestTimeout } from "./botPageRequests";
+import { botConfigurationSummary, botRunStatus, botStrategyLabel, latestBotRun } from "./botRunPresentation";
 import { BotMarketAccountPreview, BotProjectXAccountNotice, BotProviderWorkspaceBoundary } from "./BotAccountGate";
 import {
   getBotProviderAccountId,
@@ -167,6 +169,7 @@ export function BotPage() {
   const [loading, setLoading] = useState(true);
   const [activityLoading, setActivityLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configWarnings, setConfigWarnings] = useState<string[]>([]);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
@@ -187,6 +190,8 @@ export function BotPage() {
   const previousProjectXAccountIdRef = useRef<number | null>(activeProjectXAccountId);
   const activeProjectXAccountIdRef = useRef<number | null>(activeProjectXAccountId);
   const runtimeRequestController = useRef<AbortController | null>(null);
+  const evaluationRequestController = useRef<AbortController | null>(null);
+  const stopRequestInFlight = useRef(false);
 
   const selectedBot = useMemo(() => {
     if (activeProjectXAccountId === null) {
@@ -238,6 +243,11 @@ export function BotPage() {
         : null,
     [activity, selectedBot],
   );
+  const selectedRun = latestBotRun(selectedBotActivity);
+  const runStatus = botRunStatus(selectedBot, selectedBotActivity);
+  const latestDecision = [selectedBotEvaluation?.decision, ...(selectedBotActivity?.decisions ?? [])]
+    .filter((decision) => decision !== undefined)
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id)[0];
   const activeAccountClassificationFresh = providerClassificationIsFresh(effectiveActiveAccount);
   const runtimeContinuousBlockReason = useMemo(() => {
     if (activeProjectXAccountId === null) {
@@ -368,9 +378,13 @@ export function BotPage() {
     }
     if (!background) setError(null);
     try {
-      const result = await loadBotConfigsForProviderAccount(
-        activeProjectXAccountId,
-        (accountId) => botsApi.listConfigsWithCacheScope(accountId, { signal: controller.signal }),
+      const result = await boundedBotRequest(
+        loadBotConfigsForProviderAccount(
+          activeProjectXAccountId,
+          (accountId) => botsApi.listConfigsWithCacheScope(accountId, { signal: controller.signal }),
+        ),
+        controller,
+        "Bot configuration refresh timed out. Run state may be out of date.",
       );
       if (
         controller.signal.aborted || configsRequestSequence.current !== sequence ||
@@ -393,7 +407,7 @@ export function BotPage() {
       });
     } catch (err) {
       if (
-        !controller.signal.aborted && configsRequestSequence.current === sequence &&
+        (!controller.signal.aborted || err instanceof BotRequestTimeout) && configsRequestSequence.current === sequence &&
         accountRequestGate.isCurrent(requestToken)
       ) {
         setConfigWarnings([]);
@@ -410,7 +424,7 @@ export function BotPage() {
     }
   }, [accountRequestGate, activeProjectXAccountId]);
 
-  const loadActivity = useCallback(async (botId: number | null, { background = false }: { background?: boolean } = {}) => {
+  const loadActivity = useCallback(async (botId: number | null, { background = false, preserveExisting = false }: { background?: boolean; preserveExisting?: boolean } = {}) => {
     if (activeProjectXAccountId !== null && !accountRequestGate.isActive(accountRequestGate.capture(activeProjectXAccountId))) return;
     if (background && activityRequestController.current) return;
     const sequence = activityRequestSequence.current + 1;
@@ -437,11 +451,14 @@ export function BotPage() {
     const controller = new AbortController();
     activityRequestController.current = controller;
     if (!background) {
-      setActivity(null);
+      if (!preserveExisting) setActivity(null);
       setActivityLoading(true);
     }
     try {
-      const payload = await botsApi.getActivity(botId, 50, { signal: controller.signal });
+      const payload = await boundedBotRequest(
+        botsApi.getActivity(botId, 50, { signal: controller.signal }), controller,
+        "Bot activity refresh timed out. The displayed activity may be out of date.",
+      );
       if (
         !controller.signal.aborted && activityRequestSequence.current === sequence &&
         selectedBotIdRef.current === botId &&
@@ -454,7 +471,7 @@ export function BotPage() {
       }
     } catch (err) {
       if (
-        !controller.signal.aborted && activityRequestSequence.current === sequence &&
+        (!controller.signal.aborted || err instanceof BotRequestTimeout) && activityRequestSequence.current === sequence &&
         selectedBotIdRef.current === botId &&
         accountRequestGate.isCurrent(requestToken) &&
         !(err instanceof Error && err.name === "AbortError")
@@ -501,7 +518,7 @@ export function BotPage() {
   }, [activeProjectXAccountId, demoModeEnabled, loadRuntimeStatus]);
 
   useEffect(() => {
-    if (demoModeEnabled || activeProjectXAccountId === null || actionLoading !== null || emergencyFlattenAccountId !== null) return;
+    if (demoModeEnabled || activeProjectXAccountId === null || actionLoading !== null || stopping || emergencyFlattenAccountId !== null) return;
     let cancelled = false;
     let timeoutId: number;
     const refresh = async () => {
@@ -520,7 +537,7 @@ export function BotPage() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [actionLoading, activeProjectXAccountId, demoModeEnabled, emergencyFlattenAccountId, loadActivity, loadConfigs]);
+  }, [actionLoading, activeProjectXAccountId, demoModeEnabled, emergencyFlattenAccountId, loadActivity, loadConfigs, stopping]);
 
   useEffect(() => () => {
     configsRequestSequence.current += 1;
@@ -531,6 +548,8 @@ export function BotPage() {
     activityRequestController.current = null;
     runtimeRequestController.current?.abort();
     runtimeRequestController.current = null;
+    evaluationRequestController.current?.abort();
+    evaluationRequestController.current = null;
   }, []);
 
   useLayoutEffect(() => {
@@ -543,6 +562,8 @@ export function BotPage() {
     configsRequestController.current = null;
     activityRequestController.current?.abort();
     activityRequestController.current = null;
+    evaluationRequestController.current?.abort();
+    evaluationRequestController.current = null;
     setConfigs([]);
     setConfigWarnings([]);
     setSelectedBotId(null);
@@ -552,6 +573,8 @@ export function BotPage() {
     setLoading(activeProjectXAccountId !== null);
     setActivityLoading(false);
     setActionLoading(null);
+    setStopping(false);
+    stopRequestInFlight.current = false;
     setError(null);
   }, [activeProjectXAccountId]);
 
@@ -559,14 +582,21 @@ export function BotPage() {
     activityRequestSequence.current += 1;
     activityRequestController.current?.abort();
     activityRequestController.current = null;
-    setActivity(null);
-    setActivityLoading(false);
     const botId = selectedBot?.id ?? null;
+    // Keep the authoritative Start/Stop response visible while its matching
+    // activity refresh runs. A different bot or market still clears instantly.
+    setActivity((current) => current && botId !== null &&
+      current.config.id === botId && current.config.account_id === activeProjectXAccountId &&
+      current.config.contract_id === selectedBot?.contract_id &&
+      current.config.timeframe_unit === selectedBot?.timeframe_unit &&
+      current.config.timeframe_unit_number === selectedBot?.timeframe_unit_number
+      ? current : null);
+    setActivityLoading(false);
     if (!botId) {
       return undefined;
     }
 
-    const run = () => void loadActivity(botId);
+    const run = () => void loadActivity(botId, { preserveExisting: true });
     if (typeof window.requestIdleCallback === "function") {
       const requestId = window.requestIdleCallback(run, { timeout: 1_500 });
       return () => window.cancelIdleCallback(requestId);
@@ -574,16 +604,16 @@ export function BotPage() {
     const timeoutId = window.setTimeout(run, 100);
     return () => window.clearTimeout(timeoutId);
   }, [
-    loadActivity,
-    selectedBot?.contract_id,
-    selectedBot?.id,
-    selectedBot?.timeframe_unit,
-    selectedBot?.timeframe_unit_number,
-    selectedBot?.updated_at,
+    activeProjectXAccountId, loadActivity, selectedBot?.contract_id, selectedBot?.id,
+    selectedBot?.timeframe_unit, selectedBot?.timeframe_unit_number, selectedBot?.updated_at,
   ]);
 
   async function runBotAction(kind: "dry_run" | "live" | "evaluate" | "stop") {
-    if (demoModeEnabled || activeProjectXAccountId === null || actionLoading !== null) return;
+    if (kind === "stop") {
+      await stopAutomation();
+      return;
+    }
+    if (demoModeEnabled || activeProjectXAccountId === null || actionLoading !== null || stopping || emergencyFlattenAccountId !== null) return;
     const starting = kind === "dry_run" || kind === "live";
     if (!starting && !selectedBot) return;
     const blockReason = kind === "live" ? liveRunBlockReason : runtimeContinuousBlockReason;
@@ -601,43 +631,109 @@ export function BotPage() {
     const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
     // Reads started before a mutation cannot overwrite its resulting state.
     configsRequestController.current?.abort();
+    configsRequestController.current = null;
     activityRequestController.current?.abort();
+    activityRequestController.current = null;
     setActionLoading(kind);
     setError(null);
     try {
       if (starting) {
         const result = await botsApi.startTopBot(requestAccountId, kind === "dry_run");
         if (!accountRequestGate.isCurrent(requestToken)) return;
+        if (result.config.account_id !== requestAccountId || (result.run &&
+          (result.run.account_id !== requestAccountId || result.run.bot_config_id !== result.config.id))) {
+          throw new Error("The start response did not match the requested account and bot.");
+        }
         requestBotId = result.config.id;
         setConfigs((current) => [result.config, ...current.filter((config) => config.id !== result.config.id)]);
         setSelectedBotId(result.config.id);
+        selectedBotIdRef.current = result.config.id;
         setLastEvaluation(result);
-      } else if (kind === "evaluate" && requestBotId !== null) {
-        const result = await botsApi.evaluate(requestBotId, { dryRun: true });
-        if (!accountRequestGate.isCurrent(requestToken)) return;
-        setLastEvaluation(result);
-      } else if (requestBotId !== null) {
-        await botsApi.stop(requestBotId);
-        if (!accountRequestGate.isCurrent(requestToken)) return;
-        setClassificationOverrides((current) => ({
-          ...current,
-          [requestAccountId]: { observedAt: null, simulated: null },
+        setActivity((current) => ({
+          ...(current?.config.id === result.config.id ? current : { decisions: [], order_attempts: [], risk_events: [] }),
+          config: result.config,
+          runs: result.run
+            ? [result.run, ...(current?.config.id === result.config.id ? current.runs.filter((run) => run.id !== result.run!.id) : [])]
+            : (current?.config.id === result.config.id ? current.runs : []),
         }));
+      } else if (kind === "evaluate" && requestBotId !== null) {
+        const controller = new AbortController();
+        evaluationRequestController.current = controller;
+        const result = await boundedBotRequest(
+          botsApi.evaluate(requestBotId, { dryRun: true }, { signal: controller.signal }), controller,
+          "Evaluation timed out. Automation state is unchanged; refresh the evaluation to try again.", 45_000,
+        );
+        if (!accountRequestGate.isCurrent(requestToken)) return;
+        setLastEvaluation(result);
       }
-      await Promise.all([loadConfigs(), loadActivity(requestBotId), loadRuntimeStatus()]);
       if (!accountRequestGate.isCurrent(requestToken)) return;
       setChartRefreshToken((current) => current + 1);
+      // Refreshes are bounded and can be superseded by Stop. They do not hold
+      // the operator controls hostage after the action itself has completed.
+      void Promise.allSettled([
+        loadConfigs({ background: true }), loadActivity(requestBotId, { background: true }), loadRuntimeStatus(),
+      ]);
     } catch (err) {
       if (accountRequestGate.isCurrent(requestToken)) {
         // A start can persist a run before provider I/O fails. Refresh so Stop
         // remains reachable even when no successful evaluation was returned.
-        await Promise.allSettled([loadConfigs(), loadRuntimeStatus()]);
-        if (accountRequestGate.isCurrent(requestToken)) {
-          setError(err instanceof Error ? err.message : "Bot action failed");
-        }
+        setError(err instanceof Error ? err.message : "Bot action failed");
+        void Promise.allSettled([loadConfigs({ background: true }), loadRuntimeStatus()]);
       }
     } finally {
-      if (accountRequestGate.isCurrent(requestToken)) setActionLoading(null);
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setActionLoading(null);
+        evaluationRequestController.current = null;
+      }
+    }
+  }
+
+  async function stopAutomation() {
+    if (demoModeEnabled || activeProjectXAccountId === null || !selectedBot || stopRequestInFlight.current || emergencyFlattenAccountId !== null) return;
+    // Starting a run is a mutation; wait for its authoritative outcome. A
+    // diagnostic evaluation can always be cancelled to admit an ordinary Stop.
+    if (actionLoading === "dry_run" || actionLoading === "live") return;
+    const requestAccountId = activeProjectXAccountId;
+    const requestBotId = selectedBot.id;
+    const requestToken = accountRequestGate.begin(requestAccountId, "bot-action");
+    stopRequestInFlight.current = true;
+    setStopping(true);
+    evaluationRequestController.current?.abort();
+    evaluationRequestController.current = null;
+    configsRequestController.current?.abort();
+    configsRequestController.current = null;
+    activityRequestController.current?.abort();
+    activityRequestController.current = null;
+    setActionLoading(null);
+    setLastEvaluation(null);
+    setError(null);
+    try {
+      const run = await botsApi.stop(requestBotId);
+      if (!accountRequestGate.isCurrent(requestToken)) return;
+      if (!run || run.bot_config_id !== requestBotId || run.account_id !== requestAccountId || !["stopped", "blocked", "error"].includes(run.status)) {
+        throw new Error("The server did not confirm that this bot stopped. Check its run status before retrying.");
+      }
+      const stoppedConfig = { ...selectedBot, enabled: false };
+      setConfigs((current) => current.map((config) => config.id === requestBotId ? { ...config, enabled: false } : config));
+      setActivity((current) => ({
+        ...(current?.config.id === requestBotId ? current : { decisions: [], order_attempts: [], risk_events: [] }),
+        config: stoppedConfig,
+        runs: [run, ...(current?.config.id === requestBotId ? current.runs.filter((item) => item.id !== run.id) : [])],
+      }));
+      setClassificationOverrides((current) => ({
+        ...current, [requestAccountId]: { observedAt: null, simulated: null },
+      }));
+      setChartRefreshToken((current) => current + 1);
+    } catch (err) {
+      if (accountRequestGate.isCurrent(requestToken)) setError(err instanceof Error ? err.message : "Could not confirm that automation stopped.");
+    } finally {
+      if (accountRequestGate.isCurrent(requestToken)) {
+        setStopping(false);
+        stopRequestInFlight.current = false;
+        void Promise.allSettled([
+          loadConfigs({ background: true }), loadActivity(requestBotId, { background: true }), loadRuntimeStatus(),
+        ]);
+      }
     }
   }
 
@@ -817,20 +913,17 @@ export function BotPage() {
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle>TopBot</CardTitle>
-              <CardDescription>MNQ · TopBot Adaptive · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
-              <p className="mt-2 text-sm text-app-muted">5-minute EMA/VWAP pullback · Long bias: shorts need a falling 50 EMA · 1 contract · Hold for 50-point stop / 50-point target</p>
+              <CardTitle>{selectedBot?.name ?? "TopBot"}</CardTitle>
+              <CardDescription>{selectedBot ? `${selectedBot.symbol ?? selectedBot.contract_id} · ${botStrategyLabel(selectedBot.strategy_type)}` : "MNQ · TopBot Adaptive"} · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
+              <p className="mt-2 text-sm text-app-muted">{selectedBot ? botConfigurationSummary(selectedBot) : "Start a TopBot run using the current MNQ preset."}</p>
             </div>
-            <Badge variant={selectedBot?.enabled ? "positive" : "neutral"}>
-              {activeProjectXAccountId === null ? "View only" : selectedBot?.enabled ? (selectedBot.execution_mode === "live" ? "Live Run active" : "Dry Run active") : "Stopped"}
-            </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={() => void runBotAction("dry_run")}
-              disabled={demoModeEnabled || actionLoading !== null || emergencyFlattenAccountId !== null || Boolean(selectedBot?.enabled) || runtimeContinuousBlockReason !== null}
+              disabled={demoModeEnabled || actionLoading !== null || stopping || emergencyFlattenAccountId !== null || Boolean(selectedBot?.enabled) || runtimeContinuousBlockReason !== null}
               title={demoModeEnabled ? demoDisabledTitle : runtimeContinuousBlockReason ?? undefined}
             >
               {actionLoading === "dry_run" ? "Starting Dry Run…" : "Dry Run"}
@@ -838,30 +931,51 @@ export function BotPage() {
             <Button
               variant="secondary"
               onClick={() => void runBotAction("live")}
-              disabled={demoModeEnabled || actionLoading !== null || emergencyFlattenAccountId !== null || Boolean(selectedBot?.enabled) || liveRunBlockReason !== null}
+              disabled={demoModeEnabled || actionLoading !== null || stopping || emergencyFlattenAccountId !== null || Boolean(selectedBot?.enabled) || liveRunBlockReason !== null}
               title={demoModeEnabled ? demoDisabledTitle : liveRunBlockReason ?? undefined}
             >
               {actionLoading === "live" ? "Starting Live Run…" : "Live Run"}
             </Button>
-            <Button
-              variant="danger"
-              onClick={() => void runBotAction("stop")}
-              disabled={demoModeEnabled || !selectedBot || actionLoading !== null || emergencyFlattenAccountId !== null}
-              title={demoModeEnabled ? demoDisabledTitle : undefined}
-            >
-              {actionLoading === "stop" ? "Stopping…" : "Stop Automation"}
-            </Button>
           </div>
-          <p className="text-sm text-slate-400">Dry Run follows the market without placing orders. Live Run enables MNQ order routing.</p>
-          <p className="text-xs text-slate-400">Stop Automation does not cancel broker orders or close positions.</p>
-          {selectedBot?.enabled ? <p className="text-xs text-slate-400">Stop automation before starting another run.</p> : null}
-          {runtimeContinuousBlockReason ? (
-            <p className="text-xs text-amber-200" role="status">Runs unavailable: {runtimeContinuousBlockReason}</p>
-          ) : liveRunBlockReason ? (
-            <p className="text-xs text-amber-200" role="status">Live Run unavailable: {liveRunBlockReason}</p>
-          ) : null}
+          <p className="text-sm text-slate-400">New runs use TopBot Adaptive on MNQ. Dry Run follows the market without orders; Live Run enables order routing.</p>
+          {selectedBot?.enabled && !demoModeEnabled ? <p className="text-xs text-slate-400">Stop automation before starting another run.</p> : null}
         </CardContent>
       </Card>
+      <section className="z-20 space-y-2 rounded-xl border border-app-border bg-app-surface p-3 shadow-lg md:sticky md:top-[calc(var(--app-header-height,0px)+0.75rem)]" aria-label="Bot run status">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-app-muted" role="status">
+            <Badge variant={runStatus.variant}>{activeProjectXAccountId === null ? "View only" : runStatus.label}</Badge>
+            {demoModeEnabled ? <span>Demo snapshot</span> : runtimeStatus ? <span>Worker: {runtimeStatus.state}</span> : null}
+            {selectedRun?.last_heartbeat_at ? <span>Run heartbeat: {formatDateTime(selectedRun.last_heartbeat_at)}</span> : null}
+            {selectedRun?.stop_reason === "worker_restart_requires_rearm" ? <span>Routing was disarmed after restart. Start a new run to resume.</span> : null}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="danger" size="sm"
+              onClick={() => void runBotAction("stop")}
+              disabled={demoModeEnabled || !selectedBot || stopping || actionLoading === "dry_run" || actionLoading === "live" || emergencyFlattenAccountId !== null}
+              title={demoModeEnabled ? demoDisabledTitle : "Stops automation without closing broker positions"}
+            >
+              {stopping ? "Stopping…" : "Stop Automation"}
+            </Button>
+            {activeProjectXAccountId !== null ? <Button
+              variant="danger" size="sm"
+              onClick={() => void runEmergencyFlatten()}
+              disabled={demoModeEnabled || emergencyFlattenAccountId !== null}
+              title={demoModeEnabled ? demoDisabledTitle : "Disables all account bots, cancels every working order and closes every position, including trades outside this bot"}
+            >
+              {emergencyFlattenAccountId !== null ? `Flatten pending for account ${emergencyFlattenAccountId}` : `Emergency: Flatten Account ${activeProjectXAccountId}`}
+            </Button> : null}
+          </div>
+        </div>
+        <p className="text-xs text-app-text-soft">
+          {latestDecision ? <>Latest decision: <strong>{latestDecision.action}</strong> · {latestDecision.reason} · {formatDateTime(latestDecision.created_at)}</> : "No recorded decision yet."}
+        </p>
+        {!demoModeEnabled && (runtimeContinuousBlockReason || liveRunBlockReason) ? <p className="text-xs text-amber-200" role="status">
+          {runtimeContinuousBlockReason ? "Runs unavailable" : "Live Run unavailable"}: {runtimeContinuousBlockReason ?? liveRunBlockReason}
+        </p> : null}
+        <p className="text-[11px] text-app-muted">Stop Automation does not cancel broker orders or close positions. Emergency flatten affects all account orders and positions.</p>
+      </section>
       <div className="flex flex-col gap-5">
         <div className="contents">
           <Card className="order-2 min-w-0">
@@ -873,15 +987,11 @@ export function BotPage() {
                 </div>
                 {selectedBot ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={selectedBot.enabled ? "positive" : "neutral"}>
-                      {selectedBot.enabled ? "Enabled" : "Disabled"}
-                    </Badge>
-
-                    <Badge variant="accent">{selectedBot.execution_mode === "dry_run" ? "Dry run" : "Live"}</Badge>
+                    <Badge variant="neutral">{selectedBot.execution_mode === "dry_run" ? "Saved dry-run configuration" : "Saved live configuration"}</Badge>
                   </div>
                 ) : null}
               </div>
-              {activeProjectXAccountId !== null ? <div
+              {activeProjectXAccountId !== null && !demoModeEnabled ? <div
                 className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-300"
                 role="status"
                 aria-label="Automation runtime status"
@@ -962,26 +1072,6 @@ export function BotPage() {
                     </p>
                   </div>
                 ) : null}
-                <div className="rounded-xl border border-rose-400/35 bg-rose-500/10 p-3" aria-label="ProjectX emergency controls">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-rose-100">ProjectX account {activeProjectXAccountId} emergency control</p>
-                      <p className="mt-1 text-xs text-rose-100/85">
-                        Account-wide: disables its bots, cancels every working order, and closes every open position, including trades outside this bot workspace.
-                      </p>
-                    </div>
-                    <Button
-                      variant="danger"
-                      onClick={() => void runEmergencyFlatten()}
-                      disabled={demoModeEnabled || emergencyFlattenAccountId !== null}
-                      title={demoModeEnabled ? demoDisabledTitle : "Affects every open order and position on the selected ProjectX account"}
-                    >
-                      {emergencyFlattenAccountId !== null
-                        ? `Flatten pending for account ${emergencyFlattenAccountId}`
-                        : `Emergency: Flatten Account ${activeProjectXAccountId}`}
-                    </Button>
-                  </div>
-                </div>
                 {emergencyOutcome ? (
                   <div
                     className={
@@ -1147,8 +1237,8 @@ interface ActivityRow {
 
 function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-800">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}</div>
+    <details className="overflow-hidden rounded-xl border border-slate-800">
+      <summary className="cursor-pointer bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}<span className="ml-2 text-xs font-normal text-slate-400">{rows.length} recent</span></summary>
       {rows.length === 0 ? (
         <p className="px-3 py-4 text-sm text-slate-500">No rows</p>
       ) : (
@@ -1167,7 +1257,7 @@ function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) 
                   <TableCell>
                     <Badge variant={row.badgeVariant}>{row.left}</Badge>
                   </TableCell>
-                  <TableCell className="max-w-[320px] truncate text-xs text-slate-300">{row.middle}</TableCell>
+                  <TableCell className="max-w-[320px] text-xs text-slate-300">{row.middle}</TableCell>
                   <TableCell className="text-right text-xs text-slate-500">{row.right}</TableCell>
                 </TableRow>
               ))}
@@ -1175,6 +1265,6 @@ function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) 
           </Table>
         </div>
       )}
-    </div>
+    </details>
   );
 }

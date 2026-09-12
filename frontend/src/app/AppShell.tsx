@@ -93,8 +93,28 @@ export function AppShell() {
   const beginSyncRequest = useLatestRequestGuard();
   const activeSyncAccountIdRef = useRef<number | null>(null);
   const activeLifecycleAccountIdRef = useRef<number | null>(null);
+  const appHeaderRef = useRef<HTMLElement | null>(null);
   const locationRef = useRef(location);
   locationRef.current = location;
+
+  useLayoutEffect(() => {
+    const header = appHeaderRef.current;
+    const shell = header?.parentElement;
+    if (!header || !shell) return;
+    const measureHeader = () => {
+      const sticky = window.getComputedStyle(header).position === "sticky";
+      shell.style.setProperty("--app-header-height", `${sticky ? header.getBoundingClientRect().height : 0}px`);
+    };
+    measureHeader();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureHeader);
+    observer?.observe(header);
+    window.addEventListener("resize", measureHeader);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureHeader);
+      shell.style.removeProperty("--app-header-height");
+    };
+  }, []);
 
   useEffect(() => {
     return subscribeToDemoModeChanges(({ enabled, source, blockedByLiveMutation }) => {
@@ -456,7 +476,7 @@ export function AppShell() {
       >
         Skip to main content
       </a>
-      <header className="relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">
+      <header ref={appHeaderRef} className="relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">
         <div
           className={cn(
             "mx-auto flex w-full flex-col gap-2 px-3 py-2 sm:px-4 lg:px-8",

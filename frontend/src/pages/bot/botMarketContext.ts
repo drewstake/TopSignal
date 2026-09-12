@@ -2,11 +2,13 @@ import type {
   BotDataQualityStatus,
   BotMarketBias,
   BotMarketRegime,
+  BotStrategyType,
   BotTimeframeUnit,
   BotVwapLocation,
   ProjectXMarketCandle,
 } from "../../lib/types";
-import { BOT_CHART_MAX_BARS, buildCandlestickData, buildMarketLevels, buildVwapData } from "./botChartData";
+import { BOT_CHART_MAX_BARS, buildCandlestickData, buildMarketLevels } from "./botChartData";
+import { buildBotChartVwap } from "./botChartIndicators";
 import { findCandleGaps, intervalSecondsFor, isFuturesSessionOpen } from "./botCandleGaps";
 
 /**
@@ -23,6 +25,7 @@ export type VolumeState = "low" | "normal" | "elevated";
 
 export interface BotMarketSnapshot {
   contractKey: string;
+  strategyType?: BotStrategyType;
   unit: BotTimeframeUnit;
   unitNumber: number;
   candles: ProjectXMarketCandle[];
@@ -111,7 +114,6 @@ const ATR_PERIOD = 14;
 const ATR_PERCENTILE_LOOKBACK = 100;
 const VOLUME_BASELINE_BARS = 20;
 const EASTERN_TIME_ZONE = "America/New_York";
-const VWAP_SESSION_START_TIME = "18:00";
 const MAX_HIGHER_TIMEFRAMES = 2;
 /** Cap context computations; recent bars carry the read and deep history is paged in for charting, not context. */
 const MAX_CONTEXT_BARS = BOT_CHART_MAX_BARS;
@@ -273,10 +275,7 @@ export function buildMarketContext(
   const relativeVolume = computeRelativeVolume(candles);
   const volumeState = classifyVolume(relativeVolume);
 
-  const vwapPoints = buildVwapData(candles, {
-    sessionStartTime: VWAP_SESSION_START_TIME,
-    sessionTimeZone: EASTERN_TIME_ZONE,
-  });
+  const vwapPoints = buildBotChartVwap(candles, snapshot.strategyType === "topbot_adaptive");
   const vwap = vwapPoints.length > 0 ? vwapPoints[vwapPoints.length - 1].value : null;
   const vwapDistance = vwap !== null ? lastPrice - vwap : null;
   const vwapDistancePercent = vwap !== null && vwap !== 0 ? ((lastPrice - vwap) / Math.abs(vwap)) * 100 : null;

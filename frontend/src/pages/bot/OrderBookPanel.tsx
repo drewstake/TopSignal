@@ -16,6 +16,7 @@ import {
   type OrderBookSide,
 } from "./orderBook";
 import { connectOrderBookPanelStream, type MarketDepthStreamFactory } from "./orderBookPanelStream";
+import { usePageVisibility } from "./usePageVisibility";
 
 const priceFormatter = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
@@ -36,15 +37,21 @@ export function OrderBookPanel({
   demoMode = false,
   streamFactory = streamProjectXMarketDepth,
 }: OrderBookPanelProps) {
+  const pageVisible = usePageVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
   const store = useMemo(() => new OrderBookStore(normalizedContractId, 1), [normalizedContractId]);
 
   useEffect(() => {
-    if (demoMode || !normalizedContractId) {
+    if (demoMode || !pageVisible || !normalizedContractId) {
       return undefined;
     }
-    return connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
-  }, [demoMode, normalizedContractId, store, streamFactory]);
+    const close = connectOrderBookPanelStream({ contractId: normalizedContractId, store, streamFactory });
+    return () => {
+      close();
+      // A new subscription must establish a fresh snapshot before accepting deltas.
+      store.setConnectionState({ contract_id: normalizedContractId, state: "disconnected" });
+    };
+  }, [demoMode, pageVisible, normalizedContractId, store, streamFactory]);
 
   const displaySymbol = symbol?.trim();
   const displayMarket =

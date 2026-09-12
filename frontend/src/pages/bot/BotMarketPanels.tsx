@@ -63,6 +63,7 @@ export function BotMarketPanels({
           marketSnapshot={marketSnapshot}
           market={market}
           loading={evaluating}
+          demoMode={demoMode}
           onEvaluate={onEvaluate}
         />
       </Suspense>

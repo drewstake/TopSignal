@@ -3,6 +3,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { Skeleton } from "../../components/ui/Skeleton";
+import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import type { BotAnalysis, BotCollectedContext, BotConfig, BotEvaluation } from "../../lib/types";
 import { buildDisplayAnalysis, currentAnalysisFreshness, type DisplayAnalysis } from "./botAnalysisContract";
 import { buildMarketContext, candleEndMs, isConfirmedClosedCandle, type BotMarketSnapshot } from "./botMarketContext";
@@ -15,21 +16,24 @@ interface BotAnalysisPanelProps {
   marketSnapshot?: BotMarketSnapshot | null;
   market?: BotChartMarket | null;
   loading?: boolean;
+  demoMode?: boolean;
   onEvaluate?: () => void;
 }
 const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 const timestampFormatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
 
-export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, market = null, loading = false, onEvaluate }: BotAnalysisPanelProps) {
-  const [nowMs, setNowMs] = useState(Date.now);
+export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, market = null, loading = false, demoMode = false, onEvaluate }: BotAnalysisPanelProps) {
+  const [wallClockMs, setWallClockMs] = useState(Date.now);
+  const nowMs = demoMode ? Date.parse(DEMO_AS_OF_ISO) : wallClockMs;
   useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);
+    if (demoMode) return;
+    const timer = window.setInterval(() => setWallClockMs(Date.now()), 15_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [demoMode]);
   // A previous bot's response or chart must never supply this bot's explanation.
   const selectedEvaluation = bot && evaluation?.config.id === bot.id ? evaluation : null;
   const analysis = useMemo(() => buildDisplayAnalysis(selectedEvaluation, nowMs), [selectedEvaluation, nowMs]);
-  const snapshot = (bot ? matchingSnapshot(marketSnapshot, bot) : matchingMarketSnapshot(marketSnapshot, market)) ? marketSnapshot : null;
+  const snapshot = matchingMarketSnapshot(marketSnapshot, bot ?? market) ? marketSnapshot : null;
   const raw = selectedEvaluation?.analysis;
   const freshness = analysis ? currentAnalysisFreshness(analysis, nowMs) : null;
   const newerBars = analysis ? newerClosedBars(analysis, snapshot, nowMs) : 0;
@@ -37,12 +41,17 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
   const hasRead = Boolean(analysis && analysis.provenance.closed_candle_count >= (analysis.provenance.minimum_feature_bars ?? 10));
   return <Card className="min-w-0">
     <CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-3">
-      <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and TopBot decision` : "Market context from the chart · No trading account required"}</CardDescription></div>
-      {analysis && <div className="flex flex-wrap gap-2">
+      <div><CardTitle>Evaluation &amp; market analysis</CardTitle><CardDescription>{bot ? `${bot.symbol ?? bot.contract_id} · closed-candle market read and bot decision` : "Market context from the chart · No trading account required"}</CardDescription></div>
+      <div className="flex flex-wrap items-center gap-2">
+      {analysis && <>
         <Badge variant={freshnessStatus === "stale" ? "warning" : "neutral"}>{freshnessLabel(freshnessStatus)}</Badge>
         <Badge variant={analysis.dataQuality.status === "good" ? "positive" : "warning"}>Candles: {analysis.dataQuality.status === "good" ? "good quality" : labelize(analysis.dataQuality.status).toLowerCase()}</Badge>
         <Badge variant="neutral">{raw?.context_coverage?.missing.length || raw?.context_coverage?.limited.length ? "Context incomplete" : raw?.context_coverage ? "Context recorded" : "Context coverage unverified"}</Badge>
-      </div>}
+      </>}
+      {bot && onEvaluate && !demoMode && <Button onClick={onEvaluate} disabled={loading} aria-busy={loading}>
+        {loading ? "Evaluating…" : !selectedEvaluation ? "Evaluate bot" : hasRead ? "Refresh evaluation" : "Retry evaluation"}
+      </Button>}
+      </div>
     </div></CardHeader>
     <CardContent className="space-y-4">
       {loading ? <Skeleton className="h-56" /> : !bot ? <>
@@ -50,14 +59,14 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
         <p className="text-xs text-app-muted">Bot-specific decisions and account risk checks require a configured bot. Viewing market data does not run a bot or place orders.</p>
       </> : !selectedEvaluation ? <>
         <ChartMarketAnalysis snapshot={snapshot} nowMs={nowMs} />
-        <EmptyState title="No evaluation yet" description="Evaluate this bot to explain its latest closed-candle signal and checks." action={onEvaluate && <Button onClick={onEvaluate}>Evaluate bot</Button>} />
+        <EmptyState title="No evaluation yet" description={demoMode ? "This demo snapshot has no saved evaluation. Live evaluation is disabled." : "Evaluate this bot to explain its latest closed-candle signal and checks."} />
       </> : <>
           {analysis && hasRead ? <>
             <div className="grid gap-4 xl:grid-cols-2">
               <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
                 <p className="text-xs font-medium text-app-muted">Market interpretation</p>
                 <h3 className="mt-2 text-lg font-semibold leading-7">{raw?.explanation?.headline ?? legacyHeadline(analysis)}</h3>
-                <p className="mt-2 text-xs leading-5 text-app-muted">Based on the {analysis.provenance.timeframe.label} candle closed {formatTimestamp(candleClose(analysis))}. This describes the observed market; entry permission comes from TopBot’s checks.</p>
+                <p className="mt-2 text-xs leading-5 text-app-muted">Based on the {analysis.provenance.timeframe.label} candle closed {formatTimestamp(candleClose(analysis))}. This describes the observed market; entry permission comes from the bot’s checks.</p>
                 <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
                   <span><span className="text-app-muted">Direction: </span>{analysis.marketBias === "neutral" ? "No clear direction" : labelize(analysis.marketBias)}</span>
                   <span><span className="text-app-muted">Strength: </span>{labelize(raw?.features?.trend.strength_label ?? "unavailable")}</span>
@@ -67,19 +76,21 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
               <BotDecisionSummary evaluation={selectedEvaluation} />
             </div>
             {freshnessStatus === "stale" && <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 text-sm text-amber-200">This is a saved, stale evaluation{newerBars ? `; the matching chart has ${newerBars} newer closed bar${newerBars === 1 ? "" : "s"}` : ""}. Evaluate again to refresh the market read and bot checks.</p>}
-            {freshnessStatus === "market_closed" && <p className="text-xs leading-5 text-app-muted">The scheduled market session is closed. The last completed candle is retained; closed-session time does not count as a feed delay. TopBot’s configured entry window is checked separately.</p>}
+            {freshnessStatus === "market_closed" && <p className="text-xs leading-5 text-app-muted">The scheduled market session is closed. The last completed candle is retained; closed-session time does not count as a feed delay. The configured entry window is checked separately.</p>}
             {freshnessStatus === "unavailable" && <p className="text-xs text-amber-200">The candle close time cannot be verified. Treat this as a recorded interpretation until a fresh evaluation is available.</p>}
+            <Details title="Evidence and interpretation details">
             <section className="grid gap-4 md:grid-cols-2">
               <EvidenceList title="What supports this read" items={raw?.explanation?.supporting_evidence ?? analysis.scoreDrivers[analysis.marketBias]} empty="No supporting evidence was returned." />
               <EvidenceList title="What conflicts with it" items={raw?.explanation?.conflicting_evidence ?? conflictingEvidence(analysis)} empty="No conflicting evidence was identified in the available inputs. Missing context is not confirmation." />
             </section>
-            <section className="rounded-xl border border-app-border p-4"><h3 className="text-sm font-semibold">What would change the read</h3>
+            <section className="mt-4 rounded-xl border border-app-border p-4"><h3 className="text-sm font-semibold">What would change the read</h3>
               {raw?.explanation?.change_levels.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{raw.explanation.change_levels.map((level, index) => <li key={index}>{level.condition}</li>)}</ul> : <p className="mt-2 text-sm leading-6 text-app-muted">{levelText(analysis)}</p>}
               <p className="mt-2 text-xs text-app-muted">These are interpretation boundaries, not orders or guaranteed reversal points.</p>
             </section>
+            </Details>
           </> : <>
             <div className="grid gap-4 xl:grid-cols-2">
-              <EmptyState title="No directional read yet" description={`This evaluation received ${analysis?.provenance.closed_candle_count ?? 0} closed ${analysis?.provenance.timeframe.label ?? ""} candles. At least ${analysis?.provenance.minimum_feature_bars ?? 10} are needed for the first feature set; partial candles are excluded.`} action={onEvaluate && <Button onClick={onEvaluate}>Retry evaluation</Button>} />
+              <EmptyState title="No directional read yet" description={`This evaluation received ${analysis?.provenance.closed_candle_count ?? 0} closed ${analysis?.provenance.timeframe.label ?? ""} candles. At least ${analysis?.provenance.minimum_feature_bars ?? 10} are needed for the first feature set; partial candles are excluded.`} />
               <BotDecisionSummary evaluation={selectedEvaluation} />
             </div>
             {snapshot && <SeparateChartContext snapshot={snapshot} bot={bot} nowMs={nowMs} />}
@@ -103,7 +114,7 @@ function BotDecisionSummary({ evaluation }: { evaluation: BotEvaluation }) {
   const reasons = uniqueStrings(failed.length ? failed.map(check => check.detail) : evaluation.risk_events.map(event => event.message));
   const mode = detail?.execution_mode ?? evaluation.order_attempt?.execution_mode ?? (evaluation.run?.dry_run ? "dry_run" : evaluation.config.execution_mode);
   return <section className="rounded-xl border border-cyan-400/20 bg-cyan-950/10 p-4">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">TopBot decision</h3><Badge variant={blocked ? "negative" : "neutral"}>{mode === "dry_run" ? "Dry run" : mode ? labelize(mode) : "Mode unavailable"}</Badge></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">{evaluation.config.strategy_type === "topbot_adaptive" ? "TopBot decision" : "Bot decision"}</h3><Badge variant={blocked ? "negative" : "neutral"}>{mode === "dry_run" ? "Dry run" : mode ? labelize(mode) : "Mode unavailable"}</Badge></div>
     <p className="mt-2 text-lg font-semibold">{decisionHeadline(evaluation)}</p>
     <p className="mt-2 text-sm leading-6">{detail?.summary ?? (decision.reason ? humanReason(decision.reason) : "No strategy reason was returned.")}</p>
     {!detail && reasons.length > 0 && <ul className="mt-2 space-y-1 text-sm text-amber-200">{reasons.slice(0, 2).map(reason => <li key={reason}>{reason}</li>)}</ul>}
@@ -236,7 +247,7 @@ function ChartMarketAnalysis({ snapshot, nowMs }: { snapshot: BotMarketSnapshot 
       <Metric label="Direction" value={context.trend ? labelize(context.trend.direction) : "Insufficient trend history"} />
       <Metric label="Market regime" value={labelize(context.marketRegime)} />
       <Metric label="Last closed price" value={formatPrice(context.lastPrice)} />
-      <Metric label="VWAP" value={formatPrice(context.vwap)} />
+      <Metric label={snapshot?.strategyType === "topbot_adaptive" ? "TopBot regular-session VWAP" : "VWAP · 18:00 ET"} value={formatPrice(context.vwap)} />
       <Metric label="Price versus VWAP" value={context.vwapLocation ? labelize(context.vwapLocation) : "Unavailable"} />
       <Metric label="Volatility (ATR)" value={formatPrice(context.atr)} />
       <Metric label="Relative volume" value={context.relativeVolume === null ? "Unavailable" : `${context.relativeVolume.toFixed(2)}×`} />
@@ -271,9 +282,8 @@ function EvidenceList({ title, items, empty }: { title: string; items: string[];
 }
 function Metric({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><p className="text-xs text-app-muted">{label}</p><p className="mt-1 break-words text-sm font-medium">{value}</p></div>; }
 function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) { return <section className="rounded-xl border border-dashed border-app-border p-4"><h3 className="font-semibold">{title}</h3><p className="mt-2 text-sm leading-6 text-app-muted">{description}</p>{action && <div className="mt-3">{action}</div>}</section>; }
-function matchingSnapshot(snapshot: BotMarketSnapshot | null, bot: BotConfig | null): boolean { return Boolean(snapshot && bot && snapshot.contractKey === `${bot.contract_id}:${bot.timeframe_unit}:${bot.timeframe_unit_number}` && snapshot.unit === bot.timeframe_unit && snapshot.unitNumber === bot.timeframe_unit_number); }
 function newerClosedBars(analysis: DisplayAnalysis, snapshot: BotMarketSnapshot | null, nowMs: number): number {
-  if (!snapshot) return 0;
+  if (!snapshot || snapshot.unit !== analysis.provenance.timeframe.unit || snapshot.unitNumber !== analysis.provenance.timeframe.unit_number) return 0;
   const analyzed = Date.parse(analysis.provenance.latest_candle_timestamp ?? "");
   const contract = analysis.provenance.resolved_contract_id ?? analysis.provenance.configured_contract_id;
   if (!Number.isFinite(analyzed) || !contract) return 0;

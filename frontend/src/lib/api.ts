@@ -2500,10 +2500,11 @@ export const botsApi = {
       method: "POST",
       body: botStartPayload(options),
     }),
-  evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }) =>
+  evaluate: (botConfigId: number, options: BotStartOptions = { dryRun: true }, requestOptions: RequestSignalOptions = {}) =>
     requestJson<BotEvaluation>(`/api/bots/${botConfigId}/evaluate`, {
       method: "POST",
       body: botStartPayload(options),
+      signal: requestOptions.signal,
     }),
   runBacktest: runBacktestRequest,
   stop: (botConfigId: number) =>

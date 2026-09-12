@@ -28,6 +28,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 import { botsApi, buildUserScopedProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "../../lib/perf";
 import { APP_THEME_CHANGED_EVENT } from "../../lib/theme";
+import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import type { BotActivity, BotConfig, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 import {
   buildBotCandleCacheKey,
@@ -110,7 +111,6 @@ import {
   buildOlderCandlesQuery,
   buildSignalMarkers,
   buildSmaData,
-  buildVwapData,
   buildLiveCandleFromPriceUpdate,
   toUtcTimestamp,
   type LiquidityLevel,
@@ -131,6 +131,8 @@ import {
 } from "./botChartLifecycle";
 import { readBotChartThemeColors } from "./botChartTheme";
 import { buildVolumeData } from "./botChartVolume";
+import { buildBotChartVwap, resolveBotChartIndicators } from "./botChartIndicators";
+import { usePageVisibility } from "./usePageVisibility";
 import { resolveBotChartViewState } from "./botChartViewState";
 import {
   buildBotDrawingStorageKey,
@@ -168,7 +170,7 @@ const BACKGROUND_CANDLE_START_INTERVAL_MS = 300;
 const LIQUIDITY_LINE_DRAG_HIT_RADIUS_PX = 8;
 const DEFAULT_CHART_TIMEFRAME_ID: BotChartTimeframeId = "5m";
 const EASTERN_TIME_ZONE = "America/New_York";
-const VWAP_SESSION_START_TIME = "18:00";
+const chartNow = (demoMode: boolean) => demoMode ? new Date(DEMO_AS_OF_ISO) : new Date();
 
 const candleRequestScheduler = new PrioritizedRequestScheduler<string>({
   maxConcurrency: 2,
@@ -323,6 +325,7 @@ interface LiquidityDragState {
 }
 
 export function BotSignalChart({ bot: savedBot, market, demoMode = false, authenticatedCacheScope, activity, lastEvaluation, refreshToken, onMarketData }: BotSignalChartProps) {
+  const pageVisible = usePageVisibility();
   const bot = savedBot ?? market ?? null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartHandlesRef = useRef<ChartHandles | null>(null);
@@ -447,26 +450,24 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   );
   const latestOhlcCandle = useMemo(() => getLatestHoveredCandle(hoverCandlesByTime), [hoverCandlesByTime]);
   const volumeData = useMemo(() => buildVolumeData(visibleCandles), [visibleCandles]);
-  const closedChartCandles = useMemo(
-    () => buildCandlestickData(marketDataMatchesContext ? candles.filter((candle) => isConfirmedClosedCandle(candle, Date.now())) : []),
-    [candles, marketDataMatchesContext],
-  );
-  const usesEmaLayers =
-    bot?.strategy_type === "pullback_trap_reversal" ||
-    bot?.strategy_type === "ema_scalping" ||
-    bot?.strategy_type === "ema_trend_pullback";
-  const showAverageLayers = bot?.strategy_type === "sma_cross" || usesEmaLayers;
+  const closedChartCandles = useMemo(() => {
+    const cutoffMs = chartNow(demoMode).getTime();
+    return buildCandlestickData(marketDataMatchesContext ? candles.filter((candle) => isConfirmedClosedCandle(candle, cutoffMs)) : []);
+  }, [candles, demoMode, marketDataMatchesContext]);
+  const indicators = resolveBotChartIndicators(bot);
+  const usesEmaLayers = indicators.ema;
+  const showAverageLayers = indicators.showAverages;
   const fastAverage = useMemo(
-    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, bot?.fast_period ?? 0) : buildSmaData(chartCandles, bot?.fast_period ?? 0)) : []),
-    [bot?.fast_period, chartCandles, showAverageLayers, usesEmaLayers],
+    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, indicators.fastPeriod) : buildSmaData(chartCandles, indicators.fastPeriod)) : []),
+    [indicators.fastPeriod, chartCandles, showAverageLayers, usesEmaLayers],
   );
   const slowAverage = useMemo(
-    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, bot?.slow_period ?? 0) : buildSmaData(chartCandles, bot?.slow_period ?? 0)) : []),
-    [bot?.slow_period, chartCandles, showAverageLayers, usesEmaLayers],
+    () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, indicators.slowPeriod) : buildSmaData(chartCandles, indicators.slowPeriod)) : []),
+    [indicators.slowPeriod, chartCandles, showAverageLayers, usesEmaLayers],
   );
   const vwap = useMemo(
-    () => buildVwapData(visibleCandles, { sessionStartTime: VWAP_SESSION_START_TIME, sessionTimeZone: EASTERN_TIME_ZONE }),
-    [visibleCandles],
+    () => buildBotChartVwap(visibleCandles, indicators.topbot),
+    [indicators.topbot, visibleCandles],
   );
   // Liquidity detection is quadratic in the worst case; recent swings are what
   // matter, so cap the scan even when deep history has been paged in.
@@ -583,11 +584,12 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   }, [liveCandle, marketDataMatchesContext, streamPrice]);
   const livePrice = livePricePoint?.price ?? null;
   void freshnessTick; // Re-render trigger for data/price age and session transitions.
-  const chartSessionOpen = isFuturesSessionOpen(Date.now(), bot?.symbol);
+  const nowMs = chartNow(demoMode).getTime();
+  const chartSessionOpen = isFuturesSessionOpen(nowMs, bot?.symbol);
   const livePriceObservedAtMs = livePricePoint ? Date.parse(livePricePoint.observedAt) : Number.NaN;
   const livePriceIsStale =
     livePricePoint !== null &&
-    (!Number.isFinite(livePriceObservedAtMs) || Date.now() - livePriceObservedAtMs > LIVE_PRICE_STALE_AFTER_MS);
+    (!Number.isFinite(livePriceObservedAtMs) || nowMs - livePriceObservedAtMs > LIVE_PRICE_STALE_AFTER_MS);
   const liquidityDragContextKey = chartViewportKey;
   const drawingStorageScope = useMemo<BotDrawingStorageScope | null>(
     () =>
@@ -686,7 +688,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
 
   // Throttled market snapshot for the analysis/context panel.
   useEffect(() => {
-    if (!onMarketData) {
+    if (!onMarketData || !pageVisible) {
       return;
     }
 
@@ -709,12 +711,13 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         contractKey: `${config.contract_id}:${config.timeframe_unit}:${config.timeframe_unit_number}`,
         unit: config.timeframe_unit,
         unitNumber: config.timeframe_unit_number,
+        strategyType: config.strategy_type,
         candles: mergeLiveCandle(candlesRef.current, liveCandleRef.current),
         lastPrice: livePriceRef.current,
-        updatedAt: new Date().toISOString(),
+        updatedAt: chartNow(demoMode).toISOString(),
       });
     }, MARKET_SNAPSHOT_THROTTLE_MS);
-  }, [chartConfig, onMarketData, visibleCandles]);
+  }, [chartConfig, demoMode, onMarketData, pageVisible, visibleCandles]);
 
   useEffect(() => {
     return () => {
@@ -786,11 +789,12 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
 
   // Periodic tick so stale-data indicators stay current.
   useEffect(() => {
+    if (demoMode || !pageVisible) return;
     const intervalId = window.setInterval(() => {
       setFreshnessTick((current) => current + 1);
     }, FRESHNESS_TICK_MS);
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [demoMode, pageVisible]);
 
   useEffect(() => {
     hoverCandlesByTimeRef.current = hoverCandlesByTime;
@@ -920,7 +924,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       applyToChart?: boolean;
       mutation?: ChartViewportMutation;
     }) => {
-      const fetchedAt = new Date();
+      const fetchedAt = chartNow(demoMode);
       const previousEntry = readBotCandleCache(cacheKey);
       const cacheBase = replaceCache ? [] : previousEntry?.candles ?? [];
       const mergedCache = mergeMarketCandles(
@@ -975,7 +979,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         }
       }
     },
-    [queueViewportRestore],
+    [demoMode, queueViewportRestore],
   );
 
   const scheduleBackgroundCandleFetches = useCallback(
@@ -993,6 +997,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       requests: BotCandleFetchRequest[];
     }) => {
       chartBackgroundControllerRef.current?.abort();
+      if (document.hidden) return;
       const runnableRequests = requests.filter((request) => {
         if (request.reason !== "interior-gap") {
           return true;
@@ -1056,6 +1061,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
 
   const loadCandles = useCallback(
     async ({ silent = false, forceRefresh = false }: LoadCandlesOptions = {}) => {
+      if (document.hidden) return;
       if (!chartConfig || !authenticatedCacheScope) {
         candleRequestsRef.current.invalidate();
         chartBackgroundControllerRef.current?.abort();
@@ -1084,7 +1090,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         setGapRepairing(false);
       }
 
-      const now = new Date();
+      const now = chartNow(demoMode);
       const queryWindow = buildBotChartQuery(chartConfig, now);
       const initialQueryWindow = buildInitialBotChartQuery(chartConfig, now);
       const cacheKeyInput = {
@@ -1251,10 +1257,11 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         }
       }
     },
-    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, scheduleBackgroundCandleFetches],
+    [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch, demoMode, scheduleBackgroundCandleFetches],
   );
 
   const loadLivePrice = useCallback(async ({ force = false, allowClosedSession = false }: LoadLivePriceOptions = {}) => {
+    if (document.hidden) return;
     if (!chartConfig || !authenticatedCacheScope) {
       liveRequestsRef.current.invalidate();
       setLiveCandle(null);
@@ -1378,6 +1385,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   }, [authenticatedCacheScope, chartConfig, chartViewportKey, commitCandleFetch]);
 
   const loadOlderCandles = useCallback(async () => {
+    if (document.hidden) return;
     const config = chartConfigRef.current;
     const loadedCandles = candlesRef.current;
     if (
@@ -1471,6 +1479,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   }, [authenticatedCacheScope, commitCandleFetch]);
 
   const repairDataGaps = useCallback(async () => {
+    if (document.hidden) return;
     const config = chartConfigRef.current;
     const cacheScope = authenticatedCacheScope;
     if (!config || !cacheScope || repairRequestsRef.current.hasActiveRequest) {
@@ -2729,6 +2738,20 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     // These requests use independent latest-wins lanes and merge with
     // closed-over-partial precedence, so starting them together gives a cached
     // chart its live quote immediately instead of waiting for history refresh.
+    if (!pageVisible) {
+      invalidateChartRequestLanes([candleRequestsRef.current, liveRequestsRef.current, historyRequestsRef.current, repairRequestsRef.current]);
+      chartBackgroundControllerRef.current?.abort();
+      chartBackgroundControllerRef.current = null;
+      if (marketSnapshotTimeoutRef.current !== null) {
+        window.clearTimeout(marketSnapshotTimeoutRef.current);
+        marketSnapshotTimeoutRef.current = null;
+      }
+      setLoading(false);
+      setRefreshing(false);
+      setHistoryLoading(false);
+      setGapRepairing(false);
+      return;
+    }
     if (demoMode) {
       void loadCandles();
       return;
@@ -2737,12 +2760,12 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       () => loadCandles(),
       () => loadLivePrice({ force: true }),
     );
-  }, [demoMode, loadCandles, loadLivePrice, refreshToken]);
+  }, [demoMode, loadCandles, loadLivePrice, pageVisible, refreshToken]);
 
   useEffect(() => {
     warmTimeframesControllerRef.current?.abort();
     const selectedBot = warmBotRef.current;
-    if (demoMode || !selectedBot || !authenticatedCacheScope) {
+    if (demoMode || !pageVisible || !selectedBot || !authenticatedCacheScope) {
       warmTimeframesControllerRef.current = null;
       return;
     }
@@ -2750,7 +2773,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     const controller = new AbortController();
     warmTimeframesControllerRef.current = controller;
     window.queueMicrotask(() => {
-      if (controller.signal.aborted || warmTimeframesControllerRef.current !== controller) {
+      if (document.hidden || controller.signal.aborted || warmTimeframesControllerRef.current !== controller) {
         return;
       }
       const now = new Date();
@@ -2832,11 +2855,12 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         warmTimeframesControllerRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, commitCandleFetch, demoMode, warmContractKey]);
+  }, [authenticatedCacheScope, commitCandleFetch, demoMode, pageVisible, warmContractKey]);
 
   useEffect(() => {
     if (
       demoMode ||
+      !pageVisible ||
       historyViewportReadyKey !== chartViewportKey ||
       unrepairedDataGaps.length === 0 ||
       loading ||
@@ -2852,7 +2876,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     const timeout = window.setTimeout(() => void repairDataGaps(),
       Math.max(0, nextAutomaticRepairAtRef.current - Date.now()));
     return () => window.clearTimeout(timeout);
-  }, [chartViewportKey, historyViewportReadyKey, demoMode, gapRepairing, historyLoading, loading, refreshing, repairVersion, repairDataGaps, unrepairedDataGaps.length]);
+  }, [chartViewportKey, historyViewportReadyKey, demoMode, gapRepairing, historyLoading, loading, pageVisible, refreshing, repairVersion, repairDataGaps, unrepairedDataGaps.length]);
 
   useEffect(() => {
     const candleRequests = candleRequestsRef.current;
@@ -2903,7 +2927,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   // Poll closed candles for any selected bot. Review of a stopped bot still
   // needs a fresh chart; the backend serves cached rows cheaply when fresh.
   useEffect(() => {
-    if (demoMode || !bot || !authenticatedCacheScope) {
+    if (demoMode || !pageVisible || !bot || !authenticatedCacheScope) {
       return;
     }
 
@@ -2912,10 +2936,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     }, POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [authenticatedCacheScope, bot, demoMode, loadCandles]);
+  }, [authenticatedCacheScope, bot, demoMode, loadCandles, pageVisible]);
 
   useEffect(() => {
-    if (demoMode || !bot || !chartSessionOpen) {
+    if (demoMode || !pageVisible || !bot || !chartSessionOpen) {
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
       setStreamPrice(null);
@@ -2930,6 +2954,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       liveStreamRenderTimeoutRef.current = null;
     }
 
+    let stopped = false;
     const stopStreaming = streamProjectXMarketPrice(
       {
         contractId: bot.contract_id,
@@ -2938,11 +2963,13 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       },
       {
         onPrice: (price) => {
+          if (stopped || document.hidden) return;
           lastLiveStreamEventAtRef.current = Date.now();
           setStreamActive(true);
           scheduleLiveStreamPrice(price);
         },
         onError: () => {
+          if (stopped || document.hidden) return;
           lastLiveStreamEventAtRef.current = 0;
           setStreamActive(false);
         },
@@ -2950,6 +2977,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     );
 
     return () => {
+      stopped = true;
       stopStreaming();
       lastLiveStreamEventAtRef.current = 0;
       pendingLiveStreamPriceRef.current = null;
@@ -2960,10 +2988,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         liveStreamRenderTimeoutRef.current = null;
       }
     };
-  }, [authenticatedCacheScope, bot, chartSessionOpen, demoMode, scheduleLiveStreamPrice]);
+  }, [authenticatedCacheScope, bot, chartSessionOpen, demoMode, pageVisible, scheduleLiveStreamPrice]);
 
   useEffect(() => {
-    if (demoMode || !bot) {
+    if (demoMode || !pageVisible || !bot) {
       return;
     }
 
@@ -2977,7 +3005,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     }, LIVE_PRICE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [bot, demoMode, loadLivePrice]);
+  }, [bot, demoMode, loadLivePrice, pageVisible]);
 
   const subtitle = bot
     ? buildChartSubtitle(bot, chartTimeframe)
@@ -2988,7 +3016,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       [layer]: !current[layer],
     }));
   }, []);
-  const dataAgeMs = lastLoadedAt ? Date.now() - lastLoadedAt.getTime() : null;
+  const dataAgeMs = lastLoadedAt ? nowMs - lastLoadedAt.getTime() : null;
   const dataIsStale = servedFromCacheOnly || (dataAgeMs !== null && dataAgeMs > STALE_DATA_AFTER_MS);
   const freshnessTitle = lastLoadedAt
     ? `Closed candles loaded ${lastLoadedFormatter.format(lastLoadedAt)} ET${
@@ -3327,18 +3355,18 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
               <LegendDot
                 active={visibleChartLayers.fastSma}
                 className="bg-cyan-400"
-                label={`${usesEmaLayers ? "Fast EMA" : "Fast SMA"} ${bot?.fast_period ?? "-"}`}
+                label={indicators.fastLabel}
                 onClick={() => toggleChartLayer("fastSma")}
               />
               <LegendDot
                 active={visibleChartLayers.slowSma}
                 className="bg-yellow-300"
-                label={`${usesEmaLayers ? "Slow EMA" : "Slow SMA"} ${bot?.slow_period ?? "-"}`}
+                label={indicators.slowLabel}
                 onClick={() => toggleChartLayer("slowSma")}
               />
             </>
           ) : null}
-          <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label="VWAP" onClick={() => toggleChartLayer("vwap")} />
+          <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label={indicators.vwapLabel} onClick={() => toggleChartLayer("vwap")} />
           <LegendDot active={visibleChartLayers.volume} className="bg-app-muted" label="Volume" onClick={() => toggleChartLayer("volume")} />
           <LegendDot
             active={visibleChartLayers.buySignals}

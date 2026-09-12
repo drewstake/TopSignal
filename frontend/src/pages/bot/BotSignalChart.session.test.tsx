@@ -6,6 +6,9 @@ import * as api from "../../lib/api";
 import type { BotConfig, ProjectXMarketCandle } from "../../lib/types";
 import { BotSignalChart } from "./BotSignalChart";
 import { findCandleGaps, isFuturesSessionOpen } from "./botCandleGaps";
+import { getDemoApiResponse } from "../../lib/demoData";
+import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
+import type { BotConfigListResponse } from "../../lib/types";
 
 const chartSeries = vi.hoisted(() => ({ update: vi.fn(), setData: vi.fn() }));
 const viewport = vi.hoisted(() => ({ getVisibleRange: vi.fn(), setVisibleRange: vi.fn(), fitContent: vi.fn() }));
@@ -35,6 +38,7 @@ const bot: BotConfig = {
   created_at: "2026-09-04T20:00:00Z", updated_at: "2026-09-04T20:00:00Z",
 };
 beforeEach(() => {
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   viewport.getVisibleRange.mockReset();
   viewport.setVisibleRange.mockClear();
   viewport.fitContent.mockClear();
@@ -48,6 +52,70 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstub
 const mount = () => render(<BotSignalChart bot={bot} authenticatedCacheScope="session-test" activity={null}
   lastEvaluation={null} refreshToken={0} />);
 const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); };
+
+it("keeps demo history and snapshot time anchored when the real date advances", async () => {
+  vi.setSystemTime(new Date("2027-02-15T16:00:00Z"));
+  const demoBot = getDemoApiResponse<BotConfigListResponse>("/api/bots", { account_id: 910001 })!.data.items[0];
+  vi.mocked(api.botsApi.getCandles).mockImplementation(async query => getDemoApiResponse<ProjectXMarketCandle[]>(
+    "/api/projectx/candles", { contract_id: query.contractId, symbol: query.symbol,
+      start: query.start, end: query.end, unit: query.unit, unit_number: query.unitNumber, limit: query.limit },
+  )!.data);
+  const onMarketData = vi.fn();
+  render(<BotSignalChart bot={demoBot} authenticatedCacheScope="demo-clock-test" demoMode
+    activity={null} lastEvaluation={null} refreshToken={0} onMarketData={onMarketData} />);
+  await settle();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  expect(api.botsApi.getCandles).toHaveBeenCalled();
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.every(([query]) => Date.parse(query.end!) <= Date.parse(DEMO_AS_OF_ISO))).toBe(true);
+  const snapshot = onMarketData.mock.calls.at(-1)![0];
+  expect(snapshot.candles.length).toBeGreaterThan(0);
+  expect(snapshot.updatedAt).toBe(DEMO_AS_OF_ISO);
+  expect(snapshot.strategyType).toBe(demoBot.strategy_type);
+  expect(api.streamProjectXMarketPrice).not.toHaveBeenCalled();
+});
+
+it("stops chart polling and queued timeframe warming while hidden, then refreshes on return", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  mount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const stop = vi.mocked(api.streamProjectXMarketPrice).mock.results[0].value;
+  act(() => { hidden.mockReturnValue(true); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const callsWhileHidden = vi.mocked(api.botsApi.getCandles).mock.calls.length;
+  expect(stop).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(api.botsApi.getCandles).toHaveBeenCalledTimes(callsWhileHidden);
+  expect(api.streamProjectXMarketPrice).toHaveBeenCalledTimes(1);
+  act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.length).toBeGreaterThan(callsWhileHidden);
+  expect(api.streamProjectXMarketPrice).toHaveBeenCalledTimes(2);
+});
+
+it("defers automatic gap repairs while the page is hidden", async () => {
+  vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  const { sparse } = gapFixture("day", 1);
+  vi.mocked(api.botsApi.getCandles).mockResolvedValue(sparse);
+  render(<BotSignalChart bot={null} market={{ ...bot, timeframe_unit: "day", timeframe_unit_number: 1 }}
+    authenticatedCacheScope="hidden-repairs" activity={null} lastEvaluation={null} refreshToken={0} />);
+  await settle();
+  expect(api.botsApi.getCandles).not.toHaveBeenCalled();
+  act(() => { hidden.mockReturnValue(false); document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(vi.mocked(api.botsApi.getCandles).mock.calls.some(([query]) => query.repair)).toBe(true);
+});
+
+it("renders TopBot's strategy overlays instead of legacy 9/21 average legends", () => {
+  render(<BotSignalChart bot={{ ...bot, strategy_type: "topbot_adaptive" }} authenticatedCacheScope="topbot-indicators"
+    activity={null} lastEvaluation={null} refreshToken={0} demoMode />);
+  expect(screen.getByText("EMA 20")).not.toBeNull();
+  expect(screen.getByText("EMA 50 · short filter")).not.toBeNull();
+  expect(screen.getByText("TopBot VWAP · 09:30–15:45 ET")).not.toBeNull();
+  expect(screen.queryByText("Fast EMA 9")).toBeNull();
+});
 
 it("loads a market chart without a bot or account and avoids warming unrelated timeframes", async () => {
   const start = vi.spyOn(api.botsApi, "startTopBot");

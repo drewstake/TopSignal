@@ -414,16 +414,7 @@ class BotWorkerRuntime:
 
         with self.session_factory() as db:
             if startup_recovery:
-                # A persisted confirmation is an audit record, never authority
-                # to route after a crash, reboot, or lease takeover.
-                for run in db.query(BotRun).filter(
-                    BotRun.status == "running", BotRun.dry_run.is_(False)
-                ).with_for_update().all():
-                    transition_bot_run(run, "stopped", reason="worker_restart_requires_rearm", now=now)
-                    state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
-                    state["live_routing_confirmed"] = False
-                    run.raw_state = state
-                db.flush()
+                _disarm_recovered_live_runs(db, now=now)
             run_ids = _select_latest_running_run_ids(db, now=now)
             db.commit()
             unresolved = _unresolved_live_submission_count(db)
@@ -1308,6 +1299,78 @@ def _active_armed_run_count(db: Session) -> int:
         .all()
     )
     return sum(_run_disarm_reason(run, config) is None for run, config in rows)
+
+
+def _disarm_recovered_live_runs(db: Session, *, now: datetime) -> None:
+    """Leave stopped live configurations available for explicit rearming.
+
+    A persisted confirmation is an audit record, never authority to route after
+    a restart or lease takeover. Lock configs before runs, matching start/stop,
+    so clearing the enabled flag cannot race a newer run. Include prior recovery
+    stops to repair the enabled flag left behind by earlier worker versions.
+    """
+
+    recovery_reason = "worker_restart_requires_rearm"
+    # Only the live authorizations observed on entry belong to this recovery.
+    # A new explicit start may finish while we wait for a config lock below.
+    running_live_ids = [
+        int(run_id) for (run_id,) in db.query(BotRun.id).filter(
+            BotRun.status == "running", BotRun.dry_run.is_(False)
+        ).all()
+    ]
+    has_recovered_live_run = (
+        db.query(BotRun.id)
+        .filter(
+            BotRun.user_id == BotConfig.user_id,
+            BotRun.bot_config_id == BotConfig.id,
+            BotRun.dry_run.is_(False),
+            or_(
+                BotRun.id.in_(running_live_ids),
+                (BotRun.status == "stopped") & (BotRun.stop_reason == recovery_reason),
+            ),
+        )
+        .exists()
+    )
+    configs = (
+        db.query(BotConfig)
+        .filter(has_recovered_live_run)
+        .order_by(BotConfig.id)
+        .populate_existing()
+        .with_for_update()
+        .all()
+    )
+    for config in configs:
+        runs = db.query(BotRun).filter(
+            BotRun.user_id == config.user_id,
+            BotRun.bot_config_id == config.id,
+        )
+        latest_run = (
+            runs.order_by(BotRun.started_at.desc(), BotRun.id.desc())
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        for run in runs.filter(
+            BotRun.id.in_(running_live_ids),
+            BotRun.status == "running", BotRun.dry_run.is_(False),
+        ).with_for_update().all():
+            transition_bot_run(run, "stopped", reason=recovery_reason, now=now)
+            state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+            state["live_routing_confirmed"] = False
+            run.raw_state = state
+        if (
+            bool(config.enabled)
+            and latest_run is not None
+            and not bool(latest_run.dry_run)
+            and latest_run.status == "stopped"
+            and latest_run.stop_reason == recovery_reason
+        ):
+            # A deliberate recovery stop is not an unarmed enabled config.
+            # Keep its reason on the run, without failing process readiness or
+            # requiring a redundant Stop before the operator can rearm it.
+            config.enabled = False
+            config.updated_at = now
+    db.flush()
 
 
 def _select_latest_running_run_ids(db: Session, *, now: datetime) -> list[int]:

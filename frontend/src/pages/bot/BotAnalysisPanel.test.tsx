@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BotAnalysis, BotConfig, BotEvaluation, ProjectXMarketCandle } from "../../lib/types";
+import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import { BotAnalysisPanel } from "./BotAnalysisPanel";
 import type { BotMarketSnapshot } from "./botMarketContext";
 
@@ -271,7 +272,65 @@ it("labels stale chart context without claiming a fresh bot evaluation", () => {
   expect(screen.queryByRole("heading", { name: "TopBot decision" })).toBeNull();
 });
 
+it("follows the selected chart timeframe without treating its bars as matching evaluation bars", () => {
+  const snapshot = accountFreeSnapshot(15);
+  const view = render(<BotAnalysisPanel bot={bot} evaluation={null} marketSnapshot={snapshot} />);
+  expect(screen.getByText(/Based on 40 completed 15m candles/)).not.toBeNull();
+  expect(screen.queryByText("Waiting for chart candles")).toBeNull();
+  vi.setSystemTime(new Date("2026-07-09T15:30:20Z"));
+  snapshot.candles.push({ ...chartCandle("2026-07-09T15:15:00Z"), unit_number: 15 });
+  view.rerender(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={snapshot} />);
+  expect(screen.queryByText(/matching chart has .* newer closed bar/)).toBeNull();
+});
+
 describe("BotAnalysisPanel evidence and decision", () => {
+  it("keeps evaluation available after success and when the saved read becomes stale", () => {
+    const onEvaluate = vi.fn();
+    const view = render(<BotAnalysisPanel bot={bot} evaluation={null} onEvaluate={onEvaluate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate bot" }));
+    expect(onEvaluate).toHaveBeenCalledTimes(1);
+
+    view.rerender(<BotAnalysisPanel bot={bot} evaluation={evaluation} onEvaluate={onEvaluate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evaluation" }));
+    expect(onEvaluate).toHaveBeenCalledTimes(2);
+    act(() => { vi.advanceTimersByTime(20 * 60_000); });
+    expect(screen.getByText("Stale evaluation")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh evaluation" }));
+    expect(onEvaluate).toHaveBeenCalledTimes(3);
+  });
+
+  it("disables duplicate evaluation while loading and leaves retry available for insufficient data", () => {
+    const onEvaluate = vi.fn();
+    const view = render(<BotAnalysisPanel bot={bot} evaluation={evaluation} loading onEvaluate={onEvaluate} />);
+    const busy = screen.getByRole("button", { name: "Evaluating…" }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    fireEvent.click(busy);
+    expect(onEvaluate).not.toHaveBeenCalled();
+
+    view.rerender(<BotAnalysisPanel bot={bot} evaluation={evaluationWithAnalysis(insufficientAnalysis())} onEvaluate={onEvaluate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry evaluation" }));
+    expect(onEvaluate).toHaveBeenCalledTimes(1);
+    view.rerender(<BotAnalysisPanel bot={bot} evaluation={evaluation} demoMode onEvaluate={onEvaluate} />);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("uses the fixed demo timeline for chart freshness even after the scenario date", () => {
+    vi.setSystemTime(new Date("2026-09-12T05:00:00Z"));
+    const snapshot: BotMarketSnapshot = {
+      contractKey: `${bot.contract_id}:minute:5`, unit: "minute", unitNumber: 5,
+      candles: Array.from({ length: 40 }, (_, index) => chartCandle(
+        new Date(Date.parse(DEMO_AS_OF_ISO) - (40 - index) * 5 * 60_000).toISOString(),
+      )),
+      lastPrice: 105.5, updatedAt: DEMO_AS_OF_ISO,
+    };
+    const view = render(<BotAnalysisPanel bot={bot} evaluation={null} marketSnapshot={snapshot} demoMode />);
+    expect(screen.getByText(/Based on 40 completed 5m candles/)).not.toBeNull();
+    expect(screen.queryByText("Stale candles")).toBeNull();
+    expect(screen.getByText(/This demo snapshot has no saved evaluation/)).not.toBeNull();
+    view.rerender(<BotAnalysisPanel bot={bot} evaluation={null} marketSnapshot={snapshot} />);
+    expect(screen.getByText("Stale candles")).not.toBeNull();
+  });
+
   it("answers the first-screen questions without probability bars or overlapping scores", () => {
     const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={withDecisionExplanation()} />);
     expect(html).toContain("Price is rising, with conflicting directional indicators.");

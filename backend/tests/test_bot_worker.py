@@ -635,7 +635,154 @@ def test_worker_recovery_disarms_routing_runs_before_streams_or_provider_access(
         assert run.stop_reason == "worker_restart_requires_rearm"
         assert run.raw_state["live_routing_confirmed"] is False
         assert db.get(BotConfig, 1).execution_mode == "live"
+        assert db.get(BotConfig, 1).enabled is False
+
+
+@pytest.mark.parametrize("already_recovered", [False, True])
+def test_recovered_live_run_allows_ready_without_reauthorizing_routing(
+    session_factory, monkeypatch, already_recovered
+):
+    import app.main as main_module
+    from app.services.topbot import prepare_topbot
+
+    _seed_run(session_factory, dry_run=False)
+    runtime = _runtime(session_factory)
+    monkeypatch.setattr(runtime, "_sync_account_streams", lambda _ids: None)
+    monkeypatch.setattr(
+        runtime, "_client_for_user", lambda _user: pytest.fail("recovery must not contact provider")
+    )
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat()
+    assert runtime._acquire_or_renew_lease()
+    with session_factory() as db:
+        db.get(BotConfig, 1).strategy_type = "topbot_adaptive"
+        if already_recovered:
+            run = db.get(BotRun, 1)
+            worker_module.transition_bot_run(run, "stopped", reason="worker_restart_requires_rearm")
+            run.raw_state = {**run.raw_state, "live_routing_confirmed": False}
+        # The in-memory schema is current; do not bypass runtime readiness.
+        db.execute(text("create table topsignal_schema_baselines (version text primary key)"))
+        db.execute(
+            text("insert into topsignal_schema_baselines (version) values (:version)"),
+            {"version": main_module._REQUIRED_SCHEMA_BASELINE},
+        )
+        db.commit()
+
+    runtime._run_cycle(startup_recovery=True)
+
+    with session_factory() as db:
+        status = inspect_bot_runtime(db, runtime=runtime)
+        assert status.ready is True
+        assert status.checks["runs_armed"] is True
+        assert status.counts["enabled_configs"] == 0
+        assert status.counts["running_runs"] == 0
+        assert main_module.readiness(db=db) == {"status": "ready"}
+        run = db.get(BotRun, 1)
+        assert run.status == "stopped"
+        assert run.stop_reason == "worker_restart_requires_rearm"
+        assert run.raw_state["live_routing_confirmed"] is False
+        assert db.get(BotConfig, 1).enabled is False
+        assert continuous_start_availability(db, runtime=runtime) == (True, None)
+        # The operator can prepare a fresh run without first stopping an
+        # already-stopped bot. Preparation itself cannot authorize routing.
+        config = prepare_topbot(
+            db, user_id="user-a", account_id=101,
+            dry_run=False, contract_id="CON.F.US.MNQ.U26",
+        )
+        assert config.id == 1
+        assert config.enabled is False
+        assert run.status == "stopped"
+        assert run.raw_state["live_routing_confirmed"] is False
+
+
+@pytest.mark.parametrize("old_run_still_running", [False, True])
+def test_recovery_preserves_newer_armed_dry_run(session_factory, old_run_still_running):
+    _seed_run(session_factory, dry_run=False, started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    with session_factory() as db:
+        old_run = db.get(BotRun, 1)
+        if old_run_still_running:
+            # Model duplicate rows written before the current uniqueness guard.
+            db.execute(text("drop index uq_bot_runs_one_running_per_config"))
+        else:
+            worker_module.transition_bot_run(old_run, "stopped", reason="worker_restart_requires_rearm")
+            old_run.raw_state = {**old_run.raw_state, "live_routing_confirmed": False}
+        config = db.get(BotConfig, 1)
+        config.execution_mode = "dry_run"
+        db.add(BotRun(
+            id=2, user_id="user-a", bot_config_id=1, account_id=101,
+            status="running", dry_run=True,
+            started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            raw_state={"source": "manual_start", "continuous": True, "execution_mode": "dry_run"},
+        ))
+        db.commit()
+
+    with session_factory() as db:
+        worker_module._disarm_recovered_live_runs(db, now=datetime.now(timezone.utc))
+        db.commit()
         assert db.get(BotConfig, 1).enabled is True
+        assert db.get(BotRun, 1).status == "stopped"
+        assert db.get(BotRun, 1).raw_state["live_routing_confirmed"] is False
+        assert db.get(BotRun, 2).status == "running"
+        assert worker_module._active_armed_run_count(db) == 1
+
+
+def test_recovery_does_not_disarm_a_new_start_after_its_initial_read(session_factory, monkeypatch):
+    _seed_run(session_factory, dry_run=False, started_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    with session_factory() as db:
+        query = db.query
+        inserted_new_run = False
+
+        def query_with_interleaved_start(*entities, **kwargs):
+            nonlocal inserted_new_run
+            if len(entities) == 1 and entities[0] is BotConfig and not inserted_new_run:
+                inserted_new_run = True
+                # A completed explicit start can supersede the old run between
+                # recovery's initial read and acquiring the config lock.
+                worker_module.transition_bot_run(
+                    query(BotRun).filter_by(id=1).one(),
+                    "stopped", reason="superseded_by_manual_start",
+                )
+                db.flush()
+                db.add(BotRun(
+                    id=2, user_id="user-a", bot_config_id=1, account_id=101,
+                    status="running", dry_run=False,
+                    started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+                    raw_state={
+                        "source": "manual_start", "continuous": True,
+                        "execution_mode": "live", "live_routing_confirmed": True,
+                    },
+                ))
+                db.commit()
+            return query(*entities, **kwargs)
+
+        monkeypatch.setattr(db, "query", query_with_interleaved_start)
+        worker_module._disarm_recovered_live_runs(db, now=datetime.now(timezone.utc))
+        db.commit()
+        assert inserted_new_run is True
+        assert db.get(BotConfig, 1).enabled is True
+        assert db.get(BotRun, 2).status == "running"
+        assert db.get(BotRun, 2).raw_state["live_routing_confirmed"] is True
+        assert worker_module._active_armed_run_count(db) == 1
+
+
+def test_recovery_does_not_hide_an_unrelated_unarmed_enabled_config(session_factory):
+    _seed_run(session_factory, dry_run=False)
+    with session_factory() as db:
+        worker_module.transition_bot_run(db.get(BotRun, 1), "stopped", reason="manual_stop")
+        db.commit()
+    runtime = _runtime(session_factory)
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat()
+    assert runtime._acquire_or_renew_lease()
+
+    with session_factory() as db:
+        worker_module._disarm_recovered_live_runs(db, now=datetime.now(timezone.utc))
+        db.commit()
+        assert db.get(BotConfig, 1).enabled is True
+        status = inspect_bot_runtime(db, runtime=runtime)
+        assert status.ready is False
+        assert status.failed_checks == ("runs_armed",)
 
 
 def test_worker_shutdown_timeout_retains_inflight_task_and_does_not_release_lease(session_factory, monkeypatch):

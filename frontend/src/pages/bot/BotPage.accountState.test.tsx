@@ -13,12 +13,18 @@ import type {
   BotConfig,
   BotRuntimeStatus,
   BotEvaluation,
+  BotRun,
 } from "../../lib/types";
 
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart stub</div> }));
 vi.mock("./ProjectXSignalChart", () => ({ ProjectXSignalChart: () => <div>Market chart stub</div> }));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book stub</div> }));
-vi.mock("./BotAnalysisPanel", () => ({ default: () => <div>Analysis stub</div>, BotAnalysisPanel: () => <div>Analysis stub</div> }));
+vi.mock("./BotAnalysisPanel", () => ({
+  BotAnalysisPanel: ({ onEvaluate, evaluation }: { onEvaluate?: () => void; evaluation: BotEvaluation | null }) => <div>
+    <button onClick={onEvaluate}>Evaluate test bot</button>
+    {evaluation?.decision.reason}
+  </div>,
+}));
 
 import { BotPage } from "./BotPage";
 
@@ -99,6 +105,29 @@ function activity(config: BotConfig): BotActivity {
     decisions: [],
     order_attempts: [],
     risk_events: [],
+  };
+}
+
+function run(config: BotConfig, overrides: Partial<BotRun> = {}): BotRun {
+  return {
+    id: 901, bot_config_id: config.id, account_id: config.account_id,
+    status: "running", dry_run: false, started_at: "2026-09-03T12:00:00Z",
+    stopped_at: null, stop_reason: null, last_heartbeat_at: "2026-09-03T12:05:00Z",
+    ...overrides,
+  };
+}
+
+function evaluation(config: BotConfig): BotEvaluation {
+  return {
+    config, run: run(config), status: "held", candles: [], risk_events: [],
+    decision: {
+      id: 902, bot_config_id: config.id, bot_run_id: 901, account_id: config.account_id,
+      contract_id: config.contract_id, symbol: config.symbol, decision_type: "strategy",
+      action: "HOLD", reason: "Evaluation received", price: 20000, quantity: null,
+      candle_timestamp: "2026-09-03T12:00:00Z", created_at: "2026-09-03T12:05:00Z", raw_payload: {},
+    },
+    analysis: null, order_attempt: null, correlation_id: null,
+    idempotency_key: null, duplicate_of_order_attempt_id: null,
   };
 }
 
@@ -193,7 +222,8 @@ describe("BotPage background refresh", () => {
     configs.mockResolvedValue({ configs: { items: [{ ...botA, enabled: true }], total: 1 }, cacheScope: "user:test" });
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(activities).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Live Run active")).not.toBeNull();
+    // An enabled config alone must not invent an armed run while activity is pending.
+    expect(screen.getByText("Run state needs review")).not.toBeNull();
     expect(screen.getByText("Decisions")).not.toBeNull();
     expect(screen.queryByLabelText("Loading bot activity")).toBeNull();
     const signal = activities.mock.calls[1][2]?.signal;
@@ -275,6 +305,166 @@ describe("BotPage background refresh", () => {
 });
 
 describe("BotPage account-scoped run controls", () => {
+  it("keeps Stop available during a diagnostic evaluation and discards its late result", async () => {
+    const user = userEvent.setup();
+    const activeBot = { ...botA, enabled: true };
+    const pending = deferred<BotEvaluation>();
+    const list = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [activeBot], total: 1 }, cacheScope: "user:test",
+    });
+    const activities = vi.spyOn(botsApi, "getActivity").mockResolvedValue({ ...activity(activeBot), runs: [run(activeBot)] });
+    const evaluate = vi.spyOn(botsApi, "evaluate").mockReturnValue(pending.promise);
+    const stoppedRun = run(botA, { status: "stopped", stop_reason: "manual_stop", stopped_at: "2026-09-03T12:06:00Z" });
+    const stop = vi.spyOn(botsApi, "stop").mockImplementation(async () => {
+      list.mockResolvedValue({ configs: { items: [botA], total: 1 }, cacheScope: "user:test" });
+      activities.mockResolvedValue({ ...activity(botA), runs: [stoppedRun] });
+      return stoppedRun;
+    });
+
+    renderBotPage();
+    await screen.findByText("Live Run active");
+    await user.click(await screen.findByRole("button", { name: "Evaluate test bot" }));
+    const signal = evaluate.mock.calls[0][2]?.signal;
+    expect(signal?.aborted).toBe(false);
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Stop Automation" }));
+    expect(stop).toHaveBeenCalledWith(botA.id);
+    expect(signal?.aborted).toBe(true);
+    await screen.findByText("Stopped");
+    const readsAfterStop = list.mock.calls.length;
+    await act(async () => pending.resolve(evaluation(activeBot)));
+    expect(screen.queryByText("Evaluation received")).toBeNull();
+    expect(screen.queryByText("Live Run active")).toBeNull();
+    expect(list.mock.calls.length).toBe(readsAfterStop);
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("releases controls before refresh reads finish and prevents those reads from undoing Stop", async () => {
+    const user = userEvent.setup();
+    const activeBot = { ...botA, enabled: true };
+    const pendingConfigs = deferred<Awaited<ReturnType<typeof botsApi.listConfigsWithCacheScope>>>();
+    const pendingActivity = deferred<BotActivity>();
+    const initial = { configs: { items: [activeBot], total: 1 }, cacheScope: "user:test" };
+    const initialActivity = { ...activity(activeBot), runs: [run(activeBot)] };
+    const list = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValueOnce(initial).mockReturnValue(pendingConfigs.promise);
+    const activities = vi.spyOn(botsApi, "getActivity").mockResolvedValueOnce(initialActivity).mockReturnValue(pendingActivity.promise);
+    vi.spyOn(botsApi, "evaluate").mockResolvedValue(evaluation(activeBot));
+    const stoppedRun = run(botA, { status: "stopped", stop_reason: "manual_stop" });
+    vi.spyOn(botsApi, "stop").mockImplementation(async () => {
+      list.mockResolvedValue({ configs: { items: [botA], total: 1 }, cacheScope: "user:test" });
+      activities.mockResolvedValue({ ...activity(botA), runs: [stoppedRun] });
+      return stoppedRun;
+    });
+    renderBotPage();
+    await screen.findByText("Live Run active");
+    await user.click(await screen.findByRole("button", { name: "Evaluate test bot" }));
+    await waitFor(() => expect(activities).toHaveBeenCalledTimes(2));
+    const configSignal = list.mock.calls[1][1]?.signal;
+    const activitySignal = activities.mock.calls[1][2]?.signal;
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Stop Automation" }));
+    expect(configSignal?.aborted).toBe(true);
+    expect(activitySignal?.aborted).toBe(true);
+    await screen.findByText("Stopped");
+    await act(async () => {
+      pendingConfigs.resolve(initial);
+      pendingActivity.resolve(initialActivity);
+    });
+    expect(screen.queryByText("Live Run active")).toBeNull();
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(["blocked", "error"] as const)("accepts the existing %s run when Stop disables an inactive config", async (status) => {
+    const user = userEvent.setup();
+    const activeBot = { ...botA, enabled: true };
+    const terminal = run(botA, { status, stop_reason: "recorded_failure" });
+    const list = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [activeBot], total: 1 }, cacheScope: "user:test",
+    });
+    const activities = vi.spyOn(botsApi, "getActivity").mockResolvedValue({ ...activity(activeBot), runs: [terminal] });
+    vi.spyOn(botsApi, "stop").mockImplementation(async () => {
+      list.mockResolvedValue({ configs: { items: [botA], total: 1 }, cacheScope: "user:test" });
+      activities.mockResolvedValue({ ...activity(botA), runs: [terminal] });
+      return terminal;
+    });
+    renderBotPage();
+    await user.click(await screen.findByRole("button", { name: "Stop Automation" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText(/server did not confirm/)).toBeNull();
+  });
+
+  it("shows restart re-arming from the latest actual run even when the config is disabled", async () => {
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [botA], total: 1 }, cacheScope: "user:test",
+    });
+    vi.spyOn(botsApi, "getActivity").mockResolvedValue({
+      ...activity(botA), runs: [run(botA, { status: "stopped", stop_reason: "worker_restart_requires_rearm" })],
+    });
+    renderBotPage();
+    await screen.findByText("Re-arm required");
+    expect(screen.queryByText("Live Run active")).toBeNull();
+    expect(screen.getByText(/Run heartbeat:/)).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the authoritative newly started run while activity refreshes fail", async () => {
+    const user = userEvent.setup();
+    const startedBot = { ...botA, enabled: true, execution_mode: "dry_run" as const, updated_at: "2026-09-03T13:00:00Z" };
+    const list = vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [botA], total: 1 }, cacheScope: "user:test",
+    });
+    const activities = vi.spyOn(botsApi, "getActivity").mockResolvedValue({
+      ...activity(botA), runs: [run(botA, { status: "stopped", stop_reason: "worker_restart_requires_rearm" })],
+    });
+    vi.spyOn(botsApi, "startTopBot").mockImplementation(async () => {
+      list.mockReturnValue(new Promise(() => {}));
+      activities.mockRejectedValue(new Error("Activity refresh unavailable"));
+      return { ...evaluation(startedBot), run: run(startedBot, { id: 903, dry_run: true, started_at: "2026-09-03T13:00:00Z" }) };
+    });
+    renderBotPage();
+    await screen.findByText("Re-arm required");
+    await user.click(screen.getByRole("button", { name: "Dry Run" }));
+    await screen.findByText("Activity refresh unavailable");
+    expect(screen.getByText("Dry Run active")).not.toBeNull();
+    expect(screen.queryByText("Re-arm required")).toBeNull();
+    expect((screen.getByRole("button", { name: "Stop Automation" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("describes the selected legacy bot instead of claiming it uses the TopBot preset", async () => {
+    const legacy: BotConfig = {
+      ...botA, strategy_type: "ema_scalping", symbol: "MES", order_size: 3,
+      timeframe_unit_number: 1, strategy_params: { protective_stop_ticks: 12, take_profit_ticks: 24 },
+    };
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [legacy], total: 1 }, cacheScope: "user:test",
+    });
+    vi.spyOn(botsApi, "getActivity").mockResolvedValue(activity(legacy));
+    renderBotPage();
+    await screen.findByText(`MES · EMA Scalping · ${accountA.name} (${accountA.id})`);
+    expect(screen.getByText(/1-minute candles · 3 contracts/)).not.toBeNull();
+    expect(screen.getByText(/12-tick stop \/ 24-tick target/)).not.toBeNull();
+    expect(screen.queryByText(/50-point stop/)).toBeNull();
+  });
+
+  it("shows the latest recorded decision even when the activity array is unordered", async () => {
+    vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
+      configs: { items: [botA], total: 1 }, cacheScope: "user:test",
+    });
+    const decision = evaluation(botA).decision;
+    vi.spyOn(botsApi, "getActivity").mockResolvedValue({
+      ...activity(botA), decisions: [
+        { ...decision, id: 1, action: "SELL", reason: "Earlier sell", created_at: "2026-09-03T12:00:00Z" },
+        { ...decision, id: 3, action: "HOLD", reason: "Latest hold", created_at: "2026-09-03T12:40:00Z" },
+        { ...decision, id: 2, action: "BUY", reason: "Middle buy", created_at: "2026-09-03T12:20:00Z" },
+      ],
+    });
+    renderBotPage();
+    await waitFor(() => expect(screen.getByLabelText("Bot run status").textContent).toContain("Latest hold"));
+    expect(screen.getByLabelText("Bot run status").textContent).not.toContain("Earlier sell");
+  });
+
   it("requires confirmation before arming a continuous live run", async () => {
     const user = userEvent.setup();
     vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
