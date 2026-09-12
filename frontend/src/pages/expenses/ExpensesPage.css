@@ -1,0 +1,98 @@
+.expenses-workspace .panel-bg {
+  background: rgb(var(--theme-surface));
+  border-color: rgb(var(--theme-border) / 0.8);
+  box-shadow: none;
+}
+
+.expenses-workspace button:not([role="tab"]),
+.expenses-workspace input,
+.expenses-workspace select {
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.expenses-workspace .expenses-stat {
+  min-width: 0;
+  padding: 20px;
+}
+
+.expenses-workspace .expenses-stat-value {
+  margin: 10px 0 8px;
+  font-size: clamp(1.4rem, 2vw, 1.75rem);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.expenses-workspace .expenses-net-stat {
+  border-color: rgb(var(--theme-accent) / 0.35);
+  background: linear-gradient(135deg, rgb(var(--theme-accent) / 0.06), transparent), rgb(var(--theme-surface));
+}
+
+.expenses-workspace .expenses-periods {
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.expenses-workspace .expenses-table-scroll {
+  max-height: 520px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.expenses-workspace .expenses-table-scroll thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(var(--theme-surface-raised));
+}
+
+.expenses-workspace .expenses-table-scroll th {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+}
+
+.expenses-workspace .expenses-table-scroll td {
+  font-size: 12px;
+}
+
+.expenses-workspace .expenses-delete {
+  color: rgb(var(--theme-muted));
+  border-color: transparent;
+  background: transparent;
+}
+
+.expenses-workspace .expenses-delete:hover:not(:disabled) {
+  color: rgb(var(--theme-negative-text));
+  border-color: rgb(var(--theme-negative) / 0.3);
+  background: rgb(var(--theme-negative) / 0.08);
+}
+
+.expenses-form input,
+.expenses-form select,
+.expenses-form textarea {
+  border-radius: 8px;
+}
+
+.expenses-form label {
+  color: rgb(var(--theme-muted));
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+@media (max-width: 639px) {
+  .expenses-workspace button:not([role="tab"]) {
+    min-height: 44px;
+  }
+
+  .expenses-workspace .expenses-stat {
+    padding: 16px;
+  }
+
+  .expenses-workspace .expenses-stat-value {
+    font-size: clamp(1.05rem, 5.2vw, 1.3rem);
+  }
+}

@@ -30,22 +30,24 @@ export function BotProjectXAccountNotice({
 }) {
   return (
       <section
-        className="rounded-xl border border-cyan-400/25 bg-cyan-500/5 p-5"
+        className="flex flex-col gap-4 rounded-xl border border-app-border bg-app-surface px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
         aria-labelledby="bot-projectx-account-notice-title"
       >
-        <h2 id="bot-projectx-account-notice-title" className="text-lg font-semibold text-slate-100">
-          Explore Bot without an account
-        </h2>
-        <p className="mt-2 max-w-2xl text-sm text-slate-300">
-          You can view the chart, order book, and market analysis without a trading account. Market data uses your ProjectX connection.
-          {activeAccount ? ` Your ${activeAccount.name} account stays local.` : " No account is selected."}
-          {" "}Select a ProjectX account to enable bot controls. Execution is disabled in this view.
-        </p>
+        <div className="min-w-0 max-w-3xl">
+          <h2 id="bot-projectx-account-notice-title" className="text-sm font-semibold text-app-text">
+            Explore Bot without an account
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-app-muted">
+            View charts, order book, and analysis through your ProjectX connection.
+            {activeAccount ? ` Your ${activeAccount.name} account stays local.` : " No account is selected."}
+            {" "}Select a ProjectX account to enable bot controls. Execution is disabled in this view.
+          </p>
+        </div>
         {projectXAccounts.length > 0 ? (
-          <label className="mt-4 block max-w-md space-y-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
+          <label className="block w-full shrink-0 space-y-1.5 text-xs font-medium text-app-muted sm:w-64">
             <span>ProjectX account</span>
             <select
-              className="h-10 w-full rounded-xl border border-slate-700 bg-slate-950/70 px-3 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/55"
+              className="h-10 w-full rounded-lg border border-app-border bg-app-bg px-3 text-sm text-app-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/55"
               value=""
               onChange={(event) => {
                 const accountId = Number.parseInt(event.target.value, 10);
@@ -64,10 +66,13 @@ export function BotProjectXAccountNotice({
             </select>
           </label>
         ) : (
-          <p className="mt-4 text-sm text-slate-300">
-            No saved ProjectX account is available. <a className="text-cyan-300 underline underline-offset-2" href="/accounts">Open Accounts</a>{" "}
-            to connect one when you are ready.
-          </p>
+          <div className="flex shrink-0 flex-wrap items-center gap-3 sm:justify-end">
+            <span className="text-xs text-app-muted">No ProjectX account connected</span>
+            <a
+              className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-lg border border-app-border px-3 text-xs font-medium text-app-text transition-colors hover:bg-app-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/55"
+              href="/accounts"
+            >Open Accounts</a>
+          </div>
         )}
       </section>
   );

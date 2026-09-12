@@ -23,6 +23,7 @@ import type {
 import { BotMarketPanels } from "./BotMarketPanels";
 import { boundedBotRequest, BotRequestTimeout } from "./botPageRequests";
 import { botConfigurationSummary, botRunStatus, botStrategyLabel, latestBotRun } from "./botRunPresentation";
+import "./BotPage.css";
 import { BotMarketAccountPreview, BotProjectXAccountNotice, BotProviderWorkspaceBoundary } from "./BotAccountGate";
 import {
   getBotProviderAccountId,
@@ -889,8 +890,17 @@ export function BotPage() {
   }
 
   return (
-    <div className="space-y-5 pb-8">
-      <h1 className="sr-only">Trading Bot</h1>
+    <div className="bot-workspace space-y-5 pb-8">
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-app-accent">Automation workspace</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-[28px]">Trading Bot</h1>
+          <p className="mt-1 text-sm text-app-muted">Follow the market. Manage your strategy.</p>
+        </div>
+        <a href="#bot-run-activity" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-app-border px-3 text-xs font-medium text-app-text-soft transition hover:border-app-border-strong hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent">
+          View activity <span aria-hidden="true">↓</span>
+        </a>
+      </header>
       {activeProjectXAccountId === null ? (
         <BotProjectXAccountNotice
           activeAccount={activeAccount}
@@ -909,23 +919,72 @@ export function BotPage() {
         </div>
       ))}
 
+      {activeProjectXAccountId !== null ? <>
+      {classificationVerification ? (
+        <div
+          className={
+            classificationVerification.state === "verified"
+              ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
+              : "rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
+          }
+          role={classificationVerification.state === "failed" ? "alert" : "status"}
+        >
+          <p className="font-semibold">
+            Account {classificationVerification.accountId} classification {classificationVerification.state}
+          </p>
+          <p className="mt-1">{classificationVerification.message}</p>
+          <p className="mt-1 text-xs opacity-80">
+            Checked {formatDateTime(classificationVerification.completedAt)}
+          </p>
+        </div>
+      ) : null}
+      {emergencyOutcome ? (
+        <div
+          className={
+            emergencyOutcome.state === "confirmed"
+              ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
+              : "rounded-xl border border-rose-400/45 bg-rose-500/15 px-4 py-3 text-sm text-rose-100"
+          }
+          role={emergencyOutcome.state === "confirmed" ? "status" : "alert"}
+          aria-live={emergencyOutcome.state === "confirmed" ? "polite" : "assertive"}
+        >
+          <p className="font-semibold">
+            {emergencyOutcome.state === "confirmed"
+              ? `Account ${emergencyOutcome.accountId} confirmed flat`
+              : emergencyOutcome.state === "unconfirmed"
+                ? `Account ${emergencyOutcome.accountId} flatten unconfirmed`
+                : `Account ${emergencyOutcome.accountId} flatten outcome unknown`}
+          </p>
+          <p className="mt-1">{emergencyOutcome.message}</p>
+          <p className="mt-1 text-xs opacity-80">
+            Recorded {formatDateTime(emergencyOutcome.completedAt)} · Status: {emergencyOutcome.status}
+            {emergencyOutcome.auditReference ? ` · ${emergencyOutcome.auditReference}` : ""}
+          </p>
+        </div>
+      ) : null}
+      </> : null}
+
+      <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <aside className="bot-controls order-1 min-w-0 space-y-4 sm:space-y-0 xl:order-2 xl:space-y-4" aria-label="Bot controls">
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
+              <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-app-muted">Run configuration</p>
               <CardTitle>{selectedBot?.name ?? "TopBot"}</CardTitle>
               <CardDescription>{selectedBot ? `${selectedBot.symbol ?? selectedBot.contract_id} · ${botStrategyLabel(selectedBot.strategy_type)}` : "MNQ · TopBot Adaptive"} · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
-              <p className="mt-2 text-sm text-app-muted">{selectedBot ? botConfigurationSummary(selectedBot) : "Start a TopBot run using the current MNQ preset."}</p>
+              <p className="mt-4 border-t border-app-border/70 pt-4 text-xs leading-6 text-app-muted">{selectedBot ? botConfigurationSummary(selectedBot) : "Start a TopBot run using the current MNQ preset."}</p>
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex flex-wrap gap-3">
+          <div className="grid grid-cols-2 gap-2">
             <Button
               onClick={() => void runBotAction("dry_run")}
               disabled={demoModeEnabled || actionLoading !== null || stopping || emergencyFlattenAccountId !== null || Boolean(selectedBot?.enabled) || runtimeContinuousBlockReason !== null}
               title={demoModeEnabled ? demoDisabledTitle : runtimeContinuousBlockReason ?? undefined}
             >
+              <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" strokeLinejoin="round" /></svg>
               {actionLoading === "dry_run" ? "Starting Dry Run…" : "Dry Run"}
             </Button>
             <Button
@@ -937,25 +996,44 @@ export function BotPage() {
               {actionLoading === "live" ? "Starting Live Run…" : "Live Run"}
             </Button>
           </div>
-          <p className="text-sm text-slate-400">New runs use TopBot Adaptive on MNQ. Dry Run follows the market without orders; Live Run enables order routing.</p>
+          <div className="space-y-1.5 text-xs leading-5 text-app-muted">
+            <p><span className="font-medium text-app-text-soft">Dry Run</span> follows the market without orders.</p>
+            <p><span className="font-medium text-app-text-soft">Live Run</span> enables order routing.</p>
+            <p className="pt-1">New runs use TopBot Adaptive on MNQ.</p>
+          </div>
           {selectedBot?.enabled && !demoModeEnabled ? <p className="text-xs text-slate-400">Stop automation before starting another run.</p> : null}
         </CardContent>
       </Card>
-      <section className="z-20 space-y-2 rounded-xl border border-app-border bg-app-surface p-3 shadow-lg md:sticky md:top-[calc(var(--app-header-height,0px)+0.75rem)]" aria-label="Bot run status">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-app-muted" role="status">
-            <Badge variant={runStatus.variant}>{activeProjectXAccountId === null ? "View only" : runStatus.label}</Badge>
+      <section className="space-y-4 rounded-2xl border border-app-border bg-app-surface p-4 md:p-5" aria-label="Bot run status">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-app-text">Run status</h2>
+          <span role="status" aria-live="polite"><Badge variant={runStatus.variant}>{activeProjectXAccountId === null ? "View only" : runStatus.label}</Badge></span>
+        </div>
+        <div className="space-y-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs leading-5 text-app-muted" role="status">
             {demoModeEnabled ? <span>Demo snapshot</span> : runtimeStatus ? <span>Worker: {runtimeStatus.state}</span> : null}
             {selectedRun?.last_heartbeat_at ? <span>Run heartbeat: {formatDateTime(selectedRun.last_heartbeat_at)}</span> : null}
             {selectedRun?.stop_reason === "worker_restart_requires_rearm" ? <span>Routing was disarmed after restart. Start a new run to resume.</span> : null}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="rounded-lg bg-app-bg/55 p-3">
+            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-app-muted">Latest decision</p>
+            {latestDecision ? <>
+              <Badge variant={actionBadgeVariant(latestDecision.action)}>{latestDecision.action}</Badge>
+              <p className="mt-2 text-xs leading-5 text-app-text-soft">{latestDecision.reason}</p>
+              <p className="mt-2 text-[10px] text-app-muted">{formatDateTime(latestDecision.created_at)}</p>
+            </> : <p className="text-xs leading-5 text-app-muted">No recorded decision yet.</p>}
+          </div>
+          {!demoModeEnabled && activeProjectXAccountId !== null && (runtimeContinuousBlockReason || liveRunBlockReason) ? <p className="rounded-lg border border-app-warning/20 bg-app-warning/5 p-3 text-xs leading-5 text-app-warning" role="status">
+            {runtimeContinuousBlockReason ? "Runs unavailable" : "Live Run unavailable"}: {runtimeContinuousBlockReason ?? liveRunBlockReason}
+          </p> : null}
+          <div className="grid gap-2 border-t border-app-border/70 pt-4">
             <Button
-              variant="danger" size="sm"
+              variant="ghost" size="sm"
               onClick={() => void runBotAction("stop")}
               disabled={demoModeEnabled || !selectedBot || stopping || actionLoading === "dry_run" || actionLoading === "live" || emergencyFlattenAccountId !== null}
               title={demoModeEnabled ? demoDisabledTitle : "Stops automation without closing broker positions"}
             >
+              <svg viewBox="0 0 16 16" className="h-3 w-3" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" /></svg>
               {stopping ? "Stopping…" : "Stop Automation"}
             </Button>
             {activeProjectXAccountId !== null ? <Button
@@ -968,22 +1046,31 @@ export function BotPage() {
             </Button> : null}
           </div>
         </div>
-        <p className="text-xs text-app-text-soft">
-          {latestDecision ? <>Latest decision: <strong>{latestDecision.action}</strong> · {latestDecision.reason} · {formatDateTime(latestDecision.created_at)}</> : "No recorded decision yet."}
-        </p>
-        {!demoModeEnabled && (runtimeContinuousBlockReason || liveRunBlockReason) ? <p className="text-xs text-amber-200" role="status">
-          {runtimeContinuousBlockReason ? "Runs unavailable" : "Live Run unavailable"}: {runtimeContinuousBlockReason ?? liveRunBlockReason}
-        </p> : null}
-        <p className="text-[11px] text-app-muted">Stop Automation does not cancel broker orders or close positions. Emergency flatten affects all account orders and positions.</p>
+        <p className="text-[11px] leading-5 text-app-muted">Stop Automation does not cancel broker orders or close positions. {activeProjectXAccountId !== null ? "Emergency flatten affects all account orders and positions." : null}</p>
       </section>
-      <div className="flex flex-col gap-5">
-        <div className="contents">
-          <Card className="order-2 min-w-0">
+      </aside>
+          <div className="order-2 min-w-0 xl:order-1">
+          <BotProviderWorkspaceBoundary activeAccount={activeAccount} fallback={<BotMarketAccountPreview key={activeAccount?.id ?? "no-account"} activeAccount={activeAccount} demoMode={demoModeEnabled} />}>
+          <BotMarketPanels
+            key={`${activeProjectXAccountId}:${selectedBot?.id ?? "no-bot"}:${authenticatedCacheScope}`}
+            bot={selectedBot}
+            authenticatedCacheScope={authenticatedCacheScope}
+            activity={selectedBotActivity}
+            evaluation={selectedBotEvaluation}
+            refreshToken={chartRefreshToken}
+            demoMode={demoModeEnabled}
+            evaluating={actionLoading === "dry_run" || actionLoading === "live" || actionLoading === "evaluate"}
+            onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
+          />
+          </BotProviderWorkspaceBoundary>
+          </div>
+
+          <Card id="bot-run-activity" className="bot-activity order-3 min-w-0 xl:col-span-2">
             <CardHeader className="space-y-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <CardTitle>Run activity</CardTitle>
-                  <CardDescription>ProjectX rule execution</CardDescription>
+                  <CardDescription>Recent decisions, orders, and account checks</CardDescription>
                 </div>
                 {selectedBot ? (
                   <div className="flex flex-wrap items-center gap-2">
@@ -1053,50 +1140,6 @@ export function BotPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-5">
-                {activeProjectXAccountId !== null ? <>
-                {classificationVerification ? (
-                  <div
-                    className={
-                      classificationVerification.state === "verified"
-                        ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
-                        : "rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"
-                    }
-                    role={classificationVerification.state === "failed" ? "alert" : "status"}
-                  >
-                    <p className="font-semibold">
-                      Account {classificationVerification.accountId} classification {classificationVerification.state}
-                    </p>
-                    <p className="mt-1">{classificationVerification.message}</p>
-                    <p className="mt-1 text-xs opacity-80">
-                      Checked {formatDateTime(classificationVerification.completedAt)}
-                    </p>
-                  </div>
-                ) : null}
-                {emergencyOutcome ? (
-                  <div
-                    className={
-                      emergencyOutcome.state === "confirmed"
-                        ? "rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"
-                        : "rounded-xl border border-rose-400/45 bg-rose-500/15 px-4 py-3 text-sm text-rose-100"
-                    }
-                    role={emergencyOutcome.state === "confirmed" ? "status" : "alert"}
-                    aria-live={emergencyOutcome.state === "confirmed" ? "polite" : "assertive"}
-                  >
-                    <p className="font-semibold">
-                      {emergencyOutcome.state === "confirmed"
-                        ? `Account ${emergencyOutcome.accountId} confirmed flat`
-                        : emergencyOutcome.state === "unconfirmed"
-                          ? `Account ${emergencyOutcome.accountId} flatten unconfirmed`
-                          : `Account ${emergencyOutcome.accountId} flatten outcome unknown`}
-                    </p>
-                    <p className="mt-1">{emergencyOutcome.message}</p>
-                    <p className="mt-1 text-xs opacity-80">
-                      Recorded {formatDateTime(emergencyOutcome.completedAt)} · Status: {emergencyOutcome.status}
-                      {emergencyOutcome.auditReference ? ` · ${emergencyOutcome.auditReference}` : ""}
-                    </p>
-                  </div>
-                ) : null}
-                </> : null}
                 {selectedBot ? (
                   <div className="space-y-4">
                     {selectedBotEvaluation ? (
@@ -1150,15 +1193,11 @@ export function BotPage() {
                   <p className="text-sm text-slate-400">{activeProjectXAccountId === null ? "Select a ProjectX account to view its run activity." : "Ready for your first run."}</p>
                 )}
 
-                <div className="border-t border-slate-800 pt-5">
-                  <div className="mb-4 space-y-1">
-                    <h4 className="text-sm font-semibold text-slate-100 md:text-base">Activity</h4>
-                    <p className="text-xs text-slate-400">Signals, risk events, and order attempts</p>
-                  </div>
+                <div className="border-t border-app-border pt-4">
                   {activityLoading ? (
                     <div role="status" aria-live="polite" aria-label="Loading bot activity"><Skeleton className="h-64" aria-hidden="true" /></div>
                   ) : selectedBotActivity ? (
-                    <div className="grid gap-4 xl:grid-cols-2">
+                    <div className="grid items-start gap-3 md:grid-cols-2">
                       <ActivityTable
                         title="Decisions"
                         rows={selectedBotActivity.decisions.slice(0, 8).map((decision) => ({
@@ -1201,27 +1240,12 @@ export function BotPage() {
                       />
                     </div>
                   ) : (
-                    <p className="text-sm text-slate-400">No activity.</p>
+                    <p className="py-2 text-xs text-app-muted">Signals, orders, risk events, and runs will appear here.</p>
                   )}
                 </div>
               </div>
             </CardContent>
           </Card>
-
-          <BotProviderWorkspaceBoundary activeAccount={activeAccount} fallback={<BotMarketAccountPreview key={activeAccount?.id ?? "no-account"} activeAccount={activeAccount} demoMode={demoModeEnabled} />}>
-          <BotMarketPanels
-            key={`${activeProjectXAccountId}:${selectedBot?.id ?? "no-bot"}:${authenticatedCacheScope}`}
-            bot={selectedBot}
-            authenticatedCacheScope={authenticatedCacheScope}
-            activity={selectedBotActivity}
-            evaluation={selectedBotEvaluation}
-            refreshToken={chartRefreshToken}
-            demoMode={demoModeEnabled}
-            evaluating={actionLoading === "dry_run" || actionLoading === "live" || actionLoading === "evaluate"}
-            onEvaluate={selectedBot && !demoModeEnabled ? () => void runBotAction("evaluate") : undefined}
-          />
-          </BotProviderWorkspaceBoundary>
-        </div>
       </div>
     </div>
   );
@@ -1237,10 +1261,10 @@ interface ActivityRow {
 
 function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) {
   return (
-    <details className="overflow-hidden rounded-xl border border-slate-800">
-      <summary className="cursor-pointer bg-slate-900/50 px-3 py-2 text-sm font-semibold text-slate-100">{title}<span className="ml-2 text-xs font-normal text-slate-400">{rows.length} recent</span></summary>
+    <details className="overflow-hidden rounded-xl border border-app-border">
+      <summary className="min-h-11 cursor-pointer bg-app-bg/35 px-4 py-3 text-sm font-medium text-app-text transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent">{title}<span className="ml-2 text-xs font-normal text-app-muted">{rows.length} recent</span></summary>
       {rows.length === 0 ? (
-        <p className="px-3 py-4 text-sm text-slate-500">No rows</p>
+        <p className="px-4 py-5 text-xs text-app-muted">No {title.toLowerCase()} recorded yet.</p>
       ) : (
         <div className="max-h-64 overflow-auto">
           <Table>
@@ -1257,8 +1281,8 @@ function ActivityTable({ title, rows }: { title: string; rows: ActivityRow[] }) 
                   <TableCell>
                     <Badge variant={row.badgeVariant}>{row.left}</Badge>
                   </TableCell>
-                  <TableCell className="max-w-[320px] text-xs text-slate-300">{row.middle}</TableCell>
-                  <TableCell className="text-right text-xs text-slate-500">{row.right}</TableCell>
+                  <TableCell className="max-w-[320px] text-xs text-app-text-soft">{row.middle}</TableCell>
+                  <TableCell className="text-right text-xs text-app-muted">{row.right}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

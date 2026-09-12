@@ -54,7 +54,7 @@ function tileBackground(amountCents: number, maxAbsAmountCents: number) {
   }
 
   const intensity = Math.min(1, Math.abs(amountCents) / Math.max(maxAbsAmountCents, 1));
-  const alpha = 0.1 + intensity * 0.3;
+  const alpha = 0.04 + intensity * 0.1;
   const color = amountCents > 0 ? "--dashboard-positive-rgb" : "--dashboard-negative-rgb";
   return `rgb(var(${color}) / ${alpha.toFixed(3)})`;
 }
@@ -131,50 +131,59 @@ export function ExpenseCalendarCard({
   const canGoNext = visibleYear < latestYear;
 
   return (
-    <Card aria-labelledby={titleId} aria-busy={loading}>
-      <CardHeader className="mb-3 space-y-0">
-        <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center">
-          <CardTitle id={titleId} className="sm:justify-self-start">Monthly P&amp;L Calendar</CardTitle>
-          <p className="text-sm font-medium text-app-text-soft sm:text-center md:text-base" aria-live="polite">
+    <Card className="flex h-full min-w-0 flex-col" aria-labelledby={titleId} aria-busy={loading}>
+      <CardHeader className="mb-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle id={titleId}>Monthly P&amp;L Calendar</CardTitle>
+          <div className="flex items-center gap-1 rounded-xl border border-app-border/70 bg-app-surface/40 p-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-9 border-transparent px-0 sm:h-7"
+              disabled={!canGoPrevious}
+              onClick={() => setRequestedYear(visibleYear - 1)}
+              aria-label="Previous year"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m14 6-6 6 6 6" />
+              </svg>
+            </Button>
+            <p className="min-w-12 text-center text-xs font-semibold tabular-nums text-app-text-soft" aria-live="polite">
+              {visibleYear}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-9 border-transparent px-0 sm:h-7"
+              disabled={!canGoNext}
+              onClick={() => setRequestedYear(visibleYear + 1)}
+              aria-label="Next year"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m10 6 6 6-6 6" />
+              </svg>
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <p className="text-xs text-app-muted">Select a month to filter both ledgers.</p>
+          <p className={`text-sm font-semibold tabular-nums ${loading || error ? "text-app-muted" : netClass(yearNetAmountCents)}`} aria-live="polite">
             {loading
               ? "Loading monthly cash flow..."
               : error
                 ? "Monthly cash flow unavailable"
                 : `${formatCurrency(yearNetAmountCents / 100)} net`}
           </p>
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!canGoPrevious}
-              onClick={() => setRequestedYear(visibleYear - 1)}
-              aria-label="Previous year"
-            >
-              Prev
-            </Button>
-            <p className="min-w-12 text-center text-xs font-medium text-app-muted" aria-live="polite">
-              {visibleYear}
-            </p>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!canGoNext}
-              onClick={() => setRequestedYear(visibleYear + 1)}
-              aria-label="Next year"
-            >
-              Next
-            </Button>
-          </div>
         </div>
       </CardHeader>
 
-      <CardContent>
+      <CardContent className="flex flex-1 flex-col">
         {loading ? (
-          <div role="status" aria-live="polite">
+          <div className="flex flex-1 flex-col" role="status" aria-live="polite">
             <span className="sr-only">Loading payout and expense calendar</span>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-hidden="true">
+            <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-hidden="true">
               {Array.from({ length: 12 }, (_, index) => (
-                <Skeleton key={index} className="h-24" />
+                <Skeleton key={index} className="h-full min-h-24" />
               ))}
             </div>
           </div>
@@ -186,7 +195,7 @@ export function ExpenseCalendarCard({
           <div
             role="grid"
             aria-label={`${visibleYear} monthly payouts and expenses`}
-            className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"
+            className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"
           >
             {visibleMonths.map(({ key, monthIndex, expenseSummary, payoutSummary }) => {
               const monthName = formatMonthName(monthIndex);
@@ -204,7 +213,7 @@ export function ExpenseCalendarCard({
                     aria-pressed={isSelected}
                     title={accessibleLabel}
                     onClick={() => onMonthSelect?.(isSelected ? null : key)}
-                    className={`flex h-full min-h-24 w-full min-w-0 flex-col rounded-lg border p-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-focus ${
+                    className={`flex h-full min-h-24 w-full min-w-0 flex-col rounded-xl border p-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-focus ${
                       isSelected
                         ? "border-app-accent/90 ring-1 ring-app-accent/70"
                         : netAmountCents > 0
@@ -215,10 +224,10 @@ export function ExpenseCalendarCard({
                     } ${onMonthSelect ? "cursor-pointer" : "cursor-default"}`}
                     style={{ backgroundColor: tileBackground(netAmountCents, maxAbsMonthNetCents) }}
                   >
-                    <span className="text-xs font-semibold uppercase tracking-wide text-app-muted-text">
+                    <span className="text-xs font-medium text-app-muted-text">
                       {monthName}
                     </span>
-                    <span className={`mt-auto pt-3 text-base font-semibold tabular-nums ${netClass(netAmountCents)}`}>
+                    <span className={`mt-auto pt-3 text-sm font-semibold tabular-nums 2xl:text-base ${netClass(netAmountCents)}`}>
                       {formatCurrency(netAmountCents / 100)} net
                     </span>
                   </button>

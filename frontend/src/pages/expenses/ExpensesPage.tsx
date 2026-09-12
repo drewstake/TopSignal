@@ -51,6 +51,7 @@ import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
 import { formatCurrency } from "../../utils/formatters";
 import { ExpenseCalendarCard } from "./ExpenseCalendarCard";
+import "./ExpensesPage.css";
 import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildNetRangeOptions, formatLocalIsoDate, type NetRangeOption } from "./expenseNetRanges";
 import {
@@ -68,6 +69,7 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
   timeZone: "UTC",
 });
+const monthFormatter = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 
 function formatRecordDate(isoDate: string) {
   return dateFormatter.format(new Date(`${isoDate}T00:00:00.000Z`));
@@ -111,22 +113,22 @@ function getNetProfitTitleClassName(amount: number, loading: boolean) {
     return "text-2xl";
   }
   if (amount > 0) {
-    return "text-2xl text-emerald-300";
+    return "text-2xl text-app-positive-text";
   }
   if (amount < 0) {
-    return "text-2xl text-rose-300";
+    return "text-2xl text-app-negative-text";
   }
   return "text-2xl";
 }
 
 function getNetProfitAmountClassName(amount: number) {
   if (amount > 0) {
-    return "text-emerald-300";
+    return "text-app-positive-text";
   }
   if (amount < 0) {
-    return "text-rose-300";
+    return "text-app-negative-text";
   }
-  return "text-slate-100";
+  return "text-app-text";
 }
 
 function getNetProfitPositionLabel(amount: number) {
@@ -215,6 +217,8 @@ function buildInitialAddPayoutState(): AddPayoutState {
 
 export function ExpensesPage() {
   const { demoModeEnabled, demoDisabledTitle } = useDemoInteractionPolicy();
+  const [ledgerView, setLedgerView] = useState<"expenses" | "payouts">("expenses");
+  const ledgerTabsRef = useRef<HTMLDivElement>(null);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [category, setCategory] = useState<ExpenseCategory | "">("");
@@ -228,6 +232,8 @@ export function ExpensesPage() {
   const [error, setError] = useState<string | null>(null);
   const expensePaginationRef = useRef<HTMLElement>(null);
   const expensePaginationTopRef = useRef<number | null>(null);
+  const expenseTableScrollRef = useRef<HTMLDivElement>(null);
+  const payoutTableScrollRef = useRef<HTMLDivElement>(null);
 
   const handleExpensePageChange = (nextOffset: number) => {
     expensePaginationTopRef.current = expensePaginationRef.current?.getBoundingClientRect().top ?? null;
@@ -235,13 +241,15 @@ export function ExpensesPage() {
   };
 
   useLayoutEffect(() => {
-    if (loading || expensePaginationTopRef.current === null) {
+    if (loading) {
       return;
     }
+    if (expenseTableScrollRef.current) expenseTableScrollRef.current.scrollTop = 0;
+    if (expensePaginationTopRef.current === null) return;
     const previousTop = expensePaginationTopRef.current;
     expensePaginationTopRef.current = null;
     const pagination = expensePaginationRef.current;
-    if (pagination) {
+    if (pagination && !pagination.closest("[hidden]")) {
       // A shorter page must not leave the viewport down in the payouts table.
       window.scrollBy({ top: pagination.getBoundingClientRect().top - previousTop, behavior: "instant" });
     }
@@ -286,6 +294,10 @@ export function ExpensesPage() {
   const beginExpensesRequest = useLatestRequestGuard();
   const beginPayoutsRequest = useLatestRequestGuard();
   const beginFinancialSummaryRequest = useLatestRequestGuard();
+
+  useLayoutEffect(() => {
+    if (!payoutLoading && payoutTableScrollRef.current) payoutTableScrollRef.current.scrollTop = 0;
+  }, [payoutItems, payoutLoading]);
 
   const refreshFinancialData = useCallback(() => {
     setDataRevision((current) => current + 1);
@@ -690,6 +702,7 @@ export function ExpensesPage() {
       });
 
       setAddOpen(false);
+      setLedgerView("expenses");
       setOffset(0);
       refreshFinancialData();
     } catch (err) {
@@ -732,6 +745,7 @@ export function ExpensesPage() {
       });
 
       setAddPayoutOpen(false);
+      setLedgerView("payouts");
       refreshFinancialData();
       if (payoutOffset !== 0) {
         setPayoutOffset(0);
@@ -779,170 +793,149 @@ export function ExpensesPage() {
   }
 
   return (
-    <div className="space-y-6 pb-10">
-      <h1 className="sr-only">Expenses and Payouts</h1>
+    <div className="expenses-workspace space-y-5 pb-10">
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-app-accent">Financial overview</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-[28px]">Expenses and Payouts</h1>
+          <p className="mt-1 text-sm text-app-muted">Your trading costs, payouts, and net cash flow.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Payout</Button>
+          <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}><span aria-hidden="true">+</span> Add Expense</Button>
+        </div>
+      </header>
       <DemoModeNotice>
-        <p>
-          Expenses, payouts, and net ranges are a fixed sample ledger. Filtering and pagination are available; adding, deleting, and combine reconciliation are disabled.
-        </p>
+        <p>Expenses, payouts, and net ranges are a fixed sample ledger. Filtering and pagination are available; adding, deleting, and combine reconciliation are disabled.</p>
       </DemoModeNotice>
-      <section className="grid gap-3">
-        <Card>
-          <CardContent className="space-y-5">
-            <div className="grid gap-5 lg:grid-cols-3">
-              <div className="space-y-3">
-                <div>
-                  <CardDescription>Recorded spend</CardDescription>
-                  <CardTitle className="text-2xl">
-                    {totalsLoading ? "..." : totals ? formatCurrency(totals.total_amount) : "$0.00"}
-                  </CardTitle>
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <p className="text-xs text-slate-400">
-                    {totalsLoading
-                      ? "Loading recorded spend..."
-                      : totals
-                        ? `${totals.count} expense${totals.count === 1 ? "" : "s"}`
-                        : "No data"}
-                  </p>
-                  {demoModeEnabled ? (
-                    <p className="text-xs text-app-muted-strong">
-                      Local combine tracking is excluded from this sample ledger.
-                    </p>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleReconcileCombineExpenses}
-                      disabled={combineTrackerLoading}
-                    >
-                      {combineTrackerLoading ? "Reconciling..." : "Reconcile Combine Expenses"}
-                    </Button>
-                  )}
-                </div>
-                {combineTrackerError ? <p className="text-xs text-rose-300" role="alert">{combineTrackerError}</p> : null}
-                {combineTrackerNotice ? <p className="text-xs text-emerald-300" role="status">{combineTrackerNotice}</p> : null}
-              </div>
 
-              <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-                <div>
-                  <CardDescription>Spend since last payout</CardDescription>
-                  <CardTitle className="text-2xl">
-                    {spendSinceLastPayoutLoading || !spendSinceLastPayout
-                      ? "..."
-                      : formatCurrency(spendSinceLastPayout.totalAmount)}
-                  </CardTitle>
-                </div>
-                {spendSinceLastPayoutError ? (
-                  <p className="text-xs text-rose-300" role="alert">{spendSinceLastPayoutError}</p>
-                ) : (
-                  <p className="text-xs text-slate-400">
-                    {spendSinceLastPayoutLoading || !spendSinceLastPayout
-                      ? "Calculating spend..."
-                      : spendSinceLastPayout.lastPayoutDate
-                        ? `${formatExpenseCount(spendSinceLastPayout.expenseCount)} from ${formatRecordDate(
-                            spendSinceLastPayout.lastPayoutDate,
-                          )} forward.`
-                        : `No payouts recorded; showing all recorded spend (${formatExpenseCount(
-                            spendSinceLastPayout.expenseCount,
-                          )}).`}
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-3 border-t border-slate-800/80 pt-5 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
-                <div>
-                  <CardDescription>Net after payouts</CardDescription>
-                  <CardTitle className={netProfitTitleClassName}>
-                    {netProfitLoading ? "..." : formatCurrency(netProfitAmount)}
-                  </CardTitle>
-                </div>
-                {totalsError || payoutTotalsError ? (
-                  <p className="text-xs text-rose-300" role="alert">{totalsError ?? payoutTotalsError}</p>
-                ) : (
-                  <p className="text-xs text-slate-400">
-                    {netProfitLoading
-                      ? "Calculating net..."
-                      : `${netProfitPositionLabel}. ${formatCurrency(netPayoutTotalAmount)} payouts - ${formatCurrency(
-                          recordedSpendAmount,
-                        )} recorded spend.`}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {netRangesError ? <p className="text-xs text-rose-300" role="alert">{netRangesError}</p> : null}
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {netRangeOptions.map((option) => {
-                const summary = netRanges.find((item) => item.key === option.key);
-                return (
-                  <div key={option.key} className="rounded-md border border-slate-800/80 bg-slate-950/40 p-3">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">{option.label}</p>
-                    <p
-                      className={`mt-1 text-lg font-semibold ${
-                        summary ? getNetProfitAmountClassName(summary.netAmount) : "text-slate-100"
-                      }`}
-                    >
-                      {netRangesLoading || !summary ? "..." : formatCurrency(summary.netAmount)}
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {netRangesLoading || !summary
-                        ? "Loading..."
-                        : `${formatCurrency(summary.payoutAmount)} payouts - ${formatCurrency(
-                            summary.expenseAmount,
-                          )} spend`}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-xs text-slate-500">
-              Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted:{" "}
-              {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}.
-              {demoModeEnabled ? (
-                <> Demo totals exclude the device's local combine tracker.</>
-              ) : (
-                <>
-                  {" "}Standard activations: {combineSpendSnapshot.standardActivationCount} (
-                  {formatCurrency(combineSpendSnapshot.standardActivationCostCents / 100)}).
-                </>
-              )}
+      <section aria-label="Financial overview" className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
+          <h2 className="font-medium text-app-text-soft">At a glance</h2>
+          <span>All recorded activity · USD</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <Card className="expenses-stat expenses-net-stat">
+            <CardDescription>Net after payouts</CardDescription>
+            <p className={`expenses-stat-value ${netProfitTitleClassName}`}>
+              {netProfitLoading ? "..." : totalsError || payoutTotalsError ? "Unavailable" : formatCurrency(netProfitAmount)}
             </p>
-          </CardContent>
-        </Card>
+            <p className="text-xs leading-5 text-app-muted">
+              {netProfitLoading ? "Calculating net..." : totalsError || payoutTotalsError ? "Summary could not be loaded." : `${netProfitPositionLabel}.`}
+            </p>
+          </Card>
+          <Card className="expenses-stat">
+            <div>
+              <CardDescription>Recorded spend</CardDescription>
+              <p className="expenses-stat-value">{totalsLoading ? "..." : totalsError ? "Unavailable" : formatCurrency(totals?.total_amount ?? 0)}</p>
+            </div>
+            <p className="text-xs leading-5 text-app-muted">{totalsLoading ? "Loading recorded spend..." : totals ? `${totals.count} expense${totals.count === 1 ? "" : "s"}` : "No data"}</p>
+          </Card>
+          <Card className="expenses-stat">
+            <CardDescription>Total payouts</CardDescription>
+            <p className="expenses-stat-value">{payoutTotalsLoading ? "..." : payoutTotalsError ? "Unavailable" : formatCurrency(payoutTotals?.total_amount ?? 0)}</p>
+            <p className="text-xs leading-5 text-app-muted">{payoutTotalsLoading ? "Loading payout summary..." : `${(payoutTotals?.count ?? 0).toLocaleString("en-US")} payouts received`}</p>
+          </Card>
+          <Card className="expenses-stat">
+            <CardDescription>Spend since last payout</CardDescription>
+            <p className="expenses-stat-value">{spendSinceLastPayoutError ? "Unavailable" : spendSinceLastPayoutLoading || !spendSinceLastPayout ? "..." : formatCurrency(spendSinceLastPayout.totalAmount)}</p>
+            {spendSinceLastPayoutError ? <p className="text-xs text-app-negative-text" role="alert">{spendSinceLastPayoutError}</p> : <p className="text-xs leading-5 text-app-muted">
+              {spendSinceLastPayoutLoading || !spendSinceLastPayout ? "Calculating spend..." : spendSinceLastPayout.lastPayoutDate
+                ? `${formatExpenseCount(spendSinceLastPayout.expenseCount)} from ${formatRecordDate(spendSinceLastPayout.lastPayoutDate)} forward.`
+                : `No payouts recorded; showing all recorded spend (${formatExpenseCount(spendSinceLastPayout.expenseCount)}).`}
+            </p>}
+          </Card>
+        </div>
+        {totalsError || payoutTotalsError ? <p className="text-sm text-app-negative-text" role="alert">{totalsError ?? payoutTotalsError}</p> : null}
       </section>
 
-      {totalsError ? <p className="text-sm text-rose-300" role="alert">{totalsError}</p> : null}
+      <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1.8fr)_minmax(320px,1fr)]">
+        <ExpenseCalendarCard
+          months={expenseMonths}
+          payoutMonths={payoutMonths}
+          loading={totalsLoading || payoutTotalsLoading}
+          error={totalsError ?? payoutTotalsError}
+          asOfDate={financialAsOfDate}
+          selectedMonth={selectedCalendarMonth}
+          onMonthSelect={handleCalendarMonthSelect}
+        />
+        <Card className="min-w-0">
+          <CardHeader>
+            <CardTitle>Net by period</CardTitle>
+            <CardDescription>Payouts less recorded spend · as of {formatRecordDate(financialAsOfDate)}</CardDescription>
+          </CardHeader>
+          {netRangesError ? <p className="text-xs text-app-negative-text" role="alert">{netRangesError}</p> : null}
+          <div className="expenses-periods divide-y divide-app-border/60">
+            {netRangeOptions.map((option) => {
+              const summary = netRanges.find((item) => item.key === option.key);
+              return (
+                <div key={option.key} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-app-text-soft">{option.label}</p>
+                    <p className="mt-1 text-[10px] leading-4 text-app-muted">{netRangesLoading || !summary ? "Loading..." : `${formatCurrency(summary.payoutAmount)} payouts - ${formatCurrency(summary.expenseAmount)} spend`}</p>
+                  </div>
+                  <p className={`shrink-0 text-sm font-semibold tabular-nums ${summary ? getNetProfitAmountClassName(summary.netAmount) : "text-app-text"}`}>
+                    {netRangesError ? "—" : netRangesLoading || !summary ? "..." : formatCurrency(summary.netAmount)}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
 
-      <ExpenseCalendarCard
-        months={expenseMonths}
-        payoutMonths={payoutMonths}
-        loading={totalsLoading || payoutTotalsLoading}
-        error={totalsError ?? payoutTotalsError}
-        asOfDate={financialAsOfDate}
-        selectedMonth={selectedCalendarMonth}
-        onMonthSelect={handleCalendarMonthSelect}
-      />
-
-      <Card>
+      <section className="space-y-3" aria-label="Transaction history">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-app-text">Transaction history</h2>
+            <p className="mt-1 text-xs text-app-muted">Browse your records. Overview totals stay independent of ledger filters.</p>
+          </div>
+          <Button variant="ghost" size="sm" disabled={loading || payoutLoading || totalsLoading} onClick={() => {
+            clearFinancialReadCache();
+            refreshFinancialData();
+          }}>Refresh</Button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-app-border">
+          <div ref={ledgerTabsRef} role="tablist" aria-label="Transaction type" className="flex gap-5">
+            {(["expenses", "payouts"] as const).map((view) => <button
+              key={view}
+              type="button"
+              role="tab"
+              id={`${view}-tab`}
+              aria-selected={ledgerView === view}
+              aria-controls={`${view}-panel`}
+              tabIndex={ledgerView === view ? 0 : -1}
+              onClick={() => setLedgerView(view)}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const nextView = event.key === "Home" ? "expenses" : event.key === "End" ? "payouts" : view === "expenses" ? "payouts" : "expenses";
+                setLedgerView(nextView);
+                ledgerTabsRef.current?.querySelector<HTMLButtonElement>(`#${nextView}-tab`)?.focus();
+              }}
+              className={`inline-flex min-h-11 items-center gap-2 border-b-2 px-1 py-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent ${ledgerView === view ? "border-app-accent text-app-accent" : "border-transparent text-app-muted hover:text-app-text"}`}
+            >
+              {view === "expenses" ? "Expenses" : "Payouts"}
+              <span className="rounded-md bg-app-raised/65 px-1.5 py-0.5 text-[10px] tabular-nums">{view === "expenses" ? loading ? "…" : total.toLocaleString("en-US") : payoutLoading ? "…" : payoutTotal.toLocaleString("en-US")}</span>
+            </button>)}
+          </div>
+          {selectedCalendarMonth ? <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+            <span>Both ledgers: {monthFormatter.format(new Date(`${selectedCalendarMonth}-01T00:00:00.000Z`))}</span>
+            <Button variant="ghost" size="sm" onClick={() => handleCalendarMonthSelect(null)}>Clear month</Button>
+          </div> : null}
+        </div>
+      <Card id="expenses-panel" role="tabpanel" aria-labelledby="expenses-tab" tabIndex={0} hidden={ledgerView !== "expenses"} className="expenses-ledger">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>Expenses</CardTitle>
-              <CardDescription>Track paid account fees and operational costs.</CardDescription>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="secondary" disabled={loading || payoutLoading || totalsLoading} onClick={() => {
-                clearFinancialReadCache();
-                refreshFinancialData();
-              }}>Refresh</Button>
-              <Button onClick={handleOpenAdd} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Expense</Button>
+              <CardTitle className="sr-only">Expenses</CardTitle>
+              <CardDescription>Track paid account fees and operational costs. These filters apply to expenses.</CardDescription>
             </div>
           </div>
         </CardHeader>
 
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.2fr_100px]">
             <div>
               <label htmlFor="expenses-start-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Start Date</label>
               <Input
@@ -987,7 +980,11 @@ export function ExpensesPage() {
             </div>
           </div>
 
-          <div className="relative mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
+          {startDate || endDate || category ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
+            <p>{selectedCalendarMonth ? "Calendar month selected" : "Expense filters applied"}{category ? ` · ${formatCategoryLabel(category)}` : ""}</p>
+            <Button variant="ghost" size="sm" onClick={() => { handleCalendarMonthSelect(null); setCategory(""); }}>Clear filters</Button>
+          </div> : null}
+          <div ref={expenseTableScrollRef} role="region" aria-label="Expense records" tabIndex={0} className="expenses-table-scroll relative mt-4 rounded-xl border border-app-border/80">
             {loading && items.length > 0 ? (
               <div className="absolute inset-x-0 top-0 z-10 bg-app-surface/95 py-3 text-center text-sm text-app-muted" role="status" aria-live="polite">
                 Loading expenses...
@@ -1000,43 +997,40 @@ export function ExpensesPage() {
                   <TableHead>Category</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
                   <TableHead>Description</TableHead>
-                  <TableHead>Tags</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </tr>
               </TableHeader>
               <TableBody>
                 {loading && items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-slate-400">
+                    <TableCell colSpan={5} className="text-center text-app-muted">
                       <span role="status" aria-live="polite">Loading expenses...</span>
                     </TableCell>
                   </TableRow>
                 ) : error ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-rose-300">
+                    <TableCell colSpan={5} className="text-center text-app-negative-text">
                       <span role="alert">{error}</span>
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-slate-400">
+                    <TableCell colSpan={5} className="py-12 text-center text-app-muted">
                       No expenses found.
                     </TableCell>
                   </TableRow>
                 ) : (
                   items.map((expense) => (
                     <TableRow key={expense.id}>
-                      <TableCell>{dateFormatter.format(new Date(`${expense.expense_date}T00:00:00.000Z`))}</TableCell>
-                      <TableCell>{formatCategoryLabel(expense.category)}</TableCell>
-                      <TableCell className="text-right font-mono">{formatCurrency(expense.amount)}</TableCell>
-                      <TableCell className="max-w-[240px] truncate" title={expense.description ?? undefined}>
-                        {expense.description ?? "-"}
-                      </TableCell>
-                      <TableCell className="max-w-[220px] truncate" title={expense.tags.join(", ")}>
-                        {expense.tags.length > 0 ? expense.tags.join(", ") : "-"}
+                      <TableCell className="whitespace-nowrap">{dateFormatter.format(new Date(`${expense.expense_date}T00:00:00.000Z`))}</TableCell>
+                      <TableCell><span className="whitespace-nowrap rounded-md border border-app-border/60 bg-app-raised/40 px-2 py-1 text-[11px]">{formatCategoryLabel(expense.category)}</span></TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(expense.amount)}</TableCell>
+                      <TableCell className="max-w-[340px]" title={expense.description ?? undefined}>
+                        <p className="truncate">{expense.description ?? "-"}</p>
+                        {expense.tags.length > 0 ? <p className="mt-1 truncate text-[10px] text-app-muted" title={expense.tags.join(", ")}>{expense.tags.join(" · ")}</p> : null}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" disabled={demoModeEnabled || loading} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeleteExpense(expense)}>
+                        <Button variant="ghost" size="sm" className="expenses-delete" disabled={demoModeEnabled || loading} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeleteExpense(expense)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1048,7 +1042,7 @@ export function ExpensesPage() {
           </div>
           <p className="mt-2 text-xs text-slate-500 md:hidden">Swipe horizontally to review every expense column.</p>
 
-          <nav ref={expensePaginationRef} className="mt-4 flex items-center justify-between gap-3" aria-label="Expense pagination">
+          <nav ref={expensePaginationRef} className="mt-4 flex flex-wrap items-center justify-between gap-3" aria-label="Expense pagination">
             <p className="text-xs text-slate-400">
               {loading
                 ? "Loading expense total..."
@@ -1076,43 +1070,30 @@ export function ExpensesPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="payouts-panel" role="tabpanel" aria-labelledby="payouts-tab" tabIndex={0} hidden={ledgerView !== "payouts"} className="expenses-ledger">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>Payouts</CardTitle>
-              <CardDescription>Log the final payouts you receive after the profit split.</CardDescription>
+              <CardTitle className="sr-only">Payouts</CardTitle>
+              <CardDescription>Final payouts received after the profit split. {selectedCalendarMonth ? "Filtered to the selected calendar month." : "Showing all dates; select a calendar month to filter payouts."}</CardDescription>
             </div>
-            <Button onClick={handleOpenAddPayout} disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined}>Add Payout</Button>
           </div>
         </CardHeader>
 
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Total Payouts</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-100">
-                {payoutTotalsLoading ? "..." : formatCurrency(payoutTotals?.total_amount ?? 0)}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Number of Payouts</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-100">
-                {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0).toLocaleString("en-US")}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-800/80 bg-slate-950/40 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Average Payout</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-100">
-                {payoutTotalsLoading ? "..." : formatCurrency(payoutTotals?.average_amount ?? 0)}
-              </p>
-            </div>
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg bg-app-bg/35 px-4 py-3">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-app-muted">All recorded payouts</p>
+            <dl className="flex flex-wrap gap-x-8 gap-y-3 text-xs">
+              <div><dt className="text-app-muted">Total Payouts</dt><dd className="mt-1 font-semibold tabular-nums">{payoutTotalsLoading ? "..." : payoutTotalsError ? "—" : formatCurrency(payoutTotals?.total_amount ?? 0)}</dd></div>
+              <div><dt className="text-app-muted">Number of Payouts</dt><dd className="mt-1 font-semibold tabular-nums">{payoutTotalsLoading ? "..." : payoutTotalsError ? "—" : (payoutTotals?.count ?? 0).toLocaleString("en-US")}</dd></div>
+              <div><dt className="text-app-muted">Average Payout</dt><dd className="mt-1 font-semibold tabular-nums">{payoutTotalsLoading ? "..." : payoutTotalsError ? "—" : formatCurrency(payoutTotals?.average_amount ?? 0)}</dd></div>
+            </dl>
           </div>
 
           {payoutTotalsError ? <p className="mt-4 text-sm text-rose-300" role="alert">{payoutTotalsError}</p> : null}
 
-          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800/80">
-            <Table className="min-w-[720px]">
+          <div ref={payoutTableScrollRef} role="region" aria-label="Payout records" tabIndex={0} className="expenses-table-scroll mt-4 rounded-xl border border-app-border/80">
+            <Table className="min-w-[720px]" aria-label="Payouts" aria-busy={payoutLoading}>
               <TableHeader>
                 <tr>
                   <TableHead>Date</TableHead>
@@ -1144,12 +1125,12 @@ export function ExpensesPage() {
                   payoutItems.map((payout) => (
                     <TableRow key={payout.id}>
                       <TableCell>{dateFormatter.format(new Date(`${payout.payout_date}T00:00:00.000Z`))}</TableCell>
-                      <TableCell className="text-right font-mono">{formatCurrency(payout.amount)}</TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(payout.amount)}</TableCell>
                       <TableCell className="max-w-[360px] truncate" title={payout.notes ?? undefined}>
                         {payout.notes ?? "-"}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="danger" size="sm" disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeletePayout(payout)}>
+                        <Button variant="ghost" size="sm" className="expenses-delete" disabled={demoModeEnabled} title={demoModeEnabled ? demoDisabledTitle : undefined} onClick={() => void handleDeletePayout(payout)}>
                           Delete
                         </Button>
                       </TableCell>
@@ -1161,7 +1142,7 @@ export function ExpensesPage() {
           </div>
           <p className="mt-2 text-xs text-slate-500 md:hidden">Swipe horizontally to review every payout column.</p>
 
-          <div className="mt-4 flex items-center justify-between gap-3">
+          <nav className="mt-4 flex flex-wrap items-center justify-between gap-3" aria-label="Payout pagination">
             <p className="text-xs text-slate-400">
               {payoutLoading
                 ? "Loading payout total..."
@@ -1185,9 +1166,25 @@ export function ExpensesPage() {
                 Next
               </Button>
             </div>
-          </div>
+          </nav>
         </CardContent>
       </Card>
+
+      </section>
+
+      <footer className="space-y-2 border-t border-app-border/70 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs leading-5 text-app-muted">
+            Expenses counted: {totalsLoading ? "..." : (totals?.count ?? 0)}. Payouts counted: {payoutTotalsLoading ? "..." : (payoutTotals?.count ?? 0)}.
+            {demoModeEnabled ? <> Demo totals exclude the device's local combine tracker.</> : <> Standard activations: {combineSpendSnapshot.standardActivationCount} ({formatCurrency(combineSpendSnapshot.standardActivationCostCents / 100)}).</>}
+          </p>
+          {demoModeEnabled ? <p className="text-xs text-app-muted">Local combine tracking is excluded from this sample ledger.</p> : <Button variant="ghost" size="sm" onClick={handleReconcileCombineExpenses} disabled={combineTrackerLoading}>
+            {combineTrackerLoading ? "Reconciling..." : "Reconcile Combine Expenses"}
+          </Button>}
+        </div>
+        {combineTrackerError ? <p className="text-xs text-app-negative-text" role="alert">{combineTrackerError}</p> : null}
+        {combineTrackerNotice ? <p className="text-xs text-app-positive-text" role="status">{combineTrackerNotice}</p> : null}
+      </footer>
 
       <Drawer
         open={!demoModeEnabled && addPayoutOpen}
@@ -1195,7 +1192,7 @@ export function ExpensesPage() {
         title="Add Payout"
         description="Log the final payout amount you received after the profit split."
       >
-        <form className="space-y-3" onSubmit={(event) => void handleSubmitNewPayout(event)}>
+        <form className="expenses-form space-y-4" onSubmit={(event) => void handleSubmitNewPayout(event)}>
           <div>
             <label htmlFor="payout-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Payout Date</label>
             <Input
@@ -1267,7 +1264,7 @@ export function ExpensesPage() {
         title="Add Expense"
         description="Use paid-account presets for Topstep evaluation and activation fees."
       >
-        <form className="space-y-3" onSubmit={(event) => void handleSubmitNewExpense(event)}>
+        <form className="expenses-form space-y-4" onSubmit={(event) => void handleSubmitNewExpense(event)}>
           <div>
             <label htmlFor="expense-account-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account Type</label>
             <Select

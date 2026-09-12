@@ -1,0 +1,46 @@
+.bot-workspace .panel-bg {
+  background: rgb(var(--theme-surface));
+  border-color: rgb(var(--theme-border) / 0.8);
+  box-shadow: none;
+}
+
+.bot-workspace .bot-controls button {
+  min-height: 40px;
+  height: auto;
+  padding-block: 9px;
+  border-radius: 8px;
+  line-height: 1.4;
+}
+
+.bot-workspace .bot-controls {
+  overflow-wrap: anywhere;
+}
+
+.bot-workspace .bot-activity {
+  scroll-margin-top: calc(var(--app-header-height, 0px) + 1rem);
+}
+
+@media (min-width: 1280px) and (min-height: 1000px) {
+  .bot-workspace .bot-controls {
+    position: sticky;
+    top: calc(var(--app-header-height, 0px) + 1rem);
+    max-height: calc(100dvh - var(--app-header-height, 0px) - 2rem);
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+}
+
+@media (max-width: 1279px) and (min-width: 640px) {
+  .bot-workspace .bot-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 639px) {
+  .bot-workspace .bot-controls button {
+    min-height: 44px;
+  }
+}

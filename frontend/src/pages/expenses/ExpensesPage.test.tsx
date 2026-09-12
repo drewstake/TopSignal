@@ -116,6 +116,25 @@ function mockExpenseStartup(summary: FinancialSummary | Promise<FinancialSummary
   return vi.spyOn(api, "getFinancialSummary").mockImplementation(() => Promise.resolve(summary));
 }
 
+function expensePage(firstId: number, count: number): ExpenseRecord[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: firstId + index,
+    account_id: null,
+    provider: "topstep",
+    expense_date: "2026-07-20",
+    amount_cents: 4900,
+    amount: 49,
+    currency: "USD",
+    category: "other",
+    account_type: null,
+    plan_size: null,
+    description: `Expense ${firstId + index}`,
+    tags: [],
+    created_at: "2026-07-20T12:00:00Z",
+    updated_at: "2026-07-20T12:00:00Z",
+  }));
+}
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
@@ -231,6 +250,73 @@ describe("ExpensesPage consolidated startup", () => {
     await user.click(pagination.getByRole("button", { name: "Previous" }));
     await screen.findByText("Page 1 of 2 (51 total)");
     expect(within(table).getAllByRole("row")).toHaveLength(51);
+  });
+
+  it("returns the expense records scroller to the first row after the next full page loads", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    mockExpenseStartup(financialSummary(25));
+    const nextPage = deferred<Awaited<ReturnType<typeof api.listExpenses>>>();
+    vi.mocked(api.listExpenses)
+      .mockResolvedValueOnce({ items: expensePage(1, 50), total: 100 })
+      .mockReturnValueOnce(nextPage.promise);
+
+    render(<ExpensesPage />);
+    await screen.findByText("Page 1 of 2 (100 total)");
+    const records = screen.getByRole("region", { name: "Expense records" });
+    const pagination = within(screen.getByRole("navigation", { name: "Expense pagination" }));
+    records.scrollTop = 2400;
+
+    await user.click(pagination.getByRole("button", { name: "Next" }));
+    expect(records.scrollTop).toBe(2400);
+    expect(within(records).getByText("Expense 1")).not.toBeNull();
+
+    await act(async () => {
+      nextPage.resolve({ items: expensePage(51, 50), total: 100 });
+      await nextPage.promise;
+    });
+
+    expect(screen.getByText("Page 2 of 2 (100 total)")).not.toBeNull();
+    expect(records.scrollTop).toBe(0);
+    expect(within(records).getByText("Expense 51")).not.toBeNull();
+    expect(within(records).queryByText("Expense 1")).toBeNull();
+    expect(within(records).getAllByRole("row")).toHaveLength(51);
+  });
+
+  it("does not move the viewport when an expense page finishes in the hidden tab", async () => {
+    const user = userEvent.setup();
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const summaryRequest = mockExpenseStartup(financialSummary(25));
+    const nextPage = deferred<Awaited<ReturnType<typeof api.listExpenses>>>();
+    vi.mocked(api.listExpenses)
+      .mockResolvedValueOnce({ items: expensePage(1, 50), total: 51 })
+      .mockReturnValueOnce(nextPage.promise);
+
+    render(<ExpensesPage />);
+    await screen.findByText("Page 1 of 2 (51 total)");
+    const pagination = screen.getByRole("navigation", { name: "Expense pagination" });
+    vi.spyOn(pagination, "getBoundingClientRect").mockImplementation(() => ({
+      top: pagination.closest("[hidden]") ? 0 : 600,
+    }) as DOMRect);
+
+    await user.click(within(pagination).getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("tab", { name: /^Payouts/ }));
+    expect(screen.queryByRole("table", { name: "Expenses" })).toBeNull();
+    expect(screen.getByRole("table", { name: "Payouts" })).not.toBeNull();
+
+    await act(async () => {
+      nextPage.resolve({ items: expensePage(51, 1), total: 51 });
+      await nextPage.promise;
+    });
+
+    expect(scrollBy).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("tab", { name: /^Expenses/ }));
+    expect(screen.getByText("Page 2 of 2 (51 total)")).not.toBeNull();
+    expect(within(screen.getByRole("table", { name: "Expenses" })).getByText("Expense 51")).not.toBeNull();
+    expect(api.listExpenses).toHaveBeenCalledTimes(2);
+    expect(api.listPayouts).toHaveBeenCalledOnce();
+    expect(summaryRequest).toHaveBeenCalledOnce();
+    expect(scrollBy).not.toHaveBeenCalled();
   });
 
   it("reuses saved data across visits and refreshes on demand without reconciling", async () => {
