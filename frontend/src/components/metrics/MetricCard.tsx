@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Card } from "../ui/Card";
 import { cn } from "../ui/cn";
 import { InfoPopover } from "./InfoPopover";
+import { Icon } from "../ui/Icon";
 
 interface MetricCardProps {
   title: string;
@@ -30,7 +31,7 @@ export function MetricCard({
   return (
     <Card
       className={cn(
-        "group relative h-full overflow-hidden border-app-border/90 bg-app-surface/75 p-3 md:p-4 transition duration-300 hover:-translate-y-0.5 hover:border-app-accent/40 hover:shadow-[0_14px_36px_-22px_rgb(var(--theme-accent)/0.62)]",
+        "analytics-metric group relative h-full border-app-border/90 bg-app-surface/75 p-3 md:p-4",
         className,
       )}
     >
@@ -42,14 +43,14 @@ export function MetricCard({
         )}
       />
       <div className="flex items-start justify-between gap-1.5">
-        <p className="text-[10px] uppercase tracking-[0.14em] text-app-muted-strong">{title}</p>
+        <h3 className="metric-title">{title}</h3>
         {info ? <InfoPopover content={info} /> : null}
       </div>
       <p className={cn("mt-1.5 text-[1.45rem] font-semibold leading-[1.05] text-app-text md:text-[1.55rem]", primaryClassName)}>
         {primaryValue}
       </p>
       {subtitle ? <p className="mt-1 text-[11px] leading-snug text-app-muted">{subtitle}</p> : null}
-      {children ? <div className={cn("mt-2.5 space-y-1.5", contentClassName)}>{children}</div> : null}
+      {children ? <details className="metric-details"><summary><span>Explore details<span className="sr-only"> for {title}</span></span><Icon name="chevron" /></summary><div className={cn("metric-details-content mt-2.5 space-y-1.5", contentClassName)}>{children}</div></details> : null}
     </Card>
   );
 }

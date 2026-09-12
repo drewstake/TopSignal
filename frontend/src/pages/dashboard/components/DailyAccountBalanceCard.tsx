@@ -1,6 +1,7 @@
 import { type MouseEvent as ReactMouseEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card";
+import { Icon } from "../../../components/ui/Icon";
 import { Skeleton } from "../../../components/ui/Skeleton";
 import type { AccountPnlCalendarDay } from "../../../lib/types";
 import { formatCurrency } from "../../../utils/formatters";
@@ -325,7 +326,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
   }, []);
 
   return (
-    <Card className="relative overflow-hidden">
+    <Card className="dashboard-balance-card relative overflow-hidden">
       {series.length > 0 ? <div className="pointer-events-none absolute inset-x-0 top-0 h-20" style={{ background: summaryTint }} /> : null}
       <CardHeader className="relative space-y-3">
         <div>
@@ -367,9 +368,7 @@ export function DailyAccountBalanceCard({ days, loading, error, currentBalance }
         ) : error ? (
           <p className="rounded-xl border border-app-negative/30 bg-app-negative/10 px-3 py-2 text-sm text-app-negative">{error}</p>
         ) : series.length === 0 || !chartData ? (
-          <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-4 text-sm text-app-muted">
-            No daily balance data yet. Sync trades to populate this chart.
-          </p>
+          <div className="dashboard-chart-empty"><div className="empty-chart-grid" aria-hidden="true" /><span className="empty-state-icon"><Icon name="chart" /></span><h3>A fresh start. A clear view.</h3><p>No daily balance data yet. Sync trades to populate this chart.</p><span className="empty-state-caption">Your performance curve will appear here</span></div>
         ) : (
           <>
             <div className="overflow-x-auto rounded-2xl border border-app-border/70 bg-gradient-to-b from-app-bg/95 via-app-surface/80 to-app-bg/95 p-4 shadow-[inset_0_1px_0_rgb(var(--theme-muted)/0.08)]">

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Icon } from "../../../components/ui/Icon";
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card";
 import { Skeleton } from "../../../components/ui/Skeleton";
@@ -425,7 +426,7 @@ export function PnlCalendarCard({
   const hasCalendarData = !loading && !error && days.length > 0;
 
   return (
-    <Card>
+    <Card className="dashboard-calendar-card">
       <CardHeader className="mb-3 space-y-0">
         {hasCalendarData ? (
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] sm:items-center">
@@ -484,9 +485,7 @@ export function PnlCalendarCard({
         ) : error ? (
           <p className="rounded-xl border border-app-negative/30 bg-app-negative/10 px-3 py-2 text-sm text-app-negative">{error}</p>
         ) : days.length === 0 ? (
-          <p className="rounded-xl border border-app-border/80 bg-app-surface/40 px-3 py-4 text-sm text-app-muted">
-            No stored trade events yet. Sync or import trades to populate the calendar.
-          </p>
+          <div className="dashboard-calendar-empty"><div className="calendar-empty-week" aria-hidden="true">{weekdayLabels.map((day) => <div key={day}><span>{day}</span><i /><i /></div>)}</div><div className="calendar-empty-message"><Icon name="calendar" /><h3>Make every trading day count.</h3><p>No stored trade events yet. Sync or import trades to populate the calendar.</p></div></div>
         ) : (
           <div className="space-y-3">
             <div className="overflow-x-auto rounded-xl border border-app-border/80 bg-app-bg/55 p-2">

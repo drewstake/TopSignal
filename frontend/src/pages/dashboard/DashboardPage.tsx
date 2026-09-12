@@ -17,6 +17,8 @@ import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
+import { Icon } from "../../components/ui/Icon";
+import { DashboardOverview, TradingProfile } from "./components/DashboardOverview";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
@@ -3295,7 +3297,10 @@ export function DashboardPage() {
 
   return (
     <div className="dashboard-surface space-y-5 pb-8">
-      <h1 className="sr-only">Trading Dashboard</h1>
+      <div className="dashboard-page-heading">
+        <div><p className="dashboard-eyebrow">YOUR PERFORMANCE, IN FOCUS</p><h1>Trading Dashboard<span>.</span></h1><p className="dashboard-subtitle">See the whole picture. Find your edge.</p></div>
+        <span className="dashboard-range-label"><Icon name="calendar" />{compactMode.enabled ? compactRangeLabel : metricsRange === "ALL" ? "All time" : fullStatsRangeLabel}</span>
+      </div>
       <DemoModeNotice compact>
         <p>
           Dashboard filters, account selection, calendar drill-down, and copy-to-clipboard tools explore the fixed sample timeline. Live CSV imports, provider refresh, and copy-trade settings are unavailable.
@@ -3333,8 +3338,8 @@ export function DashboardPage() {
       <div className="space-y-2">
         <div className="space-y-1.5">
           <div className="max-w-full pb-1">
-            <div className="flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="flex flex-col gap-1 sm:flex-row">
+            <div className="dashboard-toolbar flex flex-col gap-1 rounded-xl border border-app-border/80 bg-app-bg/45 p-1 shadow-none sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="dashboard-custom-range flex flex-col gap-1 sm:flex-row">
               <Input
                 type="date"
                 value={customStartDate}
@@ -3366,7 +3371,7 @@ export function DashboardPage() {
                 aria-label="Custom end date"
               />
             </div>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="dashboard-range-presets flex flex-wrap items-center gap-1">
               {METRICS_RANGE_OPTIONS.map((option) => {
                 const active = option.key === metricsRange;
                 return (
@@ -3588,21 +3593,7 @@ export function DashboardPage() {
         </Card>
       ) : null}
 
-      {copyTradeModeActive ? (
-        <CopyTradePanel
-          rows={copyTradeRows}
-          totals={copyTradeTotals}
-          driftSummary={copyTradeDriftSummary}
-          driftResetAt={copyTradeDriftResetAt}
-          accounts={orderedAccounts}
-          leaderAccountId={selectedAccountId}
-          selectedFollowerAccountIds={copyTradeFollowerAccountIds}
-          maxFollowers={MAX_COPY_TRADE_FOLLOWERS}
-          loading={summaryLoading || pnlCalendarLoading || copyTradeTogglePending}
-          onFollowerSelectionChange={handleCopyTradeFollowerSelectionChange}
-          onResetUncopyEvents={handleResetUncopyEvents}
-        />
-      ) : null}
+
 
       {!selectedAccountIsCsvImport && selectedAccount?.provider_data_stale ? (
         <Card className="border-app-warning/40 bg-app-warning/10 p-4">
@@ -3661,7 +3652,39 @@ export function DashboardPage() {
         />
       ) : (
         <>
-      <MasonryGrid>
+      <DashboardOverview summary={dashboardSummary} loading={summaryLoading} error={summaryError} hasAccount={selectedAccountId !== null} maxDrawdown={summary.max_drawdown} copyAdjusted={copyTradeStatsActive} />
+      <div className="dashboard-chart-row">
+      <ViewportDeferredDashboardCard
+        title="Account Balance"
+        description="Loading the daily balance view."
+        bodyHeightClassName="h-[360px]"
+      >
+        <DailyAccountBalanceCard
+          days={dashboardPnlCalendarDays}
+          loading={pnlCalendarLoading}
+          error={pnlCalendarError}
+          currentBalance={dashboardCurrentBalance}
+        />
+      </ViewportDeferredDashboardCard>
+        <TradingProfile summary={dashboardSummary} score={sustainability.score} loading={summaryLoading} error={summaryError} copyAdjusted={copyTradeStatsActive} />
+      </div>
+      {copyTradeModeActive ? (
+        <CopyTradePanel
+          rows={copyTradeRows}
+          totals={copyTradeTotals}
+          driftSummary={copyTradeDriftSummary}
+          driftResetAt={copyTradeDriftResetAt}
+          accounts={orderedAccounts}
+          leaderAccountId={selectedAccountId}
+          selectedFollowerAccountIds={copyTradeFollowerAccountIds}
+          maxFollowers={MAX_COPY_TRADE_FOLLOWERS}
+          loading={summaryLoading || pnlCalendarLoading || copyTradeTogglePending}
+          onFollowerSelectionChange={handleCopyTradeFollowerSelectionChange}
+          onResetUncopyEvents={handleResetUncopyEvents}
+        />
+      ) : null}
+      <div className="dashboard-section-title"><div><p className="dashboard-eyebrow">BEYOND THE NUMBERS</p><h2>Performance insights</h2></div><span>Open a card to dig deeper <Icon name="chevron" /></span></div>
+      <MasonryGrid className="dashboard-analytics-grid">
         {summaryLoading ? (
           Array.from({ length: 8 }).map((_, index) => (
             <MetricCard
@@ -4043,9 +4066,9 @@ export function DashboardPage() {
               <div className="relative overflow-hidden rounded-xl border border-app-accent/20 bg-[radial-gradient(120%_130%_at_6%_0%,rgb(var(--theme-positive)/0.16),rgb(var(--theme-surface)/0.25)_42%,rgb(var(--theme-surface)/0.75)_100%)] p-2.5">
                 <div aria-hidden="true" className="pointer-events-none absolute -left-8 top-0 h-20 w-20 rounded-full bg-app-positive/20 blur-2xl" />
                 <div aria-hidden="true" className="pointer-events-none absolute -right-6 bottom-1 h-24 w-24 rounded-full bg-app-negative/15 blur-2xl" />
-                <div className="relative grid gap-2.5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+                <div className="relative grid gap-4">
                   <DonutRing
-                    className="lg:items-start"
+                    className="min-w-0"
                     segments={[
                       {
                         label: "Long",
@@ -4353,7 +4376,7 @@ export function DashboardPage() {
 
             <MetricCard
               title="Sustainability"
-              primaryValue={`${formatInteger(sustainability.score)}/100`}
+              primaryValue={displayTradeCount > 0 ? `${formatInteger(sustainability.score)}/100` : "—"}
               primaryClassName={cn("tracking-tight drop-shadow-[0_1px_10px_rgb(var(--theme-bg)/0.45)]", sustainabilityPrimaryClassName)}
               subtitle="Composite score from Risk, Consistency, and Edge."
               info="Sustainability blends drawdown control, day-to-day consistency, and profit factor with a confidence adjustment for small samples."
@@ -4374,7 +4397,7 @@ export function DashboardPage() {
               <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-[11px] uppercase tracking-[0.14em] text-app-muted-strong">Score 0-100</p>
-                  <Badge variant={sustainabilityBadgeVariant(sustainability.label)}>{sustainability.label}</Badge>
+                  <Badge variant={displayTradeCount > 0 ? sustainabilityBadgeVariant(sustainability.label) : "neutral"}>{displayTradeCount > 0 ? sustainability.label : "Awaiting trades"}</Badge>
                 </div>
 
                 <div className="mt-2.5 grid gap-1.5 sm:grid-cols-3">
@@ -4481,19 +4504,6 @@ export function DashboardPage() {
           </>
         )}
       </MasonryGrid>
-
-      <ViewportDeferredDashboardCard
-        title="Account Balance"
-        description="Loading the daily balance view."
-        bodyHeightClassName="h-[360px]"
-      >
-        <DailyAccountBalanceCard
-          days={dashboardPnlCalendarDays}
-          loading={pnlCalendarLoading}
-          error={pnlCalendarError}
-          currentBalance={dashboardCurrentBalance}
-        />
-      </ViewportDeferredDashboardCard>
 
       <ViewportDeferredDashboardCard
         title="PnL Calendar"

@@ -32,9 +32,9 @@ export const APP_THEMES: AppTheme[] = [
   {
     id: "midnight",
     name: "Midnight",
-    description: "The original high-contrast trading workspace with cyan execution accents.",
+    description: "A focused charcoal workspace with soft mint accents and clear performance signals.",
     colorScheme: "dark",
-    swatches: ["#020617", "#0f172a", "#22d3ee", "#8b5cf6"],
+    swatches: ["#0b1013", "#131a1d", "#b9eb94", "#68bfb0"],
     tags: ["Default", "Dark"],
   },
   {

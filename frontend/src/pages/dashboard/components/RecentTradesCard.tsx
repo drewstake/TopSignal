@@ -71,7 +71,7 @@ export const RecentTradesCard = memo(function RecentTradesCard({
   const hasMoreTrades = visibleTrades.length < trades.length;
 
   return (
-    <Card>
+    <Card className="dashboard-recent-trades">
       <CardHeader className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <CardTitle>{selectedTradeDate ? "Trade Events" : "Recent Trade Events"}</CardTitle>
@@ -120,7 +120,7 @@ export const RecentTradesCard = memo(function RecentTradesCard({
               ) : trades.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="px-2 py-4 text-center text-app-muted">
-                    No trades available.
+                    <span className="recent-empty-title">No trades available.</span><span className="recent-empty-description">Your latest entries and exits will appear here after you sync or import trades.</span>
                   </td>
                 </tr>
               ) : (

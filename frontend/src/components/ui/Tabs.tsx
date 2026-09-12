@@ -1,6 +1,12 @@
 ﻿import { useEffect, useRef } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "./cn";
+import { Icon, type IconName } from "./Icon";
+
+const navigationIcons: Record<string, IconName> = {
+  Dashboard: "dashboard", Accounts: "accounts", Trades: "trades",
+  Expenses: "expenses", Bot: "bot", Themes: "themes",
+};
 
 export interface TabItem {
   label: string;
@@ -23,12 +29,15 @@ export function Tabs({ items }: TabsProps) {
   return (
     <nav
       ref={navRef}
-      className="flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-app-border bg-app-surface/50 p-1"
+      aria-label="Main navigation"
+      className="workspace-navigation flex w-full items-center gap-2 overflow-x-auto rounded-xl border border-app-border bg-app-surface/50 p-1"
     >
       {items.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
+          aria-label={item.label}
+          title={item.label}
           className={({ isActive }) =>
             cn(
               "inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium transition duration-200",
@@ -38,7 +47,8 @@ export function Tabs({ items }: TabsProps) {
             )
           }
         >
-          {item.label}
+          {navigationIcons[item.label] ? <Icon name={navigationIcons[item.label]} /> : null}
+          <span>{item.label}</span>
         </NavLink>
       ))}
     </nav>

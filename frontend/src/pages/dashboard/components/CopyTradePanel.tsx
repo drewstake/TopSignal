@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { Icon } from "../../../components/ui/Icon";
 
 import { Badge } from "../../../components/ui/Badge";
 import { Button } from "../../../components/ui/Button";
@@ -107,8 +109,16 @@ export function CopyTradePanel({
     followerSelectorState.leaderAccountId === leaderAccountId ? followerSelectorState.expanded : selectedFollowerCount === 0;
   const showFollowerEditor = selectedFollowerCount === 0 || followerSelectorExpanded;
 
+  if (!loading && !totals.hasLeader) {
+    return <section className="copy-trade-setup">
+      <span className="copy-trade-setup-icon"><Icon name="trades" /></span>
+      <div><h2>Copy Trade Mode <span className="copy-setup-status">Needs Leader</span></h2><p>Select a leader account to track combined performance across up to five Topstep accounts.</p></div>
+      <Link to="/accounts" className="workspace-text-link">Manage accounts <Icon name="arrow" /></Link>
+    </section>;
+  }
+
   return (
-    <Card className="border-app-accent/30 bg-[radial-gradient(120%_130%_at_0%_0%,rgb(var(--theme-accent)/0.16),rgb(var(--theme-surface)/0.64)_48%,rgb(var(--theme-surface)/0.92)_100%)]">
+    <Card className="copy-trade-panel border-app-accent/30 bg-[radial-gradient(120%_130%_at_0%_0%,rgb(var(--theme-accent)/0.16),rgb(var(--theme-surface)/0.64)_48%,rgb(var(--theme-surface)/0.92)_100%)]">
       <CardHeader className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <CardTitle>Copy Trade Mode</CardTitle>

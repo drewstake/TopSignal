@@ -1,10 +1,11 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Select";
 import { Skeleton } from "../components/ui/Skeleton";
 import { Tabs } from "../components/ui/Tabs";
+import { Icon } from "../components/ui/Icon";
 import { Toggle } from "../components/ui/Toggle";
 import { cn } from "../components/ui/cn";
 import {
@@ -469,17 +470,54 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-app-bg text-app-text">
+    <div className="app-workspace flex min-h-screen flex-col bg-app-bg text-app-text">
       <a
         href="#app-main-content"
         className="sr-only left-3 top-3 z-50 rounded-lg bg-app-surface px-4 py-2 text-sm font-semibold text-app-text shadow-lg focus:not-sr-only focus:fixed focus:outline-none focus:ring-2 focus:ring-app-accent"
       >
         Skip to main content
       </a>
-      <header ref={appHeaderRef} className="relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">
+      <aside className="workspace-sidebar" aria-label="Workspace sidebar">
+        <Link className="workspace-brand" to={buildAccountAwarePath("/", selectedAccountId)} aria-label="TopSignal home">
+          <span className="workspace-brand-mark"><Icon name="chart" /></span>
+          <span>TopSignal<span className="workspace-brand-caption">TRADING WORKSPACE</span></span>
+        </Link>
+        <p className="workspace-nav-label">Workspace</p>
+          <Tabs
+            items={[
+              { label: "Dashboard", to: buildAccountAwarePath("/", selectedAccountId) },
+              { label: "Accounts", to: `/accounts${accountSuffix}` },
+              { label: "Trades", to: `/trades${accountSuffix}` },
+              { label: "Expenses", to: `/expenses${accountSuffix}` },
+              { label: "Bot", to: `/bot${accountSuffix}` },
+              { label: "Themes", to: `/themes${accountSuffix}` },
+            ]}
+          />
+        <div className="workspace-sidebar-bottom">
+          <div className="workspace-connection"><span className="workspace-status-dot" /><span>{demoMode.enabled ? "Demo workspace" : `${orderedAccounts.length} connected account${orderedAccounts.length === 1 ? "" : "s"}`}</span></div>
+                {hasSupabaseConfig ? (
+                  <div className="workspace-identity flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
+                    <span className="min-w-0 flex-1 truncate" title={sessionIdentityDisplay}>
+                      {sessionIdentityDisplay}
+                    </span>
+                    <Button
+                      className="h-11 shrink-0 px-2 sm:h-7"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void handleSignOut()}
+                      disabled={signOutPending}
+                    >
+                      {signOutPending ? "Signing out…" : demoMode.enabled ? "Sign out live session" : "Sign out"}
+                    </Button>
+                  </div>
+                ) : null}
+          <p className="workspace-footer">A clearer view of your edge.</p>
+        </div>
+      </aside>
+      <header ref={appHeaderRef} className="workspace-topbar relative z-30 border-b border-app-border/80 bg-app-bg/95 sm:sticky sm:top-0">
         <div
           className={cn(
-            "mx-auto flex w-full flex-col gap-2 px-3 py-2 sm:px-4 lg:px-8",
+            "workspace-topbar-inner mx-auto flex w-full flex-col gap-2 px-3 py-2 sm:px-4 lg:px-8",
             isDashboardRoute && compactMode.enabled
               ? "max-w-[1920px] sm:gap-3 sm:py-3"
               : "max-w-[1400px] sm:gap-4 sm:py-4",
@@ -492,8 +530,8 @@ export function AppShell() {
             )}
           >
             <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-end gap-2 sm:gap-3 xl:flex-nowrap">
-                <div className="w-full min-w-0 sm:w-[300px] sm:flex-none xl:w-[320px]">
+              <div className="workspace-controls flex flex-wrap items-end gap-2 sm:gap-3 xl:flex-nowrap">
+                <div className="workspace-account w-full min-w-0 sm:w-[300px] sm:flex-none xl:w-[320px]">
                   <label
                     htmlFor="app-active-account"
                     className="mb-1 block text-[11px] uppercase tracking-wide text-app-muted-strong"
@@ -575,22 +613,7 @@ export function AppShell() {
                     title={syncing ? "Wait for the current live sync to finish before changing data modes." : undefined}
                   />
                 )}
-                {hasSupabaseConfig ? (
-                  <div className="flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 self-end rounded-lg border border-app-border bg-app-surface/60 px-2.5 text-xs text-app-muted sm:h-9 sm:min-h-0 sm:w-auto sm:max-w-[340px] xl:w-[260px] xl:flex-none">
-                    <span className="min-w-0 flex-1 truncate" title={sessionIdentityDisplay}>
-                      {sessionIdentityDisplay}
-                    </span>
-                    <Button
-                      className="h-11 shrink-0 px-2 sm:h-7"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void handleSignOut()}
-                      disabled={signOutPending}
-                    >
-                      {signOutPending ? "Signing out…" : demoMode.enabled ? "Sign out live session" : "Sign out"}
-                    </Button>
-                  </div>
-                ) : null}
+
               </div>
               {accountsError ? <p className="text-xs text-app-negative">{accountsError}</p> : null}
               {providerAccountsRefreshing ? (
@@ -629,36 +652,17 @@ export function AppShell() {
                 </p>
               ) : null}
             </div>
-            <div className="shrink-0 text-left sm:text-right">
-              <p className="text-lg font-semibold tracking-tight text-app-text">TopSignal</p>
-              <p
-                className={cn(
-                  "text-xs text-app-muted",
-                  isDashboardRoute && compactMode.enabled ? "hidden sm:block" : undefined,
-                )}
-              >
-                ProjectX Account + Trade Dashboard
-              </p>
-            </div>
+
           </div>
 
-          <Tabs
-            items={[
-              { label: "Dashboard", to: buildAccountAwarePath("/", selectedAccountId) },
-              { label: "Accounts", to: `/accounts${accountSuffix}` },
-              { label: "Trades", to: `/trades${accountSuffix}` },
-              { label: "Expenses", to: `/expenses${accountSuffix}` },
-              { label: "Bot", to: `/bot${accountSuffix}` },
-              { label: "Themes", to: `/themes${accountSuffix}` },
-            ]}
-          />
+
         </div>
       </header>
       <main
         id="app-main-content"
         tabIndex={-1}
         className={cn(
-          "mx-auto w-full flex-1 px-4 lg:px-8",
+          "workspace-main mx-auto w-full flex-1 px-4 lg:px-8",
           isDashboardRoute && compactMode.enabled ? "max-w-[1920px] pb-6 pt-2" : "max-w-[1400px] py-6",
           isTradesRoute ? "lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden" : "",
         )}
