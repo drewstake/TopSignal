@@ -125,7 +125,7 @@ def sync_projectx_accounts(
     user_id: str | None = None,
     now_utc: datetime | None = None,
     missing_buffer: timedelta = timedelta(minutes=5),
-) -> None:
+) -> list[Account]:
     resolved_user_id = _resolve_user_id(user_id)
     now = _as_utc(now_utc or datetime.now(timezone.utc))
     normalized_rows = [_normalize_provider_account(row) for row in provider_accounts]
@@ -135,6 +135,7 @@ def sync_projectx_accounts(
 
     seen_external_ids = {row["external_id"] for row in normalized_rows}
     existing_by_external_id: dict[str, Account] = {}
+    refreshed_accounts: list[Account] = []
     if seen_external_ids:
         rows = (
             db.query(Account)
@@ -166,6 +167,7 @@ def sync_projectx_accounts(
             existing_by_external_id[external_id] = row
 
         row.name = payload["name"]
+        refreshed_accounts.append(row)
         if payload["balance"] is not None:
             row.balance = payload["balance"]
         row.account_state = payload["account_state"]
@@ -197,6 +199,8 @@ def sync_projectx_accounts(
         if row.account_state != ACCOUNT_STATE_MISSING:
             row.account_state = ACCOUNT_STATE_MISSING
             row.last_missing_at = now
+
+    return refreshed_accounts
 
 
 def get_projectx_account_rows(db: Session, *, user_id: str | None = None) -> list[Account]:

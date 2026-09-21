@@ -180,6 +180,7 @@ from .services.journal import (
 from .services.gemini_client import GeminiClientError
 from .services.journal_ai_recap import generate_ai_journal_recap
 from .services.journal_storage import delete_journal_image as delete_journal_image_file, journal_storage_backend
+from .services.combine_expenses import add_missing_combine_expenses
 from .services.projectx_accounts import (
     ACCOUNT_STATE_ACTIVE,
     ACCOUNT_STATE_MISSING,
@@ -1795,16 +1796,21 @@ def list_projectx_accounts(
             client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
             provider_accounts = client.list_accounts(only_active_accounts=False)
             provider_refreshed_at = datetime.now(timezone.utc)
-            sync_projectx_accounts(
-                db,
-                provider_accounts,
-                user_id=user_id,
-                now_utc=provider_refreshed_at,
-                missing_buffer=timedelta(
-                    seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
-                ),
-            )
-            db.commit()
+            with serialize_account_main_mutation(db, user_id=user_id):
+                refreshed_accounts = sync_projectx_accounts(
+                    db,
+                    provider_accounts,
+                    user_id=user_id,
+                    now_utc=provider_refreshed_at,
+                    missing_buffer=timedelta(
+                        seconds=_read_int_env("PROJECTX_ACCOUNT_MISSING_BUFFER_SECONDS", 300),
+                    ),
+                )
+                db.flush()
+                add_missing_combine_expenses(
+                    db, refreshed_accounts, user_id=user_id, observed_at=provider_refreshed_at,
+                )
+                db.commit()
             logger.info(
                 "projectx_account_sync_succeeded",
                 extra={

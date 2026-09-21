@@ -198,6 +198,45 @@ describe("AppShell account lifecycle reconciliation", () => {
     expect(router.state.location.search).toBe("?account=88001");
   });
 
+  it("populates an empty shell dropdown after explicit provider discovery", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const user = userEvent.setup();
+    const discoveredAccounts = [7101, 7102].map((id) => ({
+      ...account(id, `Express ${id}`, "projectx", false),
+      provider_data_stale: false,
+      provider_sync_status: "provider_fresh" as const,
+    }));
+    getSelectableAccountsLocalFirstMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(discoveredAccounts);
+    getSelectableAccountsMock.mockResolvedValue(discoveredAccounts);
+    vi.spyOn(accountsApi, "getAccounts")
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(discoveredAccounts);
+    const router = createMemoryRouter(
+      [{
+        path: "/",
+        element: <AppShell />,
+        children: [{ path: "accounts", element: <AccountsPage /> }],
+      }],
+      { initialEntries: ["/accounts"] },
+    );
+
+    render(<RouterProvider router={router} />);
+    const accountSelect = await screen.findByRole("combobox", { name: "Active Account" });
+    await screen.findByRole("option", { name: "No accounts" });
+    expect((accountSelect as HTMLSelectElement).disabled).toBe(true);
+    expect(getSelectableAccountsMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Refresh Express Accounts" }));
+
+    await waitFor(() => expect((accountSelect as HTMLSelectElement).disabled).toBe(false));
+    expect(screen.getByRole("option", { name: /Express 7101/ })).not.toBeNull();
+    expect(screen.getByRole("option", { name: /Express 7102/ })).not.toBeNull();
+    expect((accountSelect as HTMLSelectElement).value).toBe("7101");
+    expect(screen.getByText("2 connected accounts")).not.toBeNull();
+  });
+
   it("replaces the local-first dropdown after provider success while preserving a Live CSV selection", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     const live = {

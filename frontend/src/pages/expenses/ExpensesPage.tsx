@@ -49,6 +49,7 @@ import type {
 import { isDemoModeEnabled } from "../../lib/demoMode";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
+import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "../../lib/financialEvents";
 import { formatCurrency } from "../../utils/formatters";
 import { ExpenseCalendarCard } from "./ExpenseCalendarCard";
 import "./ExpensesPage.css";
@@ -302,6 +303,11 @@ export function ExpensesPage() {
   const refreshFinancialData = useCallback(() => {
     setDataRevision((current) => current + 1);
   }, []);
+
+  useEffect(() => {
+    window.addEventListener(ACCOUNT_EXPENSES_UPDATED_EVENT, refreshFinancialData);
+    return () => window.removeEventListener(ACCOUNT_EXPENSES_UPDATED_EVENT, refreshFinancialData);
+  }, [refreshFinancialData]);
 
   const loadExpenses = useCallback(async () => {
     const isCurrent = beginExpensesRequest();

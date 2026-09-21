@@ -1,4 +1,5 @@
 import { TradeRefreshCache } from "./tradeRefreshCache";
+import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
 import type {
   AccountEmergencyFlattenResult,
@@ -924,6 +925,11 @@ async function getAccountsFromApi(options: Required<GetAccountsOptions>): Promis
         localCacheKey,
         accounts,
       );
+      // Successful provider discovery also persists missing combine fees.
+      clearFinancialReadCache();
+      if (typeof window !== "undefined" && !isDemoModeEnabled()) {
+        window.dispatchEvent(new Event(ACCOUNT_EXPENSES_UPDATED_EVENT));
+      }
     },
     load: () => requestJson<AccountInfo[]>("/api/accounts", {
         query: {

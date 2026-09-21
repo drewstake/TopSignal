@@ -30,7 +30,7 @@ from app.main import (
     unarchive_topstep_live_account,
     update_projectx_account_trade_data_source,
 )
-from app.models import Account, PositionLifecycle, ProjectXTradeEvent, ProviderCredential
+from app.models import Account, Expense, ExpenseSuppression, PositionLifecycle, ProjectXTradeEvent, ProviderCredential
 from app.projectx_schemas import (
     ProjectXAccountArchiveIn,
     ProjectXAccountRenameIn,
@@ -47,7 +47,7 @@ def db_session():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__, PositionLifecycle.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Account.__table__, ProjectXTradeEvent.__table__, PositionLifecycle.__table__, Expense.__table__, ExpenseSuppression.__table__])
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     session = SessionLocal()
     try:
@@ -217,6 +217,11 @@ def test_accounts_route_normalizes_provider_ids_when_attaching_provider_fields(d
     monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
 
     payload = list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+
+    assert db_session.query(Expense).one().account_id == 7304
+    assert db_session.query(Expense).one().amount_cents == 4900
+    list_projectx_accounts(show_inactive=False, show_missing=False, db=db_session)
+    assert db_session.query(Expense).count() == 1
 
     assert payload == [
         {

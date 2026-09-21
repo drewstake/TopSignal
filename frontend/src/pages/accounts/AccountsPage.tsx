@@ -237,19 +237,9 @@ export function AccountsPage() {
       const providerSummary = refreshedAccounts
         ? summarizeAccountProviderSync(refreshedAccounts)
         : null;
-      const activeAccountId =
-        accountFromQuery ??
-        readStoredAccountId() ??
-        refreshedAccounts?.find((account) => account.is_main)?.id ??
-        readStoredMainAccountId() ??
-        refreshedAccounts?.[0]?.id ??
-        null;
-      const activeAccount = refreshedAccounts?.find((account) => account.id === activeAccountId);
-      if (
-        activeAccount?.trade_data_source === "csv_import" &&
-        providerSummary &&
-        providerSummary.status !== "cached_fallback"
-      ) {
+      // Discovery must also update the shell when it has no selected account,
+      // or when the previously selected ProjectX account is no longer returned.
+      if (refreshedAccounts && providerSummary?.status !== "cached_fallback") {
         dispatchAccountListChanged({
           accountId: null,
           action: "provider_refreshed",
@@ -260,7 +250,7 @@ export function AccountsPage() {
       refreshExpressRequestRef.current = false;
       setRefreshingExpressAccounts(false);
     }
-  }, [accountFromQuery, loadAccounts]);
+  }, [loadAccounts]);
 
   const freshnessAwareAccounts = useAccountProviderFreshness(accounts);
   const providerSyncNotice = useMemo(

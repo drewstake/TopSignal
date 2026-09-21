@@ -17,6 +17,18 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("tab navigation cache transport", () => {
+  it("invalidates saved financial totals after fresh account discovery", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => json(
+      String(url).includes("/api/accounts") ? [] : { items: [], total: 0 },
+    )));
+    await listExpenses();
+    await listExpenses();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await accountsApi.getAccounts({ refreshProvider: true, bypassCache: true });
+    await listExpenses();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("reuses expenses, payouts and financial totals across visits, with explicit refresh", async () => {
     const visit = () => Promise.all([
       listExpenses(), listPayouts(), getFinancialSummary({ asOfDate: "2026-09-04" }),

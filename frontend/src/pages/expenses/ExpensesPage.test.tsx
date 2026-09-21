@@ -9,6 +9,7 @@ import type { AccountInfo, ExpenseRecord, FinancialSummary, PayoutRecord } from 
 import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoading";
 import { buildAnniversaryYearRangeOptions, formatLocalIsoDate } from "./expenseNetRanges";
 import { ExpensesPage } from "./ExpensesPage";
+import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "../../lib/financialEvents";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -523,6 +524,17 @@ describe("ExpensesPage consolidated startup", () => {
 });
 
 describe("ExpensesPage combine reconciliation", () => {
+  it("reloads expenses and totals when account discovery adds fees without prompting", async () => {
+    const summarySpy = mockExpenseStartup(financialSummary(100));
+    const confirmSpy = vi.spyOn(window, "confirm");
+    render(<ExpensesPage />);
+    await waitFor(() => expect(summarySpy).toHaveBeenCalledTimes(1));
+    act(() => { window.dispatchEvent(new Event(ACCOUNT_EXPENSES_UPDATED_EVENT)); });
+    await waitFor(() => expect(summarySpy).toHaveBeenCalledTimes(2));
+    expect(api.listExpenses).toHaveBeenCalledTimes(2);
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
   it("renders a provider account-load failure as a safe actionable message", async () => {
     const user = userEvent.setup();
     mockExpenseStartup(financialSummary(0));

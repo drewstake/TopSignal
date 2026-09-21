@@ -562,7 +562,14 @@ The Expenses page combines those two tables into cash-flow summaries:
 - net after payouts
 - payout-minus-spend ranges for fixed windows, anniversary years, and all time
 
-The combine spend helper is separate from core expense storage:
+Successful ProjectX account discovery automatically adds missing evaluation-fee
+expenses for active or locked-out combine accounts. It uses the existing plan/DLL
+price presets and the account's first-seen date in Eastern time; these are inferred
+costs, not billing receipts. Existing account-linked evaluation fees and deleted-row
+suppressions are preserved. Repeat refreshes do not create additional fees, and
+cached or failed provider reads do not generate expenses. Payout entry remains manual.
+
+The optional combine reconciliation helper is separate from automatic discovery:
 
 - it lives in browser storage
 - it infers combine purchases from active account names
