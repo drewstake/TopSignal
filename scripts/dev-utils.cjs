@@ -5,6 +5,24 @@ const https = require("node:https");
 const net = require("node:net");
 const path = require("node:path");
 
+function requireBackendPython(repoRoot) {
+  const windows = process.platform === "win32";
+  const pythonPath = path.join(repoRoot, "backend", ".venv",
+    ...(windows ? ["Scripts", "python.exe"] : ["bin", "python"]));
+  if (!fs.existsSync(pythonPath)) {
+    const setupPython = windows ? "python" : "python3";
+    const venvPython = windows ? "backend\\.venv\\Scripts\\python.exe" : "backend/.venv/bin/python";
+    throw new Error(
+      `Missing backend Python executable: ${pythonPath}\n` +
+      "Create the Python 3.11+ environment and install dependencies from the repository root:\n" +
+      `  ${setupPython} -m venv backend/.venv\n` +
+      `  ${venvPython} -m pip install -r backend/requirements.txt\n` +
+      "Then rerun your dev command.",
+    );
+  }
+  return pythonPath;
+}
+
 function parseDotEnvFile(filePath) {
   if (!fs.existsSync(filePath)) {
     return {};
@@ -230,6 +248,7 @@ module.exports = {
   isPortAvailable,
   parseDotEnvFile,
   parsePort,
+  requireBackendPython,
   runDatabaseMigrations,
   waitForHttpReady,
 };

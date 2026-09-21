@@ -11,6 +11,7 @@ const {
   findAvailablePort,
   parseDotEnvFile,
   parsePort,
+  requireBackendPython,
   runDatabaseMigrations,
 } = require("./dev-utils.cjs");
 
@@ -201,6 +202,7 @@ async function main() {
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   if (offline) {
     await assertLocalFrontendAvailable();
+    requireBackendPython(repoRoot);
     process.env = offlineEnvironment(createEnvironmentSnapshot(process.env, backendEnv), repoRoot, {
       projectx: process.argv.includes("--topstep"),
     });
@@ -211,6 +213,7 @@ async function main() {
       console.log("[LOCAL] Topstep API and dry-run bot worker enabled; live orders remain disabled.");
     }
   } else {
+    requireBackendPython(repoRoot);
     console.log("Applying pending database migrations before dev server startup...");
     runDatabaseMigrations({
       repoRoot,

@@ -680,12 +680,27 @@ session, it shows a Google OAuth sign-in screen first.
 
 #### 3. Install dependencies
 
+macOS / Linux (use Python 3.11 or newer):
+
+```bash
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+npm ci
+npm --prefix frontend ci
+```
+
+Windows PowerShell:
+
 ```powershell
 python -m venv backend\.venv
 backend\.venv\Scripts\python -m pip install -r backend\requirements.txt
 npm install
 npm --prefix frontend install
 ```
+
+If startup reports `Missing backend Python executable`, run the commands above
+for your operating system. The Python environment is local to each checkout and
+is not included in Git; updating npm does not install backend dependencies.
 
 #### 4. Apply the database schema
 

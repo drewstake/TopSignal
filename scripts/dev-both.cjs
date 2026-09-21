@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const { requireBackendPython } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const devScript = path.join(__dirname, "dev.cjs");
@@ -109,6 +110,12 @@ function startBothProfiles({
 }
 
 if (require.main === module) {
+  try {
+    requireBackendPython(repoRoot);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
   const profiles = startBothProfiles();
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => profiles.stop());

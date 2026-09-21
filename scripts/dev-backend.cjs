@@ -1,5 +1,4 @@
 const { spawn } = require("node:child_process");
-const fs = require("node:fs");
 const path = require("node:path");
 const { offlineEnvironment } = require("./offline-env.cjs");
 const { watchBackendSources } = require("./backend-source-watcher.cjs");
@@ -10,18 +9,17 @@ const {
   isPortAvailable,
   parseDotEnvFile,
   parsePort,
+  requireBackendPython,
   runDatabaseMigrations,
 } = require("./dev-utils.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const backendDir = path.join(repoRoot, "backend");
-const pythonPath =
-  process.platform === "win32"
-    ? path.join(backendDir, ".venv", "Scripts", "python.exe")
-    : path.join(backendDir, ".venv", "bin", "python");
-
-if (!fs.existsSync(pythonPath)) {
-  console.error(`Missing backend Python executable: ${pythonPath}`);
+let pythonPath;
+try {
+  pythonPath = requireBackendPython(repoRoot);
+} catch (error) {
+  console.error(error.message);
   process.exit(1);
 }
 

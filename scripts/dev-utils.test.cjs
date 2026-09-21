@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const http = require("node:http");
 const net = require("node:net");
+const fs = require("node:fs");
+const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 
@@ -13,9 +15,43 @@ const {
   findAvailablePort,
   isPortAvailable,
   parseDotEnvFile,
+  requireBackendPython,
   runDatabaseMigrations,
   waitForHttpReady,
 } = require("./dev-utils.cjs");
+
+test("missing Python stops dev launchers before migration or backend retries", async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "topsignal-missing-python-"));
+  try {
+    const scriptsDir = path.join(repoRoot, "scripts");
+    fs.mkdirSync(scriptsDir);
+    for (const file of fs.readdirSync(__dirname)) {
+      if (file.endsWith(".cjs") && !file.endsWith(".test.cjs")) {
+        fs.copyFileSync(path.join(__dirname, file), path.join(scriptsDir, file));
+      }
+    }
+    const launches = [["dev-both.cjs"], ["dev.cjs"], ["dev-backend.cjs"]];
+    if (await isPortAvailable(5174)) launches.push(["dev.cjs", "--offline", "--topstep"]);
+    for (const [script, ...args] of launches) {
+      const result = spawnSync(process.execPath, [path.join(scriptsDir, script), ...args], {
+        cwd: repoRoot, encoding: "utf8", timeout: 10000, windowsHide: true,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, script);
+      assert.match(result.stderr, /Missing backend Python executable/);
+      assert.match(result.stderr, /-m venv backend\/\.venv/);
+      assert.match(result.stderr, /-m pip install -r backend\/requirements.txt/);
+      assert.doesNotMatch(result.stdout + result.stderr, /Retrying|Waiting for backend|Applying pending|\[BOTH\] Starting/);
+    }
+    const pythonPath = path.join(repoRoot, "backend", ".venv",
+      ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]));
+    fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+    fs.writeFileSync(pythonPath, "");
+    assert.equal(requireBackendPython(repoRoot), pythonPath);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
 
 test("supervised cloud backend retains the port and identity selected for frontend readiness", () => {
   const parent = {
