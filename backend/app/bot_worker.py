@@ -480,6 +480,43 @@ class BotWorkerRuntime:
         elif unresolved:
             blocked_accounts = self._unresolved_account_keys()
 
+        # Timed exits survive disarmed/stopped runs and run independently of
+        # candle boundaries, market-data requests and model availability.
+        if _background_live_execution_enabled():
+            from .services.topbot_time_exit import pending_exits, process_time_exit
+            with self.session_factory() as db:
+                exits = [(row.id, row.user_id, row.account_id, row.status,
+                          row.raw_request["timeExit"]["deadline"])
+                         for row in pending_exits(db).order_by(BotOrderAttempt.id).all()]
+            for entry_id, user_id, account_id, status, deadline in exits:
+                if self._shutdown_requested.is_set():
+                    break
+                if status == "submitted" and now < _as_utc(datetime.fromisoformat(deadline)):
+                    continue
+                try:
+                    with self.session_factory() as db:
+                        complete = process_time_exit(
+                            db, entry_id=entry_id, client=self._client_for_user(user_id), now=now,
+                            worker_lease_token=BotWorkerLeaseToken(
+                                lease_name=_LEASE_NAME, owner_id=self.owner_id,
+                                lease_ttl_seconds=self.settings.lease_ttl_seconds,
+                                mutation_allowed=lambda: (
+                                    not self._shutdown_requested.is_set() and self.snapshot().owns_lease
+                                ),
+                            ),
+                        )
+                        db.commit()
+                    if not complete:
+                        blocked_accounts.add((user_id, account_id))
+                        errors += 1
+                        last_error_code = "mathematical_time_exit_pending"
+                        provider_status = "error"
+                except Exception as exc:
+                    blocked_accounts.add((user_id, account_id))
+                    errors += 1
+                    last_error_code = "mathematical_time_exit_pending"
+                    logger.error("mathematical_time_exit_pending", extra={"error_type": type(exc).__name__})
+
         probe_due = monotonic() - self._last_provider_probe >= self.settings.provider_probe_seconds
         probed_users: set[str] = set()
         for run_id in run_ids:

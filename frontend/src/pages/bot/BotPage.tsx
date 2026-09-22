@@ -326,7 +326,7 @@ export function BotPage() {
     if (!activeAccountClassificationFresh) {
       return "The simulated Practice-account classification is stale; wait for a fresh provider observation.";
     }
-    return "TopBot Mathematical is available in Dry Run. Live routing awaits model validation and verified 15-minute exits.";
+    return null;
   }, [activeAccountClassificationFresh, activeProviderSimulated, runtimeContinuousBlockReason, runtimeStatus]);
   const runtimeCanArmContinuous = runtimeContinuousBlockReason === null;
 
@@ -668,8 +668,8 @@ export function BotPage() {
     }
     if (kind === "live" && !window.confirm(
       `Start TopBot Live Run on account ${activeProjectXAccountId}? ` +
-      "This allows MNQ orders while all server safety checks pass. " +
-      "An application restart disarms routing; start a new Live Run to resume.",
+      "Experimental Practice run: the model probabilities are unvalidated. This allows MNQ orders with protective brackets and a 15-minute timed exit. Keep this account dedicated to the bot; do not manually trade MNQ alongside it. Keep the backend running for timed exits. " +
+      "Stopping or restarting disarms new entries; pending timed exits resume when the worker is running. Start a new Live Run to resume entries.",
     )) return;
     const requestAccountId = activeProjectXAccountId;
     let requestBotId = selectedBot?.id ?? null;
@@ -1053,7 +1053,7 @@ export function BotPage() {
           <div className="space-y-1.5 text-xs leading-5 text-app-muted">
             <p><span className="font-medium text-app-text-soft">Dry Run</span> follows the market without orders.</p>
             <p><span className="font-medium text-app-text-soft">Live Run</span> enables order routing.</p>
-            <p className="pt-1">New runs use TopBot Mathematical on MNQ: candle-based Bayesian expected payoff. Dry Run only until validation and time-exit execution are complete. Missing models or insufficient evidence produce NO TRADE.</p>
+            <p className="pt-1">New runs use TopBot Mathematical on MNQ: candle-based Bayesian expected payoff. Experimental Live Run is available only on verified Practice accounts; model probabilities remain unvalidated. Entries include stop/target brackets and a 15-minute timed exit. Keep the backend running for timed exits. Missing models or insufficient evidence produce NO TRADE.</p>
           </div>
           {selectedBot?.enabled && !demoModeEnabled ? <p className="text-xs text-slate-400">Stop automation before starting another run.</p> : null}
         </CardContent>
@@ -1085,7 +1085,7 @@ export function BotPage() {
               variant="ghost" size="sm"
               onClick={() => void runBotAction("stop")}
               disabled={demoModeEnabled || !selectedBot || stopping || actionLoading === "dry_run" || actionLoading === "live" || emergencyFlattenAccountId !== null}
-              title={demoModeEnabled ? demoDisabledTitle : "Stops automation without closing broker positions"}
+              title={demoModeEnabled ? demoDisabledTitle : "Stops new entries; pending timed exits remain active"}
             >
               <svg viewBox="0 0 16 16" className="h-3 w-3" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" /></svg>
               {stopping ? "Stopping…" : "Stop Automation"}
@@ -1100,7 +1100,7 @@ export function BotPage() {
             </Button> : null}
           </div>
         </div>
-        <p className="text-[11px] leading-5 text-app-muted">Stop Automation does not cancel broker orders or close positions. {activeProjectXAccountId !== null ? "Emergency flatten affects all account orders and positions." : null}</p>
+        <p className="text-[11px] leading-5 text-app-muted">Stop Automation stops new entries without immediately flattening. Existing protective orders and pending timed exits remain active. {activeProjectXAccountId !== null ? "Emergency flatten affects all account orders and positions." : null}</p>
       </section>
       </aside>
           <div className="order-2 min-w-0 xl:order-1">

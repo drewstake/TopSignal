@@ -849,9 +849,11 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
 
 
 def delete_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> None:
-    row = get_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
-    if row is None:
-        raise LookupError("bot_config_not_found")
+    row = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id, lock_for_update=True)
+    from .topbot_time_exit import pending_exits
+    if pending_exits(db).filter(BotOrderAttempt.bot_config_id == bot_config_id,
+                                BotOrderAttempt.user_id == user_id).first() is not None:
+        raise ValueError("A timed Practice exit is pending; verify the position flat before deleting this bot.")
 
     filters = {"user_id": user_id, "bot_config_id": bot_config_id}
     db.query(BotOrderAttempt).filter_by(**filters).update(
@@ -1008,9 +1010,11 @@ def start_bot_run(
     )
     resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     if not resolved_dry_run:
-        from .topbot_mathematical import selected, live_block_reason
+        from .topbot_mathematical import selected, require_live_worker
         if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
-            raise ValueError(live_block_reason())
+            require_live_worker()
+            if not continuous or not confirm_live_order_routing:
+                raise ValueError("Experimental Practice routing requires an explicitly confirmed continuous run.")
         shared_account_block = _shared_broker_account_block(
             db, user_id=user_id, account_id=int(config.account_id)
         )
@@ -1235,9 +1239,13 @@ def _evaluate_bot_config_impl(
         lock_for_update=True,
     )
     if not resolved_dry_run:
-        from .topbot_mathematical import selected, live_block_reason
+        from .topbot_mathematical import selected, require_live_worker
         if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
-            raise ValueError(live_block_reason())
+            require_live_worker()
+            if run is None or not isinstance(run.raw_state, dict) or not (
+                run.raw_state.get("continuous") is True and run.raw_state.get("live_routing_confirmed") is True
+            ):
+                raise ValueError("Experimental Practice routing requires an explicitly confirmed continuous run.")
     resolved_account = _require_owned_account(
         db,
         user_id=user_id,
@@ -1768,7 +1776,9 @@ def _evaluate_bot_config_impl(
             risk_events=risk_events, dry_run=resolved_dry_run, analysis=analysis,
             latest_candle=latest_candle, evaluated_at=datetime.now(timezone.utc), order_attempt=order_attempt,
         )
-        if resolved_dry_run and str(config.strategy_type) == "topbot_adaptive":
+        if str(config.strategy_type) == "topbot_adaptive" and (
+            resolved_dry_run or isinstance(signal.raw_payload.get("probabilistic_research"), dict)
+        ):
             from .probabilistic_shadow import explain_shadow
             recorded_forecast = signal.raw_payload.get("probabilistic_research")
             analysis["bot_decision"]["probabilistic_research"] = dict(recorded_forecast) if isinstance(recorded_forecast, dict) else explain_shadow(
@@ -10876,6 +10886,17 @@ def evaluate_risk_gates(
         )
         if shared_account_block is not None:
             additional_blocks.append(shared_account_block)
+    if not dry_run and target_position_qty != 0:
+        from .topbot_time_exit import pending_exits
+        pending = pending_exits(db).filter(BotOrderAttempt.account_id == int(config.account_id))
+        if ignore_order_attempt_id is not None:
+            pending = pending.filter(BotOrderAttempt.id != ignore_order_attempt_id)
+        if pending.first() is not None:
+            additional_blocks.append(RiskBlock(
+                code="mathematical_exit_pending",
+                message="The previous experimental Practice entry must be verified flat before another entry.",
+                severity="critical",
+            ))
     cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
 
     live_preflight_required = _requires_live_execution_preflight(
@@ -10927,6 +10948,14 @@ def evaluate_risk_gates(
                 )
             )
         if preflight is not None:
+            from .topbot_mathematical import selected
+            if (str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params)
+                    and abs(preflight.current_position_qty) > 1e-9):
+                additional_blocks.append(RiskBlock(
+                    code="mathematical_entry_requires_flat",
+                    message="Experimental Practice entries require a flat contract; existing positions are not adopted.",
+                    severity="critical",
+                ))
             account_state = preflight.account_state
             account_can_trade = preflight.account_can_trade
             account_automation_eligible = preflight.account_automation_eligible
@@ -12576,6 +12605,11 @@ def _create_order_attempt(
                 decision_payload=decision_payload,
             )
         )
+    from .topbot_mathematical import selected
+    if (execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive"
+            and selected(config.strategy_params)):
+        from .topbot_time_exit import exit_plan
+        request_payload["timeExit"] = exit_plan()
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),

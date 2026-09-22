@@ -128,7 +128,7 @@ function BotDecisionSummary({ evaluation }: { evaluation: BotEvaluation }) {
       {detail?.basis && <p className="mt-2 text-xs text-app-muted">{detail.basis}</p>}
       {detail?.limits && <p className="mt-2 text-xs text-app-muted">Configured limits: {detail.limits.max_contracts} contracts per order; {detail.limits.max_open_position} maximum open position; ${detail.limits.max_daily_loss} daily loss; {detail.limits.max_trades_per_day} trades per day. Candle delivery grace: {detail.limits.delivery_grace_seconds}s.</p>}
     </Details>
-    {mode === "dry_run" && detail?.probabilistic_research && <BotProbabilisticPanel research={detail.probabilistic_research} selectedStrategy={detail.strategy.revision === "mnq_bayesian_payoff_v1"} />}
+    {detail?.probabilistic_research && <BotProbabilisticPanel live={mode === "live"} research={detail.probabilistic_research} selectedStrategy={detail.strategy.revision === "mnq_bayesian_payoff_v1"} />}
   </section>;
 }
 

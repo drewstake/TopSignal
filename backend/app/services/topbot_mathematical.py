@@ -2,7 +2,8 @@
 
 The research model remains pure. This adapter turns supported proposals into
 ordinary signals, so the existing account, risk and idempotency gates apply.
-Live execution is not validated, including the required 15-minute time exit.
+Experimental Practice routing uses protective brackets and a durable timed exit.
+The probabilities remain unvalidated; this is not a validated trading model.
 """
 from datetime import datetime, timezone
 import math
@@ -18,7 +19,7 @@ RULES = {
     "exit_policy": "bracket_or_15_minute_horizon", "minimum_net_edge_usd": 1.,
     "minimum_training_paths": 300, "minimum_effective_days": 20,
     "session_start": "00:00", "session_end": "23:59",
-    "routing_policy": "dry_run_only", "level2_enabled": False,
+    "routing_policy": "experimental_practice", "level2_enabled": False,
 }
 
 
@@ -30,9 +31,14 @@ def normalize_params(_params=None):
     return dict(RULES)
 
 
-def live_block_reason():
-    return ("TopBot Mathematical is available for Dry Run. Live routing requires "
-            "completed probabilistic validation and verified bracket/time-exit execution.")
+def require_live_worker():
+    import os
+    from .bot_execution_safety import live_execution_environment_enabled
+    enabled = {"1", "true", "yes", "y", "on"}
+    if (not live_execution_environment_enabled()
+            or os.getenv("TOPSIGNAL_BOT_WORKER_ENABLED", "").lower() not in enabled
+            or os.getenv("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", "").lower() not in enabled):
+        raise ValueError("Experimental Practice routing requires the live worker for timed exits.")
 
 
 def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
@@ -40,14 +46,14 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
 
     now = as_of or datetime.now(timezone.utc)
     payload = {"strategy_type": "topbot_adaptive", "strategy_revision": REVISION,
-               "settings": dict(RULES), "live_routing_allowed": False,
+               "settings": dict(RULES), "live_routing_allowed": False, "validation_status": "unvalidated",
                "probabilistic_research": unavailable(as_of=now, reason="Model inputs have not passed validation.")}
     stamp = price = None
 
     def hold(reason):
         forecast = payload["probabilistic_research"]
         if forecast["forecasts"] is None:
-            forecast["reasons"] = [reason, "Selected mathematical strategy; live routing is unavailable."]
+            forecast["reasons"] = [reason, "Experimental mathematical strategy; unvalidated probabilities."]
         return SignalResult("HOLD", reason, stamp, price, payload)
 
     if not candles:
@@ -71,7 +77,7 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
         forecast = dict(forecast)
         forecast["reasons"] = [r for r in forecast["reasons"] if not r.startswith((
             "Research only.", "Unvalidated research model:"))]
-        forecast["reasons"].append("Selected mathematical strategy; experimental probabilities. Live routing is unavailable.")
+        forecast["reasons"].append("Experimental Practice strategy; probabilities remain unvalidated.")
         payload["probabilistic_research"] = forecast
         closed = [row for row in candles if not row.is_partial]
         if closed:
@@ -93,13 +99,13 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
                 or not math.isfinite(target) or target != math.ceil(stop * 1.5 / .25) * .25):
             return hold("NO TRADE: invalid mathematical-model price or risk bracket.")
         side = 1 if action == "BUY" else -1
-        payload.update(signal_category="entry", target_position_qty=float(side), order_size=1.,
+        payload.update(live_routing_allowed=True, signal_category="entry", target_position_qty=float(side), order_size=1.,
                        entry_price=price, stop_loss=price-side*stop, take_profit=price+side*target,
                        planned_risk_points=stop, planned_reward_points=target, risk=stop,
                        reward_r_multiple=target/stop, exit_policy=RULES["exit_policy"])
         reason = (f"{action}: Bayesian expected net ${choice['expected_net_usd']:.2f}; "
                   f"lower utility ${choice['lower_utility_usd']:.2f} exceeds $1 after costs and uncertainty. "
-                  "15-minute horizon; Dry Run decision, unvalidated probabilities.")
+                  "15-minute horizon; experimental decision, unvalidated probabilities.")
         return SignalResult(action, reason, stamp, price, payload)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return hold("NO TRADE: mathematical-model inputs failed integrity checks.")

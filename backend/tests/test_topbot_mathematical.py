@@ -37,7 +37,8 @@ def test_real_mathematical_forecast_is_the_signal_not_a_shadow(tmp_path, side):
     assert abs(result.raw_payload["stop_loss"] - result.price) == 4
     assert abs(result.raw_payload["take_profit"] - result.price) == 6
     assert result.raw_payload["target_position_qty"] == (1 if side == "BUY" else -1)
-    assert result.raw_payload["live_routing_allowed"] is False
+    assert result.raw_payload["live_routing_allowed"] is True
+    assert result.raw_payload["validation_status"] == "unvalidated"
     assert "ema" not in result.raw_payload and "session_vwap" not in result.raw_payload
 
 
@@ -111,14 +112,15 @@ def test_ordinary_backtest_cannot_replay_a_current_mathematical_artifact():
 
 
 @pytest.mark.parametrize("operation", ["prepare", "start", "evaluate"])
-def test_live_entry_points_reject_before_provider_or_run_changes(db_session, monkeypatch, operation):
+def test_live_entry_points_require_enabled_worker_before_provider_or_run_changes(db_session, monkeypatch, operation):
+    monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ENABLED", "false")
     account, config = _add_account_and_config(db_session, execution_mode="live", enabled=False)
     config.strategy_type = "topbot_adaptive"
     config.strategy_params = dict(strategy.RULES)
     db_session.commit()
     client = RecordingClient()
     monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", lambda *a, **k: pytest.fail("no provider fetch"))
-    with pytest.raises(ValueError, match="available for Dry Run"):
+    with pytest.raises(ValueError, match="requires the live worker"):
         if operation == "prepare":
             prepare_topbot(db_session, user_id=USER_A, account_id=config.account_id, dry_run=False, contract_id=CONTRACT)
         elif operation == "start":

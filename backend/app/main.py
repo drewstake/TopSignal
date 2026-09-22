@@ -2922,6 +2922,9 @@ def delete_trading_bot(
     except LookupError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception:
         db.rollback()
         raise
@@ -3221,8 +3224,8 @@ def start_account_topbot(
         if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
             raise HTTPException(status_code=409, detail="csv_import_accounts_cannot_run_bots")
         if not payload.dry_run:
-            from .services.topbot_mathematical import live_block_reason
-            raise ValueError(live_block_reason())
+            from .services.topbot_mathematical import require_live_worker
+            require_live_worker()
         client = _projectx_client_for_user(db, user_id=user_id)
         # Release the read transaction before resolving the active delivery.
         db.commit()

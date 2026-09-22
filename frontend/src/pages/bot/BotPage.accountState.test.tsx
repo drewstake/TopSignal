@@ -407,7 +407,7 @@ describe("BotPage account-scoped run controls", () => {
     expect(screen.queryByText("Live Run active")).toBeNull();
     expect(screen.getByText(/Run heartbeat:/)).not.toBeNull();
     expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows the authoritative newly started run while activity refreshes fail", async () => {
@@ -467,7 +467,7 @@ describe("BotPage account-scoped run controls", () => {
     expect(screen.getByLabelText("Bot run status").textContent).not.toContain("Earlier sell");
   });
 
-  it("keeps the mathematical preset out of Live Run even with healthy runtime gates", async () => {
+  it("requires confirmation before starting experimental Practice routing", async () => {
     const user = userEvent.setup();
     vi.spyOn(botsApi, "listConfigsWithCacheScope").mockResolvedValue({
       configs: { items: [botA], total: 1 },
@@ -479,16 +479,16 @@ describe("BotPage account-scoped run controls", () => {
 
     renderBotPage();
     const armButton = await screen.findByRole("button", { name: "Live Run" });
-    await waitFor(() => expect(screen.getByText(/Live routing awaits model validation/)).toBeTruthy());
-    expect((armButton as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(false));
+    expect((armButton as HTMLButtonElement).disabled).toBe(false);
     await user.click(armButton);
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("model probabilities are unvalidated"));
     expect(start).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
     await user.click(armButton);
-    expect(start).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(accountA.id, false);
   });
 
   it("blocks continuous arming when the worker lease is not healthy and shows the exact reason", async () => {
@@ -548,8 +548,7 @@ describe("BotPage account-scoped run controls", () => {
     renderBotPage();
     const armButton = await screen.findByRole("button", { name: "Live Run" });
     if (fresh) {
-      await screen.findByText(/Live routing awaits model validation/);
-      expect((armButton as HTMLButtonElement).disabled).toBe(true);
+      await waitFor(() => expect((armButton as HTMLButtonElement).disabled).toBe(false));
     } else {
       await screen.findByText(/Could not get a fresh account classification/);
       expect((armButton as HTMLButtonElement).disabled).toBe(true);
@@ -581,8 +580,7 @@ describe("BotPage account-scoped run controls", () => {
 
     await waitFor(() => expect(verify).toHaveBeenCalledWith(accountA.id));
     expect(await screen.findByText(`Account ${accountA.id} classification verified`)).not.toBeNull();
-    await screen.findByText(/Live routing awaits model validation/);
-    expect((armButton as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((armButton as HTMLButtonElement).disabled).toBe(false));
   });
 
   it("blocks continuous arming while provider health or submissions are unresolved", async () => {
@@ -627,7 +625,7 @@ describe("BotPage account-scoped run controls", () => {
     };
     vi.mocked(botsApi.getRuntimeStatus).mockResolvedValue(status);
     renderBotPage();
-    await waitFor(() => expect(screen.getByText(/Live routing awaits model validation/)).toBeTruthy());
+    await waitFor(() => expect((screen.getByRole("button", { name: "Live Run" }) as HTMLButtonElement).disabled).toBe(false));
     expect((screen.getByRole("button", { name: "Dry Run" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByText(/ProjectX provider health is unknown/)).toBeNull();
   });

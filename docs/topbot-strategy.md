@@ -1,6 +1,6 @@
 # TopBot
 
-**Selected mathematical strategy (September 22, 2026):** New TopBot Dry Run
+**Selected mathematical strategy (September 22, 2026):** New TopBot Dry Run and experimental Practice Live Run
 starts use the candle-based Bayesian expected-payoff model, revision
 `mnq_bayesian_payoff_v1`. Its supported proposal supplies the strategy decision;
 missing models or insufficient evidence produce NO TRADE. Level 2 remains
@@ -10,7 +10,7 @@ live validation or switch an existing account run in place.
 
 **All-session update (September 22, 2026):** Enabled TopBot now evaluates setups
 at any time, including overnight, premarket, after hours and Sunday reopening.
-Both the EMA/VWAP strategy and the mathematical Dry Run adapter ignore saved
+Both the EMA/VWAP strategy and the mathematical adapter ignore saved
 entry/routing windows. Exchange closures, data integrity, warmup and existing
 risk controls still apply. The EMA/VWAP revision is
 `mnq_ema_vwap_pullback_v6_all_sessions`: VWAP resets at 09:30 and 18:00 New York
@@ -18,7 +18,8 @@ time, with at least two contiguous candles since the latest reset. This keeps
 the regular-session anchor and fits overnight history within the existing
 200-bar lookback. Replay uses the same unrestricted entry hours. Mathematical
 forecasting accepts all-session observations; its existing evidence requirements
-and Dry Run restriction remain. Offline probability research retains its original
+remain unchanged. Live Run is limited to verified simulated Practice accounts
+and uses protective brackets plus a durable timed exit. Offline probability research retains its original
 session protocol; earlier results do not validate the expanded entry hours.
 
 The v5 rules and performance comparisons below are historical.

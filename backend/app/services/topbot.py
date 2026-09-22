@@ -18,7 +18,7 @@ from .bot_service import (
     update_bot_config,
 )
 from .projectx_client import ProjectXClient
-from .topbot_mathematical import HISTORY_BARS, normalize_params, live_block_reason
+from .topbot_mathematical import HISTORY_BARS, normalize_params, require_live_worker
 
 
 TOPBOT_SETTINGS = {
@@ -72,7 +72,7 @@ def prepare_topbot(
     if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id):
         raise ValueError("TopBot requires an MNQ contract.")
     if not dry_run:
-        raise ValueError(live_block_reason())
+        require_live_worker()
     configs = (
         db.query(BotConfig)
         .filter(BotConfig.user_id == user_id, BotConfig.account_id == account_id)

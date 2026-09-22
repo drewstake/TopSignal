@@ -44,4 +44,11 @@ describe("probabilistic Dry Run explanation", () => {
     expect(screen.getByText(/This forecast supplies the strategy decision above/)).toBeTruthy();
     expect(screen.queryByText(/Dry Run shadow/)).toBeNull();
   });
+  it("labels live Practice forecasts experimental without claiming validation", () => {
+    render(<BotProbabilisticPanel research={{ ...missing, probability_basis: "uncalibrated_model_estimate",
+      forecasts: { BUY: estimate, SELL: estimate }, research_action: "BUY" }} selectedStrategy live />);
+    expect(screen.getByText("Selected mathematical strategy · Experimental Practice")).toBeTruthy();
+    expect(screen.getByText(/Experimental Practice routing; probabilities remain unvalidated/)).toBeTruthy();
+    expect(screen.queryByText(/Live routing remains disabled/)).toBeNull();
+  });
 });

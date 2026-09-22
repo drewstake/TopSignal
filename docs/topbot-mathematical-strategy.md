@@ -1,7 +1,7 @@
 # TopBot Mathematical — selected candle model
 
 The September 22 strategy change selects `bayesian_cells_v1`, revision
-`mnq_bayesian_payoff_v1`, for **new TopBot Dry Run starts**. Its forecast now
+`mnq_bayesian_payoff_v1`, for **new TopBot Dry Run and experimental Practice Live Run starts**. Its forecast now
 supplies the actual BUY / SELL / HOLD signal passed to the existing router.
 The API uses HOLD for the model's NO TRADE choice. This is a strategy-selection
 change, not evidence of profitability or completed live validation.
@@ -22,14 +22,15 @@ is still needed. Mathematical-model forecasts remain explicitly uncalibrated.
 
 ## Using the selection
 
-After loading the updated backend and frontend, start **Dry Run** from the Bot
-page on the desired account. The normal start flow applies the mathematical
+After loading the updated backend and frontend, select **Dry Run** or
+**Live Run** on a freshly verified simulated Practice account. Live Run requires
+the operator confirmation and all server worker, lease and live-routing checks. The normal start flow applies the mathematical
 preset to that account's stopped TopBot config. Existing runs are not switched
 in place by this change. Stop an existing run through the normal controls before
 starting a new one. This implementation task did not start or stop any account run.
 
 The card identifies **TopBot Mathematical**. Its decision panel says
-**Selected mathematical strategy · Dry Run**, and shows the exact forecast
+**Selected mathematical strategy · Dry Run** or **Experimental Practice**, and shows the exact forecast
 recorded for that decision. It does not read a second possibly changed artifact
 to explain the first decision. EMA entry overlays are hidden for this revision;
 VWAP is descriptive context. Level 2 remains separate research context and does
@@ -64,27 +65,50 @@ probabilistic research runner.
 
 ## Execution boundary
 
-The mathematical model is now the Dry Run decision source. Existing account,
+The mathematical model supplies Dry Run and experimental Practice decisions. Existing account,
 duplicate-order, position, loss-limit and cooldown checks still decide whether a
 proposal becomes a recorded Dry Run attempt. One-contract sizing, the $250 daily
 loss limit and 300-second cooldown are retained. A Dry Run attempt is not a
 simulated or actual fill.
 
-New mathematical Live Run starts and direct live evaluations are rejected before
-provider access. Production validation and actual bracket/15-minute exit execution
-are incomplete; emitting a bracket alone would not implement the model's time-exit
-assumption. Completing those requirements is separate from selecting the model.
-No order, broker configuration, live gate or risk increase was performed here.
+Experimental Practice Live Run is now supported. It does not assert statistical
+validation or permit automated routing on non-simulated/funded accounts. A
+confirmed continuous run and enabled live worker are required. Missing models
+and insufficient evidence still produce HOLD; no synthetic model is installed.
+
+Each entry includes provider stop/target brackets and a durable `timeExit` in its
+order audit, written before submission. The deadline is 15 minutes after entry
+preparation, conservatively before the fill. At the first available worker poll
+at/after that deadline, the worker cancels orders for that contract, verifies
+cancellation, closes any remaining position, and verifies flatness. This uses
+fresh Practice classification and the existing account/worker mutation fences.
+It does not wait for a new candle or reread the model. New automated entries on
+the account are blocked until that obligation is complete. Other contracts are
+not closed. Existing positions cannot be adopted by a new mathematical entry.
+
+Keep the backend running and use a dedicated Practice account without concurrent
+manual MNQ trading. Broker/network outages can delay exits; the 15-minute exit is
+application-managed, not a broker-hosted timer. Unknown entry submissions require
+reconciliation before closing. A mismatched position, failed cancellation,
+classification failure or lost lease leaves the exit pending and blocks new
+entries. Failed exits are recorded as critical risk events and retried with
+bounded backoff. Use the existing emergency controls or ProjectX to resolve an
+unconfirmed position.
+
+Stopping a run or restarting disarms new entries but does not discard its pending
+exit. After restart, the enabled worker resumes outstanding exits without
+re-arming entries. Bot deletion is blocked while an exit is pending. The original
+entry response and a separate bounded exit audit are retained. No model arrays,
+new historical caches or database migrations are introduced by this feature.
 
 ## Verification
 
 Tests exercise actual Bayesian BUY/SELL forecasts through the new adapter,
 missing/stale/invalid observations, receipt-time causality, owner and contract
-isolation, immutable model limits, legacy-versus-mathematical dispatch, direct
-live-entry rejection and a Dry Run router/API result using the original forecast.
+isolation, immutable model limits, legacy-versus-mathematical dispatch, live-worker/confirmation enforcement and a Dry Run router/API result using the original forecast.
 UI tests distinguish selected-model decisions from the old shadow display.
 
-Recorded verification for the combined workspace: **2,101 backend tests passed,
+Historical verification recorded before experimental Practice routing: **2,101 backend tests passed,
 nine skipped**, including the target-fill research compatibility revision;
 **963 frontend tests and 39 launcher tests passed**; TypeScript/Vite production
 build, full frontend lint and dependency audits passed. The skips require a disposable PostgreSQL database

@@ -42,7 +42,7 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.strategy_params["revision"] == "mnq_bayesian_payoff_v1"
     assert config.strategy_params["model_version"] == "bayesian_cells_v1"
     assert config.strategy_params["exit_policy"] == "bracket_or_15_minute_horizon"
-    assert config.strategy_params["routing_policy"] == "dry_run_only"
+    assert config.strategy_params["routing_policy"] == "experimental_practice"
     assert "ema_period" not in config.strategy_params
     assert "source_strategies" not in config.strategy_params
     assert _is_contract_allowed(config, contract_id="CON.F.US.MNQ.U26", symbol="F.US.MNQ")
@@ -130,7 +130,8 @@ def test_unavailable_worker_does_not_prepare_a_config(monkeypatch):
     assert error.value.status_code == 503
 
 
-def test_live_preset_route_does_not_open_provider_or_prepare_config(monkeypatch):
+def test_live_preset_route_requires_worker_before_provider_or_prepare_config(monkeypatch):
+    monkeypatch.setenv("TOPSIGNAL_BOT_WORKER_ENABLED", "false")
     monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER)
     monkeypatch.setattr(main, "_validate_bot_start_admission", lambda *a: None)
     monkeypatch.setattr(main, "_require_owned_projectx_account", lambda *a, **k: type("Account", (), {"trade_data_source": "projectx"})())
@@ -140,7 +141,7 @@ def test_live_preset_route_does_not_open_provider_or_prepare_config(monkeypatch)
         main.start_account_topbot(101, TopBotStartIn(dry_run=False, confirm_live_order_routing=True),
                                  db=type("Db", (), {"rollback": lambda self: None})())
     assert error.value.status_code == 409
-    assert "available for Dry Run" in error.value.detail
+    assert "requires the live worker" in error.value.detail
 
 
 def test_contract_resolution_ignores_other_instruments_and_expired_deliveries():
