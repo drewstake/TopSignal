@@ -1761,6 +1761,12 @@ def _evaluate_bot_config_impl(
             risk_events=risk_events, dry_run=resolved_dry_run, analysis=analysis,
             latest_candle=latest_candle, evaluated_at=datetime.now(timezone.utc), order_attempt=order_attempt,
         )
+        if resolved_dry_run and str(config.strategy_type) == "topbot_adaptive":
+            from .probabilistic_shadow import explain_shadow
+            analysis["bot_decision"]["probabilistic_research"] = explain_shadow(
+                candles=candles, owner=user_id, contract_id=str(config.contract_id),
+                as_of=datetime.now(timezone.utc),
+            )
     except Exception:
         analysis.setdefault("bot_decision", {
             "status": evaluation_status, "action": str(decision.action), "execution_mode": execution_mode,

@@ -262,11 +262,11 @@ it("preserves the visible dates from 15m to 1H and waits for history before sett
   expect(viewport.setVisibleRange).toHaveBeenCalledTimes(1);
 });
 
-function gapFixture(unit: "hour" | "day", unitNumber: number) {
+function gapFixture(unit: "hour" | "day", unitNumber: number, spacing = 6) {
   const step = (unit === "day" ? 24 : unitNumber) * 3_600_000;
   const start = Date.parse("2026-08-03T00:00:00Z");
   const full: ProjectXMarketCandle[] = [];
-  for (let index = 0; full.length < 24; index += 1) {
+  for (let index = 0; full.length < spacing * 4; index += 1) {
     const time = start + index * step;
     const weekday = new Date(time).getUTCDay();
     if (unit === "day" ? weekday === 0 || weekday === 6 : !isFuturesSessionOpen(time, "MNQ")) continue;
@@ -274,14 +274,14 @@ function gapFixture(unit: "hour" | "day", unitNumber: number) {
       timestamp: new Date(time).toISOString(), open: 20000, high: 20001, low: 19999, close: 20000,
       volume: 100, is_partial: false, fetched_at: null });
   }
-  const sparse = full.filter((_, index) => ![2, 8, 14, 20].includes(index));
+  const sparse = full.filter((_, index) => ![2, 2 + spacing, 2 + spacing * 2, 2 + spacing * 3].includes(index));
   return { full, sparse };
 }
 
-it.each([{ unit: "hour" as const, unitNumber: 4 }, { unit: "day" as const, unitNumber: 1 }])(
+it.each([{ unit: "hour" as const, unitNumber: 4 }, { unit: "hour" as const, unitNumber: 1 }])(
   "automatically repairs every $unit/$unitNumber gap in paced batches without Backfill", async ({ unit, unitNumber }) => {
     vi.setSystemTime(new Date("2026-09-08T14:01:00Z"));
-    const { full, sparse } = gapFixture(unit, unitNumber);
+    const { full, sparse } = gapFixture(unit, unitNumber, 30);
     expect(findCandleGaps(sparse, unit, unitNumber).filter(gap => gap.kind === "data")).toHaveLength(4);
     const repairs: number[] = [];
     vi.mocked(api.botsApi.getCandles).mockImplementation(async query => {
@@ -301,10 +301,11 @@ it.each([{ unit: "hour" as const, unitNumber: 4 }, { unit: "day" as const, unitN
     expect(repairs.length).toBeGreaterThan(0);
     expect(repairs.length).toBeLessThanOrEqual(3);
     expect(screen.queryByRole("button", { name: "Backfill" })).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
     expect(repairs).toHaveLength(4);
-    expect(repairs[3] - repairs[2]).toBeGreaterThanOrEqual(15_000);
+    expect(repairs[3] - repairs[2]).toBeGreaterThanOrEqual(5_000);
+    expect(repairs[3] - repairs[2]).toBeLessThan(6_000);
     const snapshot = onMarketData.mock.calls.at(-1)![0];
     expect(findCandleGaps(snapshot.candles, unit, unitNumber).filter(gap => gap.kind === "data")).toEqual([]);
   },
@@ -341,8 +342,8 @@ it("reports provider-empty gaps and does not repeatedly request them", async () 
   await act(async () => { await vi.advanceTimersByTimeAsync(100); });
   await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-  expect(repairs).toHaveBeenCalledTimes(4);
+  expect(repairs).toHaveBeenCalledTimes(1);
   expect(screen.getByText("4 gaps unavailable")).not.toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-  expect(repairs).toHaveBeenCalledTimes(4);
+  expect(repairs).toHaveBeenCalledTimes(1);
 });

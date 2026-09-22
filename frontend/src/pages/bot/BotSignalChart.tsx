@@ -129,8 +129,8 @@ import {
   type ChartViewportMutation,
   type RequestPriority,
 } from "./botChartLifecycle";
-import { readBotChartThemeColors } from "./botChartTheme";
-import { buildVolumeData } from "./botChartVolume";
+import { BOT_CHART_BUY_COLOR, BOT_CHART_SELL_COLOR, readBotChartThemeColors } from "./botChartTheme";
+import { buildVolumeData, UP_VOLUME_COLOR, DOWN_VOLUME_COLOR } from "./botChartVolume";
 import { buildBotChartVwap, resolveBotChartIndicators } from "./botChartIndicators";
 import { usePageVisibility } from "./usePageVisibility";
 import { resolveBotChartViewState } from "./botChartViewState";
@@ -159,7 +159,8 @@ const STALE_DATA_AFTER_MS = 2 * POLL_INTERVAL_MS + 15_000;
 const MAX_LOADED_BARS = 10_000;
 const HISTORY_AUTOLOAD_EDGE_BARS = 12;
 const MAX_GAP_REPAIR_WINDOWS = 3;
-const GAP_REPAIR_INTERVAL_MS = 15_000;
+const GAP_REPAIR_INTERVAL_MS = 5_000;
+const GAP_REPAIR_ERROR_INTERVAL_MS = 15_000;
 const LIVE_PRICE_POLL_INTERVAL_MS = 3_000;
 const LIVE_PRICE_STREAM_THROTTLE_MS = 250;
 const LIVE_PRICE_STREAM_STALE_MS = 5_000;
@@ -377,6 +378,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
   const hasMoreHistoryRef = useRef(true);
   const marketSnapshotTimeoutRef = useRef<number | null>(null);
   const [candles, setCandles] = useState<ProjectXMarketCandle[]>([]);
+  const [chartThemeColors, setChartThemeColors] = useState(readBotChartThemeColors);
   const [liveCandle, setLiveCandle] = useState<ProjectXMarketCandle | null>(null);
   const [streamPrice, setStreamPrice] = useState<ProjectXMarketPrice | null>(null);
   const [streamActive, setStreamActive] = useState(false);
@@ -1493,7 +1495,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       return;
     }
 
-    const windows = buildGapRepairWindows(gaps, config.timeframe_unit, config.timeframe_unit_number, MAX_GAP_REPAIR_WINDOWS);
+    const windows = buildGapRepairWindows(
+      gaps, config.timeframe_unit, config.timeframe_unit_number, MAX_GAP_REPAIR_WINDOWS,
+      { maxBridgeBars: 12, maxWindowBars: 500 },
+    );
     if (windows.length === 0) {
       return;
     }
@@ -1574,7 +1579,8 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       requestTimeoutIdsRef.current.delete(timeoutId);
       if (repairRequestsRef.current.finish(request)) {
         nextAutomaticRepairAtRef.current = Date.now() + Math.min(
-          GAP_REPAIR_INTERVAL_MS * 2 ** Math.min(automaticRepairFailuresRef.current, 4),
+          automaticRepairFailuresRef.current === 0 ? GAP_REPAIR_INTERVAL_MS
+            : GAP_REPAIR_ERROR_INTERVAL_MS * 2 ** Math.min(automaticRepairFailuresRef.current, 4),
           240_000,
         );
         setGapRepairing(false);
@@ -1743,6 +1749,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     chartHandlesRef.current = { chart, candleSeries, volumeSeries, fastSeries, slowSeries, vwapSeries, markers };
     const handleThemeChange = () => {
       const nextTheme = readBotChartThemeColors();
+      setChartThemeColors(nextTheme);
       chart.applyOptions({
         layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: nextTheme.label },
         grid: { vertLines: { color: nextTheme.grid }, horzLines: { color: nextTheme.grid } },
@@ -3354,41 +3361,41 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
             <>
               <LegendDot
                 active={visibleChartLayers.fastSma}
-                className="bg-cyan-400"
+                color={chartThemeColors.accent}
                 label={indicators.fastLabel}
                 onClick={() => toggleChartLayer("fastSma")}
               />
               <LegendDot
                 active={visibleChartLayers.slowSma}
-                className="bg-yellow-300"
+                color={chartThemeColors.warning}
                 label={indicators.slowLabel}
                 onClick={() => toggleChartLayer("slowSma")}
               />
             </>
           ) : null}
-          <LegendDot active={visibleChartLayers.vwap} className="bg-pink-400" label={indicators.vwapLabel} onClick={() => toggleChartLayer("vwap")} />
-          <LegendDot active={visibleChartLayers.volume} className="bg-app-muted" label="Volume" onClick={() => toggleChartLayer("volume")} />
+          <LegendDot active={visibleChartLayers.vwap} color={chartThemeColors.secondary} label={indicators.vwapLabel} onClick={() => toggleChartLayer("vwap")} />
+          <LegendDot active={visibleChartLayers.volume} color={UP_VOLUME_COLOR} secondaryColor={DOWN_VOLUME_COLOR} label="Volume" onClick={() => toggleChartLayer("volume")} />
           <LegendDot
             active={visibleChartLayers.buySignals}
-            className="bg-emerald-500"
+            color={BOT_CHART_BUY_COLOR}
             label="Buy"
             onClick={() => toggleChartLayer("buySignals")}
           />
           <LegendDot
             active={visibleChartLayers.sellSignals}
-            className="bg-rose-500"
+            color={BOT_CHART_SELL_COLOR}
             label="Sell"
             onClick={() => toggleChartLayer("sellSignals")}
           />
           <LegendLine
             active={visibleChartLayers.buyLiquidity}
-            className="border-emerald-500"
+            color={BOT_CHART_BUY_COLOR}
             label="Buy-side liquidity"
             onClick={() => toggleChartLayer("buyLiquidity")}
           />
           <LegendLine
             active={visibleChartLayers.sellLiquidity}
-            className="border-rose-500"
+            color={BOT_CHART_SELL_COLOR}
             label="Sell-side liquidity"
             onClick={() => toggleChartLayer("sellLiquidity")}
           />
@@ -3694,7 +3701,7 @@ function formatTimeframeLabel(unit: BotTimeframeUnit, unitNumber: number): strin
 
 function liquidityLevelToPriceLineOptions(level: LiquidityLevel) {
   const isBuySide = level.side === "buy";
-  const color = isBuySide ? "rgb(34,197,94)" : "rgb(244,63,94)";
+  const color = isBuySide ? BOT_CHART_BUY_COLOR : BOT_CHART_SELL_COLOR;
   const axisLabelColor = isBuySide ? "rgb(22,163,74)" : "rgb(225,29,72)";
 
   return {

@@ -1,3 +1,6 @@
+export const BOT_CHART_BUY_COLOR = "rgb(34,197,94)";
+export const BOT_CHART_SELL_COLOR = "rgb(244,63,94)";
+
 export interface BotChartThemeColors {
   accent: string;
   secondary: string;

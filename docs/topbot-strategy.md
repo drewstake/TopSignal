@@ -1,5 +1,11 @@
 # TopBot Adaptive v5
 
+**Probabilistic research (September 21, 2026):** Two candle-based candidates and
+a pooled probability baseline now have a versioned offline research interface
+and a read-only Dry Run explanation. Only ten complete local sessions were
+available; neither candidate passes the preregistered evidence requirements.
+V5 remains the default. See the [research results and limitations](topbot-probabilistic-results-2026-09-21.md).
+
 **Fee correction:** TopstepX MNQ defaults are now $0.61 per side ($1.22 round
 trip). The corrected app replay returns -$5,357.50 net, with +$2,186.78 on longs
 and -$7,544.28 on shorts. The comparisons below retain their original, overstated

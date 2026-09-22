@@ -1101,6 +1101,45 @@ export interface BotScoreDefinition {
   interpretation: string;
 }
 
+export interface BotResearchAction {
+  probability_net_positive: number;
+  probability_net_nonpositive: number;
+  probability_stop: number;
+  probability_time_exit: number;
+  probability_target: number;
+  expected_net_usd: number;
+  standard_error_usd: number;
+  uncertainty_penalty_usd: number;
+  lower_utility_usd: number;
+  effective_days: number;
+}
+
+export interface BotProbabilisticResearch {
+  interface_version: string;
+  model_version: string;
+  validation_status: "unvalidated";
+  action: "NO_TRADE";
+  research_action: "BUY" | "SELL" | "NO_TRADE";
+  routing_allowed: false;
+  probability_basis: "unavailable" | "uncalibrated_model_estimate";
+  horizon_minutes: number;
+  evaluated_at: string;
+  candle_close_timestamp: string | null;
+  age_seconds: number | null;
+  data_status: "missing" | "fresh" | "stale" | "invalid";
+  model_trained_through: string | null;
+  stop_points: number | null;
+  target_points: number | null;
+  quantity: number;
+  costs: { fees_usd: number; spread_usd: number; slippage_usd: number; latency_usd: number; rounding_usd: number; total_usd: number; basis: string };
+  forecasts: Record<"BUY" | "SELL", BotResearchAction> | null;
+  no_trade_expected_net_usd: number;
+  minimum_net_edge_usd: number;
+  training_paths: number;
+  uncertainty_method: string;
+  reasons: string[];
+}
+
 export interface BotDecisionExplanation {
   status: string;
   action: BotAction;
@@ -1114,6 +1153,7 @@ export interface BotDecisionExplanation {
   checks: { id: string; label: string; status: "passed" | "failed" | "not_evaluated"; detail: string }[];
   evaluated_at?: string | null;
   basis: string;
+  probabilistic_research?: BotProbabilisticResearch | null;
   limits: { max_contracts: number; max_open_position: number; max_daily_loss: number; max_trades_per_day: number; delivery_grace_seconds: number };
 }
 

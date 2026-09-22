@@ -1,0 +1,1865 @@
+{
+  "blockers": [
+    "Need 200 complete sessions; found 10.",
+    "Final untouched holdout has not been evaluated.",
+    "Forward Dry Run and execution parity are not verified.",
+    "No routing adapter or default-promotion mechanism exists in this research revision."
+  ],
+  "data_audit": {
+    "eligible_complete_sessions": [
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-08"
+    ],
+    "first": "2026-08-24T15:35:00+00:00",
+    "gap_intervals_including_closures": 12,
+    "incomplete_regular_sessions": 2,
+    "invalid_or_partial_rows": 1,
+    "last": "2026-09-09T04:10:00+00:00",
+    "note": "Full 09:30\u201315:45 ET coverage; early-close days excluded. Feature warmup is checked separately.",
+    "observed_regular_session_dates": 12,
+    "required_session_bars": 75,
+    "rows": 3128
+  },
+  "diagnostic_partition": {
+    "calibration": [
+      "2026-09-02",
+      "2026-09-03"
+    ],
+    "training": [
+      "2026-08-25",
+      "2026-08-26",
+      "2026-08-27",
+      "2026-08-28",
+      "2026-08-31",
+      "2026-09-01"
+    ],
+    "validation": [
+      "2026-09-04",
+      "2026-09-08"
+    ]
+  },
+  "folds": [
+    {
+      "calibration_paths": 38,
+      "incumbent": {
+        "cost_basis": "$0.61/side and two adverse ticks, using native production replay fill semantics.",
+        "daily_net_usd": {
+          "2026-09-04": 93.34,
+          "2026-09-08": -4.439999999999998
+        },
+        "limitation": "Entries use the same complete-session dates as the candidates. Native v5 bracket-only holding periods, end-of-window liquidation and fill rules differ. Incomplete history prevents promotion.",
+        "metrics": {
+          "average_loss": -102.22,
+          "average_mae": 51.0,
+          "average_mfe": 76.7,
+          "average_win": 97.78,
+          "expectancy": 17.78,
+          "exposure_percent": 4.7435897436,
+          "gross_pnl": 95.0,
+          "long": {
+            "average_loss": -102.22,
+            "average_win": 97.78,
+            "expectancy": -35.5533333333,
+            "gross_pnl": -103.0,
+            "losing_trades": 2,
+            "net_pnl": -106.66,
+            "payoff_ratio": 0.9565642731,
+            "profit_factor": 0.4782821366,
+            "trade_count": 3,
+            "win_rate": 33.3333333333,
+            "winning_trades": 1
+          },
+          "losing_trades": 2,
+          "max_consecutive_losses": 1,
+          "max_consecutive_wins": 3,
+          "max_drawdown_dollars": 164.72,
+          "max_drawdown_percent": 0.3290425824,
+          "net_pnl": 88.9,
+          "payoff_ratio": 0.9565642731,
+          "profit_factor": 1.4348464097,
+          "short": {
+            "average_loss": 0.0,
+            "average_win": 97.78,
+            "expectancy": 97.78,
+            "gross_pnl": 198.0,
+            "losing_trades": 0,
+            "net_pnl": 195.56,
+            "payoff_ratio": null,
+            "profit_factor": null,
+            "trade_count": 2,
+            "win_rate": 100.0,
+            "winning_trades": 2
+          },
+          "total_commission": 6.1,
+          "trade_count": 5,
+          "win_rate": 60.0,
+          "winning_trades": 3
+        },
+        "notes": [
+          "Warmup ready: 200 of 200 required closed bars were available at the first replay evaluation."
+        ],
+        "probability_scores": null,
+        "revision": "mnq_ema_vwap_pullback_v5_bracket_exits",
+        "trade_count": 5
+      },
+      "models": {
+        "bayesian_cells_v1": {
+          "acceptance_checks": {
+            "brier_vs_pool": true,
+            "calibration": false,
+            "cost_latency_parameter_stress": false,
+            "crps_usd_vs_pool": true,
+            "day_concentration": false,
+            "drawdown_closed_equity": true,
+            "fill_exit_parity": false,
+            "forward_dry_run": false,
+            "intratrade_drawdown_verified": false,
+            "missing_volume_abstention": true,
+            "paired_incumbent_advantage": false,
+            "positive_expectancy_bounds": false,
+            "regime_support": false,
+            "tail_loss": false,
+            "trade_count": false,
+            "untouched_holdout": false,
+            "without_best_days": false,
+            "without_best_trades": false
+          },
+          "calibration_attempts": [
+            {
+              "crps_usd": 18.45031291956681,
+              "pool_mix": 0.0
+            },
+            {
+              "crps_usd": 18.638228655195856,
+              "pool_mix": 0.5
+            },
+            {
+              "crps_usd": 18.88695237311868,
+              "pool_mix": 1.0
+            }
+          ],
+          "paired_incumbent_lower_usd_per_day": {
+            "10": null,
+            "5": null
+          },
+          "performance": {
+            "best_day_share_positive_pnl": null,
+            "closed_equity_max_drawdown_usd": 0.0,
+            "confidence_familywise_alpha": 0.05,
+            "expectancy_ci_lower_usd": {
+              "10": null,
+              "5": null
+            },
+            "expectancy_usd": null,
+            "expected_shortfall_95_usd": null,
+            "exposure_fraction": 0.0,
+            "exposure_minutes": 0,
+            "limitations": [
+              "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+              "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+            ],
+            "multiplicity_configurations": 6,
+            "net_usd": 0.0,
+            "net_without_best_five_days_usd": null,
+            "net_without_best_five_trades_usd": null,
+            "regimes": {
+              "early_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "high_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "late_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "low_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              }
+            },
+            "trades": 0,
+            "turnover_contract_sides": 0,
+            "win_rate": null,
+            "worst_trade_usd": null
+          },
+          "pool_mix": 0.0,
+          "scores": {
+            "brier": 0.23606480933162008,
+            "crps_usd": 20.664336189112028,
+            "day_block_confidence_intervals": {
+              "brier": {
+                "10": null,
+                "5": null
+              },
+              "crps_usd": {
+                "10": null,
+                "5": null
+              }
+            },
+            "interpretation": "Unvalidated forecasts, scored on later sessions. Fitting a mixture does not establish calibration.",
+            "log_loss": 0.6646611601436216,
+            "max_calibration_error": null,
+            "predictions": 72,
+            "reliability": [
+              {
+                "absolute_error": 0.11739610963748898,
+                "lower": 0.3,
+                "n": 20,
+                "observed": 0.25,
+                "predicted": 0.367396109637489,
+                "upper": 0.4
+              },
+              {
+                "absolute_error": 0.15898541114058362,
+                "lower": 0.4,
+                "n": 16,
+                "observed": 0.5625,
+                "predicted": 0.4035145888594164,
+                "upper": 0.5
+              },
+              {
+                "absolute_error": 0.1589854111405835,
+                "lower": 0.5,
+                "n": 16,
+                "observed": 0.4375,
+                "predicted": 0.5964854111405835,
+                "upper": 0.6
+              },
+              {
+                "absolute_error": 0.06739610963748899,
+                "lower": 0.6,
+                "n": 20,
+                "observed": 0.7,
+                "predicted": 0.632603890362511,
+                "upper": 0.7
+              }
+            ]
+          },
+          "stress": {
+            "delay_one_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 35,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Horizon exceeds the session exit deadline.": 6,
+                "Missing or invalid future path; outcome is unknown.": 4,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2075,
+                "Volatility requires a stop above the 25-point research risk cap.": 587
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "missing_every_20th_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 2948
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_0_75": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 78,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 377
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_1_25": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 17,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 700
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "unknown_volume": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 3105
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            }
+          },
+          "training_cutoff": "2026-09-01T14:00:00+00:00"
+        },
+        "empirical_pool_v1": {
+          "acceptance_checks": {
+            "brier_vs_pool": true,
+            "calibration": false,
+            "cost_latency_parameter_stress": false,
+            "crps_usd_vs_pool": true,
+            "day_concentration": false,
+            "drawdown_closed_equity": true,
+            "fill_exit_parity": false,
+            "forward_dry_run": false,
+            "intratrade_drawdown_verified": false,
+            "missing_volume_abstention": true,
+            "paired_incumbent_advantage": false,
+            "positive_expectancy_bounds": false,
+            "regime_support": false,
+            "tail_loss": false,
+            "trade_count": false,
+            "untouched_holdout": false,
+            "without_best_days": false,
+            "without_best_trades": false
+          },
+          "calibration_attempts": [],
+          "paired_incumbent_lower_usd_per_day": {
+            "10": null,
+            "5": null
+          },
+          "performance": {
+            "best_day_share_positive_pnl": null,
+            "closed_equity_max_drawdown_usd": 0.0,
+            "confidence_familywise_alpha": 0.05,
+            "expectancy_ci_lower_usd": {
+              "10": null,
+              "5": null
+            },
+            "expectancy_usd": null,
+            "expected_shortfall_95_usd": null,
+            "exposure_fraction": 0.0,
+            "exposure_minutes": 0,
+            "limitations": [
+              "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+              "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+            ],
+            "multiplicity_configurations": 6,
+            "net_usd": 0.0,
+            "net_without_best_five_days_usd": null,
+            "net_without_best_five_trades_usd": null,
+            "regimes": {
+              "early_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "high_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "late_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "low_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              }
+            },
+            "trades": 0,
+            "turnover_contract_sides": 0,
+            "win_rate": null,
+            "worst_trade_usd": null
+          },
+          "pool_mix": 0.0,
+          "scores": {
+            "brier": 0.24087771203155825,
+            "crps_usd": 21.06508041200204,
+            "day_block_confidence_intervals": {
+              "brier": {
+                "10": null,
+                "5": null
+              },
+              "crps_usd": {
+                "10": null,
+                "5": null
+              }
+            },
+            "interpretation": "Unvalidated forecasts, scored on later sessions. Fitting a mixture does not establish calibration.",
+            "log_loss": 0.6748148331167889,
+            "max_calibration_error": null,
+            "predictions": 72,
+            "reliability": [
+              {
+                "absolute_error": 0.004273504273504258,
+                "lower": 0.3,
+                "n": 36,
+                "observed": 0.3888888888888889,
+                "predicted": 0.38461538461538464,
+                "upper": 0.4
+              },
+              {
+                "absolute_error": 0.03205128205128216,
+                "lower": 0.6,
+                "n": 36,
+                "observed": 0.5833333333333334,
+                "predicted": 0.6153846153846155,
+                "upper": 0.7
+              }
+            ]
+          },
+          "stress": {
+            "delay_one_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 35,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Horizon exceeds the session exit deadline.": 6,
+                "Missing or invalid future path; outcome is unknown.": 4,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2075,
+                "Volatility requires a stop above the 25-point research risk cap.": 587
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "missing_every_20th_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 2948
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_0_75": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 78,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 377
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_1_25": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 17,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 700
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "unknown_volume": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 3105
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            }
+          },
+          "training_cutoff": "2026-09-01T14:00:00+00:00"
+        },
+        "kernel_paths_v1": {
+          "acceptance_checks": {
+            "brier_vs_pool": true,
+            "calibration": false,
+            "cost_latency_parameter_stress": false,
+            "crps_usd_vs_pool": true,
+            "day_concentration": false,
+            "drawdown_closed_equity": true,
+            "fill_exit_parity": false,
+            "forward_dry_run": false,
+            "intratrade_drawdown_verified": false,
+            "missing_volume_abstention": true,
+            "paired_incumbent_advantage": false,
+            "positive_expectancy_bounds": false,
+            "regime_support": false,
+            "tail_loss": false,
+            "trade_count": false,
+            "untouched_holdout": false,
+            "without_best_days": false,
+            "without_best_trades": false
+          },
+          "calibration_attempts": [
+            {
+              "crps_usd": 19.584433645708472,
+              "pool_mix": 0.0
+            },
+            {
+              "crps_usd": 18.354075573041936,
+              "pool_mix": 0.5
+            },
+            {
+              "crps_usd": 18.88695237311868,
+              "pool_mix": 1.0
+            }
+          ],
+          "paired_incumbent_lower_usd_per_day": {
+            "10": null,
+            "5": null
+          },
+          "performance": {
+            "best_day_share_positive_pnl": null,
+            "closed_equity_max_drawdown_usd": 0.0,
+            "confidence_familywise_alpha": 0.05,
+            "expectancy_ci_lower_usd": {
+              "10": null,
+              "5": null
+            },
+            "expectancy_usd": null,
+            "expected_shortfall_95_usd": null,
+            "exposure_fraction": 0.0,
+            "exposure_minutes": 0,
+            "limitations": [
+              "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+              "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+            ],
+            "multiplicity_configurations": 6,
+            "net_usd": 0.0,
+            "net_without_best_five_days_usd": null,
+            "net_without_best_five_trades_usd": null,
+            "regimes": {
+              "early_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "high_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "late_session": {
+                "mean_net_usd": null,
+                "trades": 0
+              },
+              "low_volatility": {
+                "mean_net_usd": null,
+                "trades": 0
+              }
+            },
+            "trades": 0,
+            "turnover_contract_sides": 0,
+            "win_rate": null,
+            "worst_trade_usd": null
+          },
+          "pool_mix": 0.5,
+          "scores": {
+            "brier": 0.2255694143982462,
+            "crps_usd": 20.232950518128096,
+            "day_block_confidence_intervals": {
+              "brier": {
+                "10": null,
+                "5": null
+              },
+              "crps_usd": {
+                "10": null,
+                "5": null
+              }
+            },
+            "interpretation": "Unvalidated forecasts, scored on later sessions. Fitting a mixture does not establish calibration.",
+            "log_loss": 0.6425425891648273,
+            "max_calibration_error": null,
+            "predictions": 72,
+            "reliability": [
+              {
+                "absolute_error": 0.08109531874878073,
+                "lower": 0.2,
+                "n": 10,
+                "observed": 0.2,
+                "predicted": 0.28109531874878074,
+                "upper": 0.3
+              },
+              {
+                "absolute_error": 0.010797984512975478,
+                "lower": 0.3,
+                "n": 12,
+                "observed": 0.3333333333333333,
+                "predicted": 0.3441313178463088,
+                "upper": 0.4
+              },
+              {
+                "absolute_error": 0.04431205173446162,
+                "lower": 0.4,
+                "n": 14,
+                "observed": 0.5,
+                "predicted": 0.4556879482655384,
+                "upper": 0.5
+              },
+              {
+                "absolute_error": 0.04431205173446162,
+                "lower": 0.5,
+                "n": 14,
+                "observed": 0.5,
+                "predicted": 0.5443120517344616,
+                "upper": 0.6
+              },
+              {
+                "absolute_error": 0.010797984512975312,
+                "lower": 0.6,
+                "n": 12,
+                "observed": 0.6666666666666666,
+                "predicted": 0.6558686821536913,
+                "upper": 0.7
+              },
+              {
+                "absolute_error": 0.018904681251219357,
+                "lower": 0.7,
+                "n": 10,
+                "observed": 0.7,
+                "predicted": 0.7189046812512193,
+                "upper": 0.8
+              }
+            ]
+          },
+          "stress": {
+            "delay_one_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 35,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Horizon exceeds the session exit deadline.": 6,
+                "Missing or invalid future path; outcome is unknown.": 4,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2075,
+                "Volatility requires a stop above the 25-point research risk cap.": 587
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "missing_every_20th_bar": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 2948
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "slippage_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_2_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "spread_4_ticks": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_0_75": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 78,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 377
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "stop_multiplier_1_25": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 17,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Missing or invalid future path; outcome is unknown.": 3,
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+                "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+                "Volatility requires a stop above the 25-point research risk cap.": 700
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            },
+            "unknown_volume": {
+              "best_day_share_positive_pnl": null,
+              "closed_equity_max_drawdown_usd": 0.0,
+              "confidence_familywise_alpha": 0.05,
+              "eligible_forecasts": 0,
+              "expectancy_ci_lower_usd": {
+                "10": null,
+                "5": null
+              },
+              "expectancy_usd": null,
+              "expected_shortfall_95_usd": null,
+              "exposure_fraction": 0.0,
+              "exposure_minutes": 0,
+              "limitations": [
+                "Drawdown is closed-equity; intratrade mark-to-market drawdown is not established.",
+                "Block confidence intervals assume weak dependence; few-day diagnostics do not support inference."
+              ],
+              "multiplicity_configurations": 6,
+              "net_usd": 0.0,
+              "net_without_best_five_days_usd": null,
+              "net_without_best_five_trades_usd": null,
+              "regimes": {
+                "early_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "high_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "late_session": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                },
+                "low_volatility": {
+                  "mean_net_usd": null,
+                  "trades": 0
+                }
+              },
+              "rejections": {
+                "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 3105
+              },
+              "trades": 0,
+              "turnover_contract_sides": 0,
+              "win_rate": null,
+              "worst_trade_usd": null
+            }
+          },
+          "training_cutoff": "2026-09-01T14:00:00+00:00"
+        }
+      },
+      "sessions": {
+        "calibration": [
+          "2026-09-02",
+          "2026-09-03"
+        ],
+        "training": [
+          "2026-08-25",
+          "2026-08-26",
+          "2026-08-27",
+          "2026-08-28",
+          "2026-08-31",
+          "2026-09-01"
+        ],
+        "validation": [
+          "2026-09-04",
+          "2026-09-08"
+        ]
+      },
+      "training_paths": 26,
+      "validation_paths": 36
+    }
+  ],
+  "holdout_evaluated": false,
+  "label_rejections": {
+    "Missing or invalid future path; outcome is unknown.": 3,
+    "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 240,
+    "Outside the 09:35\u201315:30 ET research entry window.": 2076,
+    "Volatility requires a stop above the 25-point research risk cap.": 587
+  },
+  "mode": "diagnostic",
+  "observations": [
+    {
+      "event_type": "quote",
+      "explicit_side_records": 127956,
+      "first_provider": "2026-09-08 00:58:43.478405",
+      "last_provider": "2026-09-09 04:10:55.162835",
+      "records": 127956,
+      "source": "projectx_gateway_depth",
+      "two_sided_quotes": 126606
+    },
+    {
+      "event_type": "reset",
+      "explicit_side_records": 0,
+      "first_provider": "2026-09-08 00:59:57.484671",
+      "last_provider": "2026-09-09 04:05:17.699869",
+      "records": 68,
+      "source": "projectx_gateway_depth",
+      "two_sided_quotes": 0
+    },
+    {
+      "event_type": "trade",
+      "explicit_side_records": 0,
+      "first_provider": "2026-09-08 00:58:44.616000",
+      "last_provider": "2026-09-09 04:10:55.152000",
+      "records": 121976,
+      "source": "projectx_gateway_trade",
+      "two_sided_quotes": 0
+    }
+  ],
+  "operational_effects": {
+    "database_writes": 0,
+    "default_changed": false,
+    "historical_restores": 0,
+    "orders": 0,
+    "runs_started": 0
+  },
+  "plan": {
+    "available_sessions": 10,
+    "folds": [],
+    "holdout_evaluated": false,
+    "holdout_sessions": [],
+    "required_sessions": 200,
+    "status": "insufficient_data"
+  },
+  "promotion_eligible": false,
+  "provenance": {
+    "contract_id": "CON.F.US.MNQ.U26",
+    "data_live": false,
+    "implementation_sha256": "b9af823199672259bf4b964aa29707b9cafa9769676e8fda82a7141cb8b2444e",
+    "mode": "diagnostic",
+    "numpy": "2.2.6",
+    "owner_hash": "12b9377cbe7e5c94e8a70d9d23929523d14afa954793130f8a3959c7b849aca8",
+    "protocol_sha256": "f9f2cb3f68059f9da0e95e7ebee6e14779c381625a3222d9828e17bf7415bf3f",
+    "python": "3.12.10",
+    "source_kind": "existing_local_sqlite_read_only",
+    "source_sha256": "b5170166741d2d48ca91753af6c39aef2318e3692affef00a09df3130a07dfc8"
+  },
+  "selected_for_default": null,
+  "status": "insufficient_data",
+  "training_label_rejections": {
+    "Missing or invalid future path; outcome is unknown.": 1,
+    "Need 21 contiguous, complete, valid same-contract candles with observed volume.": 72,
+    "Outside the 09:35\u201315:30 ET research entry window.": 700,
+    "Volatility requires a stop above the 25-point research risk cap.": 193
+  }
+}

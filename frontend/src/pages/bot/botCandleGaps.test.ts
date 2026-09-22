@@ -414,6 +414,32 @@ describe("findCandleGaps", () => {
 });
 
 describe("buildGapRepairWindows", () => {
+  it("covers 75 nearby holes with one bounded request instead of 25 repair passes", () => {
+    const start = Date.parse("2026-06-09T13:00:00Z");
+    const rows = Array.from({ length: 302 }, (_, index) =>
+      candle(new Date(start + index * 60_000).toISOString()));
+    const sparse = rows.filter((_, index) => index % 4 !== 2);
+    const gaps = findCandleGaps(sparse, "minute", 1).filter(gap => gap.kind === "data");
+    expect(gaps).toHaveLength(75);
+    const windows = buildGapRepairWindows(gaps, "minute", 1, 3,
+      { maxBridgeBars: 12, maxWindowBars: 500 });
+    expect(windows).toHaveLength(1);
+    expect(gaps.every(gap => isGapCoveredByRepairWindows(gap, windows))).toBe(true);
+    expect(Date.parse(windows[0].end) - Date.parse(windows[0].start)).toBeLessThan(500 * 60_000);
+  });
+
+  it("bounds grouped fetch size and leaves unattempted windows repairable", () => {
+    const start = Date.parse("2026-06-09T13:00:00Z");
+    const rows = Array.from({ length: 302 }, (_, index) =>
+      candle(new Date(start + index * 60_000).toISOString()));
+    const gaps = findCandleGaps(rows.filter((_, index) => index % 4 !== 2), "minute", 1);
+    const windows = buildGapRepairWindows(gaps, "minute", 1, 3,
+      { maxBridgeBars: 12, maxWindowBars: 50 });
+    expect(windows).toHaveLength(3);
+    expect(windows.every(window => Date.parse(window.end) - Date.parse(window.start) < 50 * 60_000)).toBe(true);
+    expect(gaps.some(gap => !isGapCoveredByRepairWindows(gap, windows))).toBe(true);
+  });
+
   it("plans zero closure repairs and exactly one request per bounded data-gap window", () => {
     const base = Date.parse("2026-06-09T13:00:00Z");
     const gap = (index: number, kind: CandleGap["kind"]): CandleGap => ({

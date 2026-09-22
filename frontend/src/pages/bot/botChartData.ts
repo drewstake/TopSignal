@@ -1,4 +1,5 @@
 import type { CandlestickData, LineData, SeriesMarker, UTCTimestamp } from "lightweight-charts";
+import { BOT_CHART_BUY_COLOR, BOT_CHART_SELL_COLOR } from "./botChartTheme";
 
 import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 
@@ -778,7 +779,7 @@ function buildDecisionMarker(
       time,
       position: "belowBar",
       shape: "arrowUp",
-      color: "rgb(34,197,94)",
+      color: BOT_CHART_BUY_COLOR,
       text: "BUY",
       size: 1.15,
     };
@@ -790,7 +791,7 @@ function buildDecisionMarker(
       time,
       position: "aboveBar",
       shape: "arrowDown",
-      color: "rgb(244,63,94)",
+      color: BOT_CHART_SELL_COLOR,
       text: "SELL",
       size: 1.15,
     };

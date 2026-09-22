@@ -146,19 +146,19 @@ export function ChartToolButton({
   );
 }
 
-export function LegendDot({ active, className, label, onClick }: LegendProps) {
+export function LegendDot({ active, color, secondaryColor, label, onClick }: LegendProps & { secondaryColor?: string }) {
   return (
     <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 transition sm:min-h-8 ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
-      <span className={`h-2.5 w-2.5 rounded-full ${className} ${active ? "" : "opacity-25 grayscale"}`} />
+      <span aria-hidden="true" style={{ background: secondaryColor ? `linear-gradient(90deg, ${color} 50%, ${secondaryColor} 50%)` : color }} className={`h-2.5 w-2.5 rounded-full ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
     </button>
   );
 }
 
-export function LegendLine({ active, className, label, onClick }: LegendProps) {
+export function LegendLine({ active, color, label, onClick }: LegendProps) {
   return (
     <button type="button" aria-pressed={active} onClick={onClick} className={`inline-flex min-h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded px-2 py-1 transition sm:min-h-8 ${active ? "text-app-text-soft hover:bg-app-bg/80" : "text-app-muted-strong hover:bg-app-bg/70 hover:text-app-muted"}`}>
-      <span className={`h-0 w-5 border-t-2 border-dotted ${className} ${active ? "" : "opacity-25 grayscale"}`} />
+      <span aria-hidden="true" style={{ borderColor: color }} className={`h-0 w-5 border-t-2 border-dotted ${active ? "" : "opacity-25 grayscale"}`} />
       <span>{label}</span>
     </button>
   );
@@ -166,7 +166,7 @@ export function LegendLine({ active, className, label, onClick }: LegendProps) {
 
 interface LegendProps {
   active: boolean;
-  className: string;
+  color: string;
   label: string;
   onClick: () => void;
 }

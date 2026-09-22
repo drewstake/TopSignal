@@ -526,6 +526,55 @@ class BotDecisionLimitsOut(BaseModel):
     delivery_grace_seconds: int
 
 
+class BotResearchCostsOut(BaseModel):
+    fees_usd: float
+    spread_usd: float
+    slippage_usd: float
+    latency_usd: float
+    rounding_usd: float
+    total_usd: float
+    basis: str
+
+
+class BotResearchActionOut(BaseModel):
+    probability_net_positive: float = Field(ge=0, le=1)
+    probability_net_nonpositive: float = Field(ge=0, le=1)
+    probability_stop: float = Field(ge=0, le=1)
+    probability_time_exit: float = Field(ge=0, le=1)
+    probability_target: float = Field(ge=0, le=1)
+    expected_net_usd: float
+    standard_error_usd: float
+    uncertainty_penalty_usd: float
+    lower_utility_usd: float
+    effective_days: float
+
+
+class BotProbabilisticResearchOut(BaseModel):
+    interface_version: str
+    model_version: str
+    validation_status: Literal["unvalidated"]
+    action: Literal["NO_TRADE"]
+    research_action: Literal["BUY", "SELL", "NO_TRADE"]
+    routing_allowed: Literal[False]
+    probability_basis: Literal["unavailable", "uncalibrated_model_estimate"]
+    horizon_minutes: int
+    evaluated_at: str
+    candle_close_timestamp: str | None
+    age_seconds: float | None
+    data_status: Literal["missing", "fresh", "stale", "invalid"]
+    model_trained_through: str | None
+    stop_points: float | None
+    target_points: float | None
+    quantity: int
+    costs: BotResearchCostsOut
+    forecasts: dict[Literal["BUY", "SELL"], BotResearchActionOut] | None
+    no_trade_expected_net_usd: float
+    minimum_net_edge_usd: float
+    training_paths: int
+    uncertainty_method: str
+    reasons: list[str]
+
+
 class BotDecisionExplanationOut(BaseModel):
     status: BotEvaluationStatus
     action: BotAction
@@ -541,6 +590,7 @@ class BotDecisionExplanationOut(BaseModel):
     checks: list[BotDecisionCheckOut]
     limits: BotDecisionLimitsOut
     basis: str
+    probabilistic_research: BotProbabilisticResearchOut | None = None
 
 
 class BotContextCoverageItemOut(BaseModel):

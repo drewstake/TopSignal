@@ -50,7 +50,10 @@ def test_actual_topbot_warmup_hold_is_explained_without_claiming_risk_permission
     from app.services.topbot_strategy import evaluate
     account, config = _add_account_and_config(db_session)
     config.strategy_type = "topbot_adaptive"
+    db_session.flush()
+    analysis_builder = bot_service.build_bot_market_analysis
     _patch_actionable_signal(monkeypatch)
+    monkeypatch.setattr(bot_service, "build_bot_market_analysis", analysis_builder)
     fetch = bot_service.fetch_candles_and_evaluate_strategy
     def actual_strategy(*args, **kwargs):
         candles, _signal = fetch(*args, **kwargs)
@@ -61,6 +64,38 @@ def test_actual_topbot_warmup_hold_is_explained_without_claiming_risk_permission
     assert "200 closed candles" in result.analysis["bot_decision"]["summary"]
     assert result.analysis["bot_decision"]["strategy"]["revision"]
     assert next(check for check in result.analysis["bot_decision"]["checks"] if check["id"] == "risk")["status"] == "not_evaluated"
+    response = BotEvaluationOut.model_validate(bot_service.serialize_evaluation(result)).model_dump(mode="json")
+    research = response["analysis"]["bot_decision"]["probabilistic_research"]
+    assert research["action"] == "NO_TRADE"
+    assert research["routing_allowed"] is False
+    assert research["forecasts"] is None
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_probabilistic_shadow_cannot_change_strategy_or_cross_live_boundary(db_session, monkeypatch, open_exchange_session, dry_run):
+    from app.services import probabilistic_shadow
+    account, config = _add_account_and_config(db_session, execution_mode="dry_run" if dry_run else "live")
+    config.strategy_type = "topbot_adaptive"
+    db_session.flush()
+    _patch_actionable_signal(monkeypatch, action="HOLD")
+    calls = []
+    def shadow(**kwargs):
+        calls.append(kwargs)
+        result = probabilistic_shadow.unavailable(as_of=datetime.now(timezone.utc), reason="Test forecast")
+        result["research_action"] = "BUY"
+        return result
+    monkeypatch.setattr(probabilistic_shadow, "explain_shadow", shadow)
+    client = RecordingClient()
+    result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account,
+                                              client=client, dry_run=dry_run)
+    assert result.decision.action == "HOLD" and result.status == "held"
+    assert result.order_attempt is None and client.place_order_calls == []
+    assert client.cancel_order_calls == [] and client.close_position_calls == []
+    assert bool(calls) == dry_run
+    if dry_run:
+        assert calls[0]["owner"] == USER_A and calls[0]["contract_id"] == config.contract_id
+    else:
+        assert "probabilistic_research" not in result.analysis["bot_decision"]
 
 
 def test_api_roundtrip_preserves_closed_candle_observation_cutoff_contract_and_final_decision(db_session, monkeypatch, open_exchange_session):

@@ -588,14 +588,15 @@ function countMissingBuckets(
 
 /**
  * Build bounded fetch windows that cover the data gaps, for backfill requests.
- * Adjacent/overlapping windows (within one interval) are merged and the result
- * is capped to `maxWindows`, keeping the largest gaps first.
+ * Adjacent/overlapping windows are merged. Optional bounded bridging groups
+ * nearby gaps before applying the request cap, avoiding a request per hole.
  */
 export function buildGapRepairWindows(
   gaps: CandleGap[],
   unit: BotTimeframeUnit,
   unitNumber: number,
   maxWindows = 3,
+  grouping?: { maxBridgeBars: number; maxWindowBars: number },
 ): GapRepairWindow[] {
   if (maxWindows <= 0) {
     return [];
@@ -604,27 +605,37 @@ export function buildGapRepairWindows(
   const dataGaps = gaps
     .filter((gap) => gap.kind === "data")
     .sort((left, right) => right.missingSessionBars - left.missingSessionBars)
-    .slice(0, Math.max(1, Math.trunc(maxWindows)));
+    .slice(0, grouping ? undefined : Math.max(1, Math.trunc(maxWindows)));
 
   const ranges = dataGaps
     .map((gap) => ({
       // Pad one interval on each side so the provider returns the bracketing bars too.
       fromMs: gap.fromMs - intervalMs,
       toMs: gap.toMs + intervalMs,
+      missingBars: gap.missingSessionBars,
     }))
     .sort((left, right) => left.fromMs - right.fromMs);
 
-  const merged: { fromMs: number; toMs: number }[] = [];
+  const bridgeMs = Math.max(1, grouping?.maxBridgeBars ?? 1) * intervalMs;
+  const maxMergedSpanMs = (grouping?.maxWindowBars ?? Infinity) * intervalMs;
+  const merged: { fromMs: number; toMs: number; missingBars: number }[] = [];
   for (const range of ranges) {
     const last = merged[merged.length - 1];
-    if (last && range.fromMs <= last.toMs + intervalMs) {
+    if (last && range.fromMs <= last.toMs + bridgeMs
+      && Math.max(last.toMs, range.toMs) - last.fromMs < maxMergedSpanMs) {
       last.toMs = Math.max(last.toMs, range.toMs);
+      last.missingBars += range.missingBars;
     } else {
       merged.push({ ...range });
     }
   }
 
-  return merged.map((range) => ({
+  const selected = grouping
+    ? merged.sort((left, right) => right.missingBars - left.missingBars)
+      .slice(0, Math.max(1, Math.trunc(maxWindows)))
+      .sort((left, right) => left.fromMs - right.fromMs)
+    : merged;
+  return selected.map((range) => ({
     start: new Date(range.fromMs).toISOString(),
     end: new Date(range.toMs).toISOString(),
   }));

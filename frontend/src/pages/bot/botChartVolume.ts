@@ -3,8 +3,8 @@ import type { HistogramData, UTCTimestamp } from "lightweight-charts";
 import type { ProjectXMarketCandle } from "../../lib/types";
 import { toUtcTimestamp } from "./botChartData";
 
-const UP_VOLUME_COLOR = "rgba(52,211,153,0.55)";
-const DOWN_VOLUME_COLOR = "rgba(251,113,133,0.55)";
+export const UP_VOLUME_COLOR = "rgba(52,211,153,0.55)";
+export const DOWN_VOLUME_COLOR = "rgba(251,113,133,0.55)";
 
 /**
  * Build the volume pane directly from ProjectX bars. Duplicate timestamps use
