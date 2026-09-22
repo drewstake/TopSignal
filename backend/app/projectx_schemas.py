@@ -149,7 +149,8 @@ class ProjectXTradeSummaryOut(BaseModel):
     win_count: int
     loss_count: int
     breakeven_count: int
-    profit_factor: float
+    profit_factor_no_losses: bool = False
+    profit_factor: float | None
     avg_win: float
     avg_loss: float
     avg_win_duration_minutes: float

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from .auth import auth_required, get_authenticated_user, get_authenticated_user_id
 from .db import get_db
+from .input_bounds import MAX_DATABASE_ID
 from .models import Account
 from .market_observation_models import DecisionResearchSnapshot
 from .services.decision_research import evaluate_pending, research_status
@@ -33,19 +34,19 @@ def get_observation_status(contract_id: str | None = Query(default=None, max_len
 
 
 @router.get("/api/decision-research")
-def get_decision_research(account_id: int = Query(gt=0), limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
+def get_decision_research(account_id: int = Query(gt=0, le=MAX_DATABASE_ID), limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
     _owned_account(db, user_id, account_id)
     return research_status(db, user_id=user_id, account_id=account_id, limit=limit)
 
 
 @router.post("/api/decision-research/evaluate")
-def evaluate_decision_research(account_id: int = Query(gt=0), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
+def evaluate_decision_research(account_id: int = Query(gt=0, le=MAX_DATABASE_ID), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
     _owned_account(db, user_id, account_id)
     return evaluate_pending(db, user_id=user_id, account_id=account_id)
 
 
 @router.get("/api/decision-research/{snapshot_id}")
-def get_decision_snapshot(snapshot_id: int, account_id: int = Query(gt=0), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
+def get_decision_snapshot(snapshot_id: int, account_id: int = Query(gt=0, le=MAX_DATABASE_ID), db: Session = Depends(get_db), user_id: str = Depends(observation_user_id)):
     _owned_account(db, user_id, account_id)
     row = db.query(DecisionResearchSnapshot).filter(DecisionResearchSnapshot.id == snapshot_id,
         DecisionResearchSnapshot.user_id == user_id, DecisionResearchSnapshot.account_id == account_id).first()

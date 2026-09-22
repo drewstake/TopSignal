@@ -688,7 +688,7 @@ describe("BotPage account-scoped run controls", () => {
 
     renderBotPage();
     await screen.findByRole("button", { name: "Stop Automation" });
-    expect(screen.getByText(/does not cancel broker orders or close positions/i)).not.toBeNull();
+    expect(screen.getByText(/stops new entries without immediately flattening.*protective orders and pending timed exits remain active/i)).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Stop Automation" }));
 
     await waitFor(() => expect(stop).toHaveBeenCalledWith(botA.id));

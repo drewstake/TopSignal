@@ -1,3 +1,4 @@
+import { formatProfitFactor } from "../../utils/profitFactor";
 import { type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 
@@ -144,13 +145,6 @@ function formatTradePrice(value: number | null | undefined) {
     return "-";
   }
   return priceFormatter.format(value);
-}
-
-function formatRatio(value: number) {
-  if (!Number.isFinite(value)) {
-    return value > 0 ? "Inf" : "N/A";
-  }
-  return formatNumber(value, 2);
 }
 
 function formatPointMove(value: number | null, basis: AccountSummary["pointsBasisUsed"]) {
@@ -840,7 +834,7 @@ export function TradesPage() {
                     value={formatPnl(summary.expectancy_per_trade)}
                     valueClassName={pnlClass(summary.expectancy_per_trade)}
                   />
-                  <MetricTile label="Profit Factor" value={formatRatio(summary.profit_factor)} />
+                  <MetricTile label="Profit Factor" value={formatProfitFactor(summary)} />
                   <MetricTile
                     label="Profit / Day"
                     value={formatPnl(summary.profit_per_day)}

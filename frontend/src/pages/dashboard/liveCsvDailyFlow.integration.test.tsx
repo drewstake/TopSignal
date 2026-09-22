@@ -322,7 +322,7 @@ function installStatefulAccountsApi(accounts: AccountInfo[] = [liveAccount]) {
   const summaryReadTradeCounts: number[] = [];
   let previewSequence = 0;
 
-  vi.spyOn(accountsApi, "getSelectableAccountsLocalFirst").mockResolvedValue(accounts);
+  vi.spyOn(accountsApi, "getSelectableAccountsLocalFirst").mockImplementation(async () => accounts.map((account) => ({ ...account, balance: account.balance === null ? null : account.balance + (account.id === LIVE_ACCOUNT_ID ? state.summary.net_pnl : 0) })));
   const getSummaryWithPointBases = vi.spyOn(accountsApi, "getSummaryWithPointBases").mockImplementation(async () => {
     summaryReadTradeCounts.push(state.summary.trade_count);
     return {
@@ -527,6 +527,39 @@ describe("Live CSV daily-flow production page bridge", () => {
 
     await waitForImportReady();
     expect(screen.queryByText("Loading dashboard...")).toBeNull();
+  });
+
+  it("refreshes the balance anchor after import without reloading the page", async () => {
+    const user = userEvent.setup();
+    mountDailyFlow([{ ...liveAccount, balance: 10_000 }]);
+    await waitForImportReady();
+    const delayedBalance = deferred<AccountInfo[]>();
+    vi.mocked(accountsApi.getSelectableAccountsLocalFirst).mockReturnValueOnce(delayedBalance.promise);
+    importFile("fresh.csv");
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByText(/Imported 2 trades from fresh\.csv/);
+    expect(screen.queryByText("$9,863.00")).toBeNull();
+    await act(async () => { delayedBalance.resolve([{ ...liveAccount, balance: 10_137 }]); });
+    await waitFor(() => expect(screen.getAllByText("$10,137.00").length).toBeGreaterThan(0));
+    expect(screen.getAllByText("$10,000.00").length).toBeGreaterThan(0);
+    expect(screen.queryByText("$9,863.00")).toBeNull();
+  });
+
+  it("does not apply an import refresh to a newly selected account", async () => {
+    const user = userEvent.setup();
+    const { router, getSummaryWithPointBases } = mountDailyFlow([liveAccount, secondLiveAccount]);
+    await waitForImportReady();
+    const delayedBalance = deferred<AccountInfo[]>();
+    vi.mocked(accountsApi.getSelectableAccountsLocalFirst).mockReturnValueOnce(delayedBalance.promise);
+    importFile("fresh.csv");
+    await user.click(await screen.findByRole("button", { name: "Confirm Import (2)" }));
+    await screen.findByText(/Imported 2 trades from fresh\.csv/);
+    await act(async () => { await router.navigate(`/dashboard?account=${secondLiveAccount.id}`); });
+    await waitFor(() => expect(getSummaryWithPointBases.mock.calls.at(-1)?.[0]).toBe(secondLiveAccount.id));
+    const reads = getSummaryWithPointBases.mock.calls.length;
+    await act(async () => { delayedBalance.resolve([liveAccount, secondLiveAccount]); });
+    expect(getSummaryWithPointBases.mock.calls.length).toBe(reads);
+    expect(router.state.location.search).toContain(String(secondLiveAccount.id));
   });
 
   it("commits through Dashboard, reloads local reads, and filters imported trades by day", async () => {

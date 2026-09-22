@@ -5,7 +5,7 @@ class SummaryMetricsOut(BaseModel):
     trade_count: int
     net_pnl: float
     win_rate: float
-    profit_factor: float
+    profit_factor: float | None
     expectancy: float
     average_win: float
     average_loss: float

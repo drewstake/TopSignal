@@ -606,3 +606,45 @@ describe("ExpensesPage combine reconciliation", () => {
     expect(deleteExpense).not.toHaveBeenCalled();
   });
 });
+
+
+it.each(["reset_fee", "data_fee", "other", "refund"] as const)("creates %s without fee-preset metadata", async (category) => {
+  mockExpenseStartup(financialSummary(0));
+  const create = vi.spyOn(api, "createExpense").mockResolvedValue({} as ExpenseRecord);
+  const user = userEvent.setup();
+  render(<ExpensesPage />);
+  await user.click(screen.getByRole("button", { name: "Add Expense" }));
+  await user.selectOptions(screen.getByLabelText("Entry type"), "general");
+  await user.selectOptions(screen.getByLabelText("Expense category"), category);
+  await user.type(screen.getByLabelText("Amount (USD)"), "12.34");
+  await user.click(screen.getByRole("button", { name: "Save Expense" }));
+  await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+    category, amount: category === "refund" ? -12.34 : 12.34,
+    account_type: undefined, plan_size: undefined,
+  })));
+});
+
+it("shows a recoverable connection error without leaving failed ranges loading", async () => {
+  const request = mockExpenseStartup(Promise.reject(new TypeError("Failed to fetch")));
+  render(<ExpensesPage />);
+  await waitFor(() => expect(screen.getAllByText(/Cannot reach TopSignal/).length).toBeGreaterThan(0));
+  expect(screen.queryByText("Loading...")).toBeNull();
+  request.mockResolvedValue(financialSummary(25));
+  await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(screen.queryByText(/Cannot reach TopSignal/)).toBeNull());
+});
+
+
+it("rejects a zero refund before submission", async () => {
+  mockExpenseStartup(financialSummary(0));
+  const create = vi.spyOn(api, "createExpense");
+  const user = userEvent.setup();
+  render(<ExpensesPage />);
+  await user.click(screen.getByRole("button", { name: "Add Expense" }));
+  await user.selectOptions(screen.getByLabelText("Entry type"), "general");
+  await user.selectOptions(screen.getByLabelText("Expense category"), "refund");
+  await user.type(screen.getByLabelText("Amount (USD)"), "0");
+  await user.click(screen.getByRole("button", { name: "Save Expense" }));
+  expect(await screen.findByText("Amount must be greater than zero for this category.")).not.toBeNull();
+  expect(create).not.toHaveBeenCalled();
+});

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+
+from .input_bounds import SupportedDate
 
 
 MIN_POSTGRES_INTEGER = -(2**31)
@@ -13,7 +16,7 @@ MAX_POSTGRES_MONEY = Decimal("21474836.47")
 
 
 class PayoutCreateIn(BaseModel):
-    payout_date: date
+    payout_date: SupportedDate
     amount: Decimal | None = Field(
         default=None,
         ge=MIN_POSTGRES_MONEY,
@@ -26,7 +29,7 @@ class PayoutCreateIn(BaseModel):
         le=MAX_POSTGRES_INTEGER,
     )
     notes: str | None = None
-    currency: str = "USD"
+    currency: Literal["USD"] = "USD"
 
     @model_validator(mode="after")
     def ensure_amount_present(self) -> "PayoutCreateIn":
@@ -45,7 +48,7 @@ class PayoutCreateIn(BaseModel):
 
 
 class PayoutUpdateIn(BaseModel):
-    payout_date: date | None = None
+    payout_date: SupportedDate | None = None
     amount_cents: int | None = Field(
         default=None,
         ge=MIN_POSTGRES_INTEGER,

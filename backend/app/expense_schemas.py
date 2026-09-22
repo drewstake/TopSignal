@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from .input_bounds import SupportedDate
+
 from .payout_schemas import PayoutTotalsOut
 
 ExpenseCategory = Literal["evaluation_fee", "activation_fee", "reset_fee", "data_fee", "other", "refund"]
@@ -20,7 +22,7 @@ MAX_POSTGRES_MONEY = Decimal("21474836.47")
 
 
 class ExpenseCreateIn(BaseModel):
-    expense_date: date
+    expense_date: SupportedDate
     amount: Decimal | None = Field(
         default=None,
         ge=MIN_POSTGRES_MONEY,
@@ -41,7 +43,7 @@ class ExpenseCreateIn(BaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     is_practice: bool = False
-    currency: str = "USD"
+    currency: Literal["USD"] = "USD"
 
     @model_validator(mode="after")
     def ensure_amount_present(self) -> "ExpenseCreateIn":
@@ -60,7 +62,7 @@ class ExpenseCreateIn(BaseModel):
 
 
 class ExpenseUpdateIn(BaseModel):
-    expense_date: date | None = None
+    expense_date: SupportedDate | None = None
     amount_cents: int | None = Field(
         default=None,
         ge=MIN_POSTGRES_INTEGER,

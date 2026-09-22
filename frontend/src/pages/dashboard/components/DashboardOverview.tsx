@@ -1,3 +1,4 @@
+import { formatProfitFactor } from "../../../utils/profitFactor";
 import { Link } from "react-router-dom";
 import { Icon, type IconName } from "../../../components/ui/Icon";
 import { Skeleton } from "../../../components/ui/Skeleton";
@@ -18,7 +19,7 @@ export function DashboardOverview({ summary, loading, error, hasAccount, maxDraw
   const metrics: { label: string; value: string; detail: string; icon: IconName; tone?: string }[] = [
     { label: copyAdjusted ? "Copy Trade Net" : "Net P&L", value: formatPnl(summary.net_pnl), detail: copyAdjusted ? "Combined leader + follower result" : "Realized profit after fees", icon: "chart", tone: hasTrades ? summary.net_pnl > 0 ? "positive" : summary.net_pnl < 0 ? "negative" : undefined : undefined },
     { label: copyAdjusted ? "Leader win rate" : "Win rate", value: hasTrades ? formatPercent(summary.win_rate, 1) : "—", detail: hasTrades ? `${formatInteger(summary.win_count)} wins · ${formatInteger(summary.loss_count)} losses` : "Your wins, in perspective", icon: "target" },
-    { label: copyAdjusted ? "Leader profit factor" : "Profit factor", value: hasTrades ? formatNumber(summary.profit_factor, 2) : "—", detail: "Gross profit / gross loss", icon: "pulse" },
+    { label: copyAdjusted ? "Leader profit factor" : "Profit factor", value: hasTrades ? formatProfitFactor(summary) : "—", detail: "Gross profit / gross loss", icon: "pulse" },
     { label: copyAdjusted ? "Leader max drawdown" : "Max drawdown", value: hasTrades ? formatPnl(-Math.abs(maxDrawdown)) : "—", detail: "Largest peak-to-trough decline", icon: "shield" },
   ];
 

@@ -1,3 +1,4 @@
+import { formatProfitFactor, profitFactorValue } from "../../../utils/profitFactor";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Card } from "../../../components/ui/Card";
@@ -291,7 +292,7 @@ export function CompactDashboardView({
         <CompactMetricCard
           label="Profit Factor"
           info="Gross winning P&L divided by gross losing P&L. It is unbounded without a losing trade."
-          value={summary.loss_count === 0 && summary.win_count > 0 ? "∞" : formatNumber(summary.profit_factor, 2)}
+          value={formatProfitFactor(summary)}
           kind="profit"
           loading={summaryLoading}
           error={summaryError}
@@ -302,7 +303,7 @@ export function CompactDashboardView({
               : undefined}
           className="md:col-span-2 lg:col-span-1"
         >
-          {metricFootnote(summary.loss_count === 0 && summary.win_count > 0 ? "No losing trades" : "Gross wins ÷ gross losses")}
+          {metricFootnote(profitFactorValue(summary) === Infinity ? (summary.loss_count === 0 ? "No losing trades" : "No gross losing P&L") : "Gross wins ÷ gross losses")}
         </CompactMetricCard>
         <CompactMetricCard
           label="Win Rate"

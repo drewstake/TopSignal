@@ -647,3 +647,15 @@ describe("buildStatsCoachSummary", () => {
     });
   });
 });
+
+
+it("keeps winning-only profit factor out of negative-edge advice and exports infinity", () => {
+  const metrics = makeMetrics({
+    summary: { profit_factor: null, win_count: 1, loss_count: 0, trade_count: 1, net_pnl: 198.78, expectancy_per_trade: 198.78 },
+    performance: { netPnl: metric(198.78), expectancyPerTrade: metric(198.78) },
+  });
+  const summary = buildStatsCoachSummary({ metrics, rangeLabel: "All time" });
+  expect(JSON.stringify(summary)).not.toContain("Negative edge");
+  expect(summary.verdict).toContain("Insufficient Sample");
+  expect(buildFullStatsText({ metrics, rangeLabel: "All time" })).toContain("Profit Factor: ∞");
+});

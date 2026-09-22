@@ -2,6 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { formatProfitFactor, profitFactorValue } from "../../utils/profitFactor";
+
 import type { ActivityMetrics } from "../../utils/activityMetrics";
 import type { SustainabilityResult } from "../../utils/sustainability";
 import type { AccountPnlCalendarDay, AccountSummary } from "../../lib/types";
@@ -805,7 +807,7 @@ function buildLeverCandidates(metrics: CopyFullStatsMetrics, sampleQuality: Samp
   const levers: SummaryLever[] = [];
   const netPnl = getMetricValue(metrics.performance.netPnl);
   const expectancy = getMetricValue(metrics.performance.expectancyPerTrade);
-  const profitFactor = metrics.summary.profit_factor;
+  const profitFactor = profitFactorValue(metrics.summary);
   const riskScore = metrics.sustainability.riskScore;
   const sustainabilityScore = metrics.sustainability.score;
   const drawdownPercentOfNet = getMetricValue(metrics.risk.drawdownPercentOfNet);
@@ -826,7 +828,7 @@ function buildLeverCandidates(metrics: CopyFullStatsMetrics, sampleQuality: Samp
     });
   }
 
-  if ((netPnl !== null && netPnl <= 0) || (expectancy !== null && expectancy <= 0) || (Number.isFinite(profitFactor) && profitFactor < 1)) {
+  if ((netPnl !== null && netPnl <= 0) || (expectancy !== null && expectancy <= 0) || (!Number.isNaN(profitFactor) && profitFactor < 1)) {
     levers.push({
       issue: "Negative edge",
       metric: `net ${formatMoney(netPnl)} and expectancy ${formatMoney(expectancy)} / trade`,
@@ -906,10 +908,10 @@ function buildLeverCandidates(metrics: CopyFullStatsMetrics, sampleQuality: Samp
     });
   }
 
-  if (netPnl !== null && netPnl > 0 && expectancy !== null && expectancy > 0 && Number.isFinite(profitFactor) && profitFactor >= 1.5) {
+  if (netPnl !== null && netPnl > 0 && expectancy !== null && expectancy > 0 && !Number.isNaN(profitFactor) && profitFactor >= 1.5) {
     levers.push({
       issue: "Protect the edge",
-      metric: `${formatMoney(netPnl)} net, ${formatMoney(expectancy)} expectancy, ${formatRatio(profitFactor)} PF`,
+      metric: `${formatMoney(netPnl)} net, ${formatMoney(expectancy)} expectancy, ${formatProfitFactor(metrics.summary)} PF`,
       action: "keep the current setup rules intact and scale only after risk stays controlled.",
       priority: 20,
     });
@@ -964,7 +966,7 @@ function buildVerdict(metrics: CopyFullStatsMetrics, rangeLabel: string, sampleQ
   const safeRangeLabel = rangeLabel.trim() || "selected range";
   const netPnl = getMetricValue(metrics.performance.netPnl);
   const expectancy = getMetricValue(metrics.performance.expectancyPerTrade);
-  const profitFactor = metrics.summary.profit_factor;
+  const profitFactor = profitFactorValue(metrics.summary);
   const riskScore = metrics.sustainability.riskScore;
   const sustainabilityScore = metrics.sustainability.score;
   const drawdownPercentOfNet = getMetricValue(metrics.risk.drawdownPercentOfNet);
@@ -976,8 +978,8 @@ function buildVerdict(metrics: CopyFullStatsMetrics, rangeLabel: string, sampleQ
   const hasDirectionProblem = getDirectionComparison(metrics) !== null || getDirectionConcentrationText(metrics) !== null;
   const hasHighFrequency = getHighFrequencyMetric(metrics) !== null;
   const isLosing =
-    (netPnl !== null && netPnl < 0) || (expectancy !== null && expectancy < 0) || (Number.isFinite(profitFactor) && profitFactor < 1);
-  const hasPositiveEdge = netPnl !== null && netPnl > 0 && expectancy !== null && expectancy > 0 && Number.isFinite(profitFactor) && profitFactor >= 1;
+    (netPnl !== null && netPnl < 0) || (expectancy !== null && expectancy < 0) || (!Number.isNaN(profitFactor) && profitFactor < 1);
+  const hasPositiveEdge = netPnl !== null && netPnl > 0 && expectancy !== null && expectancy > 0 && !Number.isNaN(profitFactor) && profitFactor >= 1;
   const hasStrongRisk =
     riskScore >= 70 &&
     sustainabilityScore >= 70 &&
@@ -1000,25 +1002,19 @@ function buildVerdict(metrics: CopyFullStatsMetrics, rangeLabel: string, sampleQ
   if (isLosing) {
     return `Defensive Mode: ${safeRangeLabel} needs capital protection first (${formatMoney(netPnl)} net, ${formatMoney(
       expectancy,
-    )} expectancy, ${formatRatio(profitFactor)} PF). Reduce risk and rebuild around the cleanest setups before increasing size.`;
+    )} expectancy, ${formatProfitFactor(metrics.summary)} PF). Reduce risk and rebuild around the cleanest setups before increasing size.`;
   }
 
   if (hasPositiveEdge && isFragile) {
-    return `Profitable But Fragile: ${safeRangeLabel} is positive (${formatMoney(netPnl)} net, ${formatRatio(
-      profitFactor,
-    )} PF), but risk, payoff, direction, or frequency needs tightening before this range deserves more size.`;
+    return `Profitable But Fragile: ${safeRangeLabel} is positive (${formatMoney(netPnl)} net, ${formatProfitFactor(metrics.summary)} PF), but risk, payoff, direction, or frequency needs tightening before this range deserves more size.`;
   }
 
   if (hasPositiveEdge && profitFactor >= 1.5 && hasStrongRisk && sampleQuality.tone === "positive") {
-    return `Scaling Candidate: ${safeRangeLabel} shows profitable edge with controlled risk (${formatMoney(netPnl)} net, ${formatRatio(
-      profitFactor,
-    )} PF, risk quality ${formatDecimal(riskScore, 1)}/100 where higher is better). Scale only in small steps while these risk metrics hold.`;
+    return `Scaling Candidate: ${safeRangeLabel} shows profitable edge with controlled risk (${formatMoney(netPnl)} net, ${formatProfitFactor(metrics.summary)} PF, risk quality ${formatDecimal(riskScore, 1)}/100 where higher is better). Scale only in small steps while these risk metrics hold.`;
   }
 
   if (hasPositiveEdge) {
-    return `Profitable But Fragile: ${safeRangeLabel} is profitable (${formatMoney(netPnl)} net, ${formatRatio(
-      profitFactor,
-    )} PF), but keep size steady until sample quality and risk both improve.`;
+    return `Profitable But Fragile: ${safeRangeLabel} is profitable (${formatMoney(netPnl)} net, ${formatProfitFactor(metrics.summary)} PF), but keep size steady until sample quality and risk both improve.`;
   }
 
   return `Insufficient Sample: ${safeRangeLabel} does not have enough complete edge data to produce a trading verdict.`;
@@ -1149,7 +1145,7 @@ export function buildFullStatsText({ metrics, rangeLabel, calendarDays = [], gen
     buildLine("Fees", formatMoney(summary.fees, { showPositiveSign: false })),
     buildLine("Trades", formatInteger(summary.trade_count)),
     buildLine("Win Rate", formatPercent(summary.win_rate)),
-    buildLine("Profit Factor", formatRatio(summary.profit_factor)),
+    buildLine("Profit Factor", formatProfitFactor(summary)),
     buildLine("Profit / Day", formatMetricMoney(metrics.performance.profitPerDay)),
     buildLine("Efficiency / Hour", formatMetricMoney(metrics.performance.efficiencyPerHour)),
     buildLine("Edge (Expectancy)", `${formatMetricMoney(metrics.performance.expectancyPerTrade)} per trade`),
@@ -1327,7 +1323,7 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
   const summary = metrics.summary;
   const netPnl = getMetricValue(metrics.performance.netPnl);
   const expectancy = getMetricValue(metrics.performance.expectancyPerTrade);
-  const profitFactor = summary.profit_factor;
+  const profitFactor = profitFactorValue(summary);
   const winRate = summary.win_rate;
   const breakevenWinRate = getMetricValue(metrics.payoff.breakevenWinRate);
   const drawdownPercentOfNet = getMetricValue(metrics.risk.drawdownPercentOfNet);
@@ -1359,8 +1355,10 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
   if (expectancy !== null && expectancy > 0) {
     doingRight.push(formatStrength(`expectancy is positive at ${formatMoney(expectancy)} per trade.`));
   }
-  if (Number.isFinite(profitFactor) && profitFactor >= 1.5) {
-    doingRight.push(formatStrength(`profit factor is ${formatRatio(profitFactor)}, so winners are covering losers in this sample.`));
+  if (!Number.isNaN(profitFactor) && profitFactor >= 1.5) {
+    doingRight.push(formatStrength(profitFactor === Infinity
+      ? "there is no gross losing P&L in this sample; profit factor is unbounded."
+      : `profit factor is ${formatProfitFactor(summary)}, so winners are covering losers in this sample.`));
   }
   if (breakevenWinRate !== null && Number.isFinite(winRate) && winRate > breakevenWinRate) {
     doingRight.push(formatStrength(`your ${formatPercent(winRate)} win rate is above the ${formatPercent(breakevenWinRate)} breakeven win rate.`));
@@ -1444,8 +1442,8 @@ export function buildStatsCoachSummary({ metrics, rangeLabel }: BuildFullStatsTe
       },
       {
         label: "Profit Factor",
-        value: formatRatio(profitFactor),
-        tone: Number.isFinite(profitFactor) && profitFactor >= 1.5 ? "positive" : Number.isFinite(profitFactor) && profitFactor < 1 ? "negative" : "neutral",
+        value: formatProfitFactor(metrics.summary),
+        tone: !Number.isNaN(profitFactor) && profitFactor >= 1.5 ? "positive" : !Number.isNaN(profitFactor) && profitFactor < 1 ? "negative" : "neutral",
       },
       {
         label: "Risk Quality",

@@ -28,6 +28,8 @@ from sqlalchemy.engine import make_url
 from cryptography.fernet import Fernet
 from urllib.parse import urlsplit
 
+from .input_bounds import MAX_DATABASE_ID, MAX_QUERY_OFFSET, MIN_SUPPORTED_DATE, MAX_SUPPORTED_DATE
+
 from .auth import (
     AuthError,
     AuthUnavailable,
@@ -1193,6 +1195,10 @@ def get_expense_totals(
     else:
         effective_start_date, effective_end_date = _resolve_expense_range_dates(range=range, week_start=week_start)
 
+    if start_created_at is not None:
+        start_created_at = _validated_utc_timestamp(start_created_at)
+    if end_created_at is not None:
+        end_created_at = _validated_utc_timestamp(end_created_at)
     if start_created_at and end_created_at and start_created_at > end_created_at:
         raise HTTPException(status_code=400, detail="start_created_at must be before or equal to end_created_at")
 
@@ -1214,7 +1220,10 @@ def get_expense_totals(
         Expense.category,
         func.coalesce(func.sum(Expense.amount_cents), 0),
         func.count(Expense.id),
-    ).group_by(Expense.category).all()
+        Expense.currency,
+    ).group_by(Expense.category, Expense.currency).all()
+    _require_usd_currencies(row[-1] for row in grouped_rows)
+    grouped_rows = [row[:-1] for row in grouped_rows]
 
     total_amount_cents = sum(int(cents) for _, cents, _ in grouped_rows)
     count = sum(int(row_count) for _, _, row_count in grouped_rows)
@@ -1256,6 +1265,7 @@ def get_financial_summary(
     if account_id is not None:
         _validate_account_id(account_id)
     effective_as_of_date = as_of_date or datetime.now(_NEW_YORK_TZ).date()
+    _validate_supported_date(effective_as_of_date)
 
     expense_query = db.query(Expense).filter(Expense.user_id == user_id)
     if account_id is not None:
@@ -1265,18 +1275,25 @@ def get_financial_summary(
         Expense.category,
         func.coalesce(func.sum(Expense.amount_cents), 0),
         func.count(Expense.id),
-    ).group_by(Expense.expense_date, Expense.category).all()
+        Expense.currency,
+    ).group_by(Expense.expense_date, Expense.category, Expense.currency).all()
+    _require_usd_currencies(row[-1] for row in expense_daily_rows)
+    expense_daily_rows = [row[:-1] for row in expense_daily_rows]
 
     payout_daily_rows = (
         db.query(
             Payout.payout_date,
             func.coalesce(func.sum(Payout.amount_cents), 0),
             func.count(Payout.id),
+            Payout.currency,
         )
         .filter(Payout.user_id == user_id)
-        .group_by(Payout.payout_date)
+        .group_by(Payout.payout_date, Payout.currency)
         .all()
     )
+
+    _require_usd_currencies(row[-1] for row in payout_daily_rows)
+    payout_daily_rows = [row[:-1] for row in payout_daily_rows]
 
     oldest_expense_date = min((row[0] for row in expense_daily_rows), default=None)
     oldest_payout_date = min((row[0] for row in payout_daily_rows), default=None)
@@ -1359,7 +1376,7 @@ def update_expense(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if expense_id <= 0:
+    if not 0 < expense_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
 
     row = (
@@ -1444,7 +1461,7 @@ def delete_expense(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if expense_id <= 0:
+    if not 0 < expense_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="expense_id must be a positive integer")
 
     row = (
@@ -1546,13 +1563,14 @@ def get_payout_totals(
     if end_date is not None:
         query = query.filter(Payout.payout_date <= end_date)
 
-    total_amount_cents, count = query.with_entities(
+    grouped_rows = query.with_entities(
         func.coalesce(func.sum(Payout.amount_cents), 0),
         func.count(Payout.id),
-    ).one()
-
-    total_amount_cents = int(total_amount_cents)
-    count = int(count)
+        Payout.currency,
+    ).group_by(Payout.currency).all()
+    _require_usd_currencies(row[-1] for row in grouped_rows)
+    total_amount_cents = sum(int(row[0]) for row in grouped_rows)
+    count = sum(int(row[1]) for row in grouped_rows)
     average_amount_cents = _calculate_average_amount_cents(total_amount_cents, count)
 
     return {
@@ -1571,7 +1589,7 @@ def update_payout(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if payout_id <= 0:
+    if not 0 < payout_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="payout_id must be a positive integer")
 
     row = (
@@ -1624,7 +1642,7 @@ def delete_payout(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if payout_id <= 0:
+    if not 0 < payout_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="payout_id must be a positive integer")
 
     row = (
@@ -1715,7 +1733,7 @@ def refresh_projectx_account_automation_classification(account_id: int):
     """Fetch one fresh provider classification for the owned account."""
 
     user_id = get_authenticated_user_id()
-    if account_id <= 0:
+    if not 0 < account_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
     if not _ACCOUNT_CLASSIFICATION_REFRESH_SLOTS.acquire(blocking=False):
         raise HTTPException(
@@ -3211,7 +3229,7 @@ def start_account_topbot(
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
-    if account_id <= 0:
+    if not 0 < account_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
     body = BotStartIn(
         dry_run=payload.dry_run,
@@ -3533,7 +3551,7 @@ def emergency_flatten_projectx_account(
     """Stop all local account automation, then request and verify broker flatness."""
 
     user_id = get_authenticated_user_id()
-    if account_id <= 0:
+    if not 0 < account_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
 
     def client_factory() -> ProjectXClient:
@@ -4890,6 +4908,11 @@ def _financial_summary_range_specs(
     return specs
 
 
+def _require_usd_currencies(currencies) -> None:
+    if any(currency != "USD" for currency in currencies):
+        raise HTTPException(status_code=409, detail="Totals unavailable: existing non-USD records require review. No currency conversion has been applied.")
+
+
 def _cents_to_dollars(amount_cents: int) -> float:
     return round(int(amount_cents) / 100, 2)
 
@@ -4920,11 +4943,26 @@ def _first_nonempty_env(*names: str) -> str | None:
 
 
 def _validate_account_id(account_id: int) -> None:
-    if account_id <= 0:
+    if not 0 < account_id <= MAX_DATABASE_ID:
         raise HTTPException(status_code=400, detail="account_id must be a positive integer")
 
 
+def _validate_supported_date(value: date) -> None:
+    if not MIN_SUPPORTED_DATE <= value <= MAX_SUPPORTED_DATE:
+        raise HTTPException(status_code=422, detail="date must be between 0002-01-01 and 9998-12-31")
+
+
+def _validated_utc_timestamp(value: datetime) -> datetime:
+    _validate_supported_date(value.date())
+    normalized = _as_utc(value)
+    _validate_supported_date(normalized.date())
+    return normalized
+
+
 def _validate_date_range(*, start_date: date | None, end_date: date | None) -> None:
+    for value in (start_date, end_date):
+        if value is not None:
+            _validate_supported_date(value)
     if start_date is not None and end_date is not None and start_date > end_date:
         raise HTTPException(status_code=400, detail="start_date must be before or equal to end_date")
 
@@ -4932,12 +4970,14 @@ def _validate_date_range(*, start_date: date | None, end_date: date | None) -> N
 def _validate_pagination(*, limit: int, offset: int, max_limit: int) -> None:
     if limit < 1 or limit > max_limit:
         raise HTTPException(status_code=400, detail=f"limit must be between 1 and {max_limit}")
-    if offset < 0:
-        raise HTTPException(status_code=400, detail="offset must be >= 0")
+    if not 0 <= offset <= MAX_QUERY_OFFSET:
+        raise HTTPException(status_code=400, detail=f"offset must be between 0 and {MAX_QUERY_OFFSET}")
 
 
 def _validate_time_range(*, start: datetime | None, end: datetime | None) -> None:
-    if start and end and _as_utc(start) > _as_utc(end):
+    start = _validated_utc_timestamp(start) if start is not None else None
+    end = _validated_utc_timestamp(end) if end is not None else None
+    if start and end and start > end:
         raise HTTPException(status_code=400, detail="start must be before end")
 
 
@@ -5249,6 +5289,7 @@ def _require_owned_projectx_account(
     account_id: int,
     error_detail: str = "Account not found.",
 ):
+    _validate_account_id(account_id)
     account = get_projectx_account_row(db, account_id, user_id=user_id)
     if account is None:
         raise HTTPException(status_code=404, detail=error_detail)

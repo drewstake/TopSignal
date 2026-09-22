@@ -76,6 +76,22 @@ function formatRecordDate(isoDate: string) {
   return dateFormatter.format(new Date(`${isoDate}T00:00:00.000Z`));
 }
 
+function formatRecordAmount(record: { amount: number; currency: string }) {
+  if (record.currency === "USD") return formatCurrency(record.amount);
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: record.currency, currencyDisplay: "code" }).format(record.amount);
+  } catch {
+    return `${record.amount.toFixed(2)} ${record.currency || "(unknown currency)"}`;
+  }
+}
+
+function financialErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback;
+  return /failed to fetch|networkerror|load failed/i.test(message)
+    ? "Cannot reach TopSignal. Check your connection and that the service is running, then choose Refresh."
+    : message;
+}
+
 function formatExpenseCount(count: number) {
   return `${count.toLocaleString("en-US")} expense${count === 1 ? "" : "s"}`;
 }
@@ -162,6 +178,8 @@ function formatCombineReconciliationError(error: unknown): string {
 }
 
 interface AddExpenseState {
+  mode: "preset" | "general";
+  category: ExpenseCategory;
   accountType: ExpenseAccountPresetType;
   planSize: "50k" | "100k" | "150k";
   stage: ExpenseStage;
@@ -174,6 +192,8 @@ interface AddExpenseState {
 
 function buildInitialAddExpenseState(accountId: string): AddExpenseState {
   return {
+    mode: "preset",
+    category: "other",
     accountType: "standard",
     planSize: "50k",
     stage: "evaluation_fee",
@@ -331,7 +351,7 @@ export function ExpensesPage() {
       }
       setItems([]);
       setTotal(0);
-      setError(err instanceof Error ? err.message : "Failed to load expenses");
+      setError(financialErrorMessage(err, "Failed to load expenses"));
     } finally {
       if (isCurrent()) {
         setLoading(false);
@@ -363,7 +383,7 @@ export function ExpensesPage() {
       }
       setPayoutItems([]);
       setPayoutTotal(0);
-      setPayoutError(err instanceof Error ? err.message : "Failed to load payouts");
+      setPayoutError(financialErrorMessage(err, "Failed to load payouts"));
     } finally {
       if (isCurrent()) {
         setPayoutLoading(false);
@@ -423,7 +443,7 @@ export function ExpensesPage() {
       if (signal?.aborted || !isCurrent()) {
         return;
       }
-      const message = err instanceof Error ? err.message : "Failed to load financial summary";
+      const message = financialErrorMessage(err, "Failed to load financial summary");
       setTotals(null);
       setExpenseMonths([]);
       setPayoutMonths([]);
@@ -580,6 +600,7 @@ export function ExpensesPage() {
   }, [addState.accountType, addState.stage]);
 
   useEffect(() => {
+    if (addState.mode !== "preset") return;
     const preset = getExpensePresetAmountCents(addState.accountType, addState.planSize, addState.stage);
     if (preset !== null) {
       setAddState((current) => ({
@@ -587,13 +608,13 @@ export function ExpensesPage() {
         amount: (preset / 100).toFixed(2),
       }));
     }
-  }, [addState.accountType, addState.planSize, addState.stage]);
+  }, [addState.mode, addState.accountType, addState.planSize, addState.stage]);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
   const payoutTotalPages = Math.max(1, Math.ceil(payoutTotal / PAYOUT_PAGE_SIZE));
   const payoutCurrentPage = Math.floor(payoutOffset / PAYOUT_PAGE_SIZE) + 1;
-  const practiceBlocked = addState.accountType === "practice";
+  const practiceBlocked = addState.mode === "preset" && addState.accountType === "practice";
   const recordedSpendAmount = totals?.total_amount ?? 0;
   const netPayoutTotalAmount = payoutTotals?.total_amount ?? 0;
   const netProfitAmount = netPayoutTotalAmount - recordedSpendAmount;
@@ -631,7 +652,7 @@ export function ExpensesPage() {
     if (demoModeEnabled) {
       return;
     }
-    const confirmed = window.confirm(`Delete expense #${expense.id} for ${formatCurrency(expense.amount)}?`);
+    const confirmed = window.confirm(`Delete expense #${expense.id} for ${formatRecordAmount(expense)}?`);
     if (!confirmed) {
       return;
     }
@@ -651,7 +672,7 @@ export function ExpensesPage() {
     if (demoModeEnabled) {
       return;
     }
-    const confirmed = window.confirm(`Delete payout #${payout.id} for ${formatCurrency(payout.amount)}?`);
+    const confirmed = window.confirm(`Delete payout #${payout.id} for ${formatRecordAmount(payout)}?`);
     if (!confirmed) {
       return;
     }
@@ -684,9 +705,14 @@ export function ExpensesPage() {
       return;
     }
 
+    const expenseCategory = addState.mode === "preset" ? addState.stage : addState.category;
     const amount = parseStrictFiniteNumber(addState.amount);
     if (amount === null || amount < 0) {
       setAddError("Amount must be a non-negative number.");
+      return;
+    }
+    if (expenseCategory !== "other" && amount === 0) {
+      setAddError("Amount must be greater than zero for this category.");
       return;
     }
 
@@ -694,17 +720,17 @@ export function ExpensesPage() {
     try {
       await createExpense({
         expense_date: addState.expenseDate,
-        amount,
-        category: addState.stage,
-        account_type: addState.accountType === "no_activation_dll" ? "no_activation" : addState.accountType,
-        plan_size: addState.planSize,
+        amount: expenseCategory === "refund" ? -amount : amount,
+        category: expenseCategory,
+        account_type: addState.mode === "general" ? undefined : addState.accountType === "no_activation_dll" ? "no_activation" : addState.accountType,
+        plan_size: addState.mode === "general" ? undefined : addState.planSize,
         account_id: parsedModalAccountId,
         description: addState.description.trim() || undefined,
         tags:
-          addState.accountType === "no_activation_dll"
+          addState.mode === "preset" && addState.accountType === "no_activation_dll"
             ? Array.from(new Set([...splitTags(addState.tags), "dll"]))
             : splitTags(addState.tags),
-        is_practice: addState.accountType === "practice",
+        is_practice: practiceBlocked,
       });
 
       setAddOpen(false);
@@ -878,7 +904,7 @@ export function ExpensesPage() {
                 <div key={option.key} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-app-text-soft">{option.label}</p>
-                    <p className="mt-1 text-[10px] leading-4 text-app-muted">{netRangesLoading || !summary ? "Loading..." : `${formatCurrency(summary.payoutAmount)} payouts - ${formatCurrency(summary.expenseAmount)} spend`}</p>
+                    <p className="mt-1 text-[10px] leading-4 text-app-muted">{netRangesError ? "Unavailable" : netRangesLoading || !summary ? "Loading..." : `${formatCurrency(summary.payoutAmount)} payouts - ${formatCurrency(summary.expenseAmount)} spend`}</p>
                   </div>
                   <p className={`shrink-0 text-sm font-semibold tabular-nums ${summary ? getNetProfitAmountClassName(summary.netAmount) : "text-app-text"}`}>
                     {netRangesError ? "—" : netRangesLoading || !summary ? "..." : formatCurrency(summary.netAmount)}
@@ -1030,7 +1056,7 @@ export function ExpensesPage() {
                     <TableRow key={expense.id}>
                       <TableCell className="whitespace-nowrap">{dateFormatter.format(new Date(`${expense.expense_date}T00:00:00.000Z`))}</TableCell>
                       <TableCell><span className="whitespace-nowrap rounded-md border border-app-border/60 bg-app-raised/40 px-2 py-1 text-[11px]">{formatCategoryLabel(expense.category)}</span></TableCell>
-                      <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(expense.amount)}</TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{formatRecordAmount(expense)}</TableCell>
                       <TableCell className="max-w-[340px]" title={expense.description ?? undefined}>
                         <p className="truncate">{expense.description ?? "-"}</p>
                         {expense.tags.length > 0 ? <p className="mt-1 truncate text-[10px] text-app-muted" title={expense.tags.join(", ")}>{expense.tags.join(" · ")}</p> : null}
@@ -1131,7 +1157,7 @@ export function ExpensesPage() {
                   payoutItems.map((payout) => (
                     <TableRow key={payout.id}>
                       <TableCell>{dateFormatter.format(new Date(`${payout.payout_date}T00:00:00.000Z`))}</TableCell>
-                      <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(payout.amount)}</TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{formatRecordAmount(payout)}</TableCell>
                       <TableCell className="max-w-[360px] truncate" title={payout.notes ?? undefined}>
                         {payout.notes ?? "-"}
                       </TableCell>
@@ -1268,9 +1294,25 @@ export function ExpensesPage() {
         open={!demoModeEnabled && addOpen}
         onClose={() => setAddOpen(false)}
         title="Add Expense"
-        description="Use paid-account presets for Topstep evaluation and activation fees."
+        description="Log a trading cost or refund, or use a Topstep fee preset."
       >
         <form className="expenses-form space-y-4" onSubmit={(event) => void handleSubmitNewExpense(event)}>
+          <div>
+            <label htmlFor="expense-entry-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Entry type</label>
+            <Select id="expense-entry-type" value={addState.mode} onChange={(event) => setAddState((current) => ({ ...current, mode: event.target.value as AddExpenseState["mode"], amount: "" }))}>
+              <option value="preset">Topstep fee preset</option>
+              <option value="general">Expense or refund</option>
+            </Select>
+          </div>
+          {addState.mode === "general" ? (
+            <div>
+              <label htmlFor="expense-entry-category" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Expense category</label>
+              <Select id="expense-entry-category" value={addState.category} onChange={(event) => setAddState((current) => ({ ...current, category: event.target.value as ExpenseCategory }))}>
+                {CATEGORY_OPTIONS.map((value) => <option key={value} value={value}>{formatCategoryLabel(value)}</option>)}
+              </Select>
+              {addState.category === "refund" ? <p className="mt-2 text-xs text-app-muted">Enter the amount received as a positive number. It will reduce recorded spend.</p> : null}
+            </div>
+          ) : <>
           <div>
             <label htmlFor="expense-account-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account Type</label>
             <Select
@@ -1335,11 +1377,13 @@ export function ExpensesPage() {
             </div>
           )}
 
+          </>}
           <div>
             <label htmlFor="expense-date" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Date</label>
             <Input
               id="expense-date"
               type="date"
+              required
               value={addState.expenseDate}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1355,6 +1399,7 @@ export function ExpensesPage() {
             <Input
               id="expense-amount"
               type="number"
+              required
               value={addState.amount}
               onChange={(event) =>
                 setAddState((current) => ({

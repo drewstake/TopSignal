@@ -151,7 +151,9 @@ it("skips closed-session live requests on navigation and resumes when the sessio
   vi.setSystemTime(new Date("2026-09-11T21:01:00Z"));
   await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
   expect(stop).toHaveBeenCalledTimes(1);
-});
+// Multiple calendar jumps drain chart timers; allow contention from other test
+// workers without timing out mid-act and contaminating the following cases.
+}, 15_000);
 
 it("keeps an explicit chart Refresh available during a closure", async () => {
   mount();

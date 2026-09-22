@@ -19,7 +19,7 @@ export interface SummaryMetrics {
   trade_count: number;
   net_pnl: number;
   win_rate: number;
-  profit_factor: number;
+  profit_factor: number | null;
   expectancy: number;
   average_win: number;
   average_loss: number;
@@ -192,7 +192,8 @@ export interface AccountSummary {
   win_count: number;
   loss_count: number;
   breakeven_count: number;
-  profit_factor: number;
+  profit_factor: number | null;
+  profit_factor_no_losses?: boolean;
   avg_win: number;
   avg_loss: number;
   avg_win_duration_minutes: number;

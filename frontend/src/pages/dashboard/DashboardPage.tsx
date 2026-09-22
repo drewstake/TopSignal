@@ -1,3 +1,4 @@
+import { formatProfitFactor } from "../../utils/profitFactor";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 
@@ -762,6 +763,7 @@ export function DashboardPage() {
 
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+  const [importBalanceRefresh, setImportBalanceRefresh] = useState<{ accountId: number; pending: boolean; error: string | null } | null>(null);
   const [compactAccountsError, setCompactAccountsError] = useState<string | null>(null);
   const [providerAccountsRefreshing, setProviderAccountsRefreshing] = useState(false);
   const [providerRefreshError, setProviderRefreshError] = useState<string | null>(null);
@@ -960,6 +962,8 @@ export function DashboardPage() {
     [orderedAccounts, accountFromQuery],
   );
   const selectedAccountId = selectedAccount?.id ?? null;
+  const selectedAccountIdRef = useRef(selectedAccountId);
+  selectedAccountIdRef.current = selectedAccountId;
   const {
     selectedDate: activeSelectedTradeDate,
     setSelectedDate: handleSelectedTradeDateChange,
@@ -1391,6 +1395,30 @@ export function DashboardPage() {
     }
     await Promise.all([loadSummaryAndCalendar(), loadTrades(), loadMetricsTrades()]);
   }, [compactMode.enabled, loadMetricsTrades, loadSummaryAndCalendar, loadTrades]);
+
+  const handleImportComplete = useCallback(async () => {
+    if (selectedAccountId === null) return;
+    const accountId = selectedAccountId;
+    const isCurrent = beginAccountsRequest();
+    setImportBalanceRefresh({ accountId, pending: true, error: null });
+    reloadShellAccounts?.();
+    let error: string | null = null;
+    try {
+      const refreshedAccounts = await accountsApi.getSelectableAccountsLocalFirst();
+      if (!isCurrent()) return;
+      setAccounts(refreshedAccounts);
+    } catch {
+      error = "Trades were imported, but the updated balance could not be loaded. Refresh the page to retry.";
+    }
+    // An import for the previous selection must not overwrite its successor's analytics.
+    if (!isCurrent()) return;
+    if (selectedAccountIdRef.current !== accountId) {
+      setImportBalanceRefresh(null);
+      return;
+    }
+    await reloadDashboard();
+    if (isCurrent()) setImportBalanceRefresh({ accountId, pending: false, error });
+  }, [beginAccountsRequest, reloadDashboard, reloadShellAccounts, selectedAccountId]);
 
   useEffect(() => {
     void loadSummaryAndCalendar();
@@ -2399,7 +2427,9 @@ export function DashboardPage() {
   );
   const dashboardCurrentBalance = copyTradeStatsActive
     ? copyTradeTotals.combinedBalance
-    : getAvailableAccountBalance(selectedAccount?.balance ?? null);
+    : importBalanceRefresh?.accountId === selectedAccountId && (importBalanceRefresh.pending || importBalanceRefresh.error)
+      ? null
+      : getAvailableAccountBalance(selectedAccount?.balance ?? null);
   const selectedDayLoadedTradeCount = !copyTradeStatsActive && activeSelectedTradeDate && !tradesLoading && !tradesError ? trades.length : null;
   const displayTradeCount = selectedDayLoadedTradeCount ?? summary.trade_count;
   const displayActiveDays = selectedDayLoadedTradeCount !== null ? (selectedDayLoadedTradeCount > 0 ? 1 : 0) : summary.active_days;
@@ -3497,7 +3527,7 @@ export function DashboardPage() {
           liveAccounts={liveCsvAccounts}
           accountsLoading={accountsLoading}
           accountSetupRequest={liveAccountSetupRequest}
-          onImportComplete={reloadDashboard}
+          onImportComplete={handleImportComplete}
           onAccountCreated={handleLiveImportAccountCreated}
           onAccountSelected={handleLiveImportAccountCreated}
         /> : null}
@@ -3661,8 +3691,8 @@ export function DashboardPage() {
       >
         <DailyAccountBalanceCard
           days={dashboardPnlCalendarDays}
-          loading={pnlCalendarLoading}
-          error={pnlCalendarError}
+          loading={pnlCalendarLoading || (importBalanceRefresh?.accountId === selectedAccountId && importBalanceRefresh.pending)}
+          error={pnlCalendarError ?? (importBalanceRefresh?.accountId === selectedAccountId ? importBalanceRefresh.error : null)}
           currentBalance={dashboardCurrentBalance}
         />
       </ViewportDeferredDashboardCard>
@@ -3862,13 +3892,13 @@ export function DashboardPage() {
               <div className="relative rounded-xl border border-app-text/10 bg-app-bg/35 p-2.5 backdrop-blur-sm">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Badge variant={edgeSignalVariant}>{edgeSignalLabel}</Badge>
-                  <Badge variant="accent">{`PF ${formatNumber(summary.profit_factor)}`}</Badge>
+                  <Badge variant="accent">{`PF ${formatProfitFactor(summary)}`}</Badge>
                   <span className="ml-auto text-[10px] uppercase tracking-[0.12em] text-app-muted">{`WR ${formatPercent(summary.win_rate, 1)}`}</span>
                 </div>
                 <div className="mt-2.5 grid gap-1.5 sm:grid-cols-3">
                   <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Profit Factor</p>
-                    <p className="mt-1 text-sm font-semibold text-app-accent">{formatNumber(summary.profit_factor)}</p>
+                    <p className="mt-1 text-sm font-semibold text-app-accent">{formatProfitFactor(summary)}</p>
                   </div>
                   <div className="rounded-lg border border-app-border/75 bg-app-surface/55 px-2 py-1.5">
                     <p className="text-[10px] uppercase tracking-[0.12em] text-app-muted">Win Rate</p>
