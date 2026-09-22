@@ -3,11 +3,12 @@ const { EventEmitter } = require("node:events");
 const { test } = require("node:test");
 const { startBothProfiles } = require("./dev-both.cjs");
 
-function harness() {
+function harness(options = {}) {
   const launches = [];
   const stopped = [];
   const exits = [];
   const profiles = startBothProfiles({
+    ...options,
     spawnProcess(command, args, options) {
       const child = new EventEmitter();
       launches.push({ command, args, options, child });
@@ -36,6 +37,15 @@ test("starts connected local first, then cloud only after the local backend has 
   });
   h.launches[0].child.emit("message", { type: "topsignal-dev-ready" });
   assert.equal(h.launches.length, 2);
+});
+
+test("live launch opts in only the local supervisor, leaving cloud configuration alone", () => {
+  const h = harness({ liveOrders: true });
+  assert.deepEqual(h.launches[0].args.slice(1), ["--offline", "--topstep", "--live"]);
+  h.launches[0].child.emit("message", { type: "topsignal-dev-ready", backendPort: 8000 });
+  assert.deepEqual(h.launches[1].args.slice(1), []);
+  assert.equal(h.launches[1].options.env.TOPSIGNAL_LIVE_EXECUTION_ENABLED,
+    process.env.TOPSIGNAL_LIVE_EXECUTION_ENABLED);
 });
 
 test("a cloud failure keeps the connected local workspace running", () => {

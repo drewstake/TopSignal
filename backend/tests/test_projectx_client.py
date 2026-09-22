@@ -685,7 +685,8 @@ def test_place_order_uses_projectx_order_place_payload():
     assert response["order_id"] == "9056"
 
 
-def test_place_order_uses_projectx_sell_market_payload_with_brackets():
+@pytest.mark.parametrize("side,stop_ticks,target_ticks", [(0, -4, 8), (1, 4, -8)])
+def test_place_order_uses_signed_projectx_brackets(side, stop_ticks, target_ticks):
     class StubClient(ProjectXClient):
         def __init__(self):
             super().__init__(base_url="https://example.test", username="demo", api_key="demo")
@@ -697,14 +698,16 @@ def test_place_order_uses_projectx_sell_market_payload_with_brackets():
 
     client = StubClient()
 
+    stop_bracket = {"ticks": 4, "type": 4}
+    target_bracket = {"ticks": 8, "type": 1}
     response = client.place_order(
         account_id=123,
         contract_id="CON.F.US.MNQ.M26",
         order_type=2,
-        side=1,
+        side=side,
         size=2,
-        stop_loss_bracket={"ticks": 4, "type": 4},
-        take_profit_bracket={"ticks": 8, "type": 1},
+        stop_loss_bracket=stop_bracket,
+        take_profit_bracket=target_bracket,
         custom_tag="bot-test-sell",
     )
 
@@ -716,16 +719,19 @@ def test_place_order_uses_projectx_sell_market_payload_with_brackets():
                 "accountId": 123,
                 "contractId": "CON.F.US.MNQ.M26",
                 "type": 2,
-                "side": 1,
+                "side": side,
                 "size": 2,
                 "customTag": "bot-test-sell",
-                "stopLossBracket": {"ticks": 4, "type": 4},
-                "takeProfitBracket": {"ticks": 8, "type": 1},
+                "stopLossBracket": {"ticks": stop_ticks, "type": 4},
+                "takeProfitBracket": {"ticks": target_ticks, "type": 1},
             },
             True,
         )
     ]
     assert response["order_id"] == "9057"
+    assert response["request_payload"] == client.calls[0][2]
+    assert stop_bracket == {"ticks": 4, "type": 4}
+    assert target_bracket == {"ticks": 8, "type": 1}
 
 
 def test_cancel_order_sends_numeric_order_id_and_requires_success_acknowledgement():

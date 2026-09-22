@@ -21,6 +21,7 @@ import type {
   ProjectXMarketCandle,
 } from "../../lib/types";
 import { BotMarketPanels } from "./BotMarketPanels";
+import { ManualOrderPanel } from "./ManualOrderPanel";
 import { boundedBotRequest, BotRequestTimeout } from "./botPageRequests";
 import { botConfigurationSummary, botRunStatus, botStrategyLabel, latestBotRun } from "./botRunPresentation";
 import "./BotPage.css";
@@ -61,7 +62,7 @@ type AccountClassificationVerification = {
   state: "verified" | "blocked" | "failed";
 };
 
-function providerClassificationIsFresh(account: AccountInfo | null | undefined, now = Date.now()): boolean {
+function providerClassificationIsFresh(account: Pick<AccountInfo, "provider_classification_observed_at"> | null | undefined, now = Date.now()): boolean {
   if (!account?.provider_classification_observed_at) {
     return false;
   }
@@ -193,6 +194,7 @@ export function BotPage() {
   const runtimeRequestController = useRef<AbortController | null>(null);
   const evaluationRequestController = useRef<AbortController | null>(null);
   const stopRequestInFlight = useRef(false);
+  const openingClassificationChecks = useRef(new Set<number>());
 
   const selectedBot = useMemo(() => {
     if (activeProjectXAccountId === null) {
@@ -260,6 +262,10 @@ export function BotPage() {
     if (!runtimeStatus) {
       return "Waiting for the continuous-worker status check.";
     }
+    if (runtimeStatus.start_admission) {
+      const admission = runtimeStatus.start_admission.dry_run;
+      return admission.allowed ? null : admission.message ?? "The server has not confirmed run availability.";
+    }
     if (runtimeStatus.checks.worker_enabled !== true) {
       return "The continuous worker is disabled on the server.";
     }
@@ -299,13 +305,16 @@ export function BotPage() {
     if (runtimeContinuousBlockReason) {
       return runtimeContinuousBlockReason;
     }
-    if (runtimeStatus?.checks.live_gate !== true) {
+    if (runtimeStatus?.start_admission && !runtimeStatus.start_admission.live.allowed) {
+      return runtimeStatus.start_admission.live.message ?? "The server has not confirmed live-run availability.";
+    }
+    if (!runtimeStatus?.start_admission && runtimeStatus?.checks.live_gate !== true) {
       return "Both server-side live-routing gates must be enabled.";
     }
-    if (runtimeStatus.checks.account_classification_fresh !== true) {
+    if (!runtimeStatus.start_admission && runtimeStatus.checks.account_classification_fresh !== true) {
       return "A fresh simulated-account classification is not confirmed for every armed live account.";
     }
-    if (runtimeStatus.checks.accounts_simulated !== true) {
+    if (!runtimeStatus.start_admission && runtimeStatus.checks.accounts_simulated !== true) {
       return "At least one armed account is not eligible for automated ProjectX routing.";
     }
     if (activeProviderSimulated === false) {
@@ -317,7 +326,7 @@ export function BotPage() {
     if (!activeAccountClassificationFresh) {
       return "The simulated Practice-account classification is stale; wait for a fresh provider observation.";
     }
-    return null;
+    return "TopBot Mathematical is available in Dry Run. Live routing awaits model validation and verified 15-minute exits.";
   }, [activeAccountClassificationFresh, activeProviderSimulated, runtimeContinuousBlockReason, runtimeStatus]);
   const runtimeCanArmContinuous = runtimeContinuousBlockReason === null;
 
@@ -493,6 +502,41 @@ export function BotPage() {
   useEffect(() => {
     void loadConfigs({ showLoading: true });
   }, [loadConfigs]);
+
+  useEffect(() => {
+    if (import.meta.env.VITE_LOCAL_PROJECTX !== "true" || demoModeEnabled || accountsLoading ||
+      activeProjectXAccountId === null || activeAccountClassificationFresh ||
+      activeProviderSimulated === false || classificationVerificationAccountId !== null ||
+      openingClassificationChecks.current.has(activeProjectXAccountId)) return;
+
+    const accountId = activeProjectXAccountId;
+    openingClassificationChecks.current.add(accountId);
+    const token = accountRequestGate.begin(accountId, "opening-classification");
+    setClassificationVerificationAccountId(accountId);
+    // Use the same fresh, scoped provider check as the verification button.
+    void accountsApi.refreshAutomationClassification(accountId)
+      .then(async (account) => {
+        if (!accountRequestGate.isCurrent(token)) return;
+        if (account.account_id !== accountId ||
+          typeof account.provider_simulated !== "boolean" || !providerClassificationIsFresh(account)) {
+          throw new Error("Could not get a fresh account classification from ProjectX. Use Verify Practice account to retry.");
+        }
+        setClassificationOverrides((current) => ({ ...current, [accountId]: {
+          observedAt: account.provider_classification_observed_at ?? null,
+          simulated: account.provider_simulated ?? null,
+        } }));
+        await loadRuntimeStatus();
+      })
+      .catch((err) => {
+        if (!accountRequestGate.isCurrent(token)) return;
+        setClassificationVerification({ accountId, completedAt: new Date().toISOString(), state: "failed",
+          message: err instanceof Error ? err.message : "Account eligibility check failed. Use Verify Practice account to retry." });
+      })
+      .finally(() => {
+        setClassificationVerificationAccountId((current) => current === accountId ? null : current);
+      });
+  }, [accountRequestGate, accountsLoading, activeAccountClassificationFresh, activeProjectXAccountId,
+    activeProviderSimulated, classificationVerificationAccountId, demoModeEnabled, loadRuntimeStatus]);
 
   useEffect(() => {
     if (demoModeEnabled || activeProjectXAccountId === null) {
@@ -964,6 +1008,16 @@ export function BotPage() {
       ) : null}
       </> : null}
 
+      {activeProjectXAccountId !== null ? <ManualOrderPanel
+        key={activeProjectXAccountId}
+        accountId={activeProjectXAccountId}
+        accountName={activeAccount?.name ?? String(activeProjectXAccountId)}
+        demoMode={demoModeEnabled}
+        disabledReason={selectedBot?.enabled ? "Stop automation before placing a manual test order." :
+          runtimeStatus?.checks.live_gate !== true ? "Live order routing is not ready." : null}
+        onFlatten={() => void runEmergencyFlatten()}
+        flattening={emergencyFlattenAccountId !== null}
+      /> : null}
       <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
       <aside className="bot-controls order-1 min-w-0 space-y-4 sm:space-y-0 xl:order-2 xl:space-y-4" aria-label="Bot controls">
       <Card>
@@ -972,7 +1026,7 @@ export function BotPage() {
             <div>
               <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-app-muted">Run configuration</p>
               <CardTitle>{selectedBot?.name ?? "TopBot"}</CardTitle>
-              <CardDescription>{selectedBot ? `${selectedBot.symbol ?? selectedBot.contract_id} · ${botStrategyLabel(selectedBot.strategy_type)}` : "MNQ · TopBot Adaptive"} · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
+              <CardDescription>{selectedBot ? `${selectedBot.symbol ?? selectedBot.contract_id} · ${botStrategyLabel(selectedBot.strategy_type, selectedBot.strategy_params)}` : "MNQ · TopBot Mathematical"} · {activeProjectXAccountId === null ? "No ProjectX account selected" : `${activeAccount?.name} (${activeProjectXAccountId})`}</CardDescription>
               <p className="mt-4 border-t border-app-border/70 pt-4 text-xs leading-6 text-app-muted">{selectedBot ? botConfigurationSummary(selectedBot) : "Start a TopBot run using the current MNQ preset."}</p>
             </div>
           </div>
@@ -999,7 +1053,7 @@ export function BotPage() {
           <div className="space-y-1.5 text-xs leading-5 text-app-muted">
             <p><span className="font-medium text-app-text-soft">Dry Run</span> follows the market without orders.</p>
             <p><span className="font-medium text-app-text-soft">Live Run</span> enables order routing.</p>
-            <p className="pt-1">New runs use TopBot Adaptive on MNQ.</p>
+            <p className="pt-1">New runs use TopBot Mathematical on MNQ: candle-based Bayesian expected payoff. Dry Run only until validation and time-exit execution are complete. Missing models or insufficient evidence produce NO TRADE.</p>
           </div>
           {selectedBot?.enabled && !demoModeEnabled ? <p className="text-xs text-slate-400">Stop automation before starting another run.</p> : null}
         </CardContent>
@@ -1128,7 +1182,7 @@ export function BotPage() {
                     variant="secondary"
                     onClick={() => void verifyAutomationClassification()}
                     disabled={demoModeEnabled || classificationVerificationAccountId !== null}
-                    title={demoModeEnabled ? demoDisabledTitle : "Open a bounded ProjectX user-hub probe for this account"}
+                    title={demoModeEnabled ? demoDisabledTitle : "Fetch a fresh account classification from ProjectX"}
                   >
                     {classificationVerificationAccountId !== null
                       ? `Verifying account ${classificationVerificationAccountId}`

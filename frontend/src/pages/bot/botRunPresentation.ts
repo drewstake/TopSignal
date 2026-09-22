@@ -1,7 +1,8 @@
 import type { BotActivity, BotConfig, BotRun } from "../../lib/types";
 import { TOPBOT_PRESET } from "./botChartIndicators";
 
-export function botStrategyLabel(strategy: string): string {
+export function botStrategyLabel(strategy: string, params?: BotConfig["strategy_params"]): string {
+  if (strategy === "topbot_adaptive" && params?.revision === "mnq_bayesian_payoff_v1") return "TopBot Mathematical";
   if (strategy === "topbot_adaptive") return "TopBot Adaptive";
   return strategy.split("_").map((part) =>
     ["ema", "vwap", "atr", "rsi", "orb", "fvg", "mss", "spy"].includes(part)
@@ -12,7 +13,10 @@ export function botStrategyLabel(strategy: string): string {
 
 export function botConfigurationSummary(bot: BotConfig): string {
   if (bot.strategy_type === "topbot_adaptive") {
-    return `${TOPBOT_PRESET.timeframeUnitNumber}-${TOPBOT_PRESET.timeframeUnit} EMA/VWAP pullback · ${TOPBOT_PRESET.positionSize} contract · ${TOPBOT_PRESET.sessionStart}–${TOPBOT_PRESET.sessionEnd} ET · ${TOPBOT_PRESET.stopPoints}-point stop / ${TOPBOT_PRESET.targetPoints}-point target`;
+    if (bot.strategy_params?.revision === "mnq_bayesian_payoff_v1") {
+      return "5-minute candles · All sessions · Bayesian expected payoff · BUY / SELL / NO TRADE · 15-minute horizon · 1 contract · Dry Run · Level 2 pending verification";
+    }
+    return `${TOPBOT_PRESET.timeframeUnitNumber}-${TOPBOT_PRESET.timeframeUnit} EMA/VWAP pullback · ${TOPBOT_PRESET.positionSize} contract · All sessions · ${TOPBOT_PRESET.stopPoints}-point stop / ${TOPBOT_PRESET.targetPoints}-point target`;
   }
   const params = bot.strategy_params as Record<string, unknown>;
   const parts = [

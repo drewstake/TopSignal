@@ -199,18 +199,25 @@ async function resolveBackendPort(failedPorts = []) {
 }
 
 async function main() {
+  const liveOrders = process.argv.includes("--live");
+  if (liveOrders && (!offline || !process.argv.includes("--topstep"))) {
+    throw new Error("--live requires --offline --topstep; use npm run dev:local:live.");
+  }
   const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
   if (offline) {
     await assertLocalFrontendAvailable();
     requireBackendPython(repoRoot);
     process.env = offlineEnvironment(createEnvironmentSnapshot(process.env, backendEnv), repoRoot, {
       projectx: process.argv.includes("--topstep"),
+      liveOrders,
     });
     fs.mkdirSync(path.join(backendDir, "storage", "offline"), { recursive: true });
     console.log("[OFFLINE] Local SQLite workspace; Google sign-in and cloud storage are disabled.");
     console.log("[OFFLINE] Saved locally in backend/storage/offline; changes do not sync to Supabase.");
     if (process.env.TOPSIGNAL_LOCAL_PROJECTX === "1") {
-      console.log("[LOCAL] Topstep API and dry-run bot worker enabled; live orders remain disabled.");
+      console.log(liveOrders
+        ? "[LOCAL] Topstep API and live order routing enabled. Start and confirm TopBot in the app to send orders."
+        : "[LOCAL] Topstep API and dry-run bot worker enabled; live orders remain disabled.");
     }
   } else {
     requireBackendPython(repoRoot);

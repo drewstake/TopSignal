@@ -58,6 +58,17 @@ describe("App Demo authentication isolation", () => {
     expect(authMocks.subscribe).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])("shows the local launch's live routing state (%s)", (liveOrders) => {
+    vi.stubEnv("DEV", true);
+    vi.stubEnv("VITE_OFFLINE_MODE", "true");
+    vi.stubEnv("VITE_LOCAL_PROJECTX", "true");
+    vi.stubEnv("VITE_LOCAL_LIVE_ORDERS", String(liveOrders));
+    render(<App />);
+    expect(screen.getByRole("status").textContent).toContain(
+      liveOrders ? "Live order routing enabled" : "Live orders disabled",
+    );
+  });
+
   it("offers the separate offline workspace below Google without bypassing cloud authentication", async () => {
     authMocks.demoEnabled.mockReturnValue(false);
     authMocks.bootstrap.mockResolvedValue(null);

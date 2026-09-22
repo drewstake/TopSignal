@@ -37,11 +37,13 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.enabled is False
     assert config.execution_mode == "dry_run"
     assert config.strategy_type == "topbot_adaptive"
-    assert config.strategy_params["revision"] == "mnq_ema_vwap_pullback_v5_bracket_exits"
-    assert config.strategy_params["exit_policy"] == "bracket_only"
-    assert config.strategy_params["directional_bias"] == "long"
-    assert config.strategy_params["short_trend_ema_period"] == 50
-    assert config.strategy_params["stop_points"] == config.strategy_params["target_points"] == 50
+    assert config.trading_start_time == "00:00"
+    assert config.trading_end_time == "23:59"
+    assert config.strategy_params["revision"] == "mnq_bayesian_payoff_v1"
+    assert config.strategy_params["model_version"] == "bayesian_cells_v1"
+    assert config.strategy_params["exit_policy"] == "bracket_or_15_minute_horizon"
+    assert config.strategy_params["routing_policy"] == "dry_run_only"
+    assert "ema_period" not in config.strategy_params
     assert "source_strategies" not in config.strategy_params
     assert _is_contract_allowed(config, contract_id="CON.F.US.MNQ.U26", symbol="F.US.MNQ")
     assert _is_contract_allowed(config, contract_id="CON.F.US.MNQ.Z26", symbol="F.US.MNQ")
@@ -51,13 +53,13 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     config.strategy_params = {"minimum_score": 10}
     db.commit()
 
-    config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=False, contract_id="CON.F.US.MNQ.Z26")
+    config = prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     assert config.id == original_id
     assert config.contract_id == "CON.F.US.MNQ.Z26"
     assert config.order_size == config.max_contracts == 1
-    assert config.strategy_params["ema_period"] == 20
+    assert config.strategy_params["minimum_training_paths"] == 300
     assert "minimum_score" not in config.strategy_params
-    assert config.execution_mode == "live"
+    assert config.execution_mode == "dry_run"
     assert config.enabled is False
     assert db.query(BotConfig).count() == 1
 
@@ -81,7 +83,7 @@ def test_never_overwrites_an_active_bot_or_changes_its_mode(db, running_row):
         config.enabled = True
     db.commit()
     with pytest.raises(ValueError, match="Stop automation"):
-        prepare_topbot(db, user_id=USER, account_id=101, dry_run=False, contract_id="CON.F.US.MNQ.Z26")
+        prepare_topbot(db, user_id=USER, account_id=101, dry_run=True, contract_id="CON.F.US.MNQ.Z26")
     assert config.execution_mode == "dry_run"
 
 
@@ -126,6 +128,19 @@ def test_unavailable_worker_does_not_prepare_a_config(monkeypatch):
     with pytest.raises(HTTPException) as error:
         main.start_account_topbot(101, TopBotStartIn(), db=object())
     assert error.value.status_code == 503
+
+
+def test_live_preset_route_does_not_open_provider_or_prepare_config(monkeypatch):
+    monkeypatch.setattr(main, "get_authenticated_user_id", lambda: USER)
+    monkeypatch.setattr(main, "_validate_bot_start_admission", lambda *a: None)
+    monkeypatch.setattr(main, "_require_owned_projectx_account", lambda *a, **k: type("Account", (), {"trade_data_source": "projectx"})())
+    monkeypatch.setattr(main, "_projectx_client_for_user", lambda *a, **k: pytest.fail("no provider client"))
+    monkeypatch.setattr(main, "prepare_topbot", lambda *a, **k: pytest.fail("no config changes"))
+    with pytest.raises(HTTPException) as error:
+        main.start_account_topbot(101, TopBotStartIn(dry_run=False, confirm_live_order_routing=True),
+                                 db=type("Db", (), {"rollback": lambda self: None})())
+    assert error.value.status_code == 409
+    assert "available for Dry Run" in error.value.detail
 
 
 def test_contract_resolution_ignores_other_instruments_and_expired_deliveries():

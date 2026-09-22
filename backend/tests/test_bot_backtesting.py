@@ -585,7 +585,8 @@ def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
 
 
 
-def test_topbot_only_evaluates_signals_inside_the_configured_session():
+@pytest.mark.parametrize("research", [False, True])
+def test_topbot_evaluation_hours_preserve_frozen_research_sessions(research):
     session_open = datetime(2026, 7, 6, 13, 30, tzinfo=timezone.utc)
     bars = [
         _candle(session_open + timedelta(minutes=5 * index), close_price=100)
@@ -601,6 +602,7 @@ def test_topbot_only_evaluates_signals_inside_the_configured_session():
         bars,
         config=_config(
             strategy_type="topbot_adaptive",
+            strategy_params={"research_revision": "synthetic-session-test"} if research else {},
             trading_start_time="09:30",
             trading_end_time="15:45",
         ),
@@ -610,7 +612,36 @@ def test_topbot_only_evaluates_signals_inside_the_configured_session():
     )
 
     assert result["range"]["bar_count"] == 4
-    assert evaluated == [session_open, session_open + timedelta(minutes=5)]
+    assert evaluated == [session_open + timedelta(minutes=5 * index) for index in range(0 if research else -2, 2)]
+
+
+@pytest.mark.parametrize("research", [False, True])
+def test_topbot_pending_fill_retains_frozen_research_cutoff(research):
+    engine = backtesting_module.BacktestEngine(
+        config=_config(
+            strategy_type="topbot_adaptive",
+            strategy_params={"research_revision": "synthetic-session-test"} if research else {},
+            trading_start_time="09:30", trading_end_time="10:06",
+        ),
+        candles=[_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=5))],
+        signal_evaluator=_hold,
+        settings=backtesting_module.BacktestSettings(
+            start=BASE_TIME, end=BASE_TIME + timedelta(minutes=15),
+            starting_balance=50_000, commission_per_contract=0,
+            slippage_ticks=0, tick_size=.25, tick_value=.5,
+        ),
+    )
+    engine._fill_pending_signal(
+        backtesting_module._PendingSignal(
+            action="BUY", signal_timestamp=BASE_TIME,
+            decision_timestamp=BASE_TIME + timedelta(minutes=5),
+            signal_price=100, reason="session boundary",
+            payload={"stop_loss": 95, "take_profit": 110},
+        ),
+        candle=_candle(BASE_TIME + timedelta(minutes=10)),
+    )
+    assert (engine.position is None) is research
+    assert engine.block_counts["stale_session_signal"] == int(research)
 
 
 def test_orb_evaluator_keeps_the_true_session_open_beyond_configured_lookback():

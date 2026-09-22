@@ -63,7 +63,7 @@ from .trading_day import (
 )
 
 
-BACKTEST_ENGINE_VERSION = "5.3.0-entry-latency-stress"
+BACKTEST_ENGINE_VERSION = "5.4.0-topbot-all-sessions"
 LEGACY_PROJECTX_BACKTEST_ENGINE_VERSION = "1.3.0"
 # Unit tests for the pre-Databento engine can opt in by monkeypatching this
 # process-local constant. It is deliberately not environment-configurable and
@@ -535,9 +535,14 @@ class BacktestEngine:
             raise BacktestConfigurationError("entry_delay_minutes requires observed minute execution")
         self.entry_delay_minutes = entry_delay_minutes
         if str(config.strategy_type) == _TOPBOT_STRATEGY:
+            from .topbot_mathematical import selected
+            if selected(config.strategy_params):
+                raise BacktestConfigurationError("Mathematical models require the chronological probabilistic research runner; a current fitted artifact cannot be replayed over its training history.")
+            research_session_restricted = isinstance(config.strategy_params, dict) and "research_revision" in config.strategy_params
             config = _SourceConfigView(config, strategy_type=_TOPBOT_STRATEGY,
                 strategy_params=bot_service_module._normalize_strategy_params(_TOPBOT_STRATEGY, config.strategy_params),
                 fast_period=int(config.fast_period), slow_period=int(config.slow_period))
+            config._research_session_restricted = research_session_restricted
         self.config = config
         self.progress_callback = progress_callback
         self.cancellation_callback = cancellation_callback
@@ -883,7 +888,7 @@ class BacktestEngine:
             else:
                 signal = self.signal_evaluator(self._evaluator_input(closed_history))
             if signal.action in {"BUY", "SELL"}:
-                if not _inside_session(
+                if (self.strategy_type != _TOPBOT_STRATEGY or getattr(self.config, "_research_session_restricted", False)) and not _inside_session(
                     event_time,
                     start_text=str(self.config.trading_start_time),
                     end_text=str(self.config.trading_end_time),
@@ -1010,6 +1015,8 @@ class BacktestEngine:
             return self._current_event_in_session
         if not futures_session_is_open(timestamp):
             return False
+        if self.strategy_type == _TOPBOT_STRATEGY and not getattr(self.config, "_research_session_restricted", False):
+            return True
         local_time = timestamp.astimezone(TRADING_TZ).time().replace(tzinfo=None)
         start = self._configured_session_start
         end = self._configured_session_end
@@ -1267,12 +1274,20 @@ class BacktestEngine:
         if self.separate_execution_stream and fill_time != self._pending_fill_time(pending):
             self.block_counts["missing_next_execution_minute"] += 1
             return
-        if not _signal_fill_is_in_same_session(
-            pending.decision_timestamp,
-            fill_time,
-            start_text=str(self.config.trading_start_time),
-            end_text=str(self.config.trading_end_time),
-        ):
+        if self.strategy_type == _TOPBOT_STRATEGY and not getattr(self.config, "_research_session_restricted", False):
+            # No runtime entry-hour cutoff, including midnight. Frozen research
+            # retains its configured hours. Do not carry a pending
+            # signal across the exchange's daily close/reopen.
+            fill_is_current = (futures_session_is_open(fill_time)
+                               and trading_day_date(pending.decision_timestamp) == trading_day_date(fill_time))
+        else:
+            fill_is_current = _signal_fill_is_in_same_session(
+                pending.decision_timestamp,
+                fill_time,
+                start_text=str(self.config.trading_start_time),
+                end_text=str(self.config.trading_end_time),
+            )
+        if not fill_is_current:
             self.block_counts["stale_session_signal"] += 1
             return
         desired_side = "long" if pending.action == "BUY" else "short"
@@ -1403,7 +1418,7 @@ class BacktestEngine:
         if not _contract_is_allowed(self.config):
             self.block_counts["contract_not_allowed"] += 1
             return False
-        if not _inside_session(
+        if (self.strategy_type != _TOPBOT_STRATEGY or getattr(self.config, "_research_session_restricted", False)) and not _inside_session(
             timestamp,
             start_text=str(self.config.trading_start_time),
             end_text=str(self.config.trading_end_time),
@@ -2932,7 +2947,10 @@ def _config_for_backtest_request(config: BotConfig, payload: Any) -> Any:
             f"unsupported_backtest_instrument:{instrument}"
         )
     if (str(requested) if requested is not None else str(config.strategy_type)) == _TOPBOT_STRATEGY:
-        from .topbot import TOPBOT_SETTINGS
+        from .topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
+        from .topbot_mathematical import selected
+        if selected(config.strategy_params):
+            raise BacktestConfigurationError("Use research_probabilistic_topbot.py for chronological mathematical-model validation.")
         if instrument not in (None, "MNQ"):
             raise BacktestConfigurationError("TopBot Adaptive trades MNQ only.")
         view = _SourceConfigView(config, strategy_type=_TOPBOT_STRATEGY,
@@ -4951,6 +4969,8 @@ def _event_timestamp_is_in_configured_session(
     timestamp = _as_utc(event_timestamp)
     if not futures_session_is_open(timestamp):
         return False
+    if str(config.strategy_type) == _TOPBOT_STRATEGY and not getattr(config, "_research_session_restricted", False):
+        return True
     session_start, session_end = _session_window_utc_for_reference(
         timestamp,
         start_text=str(config.trading_start_time),

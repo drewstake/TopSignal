@@ -3,6 +3,8 @@ const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
+const { EventEmitter } = require("node:events");
 const { offlineEnvironment } = require("./offline-env.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -64,6 +66,69 @@ test("connected local profile retains Topstep settings without enabling cloud st
   assert.equal(disconnected.PROJECTX_API_KEY, "");
   assert.equal(disconnected.ALLOW_LEGACY_PROJECTX_ENV_CREDENTIALS, "false");
   assert.equal(disconnected.TOPSIGNAL_BOT_WORKER_ENABLED, "false");
+});
+
+test("local live orders require explicit connected opt-in and do not survive a default relaunch", () => {
+  assert.throws(() => offlineEnvironment({}, repoRoot, { liveOrders: true }), /require.*Topstep/);
+  const live = offlineEnvironment({ PROJECTX_API_KEY: "fixture" }, repoRoot, { projectx: true, liveOrders: true });
+  assert.equal(live.TOPSIGNAL_LIVE_EXECUTION_ENABLED, "true");
+  assert.equal(live.TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION, "true");
+  assert.equal(live.TOPSIGNAL_BOT_WORKER_ENABLED, "true");
+  assert.equal(live.VITE_LOCAL_LIVE_ORDERS, "true");
+  assert.equal(live.PROJECTX_API_KEY, "fixture");
+  for (const projectx of [false, true]) {
+    const restarted = offlineEnvironment(live, repoRoot, { projectx });
+    assert.equal(restarted.TOPSIGNAL_LOCAL_LIVE_ORDERS, "0");
+    assert.equal(restarted.TOPSIGNAL_LIVE_EXECUTION_ENABLED, "false");
+    assert.equal(restarted.TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION, "false");
+    assert.equal(restarted.VITE_LOCAL_LIVE_ORDERS, "false");
+  }
+});
+
+test("backend wrapper preserves the supervisor's live choice despite conflicting .env values", async () => {
+  for (const liveOrders of [false, true]) {
+    const launches = [];
+    const parent = {
+      ...offlineEnvironment({}, repoRoot, { projectx: true, liveOrders }),
+      TOPSIGNAL_DEV_MIGRATIONS_APPLIED: "1",
+      TOPSIGNAL_DEV_BACKEND_PORT: "8000",
+    };
+    const fileEnv = {
+      TOPSIGNAL_LOCAL_LIVE_ORDERS: liveOrders ? "0" : "1",
+      TOPSIGNAL_LIVE_EXECUTION_ENABLED: liveOrders ? "false" : "true",
+      TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION: liveOrders ? "false" : "true",
+      DATABASE_URL: "postgresql://cloud.invalid/private",
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "dev-backend.cjs"), "utf8"), {
+      __dirname,
+      process: { env: parent, platform: process.platform, on() {}, stdout: {}, stderr: {}, exit(code) { throw new Error(`unexpected exit ${code}`); } },
+      console: { log() {}, error(message) { throw new Error(message); } },
+      require(name) {
+        if (name === "node:child_process") return { spawn(command, args, options) {
+          launches.push({ command, args, options });
+          const child = new EventEmitter();
+          child.stdout = child.stderr = { pipe() {} };
+          return child;
+        } };
+        if (name === "./backend-source-watcher.cjs") return { watchBackendSources: () => ({ close() {} }) };
+        if (name === "./dev-utils.cjs") return {
+          ...require(name),
+          requireBackendPython: () => "fixture-python",
+          parseDotEnvFile: () => fileEnv,
+          isPortAvailable: async () => true,
+          runDatabaseMigrations() { throw new Error("unexpected migration"); },
+        };
+        return require(name);
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(launches.length, 1);
+    const actual = launches[0].options.env;
+    assert.equal(actual.TOPSIGNAL_LIVE_EXECUTION_ENABLED, String(liveOrders));
+    assert.equal(actual.TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION, String(liveOrders));
+    assert.match(actual.DATABASE_URL, /^sqlite\+pysqlite:/);
+    assert.equal(actual.AUTH_REQUIRED, "false");
+  }
 });
 
 test("offline app boots, saves across restarts and retains normal readiness safeguards", () => {

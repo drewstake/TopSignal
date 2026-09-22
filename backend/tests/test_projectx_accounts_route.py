@@ -64,6 +64,24 @@ def allow_legacy_env_projectx_credentials(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
 
 
+def test_sqlite_account_verification_timestamps_are_returned_as_utc(db_session, monkeypatch):
+    class StubClient:
+        def list_accounts(self, **kwargs):
+            return [{"id": 7001, "name": "Practice", "balance": 10000.0,
+                     "can_trade": True, "is_visible": True, "simulated": True}]
+
+    monkeypatch.setattr(main_module.ProjectXClient, "from_env", lambda: StubClient())
+    list_projectx_accounts(db=db_session)
+    db_session.expire_all()
+    row = db_session.query(Account).filter(Account.external_id == "7001").one()
+    # SQLite drops timezone metadata even when the saved value was UTC-aware.
+    assert row.provider_classification_observed_at.tzinfo is None
+    payload = list_projectx_accounts(refresh_provider=False, db=db_session)[0]
+    for key in ("provider_classification_observed_at", "last_seen_at", "provider_last_successful_refresh_at"):
+        assert payload[key].tzinfo == timezone.utc
+    assert payload["provider_classification_observed_at"] == row.provider_classification_observed_at.replace(tzinfo=timezone.utc)
+
+
 def test_accounts_route_default_view_shows_active_plus_main_with_state_sync(db_session, monkeypatch):
     class StubClient:
         def list_accounts(self, *, only_active_accounts=True):

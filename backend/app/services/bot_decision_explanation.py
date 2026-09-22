@@ -19,6 +19,9 @@ def build_bot_decision_explanation(*, config: Any, signal: Any, decision: Any,
     settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
     is_topbot = str(config.strategy_type) == "topbot_adaptive"
     name = "TopBot EMA/VWAP pullback" if is_topbot else str(config.strategy_type).replace("_", " ").title()
+    from .topbot_mathematical import selected
+    if is_topbot and selected(settings):
+        name = "TopBot Mathematical · Bayesian expected payoff"
     action = str(decision.action)
     strategy_action = str(signal.action)
     risk_checked = strategy_action in {"BUY", "SELL"} and status != "duplicate_skipped"
@@ -44,8 +47,8 @@ def build_bot_decision_explanation(*, config: Any, signal: Any, decision: Any,
             checks.append({"id": "pullback", "label": "20 EMA pullback", "status": "passed" if touched else "failed",
                            "detail": "Previous candle touched the 20 EMA." if touched else "Waiting for the previous candle to touch the 20 EMA."})
         if "ema_slope" in payload and "session_vwap" in payload:
-            checks.append({"id": "ema_vwap", "label": "EMA and regular-session VWAP", "status": "passed" if strategy_action in {"BUY", "SELL"} else "not_evaluated",
-                           "detail": f"20 EMA {payload['ema']:g}, 3-bar EMA change {payload['ema_slope']:g} points; regular-session candle VWAP {payload['session_vwap']:g}. Entry also requires a confirming close beyond the previous candle and in the candle's own direction."})
+            checks.append({"id": "ema_vwap", "label": "EMA and session VWAP", "status": "passed" if strategy_action in {"BUY", "SELL"} else "not_evaluated",
+                           "detail": f"20 EMA {payload['ema']:g}, 3-bar EMA change {payload['ema_slope']:g} points; session candle VWAP {payload['session_vwap']:g}. Entry also requires a confirming close beyond the previous candle and in the candle's own direction."})
         if "short_entry_allowed" in payload:
             allowed = payload["short_entry_allowed"] is True
             checks.append({"id": "short_bias", "label": "Short-entry trend filter", "status": "passed" if allowed else "failed",
@@ -61,10 +64,11 @@ def build_bot_decision_explanation(*, config: Any, signal: Any, decision: Any,
     session_codes = {"outside_session", "outside_trading_session", "exchange_session_closed", "market_closed"}
     session_events = [row for code, row in risk_by_code.items() if code in session_codes]
     configured_session = f"{config.trading_start_time}–{config.trading_end_time} America/New_York"
-    strategy_session = f"{settings.get('session_start', '09:30')}–{settings.get('session_end', '15:45')} America/New_York" if is_topbot else configured_session
+    session_detail = ("TopBot evaluates all sessions while enabled; saved entry/routing windows do not restrict it. "
+                      if is_topbot else f"Strategy entry window: {configured_session}; configured routing window: {configured_session}. ")
     checks.append({"id": "session", "label": "Entry session", "status": "failed" if session_events else "passed" if risk_checked else "not_evaluated",
                    "detail": "; ".join(row.message for row in session_events) if session_events else
-                   f"Strategy entry window: {strategy_session}; configured routing window: {configured_session}. " + ("Scheduled exchange/session routing checks ran at evaluation time." if risk_checked else "Routing session checks were not run because no new order was considered.")})
+                   session_detail + ("Scheduled exchange/session routing checks ran at evaluation time." if risk_checked else "Routing session checks were not run because no new order was considered.")})
     checks.append({"id": "risk", "label": "Account and risk checks", "status": "failed" if blocked else "passed" if risk_checked else "not_evaluated",
                    "detail": "; ".join(row.message for row in risk_events) if risk_events else
                    ("Applicable risk checks passed for this dry-run attempt; no live provider preflight or order was performed." if dry_run and risk_checked else

@@ -48,7 +48,7 @@ def unavailable(*, as_of: datetime, reason: str, data_status: str = "missing") -
 
 
 def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_of: datetime,
-                   root: Path | None = None) -> dict:
+                   root: Path | None = None, all_sessions: bool = False) -> dict:
     """Safe to call only after a Dry Run result; caller never replaces a signal."""
     result = unavailable(as_of=as_of, reason="No fitted, validated replacement is available.")
     try:
@@ -69,7 +69,7 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             result.update(data_status="stale")
             result["reasons"][0] = "Research needs a completed candle delivered within 120 seconds of its close."
             return result
-        f = features(rows, as_of=as_of)
+        f = features(rows, as_of=as_of, all_sessions=all_sessions)
         result.update(data_status="fresh", stop_points=f.stop_points, target_points=math.ceil(f.stop_points * 1.5 / .25) * .25)
         path = model_path(owner, contract_id, rows[-1].live, root=root)
         if not path.exists():

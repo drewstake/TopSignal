@@ -53,7 +53,7 @@ def main():
     from app.models import BotConfig
     from app.services import bot_backtesting as replay, bot_service
     from app.services.databento_cache import DatabentoReplayStore
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
 
     source = args.baseline_source.read_text(encoding="utf-8")
     baseline = ModuleType("app.services._topbot_comparison_baseline")

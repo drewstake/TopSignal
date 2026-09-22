@@ -591,6 +591,15 @@ Typical bot workflow:
 6. `POST /api/bots/{id}/stop` locally stops the latest running bot run without claiming to alter broker state
 7. `POST /api/bots/{id}/emergency-flatten` durably stops automation, cancels all account orders, closes all account positions, and verifies the account is flat
 8. `GET /api/bots/runtime/status` reports worker, lease, provider, classification, and unresolved-submission safety checks
+
+The runtime status also returns the backend's dry-run and live-run admission
+decisions. ProjectX connection checks are scoped to the signed-in user and run
+independently of candle evaluation. Status polling schedules a read-only account
+check when due (normally every 60 seconds); a successful check stays fresh for
+two probe intervals. Starting with unverified health waits at most eight seconds
+for a shared check and rejects the start if verification fails or times out.
+Rate-limit responses retain their retry delay. The page shows the verification
+state, last successful check, and next retry time without requiring a reload.
 9. `GET /api/bots/{id}/activity` returns recent runs, decisions, order attempts, and risk events for the activity tables
 10. `POST /api/bots/{id}/backtests` binary-slices a prebuilt Databento continuous-root mmap and runs an order-routing-free deterministic replay
 
@@ -793,12 +802,18 @@ npm run dev
 That starts:
 
 - the regular cloud/login app on `http://localhost:5173` when available, otherwise Vite's next open port
-- the connected local workspace on `http://127.0.0.1:5174`, with ProjectX and the dry-run bot enabled, saved SQLite data, and live orders disabled
+- the connected local workspace on `http://127.0.0.1:5174`, with ProjectX, saved SQLite data, and live order routing enabled; TopBot still requires a Live Run start and confirmation
 - a separate loopback backend for each app, using available ports starting at `8000`
 
 `npm run dev` starts the local backend first, then starts the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by this command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
 
 Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
+
+The connected local app shows saved accounts immediately and checks ProjectX once each time the app opens or the page reloads, including when no accounts have been saved yet. Switching tabs or accounts does not repeat that discovery check. The Accounts page's Refresh Express Accounts action remains available for changes during a session. A failed startup check leaves saved accounts usable and displays the refresh error; it does not start a retry loop.
+
+The Bot page's **Manual order test** panel sends individual MNQ market entries with attached stop-loss and take-profit brackets to the selected simulated account. Stop automation first, choose quantity and SL/TP distances in ticks, then press Buy or Sell and review the account-specific confirmation. The panel displays broker order IDs, open positions, working bracket prices, and the last ten test attempts. In TopstepX, select **Settings → Risk Settings → Auto OCO Brackets**; API brackets are rejected in Position Brackets mode ([ProjectX documentation](https://gateway.docs.projectx.com/docs/api-reference/order/order-place/)). Defaults are one contract, a 20-tick stop and a 40-tick target. Tests accept 1–10 contracts and cap planned stop risk at $250 before fees/slippage, with fresh provider eligibility and a flat account required for every new entry. Close positions & cancel orders uses the existing confirmed account-wide flatten action. An uncertain response is retained in the order audit: Recover same submission checks its original broker tag and never resends an ambiguous order. No bot run is started by this panel.
+
+To submit TopBot orders to ProjectX, stop the current dev launcher with Ctrl+C and run `npm run dev` (both workspaces) or `npm run dev:local:live` (local only). `npm run dev:live` is an alias of `npm run dev`. These commands enable both server and worker live-routing gates for the local workspace, including after backend reloads. Open `http://127.0.0.1:5174`, select your active account, and use TopBot's Live Run control and confirmation. Starting the launcher does not start a bot. Orders are sent to the broker even when the account is simulated; existing account eligibility and risk checks still apply. The cloud profile retains its own configuration. `dev:local` and `dev:offline` continue to disable local live routing, regardless of `.env` gate values.
 
 Each profile's supervisor prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops its sibling server if one side exits permanently. Before the cloud backend starts accepting requests, its wrapper transactionally applies pending database migrations using the same environment snapshot as the backend. Each supervisor waits for its backend `/ready` check before starting Vite, and passes that backend's matching `VITE_API_BASE_URL` to its frontend.
 
@@ -913,9 +928,11 @@ Frontend auth behavior:
 | `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
 | `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
 | `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Run both the cloud app and the local ProjectX workspace |
+| `npm run dev` | Run both workspaces with live order routing enabled locally |
+| `npm run dev:live` | Alias of `npm run dev` |
 | `npm run dev:cloud` | Run only the regular cloud/login app |
 | `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |
+| `npm run dev:local:live` | Run only the local workspace with ProjectX live order routing enabled |
 | `npm run dev:offline` | Run only the local workspace without broker connections |
 | `npm run dev:backend` | Run backend dev script |
 | `npm run dev:frontend` | Run frontend dev script |

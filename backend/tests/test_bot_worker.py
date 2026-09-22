@@ -281,6 +281,8 @@ def test_continuous_admission_rejects_completed_or_stale_local_worker_task(sessi
 
     runtime._touch_runner_heartbeat()
     with session_factory() as db:
+        assert continuous_start_availability(db, runtime=runtime) == (False, "projectx_provider_unverified")
+        runtime._replace_snapshot(provider_status="ok", last_provider_check_at=datetime.now(timezone.utc))
         assert continuous_start_availability(db, runtime=runtime) == (True, None)
 
 
@@ -338,6 +340,68 @@ def test_continuous_live_admission_requires_independent_worker_live_gate(
             runtime=runtime,
             requested_live=True,
         ) == (False, "bot_worker_live_execution_disabled")
+        assert db.query(BotRun).count() == 0
+
+
+def test_status_and_start_share_user_health_decision_and_refresh_before_admission(session_factory, monkeypatch):
+    import app.main as main_module
+    from app.bot_schemas import BotStartIn
+
+    calls = []
+    runtime = BotWorkerRuntime(
+        session_factory=session_factory,
+        client_factory=lambda db, user_id: SimpleNamespace(
+            timeout_seconds=20, list_accounts=lambda **kwargs: calls.append(user_id),
+        ),
+        settings=_settings(),
+    )
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat()
+    assert runtime._acquire_or_renew_lease()
+    # A stalled global candle cycle cannot certify another user's connection.
+    runtime._replace_snapshot(provider_status="unknown")
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "user-a")
+    with session_factory() as db:
+        status = inspect_bot_runtime(db, runtime=runtime, user_id="user-a").public_dict()
+        admission = status["start_admission"]["dry_run"]
+        assert admission["allowed"] is False
+        assert continuous_start_availability(db, runtime=runtime, user_id="user-a") == (False, admission["reason"])
+        main_module._validate_bot_start_admission(db, BotStartIn(dry_run=True, continuous=True))
+        assert calls == ["user-a"]
+        status = main_module.get_bot_runtime_status(db=db)
+        assert status["start_admission"]["dry_run"]["allowed"] is True
+        assert status["provider_health"]["last_success_at"] is not None
+        assert continuous_start_availability(db, runtime=runtime, user_id="user-a") == (True, None)
+        assert continuous_start_availability(db, runtime=runtime, user_id="user-b") == (False, "projectx_provider_unverified")
+        assert db.query(BotRun).count() == 0
+
+
+def test_failed_probe_blocks_start_without_mutating_runs(session_factory, monkeypatch):
+    import app.main as main_module
+    from app.bot_schemas import BotStartIn
+    from fastapi import HTTPException
+
+    def fail(**kwargs):
+        raise ProjectXClientError("secret provider response", status_code=429, retry_after_seconds=120)
+
+    runtime = BotWorkerRuntime(
+        session_factory=session_factory,
+        client_factory=lambda db, user_id: SimpleNamespace(timeout_seconds=20, list_accounts=fail),
+        settings=_settings(),
+    )
+    runtime._runner_task = SimpleNamespace(done=lambda: False)
+    runtime._touch_runner_heartbeat()
+    assert runtime._acquire_or_renew_lease()
+    monkeypatch.setattr(main_module, "_bot_worker_runtime", runtime)
+    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "user-a")
+    with session_factory() as db:
+        with pytest.raises(HTTPException) as error:
+            main_module._validate_bot_start_admission(db, BotStartIn(dry_run=True, continuous=True))
+        assert error.value.status_code == 503
+        assert error.value.detail["code"] == "projectx_provider_unverified"
+        assert "rate-limiting" in error.value.detail["message"]
+        assert "secret" not in str(error.value.detail)
         assert db.query(BotRun).count() == 0
 
 
@@ -683,12 +747,12 @@ def test_recovered_live_run_allows_ready_without_reauthorizing_routing(
         assert run.stop_reason == "worker_restart_requires_rearm"
         assert run.raw_state["live_routing_confirmed"] is False
         assert db.get(BotConfig, 1).enabled is False
-        assert continuous_start_availability(db, runtime=runtime) == (True, None)
+        assert continuous_start_availability(db, runtime=runtime) == (False, "projectx_provider_unverified")
         # The operator can prepare a fresh run without first stopping an
         # already-stopped bot. Preparation itself cannot authorize routing.
         config = prepare_topbot(
             db, user_id="user-a", account_id=101,
-            dry_run=False, contract_id="CON.F.US.MNQ.U26",
+            dry_run=True, contract_id="CON.F.US.MNQ.U26",
         )
         assert config.id == 1
         assert config.enabled is False

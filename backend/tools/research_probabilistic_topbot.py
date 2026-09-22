@@ -71,6 +71,7 @@ def read_candles(path: Path, contract: str, owner_hash: str | None):
     connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
+        connection.execute("BEGIN")  # One consistent read snapshot if the local app is writing concurrently.
         owners = [row[0] for row in connection.execute(
             "SELECT DISTINCT user_id FROM projectx_market_candles WHERE contract_id=? AND live=0 AND unit='minute' AND unit_number=5", (contract,))]
         if owner_hash:
@@ -107,7 +108,7 @@ def incumbent_replay(rows, start, end, eligible_entry_days):
     """Use the actual production evaluator and engine; no copied EMA implementation."""
     from app.models import BotConfig
     from app.services.bot_backtesting import run_backtest
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
     from app.services.topbot_strategy import evaluate
     from app.services.bot_service import SignalResult
     from app.services.probabilistic_strategy import ET

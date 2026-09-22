@@ -5,12 +5,13 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Callable
 
 from ..db import SessionLocal
 from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_hubs import ProjectXHubRunner
-from .projectx_client import ProjectXClient
+from .projectx_client import ProjectXClient, ProjectXClientError
 from .projectx_accounts import (
     TRADE_DATA_SOURCE_PROJECTX,
     get_projectx_account_row,
@@ -184,7 +185,7 @@ def refresh_projectx_account_classification_once(
     client_factory: Callable[[], ProjectXClient],
     timeout_seconds: float = 10.0,
 ) -> ProjectXAccountClassificationObservation:
-    """Fail-closed, bounded one-shot refresh from GatewayUserAccount.
+    """Refresh from Account/search, falling back to GatewayUserAccount.
 
     Any cached timestamp is invalidated before opening the user hub.  Success
     requires this exact probe to persist a boolean classification observed
@@ -197,6 +198,7 @@ def refresh_projectx_account_classification_once(
     if int(account_id) <= 0:
         raise ValueError("classification refresh requires a positive account_id")
     timeout = min(15.0, max(0.5, float(timeout_seconds)))
+    deadline = monotonic() + timeout
     probe_started_at = datetime.now(timezone.utc)
 
     with SessionLocal() as db:
@@ -216,6 +218,29 @@ def refresh_projectx_account_classification_once(
             account_id=int(account_id),
         )
         db.commit()
+
+    # Account/search already supplies an authoritative simulated boolean on
+    # current ProjectX accounts. A quiet user hub need not emit an account
+    # change merely because we subscribed, so prefer this fresh snapshot.
+    try:
+        client = client_factory()
+        client.timeout_seconds = min(client.timeout_seconds, timeout)
+        accounts = client.list_accounts(only_active_accounts=False)
+    except ProjectXClientError:
+        accounts = []
+    account = next((a for a in accounts if a.get("id") == int(account_id)), None)
+    if account is not None and isinstance(account.get("simulated"), bool):
+        observed_at = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            persist_projectx_account_classification(db, user_id=normalized_user_id,
+                account_id=int(account_id), simulated=account["simulated"], observed_at=observed_at)
+            db.commit()
+        return ProjectXAccountClassificationObservation(account_id=int(account_id),
+            provider_simulated=account["simulated"], provider_classification_observed_at=observed_at,
+            source="projectx_account_search")
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ProjectXAccountClassificationProbeTimeout("projectx_account_classification_timeout")
 
     runner = ProjectXHubRunner(
         tracker=StreamingPnlTracker(
@@ -238,7 +263,7 @@ def refresh_projectx_account_classification_once(
     )
     try:
         payload = asyncio.run(
-            runner.probe_user_account_once(timeout_seconds=timeout)
+            runner.probe_user_account_once(timeout_seconds=remaining)
         )
     except (asyncio.TimeoutError, TimeoutError) as exc:
         raise ProjectXAccountClassificationProbeTimeout(

@@ -113,7 +113,8 @@ def contiguous(rows: Sequence[Candle]) -> bool:
     )
 
 
-def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float = 1.0) -> Features:
+def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float = 1.0,
+             all_sessions: bool = False) -> Features:
     """No sorting, interpolation, cross-owner pooling or partial-bar substitution."""
     if not math.isfinite(stop_multiplier) or stop_multiplier <= 0:
         raise ValueError("Invalid stop multiplier.")
@@ -124,7 +125,7 @@ def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float 
     if decision_at > utc(as_of):
         raise ValueError("A feature candle has not closed at decision time.")
     local = decision_at.astimezone(ET)
-    if local.weekday() >= 5 or not time(9, 35) <= local.time() <= time(15, 30):
+    if not all_sessions and (local.weekday() >= 5 or not time(9, 35) <= local.time() <= time(15, 30)):
         raise ValueError("Outside the 09:35–15:30 ET research entry window.")
     changes = np.diff([row.close for row in window])
     sigma = float(np.sqrt(np.mean(changes ** 2)))

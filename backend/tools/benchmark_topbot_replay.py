@@ -47,7 +47,7 @@ def main() -> None:
     from app.models import BotConfig
     from app.services import bot_backtesting as replay
     from app.services.databento_cache import DatabentoReplayStore
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
 
     store = DatabentoReplayStore(args.cache_dir)
     try:

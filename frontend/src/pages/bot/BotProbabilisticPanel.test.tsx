@@ -34,8 +34,14 @@ describe("probabilistic Dry Run explanation", () => {
     expect(screen.getByText(/Uncalibrated model probabilities/)).toBeTruthy();
     expect(screen.getAllByText("$-2.00")).toHaveLength(2);
     expect(screen.getByText("80.0%")).toBeTruthy();
-    expect(screen.getByText(/Shadow proposal: BUY. Routing remains disabled/)).toBeTruthy();
+    expect(screen.getByText(/Shadow proposal: BUY. Live routing remains disabled/)).toBeTruthy();
     expect(screen.getByText(/NO TRADE · validation incomplete/)).toBeTruthy();
     expect(screen.getByText(/age at evaluation 0s/)).toBeTruthy();
+  });
+  it("identifies the selected model as the source of the actual Dry Run decision", () => {
+    render(<BotProbabilisticPanel research={missing} selectedStrategy />);
+    expect(screen.getByText("Selected mathematical strategy · Dry Run")).toBeTruthy();
+    expect(screen.getByText(/This forecast supplies the strategy decision above/)).toBeTruthy();
+    expect(screen.queryByText(/Dry Run shadow/)).toBeNull();
   });
 });

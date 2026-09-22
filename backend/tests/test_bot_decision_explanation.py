@@ -69,11 +69,13 @@ def test_actual_topbot_warmup_hold_is_explained_without_claiming_risk_permission
     assert research["action"] == "NO_TRADE"
     assert research["routing_allowed"] is False
     assert research["forecasts"] is None
+    assert research["depth"]["action"] == "NO_TRADE"
+    assert research["depth"]["forecasts"] is None
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_probabilistic_shadow_cannot_change_strategy_or_cross_live_boundary(db_session, monkeypatch, open_exchange_session, dry_run):
-    from app.services import probabilistic_shadow
+    from app.services import probabilistic_shadow, depth_shadow
     account, config = _add_account_and_config(db_session, execution_mode="dry_run" if dry_run else "live")
     config.strategy_type = "topbot_adaptive"
     db_session.flush()
@@ -85,6 +87,14 @@ def test_probabilistic_shadow_cannot_change_strategy_or_cross_live_boundary(db_s
         result["research_action"] = "BUY"
         return result
     monkeypatch.setattr(probabilistic_shadow, "explain_shadow", shadow)
+    depth_calls = []
+    original_depth = depth_shadow.explain_depth
+    def depth_explanation(**kwargs):
+        depth_calls.append(kwargs)
+        value = original_depth(**kwargs)
+        value["research_action"] = "SELL"
+        return value
+    monkeypatch.setattr(depth_shadow, "explain_depth", depth_explanation)
     client = RecordingClient()
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account,
                                               client=client, dry_run=dry_run)
@@ -92,6 +102,7 @@ def test_probabilistic_shadow_cannot_change_strategy_or_cross_live_boundary(db_s
     assert result.order_attempt is None and client.place_order_calls == []
     assert client.cancel_order_calls == [] and client.close_position_calls == []
     assert bool(calls) == dry_run
+    assert bool(depth_calls) == dry_run
     if dry_run:
         assert calls[0]["owner"] == USER_A and calls[0]["contract_id"] == config.contract_id
     else:

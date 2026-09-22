@@ -1,0 +1,93 @@
+{
+  "assessed_at": "2026-09-22",
+  "scope": "Existing local environment credential profile; simulated market-data subscription; no billing account lookup",
+  "authentication": "verified",
+  "active_contract": "CON.F.US.MNQ.Z26",
+  "observed_capability": "level1_only",
+  "level2_entitlement": "not_verified",
+  "paid_subscription_status": "not_inspected",
+  "market_depth_subscribe_accepted": true,
+  "observed_depth_types": {
+    "6": 2,
+    "5": 1693,
+    "3": 830,
+    "4": 820,
+    "8": 2,
+    "7": 2
+  },
+  "explicit_bid_ask_depth_events": 0,
+  "record_counts": {
+    "connect": 2,
+    "depth": 3349,
+    "disconnect": 2,
+    "end": 2,
+    "gap": 156,
+    "quote": 896,
+    "trade": 1207,
+    "candle": 36
+  },
+  "total_raw_events": 5650,
+  "total_bytes": 3047678,
+  "total_wall_seconds": 75.635184,
+  "unrecognized_payload_markers": 156,
+  "sentinel_provider_timestamps": 1129,
+  "usable_synchronized_level2_seconds": 0,
+  "paired_sessions": 0,
+  "provider_sequence": "not_exposed",
+  "snapshot_completion": "not_documented_or_verified",
+  "order_ids_and_counts": "not_exposed",
+  "aggressor_side": "TradeLogType present; aggressor semantics not explicitly documented",
+  "conflation_frequency": "not_documented; arrival counts are observations, not guarantees",
+  "historical_depth": "no endpoint established in reviewed official docs",
+  "captures": [
+    {
+      "capture_id": "b18468b400784bbc85f823cbd9b90e50",
+      "started_at": "2026-09-22T06:02:54.693004+00:00",
+      "finished_at": "2026-09-22T06:03:40.009692+00:00",
+      "raw_events": 3614,
+      "bytes": 1955632,
+      "segment_hashes": [
+        "3d059854db4383cdfc69bc0fc18d545285c52abea44d4e5506e52721c4b9e059"
+      ],
+      "contract_metadata": {
+        "active": true,
+        "contract_id": "CON.F.US.MNQ.Z26",
+        "tick_size": 0.25,
+        "tick_value": 0.5
+      },
+      "subscription_acknowledgements": {
+        "SubscribeContractMarketDepth": "accepted",
+        "SubscribeContractQuotes": "accepted",
+        "SubscribeContractTrades": "accepted"
+      }
+    },
+    {
+      "capture_id": "aac25240f76f45889635dffd3653de87",
+      "started_at": "2026-09-22T06:15:17.601322+00:00",
+      "finished_at": "2026-09-22T06:15:47.919818+00:00",
+      "raw_events": 2036,
+      "bytes": 1092046,
+      "segment_hashes": [
+        "7574574eb5eb43da59b5e0802ac7ea8914f2030b7603b64b295e3f2ae28f1907"
+      ],
+      "contract_metadata": {
+        "active": true,
+        "contract_id": "CON.F.US.MNQ.Z26",
+        "tick_size": 0.25,
+        "tick_value": 0.5
+      },
+      "subscription_acknowledgements": {
+        "SubscribeContractMarketDepth": "accepted",
+        "SubscribeContractQuotes": "accepted",
+        "SubscribeContractTrades": "accepted"
+      }
+    }
+  ],
+  "storage": "local ignored files only; no cloud data writes",
+  "source_documents": [
+    "https://gateway.docs.projectx.com/docs/realtime/",
+    "https://gateway.docs.projectx.com/docs/getting-started/rate-limits/",
+    "https://help.topstep.com/en/articles/8284120-level-1-and-level-2-market-data",
+    "https://help.topstep.com/en/articles/11187768-topstepx-api-access"
+  ]
+}

@@ -186,7 +186,7 @@ def test_runner_style_loading_without_file_global_supports_private_original_depe
 
 def test_center_and_original_produce_identical_synthetic_execution_ledgers():
     from app.services import bot_backtesting as replay
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
     from test_bot_backtesting import _config
     from tools.research_topbot import make_engine_class
 

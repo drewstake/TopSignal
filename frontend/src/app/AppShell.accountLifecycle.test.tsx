@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -67,6 +68,7 @@ function deferred<T>() {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   window.localStorage.clear();
   getSelectableAccountsLocalFirstMock.mockReset();
   getSelectableAccountsMock.mockReset();
@@ -74,6 +76,55 @@ afterEach(() => {
 });
 
 describe("AppShell account lifecycle reconciliation", () => {
+  it("discovers local accounts on opening with an empty snapshot, once across selection and navigation", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.stubEnv("VITE_LOCAL_PROJECTX", "true");
+    const discovered = [account(7101, "Express First", "projectx", true), account(7102, "Express Second", "projectx", false)];
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([]);
+    getSelectableAccountsMock.mockResolvedValue(discovered);
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />,
+      children: [{ index: true, element: <div>Dashboard</div> }, { path: "accounts", element: <div>Accounts</div> }],
+    }]);
+    render(<StrictMode><RouterProvider router={router} /></StrictMode>);
+
+    await screen.findByRole("option", { name: /Express First/ });
+    const select = screen.getByRole("combobox", { name: "Active Account" }) as HTMLSelectElement;
+    expect(select.value).toBe("7101");
+    fireEvent.change(select, { target: { value: "7102" } });
+    await act(async () => { await router.navigate("/accounts?account=7102"); });
+    expect(select.value).toBe("7102");
+    expect(getSelectableAccountsMock).toHaveBeenCalledExactlyOnceWith({ refreshProvider: true });
+  });
+
+  it("keeps saved local accounts usable when the one startup refresh fails", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.stubEnv("VITE_LOCAL_PROJECTX", "true");
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([account(7101, "Express Saved", "projectx", true)]);
+    getSelectableAccountsMock.mockRejectedValue(new Error("ProjectX temporarily unavailable"));
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />,
+      children: [{ index: true, element: <div>Dashboard</div> }],
+    }]);
+    render(<RouterProvider router={router} />);
+    expect((await screen.findByRole("alert")).textContent).toContain("ProjectX account refresh failed");
+    expect(screen.getByRole("option", { name: /Express Saved/ })).not.toBeNull();
+    expect(getSelectableAccountsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not discover accounts in a disconnected empty workspace", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.stubEnv("VITE_LOCAL_PROJECTX", "false");
+    getSelectableAccountsLocalFirstMock.mockResolvedValue([]);
+    const router = createMemoryRouter([{
+      path: "/", element: <AppShell />,
+      children: [{ index: true, element: <div>Dashboard</div> }],
+    }]);
+    render(<RouterProvider router={router} />);
+    await waitFor(() => expect(getSelectableAccountsLocalFirstMock).toHaveBeenCalled());
+    expect(getSelectableAccountsMock).not.toHaveBeenCalled();
+  });
+
   it("turns the Live account action into an enabled upload request", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     const live = account(88001, "Live Active", "csv_import", true);

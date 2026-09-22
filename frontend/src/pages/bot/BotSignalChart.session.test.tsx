@@ -113,7 +113,7 @@ it("renders TopBot's strategy overlays instead of legacy 9/21 average legends", 
     activity={null} lastEvaluation={null} refreshToken={0} demoMode />);
   expect(screen.getByText("EMA 20")).not.toBeNull();
   expect(screen.getByText("EMA 50 · short filter")).not.toBeNull();
-  expect(screen.getByText("TopBot VWAP · 09:30–15:45 ET")).not.toBeNull();
+  expect(screen.getByText("TopBot VWAP · resets 09:30 / 18:00 ET")).not.toBeNull();
   expect(screen.queryByText("Fast EMA 9")).toBeNull();
 });
 

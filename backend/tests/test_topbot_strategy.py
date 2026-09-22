@@ -13,7 +13,7 @@ from app.models import BotConfig
 from app.bot_schemas import BotBacktestIn
 from app.services import bot_backtesting as replay
 from app.services import bot_service
-from app.services.topbot import TOPBOT_SETTINGS
+from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
 from app.services.topbot_strategy import evaluate, HISTORY_BARS, REVISION, RULES
 
 
@@ -185,7 +185,7 @@ def test_opposite_entry_cannot_flatten_or_reverse_an_open_trade(short):
     assert any("atomic reversal not supported" in note for note in result["notes"])
 
 
-@pytest.mark.parametrize("case", ["warmup", "partial", "opening_missing", "middle_missing", "no_volume", "no_touch", "no_confirmation", "vwap_opposed", "wrong_instrument", "wrong_timeframe", "weekend", "session_ended"])
+@pytest.mark.parametrize("case", ["warmup", "partial", "opening_missing", "middle_missing", "no_volume", "no_touch", "no_confirmation", "vwap_opposed", "wrong_instrument", "wrong_timeframe"])
 def test_setup_waits_when_a_required_condition_is_missing(case):
     rows = setup_candles()
     if case == "warmup":
@@ -207,11 +207,33 @@ def test_setup_waits_when_a_required_condition_is_missing(case):
         for row in rows: row.symbol, row.contract_id = "MES", "CON.F.US.MES.U26"
     elif case == "wrong_timeframe":
         for row in rows: row.unit_number = 1
-    elif case == "weekend":
-        for row in rows: row.candle_timestamp -= timedelta(days=1)
-    elif case == "session_ended":
-        for row in rows: row.candle_timestamp += timedelta(hours=5, minutes=40)
     assert evaluate(rows).action == "HOLD"
+
+
+@pytest.mark.parametrize("end", [
+    datetime(2026, 7, 6, 6, 5, tzinfo=timezone.utc),   # overnight
+    datetime(2026, 7, 6, 13, 25, tzinfo=timezone.utc), # before the regular open
+    datetime(2026, 7, 6, 20, 5, tzinfo=timezone.utc), # after the former cutoff
+    datetime(2026, 7, 5, 22, 5, tzinfo=timezone.utc), # Sunday reopening
+    datetime(2026, 1, 5, 7, 5, tzinfo=timezone.utc),  # winter overnight
+])
+@pytest.mark.parametrize("short", [False, True])
+def test_setups_are_evaluated_across_all_sessions(end, short):
+    rows = setup_candles(short=short)
+    offset = end - rows[-1].candle_timestamp
+    for row in rows:
+        row.candle_timestamp += offset
+    signal = evaluate(rows)
+    assert signal.action == ("SELL" if short else "BUY")
+    assert signal.raw_payload["session_vwap"] > 0
+
+
+def test_overnight_vwap_still_requires_complete_candles():
+    rows = setup_candles()
+    for row in rows:
+        row.candle_timestamp -= timedelta(hours=8)
+    del rows[-4]
+    assert "missing candles" in evaluate(rows).reason
 
 
 def test_bracket_distance_does_not_depend_on_pullback_size_or_atr(monkeypatch):
@@ -280,6 +302,29 @@ def test_replay_roll_clears_old_delivery_warmup():
     )
     assert output["trades"] == []
     assert any("delivery change" in note for note in output["notes"])
+
+
+def test_overnight_replay_ignores_old_saved_entry_window():
+    rows = setup_candles()
+    for row in rows:
+        row.candle_timestamp -= timedelta(hours=8)
+    signal_bar = rows[-1]
+    next_bar = deepcopy(signal_bar)
+    next_bar.candle_timestamp += timedelta(minutes=5)
+    next_bar.open_price = next_bar.close_price = 100.25
+    next_bar.high_price, next_bar.low_price = 151, 99
+    rows.append(next_bar)
+    saved = config()
+    saved.trading_start_time, saved.trading_end_time = "09:30", "15:45"
+    output = replay.run_backtest(
+        config=saved, candles=rows, start=signal_bar.candle_timestamp,
+        end=next_bar.candle_timestamp + timedelta(minutes=5), starting_balance=50000,
+        commission_per_contract=1.2, slippage_ticks=1, tick_size=.25, tick_value=.5,
+        include_evaluation_split=False,
+    )
+    assert len(output["trades"]) == 1
+    assert output["trades"][0]["entry_timestamp"] == next_bar.candle_timestamp.isoformat()
+    assert output["trades"][0]["exit_reason"] == "take_profit"
 
 
 def test_new_backtest_uses_code_defaults_without_mutating_old_config():

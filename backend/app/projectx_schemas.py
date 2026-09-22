@@ -43,7 +43,7 @@ class ProjectXAccountAutomationClassificationOut(BaseModel):
     account_id: int
     provider_simulated: bool
     provider_classification_observed_at: datetime
-    source: Literal["projectx_user_hub"]
+    source: Literal["projectx_user_hub", "projectx_account_search"]
 
 
 class TopstepLiveAccountCreateIn(BaseModel):

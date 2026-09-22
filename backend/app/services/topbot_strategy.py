@@ -1,4 +1,4 @@
-"""TopBot v5: long-biased MNQ pullbacks held for a fixed 50/50-point bracket.
+"""TopBot v6: all-session MNQ pullbacks with a fixed 50/50-point bracket.
 
 Tune the constants here, then validate a new revision. There are no source
 strategies, votes, quality scores, or learned parameters in this strategy.
@@ -9,7 +9,7 @@ from datetime import datetime, time, timedelta, timezone
 from .trading_day import TRADING_TZ
 
 
-REVISION = "mnq_ema_vwap_pullback_v5_bracket_exits"
+REVISION = "mnq_ema_vwap_pullback_v6_all_sessions"
 HISTORY_BARS = 200
 RULES = {
     "revision": REVISION,
@@ -23,8 +23,9 @@ RULES = {
     "stop_points": 50.0,
     "target_points": 50.0,
     "tick_size": 0.25,
-    "session_start": "09:30",
-    "session_end": "15:45",
+    "session_start": "00:00",
+    "session_end": "23:59",
+    "vwap_reset_times": ["09:30", "18:00"],
 }
 
 
@@ -58,16 +59,15 @@ def evaluate(candles):
         return hold("TopBot trades MNQ only.")
 
     local = timestamp.astimezone(TRADING_TZ)
-    start_time = time.fromisoformat(RULES["session_start"])
-    end_time = time.fromisoformat(RULES["session_end"])
-    # The decision becomes available at this bar's close, never its open.
-    decision_local = local + timedelta(minutes=5)
-    if local.weekday() >= 5 or not start_time <= decision_local.time() <= end_time:
-        return hold("TopBot is outside its entry session.")
-    session_start = datetime.combine(local.date(), start_time, tzinfo=TRADING_TZ).astimezone(timezone.utc)
+    # VWAP resets at the regular and overnight opens; these are indicator
+    # anchors, never entry windows. Both segments fit the 200-bar lookback.
+    anchors = [datetime.combine(local.date(), time.fromisoformat(value), tzinfo=TRADING_TZ)
+               for value in RULES["vwap_reset_times"]]
+    session_start = max(anchor if anchor <= local else anchor - timedelta(days=1)
+                        for anchor in anchors).astimezone(timezone.utc)
     session = [row for row in closed if indicators._as_utc(row.candle_timestamp) >= session_start]
     if len(session) < 2 or indicators._as_utc(session[0].candle_timestamp) != session_start:
-        return hold("TopBot needs the complete regular-session candle history for VWAP.")
+        return hold("TopBot needs at least two candles and complete history since the latest VWAP reset.")
     if any(indicators._as_utc(row.candle_timestamp) != session_start + timedelta(minutes=5 * index)
            for index, row in enumerate(session)):
         return hold("TopBot skipped a session with missing candles.")

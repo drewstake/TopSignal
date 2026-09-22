@@ -56,6 +56,8 @@ from .bot_worker import (
     continuous_start_availability,
     inspect_bot_runtime,
 )
+from .manual_order_schemas import ManualOrderTestIn
+from .services.manual_order_tests import get_manual_order_test_state, submit_manual_order_test
 from .expense_schemas import (
     CombineTrackerSuppressionsOut,
     ExpenseCategory,
@@ -931,6 +933,8 @@ def get_bot_runtime_status(db: Session = Depends(get_db)):
             "counts": {},
         }
     user_id = get_authenticated_user_id()
+    if runtime.settings.enabled:
+        runtime.provider_health.refresh(user_id)
     return inspect_bot_runtime(db, runtime=runtime, user_id=user_id).public_dict()
 
 
@@ -1708,7 +1712,7 @@ def metrics_behavior(
     response_model=ProjectXAccountAutomationClassificationOut,
 )
 def refresh_projectx_account_automation_classification(account_id: int):
-    """Fetch one fresh simulated/live classification from the scoped user hub."""
+    """Fetch one fresh provider classification for the owned account."""
 
     user_id = get_authenticated_user_id()
     if account_id <= 0:
@@ -1765,7 +1769,7 @@ def refresh_projectx_account_automation_classification(account_id: int):
         provider_classification_observed_at=(
             observation.provider_classification_observed_at
         ),
-        source="projectx_user_hub",
+        source=observation.source,
     )
 
 
@@ -3171,15 +3175,28 @@ def _validate_bot_start_admission(db: Session, body: BotStartIn) -> None:
         runtime = _bot_worker_runtime
         if runtime is None:
             raise HTTPException(status_code=503, detail="bot_worker_not_started")
+        user_id = get_authenticated_user_id()
         available, reason = continuous_start_availability(
             db,
             runtime=runtime,
             requested_live=body.dry_run is False,
+            user_id=user_id,
         )
+        if reason == "projectx_provider_unverified":
+            # Deduplicated, read-only, and deadline bounded. Unknown health
+            # never authorizes a run, including requests made outside the UI.
+            runtime.provider_health.refresh(user_id, wait=True)
+            available, reason = continuous_start_availability(
+                db, runtime=runtime, requested_live=body.dry_run is False, user_id=user_id,
+            )
         if not available:
+            detail = reason or "bot_worker_unavailable"
+            if reason == "projectx_provider_unverified":
+                admission = inspect_bot_runtime(db, runtime=runtime, user_id=user_id).public_dict()["start_admission"]
+                detail = {"code": reason, "message": admission["live" if body.dry_run is False else "dry_run"]["message"]}
             raise HTTPException(
                 status_code=503,
-                detail=reason or "bot_worker_unavailable",
+                detail=detail,
                 headers={"Retry-After": "5"},
             )
 
@@ -3203,6 +3220,9 @@ def start_account_topbot(
         account = _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
         if account.trade_data_source == TRADE_DATA_SOURCE_CSV_IMPORT:
             raise HTTPException(status_code=409, detail="csv_import_accounts_cannot_run_bots")
+        if not payload.dry_run:
+            from .services.topbot_mathematical import live_block_reason
+            raise ValueError(live_block_reason())
         client = _projectx_client_for_user(db, user_id=user_id)
         # Release the read transaction before resolving the active delivery.
         db.commit()
@@ -3224,6 +3244,40 @@ def start_account_topbot(
     except Exception:
         db.rollback()
         raise
+
+
+@app.get("/api/accounts/{account_id}/manual-order-tests")
+def manual_order_test_state(account_id: int, db: Session = Depends(get_db)):
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
+        return get_manual_order_test_state(db, user_id=user_id, account_id=account_id, client=client)
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except (ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/accounts/{account_id}/manual-order-tests")
+def place_manual_order_test(account_id: int, payload: ManualOrderTestIn, db: Session = Depends(get_db)):
+    from .services.bot_service import _ProviderMutationBlocked
+    user_id = get_authenticated_user_id()
+    try:
+        _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+        client = _projectx_client_for_user_without_open_transaction(db, user_id=user_id)
+        return submit_manual_order_test(db, user_id=user_id, account_id=account_id, payload=payload, client=client)
+    except _ProviderMutationBlocked as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=exc.block.message) from exc
+    except ProjectXClientError as exc:
+        db.rollback()
+        raise _to_http_exception(exc) from exc
+    except (ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/bots/{bot_config_id}/start", response_model=BotEvaluationOut)
@@ -5158,10 +5212,12 @@ def _serialize_projectx_account(
         ),
         "provider_simulated": None if is_csv_import else row.provider_simulated,
         "provider_classification_observed_at": (
-            None if is_csv_import else row.provider_classification_observed_at
+            _as_utc(row.provider_classification_observed_at)
+            if not is_csv_import and row.provider_classification_observed_at is not None
+            else None
         ),
         "last_trade_at": last_trade_at,
-        "last_seen_at": None if is_csv_import else row.last_seen_at,
+        "last_seen_at": _as_utc(row.last_seen_at) if not is_csv_import and row.last_seen_at is not None else None,
         "provider_data_stale": provider_snapshot_freshness.is_stale
         and trade_data_source == TRADE_DATA_SOURCE_PROJECTX,
         "provider_data_stale_at": (
@@ -5177,7 +5233,7 @@ def _serialize_projectx_account(
             provider_sync_error_message if has_provider_sync_error else None
         ),
         "provider_last_successful_refresh_at": (
-            None if is_csv_import else row.last_seen_at
+            _as_utc(row.last_seen_at) if not is_csv_import and row.last_seen_at is not None else None
         ),
         "trade_data_source": trade_data_source,
     }

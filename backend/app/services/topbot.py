@@ -18,7 +18,7 @@ from .bot_service import (
     update_bot_config,
 )
 from .projectx_client import ProjectXClient
-from .topbot_strategy import HISTORY_BARS, normalize_params
+from .topbot_mathematical import HISTORY_BARS, normalize_params, live_block_reason
 
 
 TOPBOT_SETTINGS = {
@@ -36,12 +36,17 @@ TOPBOT_SETTINGS = {
     "max_open_position": 1,
     "max_trades_per_day": 30,
     "allowed_contracts": ["MNQ", "F.US.MNQ"],
-    "trading_start_time": "09:30",
-    "trading_end_time": "15:45",
+    "trading_start_time": "00:00",
+    "trading_end_time": "23:59",
     "cooldown_seconds": 300,
     "max_data_staleness_seconds": 600,
     "allow_market_depth": False,
 }
+
+# Keep the EMA/VWAP strategy preset independent of the mathematical run preset.
+from .topbot_strategy import RULES as LEGACY_RULES, HISTORY_BARS as LEGACY_HISTORY_BARS
+LEGACY_TOPBOT_SETTINGS = deepcopy(TOPBOT_SETTINGS)
+LEGACY_TOPBOT_SETTINGS.update(strategy_params=dict(LEGACY_RULES), lookback_bars=LEGACY_HISTORY_BARS)
 
 
 def resolve_topbot_contract(client: ProjectXClient) -> str:
@@ -66,6 +71,8 @@ def prepare_topbot(
     """
     if not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id):
         raise ValueError("TopBot requires an MNQ contract.")
+    if not dry_run:
+        raise ValueError(live_block_reason())
     configs = (
         db.query(BotConfig)
         .filter(BotConfig.user_id == user_id, BotConfig.account_id == account_id)

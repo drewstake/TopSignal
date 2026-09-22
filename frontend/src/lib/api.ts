@@ -1,4 +1,5 @@
 import { TradeRefreshCache } from "./tradeRefreshCache";
+import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
 import type {
@@ -979,9 +980,8 @@ export function getSelectableAccounts(options: SelectableAccountsOptions = {}): 
 }
 
 export function getSelectableAccountsLocalFirst(): Promise<AccountInfo[]> {
-  // Startup is strictly local. An empty snapshot is not permission to contact
-  // ProjectX; discovery happens only after an explicit Express selection or
-  // the Accounts page's explicit refresh action.
+  // Load saved rows first. The shell schedules connected-local startup
+  // discovery separately, so cached accounts remain usable during refresh.
   return getSelectableAccountsFromApi({ refreshProvider: false });
 }
 
@@ -2451,6 +2451,10 @@ async function runBacktestRequest(
 }
 
 export const botsApi = {
+  getManualOrderState: (accountId: number, options: RequestSignalOptions = {}) =>
+    requestJson<ManualOrderState>(`/api/accounts/${accountId}/manual-order-tests`, { signal: options.signal }),
+  submitManualOrder: (accountId: number, payload: ManualOrderInput) =>
+    requestJson<ManualOrderResult>(`/api/accounts/${accountId}/manual-order-tests`, { method: "POST", body: payload }),
   startTopBot: (accountId: number, dryRun: boolean) =>
     requestJson<BotEvaluation>(`/api/accounts/${accountId}/topbot/start`, {
       method: "POST",

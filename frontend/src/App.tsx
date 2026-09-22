@@ -66,7 +66,9 @@ export default function App() {
       {import.meta.env.DEV && import.meta.env.VITE_OFFLINE_MODE === "true" ? (
         <div role="status" className="border-b border-app-border bg-app-surface px-4 py-2 text-center text-sm text-app-text">
           {import.meta.env.VITE_LOCAL_PROJECTX === "true"
-            ? "Local workspace · Topstep API enabled · Dry-run bot enabled · Saved on this computer · Live orders disabled"
+            ? import.meta.env.VITE_LOCAL_LIVE_ORDERS === "true"
+              ? "Local workspace · Topstep API enabled · Live order routing enabled · Saved on this computer"
+              : "Local workspace · Topstep API enabled · Dry-run bot enabled · Saved on this computer · Live orders disabled"
             : "Offline workspace · Saved on this computer · Cloud data and broker connections are unavailable"}
         </div>
       ) : null}

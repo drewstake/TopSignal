@@ -94,6 +94,7 @@ export function AppShell() {
   const beginSyncRequest = useLatestRequestGuard();
   const activeSyncAccountIdRef = useRef<number | null>(null);
   const activeLifecycleAccountIdRef = useRef<number | null>(null);
+  const localStartupRefreshAttempted = useRef(false);
   const appHeaderRef = useRef<HTMLElement | null>(null);
   const locationRef = useRef(location);
   locationRef.current = location;
@@ -263,7 +264,16 @@ export function AppShell() {
   }, [demoMode.enabled, location, selectedAccountId]);
 
   useEffect(() => {
-    if (demoMode.enabled || accountsLoading || selectedAccount?.trade_data_source !== "projectx") {
+    if (demoMode.enabled || accountsLoading || accountsError) {
+      return;
+    }
+    const connectedLocal = import.meta.env.VITE_LOCAL_PROJECTX === "true";
+    if (connectedLocal) {
+      // Discover accounts even on a fresh local database. One attempt per app
+      // opening avoids polling or refreshing again on selection/navigation.
+      if (localStartupRefreshAttempted.current) return;
+      localStartupRefreshAttempted.current = true;
+    } else if (selectedAccount?.trade_data_source !== "projectx") {
       return;
     }
 
@@ -288,6 +298,7 @@ export function AppShell() {
         }
       });
   }, [
+    accountsError,
     accountsLoading,
     beginProviderAccountsRequest,
     demoMode.enabled,

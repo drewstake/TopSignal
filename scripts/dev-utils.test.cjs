@@ -92,6 +92,24 @@ test("backend port selection skips occupied ports and ports reserved during a si
   assert.equal(await findAvailablePort(port, { maxPort: port }), port);
 });
 
+test("a reachable forwarded service is occupied even if the OS would allow a bind", async (t) => {
+  const server = net.createServer((socket) => socket.end());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  // A bind-only probe is not authoritative for Docker/WSL ports on Windows.
+  const bind = t.mock.method(net, "createServer", () => {
+    throw new Error("must not attempt to bind over a reachable service");
+  });
+  try {
+    assert.equal(await isPortAvailable(port), false);
+    assert.equal(bind.mock.callCount(), 0);
+  } finally {
+    t.mock.restoreAll();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("an occupied local frontend fails once before backend startup", async () => {
   let server;
   if (await isPortAvailable(5174)) {

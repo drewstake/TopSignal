@@ -10,20 +10,27 @@ const candle = (timestamp: string, price: number): ProjectXMarketCandle => ({
   is_partial: false, fetched_at: null,
 });
 
+it("does not present EMA entry filters for the mathematical strategy", () => {
+  expect(resolveBotChartIndicators({ ...market, strategy_type: "topbot_adaptive",
+    strategy_params: { revision: "mnq_bayesian_payoff_v1" } })).toMatchObject({
+    ema: false, showAverages: false, vwapLabel: "VWAP · context only",
+  });
+});
+
 it("shows TopBot's actual 20/50 EMA periods despite legacy saved period settings", () => {
   const legacy = { ...market, strategy_type: "topbot_adaptive" as const,
     strategy_params: { ema_period: 9, short_trend_ema_period: 200, session_start: "18:00" } };
   expect(resolveBotChartIndicators(legacy)).toMatchObject({
     ema: true, showAverages: true, fastPeriod: 20, slowPeriod: 50, sessionStart: "09:30",
     fastLabel: "EMA 20", slowLabel: "EMA 50 · short filter",
-    vwapLabel: "TopBot VWAP · 09:30–15:45 ET",
+    vwapLabel: "TopBot VWAP · resets 09:30 / 18:00 ET",
   });
   expect(resolveBotChartIndicators({ ...market, strategy_type: "sma_cross" })).toMatchObject({
     ema: false, showAverages: true, fastPeriod: 9, slowPeriod: 21, sessionStart: "18:00",
   });
 });
 
-it("keeps TopBot VWAP on its entry session and preserves the generic overnight VWAP", () => {
+it("includes all TopBot sessions and resets VWAP at the regular and overnight opens", () => {
   const rows = [candle("2026-09-10T22:00:00Z", 90), candle("2026-09-11T13:30:00Z", 110),
     candle("2026-09-11T13:35:00Z", 105)];
   expect(buildBotChartVwap(rows, true).at(-1)?.value).toBe(107.5);
@@ -31,5 +38,5 @@ it("keeps TopBot VWAP on its entry session and preserves the generic overnight V
   const session = buildBotChartVwap([...rows, candle("2026-09-11T19:45:00Z", 500),
     candle("2026-09-11T22:00:00Z", 600), candle("2026-09-14T13:25:00Z", 700),
     candle("2026-09-14T13:30:00Z", 120)], true);
-  expect(session.map(point => point.value)).toEqual([110, 107.5, 120]);
+  expect(session.map(point => point.value)).toEqual([90, 110, 107.5, (110 + 105 + 500) / 3, 600, 700, 120]);
 });

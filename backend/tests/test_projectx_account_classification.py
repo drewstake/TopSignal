@@ -141,6 +141,9 @@ def test_one_shot_refresh_persists_fresh_classification_after_socket_cleanup(mon
     class Client:
         timeout_seconds = 1
 
+        def list_accounts(self, **kwargs):
+            return [{"id": 101, "simulated": None}]
+
         def get_access_token(self):
             return "fixture-token"
 
@@ -208,7 +211,37 @@ def test_one_shot_refresh_persists_fresh_classification_after_socket_cleanup(mon
         engine.dispose()
 
 
-def test_failed_one_shot_refresh_invalidates_cached_freshness(monkeypatch):
+@pytest.mark.parametrize("simulated", [True, False])
+def test_one_shot_prefers_fresh_account_search_boolean(monkeypatch, simulated):
+    engine, factory = _factory()
+    class Client:
+        timeout_seconds = 1
+        def list_accounts(self, **kwargs):
+            return [{"id": 101, "name": "PRAC-example", "simulated": simulated}]
+    def unexpected_hub(**kwargs):
+        raise AssertionError("An authoritative REST response must not wait for a hub event")
+    try:
+        with factory() as db:
+            _seed(db)
+        monkeypatch.setattr(streaming_runtime_module, "SessionLocal", factory)
+        monkeypatch.setattr(streaming_runtime_module, "ProjectXHubRunner", unexpected_hub)
+        result = streaming_runtime_module.refresh_projectx_account_classification_once(
+            user_id="user-a", account_id=101, client_factory=Client, timeout_seconds=1)
+        assert result.provider_simulated is simulated
+        assert result.source == "projectx_account_search"
+        assert result.provider_classification_observed_at.tzinfo == timezone.utc
+        with factory() as db:
+            row = db.query(Account).one()
+            assert row.provider_simulated is simulated
+            assert row.provider_classification_observed_at is not None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("rows", [[], [{"id": 102, "simulated": True}],
+    [{"id": 101, "name": "PRAC-example", "simulated": None}],
+    [{"id": 101, "name": "PRAC-example", "simulated": "true"}]])
+def test_failed_one_shot_refresh_invalidates_cached_freshness(monkeypatch, rows):
     engine, factory = _factory()
 
     class TimedOutRunner:
@@ -238,7 +271,8 @@ def test_failed_one_shot_refresh_invalidates_cached_freshness(monkeypatch):
             streaming_runtime_module.refresh_projectx_account_classification_once(
                 user_id="user-a",
                 account_id=101,
-                client_factory=lambda: None,
+                client_factory=lambda: type("Client", (), {"timeout_seconds": 1,
+                    "list_accounts": lambda self, **kwargs: rows})(),
                 timeout_seconds=1,
             )
 

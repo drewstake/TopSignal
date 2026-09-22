@@ -1008,6 +1008,9 @@ def start_bot_run(
     )
     resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     if not resolved_dry_run:
+        from .topbot_mathematical import selected, live_block_reason
+        if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
+            raise ValueError(live_block_reason())
         shared_account_block = _shared_broker_account_block(
             db, user_id=user_id, account_id=int(config.account_id)
         )
@@ -1231,6 +1234,10 @@ def _evaluate_bot_config_impl(
         bot_config_id=bot_config_id,
         lock_for_update=True,
     )
+    if not resolved_dry_run:
+        from .topbot_mathematical import selected, live_block_reason
+        if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
+            raise ValueError(live_block_reason())
     resolved_account = _require_owned_account(
         db,
         user_id=user_id,
@@ -1763,9 +1770,14 @@ def _evaluate_bot_config_impl(
         )
         if resolved_dry_run and str(config.strategy_type) == "topbot_adaptive":
             from .probabilistic_shadow import explain_shadow
-            analysis["bot_decision"]["probabilistic_research"] = explain_shadow(
+            recorded_forecast = signal.raw_payload.get("probabilistic_research")
+            analysis["bot_decision"]["probabilistic_research"] = dict(recorded_forecast) if isinstance(recorded_forecast, dict) else explain_shadow(
                 candles=candles, owner=user_id, contract_id=str(config.contract_id),
                 as_of=datetime.now(timezone.utc),
+            )
+            from .depth_shadow import explain_depth
+            analysis["bot_decision"]["probabilistic_research"]["depth"] = explain_depth(
+                candles=candles, owner=user_id, contract_id=str(config.contract_id), as_of=datetime.now(timezone.utc),
             )
     except Exception:
         analysis.setdefault("bot_decision", {
@@ -3995,8 +4007,11 @@ def evaluate_sma_cross(
     )
 
 
-def evaluate_topbot_adaptive(candles, *, strategy_params=None) -> SignalResult:
-    """Evaluate the single code-owned MNQ trend-pullback strategy."""
+def evaluate_topbot_adaptive(candles, *, strategy_params=None, owner=None, contract_id=None) -> SignalResult:
+    """Honor the stored revision; new runs select the mathematical model."""
+    from . import topbot_mathematical
+    if topbot_mathematical.selected(strategy_params):
+        return topbot_mathematical.evaluate(candles, owner=owner, contract_id=contract_id)
     from .topbot_strategy import evaluate
     return evaluate(candles)
 
@@ -11177,7 +11192,7 @@ def evaluate_risk_gates(
             max_daily_loss=float(config.max_daily_loss),
             latest_candle_age_seconds=latest_candle_age_seconds,
             max_data_staleness_seconds=int(config.max_data_staleness_seconds),
-            inside_trading_session=_is_inside_trading_session(
+            inside_trading_session=str(config.strategy_type) == "topbot_adaptive" or _is_inside_trading_session(
                 str(config.trading_start_time),
                 str(config.trading_end_time),
             ),
@@ -13891,6 +13906,9 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         return {}
 
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
+        from . import topbot_mathematical
+        if topbot_mathematical.selected(raw_params):
+            return topbot_mathematical.normalize_params(raw_params)
         from .topbot_strategy import normalize_params
         return normalize_params(raw_params)
 

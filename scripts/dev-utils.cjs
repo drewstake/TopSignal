@@ -128,7 +128,21 @@ function classifyBackendDevChange(fileName) {
   return "ignore";
 }
 
-function isPortAvailable(port, host = "127.0.0.1") {
+async function isPortAvailable(port, host = "127.0.0.1") {
+  // Windows can allow an IPv4 bind over a Docker/WSL forwarded listener.
+  // Probe the address clients will use before attempting to claim the port.
+  const connectionRefused = await new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    const finish = (refused) => {
+      socket.destroy();
+      resolve(refused);
+    };
+    socket.once("connect", () => finish(false));
+    socket.once("error", (error) => finish(error.code === "ECONNREFUSED"));
+    socket.setTimeout(500, () => finish(false));
+  });
+  if (!connectionRefused) return false;
+
   return new Promise((resolve, reject) => {
     const server = net.createServer();
 

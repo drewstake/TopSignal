@@ -1,7 +1,10 @@
 const path = require("node:path");
 
 // Apply last, after reading .env: a cloud configuration must never win here.
-function offlineEnvironment(environment, repoRoot, { projectx = false } = {}) {
+function offlineEnvironment(environment, repoRoot, { projectx = false, liveOrders = false } = {}) {
+  if (liveOrders && !projectx) {
+    throw new Error("Local live orders require the connected Topstep profile (--offline --topstep --live).");
+  }
   const env = { ...environment };
   for (const key of Object.keys(env)) {
     if (/^(SUPABASE_|VITE_SUPABASE_|DATABENTO_API_KEY|PG)/i.test(key)
@@ -15,6 +18,7 @@ function offlineEnvironment(environment, repoRoot, { projectx = false } = {}) {
     PYTHON_DOTENV_DISABLED: "1",
     TOPSIGNAL_OFFLINE_DEV: "1",
     TOPSIGNAL_LOCAL_PROJECTX: projectx ? "1" : "0",
+    TOPSIGNAL_LOCAL_LIVE_ORDERS: liveOrders ? "1" : "0",
     TOPSIGNAL_ENV: "development",
     DATABASE_URL: `sqlite+pysqlite:///${path.join(storageDir, "topsignal.sqlite3").replaceAll("\\", "/")}`,
     MIGRATION_DATABASE_URL: "",
@@ -29,8 +33,8 @@ function offlineEnvironment(environment, repoRoot, { projectx = false } = {}) {
     ALLOW_INSECURE_LOCAL_CREDENTIALS_KEY: "false",
     TOPSIGNAL_DB_SCHEMA_INIT: "full",
     TOPSIGNAL_BOT_WORKER_ENABLED: projectx ? "true" : "false",
-    TOPSIGNAL_LIVE_EXECUTION_ENABLED: "false",
-    TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION: "false",
+    TOPSIGNAL_LIVE_EXECUTION_ENABLED: liveOrders ? "true" : "false",
+    TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION: liveOrders ? "true" : "false",
     PROJECTX_STREAMING_ENABLED: "false",
     JOURNAL_IMAGE_STORAGE_BACKEND: "local",
     JOURNAL_IMAGE_STORAGE_DIR: path.join(storageDir, "journal_images"),
@@ -38,6 +42,7 @@ function offlineEnvironment(environment, repoRoot, { projectx = false } = {}) {
     VITE_SUPABASE_ANON_KEY: "",
     VITE_OFFLINE_MODE: "true",
     VITE_LOCAL_PROJECTX: projectx ? "true" : "false",
+    VITE_LOCAL_LIVE_ORDERS: liveOrders ? "true" : "false",
     VITE_DEMO_MODE: "false",
   };
 }

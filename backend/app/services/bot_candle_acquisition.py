@@ -290,6 +290,9 @@ def _acquire_and_evaluate_topbot(
     strategy_params: dict[str, Any],
 ) -> tuple[list[Any], Any]:
     from .topbot_strategy import HISTORY_BARS
+    from . import topbot_mathematical
+    if topbot_mathematical.selected(strategy_params):
+        HISTORY_BARS = topbot_mathematical.HISTORY_BARS
     service = _service()
     candles = service.fetch_and_store_candles(
         db, user_id=user_id, config=config, client=client,
@@ -297,6 +300,7 @@ def _acquire_and_evaluate_topbot(
     )
     return candles, service.dispatch_strategy_evaluator(
         "topbot_adaptive", candles, strategy_params=strategy_params,
+        **({"owner": user_id, "contract_id": str(config.contract_id)} if topbot_mathematical.selected(strategy_params) else {}),
     )
 
 

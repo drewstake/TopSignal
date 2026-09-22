@@ -204,7 +204,7 @@ def complete_five_minute_bars(minutes):
 
 def make_config(fixture):
     from app.models import BotConfig
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
     settings = deepcopy(TOPBOT_SETTINGS)
     settings.update(fixture.get_settings("opening_drive"))
     require(all(settings[k] == 1 for k in ("order_size", "max_contracts", "max_open_position")), "one contract required")

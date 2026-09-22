@@ -10,7 +10,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 import app.main as main_module
 
 
-def test_classification_refresh_route_returns_only_fresh_hub_observation(monkeypatch):
+@pytest.mark.parametrize("source", ["projectx_user_hub", "projectx_account_search"])
+def test_classification_refresh_route_returns_fresh_provider_observation(monkeypatch, source):
     observed_at = datetime(2026, 9, 4, 2, 15, tzinfo=timezone.utc)
     monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: "user-a")
     monkeypatch.setattr(
@@ -21,7 +22,7 @@ def test_classification_refresh_route_returns_only_fresh_hub_observation(monkeyp
                 account_id=kwargs["account_id"],
                 provider_simulated=True,
                 provider_classification_observed_at=observed_at,
-                source="projectx_user_hub",
+                source=source,
             )
         ),
     )
@@ -31,7 +32,7 @@ def test_classification_refresh_route_returns_only_fresh_hub_observation(monkeyp
     assert result.account_id == 101
     assert result.provider_simulated is True
     assert result.provider_classification_observed_at == observed_at
-    assert result.source == "projectx_user_hub"
+    assert result.source == source
 
 
 @pytest.mark.parametrize(

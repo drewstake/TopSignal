@@ -549,6 +549,41 @@ class BotResearchActionOut(BaseModel):
     effective_days: float
 
 
+class BotDepthActionOut(BaseModel):
+    probability_net_positive: float = Field(ge=0, le=1)
+    expected_net_usd: float
+    uncertainty_penalty_usd: float
+    lower_utility_usd: float
+    execution_cost_proxy_usd: float
+
+
+class BotDepthContributionOut(BaseModel):
+    probability_difference: float
+    expected_net_difference_usd: float
+
+
+class BotDepthResearchOut(BaseModel):
+    model_version: str
+    horizon_seconds: int
+    action: Literal["NO_TRADE"]
+    research_action: Literal["BUY", "SELL", "NO_TRADE"]
+    routing_allowed: Literal[False]
+    probability_basis: Literal["unavailable", "uncalibrated_model_estimate"]
+    feed_capability: Literal["unverified", "level1", "verified_level2"]
+    synchronized: bool
+    book_status: str
+    age_seconds: float | None
+    bid_levels: int
+    ask_levels: int
+    forecasts: dict[Literal["BUY", "SELL"], BotDepthActionOut] | None
+    depth_contribution: dict[Literal["BUY", "SELL"], BotDepthContributionOut] | None
+    trained_through: str | None
+    estimated_round_trip_cost_usd: float | None
+    cost_basis: str
+    uncertainty_method: str
+    reasons: list[str]
+
+
 class BotProbabilisticResearchOut(BaseModel):
     interface_version: str
     model_version: str
@@ -573,6 +608,7 @@ class BotProbabilisticResearchOut(BaseModel):
     training_paths: int
     uncertainty_method: str
     reasons: list[str]
+    depth: BotDepthResearchOut | None = None
 
 
 class BotDecisionExplanationOut(BaseModel):

@@ -35,6 +35,7 @@ from .services.bot_service import (
     evaluate_bot_config,
     reconcile_unresolved_order_attempts,
 )
+from .services.bot_provider_health import BotProviderHealth, provider_health_message
 from .services.projectx_client import PROJECTX_ERROR_NETWORK, ProjectXClient
 from .services.projectx_streaming_runtime import StreamingRuntime, create_streaming_runtime
 from .services.trading_day import (
@@ -144,6 +145,7 @@ class BotRuntimeReadiness:
     state: str
     provider_status: str
     failed_checks: tuple[str, ...] = ()
+    provider_health: dict[str, Any] | None = None
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +155,11 @@ class BotRuntimeReadiness:
             "checks": dict(self.checks),
             "counts": dict(self.counts),
             "failed_checks": list(self.failed_checks),
+            "provider_health": self.provider_health,
+            "start_admission": {
+                "dry_run": _start_admission(self, requested_live=False),
+                "live": _start_admission(self, requested_live=True),
+            },
         }
 
 
@@ -209,6 +216,9 @@ class BotWorkerRuntime:
         self._reconcile_retry_not_before = 0.0
         self._reconcile_retry_failures = 0
         self._account_streams: dict[tuple[str, int], StreamingRuntime] = {}
+        self.provider_health = BotProviderHealth(
+            self._client_for_user, interval=self.settings.provider_probe_seconds,
+        )
 
     async def start(self) -> None:
         if not self.settings.enabled or self._runner_task is not None or (
@@ -1102,7 +1112,7 @@ def inspect_bot_runtime(
         elif classification is False:
             ineligible_live_accounts += 1
 
-    lease = db.query(BotRuntimeLease).filter(BotRuntimeLease.lease_name == _LEASE_NAME).one_or_none()
+    lease = db.query(BotRuntimeLease).filter(BotRuntimeLease.lease_name == _LEASE_NAME).populate_existing().one_or_none()
     lease_healthy = bool(
         lease is not None and _as_utc(lease.expires_at) > observed_at
     )
@@ -1121,6 +1131,9 @@ def inspect_bot_runtime(
             max_age_seconds=runtime.settings.provider_probe_seconds * 2,
         )
     active_work = bool(running_rows or unresolved)
+    provider_health = runtime.provider_health.inspect(user_id) if user_id is not None else None
+    if provider_health is not None:
+        provider_status = provider_health["status"]
     # These public checks describe the actual runtime capability, even before a
     # run is armed.  Readiness below decides which checks are required for an
     # idle API-only deployment; callers must not mistake an implication such as
@@ -1133,8 +1146,9 @@ def inspect_bot_runtime(
         "live_gate": _background_live_execution_enabled(),
         "account_classification_fresh": awaiting_classification == 0,
         "accounts_simulated": ineligible_live_accounts == 0,
-        "provider_healthy": provider_status == "ok" if active_work else provider_status not in {"error", "throttled"},
+        "provider_healthy": provider_status == "ok" if active_work or user_id is not None else provider_status not in {"error", "throttled"},
         "submissions_reconciled": unresolved == 0,
+        "deployment_submissions_reconciled": _unresolved_live_submission_count(db) == 0,
         # This is an account admission latch, not worker-process health.  The
         # UI must not arm while false, but /ready should remain healthy so an
         # operator can retry the emergency flatten that clears it.
@@ -1187,7 +1201,35 @@ def inspect_bot_runtime(
             else str(lease_details.get("state") or ("standby" if lease_healthy else snapshot.state))
         ),
         provider_status=provider_status,
+        provider_health=provider_health,
     )
+
+
+def _start_admission(status: BotRuntimeReadiness, *, requested_live: bool) -> dict[str, Any]:
+    checks = status.checks
+    requirements = [
+        ("worker_enabled", "bot_worker_disabled", "The continuous worker is disabled on the server."),
+        ("worker_task_healthy", "bot_worker_unhealthy", f"The continuous worker task is unhealthy (state: {status.state})."),
+        ("lease_healthy", "bot_worker_lease_unavailable", "No healthy worker lease is currently confirmed."),
+        ("account_emergency_clear", "bot_account_emergency_unresolved", "An account emergency-flatten outcome remains unresolved. Confirm the affected account is flat before arming automation."),
+        ("submissions_reconciled", "bot_submissions_unresolved", f"{status.counts.get('unresolved_live_submissions', 0)} live submission(s) still require reconciliation."),
+        ("deployment_submissions_reconciled", "bot_submissions_unresolved", "Live-submission reconciliation is not confirmed for the worker."),
+    ]
+    if requested_live:
+        requirements.insert(1, ("live_gate", "bot_worker_live_execution_disabled", "Both server-side live-routing gates must be enabled."))
+        requirements.extend([
+            ("account_classification_fresh", "bot_account_classification_stale", "A fresh simulated-account classification is not confirmed for every armed live account."),
+            ("accounts_simulated", "bot_account_ineligible", "At least one armed account is not eligible for automated ProjectX routing."),
+        ])
+    for key, reason, message in requirements:
+        if checks.get(key) is not True:
+            return {"allowed": False, "reason": reason, "message": message}
+    if status.state in {"crashed", "error", "lease_lost", "stopped", "disabled"}:
+        return {"allowed": False, "reason": "bot_worker_unhealthy", "message": f"The continuous worker state is {status.state}."}
+    if status.provider_status != "ok":
+        health = status.provider_health or {"status": status.provider_status}
+        return {"allowed": False, "reason": "projectx_provider_unverified", "message": provider_health_message(health)}
+    return {"allowed": True, "reason": None, "message": None}
 
 
 def continuous_start_availability(
@@ -1195,44 +1237,19 @@ def continuous_start_availability(
     *,
     runtime: BotWorkerRuntime,
     requested_live: bool = False,
+    user_id: str | None = None,
     now: datetime | None = None,
 ) -> tuple[bool, str | None]:
     """Fail-closed admission check performed before a continuous run is armed."""
 
+    # These configuration failures need no database or provider access.
     if not runtime.settings.enabled:
         return False, "bot_worker_disabled"
     if requested_live and not _background_live_execution_enabled():
         return False, "bot_worker_live_execution_disabled"
-    observed_at = _as_utc(now or datetime.now(timezone.utc))
-    lease = db.query(BotRuntimeLease).filter(BotRuntimeLease.lease_name == _LEASE_NAME).one_or_none()
-    if lease is None or _as_utc(lease.expires_at) <= observed_at:
-        return False, "bot_worker_lease_unavailable"
-    snapshot = runtime.snapshot()
-    if not _local_worker_task_is_healthy(
-        runtime,
-        snapshot=snapshot,
-        now=observed_at,
-    ):
-        return False, "bot_worker_unhealthy"
-    if _unresolved_live_submission_count(db):
-        return False, "bot_submissions_unresolved"
-    details = lease.details if isinstance(lease.details, dict) else {}
-    provider_status = (
-        _fresh_provider_status(
-            snapshot,
-            now=observed_at,
-            max_age_seconds=runtime.settings.provider_probe_seconds * 2,
-        )
-        if str(lease.owner_id) == runtime.owner_id
-        else _fresh_lease_provider_status(
-            details,
-            now=observed_at,
-            max_age_seconds=runtime.settings.provider_probe_seconds * 2,
-        )
-    )
-    if provider_status in {"error", "throttled"}:
-        return False, "projectx_provider_unhealthy"
-    return True, None
+    status = inspect_bot_runtime(db, runtime=runtime, user_id=user_id, now=now)
+    admission = _start_admission(status, requested_live=requested_live)
+    return admission["allowed"], admission["reason"]
 
 
 def _run_disarm_reason(run: BotRun, config: BotConfig) -> str | None:

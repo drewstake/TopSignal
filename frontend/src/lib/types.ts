@@ -117,7 +117,7 @@ export interface AccountAutomationClassification {
   account_id: number;
   provider_simulated: boolean;
   provider_classification_observed_at: string;
-  source: "projectx_user_hub";
+  source: "projectx_user_hub" | "projectx_account_search";
 }
 
 export interface AccountMainUpdateResult {
@@ -1114,6 +1114,31 @@ export interface BotResearchAction {
   effective_days: number;
 }
 
+export interface BotDepthResearch {
+  model_version: string;
+  horizon_seconds: number;
+  action: "NO_TRADE";
+  research_action: "BUY" | "SELL" | "NO_TRADE";
+  routing_allowed: false;
+  probability_basis: "unavailable" | "uncalibrated_model_estimate";
+  feed_capability: "unverified" | "level1" | "verified_level2";
+  synchronized: boolean;
+  book_status: string;
+  age_seconds: number | null;
+  bid_levels: number;
+  ask_levels: number;
+  forecasts: Record<"BUY" | "SELL", {
+    probability_net_positive: number; expected_net_usd: number; uncertainty_penalty_usd: number;
+    lower_utility_usd: number; execution_cost_proxy_usd: number;
+  }> | null;
+  depth_contribution: Record<"BUY" | "SELL", { probability_difference: number; expected_net_difference_usd: number }> | null;
+  trained_through: string | null;
+  estimated_round_trip_cost_usd: number | null;
+  cost_basis: string;
+  uncertainty_method: string;
+  reasons: string[];
+}
+
 export interface BotProbabilisticResearch {
   interface_version: string;
   model_version: string;
@@ -1138,6 +1163,7 @@ export interface BotProbabilisticResearch {
   training_paths: number;
   uncertainty_method: string;
   reasons: string[];
+  depth?: BotDepthResearch | null;
 }
 
 export interface BotDecisionExplanation {
@@ -1211,6 +1237,13 @@ export interface BotAnalysis {
 }
 
 export interface BotStrategyParams {
+  revision?: string;
+  model_version?: string;
+  routing_policy?: string;
+  horizon_minutes?: number;
+  minimum_training_paths?: number;
+  minimum_effective_days?: number;
+  level2_enabled?: boolean;
   protective_stop_ticks?: number;
   take_profit_ticks?: number;
   source_strategies?: BotStrategyType[];
@@ -1677,6 +1710,16 @@ export interface BotRuntimeStatus {
   provider_status: string;
   checks: Record<string, boolean>;
   counts: Record<string, number>;
+  provider_health?: {
+    status: string;
+    last_checked_at: string | null;
+    last_success_at: string | null;
+    retry_at: string | null;
+  } | null;
+  start_admission?: {
+    dry_run: { allowed: boolean; reason: string | null; message: string | null };
+    live: { allowed: boolean; reason: string | null; message: string | null };
+  };
 }
 
 export interface BotEmergencyFlattenRiskBlock {

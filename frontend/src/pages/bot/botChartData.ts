@@ -6,7 +6,7 @@ import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXM
 // Charting needs a market and timeframe, not a persisted bot or trading account.
 export type BotChartMarket = Pick<BotConfig,
   "contract_id" | "symbol" | "timeframe_unit" | "timeframe_unit_number" | "lookback_bars"
-> & Partial<Pick<BotConfig, "id" | "strategy_type" | "fast_period" | "slow_period">>;
+> & Partial<Pick<BotConfig, "id" | "strategy_type" | "strategy_params" | "fast_period" | "slow_period">>;
 
 export const BOT_CHART_MAX_BARS = 2_000;
 export const BOT_CHART_MIN_BARS = 300;

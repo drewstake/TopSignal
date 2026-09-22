@@ -95,7 +95,7 @@ def test_native_stream_spec_does_not_request_five_minute_data():
 def test_real_engine_fills_after_signal_and_runs_clock_on_each_observed_minute(monkeypatch, missing_entry_minute):
     from app.models import BotConfig
     from app.services import bot_backtesting as replay
-    from app.services.topbot import TOPBOT_SETTINGS
+    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
 
     monkeypatch.setattr(replay, "_topbot_stream_specs", one_minute_stream_specs)
     monkeypatch.setattr(replay, "_validate_replay_configuration",

@@ -417,6 +417,10 @@ def _resolve_minimum_history(
     timeframe_unit_number: int,
 ) -> tuple[HistoryRequirement, ...]:
     if identifier == "topbot_adaptive":
+        from . import topbot_mathematical
+        if topbot_mathematical.selected(dict(params)):
+            return (_history("signal", topbot_mathematical.HISTORY_BARS,
+                             notes="Closed 5-minute MNQ features; separately fitted probabilistic model."),)
         from .topbot_strategy import HISTORY_BARS
         return (_history("signal", HISTORY_BARS, notes="One 5-minute MNQ stream; fixed EMA warmup and regular-session VWAP."),)
 

@@ -341,10 +341,14 @@ class ProjectXClient:
             payload["trailPrice"] = float(trail_price)
         if custom_tag is not None:
             payload["customTag"] = str(custom_tag)
+        # Callers store positive distances for risk checks and idempotency.
+        # ProjectX requires signed price offsets from the entry fill:
+        # buy: stop below / target above; sell: stop above / target below.
+        direction = 1 if validated_side == 0 else -1
         if stop_loss_bracket is not None:
-            payload["stopLossBracket"] = stop_loss_bracket
+            payload["stopLossBracket"] = _signed_bracket(stop_loss_bracket, -direction)
         if take_profit_bracket is not None:
-            payload["takeProfitBracket"] = take_profit_bracket
+            payload["takeProfitBracket"] = _signed_bracket(take_profit_bracket, direction)
 
         data = self._request("POST", "/api/Order/place", payload=payload, with_auth=True)
         order_id = _string_or_none(_first_value(data, ["orderId", "id"])) if isinstance(data, dict) else None
@@ -1120,6 +1124,13 @@ def _safe_int(value: Any) -> int | None:
         return parsed
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _signed_bracket(bracket: dict[str, Any], direction: int) -> dict[str, Any]:
+    ticks = bracket.get("ticks")
+    if isinstance(ticks, bool) or not isinstance(ticks, int) or ticks <= 0:
+        raise ProjectXClientError("Bracket distance must be a positive whole number of ticks.")
+    return {**bracket, "ticks": direction * ticks}
 
 
 def _validate_projectx_order_type(value: Any) -> int:

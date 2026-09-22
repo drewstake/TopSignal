@@ -22,6 +22,7 @@ function stopProcessTree(child) {
 }
 
 function startBothProfiles({
+  liveOrders = false,
   spawnProcess = spawn,
   stopProcess = stopProcessTree,
   write = (message) => process.stdout.write(`${message}\n`),
@@ -90,7 +91,7 @@ function startBothProfiles({
   }
 
   write("[BOTH] Starting both workspaces. Press Ctrl+C to stop both.");
-  launch("LOCAL", ["--offline", "--topstep"]);
+  launch("LOCAL", ["--offline", "--topstep", ...(liveOrders ? ["--live"] : [])]);
 
   return {
     stop() {
@@ -116,7 +117,7 @@ if (require.main === module) {
     console.error(error.message);
     process.exit(1);
   }
-  const profiles = startBothProfiles();
+  const profiles = startBothProfiles({ liveOrders: process.argv.includes("--live") });
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => profiles.stop());
   }

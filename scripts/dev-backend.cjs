@@ -26,7 +26,11 @@ try {
 const backendEnv = parseDotEnvFile(path.join(backendDir, ".env"));
 const snapshot = createBackendEnvironmentSnapshot(process.env, backendEnv);
 const childEnv = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
-  ? offlineEnvironment(snapshot, repoRoot, { projectx: process.env.TOPSIGNAL_LOCAL_PROJECTX === "1" })
+  ? offlineEnvironment(snapshot, repoRoot, {
+    projectx: process.env.TOPSIGNAL_LOCAL_PROJECTX === "1",
+    // Preserve the supervisor's explicit launch mode across .env reloads.
+    liveOrders: process.env.TOPSIGNAL_LOCAL_LIVE_ORDERS === "1",
+  })
   : snapshot;
 if (process.env.TOPSIGNAL_OFFLINE_DEV === "1") {
   childEnv.TOPSIGNAL_DEV_BACKEND_PORT = process.env.TOPSIGNAL_DEV_BACKEND_PORT;
