@@ -133,6 +133,40 @@ test("an occupied local frontend fails once before backend startup", async () =>
   }
 });
 
+test("an occupied cloud frontend fails before migrations or backend startup", async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "topsignal-cloud-port-"));
+  let server;
+  try {
+    const scriptsDir = path.join(repoRoot, "scripts");
+    fs.mkdirSync(scriptsDir);
+    for (const file of fs.readdirSync(__dirname)) {
+      if (file.endsWith(".cjs") && !file.endsWith(".test.cjs")) {
+        fs.copyFileSync(path.join(__dirname, file), path.join(scriptsDir, file));
+      }
+    }
+    const pythonPath = path.join(repoRoot, "backend", ".venv",
+      ...(process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]));
+    fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+    fs.writeFileSync(pythonPath, "");
+    if (await isPortAvailable(5173, "localhost")) {
+      server = net.createServer();
+      server.listen(5173, "localhost");
+      await once(server, "listening");
+    }
+    const result = spawnSync(process.execPath, [path.join(scriptsDir, "dev.cjs")], {
+      encoding: "utf8", timeout: 10000, windowsHide: true,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Cloud frontend port 5173 is already in use/);
+    assert.match(result.stderr, /http:\/\/localhost:5173/);
+    assert.doesNotMatch(result.stdout + result.stderr, /\[BACKEND\]|restarting \(|Applying pending/);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("backend code reload and environment restart are intentionally different", () => {
   assert.equal(classifyBackendDevChange(null), "ignore");
   assert.equal(classifyBackendDevChange(undefined), "ignore");

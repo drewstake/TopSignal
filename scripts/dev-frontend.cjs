@@ -34,7 +34,7 @@ function killProcessTree(pid) {
 
 const args = process.env.TOPSIGNAL_OFFLINE_DEV === "1"
   ? [vitePath, "--host", "127.0.0.1", "--port", "5174", "--strictPort"]
-  : [vitePath];
+  : [vitePath, "--host", "localhost", "--port", "5173", "--strictPort"];
 const child = spawn(process.execPath, args, {
   cwd: frontendDir,
   env: process.env,

@@ -106,6 +106,16 @@ async function assertLocalFrontendAvailable() {
   }
 }
 
+async function assertCloudFrontendAvailable() {
+  if (!(await isPortAvailable(5173, "localhost"))) {
+    throw new Error(
+      "Cloud frontend port 5173 is already in use; no additional cloud backend was started. " +
+      "If your cloud workspace is already running, open http://localhost:5173. " +
+      "To replace it, stop its terminal with Ctrl+C and rerun this command.",
+    );
+  }
+}
+
 function classifyBackendDevChange(fileName) {
   if (!fileName) {
     return "ignore";
@@ -254,6 +264,7 @@ function runDatabaseMigrations({
 }
 
 module.exports = {
+  assertCloudFrontendAvailable,
   assertLocalFrontendAvailable,
   classifyBackendDevChange,
   createBackendEnvironmentSnapshot,

@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const { offlineEnvironment } = require("./offline-env.cjs");
 const { startReadyBackend } = require("./dev-startup.cjs");
 const {
+  assertCloudFrontendAvailable,
   assertLocalFrontendAvailable,
   createEnvironmentSnapshot,
   findAvailablePort,
@@ -221,6 +222,7 @@ async function main() {
     }
   } else {
     requireBackendPython(repoRoot);
+    await assertCloudFrontendAvailable();
     console.log("Applying pending database migrations before dev server startup...");
     runDatabaseMigrations({
       repoRoot,

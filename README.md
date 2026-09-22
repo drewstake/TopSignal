@@ -801,13 +801,15 @@ npm run dev
 
 That starts:
 
-- the regular cloud/login app on `http://localhost:5173` when available, otherwise Vite's next open port
+- the regular cloud/login app on `http://localhost:5173`
 - the connected local workspace on `http://127.0.0.1:5174`, with ProjectX, saved SQLite data, and live order routing enabled; TopBot still requires a Live Run start and confirmation
 - a separate loopback backend for each app, using available ports starting at `8000`
 
 `npm run dev` starts the local backend first, then starts the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by this command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
 
 Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
+
+If cloud port `5173` is occupied, the launcher stops that profile before migrations or backend startup and points to the existing cloud app. The frontend also uses a strict port to prevent a startup race from moving it to an origin the backend rejects. Use `localhost:5173` for cloud and `127.0.0.1:5174` for local; the two hostnames can reach different servers on the same port.
 
 The connected local app shows saved accounts immediately and checks ProjectX once each time the app opens or the page reloads, including when no accounts have been saved yet. Switching tabs or accounts does not repeat that discovery check. The Accounts page's Refresh Express Accounts action remains available for changes during a session. A failed startup check leaves saved accounts usable and displays the refresh error; it does not start a retry loop.
 
