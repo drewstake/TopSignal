@@ -1396,7 +1396,7 @@ def _series_fingerprint(
         "root_symbol": root_symbol,
         "unit": unit,
         "unit_number": int(unit_number),
-        "resampling": "globex_session_anchored_complete_ohlcv_v4_verified_holiday_dates",
+        "resampling": "globex_observed_5m_v5_quality_flags_complete_larger_intervals",
     }
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
@@ -3222,6 +3222,15 @@ def _build_resampled_series(
         group_ends=group_ends,
         root_symbol=root_symbol,
     )
+    observed_five_minute = unit == "minute" and int(unit_number) == 5
+    if observed_five_minute:
+        # No trade need not produce a 1m record. Keep observed OHLCV without
+        # interpolation; reject mixed deliveries and an unfinished final bucket.
+        starts = bucket_starts[group_starts]
+        _, inverse, counts = np.unique(starts, return_inverse=True, return_counts=True)
+        complete_groups = ((counts[inverse] == 1)
+                           & (starts >= timestamps[0])
+                           & (bucket_ends[group_starts] <= timestamps[-1] + 60_000_000_000))
     output_rows = int(np.count_nonzero(complete_groups))
     if output_rows == 0:
         raise DatabentoCacheError(
@@ -3247,6 +3256,10 @@ def _build_resampled_series(
     }
     selected_starts = group_starts[complete_groups]
     selected_ends = group_ends[complete_groups]
+    if observed_five_minute:
+        # A bounded scalar per bucket, kept beside the replay arrays. Missing
+        # minutes are ambiguous (quiet market or feed outage), never filled.
+        np.save(target / "observed_minute_count.npy", (selected_ends - selected_starts).astype(np.uint8))
     output["timestamp_ns"][:] = bucket_starts[selected_starts]
     output["close_timestamp_ns"][:] = bucket_ends[selected_starts]
     output["open_nano"][:] = np.asarray(arrays["open_nano"])[selected_starts]
@@ -3283,6 +3296,9 @@ def _build_resampled_series(
         "first_timestamp_ns": first_timestamp_ns,
         "source_end_ns": source_end_ns,
         "raw_symbols_by_code": _raw_symbols_by_code(manifest, root_symbol),
+        "aggregation_policy": "observed_minutes" if observed_five_minute else "complete_open_minutes",
+        "quality_flags": "observed_minute_count.npy" if observed_five_minute else None,
+        "buckets_with_unobserved_minutes": int(np.count_nonzero(selected_ends - selected_starts < 5)) if observed_five_minute else 0,
     }
 
 

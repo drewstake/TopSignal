@@ -46,6 +46,9 @@ def _owned(db, user_id, account_id):
 
 
 def _require_idle(db, user_id, account_id, *, own_attempt_id=None):
+    from .topbot_time_exit import pending_exits
+    if pending_exits(db).filter(BotOrderAttempt.account_id == account_id).first() is not None:
+        raise ValueError("A timed bot exit is pending. Wait for verified flat reconciliation before a manual test.")
     if (db.query(BotConfig.id).filter(BotConfig.user_id == user_id, BotConfig.account_id == account_id,
                                     BotConfig.enabled.is_(True)).first() or
             db.query(BotRun.id).filter(BotRun.user_id == user_id, BotRun.account_id == account_id,
@@ -67,14 +70,15 @@ def _require_idle(db, user_id, account_id, *, own_attempt_id=None):
 
 
 def _contract(client):
-    for row in client.search_contracts(search_text="MNQ", live=False):
-        if row.get("active_contract") is True and re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", str(row.get("id", ""))):
-            for field in ("tick_size", "tick_value"):
-                value = row.get(field)
-                if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
-                    raise ValueError("ProjectX did not return valid MNQ tick metadata.")
-            return {key: row.get(key) for key in ("id", "name", "tick_size", "tick_value")}
-    raise ValueError("No active MNQ contract is available from ProjectX.")
+    from .bot_service import _pick_market_contract
+    row = _pick_market_contract(client.search_contracts(search_text="MNQ", live=False), root="MNQ")
+    if row is None or not re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", str(row.get("id", ""))):
+        raise ValueError("No unique active MNQ contract is available from ProjectX.")
+    for field in ("tick_size", "tick_value"):
+        value = row.get(field)
+        if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
+            raise ValueError("ProjectX did not return valid MNQ tick metadata.")
+    return {key: row.get(key) for key in ("id", "name", "tick_size", "tick_value")}
 
 
 def _result(row):
@@ -117,7 +121,7 @@ def _recover_existing(db, existing, client, user_id, account_id):
             order = matches[0]
             if order.get("order_id") and order.get("status") in {1, 2, 3, 4, 5}:
                 row.provider_order_id = str(order["order_id"])
-                row.status = "error" if order["status"] == 5 else "submitted"
+                row.status = "error" if order["status"] == 5 else "cancelled" if order["status"] in {3, 4} else "submitted"
                 row.rejection_reason = "ProjectX reports the original order was rejected." if row.status == "error" else None
                 row.raw_response = {"reconciled": True, "order": order.get("raw_payload")}
         db.commit()
@@ -143,7 +147,7 @@ def submit_manual_order_test(db: Session, *, user_id: str, account_id: int,
     db.commit()
 
     contract = _contract(client)
-    if payload.quantity * payload.stop_loss_ticks * contract["tick_value"] > MAX_STOP_RISK:
+    if payload.quantity * ((payload.stop_loss_ticks + 2) * contract["tick_value"] + 1.22) > MAX_STOP_RISK:
         raise ValueError("Manual tests allow at most $250 of planned stop risk, excluding fees and slippage.")
     provider_account = next((a for a in client.list_accounts(only_active_accounts=False) if a["id"] == account_id), None)
     if not provider_account or provider_account.get("can_trade") is not True or provider_account.get("is_visible") is not True:

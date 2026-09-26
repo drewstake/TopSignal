@@ -14,7 +14,7 @@ from .databento_ingestion import MNQ_HISTORY_START_UTC, SUPPORTED_DATASET
 from .trading_day import as_utc, futures_session_is_open, trading_day_bounds_utc
 
 
-ROLL_POLICY_VERSION = "volume_previous_completed_session_v1"
+ROLL_POLICY_VERSION = "legacy_retrospective_volume_roll_v1"
 PRICE_SCALE = 1_000_000_000
 REPLAY_QUERY_CHUNK_SIZE = 8_192
 

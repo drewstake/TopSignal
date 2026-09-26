@@ -1,0 +1,55 @@
+{
+  "checked_on": "2026-09-26",
+  "status": "offline_adapter_boundary_replay_passed",
+  "source_fingerprint": "e900ae486308de577f0945e21cd54821ed2b206c027761d1973563a9085b4d6a",
+  "implementation_sha256": "4a85e815bc7a3a286015327edb506a7a5970da7c372603555e23cdf58505a6e8",
+  "scope": "Live mathematical adapter evaluated on actual closed Databento 5m windows with a frozen decision clock",
+  "decisions": 67,
+  "holds": 67,
+  "signals": 0,
+  "windows": [
+    {
+      "window": "Thursday daily halt",
+      "first_decision_et": "2026-06-25T15:50:00-04:00",
+      "last_decision_et": "2026-06-25T18:15:00-04:00",
+      "decisions": 30,
+      "holds": 30,
+      "reasons": {
+        "outside_research_session": 5,
+        "entry_too_close_to_session_close": 25
+      }
+    },
+    {
+      "window": "Friday weekend close",
+      "first_decision_et": "2026-06-26T15:50:00-04:00",
+      "last_decision_et": "2026-06-26T18:15:00-04:00",
+      "decisions": 30,
+      "holds": 30,
+      "reasons": {
+        "outside_research_session": 1,
+        "entry_too_close_to_session_close": 25,
+        "exchange_session_closed": 4
+      }
+    },
+    {
+      "window": "Thanksgiving early close",
+      "first_decision_et": "2025-11-27T12:45:00-05:00",
+      "last_decision_et": "2025-11-27T13:15:00-05:00",
+      "decisions": 7,
+      "holds": 7,
+      "reasons": {
+        "entry_too_close_to_session_close": 7
+      }
+    }
+  ],
+  "network_requests": 0,
+  "orders": 0,
+  "database_writes": 0,
+  "observations": "backend\\storage\\databento\\audit\\boundary-adapter-observations-20260926.json",
+  "observations_sha256": "057b6221c099f616d1be0a7f951c5dfa4d415d1ecf32f5daa6c9e38e0613e72d",
+  "limitations": [
+    "Offline adapter replay, not a live worker or broker observation.",
+    "The boundary gate runs before model loading; no passed model or trade edge is inferred.",
+    "Actual broker cancel/close behavior during the halt remains unobserved."
+  ]
+}

@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from threading import BoundedSemaphore, Event, Lock
 from time import perf_counter
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -3613,14 +3613,20 @@ def emergency_flatten_projectx_account(
 @app.get("/api/bots/{bot_config_id}/activity", response_model=BotActivityOut)
 def get_trading_bot_activity(
     bot_config_id: int,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=2000),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    run_id: int | None = None,
+    execution_mode: Literal["dry_run", "live"] | None = None,
+    signals_only: bool = False,
     db: Session = Depends(get_db),
 ):
     user_id = get_authenticated_user_id()
     if bot_config_id <= 0:
         raise HTTPException(status_code=400, detail="bot_config_id must be a positive integer")
     try:
-        payload = get_bot_activity(db, user_id=user_id, bot_config_id=bot_config_id, limit=limit)
+        payload = get_bot_activity(db, user_id=user_id, bot_config_id=bot_config_id, limit=limit,
+                                  start=start, end=end, run_id=run_id, execution_mode=execution_mode, signals_only=signals_only)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {

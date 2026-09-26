@@ -11,7 +11,7 @@ import numpy as np
 from .depth_research import L1_NAMES, L2_NAMES, SHAPE_NAMES, FLOW_NAMES, timestamp
 from .probabilistic_strategy import Features
 
-VERSION = "depth_logistic_ridge_v1"
+VERSION = "depth_direct_payoff_v2"
 CANDLE_NAMES = ("return_1", "return_3", "relative_volatility", "relative_volume")
 FEATURE_SETS = {"candles": CANDLE_NAMES, "level1": CANDLE_NAMES + L1_NAMES,
                 "level2": CANDLE_NAMES + L1_NAMES + L2_NAMES,
@@ -77,6 +77,9 @@ class DepthModel:
     trained_through: datetime
     penalty: float = 1.
     horizon_seconds: int = 900
+    payoff_coefficients: np.ndarray | None = None
+    payoff_covariance: np.ndarray | None = None
+    effective_days: float = 0.
 
     @classmethod
     def fit(cls, samples: Sequence[Example], feature_set: str, *, penalty: float = 1., horizon_seconds: int = 900):
@@ -93,6 +96,9 @@ class DepthModel:
         z = np.column_stack([np.ones(len(x)), np.clip((x - mean) / scale, -8, 8)])
         ridge = np.diag([1e-6] + [penalty / len(x)] * x.shape[1])
         coef, cov, means, ses, execution = [], [], [], [], []
+        payoff_coefficients, payoff_covariances = [], []
+        day_weights = np.asarray([w[days == day].sum() for day in unique])
+        effective_days = float(1 / np.sum(day_weights ** 2))
         for side in (0, 1):
             net = np.asarray([s.net[side] if horizon_seconds == 900 else s.short_net[horizon_seconds][side] for s in samples])
             y = (net > 0).astype(float)
@@ -125,6 +131,14 @@ class DepthModel:
             inverse = np.linalg.inv(hessian)
             covariance = inverse @ (scores.T @ scores) @ inverse * len(unique) / max(1, len(unique) - 1)
             conditional = [float(np.sum(w[y == k] * net[y == k]) / np.sum(w[y == k])) for k in (0, 1)]
+            payoff_inverse = np.linalg.inv(z.T @ (w[:, None] * z) + ridge)
+            payoff_beta = payoff_inverse @ (z.T @ (w * net))
+            payoff_residual = net - z @ payoff_beta
+            payoff_scores = np.stack([np.sum((w * payoff_residual)[:, None] * z * (days == day)[:, None], axis=0) for day in unique])
+            payoff_cov = payoff_inverse @ (payoff_scores.T @ payoff_scores) @ payoff_inverse
+            payoff_cov *= effective_days / max(1, effective_days-1)
+            payoff_coefficients.append(payoff_beta)
+            payoff_covariances.append(payoff_cov)
             by_day = np.asarray([np.mean(net[days == day]) for day in unique])
             target = np.asarray([s.execution_cost[side] for s in samples])
             if not np.isfinite(target).all():
@@ -132,7 +146,8 @@ class DepthModel:
             execution.append(np.linalg.solve(z.T @ (w[:, None] * z) + ridge, z.T @ (w * target)))
             coef.append(beta); cov.append(covariance); means.append(conditional); ses.append(daily_se(by_day))
         return cls(feature_set, mean, scale, np.asarray(coef), np.asarray(cov), np.asarray(means), np.asarray(ses),
-                   np.asarray(execution), len(samples), len(unique), max(s.label_end for s in samples), penalty, horizon_seconds)
+                   np.asarray(execution), len(samples), len(unique), max(s.label_end for s in samples), penalty, horizon_seconds,
+                   np.asarray(payoff_coefficients), np.asarray(payoff_covariances), effective_days)
 
     def design(self, values: np.ndarray, at: datetime) -> np.ndarray:
         if timestamp(at) <= self.trained_through:
@@ -150,16 +165,17 @@ class DepthModel:
         outcomes = {}
         for index, side in enumerate(("BUY", "SELL")):
             p = float(sigmoid(z @ self.coefficients[index]))
-            negative, positive = self.conditional_net[index]
-            net = p * positive + (1 - p) * negative
-            probability_se = p * (1 - p) * math.sqrt(max(0., float(z @ self.covariance[index] @ z)))
-            se = self.payoff_se[index] + abs(positive - negative) * probability_se
-            penalty = 2.576 * se + 1.
+            if self.payoff_coefficients is None or self.payoff_covariance is None:
+                raise ValueError("Direct conditional payoff fit is required")
+            net = float(z @ self.payoff_coefficients[index])
+            se = math.sqrt(max(0., float(z @ self.payoff_covariance[index] @ z)))
+            from scipy.stats import t
+            penalty = float(t.ppf(1-.01/8, max(1, self.effective_days-1))) * se + 1.
             outcomes[side] = {"probability_net_positive": p, "expected_net_usd": float(net),
                               "uncertainty_penalty_usd": float(penalty), "lower_utility_usd": float(net - penalty),
                               "execution_cost_proxy_usd": float(z @ self.execution_coefficients[index])}
         best = max(outcomes, key=lambda side: outcomes[side]["lower_utility_usd"])
-        supported = self.training_examples >= 300 and self.training_days >= 20 and self.horizon_seconds == 900
+        supported = self.training_examples >= 300 and self.effective_days >= 20 and self.horizon_seconds == 900
         proposal = best if supported and outcomes[best]["lower_utility_usd"] > 1 else "NO_TRADE"
         reasons = ["Unvalidated research estimates; no order routing."]
         if not supported:
@@ -173,11 +189,12 @@ class DepthModel:
                 "probability_basis": "uncalibrated_model_estimate", "forecasts": outcomes,
                 "training_examples": self.training_examples, "training_days": self.training_days,
                 "trained_through": self.trained_through.isoformat(), "reasons": reasons,
-                "uncertainty_method": "Day-cluster coefficient uncertainty plus larger of day/HAC payoff SE; 2.576 SE and $1 buffer. Not a coverage guarantee."}
+                "uncertainty_method": "Direct conditional net-payoff regression with day-cluster sandwich covariance and effective-day t penalty. Research only."}
 
     def to_dict(self) -> dict:
         return {"version": VERSION, "feature_set": self.feature_set, "feature_names": list(FEATURE_SETS[self.feature_set]),
-                **{k: getattr(self, k).tolist() for k in ("mean", "scale", "coefficients", "covariance", "conditional_net", "payoff_se", "execution_coefficients")},
+                **{k: getattr(self, k).tolist() for k in ("mean", "scale", "coefficients", "covariance", "conditional_net", "payoff_se", "execution_coefficients", "payoff_coefficients", "payoff_covariance")},
+                "effective_days": self.effective_days,
                 "training_examples": self.training_examples, "training_days": self.training_days,
                 "trained_through": self.trained_through.isoformat(), "penalty": self.penalty, "horizon_seconds": self.horizon_seconds}
 
@@ -191,7 +208,8 @@ class DepthModel:
         arrays = {}
         for key, shape in {"mean": (count,), "scale": (count,), "coefficients": (2, count + 1),
                            "covariance": (2, count + 1, count + 1), "conditional_net": (2, 2),
-                           "payoff_se": (2,), "execution_coefficients": (2, count + 1)}.items():
+                           "payoff_se": (2,), "execution_coefficients": (2, count + 1),
+                           "payoff_coefficients": (2, count + 1), "payoff_covariance": (2, count+1, count+1)}.items():
             arrays[key] = np.asarray(value[key], dtype=float)
             if arrays[key].shape != shape or not np.isfinite(arrays[key]).all() or np.max(np.abs(arrays[key])) > 1e8:
                 raise ValueError("Malformed fitted model.")
@@ -199,8 +217,11 @@ class DepthModel:
                 or not 2 <= value["training_examples"] <= 20000 or not 1 <= value["training_days"] <= value["training_examples"]
                 or value["horizon_seconds"] not in {1, 5, 30, 900} or value["penalty"] not in {.5, 1., 2.}):
             raise ValueError("Invalid model metadata.")
-        for matrix in arrays["covariance"]:
+        if not 1 <= value["effective_days"] <= value["training_days"] + 1e-6:
+            raise ValueError("Invalid effective-day support")
+        for matrix in [*arrays["covariance"], *arrays["payoff_covariance"]]:
             if not np.allclose(matrix, matrix.T) or np.min(np.linalg.eigvalsh(matrix)) < -1e-7:
                 raise ValueError("Invalid uncertainty covariance.")
         return cls(value["feature_set"], **arrays, training_examples=value["training_examples"], training_days=value["training_days"],
-                   trained_through=timestamp(value["trained_through"]), penalty=value["penalty"], horizon_seconds=value["horizon_seconds"])
+                   trained_through=timestamp(value["trained_through"]), penalty=value["penalty"], horizon_seconds=value["horizon_seconds"],
+                   effective_days=value["effective_days"])

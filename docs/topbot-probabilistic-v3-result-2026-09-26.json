@@ -1,0 +1,159 @@
+{
+  "experiment_id": "2bfc29c748473b55578a75c9502c04e295a93fa99d768b9741345639fdb79ad5",
+  "status": "offline_failed",
+  "promotion_eligible": false,
+  "complete_sessions": 1622,
+  "blockers": [
+    "Final untouched holdout has not been evaluated.",
+    "Forward Dry Run and execution parity are not verified.",
+    "Reviewed installation is required; research never promotes automatically."
+  ],
+  "report": "C:\\Users\\drews\\Development\\TopSignal\\backend\\storage\\databento\\probabilistic-v3\\experiments\\2bfc29c748473b55578a75c9502c04e295a93fa99d768b9741345639fdb79ad5\\report.json",
+  "projectx_parity": {
+    "projectx_bars": 3128,
+    "overlap_bars": 0,
+    "exact_ohlcv_matches": 0,
+    "exact_match_rate": null,
+    "mismatches": {
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "volume": 0
+    },
+    "timestamp_convention": "UTC bar open; compare only identical delivery and five-minute interval",
+    "status": "no_overlap",
+    "trusted_parity": false
+  },
+  "folds": 74,
+  "multiplicity_count": 292,
+  "historical_experiment_count_verified": false,
+  "protocol_sha256": "70cb218611e47b77470126a9c4dfc5cfb89b59fef7dead547aaf90427a8aaa96",
+  "implementation_sha256": "4a85e815bc7a3a286015327edb506a7a5970da7c372603555e23cdf58505a6e8",
+  "source_sha256": "895557cfb6f08836a5ae3ffef80515fdbbcea262b9ee1be224fd6137915cccd2",
+  "population": {
+    "candidate_windows": 115049,
+    "accepted": 58865,
+    "volatility_cap": 55898,
+    "other_rejections": 286
+  },
+  "volatility_cap_rejection_share": 0.48586254552408104,
+  "model_results": {
+    "bayesian_cells_v1": {
+      "trades": 0,
+      "net_usd": 0.0,
+      "expectancy_usd": null,
+      "failed_checks": [
+        "calibration",
+        "cost_latency_parameter_stress",
+        "day_concentration",
+        "paired_incumbent_advantage",
+        "positive_expectancy_bounds",
+        "regime_support",
+        "tail_loss",
+        "trade_count",
+        "without_best_days",
+        "without_best_trades"
+      ],
+      "bootstrap_seed_sensitivity": {
+        "10": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        },
+        "5": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        }
+      }
+    },
+    "empirical_pool_v1": {
+      "trades": 0,
+      "net_usd": 0.0,
+      "expectancy_usd": null,
+      "failed_checks": [
+        "calibration",
+        "cost_latency_parameter_stress",
+        "day_concentration",
+        "paired_incumbent_advantage",
+        "positive_expectancy_bounds",
+        "regime_support",
+        "tail_loss",
+        "trade_count",
+        "without_best_days",
+        "without_best_trades"
+      ],
+      "bootstrap_seed_sensitivity": {
+        "10": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        },
+        "5": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        }
+      }
+    },
+    "kernel_paths_v1": {
+      "trades": 0,
+      "net_usd": 0.0,
+      "expectancy_usd": null,
+      "failed_checks": [
+        "calibration",
+        "cost_latency_parameter_stress",
+        "day_concentration",
+        "paired_incumbent_advantage",
+        "positive_expectancy_bounds",
+        "regime_support",
+        "tail_loss",
+        "trade_count",
+        "without_best_days",
+        "without_best_trades"
+      ],
+      "bootstrap_seed_sensitivity": {
+        "10": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        },
+        "5": {
+          "maximum": null,
+          "minimum": null,
+          "seeds": 0
+        }
+      }
+    }
+  },
+  "directional_baselines": {
+    "always_long": {
+      "trades": 20860,
+      "net_usd": -70154.2
+    },
+    "always_short": {
+      "trades": 20225,
+      "net_usd": -77593.5
+    },
+    "flat": {
+      "trades": 0,
+      "net_usd": 0.0
+    }
+  },
+  "artifact_verification": {
+    "native_report": true,
+    "report_bytes": 22869025,
+    "report_file_sha256": "74de92d55df11ca71fdcff07c7595d5ad7b07787b27d614c3068054f8cbbb93d",
+    "report_canonical_sha256": "17c3bc548969b6939f566c9d48755f5a9d8bf14aaa1ce7d1e9ace44b1fb59beb",
+    "implementation_matches_current_code": true,
+    "registration_matches_report": true,
+    "verified_ledger_references": 3111,
+    "verified_distinct_ledger_files": 149,
+    "failed_candidate_loader_rejections": {
+      "bayesian_cells_v1": "Artifact requires a passed development experiment",
+      "kernel_paths_v1": "Artifact requires a passed development experiment"
+    }
+  },
+  "research_result": "Both candidates and the empirical pool proposed zero admissible trades. Expectancy and lower bounds are undefined; validation fails."
+}

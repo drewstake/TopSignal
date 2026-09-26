@@ -68,6 +68,7 @@ class _Inspector:
             "bot_runtime_leases",
             "expense_suppressions",
             "projectx_trade_events",
+            "projectx_market_candles",
             "trade_import_batches",
             "trade_import_previews",
         ]
@@ -88,6 +89,8 @@ class _Inspector:
         return [table for table in tables if table != self.missing_table]
 
     def get_columns(self, table_name):
+        if table_name == "projectx_market_candles":
+            return [{"name": name, "nullable": True} for name in ("first_fetched_at", "revision_hash")]
         if table_name == "account_emergency_actions":
             return [
                 {"name": column_name, "nullable": column_name in {"result_payload", "completed_at"}}

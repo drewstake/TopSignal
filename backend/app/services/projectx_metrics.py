@@ -77,6 +77,7 @@ def compute_trade_summary(
     *,
     points_basis: str = "auto",
     point_value_by_symbol: Mapping[str, float] | None = None,
+    starting_balance: float | None = None,
 ) -> dict[str, TradeSummaryValue]:
     normalized_points_basis = normalize_points_basis(points_basis)
     point_value_lookup = dict(point_value_by_symbol or _default_point_value_lookup())
@@ -84,7 +85,7 @@ def compute_trade_summary(
     if not trades:
         return _empty_trade_summary(points_basis=normalized_points_basis)
 
-    realized_values, closed_pnls = _compute_realized_values(trades)
+    realized_values, _ = _compute_realized_values(trades)
     fee_values = [_effective_fee(trade) for trade in trades]
     net_values = [realized - fee for realized, fee in zip(realized_values, fee_values)]
     closed_net_values = [net for trade, net in zip(trades, net_values) if trade.pnl is not None]
@@ -93,10 +94,8 @@ def compute_trade_summary(
     losses = [value for value in closed_net_values if value < 0]
     breakeven_count = len(closed_net_values) - len(wins) - len(losses)
 
-    gross_wins = [value for value in closed_pnls if value > 0]
-    gross_losses = [value for value in closed_pnls if value < 0]
-    gross_profit = math.fsum(gross_wins)
-    gross_loss_abs = abs(math.fsum(gross_losses))
+    net_profit = math.fsum(wins)
+    net_loss_abs = abs(math.fsum(losses))
 
     gross_pnl = math.fsum(realized_values)
     total_fees = math.fsum(fee_values)
@@ -112,7 +111,7 @@ def compute_trade_summary(
     red_days = sum(1 for value in daily_net.values() if value < 0)
     flat_days = active_days - green_days - red_days
 
-    drawdown_stats = _compute_drawdown_stats(trades, net_values)
+    drawdown_stats = _compute_drawdown_stats(trades, net_values, starting_balance=starting_balance)
     active_hours = _compute_active_hours(trades)
     hold_durations = _compute_closed_trade_hold_durations_minutes(trades)
     hold_win_minutes = [
@@ -149,8 +148,8 @@ def compute_trade_summary(
         "win_count": len(wins),
         "loss_count": len(losses),
         "breakeven_count": breakeven_count,
-        "profit_factor_no_losses": gross_loss_abs == 0 and gross_profit > 0,
-        "profit_factor": _round(gross_profit / gross_loss_abs, 4) if gross_loss_abs > 0 else None,
+        "profit_factor_no_losses": net_loss_abs == 0 and net_profit > 0,
+        "profit_factor": _round(net_profit / net_loss_abs, 4) if net_loss_abs > 0 else None,
         "avg_win": _round(_mean(wins)),
         "avg_loss": _round(_mean(losses)),
         "avg_win_duration_minutes": _round(_mean(hold_win_minutes)),
@@ -159,7 +158,7 @@ def compute_trade_summary(
         "tail_risk_5pct": _round(_tail_risk_worst_5pct(closed_net_values)),
         "max_drawdown": _round(drawdown_stats["max_drawdown"]),
         "average_drawdown": _round(drawdown_stats["average_drawdown"]),
-        "risk_drawdown_score": _round(drawdown_stats["risk_drawdown_score"], 2),
+        "risk_drawdown_score": _round(drawdown_stats["risk_drawdown_score"], 2) if drawdown_stats["risk_drawdown_score"] is not None else None,
         "max_drawdown_length_hours": _round(drawdown_stats["max_drawdown_length_hours"]),
         "recovery_time_hours": _round(drawdown_stats["recovery_time_hours"]),
         "average_recovery_length_hours": _round(drawdown_stats["average_recovery_length_hours"]),
@@ -708,7 +707,7 @@ def _compute_active_hours(trades: list[TradeMetricSample]) -> float:
     return total_hours
 
 
-def _compute_drawdown_stats(trades: list[TradeMetricSample], net_values: list[float]) -> dict[str, float]:
+def _compute_drawdown_stats(trades: list[TradeMetricSample], net_values: list[float], *, starting_balance: float | None = None) -> dict[str, float | None]:
     if not trades:
         return {
             "max_drawdown": 0.0,
@@ -741,13 +740,13 @@ def _compute_drawdown_stats(trades: list[TradeMetricSample], net_values: list[fl
     ]
 
     max_drawdown = max_episode.trough_drawdown
-    denominator = max(max_episode.peak_equity, abs(max_drawdown), 1.0)
+    denominator = starting_balance if starting_balance is not None and math.isfinite(starting_balance) and starting_balance > 0 else None
     recovery_end = max_episode.end_ts or last_ts
 
     return {
         "max_drawdown": max_drawdown,
         "average_drawdown": _mean([episode.trough_drawdown for episode in episodes]),
-        "risk_drawdown_score": (abs(max_drawdown) / denominator) * 100.0,
+        "risk_drawdown_score": (abs(max_drawdown) / denominator) * 100.0 if denominator else None,
         "max_drawdown_length_hours": max(drawdown_lengths) if drawdown_lengths else 0.0,
         "recovery_time_hours": _duration_hours(max_episode.trough_ts, recovery_end),
         "average_recovery_length_hours": _mean(recovery_lengths),

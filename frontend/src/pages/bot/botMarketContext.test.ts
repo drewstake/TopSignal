@@ -53,7 +53,7 @@ function snapshot(candles: ProjectXMarketCandle[], lastPrice: number | null = nu
   };
 }
 
-it("uses the selected TopBot session for the chart's VWAP interpretation", () => {
+it("shares the 18:00 ET context VWAP across strategies", () => {
   const candles = [
     candle("2026-06-08T22:00:00Z", 90),
     candle("2026-06-09T13:30:00Z", 110),
@@ -64,9 +64,9 @@ it("uses the selected TopBot session for the chart's VWAP interpretation", () =>
   const generic = buildMarketContext(source, now);
   const topbot = buildMarketContext({ ...source, strategyType: "topbot_adaptive" }, now);
   expect(generic?.vwap).toBeCloseTo(101.6666667);
-  expect(topbot?.vwap).toBe(107.5);
+  expect(topbot?.vwap).toBeCloseTo(101.6666667);
   expect(generic?.vwapDistance).toBeGreaterThan(0);
-  expect(topbot?.vwapDistance).toBeLessThan(0);
+  expect(topbot?.vwapDistance).toBeGreaterThan(0);
 });
 
 describe("aggregateCandles", () => {

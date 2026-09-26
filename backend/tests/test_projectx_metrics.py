@@ -83,7 +83,7 @@ def test_compute_trade_summary_with_mixed_results_and_fees():
     assert summary["win_count"] == 2
     assert summary["loss_count"] == 1
     assert summary["breakeven_count"] == 0
-    assert summary["profit_factor"] == 4.0
+    assert summary["profit_factor"] == 3.6071
     assert summary["avg_win"] == 75.75
     assert summary["avg_loss"] == -42.0
     assert summary["avg_win_duration_minutes"] == 0.0
@@ -92,7 +92,7 @@ def test_compute_trade_summary_with_mixed_results_and_fees():
     assert summary["tail_risk_5pct"] == -42.0
     assert summary["max_drawdown"] == -42.0
     assert summary["average_drawdown"] == -42.0
-    assert summary["risk_drawdown_score"] == 44.21
+    assert summary["risk_drawdown_score"] is None
     assert summary["max_drawdown_length_hours"] == 0.5
     assert summary["recovery_time_hours"] == 0.5
     assert summary["average_recovery_length_hours"] == 0.5

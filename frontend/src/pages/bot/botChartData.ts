@@ -1,7 +1,7 @@
 import type { CandlestickData, LineData, SeriesMarker, UTCTimestamp } from "lightweight-charts";
 import { BOT_CHART_BUY_COLOR, BOT_CHART_SELL_COLOR } from "./botChartTheme";
 
-import type { BotConfig, BotDecision, BotEvaluation, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
+import type { BotConfig, BotDecision, BotEvaluation, BotOrderAttempt, BotTimeframeUnit, ProjectXMarketCandle, ProjectXMarketPrice } from "../../lib/types";
 
 // Charting needs a market and timeframe, not a persisted bot or trading account.
 export type BotChartMarket = Pick<BotConfig,
@@ -62,17 +62,6 @@ interface BuildLiveCandleFromPriceOptions {
   fetchedAt?: Date;
 }
 
-export interface BuildCandlestickDataOptions {
-  /**
-   * Display-only continuity treatment. When enabled, a consecutive candle's
-   * rendered open is joined to the previous close. Raw ProjectX OHLC remains
-   * untouched and is used by default.
-   */
-  visualContinuity?: boolean;
-  /** @deprecated Use `visualContinuity`; retained for existing callers. */
-  bridgeConsecutiveGaps?: boolean;
-}
-
 interface BuildVwapDataOptions {
   sessionStartTime?: string;
   sessionTimeZone?: string;
@@ -108,7 +97,6 @@ export function toUtcTimestamp(value: string | null | undefined): UTCTimestamp |
 
 export function buildCandlestickData(
   candles: ProjectXMarketCandle[],
-  options: BuildCandlestickDataOptions = {},
 ): CandlestickData<UTCTimestamp>[] {
   const byTime = new Map<number, ValidMarketCandle>();
 
@@ -133,30 +121,8 @@ export function buildCandlestickData(
     });
   }
 
-  const visualContinuity = options.visualContinuity ?? options.bridgeConsecutiveGaps ?? false;
-  const sortedCandles = Array.from(byTime.values()).sort((left, right) => left.timestampSeconds - right.timestampSeconds);
-  return sortedCandles.map((row, index) => {
-    if (!visualContinuity) {
-      return buildCanonicalCandlestick(row);
-    }
-    const previous = index > 0 ? sortedCandles[index - 1] : null;
-    const open =
-      previous && areConsecutiveIntradayCandles(previous, row)
-        ? previous.candle.close
-        : row.candle.open;
-    return buildVisualContinuityCandlestick(row, open);
-  });
-}
-
-/**
- * Build display-only candles whose consecutive opens visually join the prior
- * close. Prefer `buildCandlestickData` whenever canonical ProjectX OHLC is
- * required for charting or calculations.
- */
-export function buildVisualContinuityCandlestickData(
-  candles: ProjectXMarketCandle[],
-): CandlestickData<UTCTimestamp>[] {
-  return buildCandlestickData(candles, { visualContinuity: true });
+  return Array.from(byTime.values()).sort((a, b) => a.timestampSeconds - b.timestampSeconds)
+    .map(buildCanonicalCandlestick);
 }
 
 export function buildSmaData(candles: CandlestickData<UTCTimestamp>[], period: number): LineData<UTCTimestamp>[] {
@@ -216,7 +182,7 @@ export function buildVwapData(
   }
 
   const sessionTimeZone = options.sessionTimeZone ?? DEFAULT_VWAP_SESSION_TIME_ZONE;
-  const sessionStartMinutes = parseSessionStartMinutes(options.sessionStartTime);
+  const sessionStartMinutes = parseSessionStartMinutes(options.sessionStartTime ?? "18:00");
   const sessionFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: sessionTimeZone,
     year: "numeric",
@@ -258,6 +224,55 @@ export function buildVwapData(
   }
 
   return output;
+}
+
+/** Prepare history once per provider refresh; quote ticks only reprice the tail. */
+export function prepareLiveVwap(candles: ProjectXMarketCandle[]) {
+  const rows = buildSortedVwapCandles(candles);
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: DEFAULT_VWAP_SESSION_TIME_ZONE,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  type State = { session: string | null; volume: number; priceVolume: number };
+  const empty: State = { session: null, volume: 0, priceVolume: 0 };
+  const add = (state: State, row: ValidMarketCandle): State => {
+    const session = buildVwapSessionKey(row.candle.timestamp, formatter, 18 * 60);
+    const prior = session === state.session ? state : empty;
+    const volume = Number.isFinite(row.candle.volume) && row.candle.volume > 0 ? row.candle.volume : 0;
+    return { session, volume: prior.volume + volume,
+      priceVolume: prior.priceVolume + volume * (row.candle.high + row.candle.low + row.candle.close) / 3 };
+  };
+  let state = empty, beforeLast = empty, prefixLength = 0;
+  const output: LineData<UTCTimestamp>[] = [];
+  for (const row of rows) {
+    beforeLast = state; prefixLength = output.length;
+    state = add(state, row);
+    if (state.volume > 0) output.push({ time: row.time, value: state.priceVolume / state.volume });
+  }
+  const last = rows.at(-1);
+  return (live: ProjectXMarketCandle | null): LineData<UTCTimestamp>[] => {
+    if (!live) return output;
+    const row = buildSortedVwapCandles([live])[0];
+    if (!row) return output;
+    if (last && row.time < last.time) return buildVwapData([...candles, live]);
+    const replacing = last && row.time === last.time;
+    if (replacing && !last.candle.is_partial && live.is_partial) return output;
+    const next = add(replacing ? beforeLast : state, row);
+    const prefix = replacing ? output.slice(0, prefixLength) : output;
+    return next.volume > 0 ? [...prefix, { time: row.time, value: next.priceVolume / next.volume }] : prefix;
+  };
+}
+
+export function prepareLiveCandlesticks(candles: ProjectXMarketCandle[]) {
+  const base = buildCandlestickData(candles);
+  const last = base.at(-1);
+  const closedTimes = new Set(candles.filter(c => !c.is_partial).map(c => toUtcTimestamp(c.timestamp)));
+  return (live: ProjectXMarketCandle | null) => {
+    if (!live) return base;
+    const tail = buildCandlestickData([live])[0];
+    if (!tail || (live.is_partial && closedTimes.has(tail.time))) return base;
+    if (!last || tail.time > last.time) return [...base, tail];
+    if (tail.time === last.time) return [...base.slice(0, -1), tail];
+    return buildCandlestickData([...candles, live]);
+  };
 }
 
 export function buildLiquidityLevels(
@@ -445,29 +460,6 @@ function buildCanonicalCandlestick(row: ValidMarketCandle): CandlestickData<UTCT
     low: candle.low,
     close: candle.close,
   };
-}
-
-function buildVisualContinuityCandlestick(row: ValidMarketCandle, open: number): CandlestickData<UTCTimestamp> {
-  const { candle } = row;
-  const high = Math.max(open, candle.open, candle.high, candle.low, candle.close);
-  const low = Math.min(open, candle.open, candle.high, candle.low, candle.close);
-
-  return {
-    time: row.time,
-    open,
-    high,
-    low,
-    close: candle.close,
-  };
-}
-
-function areConsecutiveIntradayCandles(previous: ValidMarketCandle, current: ValidMarketCandle): boolean {
-  if (previous.candle.unit !== current.candle.unit || previous.candle.unit_number !== current.candle.unit_number) {
-    return false;
-  }
-
-  const intervalSeconds = intradayIntervalSeconds(current.candle);
-  return intervalSeconds !== null && current.timestampSeconds - previous.timestampSeconds === intervalSeconds;
 }
 
 function findPreviousConsecutiveClose(input: {
@@ -733,6 +725,7 @@ export function buildSignalMarkers(input: {
   candles: CandlestickData<UTCTimestamp>[];
   activityDecisions?: BotDecision[];
   lastEvaluation?: BotEvaluation | null;
+  orderAttempts?: BotOrderAttempt[];
   timeframeUnit?: BotTimeframeUnit;
   timeframeUnitNumber?: number;
 }): SeriesMarker<UTCTimestamp>[] {
@@ -754,6 +747,16 @@ export function buildSignalMarkers(input: {
     }
   }
 
+  for (const attempt of input.orderAttempts ?? []) {
+    if (attempt.execution_mode !== "live") continue;
+    for (const event of attempt.execution_observations ?? []) {
+      const time = toDecisionMarkerTimestamp(event.timestamp, candleTimes, sortedCandleTimes, input.timeframeUnit, input.timeframeUnitNumber);
+      if (time === null || !candleTimes.has(Number(time))) continue;
+      const id = event.kind === "fill" ? `fill-${event.id}` : `flat-${attempt.id}`;
+      markersByKey.set(id, { id, time, position: "inBar", shape: "square", size: .65,
+        color: "rgb(56,189,248)", text: event.kind === "fill" ? `FILL ${attempt.side} @ ${event.price}` : "FLAT VERIFIED" });
+    }
+  }
   return Array.from(markersByKey.values()).sort((left, right) => Number(left.time) - Number(right.time));
 }
 
@@ -767,11 +770,23 @@ function buildDecisionMarker(
   if (!SIGNAL_ACTIONS.has(decision.action)) {
     return null;
   }
+  if (decision.decision_type !== "signal" && decision.decision_type !== "risk_reject") return null;
 
-  const time = toDecisionMarkerTimestamp(decision.candle_timestamp, candleTimes, sortedCandleTimes, timeframeUnit, timeframeUnitNumber);
+  const chartSeconds = timeframeUnit ? UNIT_SECONDS_BY_NAME[timeframeUnit] * (timeframeUnitNumber ?? 1) : 300;
+  const payload = decision.raw_payload ?? {};
+  const decisionSeconds = typeof payload.decision_interval_seconds === "number" ? payload.decision_interval_seconds : 300;
+  const stamp = decision.candle_timestamp ? Date.parse(decision.candle_timestamp) : NaN;
+  const alignedStamp = Number.isFinite(stamp) && Number.isFinite(decisionSeconds)
+    ? new Date(stamp + Math.max(0, decisionSeconds - chartSeconds) * 1000).toISOString() : null;
+  const time = toDecisionMarkerTimestamp(alignedStamp, candleTimes, sortedCandleTimes, timeframeUnit, timeframeUnitNumber);
   if (time === null || !candleTimes.has(Number(time))) {
     return null;
   }
+
+  if (decision.decision_type === "risk_reject") return {
+    id: markerId(decision), time, position: "aboveBar", shape: "circle",
+    color: "rgb(148,163,184)", text: `○ BLOCKED ${decision.action}`, size: 0,
+  };
 
   if (decision.action === "BUY") {
     return {
