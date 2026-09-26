@@ -43,11 +43,6 @@ TOPBOT_SETTINGS = {
     "allow_market_depth": False,
 }
 
-# Keep the EMA/VWAP strategy preset independent of the mathematical run preset.
-from .topbot_strategy import RULES as LEGACY_RULES, HISTORY_BARS as LEGACY_HISTORY_BARS
-LEGACY_TOPBOT_SETTINGS = deepcopy(TOPBOT_SETTINGS)
-LEGACY_TOPBOT_SETTINGS.update(strategy_params=dict(LEGACY_RULES), lookback_bars=LEGACY_HISTORY_BARS)
-
 
 def resolve_topbot_contract(client: ProjectXClient) -> str:
     """Select only the provider's active MNQ delivery, never a search near-match."""

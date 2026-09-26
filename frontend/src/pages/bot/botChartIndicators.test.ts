@@ -17,13 +17,11 @@ it("does not present EMA entry filters for the mathematical strategy", () => {
   });
 });
 
-it("shows TopBot's actual 20/50 EMA periods despite legacy saved period settings", () => {
-  const legacy = { ...market, strategy_type: "topbot_adaptive" as const,
+it("shows no moving-average filters for TopBot, even with removed EMA/VWAP settings", () => {
+  const retired = { ...market, strategy_type: "topbot_adaptive" as const,
     strategy_params: { ema_period: 9, short_trend_ema_period: 200, session_start: "18:00" } };
-  expect(resolveBotChartIndicators(legacy)).toMatchObject({
-    ema: true, showAverages: true, fastPeriod: 20, slowPeriod: 50, sessionStart: "09:30",
-    fastLabel: "EMA 20", slowLabel: "EMA 50 · short filter",
-    vwapLabel: "TopBot VWAP · resets 09:30 / 18:00 ET",
+  expect(resolveBotChartIndicators(retired)).toMatchObject({
+    ema: false, showAverages: false, sessionStart: "09:30", vwapLabel: "VWAP · context only",
   });
   expect(resolveBotChartIndicators({ ...market, strategy_type: "sma_cross" })).toMatchObject({
     ema: false, showAverages: true, fastPeriod: 9, slowPeriod: 21, sessionStart: "18:00",

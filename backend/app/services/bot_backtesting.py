@@ -149,6 +149,14 @@ UNSUPPORTED_BACKTEST_STRATEGY_REASONS: dict[str, str] = {
 
 _BRACKET_REQUIRED_STRATEGIES = SUPPORTED_BACKTEST_STRATEGIES - {"sma_cross"}
 _TOPBOT_STRATEGY = "topbot_adaptive"
+# TopBot's live strategy (the mathematical model) cannot be replayed over its
+# own training history. The TopBot replay path remains for fixture-driven
+# research engines, which declare a research_revision and their own evaluator.
+_TOPBOT_REPLAY_WARMUP_BARS = 200
+_TOPBOT_REPLAY_UNAVAILABLE = (
+    "TopBot's only strategy is the mathematical model, which cannot be replayed over its "
+    "training history. Use backend/tools/research_probabilistic_topbot.py for chronological validation."
+)
 _TRADING_DAY_VWAP_STRATEGIES = {
     "vwap_atr_mean_reversion",
     "bollinger_mean_reversion",
@@ -539,8 +547,10 @@ class BacktestEngine:
             if selected(config.strategy_params):
                 raise BacktestConfigurationError("Mathematical models require the chronological probabilistic research runner; a current fitted artifact cannot be replayed over its training history.")
             research_session_restricted = isinstance(config.strategy_params, dict) and "research_revision" in config.strategy_params
+            if signal_evaluator is None and not research_session_restricted:
+                raise BacktestConfigurationError(_TOPBOT_REPLAY_UNAVAILABLE)
             config = _SourceConfigView(config, strategy_type=_TOPBOT_STRATEGY,
-                strategy_params=bot_service_module._normalize_strategy_params(_TOPBOT_STRATEGY, config.strategy_params),
+                strategy_params=deepcopy(config.strategy_params) if isinstance(config.strategy_params, dict) else {},
                 fast_period=int(config.fast_period), slow_period=int(config.slow_period))
             config._research_session_restricted = research_session_restricted
         self.config = config
@@ -1901,10 +1911,9 @@ def _matching_benchmark_contract(
 
 
 def _topbot_stream_specs(config: BotConfig) -> dict[str, _TopBotReplayStreamSpec]:
-    from .topbot_strategy import HISTORY_BARS
     key = _topbot_asset_stream_key("minute", 5)
     return {key: _TopBotReplayStreamSpec(
-        key=key, unit="minute", unit_number=5, warmup_bars=HISTORY_BARS,
+        key=key, unit="minute", unit_number=5, warmup_bars=_TOPBOT_REPLAY_WARMUP_BARS,
         contract_id=str(config.contract_id), symbol=config.symbol,
     )}
 
@@ -2947,20 +2956,7 @@ def _config_for_backtest_request(config: BotConfig, payload: Any) -> Any:
             f"unsupported_backtest_instrument:{instrument}"
         )
     if (str(requested) if requested is not None else str(config.strategy_type)) == _TOPBOT_STRATEGY:
-        from .topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
-        from .topbot_mathematical import selected
-        if selected(config.strategy_params):
-            raise BacktestConfigurationError("Use research_probabilistic_topbot.py for chronological mathematical-model validation.")
-        if instrument not in (None, "MNQ"):
-            raise BacktestConfigurationError("TopBot Adaptive trades MNQ only.")
-        view = _SourceConfigView(config, strategy_type=_TOPBOT_STRATEGY,
-            strategy_params=deepcopy(TOPBOT_SETTINGS["strategy_params"]),
-            fast_period=TOPBOT_SETTINGS["fast_period"], slow_period=TOPBOT_SETTINGS["slow_period"])
-        for name, value in TOPBOT_SETTINGS.items():
-            setattr(view, name, deepcopy(value))
-        view.contract_id = str(config.contract_id) if normalize_symbol_key(config.contract_id) == "MNQ" else "DATABENTO.CONTINUOUS.MNQ"
-        view.allowed_contracts = [view.contract_id]
-        return view
+        raise BacktestConfigurationError(_TOPBOT_REPLAY_UNAVAILABLE)
     current_instrument = normalize_symbol_key(config.symbol) or normalize_symbol_key(
         config.contract_id
     )
@@ -4664,7 +4660,10 @@ def _assumptions_snapshot(
         "entry_latency_rule": "entry waits until original decision plus configured delay; missing exact minute discards; exits retain normal timing",
         "signal_timing": "strategy_evaluated_after_bar_close_using_only_then-closed_bars",
         "strategy_replay": "single_strategy",
-        "strategy_revision": bot_service_module._normalize_strategy_params(_TOPBOT_STRATEGY, {}).get("revision") if is_topbot else None,
+        "strategy_revision": (
+            (config.strategy_params or {}).get("research_revision") or (config.strategy_params or {}).get("revision")
+            if is_topbot and isinstance(config.strategy_params, dict) else None
+        ),
         "source_synchronization": "not_applicable",
         "synchronized_stream_count": 1,
         "event_order": "resting_gap_brackets_then_pending_open_fill_then_intrabar_brackets_then_close_signal",

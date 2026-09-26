@@ -173,7 +173,7 @@ def test_crps_matches_pairwise_definition():
 def test_splits_reserve_tail_and_purge_boundary_labels():
     from pathlib import Path
     from tools.research_probabilistic_topbot import verify_protocol
-    registered = json.loads((Path(__file__).resolve().parents[2] / "docs/topbot-probabilistic-protocol-v1.json").read_text())
+    registered = json.loads((Path(__file__).resolve().parents[2] / "docs/topbot-probabilistic-protocol-v2.json").read_text())
     verify_protocol(registered)
     with pytest.raises(ValueError, match="register a new experiment"):
         verify_protocol({**registered, "commission_per_side_usd": 0})

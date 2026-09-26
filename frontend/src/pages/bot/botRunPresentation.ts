@@ -1,9 +1,8 @@
 import type { BotActivity, BotConfig, BotRun } from "../../lib/types";
-import { TOPBOT_PRESET } from "./botChartIndicators";
 
 export function botStrategyLabel(strategy: string, params?: BotConfig["strategy_params"]): string {
   if (strategy === "topbot_adaptive" && params?.revision === "mnq_bayesian_payoff_v1") return "TopBot Mathematical";
-  if (strategy === "topbot_adaptive") return "TopBot Adaptive";
+  if (strategy === "topbot_adaptive") return "TopBot (retired strategy)";
   return strategy.split("_").map((part) =>
     ["ema", "vwap", "atr", "rsi", "orb", "fvg", "mss", "spy"].includes(part)
       ? part.toUpperCase()
@@ -16,7 +15,7 @@ export function botConfigurationSummary(bot: BotConfig): string {
     if (bot.strategy_params?.revision === "mnq_bayesian_payoff_v1") {
       return "5-minute candles · All sessions · Bayesian expected payoff · BUY / SELL / NO TRADE · 15-minute horizon · 1 contract · Dry Run · Level 2 pending verification";
     }
-    return `${TOPBOT_PRESET.timeframeUnitNumber}-${TOPBOT_PRESET.timeframeUnit} EMA/VWAP pullback · ${TOPBOT_PRESET.positionSize} contract · All sessions · ${TOPBOT_PRESET.stopPoints}-point stop / ${TOPBOT_PRESET.targetPoints}-point target`;
+    return "Retired EMA/VWAP settings · holds every candle · stop this bot and start a new run to use TopBot Mathematical";
   }
   const params = bot.strategy_params as Record<string, unknown>;
   const parts = [

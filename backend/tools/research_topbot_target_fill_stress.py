@@ -23,13 +23,13 @@ from tools import research_topbot as _original_runner
 
 # Prospective compatibility review: docs/topbot-target-stress-compatibility-2026-09-22.md.
 BASE_ENGINE_VERSION = "5.4.0-topbot-all-sessions"
-STRESS_ENGINE_VERSION = BASE_ENGINE_VERSION + "+target-through-1tick-v2"
-EXECUTION_MODEL = "observed_1m_target_through_one_tick_v2"
+STRESS_ENGINE_VERSION = BASE_ENGINE_VERSION + "+target-through-1tick-v3"
+EXECUTION_MODEL = "observed_1m_target_through_one_tick_v3"
 TARGET_CONFIRMATION_TICKS = 1
 SOURCE_HASHES = {
-    "app/services/bot_backtesting.py": "e48a42652105883094366148c6020aab46aa0bcac443024c7688d6dd67f3cd8b",
-    "tools/research_topbot.py": "491ee9d3f0e25ac231f939fb48b66509b696498ed17a69c59676809128de8047",
-    "tools/fixtures/topbot_research.py": "d0230d261f3e5f00f6f876756086b873987eb540ae2c6a6b1798ba2b376d80e6",
+    "app/services/bot_backtesting.py": "be2fccf067180a16a84c45f7b210d1f186a729401b8df8e1e55a94deaf51110f",
+    "tools/research_topbot.py": "57fc67b564465abbceba9209fa0f6af2c198b2aa0bc5de18697351a5e882865e",
+    "tools/fixtures/topbot_research.py": "90df94dbbc44990341f7eb10a46a1b474e8026befdbae0274c373db7c8e5e442",
 }
 
 

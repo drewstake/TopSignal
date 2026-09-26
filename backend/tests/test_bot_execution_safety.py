@@ -3072,12 +3072,12 @@ def test_sma_entry_stop_risk_must_fit_remaining_account_loss_budget(db_session, 
 
 
 @pytest.mark.parametrize("position_qty", [0, 1, -1])
-def test_topbot_blocked_short_target_only_closes_a_provider_long(db_session, monkeypatch, position_qty):
+def test_topbot_target_only_exit_closes_only_a_provider_long(db_session, monkeypatch, position_qty):
     _, config = _add_account_and_config(db_session, execution_mode="live")
     config.strategy_type = "topbot_adaptive"
     db_session.commit()
     _patch_actionable_signal(monkeypatch, action="SELL", raw_payload={
-        "strategy_type": "topbot_adaptive", "short_entry_allowed": False,
+        "strategy_type": "topbot_adaptive",
         "signal_category": "exit", "target_position_qty": 0.0,
         "exit_reason": "opposite_signal_flatten",
     })

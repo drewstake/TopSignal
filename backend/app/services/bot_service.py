@@ -4018,12 +4018,25 @@ def evaluate_sma_cross(
 
 
 def evaluate_topbot_adaptive(candles, *, strategy_params=None, owner=None, contract_id=None) -> SignalResult:
-    """Honor the stored revision; new runs select the mathematical model."""
+    """TopBot's only strategy is the mathematical model.
+
+    A config still carrying a removed revision (for example the retired EMA/VWAP
+    pullback) never trades: its safety gates were keyed to that revision. Stop it
+    and start a new run, which applies the mathematical preset.
+    """
     from . import topbot_mathematical
     if topbot_mathematical.selected(strategy_params):
         return topbot_mathematical.evaluate(candles, owner=owner, contract_id=contract_id)
-    from .topbot_strategy import evaluate
-    return evaluate(candles)
+    closed = _closed_candles(candles)
+    latest = closed[-1] if closed else None
+    revision = strategy_params.get("revision") if isinstance(strategy_params, dict) else None
+    return SignalResult(
+        action="HOLD",
+        reason="TopBot's EMA/VWAP strategy was removed. Stop this bot and start a new run to use TopBot Mathematical.",
+        candle_timestamp=_as_utc(latest.candle_timestamp) if latest is not None else None,
+        price=float(latest.close_price) if latest is not None else None,
+        raw_payload={"strategy_type": "topbot_adaptive", "strategy_revision": revision, "retired_strategy": True},
+    )
 
 
 def evaluate_ema_scalping(
@@ -13940,11 +13953,10 @@ def _normalize_strategy_params(strategy_type: Any, params: Any) -> dict[str, Any
         return {}
 
     if normalized_strategy_type == _STRATEGY_TOPBOT_ADAPTIVE:
+        # The mathematical model is TopBot's only strategy; saved settings from
+        # removed revisions are replaced with its code-owned preset.
         from . import topbot_mathematical
-        if topbot_mathematical.selected(raw_params):
-            return topbot_mathematical.normalize_params(raw_params)
-        from .topbot_strategy import normalize_params
-        return normalize_params(raw_params)
+        return topbot_mathematical.normalize_params(raw_params)
 
     if normalized_strategy_type == _STRATEGY_EMA_TREND_PULLBACK:
         long_rsi_min = _bounded_float_param(

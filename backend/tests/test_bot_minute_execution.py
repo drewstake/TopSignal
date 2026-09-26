@@ -148,8 +148,8 @@ def test_roll_resolver_cannot_backdate_a_future_old_delivery_minute():
         _run(signals, minutes, _buy_script(0, stop=50), roll_exit_candle_resolver=resolver)
 
 
-def test_real_topbot_uses_200_signal_bars_for_warmup_and_never_minute_bars(monkeypatch):
-    from app.services.topbot_strategy import HISTORY_BARS
+def test_topbot_research_replay_uses_200_signal_bars_for_warmup_and_never_minute_bars(monkeypatch):
+    HISTORY_BARS = replay._TOPBOT_REPLAY_WARMUP_BARS
 
     first = BASE_TIME - timedelta(minutes=5 * (HISTORY_BARS - 1))
     signals = [_candle(first + timedelta(minutes=5 * i)) for i in range(HISTORY_BARS + 3)]
@@ -166,7 +166,8 @@ def test_real_topbot_uses_200_signal_bars_for_warmup_and_never_minute_bars(monke
         return original(rows, strategy_params=strategy_params)
 
     monkeypatch.setattr(bot_service, "evaluate_topbot_adaptive", observe)
-    config = _config(strategy_type="topbot_adaptive", lookback_bars=HISTORY_BARS)
+    config = _config(strategy_type="topbot_adaptive", lookback_bars=HISTORY_BARS,
+                     strategy_params={"research_revision": "synthetic-warmup-test"})
     result = replay.run_backtest(
         config=config, candles=signals, execution_candles=minutes,
         start=first, end=BASE_TIME + timedelta(minutes=20),

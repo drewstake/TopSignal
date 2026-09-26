@@ -190,7 +190,7 @@ $legacyCache = 'C:\Users\drews\Development\TopSignal\backend\storage\databento-f
 That original CLI hardcodes **$1.20 per side** and has no commission override
 flag. It reproduces the historical higher-cost baseline, not today's base fee.
 For current-source comparisons, use format 6 and explicit **$0.61 per side**;
-the [fee correction](topbot-fee-correction.md) supplies current commands and
+the fee correction (removed with the EMA/VWAP strategy) supplies current commands and
 paired $1.20 stress controls. Changing cache paths alone cannot reproduce an
 old engine, calendar, or risk policy.
 

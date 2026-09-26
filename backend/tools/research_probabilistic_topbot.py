@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 # Execution and risk constants are versioned in the model, not operator tuning
 # controls. Refuse a changed declaration instead of reporting tests of a protocol
 # that the implementation did not actually follow.
-REGISTERED_PROTOCOL_SHA256 = "f9f2cb3f68059f9da0e95e7ebee6e14779c381625a3222d9828e17bf7415bf3f"
+REGISTERED_PROTOCOL_SHA256 = "68f3f3d49ed1aa3026d2b978799bec278e8177972abdde052c1cfeb303f6046e"
 
 
 def offline_guard() -> None:
@@ -62,7 +62,7 @@ def digest(payload) -> str:
 
 def verify_protocol(protocol: dict) -> None:
     if digest(protocol) != REGISTERED_PROTOCOL_SHA256:
-        raise ValueError("Protocol differs from registered v1. Version the implementation and register a new experiment before changing assumptions.")
+        raise ValueError("Protocol differs from registered v2. Version the implementation and register a new experiment before changing assumptions.")
 
 
 def read_candles(path: Path, contract: str, owner_hash: str | None):
@@ -105,42 +105,15 @@ def read_candles(path: Path, contract: str, owner_hash: str | None):
 
 
 def incumbent_replay(rows, start, end, eligible_entry_days):
-    """Use the actual production evaluator and engine; no copied EMA implementation."""
-    from app.models import BotConfig
-    from app.services.bot_backtesting import run_backtest
-    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
-    from app.services.topbot_strategy import evaluate
-    from app.services.bot_service import SignalResult
-    from app.services.probabilistic_strategy import ET
-    config = BotConfig(id=1, user_id="offline-research", account_id=1, name="Offline comparator",
-                       provider="projectx", execution_mode="dry_run", enabled=False,
-                       contract_id=rows[0].contract_id, **TOPBOT_SETTINGS)
-    candles = [SimpleNamespace(user_id="offline-research", contract_id=r.contract_id, symbol="MNQ", live=r.live,
-                              unit="minute", unit_number=5, candle_timestamp=r.timestamp, open_price=r.open,
-                              high_price=r.high, low_price=r.low, close_price=r.close, volume=r.volume,
-                              is_partial=r.partial, fetched_at=None, raw_payload=None,
-                              source_instrument_id=1, source_raw_symbol=r.contract_id) for r in rows if r.timestamp < end]
-    def observed_session_evaluator(history):
-        latest = history[-1]
-        from datetime import timedelta
-        if (latest.candle_timestamp + timedelta(minutes=5)).astimezone(ET).date().isoformat() not in eligible_entry_days:
-            return SignalResult(action="HOLD", reason="Common research coverage excludes this entry session.",
-                                candle_timestamp=latest.candle_timestamp, price=latest.close_price, raw_payload={})
-        return evaluate(history)
-    result = run_backtest(config=config, candles=candles, start=start, end=end, starting_balance=50000,
-                          commission_per_contract=.61, slippage_ticks=2, tick_size=.25, tick_value=.5,
-                          signal_evaluator=observed_session_evaluator, include_evaluation_split=False)
-    trades = result["trades"]
-    daily = {}
-    for trade in trades:
-        when = datetime.fromisoformat(str(trade["exit_timestamp"]).replace("Z", "+00:00"))
-        day = when.astimezone(ET).date().isoformat()
-        daily[day] = daily.get(day, 0) + trade["net_pnl"]
-    return {"revision": "mnq_ema_vwap_pullback_v5_bracket_exits", "metrics": result["metrics"],
-            "trade_count": len(trades), "daily_net_usd": daily, "notes": result["notes"],
-            "probability_scores": None,
-            "cost_basis": "$0.61/side and two adverse ticks, using native production replay fill semantics.",
-            "limitation": "Entries use the same complete-session dates as the candidates. Native v5 bracket-only holding periods, end-of-window liquidation and fill rules differ. Incomplete history prevents promotion."}
+    """Protocol v2 benchmark: flat, i.e. no position and $0 net on every session.
+
+    The EMA/VWAP incumbent used by protocol v1 was removed from TopSignal.
+    """
+    daily = {day: 0.0 for day in sorted(eligible_entry_days)}
+    return {"revision": "flat_no_trade", "metrics": None, "trade_count": 0,
+            "daily_net_usd": daily, "notes": [], "probability_scores": None,
+            "cost_basis": "No trades, so no fees or slippage.",
+            "limitation": "Doing nothing is the benchmark; a candidate must show a positive paired daily lower bound against $0."}
 
 
 def main() -> int:
@@ -157,12 +130,11 @@ def main() -> int:
     from app.services.probabilistic_validation import (
         audit_candles, walk_forward_plan, development, day_start, paired_daily_bound, acceptance_checks,
     )
-    protocol_path = ROOT / "docs/topbot-probabilistic-protocol-v1.json"
+    protocol_path = ROOT / "docs/topbot-probabilistic-protocol-v2.json"
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
     verify_protocol(protocol)
     rows, owner, source_hash, observation_audit = read_candles(args.sqlite, args.contract, args.owner_hash)
-    # The incumbent imports shared indicators, calendar and risk helpers. Hash
-    # all application Python sources so an indirect dependency cannot silently
+    # Hash all application Python sources so an indirect dependency cannot silently
     # reuse an older experiment identity. Never include operator env files.
     sources = sorted((ROOT / "backend/app").rglob("*.py"))
     sources.extend((Path(__file__), ROOT / "backend/requirements.txt"))

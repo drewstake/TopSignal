@@ -33,7 +33,7 @@ NFA and commission ($1.22 round trip). The base cost above and CLI defaults are
 corrected on that external evidence; candidate rules, split dates and acceptance
 criteria are unchanged. Historical manifests are immutable. Their $1.20 runs can
 serve as fee stress cases, but the matrix needs a new explicitly $0.61 comparison
-before strategy selection. See [the correction and baseline reruns](topbot-fee-correction.md)."""
+before strategy selection. See the correction and baseline reruns (removed with the EMA/VWAP strategy)."""
 
 
 def sha(payload):

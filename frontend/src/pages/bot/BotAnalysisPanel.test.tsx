@@ -111,7 +111,7 @@ const evaluation = {
   idempotency_key: null,
   duplicate_of_order_attempt_id: null,
   config: bot,
-  decision: { action: "HOLD", price: 105, contract_id: bot.contract_id, candle_timestamp: "2026-07-09T15:00:00Z", created_at: "2026-07-09T15:05:20Z", reason: "Waiting for a pullback to the 20 EMA." },
+  decision: { action: "HOLD", price: 105, contract_id: bot.contract_id, candle_timestamp: "2026-07-09T15:00:00Z", created_at: "2026-07-09T15:05:20Z", reason: "NO TRADE: insufficient independent evidence or net utility after costs and uncertainty." },
   analysis,
   candles: [],
   risk_events: [],
@@ -212,9 +212,9 @@ function chartCandle(timestamp: string): ProjectXMarketCandle {
 function withDecisionExplanation(status: BotEvaluation["status"] = "held", action: "HOLD" | "BUY" = "HOLD"): BotEvaluation {
   return { ...evaluation, status, decision: { ...evaluation.decision, action }, analysis: { ...analysis,
     bot_decision: {
-      status, action, strategy: { name: "TopBot EMA/VWAP pullback", revision: "v1" },
-      summary: status === "risk_blocked" ? "BUY setup rejected: the daily loss limit is reached." : "Waiting for a pullback to the 20 EMA.",
-      strategy_reason: "Previous candle did not touch the 20 EMA.", execution_mode: "dry_run",
+      status, action, strategy: { name: "TopBot Mathematical · Bayesian expected payoff", revision: "mnq_bayesian_payoff_v1" },
+      summary: status === "risk_blocked" ? "BUY setup rejected: the daily loss limit is reached." : "NO TRADE: insufficient independent evidence or net utility after costs and uncertainty.",
+      strategy_reason: "Lower utility did not exceed $1 after costs and uncertainty.", execution_mode: "dry_run",
       contract_id: bot.contract_id, candle_timestamp: evaluation.decision.candle_timestamp,
       candle_close_timestamp: "2026-07-09T15:05:00Z", evaluated_at: "2026-07-09T15:05:20Z",
       checks: [{ id: "risk", label: "Account and routing checks", status: action === "HOLD" ? "not_evaluated" : "failed", detail: action === "HOLD" ? "No new order considered; account risk checks were not evaluated." : "Daily loss limit reached." }],
@@ -338,7 +338,7 @@ describe("BotAnalysisPanel evidence and decision", () => {
     expect(html).toContain("What conflicts with it");
     expect(html).toContain("What would change the read");
     expect(html).toContain("Holding — no new entry");
-    expect(html).toContain("Waiting for a pullback to the 20 EMA.");
+    expect(html).toContain("NO TRADE: insufficient independent evidence or net utility after costs and uncertainty.");
     expect(html).toContain("Not Evaluated");
     expect(html).toContain("Configured limits: 1 contracts per order");
     expect(html).toContain("Current closed-candle read");

@@ -132,7 +132,7 @@ export function BotBacktestPanel({ bot, demoMode = false }: BotBacktestPanelProp
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>Backtest</CardTitle>
-            <CardDescription>TopBot Adaptive · MNQ 5m · EMA/VWAP pullback · Long bias · Hold for 50-point stop / 50-point target</CardDescription>
+            <CardDescription>Historical replay for supported strategies. TopBot Mathematical can't be replayed over its own training history; use the probabilistic research runner.</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             {demoMode ? <Badge variant="accent">Demo snapshot</Badge> : null}
