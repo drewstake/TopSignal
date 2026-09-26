@@ -491,8 +491,6 @@ class BotWorkerRuntime:
             for entry_id, user_id, account_id, status, deadline in exits:
                 if self._shutdown_requested.is_set():
                     break
-                if status == "submitted" and now < _as_utc(datetime.fromisoformat(deadline)):
-                    continue
                 try:
                     with self.session_factory() as db:
                         complete = process_time_exit(
@@ -508,9 +506,10 @@ class BotWorkerRuntime:
                         db.commit()
                     if not complete:
                         blocked_accounts.add((user_id, account_id))
-                        errors += 1
-                        last_error_code = "mathematical_time_exit_pending"
-                        provider_status = "error"
+                        if now >= _as_utc(datetime.fromisoformat(deadline)):
+                            errors += 1
+                            last_error_code = "mathematical_time_exit_pending"
+                            provider_status = "error"
                 except Exception as exc:
                     blocked_accounts.add((user_id, account_id))
                     errors += 1

@@ -62,7 +62,10 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
         <ChartMarketAnalysis snapshot={snapshot} nowMs={nowMs} />
         <EmptyState title="No evaluation yet" description={demoMode ? "This demo snapshot has no saved evaluation. Live evaluation is disabled." : "Evaluate this bot to explain its latest closed-candle signal and checks."} />
       </> : <>
+          {bot.strategy_type === "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
           {analysis && hasRead ? <>
+            <details open={bot.strategy_type !== "topbot_adaptive"}>
+            <summary className="cursor-pointer text-sm text-app-muted">Indicator context only · not model inputs</summary>
             <div className="grid gap-4 xl:grid-cols-2">
               <section className="rounded-xl border border-app-border bg-app-bg/40 p-4">
                 <p className="text-xs font-medium text-app-muted">Market interpretation</p>
@@ -74,8 +77,9 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
                   <span><span className="text-app-muted">Indicator agreement: </span>{agreementLabel(raw?.features?.trend.agreement)}</span>
                 </div>
               </section>
-              <BotDecisionSummary evaluation={selectedEvaluation} />
+              {bot.strategy_type !== "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
             </div>
+            </details>
             {freshnessStatus === "stale" && <p role="status" className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 text-sm text-amber-200">This is a saved, stale evaluation{newerBars ? `; the matching chart has ${newerBars} newer closed bar${newerBars === 1 ? "" : "s"}` : ""}. Evaluate again to refresh the market read and bot checks.</p>}
             {freshnessStatus === "market_closed" && <p className="text-xs leading-5 text-app-muted">The scheduled market session is closed. The last completed candle is retained; closed-session time does not count as a feed delay. The configured entry window is checked separately.</p>}
             {freshnessStatus === "unavailable" && <p className="text-xs text-amber-200">The candle close time cannot be verified. Treat this as a recorded interpretation until a fresh evaluation is available.</p>}
@@ -92,7 +96,7 @@ export function BotAnalysisPanel({ bot, evaluation, marketSnapshot = null, marke
           </> : <>
             <div className="grid gap-4 xl:grid-cols-2">
               <EmptyState title="No directional read yet" description={`This evaluation received ${analysis?.provenance.closed_candle_count ?? 0} closed ${analysis?.provenance.timeframe.label ?? ""} candles. At least ${analysis?.provenance.minimum_feature_bars ?? 10} are needed for the first feature set; partial candles are excluded.`} />
-              <BotDecisionSummary evaluation={selectedEvaluation} />
+              {bot.strategy_type !== "topbot_adaptive" && <BotDecisionSummary evaluation={selectedEvaluation} />}
             </div>
             {snapshot && <SeparateChartContext snapshot={snapshot} bot={bot} nowMs={nowMs} />}
           </>}

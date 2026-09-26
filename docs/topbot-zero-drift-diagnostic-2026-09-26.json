@@ -1,0 +1,9 @@
+{
+  "seed": 20260926,
+  "refits": 100,
+  "tests_per_refit": 8,
+  "refits_with_any_trade": 0,
+  "observed_fraction": 0.0,
+  "synthetic_only": true,
+  "limitation": "Zero-drift Gaussian scenarios with matched volatility; not market calibration or profitability evidence."
+}

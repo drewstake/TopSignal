@@ -106,6 +106,8 @@ import {
   buildInitialBotChartQuery,
   buildBotLivePriceQuery,
   buildCandlestickData,
+  prepareLiveCandlesticks,
+  prepareLiveVwap,
   buildEmaData,
   buildMarketLevels,
   buildOlderCandlesQuery,
@@ -131,7 +133,7 @@ import {
 } from "./botChartLifecycle";
 import { BOT_CHART_BUY_COLOR, BOT_CHART_SELL_COLOR, readBotChartThemeColors } from "./botChartTheme";
 import { buildVolumeData, UP_VOLUME_COLOR, DOWN_VOLUME_COLOR } from "./botChartVolume";
-import { buildBotChartVwap, resolveBotChartIndicators } from "./botChartIndicators";
+import { resolveBotChartIndicators } from "./botChartIndicators";
 import { usePageVisibility } from "./usePageVisibility";
 import { resolveBotChartViewState } from "./botChartViewState";
 import {
@@ -445,7 +447,30 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     () => (marketDataMatchesContext ? mergeLiveCandle(candles, liveCandle) : []),
     [candles, liveCandle, marketDataMatchesContext],
   );
-  const chartCandles = useMemo(() => buildCandlestickData(visibleCandles), [visibleCandles]);
+  const candleTail = useMemo(() => prepareLiveCandlesticks(marketDataMatchesContext ? candles : []), [candles, marketDataMatchesContext]);
+  const chartCandles = useMemo(() => candleTail(marketDataMatchesContext ? liveCandle : null), [candleTail, liveCandle, marketDataMatchesContext]);
+  const [signalMode, setSignalMode] = useState<"all" | "live" | "dry_run">("all");
+  const [signalRun, setSignalRun] = useState("all");
+  const [signalHistory, setSignalHistory] = useState<{ key: string; activity: BotActivity | null; error?: boolean } | null>(null);
+  const historyStart = marketDataMatchesContext ? candles[0]?.timestamp : undefined;
+  const historyLast = marketDataMatchesContext ? candles.at(-1)?.timestamp : undefined;
+  const historyEnd = historyLast ? new Date(Date.parse(historyLast) + chartTimeframe.unitNumber *
+    (chartTimeframe.unit === "day" ? 86400 : chartTimeframe.unit === "hour" ? 3600 : 60) * 1000).toISOString() : undefined;
+  const signalHistoryKey = `${chartViewportKey}:${signalMode}:${signalRun}:${historyStart}:${historyEnd}`;
+  useEffect(() => {
+    if (demoMode || !savedBot || !authenticatedCacheScope || !historyStart || !historyEnd) return;
+    const controller = new AbortController();
+    botsApi.getActivity(savedBot.id, 2000, { signal: controller.signal }, {
+      start: historyStart, end: historyEnd, signals_only: true,
+      run_id: signalRun === "all" ? undefined : Number(signalRun),
+      execution_mode: signalMode === "all" ? undefined : signalMode,
+    }).then(result => {
+      if (!controller.signal.aborted && result.config.id === savedBot.id && result.config.account_id === savedBot.account_id)
+        setSignalHistory({ key: signalHistoryKey, activity: result });
+    }).catch(() => { if (!controller.signal.aborted) setSignalHistory({ key: signalHistoryKey, activity: null, error: true }); });
+    return () => controller.abort();
+  }, [savedBot, authenticatedCacheScope, demoMode, historyStart, historyEnd, signalMode, signalRun, signalHistoryKey]);
+  const chartActivity = signalHistory?.key === signalHistoryKey && signalHistory.activity ? signalHistory.activity : activity;
   const hoverCandlesByTime = useMemo(
     () => buildHoverCandleMap(visibleCandles, chartCandles),
     [chartCandles, visibleCandles],
@@ -467,10 +492,8 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     () => (showAverageLayers ? (usesEmaLayers ? buildEmaData(chartCandles, indicators.slowPeriod) : buildSmaData(chartCandles, indicators.slowPeriod)) : []),
     [indicators.slowPeriod, chartCandles, showAverageLayers, usesEmaLayers],
   );
-  const vwap = useMemo(
-    () => buildBotChartVwap(visibleCandles, indicators.topbot),
-    [indicators.topbot, visibleCandles],
-  );
+  const vwapTail = useMemo(() => prepareLiveVwap(marketDataMatchesContext ? candles : []), [candles, marketDataMatchesContext]);
+  const vwap = useMemo(() => vwapTail(marketDataMatchesContext ? liveCandle : null), [vwapTail, liveCandle, marketDataMatchesContext]);
   // Liquidity detection is quadratic in the worst case; recent swings are what
   // matter, so cap the scan even when deep history has been paged in.
   const liquidityLevels = useMemo(
@@ -496,14 +519,18 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     () =>
       buildSignalMarkers({
         candles: closedChartCandles,
+        orderAttempts: chartActivity?.order_attempts.filter(attempt => attempt.contract_id === bot?.contract_id &&
+          (signalRun === "all" || attempt.bot_run_id === Number(signalRun)) && (signalMode === "all" || attempt.execution_mode === signalMode)),
         activityDecisions:
-          activity &&
+          chartActivity &&
           bot &&
-          activity.config.id === bot.id &&
-          activity.config.contract_id === bot.contract_id &&
-          activity.config.timeframe_unit === bot.timeframe_unit &&
-          activity.config.timeframe_unit_number === bot.timeframe_unit_number
-            ? activity.decisions.filter((decision) => savedBot && decisionMatchesBotMarket(decision, savedBot))
+          chartActivity.config.id === bot.id &&
+          chartActivity.config.contract_id === bot.contract_id &&
+          chartActivity.config.timeframe_unit === bot.timeframe_unit &&
+          chartActivity.config.timeframe_unit_number === bot.timeframe_unit_number
+            ? (chartActivity?.decisions ?? []).filter((decision) => savedBot && decisionMatchesBotMarket(decision, savedBot) &&
+              (signalRun === "all" || decision.bot_run_id === Number(signalRun)) &&
+              (signalMode === "all" || decision.raw_payload?.execution_mode === signalMode))
             : [],
         lastEvaluation:
           lastEvaluation &&
@@ -511,6 +538,8 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
           lastEvaluation.config.id === bot.id &&
           lastEvaluation.config.contract_id === bot.contract_id &&
           savedBot && decisionMatchesBotMarket(lastEvaluation.decision, savedBot) &&
+          (signalRun === "all" || lastEvaluation.decision.bot_run_id === Number(signalRun)) &&
+          (signalMode === "all" || lastEvaluation.decision.raw_payload?.execution_mode === signalMode) &&
           lastEvaluation.config.timeframe_unit === bot.timeframe_unit &&
           lastEvaluation.config.timeframe_unit_number === bot.timeframe_unit_number
             ? lastEvaluation
@@ -518,7 +547,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         timeframeUnit: chartTimeframe.unit,
         timeframeUnitNumber: chartTimeframe.unitNumber,
       }),
-    [activity, bot, savedBot, chartTimeframe, closedChartCandles, lastEvaluation],
+    [chartActivity, bot, savedBot, chartTimeframe, closedChartCandles, lastEvaluation, signalMode, signalRun],
   );
   const visibleSignalMarkers = useMemo(
     () =>
@@ -3161,6 +3190,17 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
           <div className="min-w-0">
             <CardTitle>Signal Chart</CardTitle>
             <CardDescription className="mt-1">{subtitle}</CardDescription>
+            {savedBot && <div className="mt-2 flex flex-wrap gap-2 text-xs text-app-muted">
+              <label>Signals <select aria-label="Signal execution mode" value={signalMode} onChange={e => setSignalMode(e.target.value as typeof signalMode)} className="rounded border border-app-border bg-app-surface p-1">
+                <option value="all">All modes</option><option value="dry_run">Dry Run</option><option value="live">Practice Live</option>
+              </select></label>
+              <label> Run <select aria-label="Signal run" value={signalRun} onChange={e => setSignalRun(e.target.value)} className="rounded border border-app-border bg-app-surface p-1">
+                <option value="all">All runs</option>{activity?.runs.map(run => <option key={run.id} value={run.id}>Run {run.id}</option>)}
+              </select></label>
+              <span>Arrows: model decisions · ○: blocked · squares: observed fills / verified flat</span>
+              {signalHistory?.key === signalHistoryKey && signalHistory.error && <span>Signal history unavailable; showing recent activity.</span>}
+              {chartActivity && chartActivity.decisions.length >= 2000 && <span>Showing the latest 2,000 decisions in the loaded range.</span>}
+            </div>}
             <div className="mt-2">
               {demoMode ? (
                 <div className="inline-flex min-h-8 items-center rounded-md border border-app-accent/35 bg-app-accent/10 px-2.5 text-xs font-semibold text-app-accent" role="note">

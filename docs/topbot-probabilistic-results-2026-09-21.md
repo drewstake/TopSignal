@@ -1,6 +1,8 @@
+> Historical result: the EMA/VWAP TopBot v5 incumbent has since been removed. TopBot Mathematical is the current preset; these diagnostic results do not validate it.
+
 # MNQ probabilistic research results — 21 September 2026
 
-**No candidate qualifies for promotion. TopBot v5 remains the default.** The
+**No candidate qualified for promotion in this historical diagnostic.** TopBot v5 has since been removed; current work uses protocol v3 and TopBot Mathematical. The
 implementation adds two experimental models, an unconditional probability
 baseline, offline validation and a read-only Dry Run explanation. No real run
 was started, no provider order was placed, and no account/risk configuration was

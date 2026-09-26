@@ -1,8 +1,10 @@
+> Historical result: the EMA/VWAP TopBot v5 incumbent has since been removed. TopBot Mathematical is the current preset; these diagnostic results do not validate it.
+
 # MNQ Level 2 result and API capability assessment — 22 September 2026
 
 **Decision: do not promote a depth model.** The engineering integration is
 implemented, but neither Level 2 entitlement nor predictive incremental value has
-been established. Current v5 remains the default. Depth research cannot route
+been established. The v5 default has since been removed; current TopBot Mathematical remains subject to protocol v3 evidence gates. Depth research cannot route
 orders; no Live Run, active run, account risk setting or emergency control was
 changed. No subscription, billing upgrade or historical data was purchased.
 

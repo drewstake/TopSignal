@@ -19,6 +19,7 @@ from .bot_service import (
 )
 from .projectx_client import ProjectXClient
 from .topbot_mathematical import HISTORY_BARS, normalize_params, require_live_worker
+from .probabilistic_protocol import protocol
 
 
 TOPBOT_SETTINGS = {
@@ -32,13 +33,13 @@ TOPBOT_SETTINGS = {
     "slow_period": 21,
     "order_size": 1,
     "max_contracts": 1,
-    "max_daily_loss": 250,
+    "max_daily_loss": protocol()["max_daily_loss_usd"],
     "max_open_position": 1,
-    "max_trades_per_day": 30,
+    "max_trades_per_day": protocol()["max_entries_per_day"],
     "allowed_contracts": ["MNQ", "F.US.MNQ"],
-    "trading_start_time": "00:00",
-    "trading_end_time": "23:59",
-    "cooldown_seconds": 300,
+    "trading_start_time": protocol()["entry_window_et"][0],
+    "trading_end_time": protocol()["entry_window_et"][1],
+    "cooldown_seconds": protocol()["cooldown_seconds"],
     "max_data_staleness_seconds": 600,
     "allow_market_depth": False,
 }
@@ -48,11 +49,11 @@ def resolve_topbot_contract(client: ProjectXClient) -> str:
     """Select only the provider's active MNQ delivery, never a search near-match."""
     # Contract search matches display symbols (e.g. MNQU6), not symbol IDs.
     rows = client.search_contracts(search_text="MNQ", live=False)
-    for row in rows:
-        contract_id = str(row.get("id") or "").strip()
-        if row.get("active_contract") is True and re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", contract_id):
-            return contract_id
-    raise ValueError("No active MNQ contract is available from ProjectX. Try again when market data is available.")
+    from .bot_service import _pick_market_contract
+    row = _pick_market_contract(rows, root="MNQ")
+    if row and re.fullmatch(r"CON\.F\.US\.MNQ\.[A-Z]\d{2}", str(row.get("id", ""))):
+        return str(row["id"])
+    raise ValueError("No active MNQ contract could be selected unambiguously from ProjectX. Try again when market data is available.")
 
 
 def prepare_topbot(

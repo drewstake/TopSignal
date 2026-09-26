@@ -37,8 +37,8 @@ def test_preset_is_mnq_only_and_reused_with_code_defaults(db):
     assert config.enabled is False
     assert config.execution_mode == "dry_run"
     assert config.strategy_type == "topbot_adaptive"
-    assert config.trading_start_time == "00:00"
-    assert config.trading_end_time == "23:59"
+    assert config.trading_start_time == "09:35"
+    assert config.trading_end_time == "15:30"
     assert config.strategy_params["revision"] == "mnq_bayesian_payoff_v1"
     assert config.strategy_params["model_version"] == "bayesian_cells_v1"
     assert config.strategy_params["exit_policy"] == "bracket_or_15_minute_horizon"

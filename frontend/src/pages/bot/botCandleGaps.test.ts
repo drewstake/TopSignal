@@ -54,7 +54,8 @@ describe("isFuturesSessionOpen", () => {
 
   it("applies the equity-index daily halt only to recognized equity products", () => {
     const halt = Date.parse("2026-07-06T20:15:00Z"); // Mon 16:15 ET
-    expect(isFuturesSessionOpen(halt, "CON.F.US.MNQ.U26")).toBe(false);
+    expect(isFuturesSessionOpen(halt, "CON.F.US.MNQ.U26")).toBe(true);
+    expect(isFuturesSessionOpen(Date.parse("2021-06-25T20:15:00Z"), "MNQ")).toBe(false);
     expect(isFuturesSessionOpen(halt, "UNKNOWN")).toBe(true);
     expect(isFuturesSessionOpen(Date.parse("2026-07-06T20:30:00Z"), "MNQ")).toBe(true);
   });

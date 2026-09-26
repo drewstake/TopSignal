@@ -202,7 +202,7 @@ export interface AccountSummary {
   tail_risk_5pct: number;
   max_drawdown: number;
   average_drawdown: number;
-  risk_drawdown_score: number;
+  risk_drawdown_score: number | null;
   max_drawdown_length_hours: number;
   recovery_time_hours: number;
   average_recovery_length_hours: number;
@@ -1141,12 +1141,16 @@ export interface BotDepthResearch {
 }
 
 export interface BotProbabilisticResearch {
+  reason_code?: string | null;
+  volatility_sigma?: number | null;
+  implied_stop_points?: number | null;
+  experiment_id?: string | null;
   interface_version: string;
   model_version: string;
-  validation_status: "unvalidated";
+  validation_status: "unvalidated" | "offline_passed" | "passed";
   action: "NO_TRADE";
   research_action: "BUY" | "SELL" | "NO_TRADE";
-  routing_allowed: false;
+  routing_allowed: boolean;
   probability_basis: "unavailable" | "uncalibrated_model_estimate";
   horizon_minutes: number;
   evaluated_at: string;
@@ -1546,6 +1550,7 @@ export interface BotDecision {
 }
 
 export interface BotOrderAttempt {
+  execution_observations?: { kind: "fill" | "verified_flat"; id?: number; timestamp: string; price?: number; size?: number; exit_drift_seconds?: number | null }[];
   id: number;
   bot_config_id: number | null;
   bot_run_id: number | null;
@@ -1555,7 +1560,7 @@ export interface BotOrderAttempt {
   side: "BUY" | "SELL";
   order_type: string;
   size: number;
-  status: "pending" | "dry_run" | "submitted" | "submission_unknown" | "blocked" | "rejected" | "error";
+  status: "pending" | "dry_run" | "submitted" | "submission_unknown" | "blocked" | "rejected" | "error" | "cancelled";
   execution_mode?: BotExecutionMode;
   correlation_id?: string | null;
   idempotency_key?: string | null;

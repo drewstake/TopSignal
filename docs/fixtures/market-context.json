@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {"timestamp": "2026-06-09T20:20:00+00:00", "open": true},
+    {"timestamp": "2021-06-25T20:20:00+00:00", "open": false},
+    {"timestamp": "2021-12-31T15:00:00+00:00", "open": true},
+    {"timestamp": "2026-11-27T18:20:00+00:00", "open": false},
+    {"timestamp": "2026-06-05T21:05:00+00:00", "open": false}
+  ],
+  "vwap": {
+    "candles": [
+      {"timestamp": "2026-06-08T22:00:00Z", "open": 90, "high": 91, "low": 89, "close": 90, "volume": 100},
+      {"timestamp": "2026-06-09T13:30:00Z", "open": 110, "high": 111, "low": 109, "close": 110, "volume": 100},
+      {"timestamp": "2026-06-09T13:35:00Z", "open": 105, "high": 106, "low": 104, "close": 105, "volume": 100}
+    ],
+    "expected": 101.66666666666667
+  }
+}

@@ -46,12 +46,26 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-09-04T21:05:00Z"));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(api.botsApi, "getCandles").mockResolvedValue([]);
+  vi.spyOn(api.botsApi, "getActivity").mockResolvedValue({config: bot, runs: [], decisions: [], order_attempts: [], risk_events: []});
   vi.spyOn(api, "streamProjectXMarketPrice").mockReturnValue(vi.fn());
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 const mount = () => render(<BotSignalChart bot={bot} authenticatedCacheScope="session-test" activity={null}
   lastEvaluation={null} refreshToken={0} />);
 const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5_000); }); };
+
+it("loads bounded signal history for the chart range and selected execution mode", async () => {
+  vi.mocked(api.botsApi.getCandles).mockResolvedValue([{id: 1, contract_id: bot.contract_id, symbol: bot.symbol,
+    unit: "minute", unit_number: 5, timestamp: "2026-09-04T20:55:00Z", open: 100, high: 101, low: 99,
+    close: 100, volume: 10, is_partial: false, live: false, fetched_at: "2026-09-04T21:00:00Z"}]);
+  mount();
+  await settle();
+  expect(api.botsApi.getActivity).toHaveBeenCalledWith(1, 2000, expect.anything(), expect.objectContaining({
+    signals_only: true, start: "2026-09-04T20:55:00Z", end: "2026-09-04T21:00:00.000Z"}));
+  fireEvent.change(screen.getByLabelText("Signal execution mode"), {target: {value: "live"}});
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(api.botsApi.getActivity).toHaveBeenLastCalledWith(1, 2000, expect.anything(), expect.objectContaining({execution_mode: "live"}));
+});
 
 it("keeps demo history and snapshot time anchored when the real date advances", async () => {
   vi.setSystemTime(new Date("2027-02-15T16:00:00Z"));

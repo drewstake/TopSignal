@@ -77,8 +77,6 @@ def _is_micro_contract(*, symbol: str | None, contract_id: str | None) -> bool:
     for candidate in symbol_candidates(symbol=symbol, contract_id=contract_id):
         if candidate in _TOPSTEP_MICRO_SYMBOLS:
             return True
-        if candidate.startswith("M"):
-            return True
     return False
 
 

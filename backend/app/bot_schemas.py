@@ -65,6 +65,8 @@ class ProjectXContractOut(BaseModel):
 
 
 class ProjectXMarketCandleOut(BaseModel):
+    first_fetched_at: datetime | None = None
+    revision_hash: str | None = None
     id: int | None = None
     contract_id: str
     symbol: str | None = None
@@ -87,7 +89,7 @@ class BotConfigBase(BaseModel):
     contract_id: str = Field(min_length=1, max_length=120)
     symbol: str | None = Field(default=None, max_length=40)
     execution_mode: BotExecutionMode = "dry_run"
-    strategy_type: BotStrategyType = "sma_cross"
+    strategy_type: BotStrategyType = "topbot_adaptive"
     strategy_params: dict[str, Any] = Field(default_factory=dict)
     timeframe_unit: TimeframeUnit = "minute"
     timeframe_unit_number: int = Field(default=5, gt=0, le=1440)
@@ -214,6 +216,7 @@ class BotDecisionOut(BaseModel):
 
 
 class BotOrderAttemptOut(BaseModel):
+    execution_observations: list[dict[str, Any]] = Field(default_factory=list)
     id: int
     bot_config_id: int | None = None
     bot_run_id: int | None = None
@@ -585,12 +588,16 @@ class BotDepthResearchOut(BaseModel):
 
 
 class BotProbabilisticResearchOut(BaseModel):
+    reason_code: str | None = None
+    volatility_sigma: float | None = None
+    implied_stop_points: float | None = None
+    experiment_id: str | None = None
     interface_version: str
     model_version: str
-    validation_status: Literal["unvalidated"]
+    validation_status: Literal["unvalidated", "offline_passed", "passed"]
     action: Literal["NO_TRADE"]
     research_action: Literal["BUY", "SELL", "NO_TRADE"]
-    routing_allowed: Literal[False]
+    routing_allowed: bool
     probability_basis: Literal["unavailable", "uncalibrated_model_estimate"]
     horizon_minutes: int
     evaluated_at: str

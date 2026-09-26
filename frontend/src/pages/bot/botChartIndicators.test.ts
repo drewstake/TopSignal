@@ -21,20 +21,20 @@ it("shows no moving-average filters for TopBot, even with removed EMA/VWAP setti
   const retired = { ...market, strategy_type: "topbot_adaptive" as const,
     strategy_params: { ema_period: 9, short_trend_ema_period: 200, session_start: "18:00" } };
   expect(resolveBotChartIndicators(retired)).toMatchObject({
-    ema: false, showAverages: false, sessionStart: "09:30", vwapLabel: "VWAP · context only",
+    ema: false, showAverages: false, sessionStart: "18:00", vwapLabel: "VWAP · context only",
   });
   expect(resolveBotChartIndicators({ ...market, strategy_type: "sma_cross" })).toMatchObject({
     ema: false, showAverages: true, fastPeriod: 9, slowPeriod: 21, sessionStart: "18:00",
   });
 });
 
-it("includes all TopBot sessions and resets VWAP at the regular and overnight opens", () => {
+it("includes all TopBot sessions and uses the same 18:00 ET VWAP as backend context", () => {
   const rows = [candle("2026-09-10T22:00:00Z", 90), candle("2026-09-11T13:30:00Z", 110),
     candle("2026-09-11T13:35:00Z", 105)];
-  expect(buildBotChartVwap(rows, true).at(-1)?.value).toBe(107.5);
+  expect(buildBotChartVwap(rows, true).at(-1)?.value).toBeCloseTo(101.6666667);
   expect(buildBotChartVwap(rows, false).at(-1)?.value).toBeCloseTo(101.6666667);
   const session = buildBotChartVwap([...rows, candle("2026-09-11T19:45:00Z", 500),
     candle("2026-09-11T22:00:00Z", 600), candle("2026-09-14T13:25:00Z", 700),
     candle("2026-09-14T13:30:00Z", 120)], true);
-  expect(session.map(point => point.value)).toEqual([90, 110, 107.5, (110 + 105 + 500) / 3, 600, 700, 120]);
+  expect(session.map(point => point.value)).toEqual([90, 100, (90 + 110 + 105) / 3, (90 + 110 + 105 + 500) / 4, 600, 700, 410]);
 });

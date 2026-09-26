@@ -24,7 +24,7 @@ describe("probabilistic Dry Run explanation", () => {
     render(<BotProbabilisticPanel research={missing} />);
     expect(screen.getByText(/probabilities, expected payoff and model uncertainty are unavailable/)).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
-    expect(screen.getByText(/NO TRADE · validation incomplete/)).toBeTruthy();
+    expect(screen.getByText(/Validation incomplete/)).toBeTruthy();
     expect(screen.getByText(/Assumed round-trip costs: \$3.22/)).toBeTruthy();
     expect(screen.getByText(/15-minute horizon · bayesian_cells_v1/)).toBeTruthy();
   });
@@ -35,7 +35,7 @@ describe("probabilistic Dry Run explanation", () => {
     expect(screen.getAllByText("$-2.00")).toHaveLength(2);
     expect(screen.getByText("80.0%")).toBeTruthy();
     expect(screen.getByText(/Shadow proposal: BUY. Live routing remains disabled/)).toBeTruthy();
-    expect(screen.getByText(/NO TRADE · validation incomplete/)).toBeTruthy();
+    expect(screen.getByText(/Validation incomplete/)).toBeTruthy();
     expect(screen.getByText(/age at evaluation 0s/)).toBeTruthy();
   });
   it("identifies the selected model as the source of the actual Dry Run decision", () => {
@@ -44,11 +44,10 @@ describe("probabilistic Dry Run explanation", () => {
     expect(screen.getByText(/This forecast supplies the strategy decision above/)).toBeTruthy();
     expect(screen.queryByText(/Dry Run shadow/)).toBeNull();
   });
-  it("labels live Practice forecasts experimental without claiming validation", () => {
+  it("keeps live routing blocked when the evidence gate has not passed", () => {
     render(<BotProbabilisticPanel research={{ ...missing, probability_basis: "uncalibrated_model_estimate",
       forecasts: { BUY: estimate, SELL: estimate }, research_action: "BUY" }} selectedStrategy live />);
     expect(screen.getByText("Selected mathematical strategy · Experimental Practice")).toBeTruthy();
-    expect(screen.getByText(/Experimental Practice routing; probabilities remain unvalidated/)).toBeTruthy();
-    expect(screen.queryByText(/Live routing remains disabled/)).toBeNull();
+    expect(screen.getByText(/Live routing remains disabled/)).toBeTruthy();
   });
 });

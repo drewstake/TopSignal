@@ -220,11 +220,11 @@ def test_profit_factor_states_are_json_safe(pnls, expected, wins, losses):
     json.dumps(summary, allow_nan=False)
 
 
-def test_no_gross_losses_is_explicit_even_when_fees_make_a_net_loss():
+def test_fees_that_make_a_net_loss_reduce_net_profit_factor():
     summary = compute_trade_summary([TradeMetricSample(
         timestamp=datetime(2026, 7, 2, tzinfo=timezone.utc), pnl=1, fees=2, commissions=0)])
-    assert summary["profit_factor"] is None
-    assert summary["profit_factor_no_losses"] is True
+    assert summary["profit_factor"] == 0
+    assert summary["profit_factor_no_losses"] is False
     assert summary["loss_count"] == 1
     assert summary["net_pnl"] == -1
 

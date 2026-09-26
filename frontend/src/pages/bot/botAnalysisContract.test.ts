@@ -129,7 +129,7 @@ describe("canonical scenario-weight contract", () => {
     expect(Number.isInteger(weights.bullish)).toBe(true);
     expect(Number.isInteger(weights.bearish)).toBe(true);
     expect(Number.isInteger(weights.sideways)).toBe(true);
-    expect(weights.bullish + weights.bearish + weights.sideways).toBe(100);
+    expect(weights.bullish + weights.bearish + weights.sideways).toBe(Number.isNaN(input.bullish) ? 0 : 100);
   });
 
   it("uses the backend method name and scenario-weight labels consistently", () => {
@@ -199,7 +199,7 @@ describe("buildDisplayAnalysis", () => {
     expect(result?.provenance.partial_candle_count).toBe(1);
     expect(result?.provenance.stale_after_seconds).toBe(600);
     expect(result?.provenance.is_stale).toBe(false);
-    expect(result!.scenarioWeights.bullish + result!.scenarioWeights.bearish + result!.scenarioWeights.sideways).toBe(100);
+    expect(result!.scenarioWeights).toEqual({ bullish: 0, bearish: 0, sideways: 0 });
     expect(result?.dataQuality.warnings[0]).toContain("Local fallback analysis");
   });
 

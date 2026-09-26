@@ -10,6 +10,14 @@ import {
 } from "./botEvaluationOverlay";
 
 describe("selectLatestActionableEvaluation", () => {
+  it("rejects risk-blocked signals and explicit risk rejection rows", () => {
+    const item = marketEvaluation();
+    item.decision.decision_type = "risk_reject";
+    expect(selectLatestActionableEvaluation({bot: item.config, activity: null, lastEvaluation: item})).toBeNull();
+    item.decision.decision_type = "signal";
+    item.decision.raw_payload = { routing_status: "risk_blocked" };
+    expect(selectLatestActionableEvaluation({bot: item.config, activity: null, lastEvaluation: item})).toBeNull();
+  });
   it("keeps the latest actionable evaluation when a newer run returns HOLD", () => {
     const cached = marketEvaluation({ action: "BUY", createdAt: "2026-07-09T14:00:00.000Z" });
     const hold = marketEvaluation({ action: "HOLD", createdAt: "2026-07-09T14:05:00.000Z" });
@@ -311,6 +319,7 @@ function evaluation(overrides: EvaluationOverrides = {}): BotEvaluation {
     run: null,
     decision: {
       id: 99,
+      decision_type: "signal",
       action: overrides.action ?? "BUY",
       price: overrides.decisionPrice === undefined ? 100 : overrides.decisionPrice,
       candle_timestamp:
