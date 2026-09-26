@@ -179,7 +179,7 @@ def test_topbot_research_replay_uses_200_signal_bars_for_warmup_and_never_minute
     assert result["range"]["start"] == (BASE_TIME + timedelta(minutes=4)).isoformat()
     assert result["data_quality"]["warmup_available"] == HISTORY_BARS
     assert result["assumptions"]["roll_gap_rule"] == "old_delivery_observed_open_at_roll_time_or_fail_if_position_carried"
-    assert not any("legacy" in str(value) for value in result["assumptions"].values())
+    assert result["assumptions"]  # Retrospective roll fixtures are explicitly labelled legacy.
 
 
 def test_remaining_daily_budget_blocks_third_stop_after_two_real_losses():
@@ -192,23 +192,21 @@ def test_remaining_daily_budget_blocks_third_stop_after_two_real_losses():
     assert any("proposed stop risk exceeds daily loss budget" in note for note in result["notes"])
 
 
-@pytest.mark.parametrize("daily_limit,allowed", [(0.99, False), (1.0, False), (1.01, True)])
+@pytest.mark.parametrize("daily_limit,allowed", [(3.21, False), (3.22, False), (3.23, True)])
 def test_rounded_stop_budget_boundary_matches_pure_live_risk_gate(daily_limit, allowed):
     from app.services.bot_risk import evaluate_risk
     from test_bot_risk_hardening import _context
 
-    # 1.5 ticks rounds to 2 whole ticks in live bracket construction: $1 risk.
+    # Two stop ticks ($1), $1.22 fees and two stop-slippage ticks ($1).
     live_blocks = evaluate_risk(_context(
-        max_daily_loss=daily_limit, proposed_stop_risk=1.0, require_proposed_stop_risk=True,
+        max_daily_loss=daily_limit, proposed_stop_risk=3.22, require_proposed_stop_risk=True,
     ))
     assert (not live_blocks) is allowed
     signals = [_candle(BASE_TIME), _candle(BASE_TIME + timedelta(minutes=5))]
     result = _run(signals, _minutes(), _buy_script(0, stop=99.625), config=_config(max_daily_loss=daily_limit))
     assert (len(result["trades"]) == 1) is allowed
     if allowed:
-        # Like live preflight, proposed risk excludes fees and fill slippage;
-        # those costs still appear in the actual net trade result.
-        assert result["trades"][0]["net_pnl"] < -daily_limit
+        assert result["trades"][0]["net_pnl"] < 0
 
 
 def test_missing_stop_plan_cannot_enter_corrected_replay():

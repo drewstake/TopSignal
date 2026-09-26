@@ -441,6 +441,7 @@ def _as_test_utc(value: datetime) -> datetime:
 
 def _make_bot_create_payload(name: str = "Test Bot") -> BotConfigCreateIn:
     return BotConfigCreateIn(
+        strategy_type="sma_cross",
         name=name,
         account_id=9001,
         contract_id="CON.F.US.MNQ.M26",
@@ -3357,15 +3358,23 @@ def test_market_candle_upsert_promotes_partial_and_never_regresses_closed_or_oth
         return rows[0]
 
     try:
-        assert store(user_id=owner, close=100, is_partial=True).is_partial is True
+        initial = store(user_id=owner, close=100, is_partial=True)
+        assert initial.is_partial is True
+        first_receipt, first_hash = initial.first_fetched_at, initial.revision_hash
+        assert first_receipt is not None and len(first_hash) == 64
         promoted = store(user_id=owner, close=101, is_partial=False)
         assert promoted.is_partial is False
         assert float(promoted.close_price) == 101
+        assert promoted.first_fetched_at == first_receipt
+        assert promoted.revision_hash != first_hash
+        closed_hash = promoted.revision_hash
 
         protected = store(user_id=owner, close=999, is_partial=True)
         assert protected.is_partial is False
         assert float(protected.close_price) == 101
         assert protected.raw_payload == {"close": 101}
+        assert protected.first_fetched_at == first_receipt
+        assert protected.revision_hash == closed_hash
 
         other = store(user_id=other_user, close=202, is_partial=True)
         assert other.is_partial is True

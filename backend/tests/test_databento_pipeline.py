@@ -398,9 +398,10 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
             row.volume,
             row.source_instrument_id,
             row.source_raw_symbol,
-            row.roll_policy_version,
         )
 
+    assert local[0].roll_policy_version == "volume_previous_completed_session_v1"
+    assert relational[0].roll_policy_version == "legacy_retrospective_volume_roll_v1"
     assert [candle_values(row) for row in local] == [
         candle_values(row) for row in relational
     ]

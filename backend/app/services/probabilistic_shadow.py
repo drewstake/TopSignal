@@ -1,6 +1,6 @@
 """Read-only, tenant-scoped research explanation for completed Dry Run evaluations.
 
-No artifact can authorize a trade. Files are local, bounded and schema-checked;
+Reviewed artifacts satisfy only the evidence gate. Files are local, bounded and schema-checked;
 sample arrays never leave this module in an API response or database result.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .probabilistic_strategy import (
-    BAR, DEFAULT_RESEARCH_MODEL, INTERFACE_VERSION, Candle, Costs, PathModel, features, utc,
+    BAR, DEFAULT_RESEARCH_MODEL, INTERFACE_VERSION, Candle, Costs, PathModel, VolatilityAboveRiskCap, features, utc,
 )
 
 
@@ -30,8 +30,11 @@ def scope_hash(owner: str) -> str:
 
 
 def model_path(owner: str, contract_id: str, live: bool, *, root: Path | None = None) -> Path:
-    stream = sha256(f"{contract_id}|{int(live)}".encode()).hexdigest()
-    return (root or cache_root()) / "probabilistic-v1/models" / scope_hash(owner) / f"{stream}.json"
+    from .probabilistic_protocol import protocol
+    if contract_id != "CON.F.US.MNQ" and not contract_id.startswith("CON.F.US.MNQ."):
+        raise ValueError("Unsupported model root")
+    stream = sha256(f"MNQ|{protocol()['roll_policy']}|{int(live)}".encode()).hexdigest()
+    return (root or cache_root()) / "probabilistic-v3/models" / scope_hash(owner) / f"{stream}.json"
 
 
 def unavailable(*, as_of: datetime, reason: str, data_status: str = "missing") -> dict:
@@ -49,7 +52,7 @@ def unavailable(*, as_of: datetime, reason: str, data_status: str = "missing") -
 
 def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_of: datetime,
                    root: Path | None = None, all_sessions: bool = False) -> dict:
-    """Safe to call only after a Dry Run result; caller never replaces a signal."""
+    """Return the bound forecast; account, risk and worker gates remain separate."""
     result = unavailable(as_of=as_of, reason="No fitted, validated replacement is available.")
     try:
         # Do not silently filter another user's data, different contracts or old
@@ -78,17 +81,24 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
         if path.stat().st_size > 4_000_000:
             raise ValueError("Research model artifact exceeds its size limit.")
         artifact = json.loads(path.read_text(encoding="utf-8"))
-        if (artifact.get("owner_hash") != scope_hash(owner) or artifact.get("contract_id") != contract_id
+        from .probabilistic_protocol import protocol
+        if (artifact.get("owner_hash") != scope_hash(owner) or artifact.get("root_symbol") != "MNQ"
+                or artifact.get("roll_policy") != protocol()["roll_policy"]
                 or artifact.get("data_live") is not rows[-1].live):
             raise ValueError("Research model scope does not match this owner, contract and data subscription.")
-        model = PathModel.from_dict(artifact["model"])
-        if utc(as_of) - model.trained_through > timedelta(days=7):
-            raise ValueError("Research model is stale; refresh offline evidence before using its forecasts.")
+        from .probabilistic_artifacts import validate_binding
+        model, _ = validate_binding(artifact, root=root or cache_root(), as_of=f.decision_at)
         forecast = model.forecast(f)
         result.update(forecast)
-        # Even malicious/stale artifact metadata cannot claim calibration or authorize routing.
-        result.update(action="NO_TRADE", routing_allowed=False, validation_status="unvalidated",
+        # Routing evidence is taken only from the verified experiment/review binding.
+        result.update(action="NO_TRADE", routing_allowed=artifact["validation_status"] == "passed", validation_status=artifact["validation_status"],
                       probability_basis="uncalibrated_model_estimate")
+        result["experiment_id"] = artifact["experiment_id"]
+        return result
+    except VolatilityAboveRiskCap as exc:
+        result.update(data_status="fresh", reason_code="volatility_above_risk_cap",
+                      volatility_sigma=exc.sigma, implied_stop_points=exc.stop)
+        result["reasons"][0] = str(exc)
         return result
     except (ValueError, TypeError, KeyError, AttributeError, OSError, OverflowError):
         # File details, identifiers and raw payloads do not belong in user-facing error messages.

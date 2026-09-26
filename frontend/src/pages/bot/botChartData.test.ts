@@ -15,9 +15,12 @@ import {
   buildLiveCandleFromPriceUpdate,
   buildSignalMarkers,
   buildSmaData,
-  buildVisualContinuityCandlestickData,
   buildVwapData,
+  prepareLiveVwap,
+  prepareLiveCandlesticks,
 } from "./botChartData";
+import fixture from "../../../../docs/fixtures/market-context.json";
+import { isFuturesSessionOpen } from "./botCandleGaps";
 import type { BotConfig, BotDecision, ProjectXMarketCandle } from "../../lib/types";
 
 function candle(timestamp: string, close: number, overrides: Partial<ProjectXMarketCandle> = {}): ProjectXMarketCandle {
@@ -94,6 +97,33 @@ function decision(overrides: Partial<BotDecision> = {}): BotDecision {
 }
 
 describe("buildCandlestickData", () => {
+  it("shares exchange boundaries and the 18:00 VWAP fixture with the backend", () => {
+    fixture.sessions.forEach(row => expect(isFuturesSessionOpen(Date.parse(row.timestamp), "MNQ")).toBe(row.open));
+    const rows = fixture.vwap.candles.map(row => candle(row.timestamp, row.close, row));
+    expect(buildVwapData(rows).at(-1)?.value).toBeCloseTo(fixture.vwap.expected);
+  });
+
+  it("prices quote tails identically to a full rebuild, including session changes", () => {
+    const history = [candle("2026-06-09T20:55:00Z", 100), candle("2026-06-09T22:00:00Z", 105, { is_partial: true })];
+    const vwap = prepareLiveVwap(history), prices = prepareLiveCandlesticks(history);
+    for (const live of [candle("2026-06-09T22:00:00Z", 110, { is_partial: true }),
+      candle("2026-06-09T22:05:00Z", 103, { is_partial: true }),
+      candle("2026-06-09T20:55:00Z", 900, { is_partial: true })]) {
+      expect(vwap(live)).toEqual(buildVwapData([...history, live]));
+      expect(prices(live)).toEqual(buildCandlestickData([...history, live]));
+    }
+  });
+
+  it("shows one signal and one visible blocked marker, hides duplicate attempts, and aligns 5m to 1m close", () => {
+    const candles = buildCandlestickData(Array.from({length: 10}, (_, i) => candle(`2026-04-26T13:${35+i}:00Z`, 100)));
+    const markers = buildSignalMarkers({ candles, timeframeUnit: "minute", timeframeUnitNumber: 1,
+      activityDecisions: [decision(), decision({id: 2, decision_type: "risk_reject"}), decision({id: 3, decision_type: "duplicate_skip"})] });
+    expect(markers).toHaveLength(2);
+    expect(markers[0].time).toBe(Date.parse("2026-04-26T13:39:00Z") / 1000);
+    expect(markers[1].text).toBe("○ BLOCKED BUY");
+    expect(markers[1].color).not.toBe("transparent");
+    expect(buildSignalMarkers({ candles, activityDecisions: [decision({candle_timestamp: "invalid"})] })).toEqual([]);
+  });
   it("sorts candles, drops invalid rows, and lets the latest duplicate win", () => {
     const rows = buildCandlestickData([
       candle("2026-04-26T13:40:00Z", 102),
@@ -125,22 +155,22 @@ describe("buildCandlestickData", () => {
     expect(source).toEqual(before);
   });
 
-  it("only bridges consecutive opens through the explicit display-only continuity helper", () => {
-    const rows = buildVisualContinuityCandlestickData([
+  it("preserves real gaps in consecutive candles", () => {
+    const rows = buildCandlestickData([
       candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
       candle("2026-04-26T13:40:00Z", 125, { open: 122, high: 126, low: 121 }),
     ]);
 
     expect(rows[1]).toMatchObject({
-      open: 100,
+      open: 122,
       high: 126,
-      low: 100,
+      low: 121,
       close: 125,
     });
   });
 
   it("does not apply display continuity across a missing interval", () => {
-    const rows = buildVisualContinuityCandlestickData([
+    const rows = buildCandlestickData([
       candle("2026-04-26T13:35:00Z", 100, { open: 96, high: 102, low: 95 }),
       candle("2026-04-26T13:45:00Z", 125, { open: 122, high: 126, low: 121 }),
     ]);

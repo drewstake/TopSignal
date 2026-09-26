@@ -145,12 +145,10 @@ def _cme_equity_holiday_schedule(
             return FuturesHolidaySchedule("National Day of Mourning", value, early_close=time(9, 30))
 
     year = value.year
-    # Jan 1 can be observed on Dec 31 of the preceding calendar year, so both
-    # nominal years must be checked for a date near the year boundary.
-    observed_new_year_dates = {
-        _nearest_weekday(date(nominal_year, 1, 1))
-        for nominal_year in (year, year + 1)
-    }
+    # Saturday New Year's does not substitute the preceding year-end Friday.
+    # Sunday Jan 1 is observed on Monday Jan 2, in the same calendar year.
+    new_year = date(year, 1, 1)
+    observed_new_year_dates = {new_year + timedelta(days=1) if new_year.weekday() == 6 else new_year}
     if value in observed_new_year_dates:
         return FuturesHolidaySchedule("New Year's Day", value, full_close=True)
 

@@ -100,6 +100,21 @@ testing continues to use ProjectX market data. Do not automatically restore or
 rebuild the retired history; the retained replay tools need an explicit restore
 or new import before reuse. The filesystem/cloud boundary above still applies.
 
+## September 26, 2026 authorized local research recovery
+
+The user explicitly authorized source recovery for the trading-bot audit. Two
+original Databento ZIPs and their metadata (67,898,148 bytes) were restored from
+the September 8 recovery archive after matching its SHA-256 and every restored
+file against the retirement manifest. `build_databento_cache.py` rebuilt MNQ
+1m, 5m, 4h and 1d series under `backend/storage/databento`. Existing v3 experiment
+registrations were preserved; the retired research directory was not restored.
+No historical rows were imported into Supabase. Recovery details are in
+`backend/storage/databento/source-recovery-20260926.json`.
+
+This specific authorization does not authorize other archive restoration or
+cloud historical imports. The retained source archives and retirement recovery
+ZIP still need an off-device backup destination.
+
 ## If sign-in or service health fails again
 
 1. Capture the actual HTTP status and error from Auth/PostgREST. An unhealthy

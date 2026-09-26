@@ -1,0 +1,60 @@
+{
+  "status": "fees_reconciled_execution_evidence_partial",
+  "fill_records": 35,
+  "closing_fill_records": 18,
+  "order_records": 60,
+  "distinct_filled_orders_matched": 31,
+  "order_status_counts": {
+    "2": 31,
+    "3": 27,
+    "5": 2
+  },
+  "unmatched_fill_records": 0,
+  "order_fill_quantity_mismatches": 4,
+  "order_fill_average_price_mismatches": 0,
+  "fee_reconciliation_passed_for_observed_window": true,
+  "closing_fill_fee_mismatches": 0,
+  "mnq_stop_orders": 5,
+  "mnq_stop_orders_exceeding_two_tick_risk_allowance": 2,
+  "maximum_observed_mnq_stop_difference_ticks": 6.0,
+  "saved_order_attempts_matched": 1,
+  "strategy_decisions_matched": 0,
+  "timed_exit_plans_matched": 0,
+  "references": [
+    "https://gateway.docs.projectx.com/docs/api-reference/order/order-search/",
+    "https://gateway.docs.projectx.com/docs/api-reference/trade/trade-search/"
+  ],
+  "order_mutations": 0,
+  "database_writes": 0,
+  "model_promotions": 0,
+  "checked_on": "2026-09-26",
+  "scope": "Aggregate read-only execution audit; account-specific records retained only in the ignored local cache",
+  "account_count": 3,
+  "private_details_record": "backend/storage/databento/audit/current-account-audit-detailed-20260926.json",
+  "private_details_sha256": "ea3a19d859bb61c769af22c97a7e01e11a6c01a5f6cf181c4f842ec98c3539a0",
+  "source_file_sha256": "4aa563c69b4dd313624a687a8f20e3adb1fd42d9492641415858e67d961334bb",
+  "fee_components_per_side_per_contract_usd": {
+    "MNQ": {
+      "fees": 0.36,
+      "commission": 0.25
+    },
+    "NQ": {
+      "fees": 1.39,
+      "commission": 0.5
+    }
+  },
+  "bracket_observation": {
+    "matching_manual_brackets": 1,
+    "requested_distances_match": true,
+    "continuous_protection_verified": false,
+    "automatic_oco_timing_verified": false
+  },
+  "limitations": [
+    "Fees reconcile to provider execution records; no formal statement was used.",
+    "Existing activity predates the revised strategy and is not its forward performance.",
+    "Observed stop movement exceeds the two-tick risk allowance; this sample does not validate the frozen one-contract cost distribution.",
+    "Final order states do not prove continuous protection, account bracket mode, halt behavior, target non-fill rates or timed-exit drift.",
+    "Four filled orders report zero fillVolume despite matched executions.",
+    "Correlated activity across accounts is not independent research evidence."
+  ]
+}

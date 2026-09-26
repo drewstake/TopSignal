@@ -700,6 +700,8 @@ def _ensure_bot_schema_compatibility() -> None:
             _add_column(conn, "projectx_market_candles", candle_columns, "source", "text not null default 'projectx'")
             _add_column(conn, "projectx_market_candles", candle_columns, "raw_payload", "jsonb")
             _add_column(conn, "projectx_market_candles", candle_columns, "fetched_at", "timestamptz not null default now()")
+            _add_column(conn, "projectx_market_candles", candle_columns, "first_fetched_at", "timestamptz")
+            _add_column(conn, "projectx_market_candles", candle_columns, "revision_hash", "varchar(64)")
             conn.execute(
                 text(
                     """
@@ -1086,7 +1088,7 @@ def _ensure_bot_schema_compatibility() -> None:
                     """
                     alter table bot_order_attempts
                     add constraint bot_order_attempts_status_check
-                    check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error'))
+                    check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error','cancelled'))
                     """
                 )
             )

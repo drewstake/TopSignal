@@ -2527,10 +2527,12 @@ export const botsApi = {
     requestJson<BotRuntimeStatus>("/api/bots/runtime/status", {
       signal: options.signal,
     }),
-  getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {}) =>
+  getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {},
+    filters: { start?: string; end?: string; run_id?: number; execution_mode?: "dry_run" | "live"; signals_only?: boolean } = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {
       query: {
         limit,
+        ...filters,
       },
       signal: options.signal,
     }),

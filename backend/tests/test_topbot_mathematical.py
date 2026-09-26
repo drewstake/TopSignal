@@ -17,13 +17,28 @@ from test_bot_execution_safety import (
 
 def install(root, *, side="BUY", model=None):
     model = model or fitted("bayesian_cells_v1")
+    model = replace(model, samples=tuple(replace(s, path=tuple(tuple(v * 5 for v in bar) for bar in s.path)) for s in model.samples))
     if side == "SELL":
         model = replace(model, samples=tuple(replace(s, path=tuple(
             (-o, -lo, -hi, -c) for o, hi, lo, c in s.path)) for s in model.samples))
+    from app.services.probabilistic_protocol import digest, implementation_sha, protocol
+    from app.services.probabilistic_artifacts import experiment_path
+    from app.services.probabilistic_artifacts import OFFLINE_CHECKS
+    report = {"mode": "development", "status": "offline_passed", "protocol_sha256": digest(protocol()),
+              "implementation_sha256": implementation_sha(),
+              "pooled": {model.version: {"acceptance_checks": dict.fromkeys(OFFLINE_CHECKS, True), "frozen_pool_mix": model.pool_mix}}}
+    experiment_id = digest(report)
+    report["experiment_id"] = experiment_id
+    record = experiment_path(root, experiment_id)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(report), encoding="utf-8")
     path = model_path("owner", CONTRACT, False, root=root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"owner_hash": scope_hash("owner"), "contract_id": CONTRACT,
-                               "data_live": False, "model": model.to_dict()}), encoding="utf-8")
+    path.write_text(json.dumps({"owner_hash": scope_hash("owner"), "root_symbol": "MNQ",
+        "roll_policy": protocol()["roll_policy"], "data_live": False, "model": model.to_dict(),
+        "experiment_id": experiment_id, "experiment_sha256": digest(report),
+        "protocol_sha256": digest(protocol()), "implementation_sha256": implementation_sha(),
+        "validation_status": "offline_passed", "review": {"reviewed_by": "synthetic test fixture", "model_version": model.version}}), encoding="utf-8")
     return path
 
 
@@ -37,19 +52,19 @@ def test_real_mathematical_forecast_is_the_signal_not_a_shadow(tmp_path, side):
     assert abs(result.raw_payload["stop_loss"] - result.price) == 4
     assert abs(result.raw_payload["take_profit"] - result.price) == 6
     assert result.raw_payload["target_position_qty"] == (1 if side == "BUY" else -1)
-    assert result.raw_payload["live_routing_allowed"] is True
-    assert result.raw_payload["validation_status"] == "unvalidated"
+    assert result.raw_payload["live_routing_allowed"] is False
+    assert result.raw_payload["validation_status"] == "offline_passed"
     assert "ema" not in result.raw_payload and "session_vwap" not in result.raw_payload
 
 
 @pytest.mark.parametrize("hours", [-8, 6, 12])
-def test_mathematical_model_evaluates_outside_regular_session(tmp_path, hours):
+def test_mathematical_model_holds_outside_regular_session(tmp_path, hours):
     install(tmp_path)
     offset = timedelta(hours=hours)
     rows = as_rows([replace(row, timestamp=row.timestamp + offset) for row in candles(21)])
     result = strategy.evaluate(rows, as_of=NOW + offset, root=tmp_path)
-    assert result.action == "BUY"
-    assert result.raw_payload["probabilistic_research"]["data_status"] == "fresh"
+    assert result.action == "HOLD"
+    assert result.raw_payload["hold_reason"] in {"outside_research_session", "entry_too_close_to_session_close"}
 
 
 @pytest.mark.parametrize("fault", ["missing", "stale", "owner", "contract", "gap", "partial", "volume", "few_paths", "bad_payoff", "other_model"])
@@ -143,7 +158,8 @@ def test_selected_forecast_reaches_dry_run_router_and_api_without_second_model_r
     config.strategy_type = "topbot_adaptive"
     config.strategy_params = dict(strategy.RULES)
     config.trading_start_time, config.trading_end_time = "09:30", "15:45"
-    monkeypatch.setattr(bot_service, "_is_inside_trading_session", lambda *a: False)
+    monkeypatch.setattr(bot_service, "_is_inside_trading_session", lambda *a, **kw: False)
+    monkeypatch.setattr("app.services.topbot_session.entry_boundary_reason", lambda *a, **kw: None)
     db_session.flush()
     install(tmp_path)
     mathematical = strategy.evaluate(as_rows(candles(21)), as_of=NOW, root=tmp_path)

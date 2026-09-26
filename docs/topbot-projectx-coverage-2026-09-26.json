@@ -1,0 +1,64 @@
+{
+  "source": "existing read-only ProjectX SQLite snapshot",
+  "purpose": "coverage audit only; not training or validation evidence",
+  "contracts": {
+    "CON.F.US.MNQ.U26": {
+      "rows": 3128,
+      "invalid_or_partial_rows": 1,
+      "first": "2026-08-24T15:35:00+00:00",
+      "last": "2026-09-09T04:10:00+00:00",
+      "delivery_contracts": [
+        "CON.F.US.MNQ.U26"
+      ],
+      "observed_regular_session_dates": 12,
+      "eligible_complete_sessions": [
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-08"
+      ],
+      "incomplete_regular_sessions": 2,
+      "gap_intervals_including_closures": 12,
+      "required_session_bars": 75,
+      "note": "Full 09:30\u201315:45 ET coverage; early-close days excluded. Feature warmup is checked separately.",
+      "source_sha256": "b5170166741d2d48ca91753af6c39aef2318e3692affef00a09df3130a07dfc8"
+    },
+    "CON.F.US.MNQ.Z26": {
+      "rows": 3750,
+      "invalid_or_partial_rows": 0,
+      "first": "2026-09-08T07:20:00+00:00",
+      "last": "2026-09-25T20:55:00+00:00",
+      "delivery_contracts": [
+        "CON.F.US.MNQ.Z26"
+      ],
+      "observed_regular_session_dates": 14,
+      "eligible_complete_sessions": [
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10",
+        "2026-09-11",
+        "2026-09-14",
+        "2026-09-15",
+        "2026-09-16",
+        "2026-09-17",
+        "2026-09-18",
+        "2026-09-21",
+        "2026-09-22",
+        "2026-09-23",
+        "2026-09-24",
+        "2026-09-25"
+      ],
+      "incomplete_regular_sessions": 0,
+      "gap_intervals_including_closures": 15,
+      "required_session_bars": 75,
+      "note": "Full 09:30\u201315:45 ET coverage; early-close days excluded. Feature warmup is checked separately.",
+      "source_sha256": "31c8794b4852013c1ff4f71f68e6f7bd4ce0f23c7fd33361cc63622428345953"
+    }
+  }
+}

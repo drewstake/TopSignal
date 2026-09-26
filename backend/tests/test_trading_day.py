@@ -81,12 +81,11 @@ def test_unknown_root_fails_closed_for_obvious_major_holiday_closures():
     ) is False
 
 
-def test_new_year_observed_on_prior_december_31_is_closed():
-    # Jan 1, 2022 was Saturday, so the exchange holiday was observed Friday.
+def test_new_years_saturday_does_not_close_prior_december_31():
     assert futures_session_is_open(
         datetime(2021, 12, 31, 17, 0, tzinfo=timezone.utc),
         symbol="MNQ",
-    ) is False
+    ) is True
 
 
 @pytest.mark.parametrize("year", [2019, 2023, 2024, 2025])

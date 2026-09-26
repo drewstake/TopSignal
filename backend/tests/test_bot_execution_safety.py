@@ -1948,7 +1948,8 @@ def test_local_daily_pnl_uses_canonical_round_turn_fee_and_commission(db_session
     ) == pytest.approx(-250.25)
 
 
-def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session):
+@pytest.mark.parametrize("provider_status,expected_status", [(2, "submitted"), (3, "cancelled"), (4, "cancelled")])
+def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session, provider_status, expected_status):
     _, config = _add_account_and_config(db_session, execution_mode="live")
     decision = BotDecision(
         user_id=USER_A,
@@ -1984,7 +1985,7 @@ def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session):
                 "order_id": "provider-456",
                 "account_id": 9001,
                 "contract_id": CONTRACT_ID,
-                "status": 2,
+                "status": provider_status,
                 "custom_tag": "topsignal-1-reconcile",
                 "raw_payload": {"id": 456, "customTag": "topsignal-1-reconcile"},
             }
@@ -2000,9 +2001,12 @@ def test_reconcile_unresolved_attempt_uses_deterministic_custom_tag(db_session):
 
     assert error is None
     assert unresolved_count == 0
-    assert attempt.status == "submitted"
+    assert attempt.status == expected_status
     assert attempt.provider_order_id == "provider-456"
     assert attempt.raw_response["reconciled"] is True
+    db_session.commit()
+    db_session.refresh(attempt)
+    assert attempt.status == expected_status
 
 
 def test_late_reconciliation_blocks_current_evaluation_and_restarts_settlement_window(db_session, monkeypatch):

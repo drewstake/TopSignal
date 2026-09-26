@@ -106,7 +106,13 @@ def serialize_bot_decision(row: BotDecision) -> dict[str, Any]:
 
 
 def serialize_bot_order_attempt(row: BotOrderAttempt) -> dict[str, Any]:
+    events = list(getattr(row, "_execution_observations", []))
+    plan = (row.raw_request or {}).get("timeExit", {})
+    if row.execution_mode == "live" and plan.get("outcome") == "verified_flat" and plan.get("completed_at"):
+        events.append({"kind": "verified_flat", "timestamp": plan["completed_at"],
+                       "exit_drift_seconds": plan.get("exit_drift_seconds")})
     return {
+        "execution_observations": events,
         "id": int(row.id),
         "bot_config_id": int(row.bot_config_id) if row.bot_config_id is not None else None,
         "bot_run_id": int(row.bot_run_id) if row.bot_run_id is not None else None,
@@ -142,6 +148,8 @@ def serialize_bot_risk_event(row: BotRiskEvent) -> dict[str, Any]:
 
 def serialize_market_candle(row: ProjectXMarketCandle) -> dict[str, Any]:
     return {
+        "first_fetched_at": _as_utc(row.first_fetched_at) if getattr(row, "first_fetched_at", None) else None,
+        "revision_hash": getattr(row, "revision_hash", None),
         "id": int(row.id) if row.id is not None else None,
         "contract_id": row.contract_id,
         "symbol": row.symbol,

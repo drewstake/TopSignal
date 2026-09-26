@@ -159,7 +159,7 @@ class ProjectXTradeSummaryOut(BaseModel):
     tail_risk_5pct: float
     max_drawdown: float
     average_drawdown: float
-    risk_drawdown_score: float
+    risk_drawdown_score: float | None
     max_drawdown_length_hours: float
     recovery_time_hours: float
     average_recovery_length_hours: float
