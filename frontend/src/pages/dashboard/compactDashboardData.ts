@@ -336,7 +336,7 @@ export function combineCompactSummaries(
       ? computeCompactCalendarMaxDrawdown(days)
       : round(sumField((value) => Math.abs(value.max_drawdown))),
     average_drawdown: round(weightedAverage(summaries, (value) => value.average_drawdown, (value) => value.trade_count)),
-    risk_drawdown_score: round(weightedAverage(summaries, (value) => value.risk_drawdown_score, (value) => value.trade_count)),
+    risk_drawdown_score: null, // Combined accounts have no shared starting balance.
     max_drawdown_length_hours: round(Math.max(...summaries.map((summary) => finite(summary.max_drawdown_length_hours)))),
     recovery_time_hours: round(Math.max(...summaries.map((summary) => finite(summary.recovery_time_hours)))),
     average_recovery_length_hours: round(weightedAverage(summaries, (value) => value.average_recovery_length_hours, (value) => value.trade_count)),

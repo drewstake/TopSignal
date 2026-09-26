@@ -205,6 +205,7 @@ def _tiny_mnq_archives(
     *,
     bar_count: int = 6,
     start: datetime | None = None,
+    skip_minutes: tuple[int, ...] = (),
 ) -> tuple[tuple[Path, Path], datetime]:
     directory.mkdir(parents=True, exist_ok=True)
     instrument_id, _raw_symbol, _unit_quantity = ROOT_CONTRACTS["MNQ"]
@@ -225,7 +226,7 @@ def _tiny_mnq_archives(
                 instrument_id=instrument_id,
                 index=index,
             )
-            for index in range(bar_count)
+            for index in range(bar_count) if index not in skip_minutes
         ],
     )
     return (definitions, ohlcv), start
@@ -662,6 +663,22 @@ def test_nonaligned_source_start_drops_partial_and_exposes_first_complete_bucket
             candles[0].close_price,
             candles[0].volume,
         ) == (103.0, 109.0, 102.0, 107.5, 75)
+    finally:
+        store.clear()
+
+
+def test_local_five_minute_cache_keeps_quiet_bucket_and_quality_flag(tmp_path):
+    archives, start = _tiny_mnq_archives(tmp_path / "archives", bar_count=10, skip_minutes=(1, 2, 3))
+    root = tmp_path / "cache"
+    build_databento_cache(archives, cache_root=root, timeframes=("1m", "5m"))
+    store = DatabentoReplayStore(root)
+    try:
+        rows = store.load_candles(user_id=OWNER_ID, contract_id=CONTRACT_ID, root_symbol="MNQ",
+            unit="minute", unit_number=5, start=start, end=start+timedelta(minutes=10), closed_by=start+timedelta(minutes=10))
+        assert len(rows) == 2
+        assert (rows[0].open_price, rows[0].close_price, rows[0].volume) == (100, 104.5, 24)
+        flags = np.load(next(root.rglob("observed_minute_count.npy")))
+        assert flags.tolist() == [2, 5]
     finally:
         store.clear()
 

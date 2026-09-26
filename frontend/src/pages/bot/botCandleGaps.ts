@@ -353,7 +353,8 @@ export function isFuturesSessionOpen(timestampMs: number, symbol?: string | null
     if (minutesOfDay >= closeMinutes) {
       return false;
     }
-    if (minutesOfDay >= EQUITY_HALT_START_MINUTES && minutesOfDay < EQUITY_HALT_END_MINUTES) {
+    const dateKey = tradingDate.year * 10000 + tradingDate.month * 100 + tradingDate.day;
+    if (dateKey < 20210628 && minutesOfDay >= EQUITY_HALT_START_MINUTES && minutesOfDay < EQUITY_HALT_END_MINUTES) {
       return false;
     }
   }

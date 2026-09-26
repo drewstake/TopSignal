@@ -11,6 +11,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
     func,
@@ -689,6 +690,8 @@ class ProjectXMarketCandle(Base):
     source = Column(Text, nullable=False, server_default="projectx")
     raw_payload = Column(JSON, nullable=True)
     fetched_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    first_fetched_at = Column(DateTime(timezone=True), nullable=True)
+    revision_hash = Column(String(64), nullable=True)
 
     __table_args__ = (
         CheckConstraint("unit in ('second','minute','hour','day','week','month')", name="projectx_market_candles_unit_check"),
@@ -1071,7 +1074,7 @@ class BotOrderAttempt(Base):
         CheckConstraint("side in ('BUY','SELL')", name="bot_order_attempts_side_check"),
         CheckConstraint("order_type in ('market','limit','stop','trailing_stop')", name="bot_order_attempts_order_type_check"),
         CheckConstraint(
-            "status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error')",
+            "status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error','cancelled')",
             name="bot_order_attempts_status_check",
         ),
         CheckConstraint("size > 0", name="bot_order_attempts_size_positive_check"),

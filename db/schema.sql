@@ -499,6 +499,8 @@ create table if not exists projectx_market_candles (
   source text not null default 'projectx',
   raw_payload jsonb,
   fetched_at timestamptz not null default now(),
+  first_fetched_at timestamptz,
+  revision_hash varchar(64),
   unique (user_id, contract_id, live, unit, unit_number, candle_timestamp)
 );
 
@@ -760,7 +762,7 @@ create table if not exists bot_order_attempts (
   limit_price numeric(18,6),
   stop_price numeric(18,6),
   trail_price numeric(18,6),
-  status text not null default 'pending' check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error')),
+  status text not null default 'pending' check (status in ('pending','dry_run','submitted','submission_unknown','blocked','rejected','error','cancelled')),
   provider_order_id text,
   rejection_reason text,
   raw_request jsonb,

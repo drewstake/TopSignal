@@ -173,7 +173,7 @@ def test_crps_matches_pairwise_definition():
 def test_splits_reserve_tail_and_purge_boundary_labels():
     from pathlib import Path
     from tools.research_probabilistic_topbot import verify_protocol
-    registered = json.loads((Path(__file__).resolve().parents[2] / "docs/topbot-probabilistic-protocol-v2.json").read_text())
+    registered = json.loads((Path(__file__).resolve().parents[2] / "docs/topbot-probabilistic-protocol-v3.json").read_text())
     verify_protocol(registered)
     with pytest.raises(ValueError, match="register a new experiment"):
         verify_protocol({**registered, "commission_per_side_usd": 0})
@@ -238,7 +238,7 @@ def test_shadow_artifact_cannot_claim_calibration_or_change_routing(tmp_path):
                 "model": fitted().to_dict(), "validation_status": "calibrated", "routing_allowed": True}
     path.write_text(json.dumps(artifact), encoding="utf-8")
     result = explain_shadow(candles=as_rows(candles(21)), owner="owner", contract_id=CONTRACT, as_of=NOW, root=tmp_path)
-    assert result["forecasts"] is not None
+    assert result["forecasts"] is None
     assert result["validation_status"] == "unvalidated" and result["routing_allowed"] is False
     assert result["action"] == "NO_TRADE"
     artifact["owner_hash"] = scope_hash("other")
@@ -269,7 +269,7 @@ def test_probability_scores_report_inadequate_calibration_instead_of_claiming_su
     model = fitted()
     sample = Sample(query(), WIN_PATH, NOW + 3 * BAR)
     scores = probability_scores(model, [sample], Costs())
-    assert scores["predictions"] == 2
+    assert scores["predictions"] == 1
     assert scores["max_calibration_error"] is None
     assert scores["day_block_confidence_intervals"]["brier"]["5"] is None
 
@@ -277,20 +277,19 @@ def test_probability_scores_report_inadequate_calibration_instead_of_claiming_su
 def test_development_never_builds_features_or_labels_from_reserved_holdout(monkeypatch):
     from app.services import probabilistic_validation as validation
     days = [(NOW + timedelta(days=i)).date().isoformat() for i in range(200)]
-    protocol = {"minimum_total_sessions": 200, "untouched_final_sessions": 60,
-                "training_sessions": 60, "calibration_sessions": 20,
-                "validation_sessions": 20, "walk_forward_step_sessions": 20}
+    from app.services.probabilistic_protocol import protocol as registered_protocol
+    protocol = registered_protocol()
     monkeypatch.setattr(validation, "audit_candles", lambda _: {"eligible_complete_sessions": days})
     cutoff = validation.day_start(days[-60])
     rows = [replace(candles(1)[0], timestamp=cutoff - BAR), replace(candles(1)[0], timestamp=cutoff)]
     calls = []
     def observed(input_rows, **kwargs):
         calls.append(kwargs)
-        assert len(input_rows) == 1 and all(r.timestamp < cutoff for r in input_rows)
+        assert len(input_rows) <= 1 and all(r.timestamp < cutoff for r in input_rows)
         return [], {}
     monkeypatch.setattr(validation, "make_samples", observed)
     report, _ = validation.development(rows, protocol)
-    assert len(calls) == 2
+    assert len(calls) == 7  # Training, scoring and five cached stress transforms.
     assert report["holdout_evaluated"] is False and report["promotion_eligible"] is False
 
 

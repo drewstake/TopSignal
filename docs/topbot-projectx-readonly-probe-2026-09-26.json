@@ -1,0 +1,39 @@
+{
+  "scope": "read-only historical market-data probe; no accounts, orders or database writes",
+  "requested_window": [
+    "2026-07-09T13:30:00+00:00",
+    "2026-07-09T15:30:00+00:00"
+  ],
+  "contract": "CON.F.US.MNQ.U26",
+  "orders": 0,
+  "database_writes": 0,
+  "status": "no_overlap",
+  "bars_5m": 0,
+  "bars_1m": 0,
+  "limited_timestamps": [],
+  "limit_returns_newest": null,
+  "limit_returns_oldest": null,
+  "zero_volume_bars_5m": 0,
+  "five_minute_alignment": null,
+  "recent_window_probe": {
+    "window": [
+      "2026-09-25T13:30:00+00:00",
+      "2026-09-25T15:30:00+00:00"
+    ],
+    "contract": "CON.F.US.MNQ.Z26",
+    "status": "observed",
+    "bars_5m": 24,
+    "bars_1m": 120,
+    "limited_timestamps": [
+      "2026-09-25T15:20:00+00:00",
+      "2026-09-25T15:25:00+00:00"
+    ],
+    "limit_returns_newest": true,
+    "limit_returns_oldest": false,
+    "zero_volume_bars_5m": 0,
+    "five_minute_alignment": true,
+    "complete_minute_groups": 24,
+    "exact_1m_aggregation_matches": 24,
+    "timestamp_convention_inferred": "bar open"
+  }
+}

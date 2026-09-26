@@ -8,23 +8,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from functools import cached_property
 import math
 from typing import Any, Literal, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
+from scipy.stats import t as student_t
+from .probabilistic_protocol import protocol
 
 
-INTERFACE_VERSION = "mnq-probabilistic-v1"
+INTERFACE_VERSION = "mnq-probabilistic-v3"
 MODEL_VERSIONS = ("empirical_pool_v1", "bayesian_cells_v1", "kernel_paths_v1")
 DEFAULT_RESEARCH_MODEL = "bayesian_cells_v1"  # Research prototype, not production selection.
-HORIZON = 3
-FEATURE_BARS = 21
+SPEC = protocol()
+HORIZON = SPEC["horizon_bars"]
+FEATURE_BARS = SPEC["feature_bars"]
 TICK = 0.25
 POINT_VALUE = 2.0
 ET = ZoneInfo("America/New_York")
-BAR = timedelta(minutes=5)
+BAR = timedelta(minutes=SPEC["bar_minutes"])
 Action = Literal["BUY", "SELL", "NO_TRADE"]
+
+
+class VolatilityAboveRiskCap(ValueError):
+    def __init__(self, sigma: float, stop: float):
+        self.sigma, self.stop = sigma, stop
+        super().__init__(f"volatility_above_risk_cap: sigma={sigma:.4f}, implied stop={stop:.2f}; 25-point risk cap.")
 
 
 def utc(value: datetime) -> datetime:
@@ -68,10 +78,10 @@ class Candle:
 
 @dataclass(frozen=True)
 class Costs:
-    commission_per_side: float = 0.61
-    spread_ticks: float = 1.0
-    slippage_ticks: float = 1.0
-    latency_ticks: float = 0.5
+    commission_per_side: float = SPEC["commission_per_side_usd"]
+    spread_ticks: float = SPEC["assumed_spread_ticks"]
+    slippage_ticks: float = SPEC["slippage_ticks_per_side"]
+    latency_ticks: float = SPEC["latency_ticks_per_side"]
 
     def __post_init__(self) -> None:
         if any(not math.isfinite(x) or x < 0 for x in (
@@ -137,9 +147,9 @@ def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float 
     volume_base = float(np.mean([row.volume for row in window[:-1]]))
     values = (float(changes[-1] / sigma), float(sum(changes[-3:]) / (sigma * math.sqrt(3))),
               math.log(recent / sigma), math.log(window[-1].volume / volume_base))
-    stop = max(4.0, math.ceil(stop_multiplier * sigma * math.sqrt(HORIZON) / TICK) * TICK)
-    if stop > 25:
-        raise ValueError("Volatility requires a stop above the 25-point research risk cap.")
+    stop = max(SPEC["minimum_candidate_stop_points"], math.ceil(stop_multiplier * sigma * math.sqrt(HORIZON) / TICK) * TICK)
+    if stop > SPEC["maximum_candidate_stop_points"]:
+        raise VolatilityAboveRiskCap(sigma, stop)
     return Features(values, stop, sigma, decision_at, local.date().isoformat())
 
 
@@ -152,7 +162,7 @@ class Sample:
 
 
 def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0,
-                 stop_multiplier: float = 1.0) -> tuple[list[Sample], dict[str, int]]:
+                 stop_multiplier: float = 1.0, population_by_day: dict | None = None) -> tuple[list[Sample], dict[str, int]]:
     if stride not in (1, 3) or delay_bars not in (0, 1):
         raise ValueError("Unsupported research lattice or latency stress.")
     samples: list[Sample] = []
@@ -162,6 +172,11 @@ def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0
         local = now.astimezone(ET)
         if stride == 3 and (local.hour * 60 + local.minute - 570) % 15:
             continue
+        population = None
+        if population_by_day is not None and time(9, 35) <= local.time() <= time(15, 30):
+            population = population_by_day.setdefault(local.date().isoformat(),
+                {"candidate_windows": 0, "accepted": 0, "volatility_cap": 0, "other_rejections": 0})
+            population["candidate_windows"] += 1
         try:
             f = features(rows[max(0, index - FEATURE_BARS + 1):index + 1], as_of=now,
                          stop_multiplier=stop_multiplier)
@@ -172,16 +187,22 @@ def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0
             if end.astimezone(ET).date() != local.date() or end.astimezone(ET).time() > time(15, 45):
                 raise ValueError("Horizon exceeds the session exit deadline.")
             reference = future[0].open
-            path = tuple(tuple((v - reference) / f.stop_points for v in
+            path = tuple(tuple((v - reference) / (f.volatility * math.sqrt(HORIZON)) for v in
                                (row.open, row.high, row.low, row.close)) for row in future)
             samples.append(Sample(f, path, end))
+            if population is not None:
+                population["accepted"] += 1
         except ValueError as exc:
-            rejected[str(exc)] = rejected.get(str(exc), 0) + 1
+            reason = "volatility_above_risk_cap" if isinstance(exc, VolatilityAboveRiskCap) else str(exc)
+            rejected[reason] = rejected.get(reason, 0) + 1
+            if population is not None:
+                population["volatility_cap" if isinstance(exc, VolatilityAboveRiskCap) else "other_rejections"] += 1
     return samples, rejected
 
 
 def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
-                target_ratio: float = 1.5) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                target_ratio: float = SPEC["target_stop_ratio"], scale: float | None = None,
+                trade_through_ticks: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Reprice first-passage scenarios with fills and brackets on the same basis.
 
     Returns net USD, exit kind (0 stop, 1 time, 2 target), and bars exposed.
@@ -189,7 +210,9 @@ def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
     """
     if side not in (-1, 1) or not math.isfinite(stop) or stop <= 0 or target_ratio <= 0:
         raise ValueError("Invalid side or bracket.")
-    p = np.asarray(paths, dtype=float) * stop
+    if scale is not None and (not math.isfinite(scale) or scale <= 0):
+        raise ValueError("Invalid forecast price scale")
+    p = np.asarray(paths, dtype=float) * (stop if scale is None else scale)
     if p.ndim != 3 or p.shape[1:] != (HORIZON, 4) or not np.isfinite(p).all():
         raise ValueError("Invalid scenario array.")
     n = len(p)
@@ -208,9 +231,9 @@ def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
     for bar in range(HORIZON):
         # A known opening gap is ordered before that bar's uncertain high/low.
         gap_stop = pending & (opening[:, bar] <= stop_level)
-        gap_target = pending & ~gap_stop & (opening[:, bar] >= target)
+        gap_target = pending & ~gap_stop & (opening[:, bar] >= target + trade_through_ticks * TICK)
         hit_stop = pending & ~gap_target & (adverse[:, bar] <= stop_level)
-        hit_target = pending & ~gap_stop & ~hit_stop & (favorable[:, bar] >= target)
+        hit_target = pending & ~gap_stop & ~hit_stop & (favorable[:, bar] >= target + trade_through_ticks * TICK)
         stopped = gap_stop | hit_stop
         targeted = gap_target | hit_target
         fill[stopped] = np.minimum(stop_level[stopped], opening[stopped, bar])
@@ -268,18 +291,35 @@ class PathModel:
                 or np.any(paths[:, :, 1] < np.maximum(paths[:, :, 0], paths[:, :, 3]))):
             raise ValueError("Malformed OHLC path.")
 
-    @property
+    @cached_property
     def paths(self) -> np.ndarray:
-        return np.asarray([s.path for s in self.samples], dtype=float)
+        values = np.asarray([s.path for s in self.samples], dtype=float)
+        values.setflags(write=False)
+        return values
 
-    @property
+    @cached_property
     def trained_through(self) -> datetime:
         return max(s.label_end for s in self.samples)
+
+    @cached_property
+    def _feature_values(self) -> np.ndarray:
+        values = np.asarray([s.features.values for s in self.samples])
+        values.setflags(write=False)
+        return values
+
+    @cached_property
+    def _day_codes(self) -> np.ndarray:
+        # np.unique preserves the same sorted day order used by the HAC lags.
+        return np.unique([s.features.day for s in self.samples], return_inverse=True)[1]
+
+    @cached_property
+    def _feature_scale(self) -> np.ndarray:
+        return np.maximum(np.std(self._feature_values, axis=0), 0.1)
 
     def weights(self, f: Features) -> np.ndarray:
         if self.trained_through >= f.decision_at:
             raise ValueError("Training label cutoff must be strictly before this decision.")
-        x = np.asarray([s.features.values for s in self.samples])
+        x = self._feature_values
         query = np.asarray(f.values)
         if not np.isfinite(query).all() or np.max(np.abs(x)) > 50 or np.max(np.abs(query)) > 50:
             raise ValueError("Features exceed the research model's numerical domain.")
@@ -290,7 +330,7 @@ class PathModel:
             same = ((x[:, 1] >= 0) == (query[1] >= 0)) & ((x[:, 2] >= 0) == (query[2] >= 0))
             weights = (same.astype(float) + 20 / n) / (np.sum(same) + 20)
         else:
-            scale = np.maximum(np.std(x, axis=0), 0.1)  # Train only; never future normalization.
+            scale = self._feature_scale  # Train only; never future normalization.
             distance = np.sum(((x - query) / scale) ** 2, axis=1)
             kernel = np.exp(-0.5 * np.minimum(distance, 100))
             weights = 0.95 * kernel / np.sum(kernel) + 0.05 / n
@@ -301,23 +341,23 @@ class PathModel:
 
     def forecast(self, f: Features, costs: Costs = Costs()) -> dict:
         weights = self.weights(f)
-        days = np.asarray([s.features.day for s in self.samples])
-        unique_days = sorted(set(days))
-        day_weight = np.asarray([weights[days == day].sum() for day in unique_days])
+        day_codes = self._day_codes
+        day_weight = np.bincount(day_codes, weights=weights)
         effective_days = float(1 / np.sum(day_weight ** 2))
         outcomes = {}
         for action, side in (("BUY", 1), ("SELL", -1)):
-            payoffs, kinds, _ = price_paths(self.paths, stop=f.stop_points, side=side, costs=costs)
+            payoffs, kinds, _ = price_paths(self.paths, stop=f.stop_points, scale=f.volatility * math.sqrt(HORIZON), side=side, costs=costs)
             mean = float(np.dot(weights, payoffs))
-            contributions = np.asarray([np.sum(weights[days == day] * (payoffs[days == day] - mean))
-                                        for day in unique_days])
+            contributions = np.bincount(day_codes, weights=weights * (payoffs - mean))
             variance = float(np.dot(contributions, contributions))
             hac = variance + 2 * sum((1 - lag / 5) * float(np.dot(contributions[lag:], contributions[:-lag]))
                                     for lag in range(1, min(5, len(contributions))))
             # Small-cluster correction; HAC is never allowed to reduce uncertainty.
-            correction = len(unique_days) / max(1, len(unique_days) - 1)
+            correction = effective_days / max(1e-9, effective_days - 1)
             se = math.sqrt(max(variance, hac, 0) * correction)
-            penalty = 2.576 * se + 1.0
+            critical = float(student_t.ppf(1 - SPEC["forecast_familywise_alpha"] / SPEC["forecast_tests_per_refit"],
+                                          max(1, effective_days - 1)))
+            penalty = critical * se + SPEC["cost_uncertainty_usd"]
             if not all(math.isfinite(value) for value in (mean, se, penalty)):
                 raise ValueError("Forecast uncertainty is not finite.")
             def probability(mask):
@@ -331,10 +371,12 @@ class PathModel:
                 "expected_net_usd": mean, "standard_error_usd": se,
                 "uncertainty_penalty_usd": penalty, "lower_utility_usd": mean - penalty,
                 "effective_days": effective_days,
+                "critical_value": critical,
+                "expected_net_r": mean / (POINT_VALUE * f.stop_points),
             }
         best = max(outcomes, key=lambda key: outcomes[key]["lower_utility_usd"])
-        supported = len(self.samples) >= 300 and effective_days >= 20
-        proposal = best if supported and outcomes[best]["lower_utility_usd"] > 1 else "NO_TRADE"
+        supported = len(self.samples) >= SPEC["minimum_training_examples"] and effective_days >= SPEC["minimum_effective_days_per_forecast"]
+        proposal = best if supported and outcomes[best]["lower_utility_usd"] > SPEC["minimum_net_edge_usd"] else "NO_TRADE"
         reasons = ["Unvalidated research model: no order routing or default promotion."]
         if not supported:
             reasons.append("Insufficient independent evidence: require 300 training paths and 20 effective days.")
@@ -347,7 +389,7 @@ class PathModel:
                 "stop_points": f.stop_points, "target_points": math.ceil(f.stop_points * 1.5 / TICK) * TICK,
                 "quantity": 1, "costs": costs.describe(), "forecasts": outcomes,
                 "no_trade_expected_net_usd": 0.0, "minimum_net_edge_usd": 1.0,
-                "uncertainty_method": "Larger of day-cluster and 4-lag Bartlett HAC SE; 2.576 SE plus $1 cost uncertainty.",
+                "uncertainty_method": "Day-cluster/HAC SE with Kish effective-day correction; Student t and eight-test Bonferroni correction plus cost buffer.",
                 "training_paths": len(self.samples), "reasons": reasons}
 
     def to_dict(self) -> dict:

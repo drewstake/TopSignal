@@ -124,7 +124,7 @@ export function buildEvaluationOverlayModel(
   evaluation: BotEvaluation | null,
   options: BuildEvaluationOverlayOptions = {},
 ): EvaluationOverlayModel | null {
-  if (!evaluation || !isActionableEvaluationAction(evaluation.decision.action)) {
+  if (!evaluation || !isActionableDecision(evaluation.decision) || !isActionableEvaluationAction(evaluation.decision.action) || evaluation.status === "risk_blocked") {
     return null;
   }
 
@@ -261,7 +261,7 @@ export function buildEvaluationOverlayStaleness(
 }
 
 export function isActionableEvaluation(evaluation: BotEvaluation | null | undefined): evaluation is BotEvaluation {
-  return evaluation !== null && evaluation !== undefined && isActionableEvaluationAction(evaluation.decision.action);
+  return evaluation !== null && evaluation !== undefined && evaluation.status !== "risk_blocked" && isActionableDecision(evaluation.decision);
 }
 
 function isActionableEvaluationAction(action: BotEvaluation["decision"]["action"]): action is EvaluationOverlayAction {
@@ -269,7 +269,8 @@ function isActionableEvaluationAction(action: BotEvaluation["decision"]["action"
 }
 
 function isActionableDecision(decision: BotDecision): boolean {
-  return decision.action === "BUY" || decision.action === "SELL";
+  return decision.decision_type === "signal" && decision.raw_payload?.routing_status !== "risk_blocked"
+    && (decision.action === "BUY" || decision.action === "SELL");
 }
 
 function evaluationMatchesBotMarket(evaluation: BotEvaluation | null | undefined, bot: BotConfig): boolean {

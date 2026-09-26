@@ -78,7 +78,7 @@ export interface DisplayAnalysis {
   dataConfidence: BotAnalysisDimension;
 }
 
-const NEUTRAL_WEIGHTS: BotDirectionalProbabilities = { bullish: 33, bearish: 33, sideways: 34 };
+const NEUTRAL_WEIGHTS: BotDirectionalProbabilities = { bullish: 0, bearish: 0, sideways: 0 };
 
 export function normalizeScenarioWeights(
   values: Partial<BotDirectionalProbabilities> | null | undefined,
@@ -255,7 +255,7 @@ function normalizeBackendAnalysis(
 
 function buildLocalFallback(evaluation: BotEvaluation, context: MarketContext): DisplayAnalysis {
   const scoreDrivers = localScoreDrivers(context);
-  const weights = buildLocalScenarioWeights(context);
+  const weights = buildLocalScenarioWeights();
   const marketBias = normalizeBias(context.trend?.direction ?? "neutral", weights);
   const closes = evaluation.candles
     .filter((candle) => !candle.is_partial && Number.isFinite(candle.close) && Number.isFinite(Date.parse(candle.timestamp)))
@@ -350,37 +350,9 @@ function buildLocalFallback(evaluation: BotEvaluation, context: MarketContext): 
   };
 }
 
-function buildLocalScenarioWeights(context: MarketContext): BotDirectionalProbabilities {
-  let bullish = 33;
-  let bearish = 33;
-  let sideways = 34;
-  const trendBias = (context.trend?.strength ?? 0) * 28;
-  if (context.trend?.direction === "bullish") {
-    bullish += trendBias;
-    bearish -= trendBias * 0.55;
-    sideways -= trendBias * 0.45;
-  } else if (context.trend?.direction === "bearish") {
-    bearish += trendBias;
-    bullish -= trendBias * 0.55;
-    sideways -= trendBias * 0.45;
-  } else {
-    sideways += 6;
-    bullish -= 3;
-    bearish -= 3;
-  }
-  if (context.marketRegime === "range" || context.marketRegime === "quiet") {
-    sideways += 6;
-    bullish -= 3;
-    bearish -= 3;
-  }
-  if (context.vwapLocation === "above") {
-    bullish += 3;
-    bearish -= 3;
-  } else if (context.vwapLocation === "below") {
-    bearish += 3;
-    bullish -= 3;
-  }
-  return normalizeScenarioWeights({ bullish, bearish, sideways });
+function buildLocalScenarioWeights(): BotDirectionalProbabilities {
+  // Missing forecasts are unavailable, not invented equally likely outcomes.
+  return { ...NEUTRAL_WEIGHTS };
 }
 
 function localSetupQualityScore(context: MarketContext, marketBias: BotMarketBias): number {

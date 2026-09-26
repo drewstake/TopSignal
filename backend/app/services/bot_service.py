@@ -82,6 +82,10 @@ _ACCOUNT_AUTOMATION_CLASSIFICATION_MAX_AGE = timedelta(minutes=5)
 # every read/mutation make a genuinely active account flatten non-reclaimable.
 _ACCOUNT_EMERGENCY_ACTION_LEASE_DURATION = timedelta(minutes=5)
 _TRANSIENT_LIVE_RISK_CODES = {
+    "mathematical_exit_pending",
+    "entry_too_close_to_session_close",
+    "outside_research_session",
+    "cooldown_after_entry",
     "account_emergency_flatten_unresolved",
     "account_automation_classification_unknown",
     "account_unrealized_pnl_unavailable",
@@ -723,6 +727,7 @@ def get_bot_config(db: Session, *, user_id: str, bot_config_id: int) -> BotConfi
 
 
 def create_bot_config(db: Session, *, user_id: str, payload: Any) -> BotConfig:
+    _require_strategy_available(payload.strategy_type)
     account = _require_owned_account(db, user_id=user_id, account_id=payload.account_id)
     _require_projectx_trade_data_source(account)
     name = _validate_unique_bot_name(db, user_id=user_id, name=payload.name)
@@ -787,6 +792,8 @@ def update_bot_config(db: Session, *, user_id: str, bot_config_id: int, payload:
     _require_projectx_trade_data_source(current_account)
 
     update_data = payload.model_dump(exclude_unset=True)
+    if "strategy_type" in update_data or update_data.get("enabled"):
+        _require_strategy_available(update_data.get("strategy_type", row.strategy_type))
     if "account_id" in update_data:
         target_account_id = int(update_data["account_id"])
         if target_account_id != int(row.account_id):
@@ -1010,6 +1017,7 @@ def start_bot_run(
     )
     resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     if not resolved_dry_run:
+        _require_strategy_available(str(config.strategy_type))
         from .topbot_mathematical import selected, require_live_worker
         if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
             require_live_worker()
@@ -1239,6 +1247,7 @@ def _evaluate_bot_config_impl(
         lock_for_update=True,
     )
     if not resolved_dry_run:
+        _require_strategy_available(str(config.strategy_type))
         from .topbot_mathematical import selected, require_live_worker
         if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
             require_live_worker()
@@ -1282,6 +1291,22 @@ def _evaluate_bot_config_impl(
     latest_candle = decision_candles[-1] if decision_candles else None
     execution_contract_id = _execution_contract_id(market_config, latest_candle)
     execution_symbol = _execution_symbol(market_config, latest_candle)
+    from .topbot_mathematical import selected as mathematical_selected
+    mathematical = str(market_config.strategy_type) == "topbot_adaptive" and mathematical_selected(market_config.strategy_params)
+    contract_rolled = mathematical and latest_candle is not None and str(latest_candle.contract_id) != str(market_config.contract_id)
+    hold_reason = None
+    if contract_rolled:
+        hold_reason = "contract_rolled"
+    elif mathematical and not resolved_dry_run and worker_lease_token is None:
+        hold_reason = "worker_lease_required"
+    elif not resolved_dry_run and mathematical:
+        from .topbot_time_exit import pending_exits
+        if pending_exits(db).filter(BotOrderAttempt.account_id == int(market_config.account_id)).first() is not None:
+            hold_reason = "mathematical_exit_pending"
+    if hold_reason:
+        signal = SignalResult("HOLD", hold_reason, signal.candle_timestamp, signal.price,
+                              {"strategy_type": market_config.strategy_type, "hold_reason": hold_reason,
+                               "live_routing_allowed": False})
     instrument_spec = None
     if signal.action in {"BUY", "SELL"}:
         instrument_spec = _load_or_resolve_instrument_spec(
@@ -1318,6 +1343,15 @@ def _evaluate_bot_config_impl(
         if run_snapshot is None or _bot_run_execution_snapshot(run) != run_snapshot:
             raise ValueError("bot_run_changed_during_market_fetch")
 
+    if contract_rolled:
+        config.enabled = False
+        if run is not None:
+            transition_bot_run(run, "blocked", reason="contract_rolled")
+        db.add(BotRiskEvent(user_id=user_id, bot_config_id=config.id,
+                           bot_run_id=run.id if run else None, account_id=config.account_id,
+                           severity="warning", code="contract_rolled",
+                           message="The active delivery contract changed. Review the new contract and restart the run.",
+                           raw_payload={"configured_contract": config.contract_id, "active_contract": execution_contract_id}))
     analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
     from .market_context_bundle import build_collected_context, integrate_collected_context
     evaluation_time = datetime.now(timezone.utc)
@@ -1754,6 +1788,9 @@ def _evaluate_bot_config_impl(
         state["last_evaluation_status"] = evaluation_status
         run.raw_state = state
     db.flush()
+    decision.raw_payload = {**(decision.raw_payload or {}), "execution_mode": execution_mode,
+                            "routing_status": evaluation_status,
+                            "decision_interval_seconds": _market_candle_interval(unit=str(config.timeframe_unit), unit_number=int(config.timeframe_unit_number)).total_seconds()}
     log_bot_event(
         logger,
         "bot_evaluation_completed",
@@ -2521,9 +2558,14 @@ def get_bot_activity(
     user_id: str,
     bot_config_id: int,
     limit: int = 50,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    run_id: int | None = None,
+    execution_mode: str | None = None,
+    signals_only: bool = False,
 ) -> dict[str, Any]:
     config = _require_bot_config(db, user_id=user_id, bot_config_id=bot_config_id)
-    bounded_limit = max(1, min(int(limit), 200))
+    bounded_limit = max(1, min(int(limit), 2000 if signals_only else 200))
     runs = (
         db.query(BotRun)
         .filter(BotRun.user_id == user_id)
@@ -2532,28 +2574,55 @@ def get_bot_activity(
         .limit(10)
         .all()
     )
-    decisions = (
+    decision_query = (
         db.query(BotDecision)
         .filter(BotDecision.user_id == user_id)
         .filter(BotDecision.bot_config_id == bot_config_id)
-        .order_by(BotDecision.created_at.desc(), BotDecision.id.desc())
-        .limit(bounded_limit)
-        .all()
     )
-    attempts = (
-        db.query(BotOrderAttempt)
-        .filter(BotOrderAttempt.user_id == user_id)
-        .filter(BotOrderAttempt.bot_config_id == bot_config_id)
-        .order_by(BotOrderAttempt.created_at.desc(), BotOrderAttempt.id.desc())
-        .limit(bounded_limit)
-        .all()
-    )
+    if start is not None:
+        decision_query = decision_query.filter(BotDecision.candle_timestamp >= _as_utc(start))
+    if end is not None:
+        decision_query = decision_query.filter(BotDecision.candle_timestamp <= _as_utc(end))
+    if run_id is not None:
+        decision_query = decision_query.filter(BotDecision.bot_run_id == run_id)
+    if execution_mode is not None:
+        decision_query = decision_query.filter(BotDecision.raw_payload["execution_mode"].as_string() == execution_mode)
+    if signals_only:
+        decision_query = decision_query.filter(BotDecision.decision_type.in_(["signal", "risk_reject"]), BotDecision.action.in_(["BUY", "SELL"]))
+    decisions = decision_query.order_by(BotDecision.candle_timestamp.desc(), BotDecision.id.desc()).limit(bounded_limit).all()
+    attempt_query = db.query(BotOrderAttempt).filter(
+        BotOrderAttempt.user_id == user_id, BotOrderAttempt.bot_config_id == bot_config_id)
+    if start is not None:
+        attempt_query = attempt_query.filter(BotOrderAttempt.created_at >= _as_utc(start))
+    if end is not None:
+        attempt_query = attempt_query.filter(BotOrderAttempt.created_at <= _as_utc(end))
+    if run_id is not None:
+        attempt_query = attempt_query.filter(BotOrderAttempt.bot_run_id == run_id)
+    if execution_mode is not None:
+        attempt_query = attempt_query.filter(BotOrderAttempt.execution_mode == execution_mode)
+    attempts = attempt_query.order_by(BotOrderAttempt.created_at.desc(), BotOrderAttempt.id.desc()).limit(bounded_limit).all()
+    # Authoritative fills only. A submitted order is not a fill. Bound this read
+    # to the same owner/account and exact order IDs; never infer fills from price.
+    by_order = {str(a.provider_order_id): a for a in attempts if a.provider_order_id and a.execution_mode == "live"}
+    for attempt in attempts:
+        attempt._execution_observations = []
+    if by_order:
+        fills = db.query(ProjectXTradeEvent).filter(
+            ProjectXTradeEvent.user_id == user_id, ProjectXTradeEvent.account_id == config.account_id,
+            ProjectXTradeEvent.order_id.in_(by_order), ProjectXTradeEvent.import_batch_id.is_(None),
+            _non_voided_trade_event_expr(),
+        ).order_by(ProjectXTradeEvent.trade_timestamp.desc()).limit(2000).all()
+        for fill in fills:
+            attempt = by_order.get(str(fill.order_id))
+            if attempt is not None and attempt.contract_id == fill.contract_id and attempt.side == fill.side:
+                attempt._execution_observations.append({"kind": "fill", "id": int(fill.id),
+                    "timestamp": _as_utc(fill.trade_timestamp).isoformat(), "price": float(fill.price), "size": float(fill.size)})
     risk_events = (
         db.query(BotRiskEvent)
         .filter(BotRiskEvent.user_id == user_id)
         .filter(BotRiskEvent.bot_config_id == bot_config_id)
         .order_by(BotRiskEvent.created_at.desc(), BotRiskEvent.id.desc())
-        .limit(bounded_limit)
+        .limit(min(bounded_limit, 200))
         .all()
     )
     return {
@@ -3204,6 +3273,9 @@ def fetch_and_store_market_candles(
             if row in db:
                 db.expunge(row)
         db.rollback()
+    # Coalesce only identical provider windows. Normalize the request as well
+    # as its key, so an explicit range never receives a different bar window.
+    start, end = _as_utc(start).replace(microsecond=0), _as_utc(end).replace(microsecond=0)
     try:
         request_key = (
             str(user_id),
@@ -3211,8 +3283,8 @@ def fetch_and_store_market_candles(
             bool(live),
             normalized_unit,
             int(unit_number),
-            _as_utc(start).isoformat(),
-            _as_utc(end).isoformat(),
+            start.isoformat(),
+            end.isoformat(),
             int(limit),
             bool(include_partial_bar),
         )
@@ -3582,7 +3654,7 @@ def resolve_market_contract(
     candidates = _unique_text_values([normalized_contract_id, normalized_symbol])
     for candidate in candidates:
         rows = client.search_contracts(search_text=candidate, live=live)
-        resolved = _pick_market_contract(rows)
+        resolved = _pick_market_contract(rows, root=normalize_symbol_key(normalized_symbol or candidate).split(".")[-1])
         if resolved is None:
             continue
         resolved_id = _normalized_optional_text(resolved.get("id"))
@@ -3621,7 +3693,8 @@ def resolve_current_market_contract(
     ):
         try:
             for candidate in _market_symbol_lookup_candidates(normalized_symbol):
-                resolved = _pick_market_contract(search_contracts(search_text=candidate, live=live))
+                root = normalized_contract_id.split(".")[3]
+                resolved = _pick_market_contract(search_contracts(search_text=candidate, live=live), root=root)
                 if resolved is None:
                     continue
                 resolved_id = _normalized_optional_text(resolved.get("id"))
@@ -3735,6 +3808,7 @@ def store_market_candles(
                 unit=unit,
                 unit_number=unit_number,
                 candle_timestamp=timestamp,
+                first_fetched_at=fetched_at,
             )
             db.add(row)
         row.symbol = symbol
@@ -3746,11 +3820,19 @@ def store_market_candles(
         row.is_partial = incoming_is_partial
         row.raw_payload = bar.get("raw_payload")
         row.fetched_at = fetched_at
+        row.revision_hash = _candle_revision_hash(bar)
         output.append(row)
 
     output.sort(key=lambda row: _as_utc(row.candle_timestamp))
     db.flush()
     return output
+
+
+def _candle_revision_hash(bar: dict[str, Any]) -> str:
+    from .probabilistic_protocol import digest
+    return digest([_as_utc(bar["timestamp"]).isoformat(),
+                   *[float(bar[key]) for key in ("open", "high", "low", "close", "volume")],
+                   bool(bar.get("is_partial"))])
 
 
 def _dedupe_market_candle_bars(bars: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3865,6 +3947,8 @@ def _market_candle_insert_values(
         "is_partial": bool(bar.get("is_partial") or False),
         "raw_payload": bar.get("raw_payload"),
         "fetched_at": fetched_at,
+        "first_fetched_at": fetched_at,
+        "revision_hash": _candle_revision_hash(bar),
     }
 
 
@@ -3897,6 +3981,7 @@ def _upsert_market_candle_rows(db: Session, *, values: list[dict[str, Any]]) -> 
                     "is_partial": excluded.is_partial,
                     "raw_payload": excluded.raw_payload,
                     "fetched_at": excluded.fetched_at,
+                    "revision_hash": excluded.revision_hash,
                 },
                 where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
             )
@@ -3932,6 +4017,7 @@ def _upsert_sqlite_market_candle_rows(db: Session, *, values: list[dict[str, Any
                     "is_partial": excluded.is_partial,
                     "raw_payload": excluded.raw_payload,
                     "fetched_at": excluded.fetched_at,
+                    "revision_hash": excluded.revision_hash,
                 },
                 where=table.c.is_partial.is_(True) | excluded.is_partial.is_(False),
             )
@@ -10867,7 +10953,9 @@ def evaluate_risk_gates(
     instrument_spec: InstrumentSpec | None = None,
     perform_live_preflight: bool = True,
     reconcile_live_submissions: bool = True,
+    now: datetime | None = None,
 ) -> list[RiskBlock]:
+    now = _as_utc(now or datetime.now(timezone.utc))
     order_size = float(requested_order_size if requested_order_size is not None else config.order_size)
     signed_change = order_size if action == "BUY" else -order_size
     resulting_position_qty = (
@@ -10910,7 +10998,13 @@ def evaluate_risk_gates(
                 message="The previous experimental Practice entry must be verified flat before another entry.",
                 severity="critical",
             ))
-    cooldown_block = _cooldown_block(db, user_id=user_id, config=config)
+    from .topbot_mathematical import selected as mathematical_selected
+    if not position_reducing and mathematical_selected(config.strategy_params):
+        from .topbot_session import entry_boundary_reason
+        boundary = entry_boundary_reason(now, symbol=symbol or "MNQ")
+        if boundary:
+            additional_blocks.append(RiskBlock(code=boundary, message=boundary.replace("_", " ")))
+    cooldown_block = _cooldown_block(db, user_id=user_id, config=config, now=now, ignore_order_attempt_id=ignore_order_attempt_id)
 
     live_preflight_required = _requires_live_execution_preflight(
         config=config,
@@ -11237,6 +11331,7 @@ def evaluate_risk_gates(
             inside_trading_session=str(config.strategy_type) == "topbot_adaptive" or _is_inside_trading_session(
                 str(config.trading_start_time),
                 str(config.trading_end_time),
+                now=now,
             ),
             delayed_session_block=_delayed_orb_session_loss_block(db, user_id=user_id, config=config),
             cooldown_block=cooldown_block,
@@ -11259,7 +11354,7 @@ def evaluate_risk_gates(
                 authoritative_entry_risk_required and not position_reducing
             ),
             exchange_session_open=futures_session_is_open(
-                datetime.now(timezone.utc),
+                now,
                 symbol=symbol or contract_id,
             ),
         )
@@ -11324,7 +11419,9 @@ def _proposed_order_stop_risk(
     if order_attempt is not None and isinstance(order_attempt.raw_request, dict):
         bracket = order_attempt.raw_request.get("stopLossBracket")
         if _valid_bracket_payload(bracket, expected_type=4):
-            return float(bracket["ticks"]) * float(instrument_spec.tick_value) * float(order_size)
+            from .probabilistic_strategy import Costs
+            return round((float(bracket["ticks"]) * float(instrument_spec.tick_value)
+                    + Costs().describe()["fees_usd"] + 2 * float(instrument_spec.tick_value)) * float(order_size), 8)
 
     payload = decision.raw_payload if decision is not None and isinstance(decision.raw_payload, dict) else {}
     entry_price = _finite_optional_float(decision.price if decision is not None else payload.get("entry_price"))
@@ -11337,7 +11434,9 @@ def _proposed_order_stop_risk(
     ):
         return None
     stop_ticks = max(1, int(round(abs(entry_price - stop_loss) / instrument_spec.tick_size)))
-    return float(stop_ticks) * float(instrument_spec.tick_value) * float(order_size)
+    from .probabilistic_strategy import Costs
+    return round((float(stop_ticks) * float(instrument_spec.tick_value)
+            + Costs().describe()["fees_usd"] + 2 * float(instrument_spec.tick_value)) * float(order_size), 8)
 
 
 def _fresh_cached_account_automation_eligibility(
@@ -11701,7 +11800,7 @@ def reconcile_unresolved_order_attempts(
             row.updated_at = observed_at
             resolved_count += 1
         elif provider_status in {2, 3, 4}:
-            row.status = "submitted"
+            row.status = "cancelled" if provider_status in {3, 4} else "submitted"
             row.rejection_reason = None
             row.updated_at = observed_at
             resolved_count += 1
@@ -12622,7 +12721,8 @@ def _create_order_attempt(
     if (execution_mode == "live" and str(config.strategy_type) == "topbot_adaptive"
             and selected(config.strategy_params)):
         from .topbot_time_exit import exit_plan
-        request_payload["timeExit"] = exit_plan()
+        request_payload["timeExit"] = exit_plan(decision_at=(
+            _as_utc(decision.candle_timestamp) + timedelta(minutes=5) if decision.candle_timestamp else None))
     row = BotOrderAttempt(
         user_id=user_id,
         bot_config_id=int(config.id),
@@ -12687,197 +12787,100 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
 
 
 def _execute_verified_reduce_only_flatten(
-    *,
-    client: ProjectXClient,
-    account_id: int,
-    contract_id: str,
+    *, client: ProjectXClient, account_id: int, contract_id: str,
     order_attempt: BotOrderAttempt | _BrokerActionAuditAttempt,
     before_provider_mutation: Callable[[], None] | None = None,
 ) -> RiskBlock | None:
-    """Cancel contract orders, close the position, and verify the account is flat.
+    """Close with protection intact; cancel residual orders only after verified flat.
 
-    ProjectX cancel/close calls are not safely retryable and the close endpoint
-    has no custom idempotency tag.  Every mutation is therefore followed by an
-    authoritative read.  An exception is considered reconciled only when that
-    read proves the requested safe state.
+    Never retry an ambiguous mutation in this call. Broker readback determines
+    success even after a timeout. A failed close leaves working stops untouched.
     """
+    audit: dict[str, Any] = {"broker_action": "close_contract_then_cancel_orders",
+        "account_id": int(account_id), "contract_id": str(contract_id),
+        "cancelled_order_ids": [], "cancel_errors": []}
+    order_attempt.raw_response = audit
 
-    audit: dict[str, Any] = {
-        "broker_action": "cancel_orders_then_close_contract",
-        "account_id": int(account_id),
-        "contract_id": str(contract_id),
-        "cancelled_order_ids": [],
-        "cancel_errors": [],
-    }
+    def unresolved(code: str, message: str) -> RiskBlock:
+        order_attempt.status = "submission_unknown"
+        order_attempt.rejection_reason = message
+        order_attempt.raw_response = dict(audit)
+        return RiskBlock(code=code, message=message, severity="critical")
 
-    def fence_provider_mutation() -> None:
-        if before_provider_mutation is None:
-            return
-        try:
+    def fence() -> None:
+        order_attempt.raw_response = dict(audit)
+        if before_provider_mutation is not None:
             before_provider_mutation()
-        except Exception:
-            # Preserve any already-completed cancellation audit if a later
-            # emergency/classification check stops the remaining sequence.
-            order_attempt.raw_response = audit
-            raise
+
+    def quantity() -> float:
+        return _provider_contract_position_qty(client.search_open_positions(account_id=int(account_id)),
+                                               account_id=int(account_id), contract_id=contract_id)
+
+    def working() -> list[dict]:
+        rows = client.search_open_orders(account_id=int(account_id))
+        if any(not isinstance(row, dict) or row.get("account_id") != int(account_id) for row in rows):
+            raise ValueError("Invalid account-scoped working orders during flatten.")
+        return [r for r in rows if str(r.get("contract_id") or "") == str(contract_id)]
 
     try:
-        initial_orders = client.search_open_orders(account_id=int(account_id))
+        # Validate the read before any mutation, without removing protection.
+        working()
+        before = quantity()
     except Exception as exc:
-        return RiskBlock(
-            code="working_order_reconciliation_unavailable",
-            message=(
-                "Working orders could not be refreshed before the reduce-only flatten: "
-                f"{sanitize_error(exc, max_length=180)}"
-            ),
-            severity="critical",
-        )
-
-    contract_orders: list[dict[str, Any]] = []
-    for row in initial_orders:
-        if not isinstance(row, dict) or int(row.get("account_id", -1)) != int(account_id):
-            return RiskBlock(
-                code="working_order_reconciliation_invalid",
-                message="ProjectX returned an invalid account-scoped working order during flatten.",
-                severity="critical",
-            )
-        if str(row.get("contract_id") or "") == str(contract_id):
-            contract_orders.append(row)
-
-    for row in contract_orders:
-        order_id = row.get("order_id")
-        fence_provider_mutation()
+        audit["preflight_error"] = sanitize_error(exc, max_length=180)
+        return unresolved("position_reconciliation_unavailable", "Unable to verify exposure before flatten.")
+    audit["position_before_close"] = before
+    if abs(before) > 1e-9:
+        fence()
         try:
-            response = client.cancel_order(account_id=int(account_id), order_id=order_id)
-            audit["cancelled_order_ids"].append(str(order_id))
+            audit["close_response"] = client.close_position(
+                account_id=int(account_id), contract_id=str(contract_id)).get("raw_payload")
+        except Exception as exc:
+            audit["close_error"] = sanitize_error(exc, max_length=180)
+        try:
+            after = quantity()
+        except Exception as exc:
+            audit["position_verification_error"] = sanitize_error(exc, max_length=180)
+            after = None
+        audit["position_after_close"] = after
+        if after is None or abs(after) > 1e-9:
+            return unresolved("broker_flatten_unconfirmed",
+                              "Close is unconfirmed; existing protective orders have been preserved.")
+        audit["close_reconciled_after_error"] = "close_error" in audit
+    else:
+        audit["reconciled_noop"] = True
+    try:
+        remaining = working()
+    except Exception as exc:
+        audit["order_verification_error"] = sanitize_error(exc, max_length=180)
+        return unresolved("working_order_reconciliation_unavailable", "Flat position observed; residual orders are unverified.")
+    for row in remaining:
+        fence()
+        try:
+            response = client.cancel_order(account_id=int(account_id), order_id=row.get("order_id"))
+            audit["cancelled_order_ids"].append(str(row.get("order_id")))
             audit.setdefault("cancel_responses", []).append(response.get("raw_payload"))
         except Exception as exc:
-            audit["cancel_errors"].append(
-                {"order_id": str(order_id), "error": sanitize_error(exc, max_length=180)}
-            )
-
+            audit["cancel_errors"].append({"order_id": str(row.get("order_id")), "error": sanitize_error(exc, max_length=180)})
     try:
-        remaining_orders = client.search_open_orders(account_id=int(account_id))
-    except Exception as exc:
-        remaining_orders = None
-        audit["order_verification_error"] = sanitize_error(exc, max_length=180)
-    if remaining_orders is None:
-        order_attempt.status = "submission_unknown"
-        order_attempt.rejection_reason = "Working-order cancellation could not be verified."
-        order_attempt.raw_response = audit
-        return RiskBlock(
-            code="working_order_cancellation_unconfirmed",
-            message="Working-order cancellation could not be verified; the position was not closed.",
-            severity="critical",
-        )
-
-    remaining_contract_orders = [
-        row
-        for row in remaining_orders
-        if isinstance(row, dict)
-        and int(row.get("account_id", -1)) == int(account_id)
-        and str(row.get("contract_id") or "") == str(contract_id)
-    ]
-    if remaining_contract_orders:
-        audit["remaining_order_ids"] = [
-            str(row.get("order_id")) for row in remaining_contract_orders
-        ]
-        order_attempt.status = "submission_unknown"
-        order_attempt.rejection_reason = "One or more working orders remain after cancellation."
-        order_attempt.raw_response = audit
-        return RiskBlock(
-            code="working_order_cancellation_unconfirmed",
-            message="One or more working provider orders remain; flattening was not attempted.",
-            severity="critical",
-        )
-
-    try:
-        before_close_qty = _provider_contract_position_qty(
-            client.search_open_positions(account_id=int(account_id)),
-            account_id=int(account_id),
-            contract_id=contract_id,
-        )
-    except Exception as exc:
-        audit["position_verification_error"] = sanitize_error(exc, max_length=180)
-        order_attempt.status = "submission_unknown"
-        order_attempt.rejection_reason = "Position state could not be verified after order cancellation."
-        order_attempt.raw_response = audit
-        return RiskBlock(
-            code="position_reconciliation_unavailable",
-            message="Position state could not be verified after cancelling working orders.",
-            severity="critical",
-        )
-    audit["position_before_close"] = before_close_qty
-    if abs(before_close_qty) <= 1e-9:
-        audit["reconciled_noop"] = True
-        audit["position_after_close"] = 0.0
-        order_attempt.status = "submitted"
-        order_attempt.rejection_reason = None
-        order_attempt.raw_response = audit
-        request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
-        request["providerAction"] = "reconciled_flat_noop"
-        request["verifiedFlat"] = True
-        order_attempt.raw_request = request
-        return None
-
-    close_error: Exception | None = None
-    fence_provider_mutation()
-    try:
-        close_response = client.close_position(
-            account_id=int(account_id),
-            contract_id=str(contract_id),
-        )
-        audit["close_response"] = close_response.get("raw_payload")
-    except Exception as exc:
-        close_error = exc
-        audit["close_error"] = sanitize_error(exc, max_length=180)
-
-    try:
-        final_qty = _provider_contract_position_qty(
-            client.search_open_positions(account_id=int(account_id)),
-            account_id=int(account_id),
-            contract_id=contract_id,
-        )
-        final_orders = client.search_open_orders(account_id=int(account_id))
+        remaining = working()
+        after = quantity()  # Detect a fill racing with residual-order cleanup.
     except Exception as exc:
         audit["final_verification_error"] = sanitize_error(exc, max_length=180)
-        final_qty = None
-        final_orders = None
-
-    final_contract_orders = (
-        [
-            row
-            for row in final_orders
-            if isinstance(row, dict)
-            and int(row.get("account_id", -1)) == int(account_id)
-            and str(row.get("contract_id") or "") == str(contract_id)
-        ]
-        if final_orders is not None
-        else None
-    )
-    audit["position_after_close"] = final_qty
-    audit["close_reconciled_after_error"] = bool(close_error is not None and final_qty == 0)
-    if final_qty is not None and abs(final_qty) <= 1e-9 and final_contract_orders == []:
-        order_attempt.status = "submitted"
-        order_attempt.provider_order_id = None
-        order_attempt.rejection_reason = None
-        order_attempt.raw_response = audit
-        request = dict(order_attempt.raw_request) if isinstance(order_attempt.raw_request, dict) else {}
-        request["providerAction"] = "Position/closeContract"
-        request["verifiedFlat"] = True
-        order_attempt.raw_request = request
-        return None
-
-    order_attempt.status = "submission_unknown"
-    order_attempt.rejection_reason = (
-        "The broker close outcome is unknown; the contract position was not verified flat."
-    )
-    order_attempt.raw_response = audit
-    return RiskBlock(
-        code="broker_flatten_unconfirmed",
-        message="The broker close outcome could not be verified flat; all new routing is disabled.",
-        severity="critical",
-    )
+        return unresolved("broker_flatten_unconfirmed", "Final position and working orders could not be verified.")
+    audit["position_after_close"] = after
+    audit["remaining_order_ids"] = [str(r.get("order_id")) for r in remaining]
+    if abs(after) > 1e-9:
+        return unresolved("broker_flatten_unconfirmed", "Exposure changed during cleanup; operator reconciliation required.")
+    if remaining:
+        return unresolved("working_order_cancellation_unconfirmed", "Position is flat but residual order cancellation is unconfirmed.")
+    order_attempt.status = "submitted"
+    order_attempt.rejection_reason = None
+    order_attempt.raw_response = dict(audit)
+    request = dict(order_attempt.raw_request or {})
+    request.update(providerAction="reconciled_flat_noop" if abs(before) <= 1e-9 else "Position/closeContract", verifiedFlat=True)
+    order_attempt.raw_request = request
+    return None
 
 
 def _execute_verified_account_flatten(
@@ -13155,7 +13158,7 @@ def _load_or_resolve_instrument_spec(
                 ),
                 None,
             )
-            resolved = exact or _pick_market_contract(rows)
+            resolved = exact or _pick_market_contract(rows, root=normalize_symbol_key(contract_id) or normalize_symbol_key(symbol))
             if resolved is not None:
                 break
     except (ProjectXClientError, AttributeError, TypeError):
@@ -13220,6 +13223,9 @@ def _strategy_protection_block(
         return None
 
     strategy_type = str(payload.get("strategy_type") or config.strategy_type)
+    from .topbot_mathematical import selected
+    if strategy_type == "topbot_adaptive" and selected(config.strategy_params) and payload.get("live_routing_allowed") is not True:
+        return RiskBlock(code="model_validation_required", message="Live routing requires a passed experiment and reviewed model artifact.", severity="critical")
     if strategy_type == _STRATEGY_SMA_CROSS:
         params = _normalize_strategy_params(_STRATEGY_SMA_CROSS, config.strategy_params)
         stop_ticks = params.get("protective_stop_ticks")
@@ -13786,11 +13792,20 @@ def _delayed_orb_session_loss_block(db: Session, *, user_id: str, config: BotCon
     )
 
 
-def _cooldown_block(db: Session, *, user_id: str, config: BotConfig) -> RiskBlock | None:
+def _cooldown_block(db: Session, *, user_id: str, config: BotConfig, now: datetime | None = None, ignore_order_attempt_id: int | None = None) -> RiskBlock | None:
     cooldown_seconds = int(config.cooldown_seconds)
     if cooldown_seconds <= 0:
         return None
-    threshold = datetime.now(timezone.utc) - timedelta(seconds=cooldown_seconds)
+    threshold = _as_utc(now or datetime.now(timezone.utc)) - timedelta(seconds=cooldown_seconds)
+    from .topbot_mathematical import selected
+    if selected(config.strategy_params) and db.query(BotOrderAttempt.id).filter(
+        BotOrderAttempt.user_id == user_id, BotOrderAttempt.bot_config_id == config.id,
+        BotOrderAttempt.created_at >= threshold,
+        BotOrderAttempt.created_at <= _as_utc(now or datetime.now(timezone.utc)),
+        BotOrderAttempt.id != ignore_order_attempt_id if ignore_order_attempt_id is not None else True,
+        BotOrderAttempt.status.in_(["pending", "submitted", "submission_unknown"]),
+    ).first():
+        return RiskBlock(code="cooldown_after_entry", message="The registered cooldown applies after every entry.")
     recent_attempt = (
         db.query(BotOrderAttempt)
         .filter(BotOrderAttempt.user_id == user_id)
@@ -13828,10 +13843,10 @@ def _looks_like_live_funded_account(account: Account) -> bool:
     return bool(_LIVE_ACCOUNT_PATTERN.search(text))
 
 
-def _is_inside_trading_session(start_text: str, end_text: str) -> bool:
+def _is_inside_trading_session(start_text: str, end_text: str, *, now: datetime | None = None) -> bool:
     start = _parse_session_time(start_text)
     end = _parse_session_time(end_text)
-    current = datetime.now(TRADING_TZ).time().replace(second=0, microsecond=0)
+    current = _as_utc(now or datetime.now(timezone.utc)).astimezone(TRADING_TZ).time().replace(second=0, microsecond=0)
     if start <= end:
         return start <= current <= end
     return current >= start or current <= end
@@ -15166,12 +15181,16 @@ def _normalize_projectx_benchmark_symbol(value: Any, *, default: str) -> str:
     return normalized.strip().upper()
 
 
-def _pick_market_contract(rows: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    rows_list = [row for row in rows if isinstance(row, dict)]
-    for row in rows_list:
-        if bool(row.get("active_contract")):
-            return row
-    return rows_list[0] if rows_list else None
+def _pick_market_contract(rows: Iterable[dict[str, Any]], *, root: str | None = None) -> dict[str, Any] | None:
+    rows_list = [row for row in rows if isinstance(row, dict) and row.get("active_contract") is True
+                 and (root is None or str(row.get("id", "")).startswith(f"CON.F.US.{root}."))]
+    return rows_list[0] if len(rows_list) == 1 else None
+
+
+def _require_strategy_available(strategy_type: str) -> None:
+    import os
+    if str(strategy_type) != "topbot_adaptive" and os.getenv("TOPSIGNAL_ENABLE_LEGACY_STRATEGIES", "").lower() not in {"1", "true"}:
+        raise ValueError("Legacy strategies require TOPSIGNAL_ENABLE_LEGACY_STRATEGIES; new configurations default to TopBot Mathematical.")
 
 
 def _unique_text_values(values: Iterable[Any]) -> list[str]:

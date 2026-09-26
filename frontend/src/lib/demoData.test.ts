@@ -313,8 +313,8 @@ describe("demo bot and market data", () => {
     expect(activity.order_attempts.every((row) => row.status === "dry_run" && row.provider_order_id === null)).toBe(true);
     expect(activity.runs[0].started_at).toBe("2026-07-24T13:30:00.000Z");
     expect(activity.runs[0].stopped_at).toBe("2026-07-24T19:45:00.000Z");
-    expect(activity.config.trading_start_time).toBe("09:30");
-    expect(activity.config.trading_end_time).toBe("15:45");
+    expect(activity.config.trading_start_time).toBe("09:35");
+    expect(activity.config.trading_end_time).toBe("15:30");
   });
 
   it("honors candle symbol, contract, range, timeframe, limit, freshness, and partial-bar parameters", () => {

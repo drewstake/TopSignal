@@ -1,0 +1,41 @@
+{
+  "checked_on": "2026-09-26",
+  "status": "cached_provider_fields_reconciled_statement_unavailable",
+  "source": "backend/storage/offline/topsignal.sqlite3",
+  "scope": "Exactly one cached candle owner; MNQ provider events only; no imported or voided rows",
+  "network_requests": 0,
+  "database_writes": 0,
+  "source_observations_sha256": "ce6acef972c56d7b27e525d8d05e5c724e0f5f03914a32f8e5da48e342461319",
+  "mnq_rows": 125,
+  "eligible_provider_events": 125,
+  "closed_events_compared": 63,
+  "open_leg_events": 62,
+  "skipped": {},
+  "date_range": [
+    "2026-08-12",
+    "2026-09-25"
+  ],
+  "fee_scope_counts": {
+    "per_side": 125
+  },
+  "provider_non_commission_fee_per_side_per_contract_usd": [
+    0.36
+  ],
+  "provider_commission_per_side_per_contract_usd": [
+    0.25
+  ],
+  "stored_fees_equal_provider_fees": true,
+  "stored_commissions_null_count": 125,
+  "risk_fee_mismatches": 0,
+  "metrics_fee_mismatches": 0,
+  "published_schedule_mismatches": 0,
+  "maximum_fee_difference_usd": 0.0,
+  "published_mnq_round_turn_usd": 1.22,
+  "published_source": "https://help.topstep.com/en/articles/8284213-topstepx-commissions-and-fees",
+  "interpretation": "In this sample the separate provider fields are consistent with fees excluding commission. Both application calculations equal twice the sum of those fields, with no detected double counting.",
+  "limitations": [
+    "No broker statement was available; this is not statement reconciliation.",
+    "Cached historical payloads are not a fresh provider response and do not prove future fee semantics.",
+    "Open legs are excluded from the round-trip comparison. Other instruments and account-specific adjustments are not tested."
+  ]
+}

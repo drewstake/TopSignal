@@ -1,0 +1,59 @@
+{
+  "sessions": 1858,
+  "totals": {
+    "expected_open_buckets": 507794,
+    "observed_open_buckets": 507388,
+    "missing_open_buckets": 406,
+    "missing_regular_session_buckets": 7
+  },
+  "by_year": {
+    "2019": {
+      "expected_open_buckets": 46375,
+      "observed_open_buckets": 46361,
+      "missing_open_buckets": 14,
+      "missing_regular_session_buckets": 0
+    },
+    "2020": {
+      "expected_open_buckets": 70353,
+      "observed_open_buckets": 70090,
+      "missing_open_buckets": 263,
+      "missing_regular_session_buckets": 7
+    },
+    "2021": {
+      "expected_open_buckets": 70695,
+      "observed_open_buckets": 70695,
+      "missing_open_buckets": 0,
+      "missing_regular_session_buckets": 0
+    },
+    "2022": {
+      "expected_open_buckets": 70827,
+      "observed_open_buckets": 70827,
+      "missing_open_buckets": 0,
+      "missing_regular_session_buckets": 0
+    },
+    "2023": {
+      "expected_open_buckets": 70689,
+      "observed_open_buckets": 70689,
+      "missing_open_buckets": 0,
+      "missing_regular_session_buckets": 0
+    },
+    "2024": {
+      "expected_open_buckets": 71013,
+      "observed_open_buckets": 71013,
+      "missing_open_buckets": 0,
+      "missing_regular_session_buckets": 0
+    },
+    "2025": {
+      "expected_open_buckets": 70647,
+      "observed_open_buckets": 70518,
+      "missing_open_buckets": 129,
+      "missing_regular_session_buckets": 0
+    },
+    "2026": {
+      "expected_open_buckets": 37195,
+      "observed_open_buckets": 37195,
+      "missing_open_buckets": 0,
+      "missing_regular_session_buckets": 0
+    }
+  }
+}

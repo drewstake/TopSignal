@@ -1,0 +1,4103 @@
+{
+  "reviewed_by": "Codex audit: manifest-verified archived summaries; completeness NOT verified",
+  "historical_count_verified": false,
+  "method": "Count each archived experiment summary as a configuration run, including reruns and stress variants. This is a conservative known inventory, not a deduplicated complete history. Missing other families and post-retirement research remain unresolved.",
+  "configurations": [
+    {
+      "id": "87b7fe2fef0d9c4e618127473fe7632914ed079414a7af2f8933406478c43cb0",
+      "source": "research/experiments/20260905T002140.238988Z-corrected-baseline-6cdcad805f0b/baseline_v5__full__slip-1.summary.json",
+      "source_sha256": "6defc17e4dfc67b0a0bd763d888ed2a308e4690fe9f434677505fe144fe4cb84",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d472bb63efe5059fb6bacbaa76752fb81af7328ff689db942632cd513bd752b8",
+      "source": "research/experiments/20260905T002426.194903Z-hypotheses-controls-5777400469ac/baseline_v5__full__slip-1.summary.json",
+      "source_sha256": "11773067bb9a683226cd26419e8af28a8e6ca05f5f23ef3973aac6d708a6f3d7",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ca6cb4ca09de3aaf8e1397335426856f6e289ed5e3e11a10c21db00996665436",
+      "source": "research/experiments/20260905T002426.361369Z-hypotheses-opening-50e1a7cb8eb7/orb30_both__full__slip-1.summary.json",
+      "source_sha256": "3d62f36eecd4313e89a28980d378ab0c36ff7fc588a37bff267fd11a332c5b6a",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0384777a5d6af5a15984dd3e36e79c07f42e596c74b298221691c9abb6763d7a",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__development__slip-1.summary.json",
+      "source_sha256": "ef98311d3da799f34221c5934e7c4a68363428fe567e4727f5321f64b1b14082",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "5c6a5e7979cbc7c92095d85c7e97956dcb6ea3274db41551c3c158efbe35aa7a",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__development__slip-2.summary.json",
+      "source_sha256": "efc4bddebdf142895833fc2a945eaaaf8d6a427f25f48ea568407e33d78f2779",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "198944c2ea6463621bac0505b9bec2b3b20238ebfd304d28b8852fe81c7b2bb0",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__development__slip-4.summary.json",
+      "source_sha256": "76ba6375181bbc7274380a00f679e4c180ad3255e402e9ccddc2b17d915b3dca",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ab74395e727e871305bcceb0cacd18ebf8cca5eac2ac7e5c979d748369b4ab9b",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__diagnostic__slip-1.summary.json",
+      "source_sha256": "5aef173a4b62a05820d0c15419ad998c41b18ddb570b4f1ca63b49a57ec5f8b9",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a836145af9e3d762023257ba5d5a310470f34bf3591337c3319fd5a21c522987",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__diagnostic__slip-2.summary.json",
+      "source_sha256": "9ea5ba830547a79990ad061c8858db8f53510d3e7bf6db8f69fdbfb51cd5eda6",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "575a696df78fa1f1ce04c405163c0efad4651c23f3b823fc63bb2b76b5457b35",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__diagnostic__slip-4.summary.json",
+      "source_sha256": "cab30fcc06a62cf496ecfd31b3357090ab56af4ae64a7e4f717c9cd97c70249b",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "97e47574e9cff840936fee3d4f33d3245119d74b171717a155df177d3222e7d1",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__full__slip-1.summary.json",
+      "source_sha256": "fb34f1078c01bf87c28e4eb7825d23ffa840ac682d8a24e7f7caaba285f0dd11",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dc8bbdee5473e9e87be6d8fb240f1504f9e83d784d5e279d0a9f06fe0c8f1c7c",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__full__slip-2.summary.json",
+      "source_sha256": "b4f18ec7baeb4e465707b603056d6079fa3681aaadd7f032248bd1c7c889d980",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bb37e47806560e522b35cd8c7d6a89f833824654c8d8bbaac453f21a91407627",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/baseline_v5__full__slip-4.summary.json",
+      "source_sha256": "6f0e0c2e8108630c60f8a8da3963e89e69af982ec5be3287167997e17037c9e8",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a71c72a917044ef73b922c5ed7dceaa61b33e7b924b25190b2fe860793b7b0ae",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__development__slip-1.summary.json",
+      "source_sha256": "58ac09cd72496dce66e29831eeaba63e8cf222dd96944722d72f12972e842449",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "31c2faec6c26f5845f11b23261d070e8c7d3e69cfa0f61428e51d66ab5597935",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__development__slip-2.summary.json",
+      "source_sha256": "048f2c65cac89dde33a5458dfec051c613b7e6228d02236ce19394698bffb7fc",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d4b607156ce437817813b016d56798d8779809e29e2cd70003541fcb8c30b6a4",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__development__slip-4.summary.json",
+      "source_sha256": "29a3a9300f455bc2524448f8292a3fa0a1cde93d0c0c034a2210286cd22bf02b",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d9b51d54b6893a045985f3827e2a43b66c5d33c1a7eee719fee2088b918fadeb",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__diagnostic__slip-1.summary.json",
+      "source_sha256": "8b75b1c78bf7b6006f9a02b5c48e2c1e355d06f2e297443c210905f65e7a7441",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "e5eee34dbd07e379fe986688f86ae59cf082f11336eb08108938de0369f77052",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__diagnostic__slip-2.summary.json",
+      "source_sha256": "427ad822d47abe67d12ba23debc34f14c8a115e5f71ee4e64273d87034cf3d6e",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f1456f47e6b57da73b6f11db7726395d670713843c1f0a829815501eb0887e11",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__diagnostic__slip-4.summary.json",
+      "source_sha256": "7a1bb1d623069e00e0f5fcdf24e0be7bad0f460251cb6dcce90ce80c096de1de",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dda77f282c5b912765ce465114e39737d9ada784a5b58336f4fd1bcbacc2299c",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__full__slip-1.summary.json",
+      "source_sha256": "fc745a3d540103b875079bf5167201b2f1687926ba7abe97d729bb3b05c7a5dd",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "98c2ba3a95fdacc05c792be6e964da391f05e3aa45f6ce30b99d2ae3b914695d",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__full__slip-2.summary.json",
+      "source_sha256": "75282772509cfa29a035fef78028f9be7094f4e204e41fe568d4075f0c4fc901",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "53baff555dbf1866282ae15a3f8b171b5bb5eed46bc7ebb22e74209c6ef35101",
+      "source": "research/experiments/20260905T003843.383966Z-parity-controls-b0cf5c51afd3/v5_long__full__slip-4.summary.json",
+      "source_sha256": "d7e9543f3d6577259885b981abb6f9f5f0e48912772b9680c1d443645d86239f",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c0c32da5b1a4c862f034715580d89cd49323b9514df6fb8f72e100ada43ad9aa",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__development__slip-1.summary.json",
+      "source_sha256": "ad482bd38620766d2503b7030b2c8243b3b960f06bfc727eae0d5ec3ae6ae639",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "923ab1b2f4c51f396dde0ef0d10edec213c123baf3b666d15743bc630033fc6f",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__development__slip-2.summary.json",
+      "source_sha256": "377f5114a90f97d3d2d49a8ed3e5e5cf92ebb8a3dab0098fa672c877a796b401",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "21f5e757e91ec74163e7d5e2b6f59aceae38999ba2730dd1065e66e3eb8edbf8",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__development__slip-4.summary.json",
+      "source_sha256": "554c7d065c2e92c718f975b3d8772e98a5ba38f7c5e6c572938c2dcb5b1b20f0",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1c58ba26fc9be3ac530c9328b928fad00e2ae5cd6dcbb68ff2bc44832830c4a0",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__diagnostic__slip-1.summary.json",
+      "source_sha256": "1001cab9903115eb9f3df046035ac773204750cbe6f97f37bf6daa0d6215e72e",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "df4f5e477752f251ffc0c4785583fb3007be34b9415dc6313d8b4984ddb6d694",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__diagnostic__slip-2.summary.json",
+      "source_sha256": "d1f5a902a8af15b62799d8b40c7e11cb534d8f131f594a53df40ab36547d8d23",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "77b552190ad3f32ee3f5051b32cf23d8773635d949975a00d112e8c5639c9d69",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__diagnostic__slip-4.summary.json",
+      "source_sha256": "f1a3d61e73589b1260624ff1ed1a65d8dba2140f309f0c91a3caddd72a110f40",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c1958ca61a87b84af29707b33b1053b8cb72a090dd04ae44910c42d7b7e1ab8c",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__full__slip-1.summary.json",
+      "source_sha256": "0e30190405c0c1f1179d16e97e23c73eeb30fab587bbb464af0b7f1a60f7df2e",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "37c714d3cd1cc85d4d2baf614355f41d950586bec778eef9984cec5e30ae4ee2",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__full__slip-2.summary.json",
+      "source_sha256": "738ea131065dd099c312798e75d6a00f43975920287e5635965e699845fa6884",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a32964db4d2f04d3354e1140a6086a22b87305edfe9fb19ebe1808e0bbed6e02",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/opening_drive__full__slip-4.summary.json",
+      "source_sha256": "ec630c7be0b5950d3553783cd3804f57cae2519e54269782609e0bc4388adb8f",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ff6b9df1636b1760546df1fbd2d1606ad5ef56010185d9fd5f20a84fab11b33d",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__development__slip-1.summary.json",
+      "source_sha256": "3e406b8419a2343f26e00194c7ebde61f042bf047a5bd439b4948cfb2e785235",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "12c27bd3c7b492884ff52bfcb92ad5806000189fd510d1641ee3b958abf57cad",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__development__slip-2.summary.json",
+      "source_sha256": "1a7770645a41e39f597301fb301cce7e330ef28f4b0005ffe8f518b5ad2641b5",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9ea421631f648d81f2cd2d760a9f21951c117886b0a7863b25a5fd26b1fe959a",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__development__slip-4.summary.json",
+      "source_sha256": "b2a31194f7256c570f4db9b53553e7a24db6b0151a11145aced9822703e4d505",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4d936b31a4fbaeeec9581a33c01b4909cd3dede10dc2eca37e42fa2f6be3241d",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__diagnostic__slip-1.summary.json",
+      "source_sha256": "e0803962623b763b45b4a06d1444116869458151410a248ff708abc4dbc4c332",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9fb581729cc7ca69eacc1ce3bd632f4cd7d95d9797c5180aeb1d6f85c1ca5a46",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__diagnostic__slip-2.summary.json",
+      "source_sha256": "3357a282e071b1f3e02112412a7b14b5e6e4503a8753ccfb2125ecbe4bb49245",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2d64061e8f79de03e22922aa10a0f455e2480480c015b130a167db4af2d9b95a",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__diagnostic__slip-4.summary.json",
+      "source_sha256": "855a880354681158e85f09f1abd4501b472b6dff310c59974722eb273fe288a1",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d8844642a9d8dc56ffba98a8bf30224c848ab0720eb91feef57f4e6fc8f26732",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__full__slip-1.summary.json",
+      "source_sha256": "2efe8f9ab185a5c13fe1a67df660acd9ffda6e2384068eaf8ad253f9be94c3b2",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2c8ab4bb45fe922d1a037da1a89ad6b8ebda6779007f043545858ad677fd7ece",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__full__slip-2.summary.json",
+      "source_sha256": "e4ee7319ae072328c2d78332169b67ff1ce436fc3a86b3813774aa93ef10fd72",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "70e8f54e63c577594c1808ed5caa6e24a370648312af9a62cd4e701c84404350",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_both__full__slip-4.summary.json",
+      "source_sha256": "76a13e1a3e5bec4fad6947ab299841cc822279eb38ad2d2d56afa047937a329b",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "fdc373ccf6c7844717c199059144070d0af2b270b81a14f184a3cb00ff368010",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__development__slip-1.summary.json",
+      "source_sha256": "8f931972549081f982d2722a7bf14d2c47b8769e4efb224b41d3bafbd37502fb",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "fdd2cd779f0cd0c3821aafa3050ddaed17095e16902593c26ba8a09a046eb8e6",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__development__slip-2.summary.json",
+      "source_sha256": "3e27a747408a46e8094d2f1342a39006104d6049e675a859fef17fa59258e14f",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c2d861efae4878c88c2ce943f7374901cd61e359680d421f04dbc47df359346a",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__development__slip-4.summary.json",
+      "source_sha256": "50109dc2801c0e9033f2a27c27b51af0dbc6b73c640e56dc5821882dfe30591b",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1aed0547eb4e4c61c367e2e69c2f592750686bd28e9b8d558de9e26c0ee5671f",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__diagnostic__slip-1.summary.json",
+      "source_sha256": "16c05626899c18080051d5b2c2357457ed907e9379abd22ede03dccce6d22d55",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c6ba07e2c9bb4a2b27dc1405f2972e6b1d871727d1ab5a5c62c5875d3de51ae1",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__diagnostic__slip-2.summary.json",
+      "source_sha256": "84626df6941f638a0abfc2ad7a686eea39f67e8ef889590c83eb43f5f6b78f2b",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "5479a68666b0cb5ad33f2b08ecee944303117eb94b3f339b07f625bf5fe3b9f4",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__diagnostic__slip-4.summary.json",
+      "source_sha256": "fb944b923bc807deb3820e7d4c384c26477e75d7fa62d8beae4532cf4b2019ae",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2444bd83cef51aafaface16e4507f02c6bf5d39b05bba9e7e9fa481578f935ae",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__full__slip-1.summary.json",
+      "source_sha256": "c84e31966a0c044de1b80042b7dabf600a0fc782095dfee4287d54f892bb560d",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "79bf345b2e6f6436b6df9e792c3b5c30c1cb080e16577527bb8534c10ebae121",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__full__slip-2.summary.json",
+      "source_sha256": "f4f292140fcb9faf36e0db1e6720c5c7b223a33c1cd3153ebe6b3a67e7e9478b",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ce702f67014c012cf0fca36ad4e26af1ec6f064b0a5371a3aae9098c6aad2c3d",
+      "source": "research/experiments/20260905T003843.544041Z-parity-opening-b098560f5cb6/orb30_long__full__slip-4.summary.json",
+      "source_sha256": "180b5290d09c2a122102c9f74008518073f5f6a018a33131ce321c06776270de",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "31ca3e684f065eed4cfe16446ceb2d254c3ccb6454b478b16575ab65ca7a3d9e",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__development__slip-1.summary.json",
+      "source_sha256": "5d46e355f0c3dc884c7c08d4dac39e49e4222d925d3f8d4fa77fcc07375089e5",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "208b31e231641baf782fe7f4d59bc07e88c9d9e87720bb959172f6a9ec1a254f",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__development__slip-2.summary.json",
+      "source_sha256": "8ac986715a9884e539f4c66bb0cefe94a9c665a34bf237a50f2bc685ed7efde4",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "786f53672d14b22c4bca715784f76092911ad1a88f664c20cfe13a66491e5954",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__development__slip-4.summary.json",
+      "source_sha256": "4c2c876930956f6162b8d431b35fd3986d394f8cba7272ca0df84312d6a30935",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1d13a15b64d74e2e41a48bd03885109d8a13c49664e1245d61e036dbe7e7972f",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__diagnostic__slip-1.summary.json",
+      "source_sha256": "50a85e71f4c76e930c4d1db72741d4fe555d26569b1af6e397881d2d01245c5f",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8ad6358b2021bddb5d73a5db21c1439a7ad2b9ee4ebc5e055c3f38514babf28d",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__diagnostic__slip-2.summary.json",
+      "source_sha256": "a404ba7697f01313c62526f20604ed31bf13fe45ee7fde24314888837423b238",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0fde18ee7362daf4abb841722bca6659ccf78b35d5d7b18577c9f750aded0b15",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__diagnostic__slip-4.summary.json",
+      "source_sha256": "010fd2a265249e40cc8fa51190e5eab63edce94dac64dfe71704e58f45d6e152",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "470f9ec6dced0ea425d8e3f84a09e08260776208b07df4b8285e8888c1e04097",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__full__slip-1.summary.json",
+      "source_sha256": "13b6ce9334a562bbc971ad5465a4a5c35ee4419483034eded35471af44e9194b",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "fcec5035ed4637ba6ce337b75c70ca982e421f00195283ad4783da31bc8f8560",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__full__slip-2.summary.json",
+      "source_sha256": "a711d6cd37fee5f131fa93f8f539bda567bbc1c45ecb9366dbea39301768c7ae",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8d92b016e32d39a5611e0fcb67bd28cc15e12f194decf5c0bc4c6d7defbd43bd",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/afternoon_momentum__full__slip-4.summary.json",
+      "source_sha256": "b8be9be1bcc56e405e54904dacf2b34f3e8324fa02cc2986c527edf577dd0c1e",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dc479ee8785d63c7d4831db8c1d490d686a765fb1090f72a7f86a38b19147742",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__development__slip-1.summary.json",
+      "source_sha256": "1590b899a5b941be44f8dae8e03aa36e78c8faa00c2ca31fbbec49fb5111f8dc",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "11f2c2e15de24bf9af98ab1f59b66f99cd10964040885a6db1f88c127b8798b9",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__development__slip-2.summary.json",
+      "source_sha256": "644861867bbcb96fffd55e8d5db3db24657967b09c9f67e8a4633f6f19dda535",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c4aaf0000baba6ee48ba63f49d6611262b686132f4464cd866c916c95b0bc7a4",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__development__slip-4.summary.json",
+      "source_sha256": "a563722023f14bad0440571e59c35528a1f89c0c2a598ef07b1736e947794006",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "169f3851676c41784a49049d6c97e828f4553f043e47b6c7158870ff79954757",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__diagnostic__slip-1.summary.json",
+      "source_sha256": "1fd6c07c8b0014a127d825015cb2b93612df1aa5e07464940f87b53669b6ef25",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f57d3745aa421d812bbd1f2524c43f126b1e44a17256892afc099c50d3a3289c",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__diagnostic__slip-2.summary.json",
+      "source_sha256": "7a2218d61f6404eeaa4d0492756e2a364942ce3418795946af972e8106e0cb19",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "cf5bd12e178277a54717f6cd051f6dea7d48c3133391b155827fdd98004abfbf",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__diagnostic__slip-4.summary.json",
+      "source_sha256": "27c8c43d4d857d61d1c454442a253ca37c4166ac9f3199446384103b0e08f5dd",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2046872345ac567af8df9cd003727ded26f4dbfddd97a5fc0869d1c89cb1c9f9",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__full__slip-1.summary.json",
+      "source_sha256": "99b2d6079ec95217c7630294bb9ffe51cfecbdd1a8f8f0ffe38b193a4e9f7cdb",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f459a2129e00b482635c0feeb2fef2a438fd3c5f860230003d922c446dbf5de6",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__full__slip-2.summary.json",
+      "source_sha256": "b52a40d06828c61e1219cd8fd6a064cbec3afdc6b7bc19b01f175e2d81631b71",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "08cec97ecdf744577ad779058a939e141b583774286f2eca7fcfc4d331b9d39f",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/v5_long_atr__full__slip-4.summary.json",
+      "source_sha256": "908b96e7cafa48150e973e181e921adbad288dd3c71e3f4c6ed9c71ca64a8482",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ae6f1714ad82dbd1c597bd9508c7c391de4373ab9c1515abed11a399d14d25f0",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__development__slip-1.summary.json",
+      "source_sha256": "e4d3a15995e74aef9f20507aa83b24e0650d10a58c4c31b9458d41281f923de2",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "da537bf4571e8358c9c15f4805dc351b484527eb9cee08db6abc432825495b7a",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__development__slip-2.summary.json",
+      "source_sha256": "990ac42c70724bf64d97951489a5488aa0ae3bfefa14eb6f0fed31eac09b1c75",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a57507a3cca35fc26812caabd8c8dc8d6e790a508655aef22081bc9b90c933df",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__development__slip-4.summary.json",
+      "source_sha256": "a12ad3eaeba084548e6ac23a3345089364e2f13cbfd920e7c801dd4f9bffc18a",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1822d2b9523295726645302939bb9ad56d4315a261bc8d5ab0682f2ceee7f597",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__diagnostic__slip-1.summary.json",
+      "source_sha256": "88bdc49371049592fd3a4867b8c11be5f8760fcd2031f018ca545e34a8957f5f",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f5a0df52732cc968d5d065887f3f61ce77b3abc6a0afeb798f5dce523a928be1",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__diagnostic__slip-2.summary.json",
+      "source_sha256": "7ac2f256624983144fa4d2fed5dd66ceca0fe10f522278b1434da1e2b6cb41f4",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "15fc7d92be031c5b2414b40d46184b7aabd509ae3ac8fdd9730b262da4a28924",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__diagnostic__slip-4.summary.json",
+      "source_sha256": "0e611b1f7f5495520a7e7e8f1bb775c2bcad3a9c2b9c8386da64abe188e89816",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bd1e66f4d1d2be04990951ab557bf52232c3e4367fad45f77f394d32c9d4edaf",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__full__slip-1.summary.json",
+      "source_sha256": "718db47ad7ce5bb81bf90d9c00b8e88a76eb31203c5ac9d606d58ebee7dd82b1",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9d3dab458a90e204bc4e31fda6dfe8c5e0ef824edc5cfae79dd626e60b698708",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__full__slip-2.summary.json",
+      "source_sha256": "ae81c78788f5ee5cc4fc0c0097dd8cfa364dd631cc52427c78227da4f5b8b002",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "67e7a201dafc62f5327a062e2fde18a184ce246fb15f0b2ef3f44ec8ef54921a",
+      "source": "research/experiments/20260905T003843.714717Z-parity-alternatives-21c91ed79578/vwap_reversion__full__slip-4.summary.json",
+      "source_sha256": "6601006fe22d5cddb57e24e22650b8b6b264977451cb5bc4856b612daef0a74e",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a659d970504febe9dd5dcde16e2138396539da534080a30350cc6f3c6236cf71",
+      "source": "research/experiments/20260905T004802.745634Z-fee-corrected-baseline-1c25d5260c60/baseline_v5__full__slip-1.summary.json",
+      "source_sha256": "f3013a514def7c6ea3e78a8c4df1ea23c5e6f19a2801a915ad41f92a1536e27f",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "91a1901a159601a28bda243fe22d56ce33679a5023c08ae7f7e06679dbbf0039",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__development__slip-1.summary.json",
+      "source_sha256": "98b0285b6c8b4f0951eb2dd23f78c528cf9c4f4f35a17371c9a8f6c54c7d7271",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "30db3f14c906cc18a101b396f23a48f9ae2bdf4a308a3fabcde98cbf57e338e7",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__development__slip-2.summary.json",
+      "source_sha256": "4ba9861f647d281fdf79117673834b40ef6d46e5dae03d14cbd178b8e2254247",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "44a75a4907a82be7d7357cad7e95c4cbedddc4e70163f70f682a2c66cd21c6de",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__development__slip-4.summary.json",
+      "source_sha256": "76151aae0d9941c8bbd307c9022650af242a3d3899bbd898b46deb65f776d61f",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "fcdb3e7ed6582291eed716f6395225546fffcb4fcd4519f2c549f73a60201d7b",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__diagnostic__slip-1.summary.json",
+      "source_sha256": "faaae510f9b025d32665dbbebb54bd898bb4b3bc7117f94ca45d25e4154338a4",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dfee3a6b820d11b65ab8a662ba604e6af065a1c21ce41f9e755b6f65c43b6179",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__diagnostic__slip-2.summary.json",
+      "source_sha256": "f67fa858bcba426b8ce6c304e99ae855bd6b6ba4746bf3691474f55b2c5267a3",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "938d711d6b1bcf2f4f59fdd724d77f974d6a15809b8ee6496e8971d426221ff4",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__diagnostic__slip-4.summary.json",
+      "source_sha256": "7d8b67541d408c7d992eb51d5f963eed84fe1be52ac97f2dde982de29f1a2bc3",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8cc59c775f8d2489e4690a423ddd3b4e05c9cd5d33235f01e8810c1742ece1e2",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__full__slip-1.summary.json",
+      "source_sha256": "2f964c32040f339624c5456a390b15ac3e8bc18220c8aafdad15b45bdb124b57",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2bf64427c2601e290d038b2f615f28602d5f6862e935420b4cce559621250fb3",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__full__slip-2.summary.json",
+      "source_sha256": "ceaa39908749d2f92a021c2b28d99f3fbb4161888718b4432889a4a4685351f0",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bd142a68fc8dd9903dae14c3caddab95ecc021e8a6e2753653fa1cc81f941800",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/baseline_v5__full__slip-4.summary.json",
+      "source_sha256": "0137fe227eb26def4a0578bb73787f4a186b62a9cadd74990cc7571409090ef3",
+      "candidate": "baseline_v5",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4214dafcb5911ed058f31bb9e03b55fc0944b95b3200562684ac8fba5a01ef49",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__development__slip-1.summary.json",
+      "source_sha256": "ff14d9141d1118df37b3e7b3be4526e33025490bc3f29c18b771171d481fe2ae",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "41689cac2048ddb5c083c908b9cbf3e6dff66b2857ef3e49f471e5859bd0832e",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__development__slip-2.summary.json",
+      "source_sha256": "0c8be2c603d424262cd7658444e889f68a5667be91028362f3b2c3613b08ff60",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b882c40172b31ed491da9fe951ba38acca852888631c6c9f0ff8dec2939e16d2",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__development__slip-4.summary.json",
+      "source_sha256": "f954661db1515df4c4b95aba3315d0287317ae615e4baaf9adffac17c5752e08",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "244aaf74243f0bc27e26f0f27fccf406e8c2b07dcda3062a869d7e8979fb512e",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__diagnostic__slip-1.summary.json",
+      "source_sha256": "e5e370cafa40981faddbdd03da03fe6ca20a3670de21253ad534050cc9e93485",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "abe9a06bb90827c0a29942151568f26d748bc9dff91810ebf89d2806691abdfb",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__diagnostic__slip-2.summary.json",
+      "source_sha256": "1ca364f716575aa77112b10d0249dbae7b98a1352c456ce948ab63ddd3cf82e8",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b1ebe603e90f45a393acf6da7e533ca0b4d9187013fd0546fa980fef088d9c50",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__diagnostic__slip-4.summary.json",
+      "source_sha256": "2ba7dd57c14cb7bf7add479ad579b4e650af81c11a301b07c0359e7fc6fe0f92",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "782b86d34d7083e52935e41e5a1e7ec8499c89a8131d1c775238850f6603c6cc",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__full__slip-1.summary.json",
+      "source_sha256": "288ece69782175d9d510e447d0aa2553b1c967c1b000a47617d658b1dc941e34",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6d775bcae618297f413170221847411c1744ac3acc8e62d3aaf42ecac4a6027a",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__full__slip-2.summary.json",
+      "source_sha256": "716e749ae50aec96763b72437058576f9f4ca8859266faa6dc764f7ca8c31d1f",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "36f020369395affd539a8de5744d4ba098a8ccc5ff80e90a84047689e63f0696",
+      "source": "research/experiments/20260905T005437.879081Z-fee061-controls-049bbb66d292/v5_long__full__slip-4.summary.json",
+      "source_sha256": "60b95ec39d5dadda81e0e084588a843172534c1a1eeb98624e0900824db60d2c",
+      "candidate": "v5_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6b60415f23513762871151632638d923222cd22b99814b593d88f384fc188633",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__development__slip-1.summary.json",
+      "source_sha256": "d4d943863e4880337cd8a0ceb20bb991f72bcb6d23c09770ebfb609416c1f4d7",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d37315f171c55bc31e29079798d465fdc23ad582822b17db0a9456075b72f89b",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__development__slip-2.summary.json",
+      "source_sha256": "71683055aa57db072e16fcb44e62296e533f0969a9ebfde5d61a39bf409ad5c0",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "76e16330ed61fa3cef83b6b3465e5e4a6c8c8397d1f1b557a4d7d6b3b125b4e5",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__development__slip-4.summary.json",
+      "source_sha256": "9e9c9ada65c8d197d524586baefc0c3e9c13162985f247ff2c8155a87586ba34",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "82ca43a3d46cfbf031fdaab477675542dac1c5c034fbdb216705110d2c83816f",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__diagnostic__slip-1.summary.json",
+      "source_sha256": "c92bdc6e9cbad5bfce75ed3e953f3cb4013b7a04f5d2354448a255fc64a07bd5",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "3e9f6465696367f387f4fc34e5422d15e19d60efabcc278bc8915a39b949521f",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__diagnostic__slip-2.summary.json",
+      "source_sha256": "1e9cb4c1a97ebba74828b2f16b79f79e907ddd5d0770d45a32f805d026d2ca59",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b29eb58aa9a65d74391795320ff8f0100420939277c167e558901d2410dca6d6",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__diagnostic__slip-4.summary.json",
+      "source_sha256": "4eca35f0d2a5b3033fda2dbbef105488b1cab4632fba2b147453794dba8b1f1d",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "33298387b31433c9320fcd8f7ac89e7414477dd4007f5ead6517e7b9f31b81ea",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__full__slip-1.summary.json",
+      "source_sha256": "034cc3b01eead3ccd56f7f3bcaf63a93e8b161afa801afeb49af2b8fdf67294d",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c9c2f581be8b8d19d1c5a7548c21b2f8481ec408816d06b581e9adddf3df0a20",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__full__slip-2.summary.json",
+      "source_sha256": "abfa69fd5848efec8a560a69d1b3d32897fa37c42b73223d0c3b6b0f11ff0e3a",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a9dac323b60acf1af36763178d509e0f0dd2bac3c81446ead1562da9745e9196",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/opening_drive__full__slip-4.summary.json",
+      "source_sha256": "ec1419b1404cf83d42f914a98b02cde4880deb122430d74f4cdf32d0a1cfd7da",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "479c82ebacda3b0c8de0ea642d2398b3765ed6687af99f131733557970b4a82c",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__development__slip-1.summary.json",
+      "source_sha256": "7dd743e700b22bac0ea07d37fd9ca1a24065eda0d12209eeb1396ca00a84f3b2",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bd96fa1f331e7069c0a3d230c9a2c2d892a07b82eff5bc14ba8e0da9f5ba2c1e",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__development__slip-2.summary.json",
+      "source_sha256": "a6c48f3d5ee5c0d2f142aa0a1be9dbea0cdbf55916d998a7c8a8fb2c4e60466d",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a29e0b1020208d2ea95efa499778f7e332247423c816037535ac6e6c5baecc14",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__development__slip-4.summary.json",
+      "source_sha256": "ab501861c6ca080aea6c67f5f69867510f9519dcfca7d2158ed3eecbae18d250",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "48ff26120490b61d60330c1624893b5a5c031589a736844a4b6f1d3d8218edb0",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__diagnostic__slip-1.summary.json",
+      "source_sha256": "d5cad25e0a946e84a25a046168897d077d5e0496e222695fd80a9bb7a7d203f9",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ec9a96441a3cff94cb10c1ae8ebcb911d32a13069c66a5f0774355fecc06f5c0",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__diagnostic__slip-2.summary.json",
+      "source_sha256": "ec86e7e501481120147df4c09266ca90133e040c087c5bb34aae7c2f1a359345",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d1bc2db292a013a0f16755fadf5b1c40cf55a997c7244e4a8692119533149a79",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__diagnostic__slip-4.summary.json",
+      "source_sha256": "3b194ab152bc78cd4928f49511fe17322245eb9348b12acf50359b297b760575",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0033d0ca72b15e5a294ffb49d5e563f7e62b64f90ebf569ce178db5e6cae3c12",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__full__slip-1.summary.json",
+      "source_sha256": "8dfe2e71ffca0f02aa9bc5e622369c4ee945b4ac764d80c992afda55b62dee64",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "777c2f4282ff7645eddf2e81b82c2e86a9f9059c012ec16047435ad0a712717d",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__full__slip-2.summary.json",
+      "source_sha256": "32bbecb5d33bf4c2aca19a1100c6ca9ab71284b78b26ebeed7fac162784d10d8",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0e30095033e381716a0f9f2f56257a8356d3f3ce4eb0fcd79282222d5aa19393",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_both__full__slip-4.summary.json",
+      "source_sha256": "785fa0e54bef7f07ec95e1bf7d6e651e2cc5f04ad13cab5b82f469d9a2c01862",
+      "candidate": "orb30_both",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b7fbff25e67b103f15f0a4e3902197f03515138ebacd0935292fd81f9e69523e",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__development__slip-1.summary.json",
+      "source_sha256": "26cb1ad15fd6cc9fa32d805f6a5c3531e7d8b2b49c46669e022da7cf851b5e3e",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "260853f6e2548a65d02fec6d8bb758fca74735060aa939c34e3dc81cf2136a0c",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__development__slip-2.summary.json",
+      "source_sha256": "1d7b522cc77393e079ee06ac0d1398f116bc572b553e4c10c19819e64196e132",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4f35179c5896004a0dd4db1ad41bdf5aab0d4d52ffbfac409d2a9715e096f4a0",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__development__slip-4.summary.json",
+      "source_sha256": "33956389b4d06994d4e05290345f27b882dae90f831331192d944565800c9146",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9067ef0c7aba1c21afb4f9581b68fd531a558b8956600cbc81f7231055efde0b",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__diagnostic__slip-1.summary.json",
+      "source_sha256": "35c0dc5e0493b9992f756175e90c0d357cc7759be0ceee6051223ed90fb6557f",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bd9d7dc38e72ad390889fc3467271772bd75f9a6966373b3962aac228e64472c",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__diagnostic__slip-2.summary.json",
+      "source_sha256": "d9027df9885c84af6e3c9d555494a5d35d9ef7f0b0b58c84e013727bc947e0fb",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "7911bb847d28c66dbc9699f3ca93853459c8bf79f4c0787add9494d2f2903035",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__diagnostic__slip-4.summary.json",
+      "source_sha256": "43e168d52b737061e0a0808ea08d62166be2d18603a82d8f9c9a7abf67525ff5",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6cbc04dafe8ae0b221127b6176ff2c6a3ba6a63832af692c0c7adaa1a871aff7",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__full__slip-1.summary.json",
+      "source_sha256": "305f27904dcc96894d68d3a2beeabc2b777bf4b57919f4f6bfe45438743b780a",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "46b80f5e7b9543a80a2196e5d26325dbd8fc49b6bec205eca7ce27c8e07e0859",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__full__slip-2.summary.json",
+      "source_sha256": "eaba299c161f31ef205b2ef7549f477877b649148d917e9e76ee81b42a94055c",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "552ab549d7b64ff1ece40bc39d568a0adda0f7449533cb0fcb4d27de42bda514",
+      "source": "research/experiments/20260905T005448.370797Z-fee061-opening-8482f9451110/orb30_long__full__slip-4.summary.json",
+      "source_sha256": "40b3107bd4fa91e34986b2305e08822626fe28a1c305f25e80346dcb0a01c108",
+      "candidate": "orb30_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "5621b002f1d9307e8ba77e9f62f40dc641083762bc409308d74acbec83574ac3",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__development__slip-1.summary.json",
+      "source_sha256": "bc31cfd404a637670ebd00d0d3f7cf4fdc97afbc0669b02ae98820da2889e2db",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a1b6aff852ee753aa80aac10382e6e2390205a020561659eb44e4c4919931adb",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__development__slip-2.summary.json",
+      "source_sha256": "ac100bf633683d70700da4a9363ed539d9913e3d8b653f8f5e544633af090e40",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "12f6fb4881acb79913cb01b7e41bed748241b7106b6777680891059671a481da",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__development__slip-4.summary.json",
+      "source_sha256": "3ae1598b00f252817ee768c81db7c9412bec2cc33074f12b20903a46dc40308b",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "627a861dfd7680c78dbe41ee8b18e2074ea126518ed2a73360a9cb287e1fd674",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__diagnostic__slip-1.summary.json",
+      "source_sha256": "7c97ef4f20f0f1dca3fca55a20dee7419bb70d1606f5092b0568c94831a97e4d",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ddfad15889842d4f6fc1a45b80a1c2b90aab64501d878b54e300d784a1fa463d",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__diagnostic__slip-2.summary.json",
+      "source_sha256": "c0d18e78f58e32455c6239cdb6241a367c6abab80f771130cd70a8c956bdcc6f",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9c41bbc3f63346300ccd450d055716a462558cbc1a4c9cf93cc047df34ac3046",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__diagnostic__slip-4.summary.json",
+      "source_sha256": "fb8a89fd327c5def165f96100682722661f1f2a07fb03680f547e90393ea9675",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "90a4c570f0597f699fd8d6131b5097750d838663b5574c39da87c8c226330d24",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__full__slip-1.summary.json",
+      "source_sha256": "95a39584a5d5c6f498e819c0983f2c7154af14f7ae7f263d78e5a6a5e9bb5b6d",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "21883a36b8a0dfb7891073a2b8a9c3725b79d3e2a8893dad45a517ec01925f53",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__full__slip-2.summary.json",
+      "source_sha256": "734fa8c46e907a22d53cd465d32be3385f92e26c22585336f475d4817c880885",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "82468adbc58c7fb7aee1f45d5bebd8d780a7f517a0d09581503c671d1127089a",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/afternoon_momentum__full__slip-4.summary.json",
+      "source_sha256": "367de83d2f81f159c803929f5c019a677614f6249b7254db99b8dde7d778e082",
+      "candidate": "afternoon_momentum",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c3f1efb80acaefee4aebd03634ea2547078fe86ccfe41228de0ff38bcb961cde",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__development__slip-1.summary.json",
+      "source_sha256": "6369768323ce1473a7dda10c8634370d35e74f92f216816aacbbdee7e61cdcac",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dbaf88f83f216ef355fb3571ea3035aae11878a9c6ec52f26edcc46787c21751",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__development__slip-2.summary.json",
+      "source_sha256": "a665cd923e1e290531b4da1d933cfed50631ce23f7f8578fc5446d40166d5b80",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "422ec85c8d35dd3218ba4781f204475b70e6aeddb0c2445723a3019d21c0203a",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__development__slip-4.summary.json",
+      "source_sha256": "aa545855cec4553d1ee587f223130adb48a154b7bdbde5a35901e16430511558",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "541b5e71f54a27c77eb41f56652f0c0ae089c127ef6f0b23c4c8b943a6d35165",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__diagnostic__slip-1.summary.json",
+      "source_sha256": "2760dc44ff9094e641dceee6f31d2d8fc7bdba1f9d6558268f8b00225f2a20b5",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c69290d57b9f2b27fcfe7f2020401189aeb6cb78d8cc4c4060756e4a10fdb5b7",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__diagnostic__slip-2.summary.json",
+      "source_sha256": "b58df31dfbd06ee948593f463f6cfd7a4604f9b1f25dcad63ac38c2e67734ab9",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "526eb1a2135c0afbefa7d885e281414049a023341400ccfd7a487e620635421c",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__diagnostic__slip-4.summary.json",
+      "source_sha256": "d86c8f4436b42807a54cae300a5fcce8abe17f9a17815037865f415bd8fd3831",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ef0b4bbcc21306dbfbc0594bd7b524a43bd1597196ec64e18f6ad429fd8fc5a4",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__full__slip-1.summary.json",
+      "source_sha256": "7527d8c5c1b6bb11cd6d5d22d15e316fa163f8ee6a661a51a30b634f158c1dc5",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a3940cfecf702d4c63b728bdc14afc901a425dddc18266d3216d9957209ba5ee",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__full__slip-2.summary.json",
+      "source_sha256": "0473449ace40c755a9b0b2ca4d43924fd6f5039ccc62e4486cbf9a5f25eb1aaf",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "839a66ed20e6f5237a38c02f6b3f4facd7d9d1974f72792bd335d32927b262f1",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/v5_long_atr__full__slip-4.summary.json",
+      "source_sha256": "7d062da73d23ea2fd54959cdc8af0cb89813cd8175dbbc5b69818eef5606319a",
+      "candidate": "v5_long_atr",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b0e7fa46ffeab639f63044e9b7417645ae5a5a9ffaba16c8bf36765f5d90fdb1",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__development__slip-1.summary.json",
+      "source_sha256": "017c1ee60b7dc5c00ab379efcbca45055e15e63bc343ae856195d663c97c4da2",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9556e5cb7fafa689d6a75e7646e1e320aded23959ddd059f8ce47d3532aa321a",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__development__slip-2.summary.json",
+      "source_sha256": "1794727537c40af152f6c3de7571957763d113919425e91b4d7687ed7bcc716f",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "e15eab5a235e2d86bfabe76f045a45f9f04dcb3f43506a6510836b394d269b73",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__development__slip-4.summary.json",
+      "source_sha256": "5bc228a93b3e74ece29ce6f78027b15aa5b94ab294159589401d6dc8655650a7",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6d3390caf283a25fdfe084ad9a1f71d936fc43bf0be68f7cabb4e6773c4c8869",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__diagnostic__slip-1.summary.json",
+      "source_sha256": "28fdbd948708a697e6c6469a93b5965c355e91c189143d7faec8bcaa6ddfcbc9",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "7db7c3eed3e36b9ea59a6fd71cdd88b61ce3e7d6155ea917ed799e49cb1e1975",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__diagnostic__slip-2.summary.json",
+      "source_sha256": "ff65401b5cb128ed83b378cf9da81fcb6f51c4f7ad1bcf32efed5db7325f9b1c",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "907a42b2c19387ba9325d4186aa95a210984bf7fb85a192fbc5b12298f911d4d",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__diagnostic__slip-4.summary.json",
+      "source_sha256": "591964216885e872651ee4af9b0b82adc16b3643231ebbf68d8b00df784b8b0c",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "5639d1eb49ed9cb1c26ec804b8d3e051c478ffa53a3c954bbdb6695a34403402",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__full__slip-1.summary.json",
+      "source_sha256": "3259ec697518dfa2c7530c55d669002827d318b433ad7a169713db6c28ecbc3e",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ed84f374dde7c819635bb5d318e58cee331250cc6c6bafd266fc522cb2388262",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__full__slip-2.summary.json",
+      "source_sha256": "36ccddc0468398a1aaf02bd36a883a8e26e06f55432be6838a72ff9fd1e3f1e4",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "77203af6734bea2fee49eba69141fd8a1e5365236a2f9daa4866698224b7c0ef",
+      "source": "research/experiments/20260905T005537.092354Z-fee061-alternatives-7788ffa0563a/vwap_reversion__full__slip-4.summary.json",
+      "source_sha256": "89ed4859ed862147ff68e979f459a36d7ddbe6236244fc49de617e4c0675d8b4",
+      "candidate": "vwap_reversion",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2b3f543c54ffb5a5521650853222fa66c8e5c4195c11e7a7b43a8e819c195aa4",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_center__diagnostic__slip-1.summary.json",
+      "source_sha256": "b5c770f8d23bd5d2dd8dfc1461c60cea84be2a24b603f3d9bb64c00ab7fc5831",
+      "candidate": "opening_drive_center",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2ccf37796df39acbdf513516fc0d207d65a24e839fedccae308fb7e750fe30ff",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_center__diagnostic__slip-2.summary.json",
+      "source_sha256": "afa4e6ff829e58568d8e89e6c4ece891f7b971ee6ddbd6f47a7f0b0db633639b",
+      "candidate": "opening_drive_center",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9440ca149ee8c3817411b9251db81f3550aed9b40f35db27e271ff7a52ed936e",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_center__full__slip-1.summary.json",
+      "source_sha256": "eee492292099deb0de449109a476d357f6c73767138f7466c2fea127e70f571a",
+      "candidate": "opening_drive_center",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a3fae3c0943b75044c64c4421b36843bafb4ed553710c1de36c417bf2278fffb",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_center__full__slip-2.summary.json",
+      "source_sha256": "9166a39696394590fb5d72ada1c4507d5e81dd49f09983c0080dfb3953f9ba92",
+      "candidate": "opening_drive_center",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8ac32d1ebf1577c18ba767ec35d7c209518f379dcf46ef9222d611f6084cb3ca",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_060__diagnostic__slip-1.summary.json",
+      "source_sha256": "edc78bf1b529a2ccff924c5d8765692d17b8dd5148a580204ff49661901faa02",
+      "candidate": "opening_drive_displacement_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d0136f8b8dfdb3a3570c34f5d258aa56cded307a1d149900e16e8f604027dc4b",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_060__diagnostic__slip-2.summary.json",
+      "source_sha256": "2e79f96173802e278ccc4067392d037a04667e21399a40fc601eecfd57c72d2e",
+      "candidate": "opening_drive_displacement_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "02d0795210f257582ee60c33114c46ff765dc5e8b90693ad7465363dd1d82d61",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_060__full__slip-1.summary.json",
+      "source_sha256": "9a5fd18e3b78efe24b7d3e6ce3041e3b2d6016f843fa6e6231cb631617969d19",
+      "candidate": "opening_drive_displacement_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f6d934b759d1bad301669ff80dc9fe00d76f38dd13c6d8c919b33797fb99c090",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_060__full__slip-2.summary.json",
+      "source_sha256": "85ec44ba23584bc7ec0eb6cf71521518fb6b9d5d783bf97d49f19098506a98cd",
+      "candidate": "opening_drive_displacement_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "de591cca3e0b2b87d1fb2d6228a206ff15f1bbf202651aa9b8e5c2e5dbfe4e53",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_070__diagnostic__slip-1.summary.json",
+      "source_sha256": "77625ccb15a06b822937980f76a8d69d66e68bc68cd7c229c6237ce891938429",
+      "candidate": "opening_drive_displacement_070",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "57c6883889969b38160c5596553c34bc40195cfca66e9ee46dac19c800e4156e",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_070__diagnostic__slip-2.summary.json",
+      "source_sha256": "48f94d8e82d31e67a1e562904f8594ef48363b3375e9731d9b7a138d7de9873f",
+      "candidate": "opening_drive_displacement_070",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a148dd8a9506806ba3314c77a1bda797444716a81cd89918a6e41988b8bb39e0",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_070__full__slip-1.summary.json",
+      "source_sha256": "bb037d82d814ac5527224402f3fe4f5a100160c92c7cd5c4d17d03ef10cf76f9",
+      "candidate": "opening_drive_displacement_070",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "34c4d16a31afa351ebfce95c91edf0a7cedf266b3841ad0791fb35e25bb1042f",
+      "source": "research/experiments/20260905T011330.674136Z-drive-neighbors-displacement-54aa3a80dc03/opening_drive_displacement_070__full__slip-2.summary.json",
+      "source_sha256": "d351dad6a4109930acfda43031b47ff2d6653530295f4a9c7cd66b92ecd14b0f",
+      "candidate": "opening_drive_displacement_070",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0b592ff975e8ed8410a2dbd782a6f3a686f44c7d9b5805ae22399d585dc21ef2",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_040__diagnostic__slip-1.summary.json",
+      "source_sha256": "41644483b2f399ded5d4b8f3ed2a88686ee353ffc8c08bfd40b009c6de6eb7a3",
+      "candidate": "opening_drive_stop_040",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "633ec374fb1bb87a2cc223034e9b41e2921afd0295a15047e14c22faabf19231",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_040__diagnostic__slip-2.summary.json",
+      "source_sha256": "e384681e66168cb5b8ba97c9cf2e801ac4cf54a606c45bb1e02025a6d2d6cef9",
+      "candidate": "opening_drive_stop_040",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "72acafb46c5722f43af8650a73ef04d6571adf2f497360ac01bb2e60193276f8",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_040__full__slip-1.summary.json",
+      "source_sha256": "7924dc199c492e1caeb9b6a92a5d243fca24d10c009a60f59829bcee2b0e0b74",
+      "candidate": "opening_drive_stop_040",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "640cf507b543ff2d7ce2730f7e401d5d3fe35c511c626e0a4d829517a7f2773a",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_040__full__slip-2.summary.json",
+      "source_sha256": "d92355c98af44096056666d707fd919521474fd14ee107db1f6bda52a8c43ff0",
+      "candidate": "opening_drive_stop_040",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1c32c1630c94df8a74c9c61e415308d0251081a462f53c5519a7a294bb197fc2",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_060__diagnostic__slip-1.summary.json",
+      "source_sha256": "dc5361e137eb4c196e5537b681902de34f797331aff52506d234d9f32ef8d038",
+      "candidate": "opening_drive_stop_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9a5de557220884b2d6b9c04da758e675b551f7093c75598da0cd7e460985bcaa",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_060__diagnostic__slip-2.summary.json",
+      "source_sha256": "7b41fe61fd2ebbfc79e5d140f28002c861a018f7a97ff158d88ffe7649123362",
+      "candidate": "opening_drive_stop_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "7a7bd6d522757a738b49a33f93b7f936f0a03b221c664ad8c3b9afd4180ec67d",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_060__full__slip-1.summary.json",
+      "source_sha256": "5012fa07d73ffd5c92deb6e672a8217afce058e3fc673f81543d718836b8aac3",
+      "candidate": "opening_drive_stop_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2b84375e123fa4e8cf88e012d92977f7ff87133d9e4ae09ad328c47341dedf50",
+      "source": "research/experiments/20260905T011340.970424Z-drive-neighbors-stop-f0cf9be62aa3/opening_drive_stop_060__full__slip-2.summary.json",
+      "source_sha256": "92b551b5d6e8d6468c1ceb27d355c1ee5bf075185bdf482d02b8f2595f4b5133",
+      "candidate": "opening_drive_stop_060",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0413df40bc672c497b2b9af1db8b4bc3fe6b32f96df6424e92b27a7a98db3f81",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_175__diagnostic__slip-1.summary.json",
+      "source_sha256": "c0020e6e191f782a9aeb0a248550e9097db6e7ba1854af03697c292b4e3121df",
+      "candidate": "opening_drive_reward_175",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "ed8dafb9d99be7ebb3e893fd235793e7113ca480fd75741ce9b7787823e8f671",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_175__diagnostic__slip-2.summary.json",
+      "source_sha256": "88501d8b239cd5a730cde0d8cde0f94829406e1607258816549b43bebd31076f",
+      "candidate": "opening_drive_reward_175",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8cd9e0ff6a39ff99ae37ecae8315a2677fc925ca4d4ff6590234fda40fca009c",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_175__full__slip-1.summary.json",
+      "source_sha256": "7d3afb376d19fbe9f565b635e7a05c322fb752d33390d339946bf597657e449f",
+      "candidate": "opening_drive_reward_175",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6baa0988e2c7be06fa76fc228fe97bece09595c5a1f13a5852068706c9a778df",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_175__full__slip-2.summary.json",
+      "source_sha256": "0ed13553d200db3a05fe8376224f29e107bb2df4c3ee6be7150d01e4c547bb67",
+      "candidate": "opening_drive_reward_175",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "06bf34a038046066688d51b47600f32cfe4da48830b5c5b209568e78a4f901e3",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_225__diagnostic__slip-1.summary.json",
+      "source_sha256": "55dcdf505bd775cd817a2e7d4e3e1cc45bcfca5811a1ad03c2a0a089e246f094",
+      "candidate": "opening_drive_reward_225",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0d5bbd6c88a027ad460c6e58f4ba3ed38bcd8bacdf453af3eea18ebaaa8619a0",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_225__diagnostic__slip-2.summary.json",
+      "source_sha256": "e0f45a37b5e9cf85602fae72e2c96d0298a10ab6a79de45af70d1511e7058680",
+      "candidate": "opening_drive_reward_225",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "69866c8be1e7798ff483c7cd3b9d93c94f071fa4176d8a89fdcd4292bb4a26e0",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_225__full__slip-1.summary.json",
+      "source_sha256": "1a68a03799b2d6832fefd8ed9ba34ecfcbd7549ab638428bce6e36732f423abd",
+      "candidate": "opening_drive_reward_225",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bcd114c0ad8013b8e054b8152796599848db3dae69664f7dd73318f550891b57",
+      "source": "research/experiments/20260905T011351.327135Z-drive-neighbors-reward-b6e8ca140898/opening_drive_reward_225__full__slip-2.summary.json",
+      "source_sha256": "c3dcfde9db35f4fa45568480f7c6603613a8f4ebed279fb4f19ca4303bbbe485",
+      "candidate": "opening_drive_reward_225",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1abfcb87bcd52939b9b1062e6ae09aa6ab456a0993e1648483116ad70455a7ec",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__development__slip-1.summary.json",
+      "source_sha256": "64704ade810c8ea9388bf5de6d74052cb034ca27e0872557568e255fa04597d5",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "86e385c270a031be3d0152320c28a4fefbc509431d50d52ce7e9c3b44bc505a3",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__development__slip-2.summary.json",
+      "source_sha256": "dd1a234492c3354b1e78b2786240b3dd1b43fa8e4a289e29746da49ad98f4294",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "aec398e532d46bd5757a77292666c50f539304d2557e25cef292f16b66b012d3",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__development__slip-4.summary.json",
+      "source_sha256": "e73aebbaa52a3a49f5413cecd457b16861102b06b43a76a3c39d7dad6c8210f7",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4ac2443bc7fdeed80fc9674c825558e72fb833e49e303219b448fc13b25f685e",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__diagnostic__slip-1.summary.json",
+      "source_sha256": "ce15667cb1507d49762a7b7ce72660fd43818e33d605de188cb31e424f8f8d05",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "075219ab24427ff004d6fb75374f51aefce53e8cdb6988cdd7c0bf669887a3f4",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__diagnostic__slip-2.summary.json",
+      "source_sha256": "692b9392de6af63d129f56a544445e4040f46abfd60cb02f62a4e261870cb727",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "14b918d9f77e3df801fe4ae99471c9b814427406009d7912004252301072cea0",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__diagnostic__slip-4.summary.json",
+      "source_sha256": "4a3db04d47b6061b5951f0fcf191ba7ebb00f67a4bcf43b89c1180af03bc4746",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "e5afb0b40554b93e4951381584399c6bc899fb19267db08992db2e4ff5a242f5",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__full__slip-1.summary.json",
+      "source_sha256": "a47d05a7dcfaab7c6d1be9995a33e3e3699be84e8f4ccd7de48c9e098ca38bae",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "3be18a203230c09d263cfb37b78d65a67b289dc2ed226007591f5c6687ae7b4a",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__full__slip-2.summary.json",
+      "source_sha256": "c1445568f76d5a39e51e124bc5399ca6ee0b7cb9795800b39fdbd142d9c2b755",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c6a5043f6d55763b8ab8b4a82bf06e507011e708ff18ebf2bd6e6028a5a902e1",
+      "source": "research/experiments/20260905T011407.431551Z-drive-delay-one-minute-75ad90735944/opening_drive__full__slip-4.summary.json",
+      "source_sha256": "661c6e4ae15eb3f83196c529f86aa8c4e585525115a1b0c6dbecd15ebdeb9063",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2dd583305bf8f26f5cc56f7625a76490b1c4b2c0132a3d10049d2d527b744f65",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__development__slip-1.summary.json",
+      "source_sha256": "1ac13b4e7d1b89b097e14ac71925f652caaa7c6c29b1f3fe98bdb88f420042cd",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c53b2dc37621cc7c6d67de85349ae44c893a83d6eb1e18225655a1a1a5ff1ec5",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__development__slip-2.summary.json",
+      "source_sha256": "e4ea5f73212de4ae189fc0ea0bac5013cbd5ecfd04db68536ccd0a141bbaf615",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "2451589d6e39d1d540cc34e9d985f4ca233c79e80e9f2807dfe23f6ff7134d08",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__development__slip-4.summary.json",
+      "source_sha256": "db9d5adc7b8538daff9c8f0dd2292ced9f8478da622e7e2ad9a3e432e871090d",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "728d1f4cb1d4ab4fcd444cd7e98245ba2b140c052007ff2c63506b208fd3865a",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__diagnostic__slip-1.summary.json",
+      "source_sha256": "e2a91f26a295254bc8638d55e1793795137552cb8616c794dd6ffc71e7a3c54d",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "e2a6778c9d1749044ea8c11a135247cd3691a418e82e71cc38638ee7e3759d32",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__diagnostic__slip-2.summary.json",
+      "source_sha256": "40ede8e0556bfc0978b6461e9d7c2cd9adf7efb41e86074c5d2549eacb582884",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6f3fc69e8ba6bca80887a926b8976f2f4a718b43b5fbe174d30f4cb873c62f50",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__diagnostic__slip-4.summary.json",
+      "source_sha256": "9503ffc0625a7e51a967cb1bbfd8bc403dc4564e1d59e94b1944251437e05d6f",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "dc64e2c635a0ff28034baa9d4af892334aeec2959d47bca91ffdaf0c653d8813",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__full__slip-1.summary.json",
+      "source_sha256": "2c05a8290362602e5d665f31789cb9dd683e75284b2c89506ca087015615fda8",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6c243a5e17f07c72cb55c14d1545fc02e21856892fc87801f780882c7e719575",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__full__slip-2.summary.json",
+      "source_sha256": "7b40fa45e266842f74d71a84cb97a1ce938afb7870977f085e4661ff18d5889b",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1098510773b9f6f37f67912e02d68b00e923c05a8291a2d9b9b9af0c5356bcd9",
+      "source": "research/experiments/20260905T011417.743363Z-drive-target-through-one-tick-07d9bf06d213/opening_drive__full__slip-4.summary.json",
+      "source_sha256": "0bce80d82f4d94b1f40515496aae447a4f7c5f8fa678a864f9c1f8e15deb4a0c",
+      "candidate": "opening_drive",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8fd56c096f2794b0f1ad15c3d6918494b97ee079886ec69879f994854ed3759b",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__development__slip-1.summary.json",
+      "source_sha256": "8ef0fb056f8fc0f0ecd1813ab988d5b60dc7f6c59af506954bee833e39bf5b9e",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0a6d393f3cb23ae326c05ff036ad3f4956f7da7baba45cc85a4cb95d92d0ea96",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__development__slip-2.summary.json",
+      "source_sha256": "e30383dbd29f84c798714e56896c2bfa6478af2479a01f7eeb5e55b19e2b9110",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "76bda23bdfc61a807606a9f30f39c6c86a87649ef03320f28d0f474a58e2b23e",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__development__slip-4.summary.json",
+      "source_sha256": "b359543484bd07b5e91b032705bea9133145afd1d9b79e5d1778a6ddbc29c231",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "13aeaaf4f953a34344ce34df9cd1e82ef296c1ca846b63d93a3fe1f879dbc627",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__diagnostic__slip-1.summary.json",
+      "source_sha256": "037f481403ab3e79f4d3b8a77a0ba93c80a2a46592c29fc8721f93671b1c1e3e",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "74853cf540e82c4ce67f40fc992d9517c6590518eec16310f74adca5b50358f0",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__diagnostic__slip-2.summary.json",
+      "source_sha256": "166ced7ffd8c5402658985a496518fa5438f13b98d5382d2fb25888c0a2f1e88",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "151645bf172b2731bddba7b1c8902937ccaf64519957f8990af51d1569db6303",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__diagnostic__slip-4.summary.json",
+      "source_sha256": "3052a4bcebcef0246011c4bcf79d1228606c043b777b1288b377f42090f4b84e",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4f03cb67c7c3cafe0ca9157f386fde799e56f1579b6a7fdd3c6d2d764868d930",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__full__slip-1.summary.json",
+      "source_sha256": "d4dc60392cab8b36dd3b128af89785a6066a4321a1e8e9e509250cd4e74c7fef",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "93f972fcf61682c6b46b07e28186761bef1f09bb74fe2a888afc0bcd85564f98",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__full__slip-2.summary.json",
+      "source_sha256": "bf60983727f7abad3913b303c47ff0faa9141a6df850799fd0a6478469b4b868",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "907a0e70b1ee0ac43a7903e7db7ae62de666ee440a3999f6971aba6466b2e0d0",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_50__full__slip-4.summary.json",
+      "source_sha256": "6fa706ba20e10904f82af2d378709fc83b98418baf75898760a3bba456f91930",
+      "candidate": "overnight_long_50",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1ae5d36aaed1c7fcfb1ba0b65e2d28d9de7be855317e71410c6605aa20cedbd1",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__development__slip-1.summary.json",
+      "source_sha256": "3d0e634721d11278e1fb2b6b760f8cbf2fb974330aea40440caac91addcecfd3",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0c251f221c26c218799bcbda1edfd6f5a63df3327251222ecb9689a88a89375c",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__development__slip-2.summary.json",
+      "source_sha256": "0280dfd23ab3381c3d3d90faa45262ae260629053823344699ab03648b9d9770",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "24a317327fcbfb7fe9a4bc26d236d0ebaef200847471c7c03502f970a661285a",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__development__slip-4.summary.json",
+      "source_sha256": "cc15f8562f62cbfd33567a3fe7da61e61474056fd2bf86a0eade59b9a8d589e8",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "7d7274463bf3852993866ab25e11a497d4d6d840a0342972e620eec01839d6b4",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__diagnostic__slip-1.summary.json",
+      "source_sha256": "b6192757cbc171132f20e0f0b1c3039aabaf524cff34fd9715275cbdf86065b0",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "81c0f9f7fe68158c3650be2993348d9948f87ec8a14371bac697b8f82624dcf5",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__diagnostic__slip-2.summary.json",
+      "source_sha256": "8f4fdfbf9d4849bc0ebd0c586eacefbb4c7b3a9136771bae1606a566de07237d",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "eb52d802d0c6ea2ce3834464669b62859051f87e3c60082560f8f1872a210881",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__diagnostic__slip-4.summary.json",
+      "source_sha256": "0501fabad205eeb7567cacbb97f880090ea57416b2ca2ce6d6d220fcdd536df6",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f816d3fe84e8e3a6b9dda0654df9286f0377cf3c83cb6e23332c3843e11838a7",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__full__slip-1.summary.json",
+      "source_sha256": "f3e58a4631d2c2d4666b2b56900fe7bccff9c38bd6f68bc6998e73b38d3311ef",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b556eb2373b1f84e59de1f0aa61d4372ed055df714c2bbdc5ffc4ba8c45f9b35",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__full__slip-2.summary.json",
+      "source_sha256": "6d23b7be999e53482b11fc4cda6495a283e8265cb5d8ae2c2a82e466aabf4705",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1140bb187475b8a67378e6f84049cbab01ee9df61894787c4c3bf697de3bbd7b",
+      "source": "research/experiments/20260905T012732.368477Z-overnight-center-neighbor-f6b1977f9ae8/overnight_long_75__full__slip-4.summary.json",
+      "source_sha256": "0b805e44d183671d3fbd7c2fb0a23bef5b503cf50934ba69a4f8ea94c2cdff25",
+      "candidate": "overnight_long_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "767545e567a883667cca89f1009dd97ba19af85697507b3aa74d8948f07401ee",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__development__slip-1.summary.json",
+      "source_sha256": "05d32e117b167ebed25ae63b22785a3ede74e351a788abc77d0e0508244ccba1",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "f9fe70c99635c2ecdc68a709e87207d9de0eaac8203fe0da30089eaa679c7b2c",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__development__slip-2.summary.json",
+      "source_sha256": "03f3ceb2d89a0d7df901fcfad61856f8a63dc3573dc25e15afff4cadb266faae",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "76d6f788cbd73359bebba226b460c3cd67d7ee4eeca972dd8b4e35b4c26b4a45",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__development__slip-4.summary.json",
+      "source_sha256": "c94958b74dabc690cb404181f6c17b783fc0d0c7066981232119bf5e1dd8aeda",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c11a2f953264ff302a0c0a94ab0d6442bcee5927501d1967f0637bea501516ad",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__diagnostic__slip-1.summary.json",
+      "source_sha256": "18edbeb06df7ff5079e2b40af0cda327e205faf0857a3867ea8ec769d99a2834",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "3c585fcc47a6d2fb88812315b2cd841178a9d468225fed3e2a56ea9f573797b8",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__diagnostic__slip-2.summary.json",
+      "source_sha256": "3f93807613423cd10677fed84d38a23d91465fa3038a8d77aef246f94e6f95a5",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "d960872cc5ca625e52671d0bdf7bab60d24e877725a1d0bf9a8a7d7c9900b453",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__diagnostic__slip-4.summary.json",
+      "source_sha256": "cdc47f673ad15455b0c3703a39c9762d50fbba554c3a2b891badec2671377860",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a8f62ac20cce9e074b370b17dbe04da8338a4ca1b2c3408cdf51faf2677ae73d",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__full__slip-1.summary.json",
+      "source_sha256": "7546554d13aee1e01a8e583c5ebf346916763f5d4913a39e4b7e13b9cfd83d73",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "74dc348e6fb8ce32f47023ed964bfce9a1a443a3ebfcbc44f9023df40c23713f",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__full__slip-2.summary.json",
+      "source_sha256": "796991c6494111e368227823b696b562a1093a35f3fc8aa658cd2397d6d16d63",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "08cc9a57b8aab09091145b146094a1a016b5586c7d834602c1f54c94893d5035",
+      "source": "research/experiments/20260905T012742.618736Z-overnight-wide-neighbor-f3f2be3017f6/overnight_long_100__full__slip-4.summary.json",
+      "source_sha256": "f2ee2f3d226d9ffe3264ff97fa304af5b53903e1fa5a21f5f0c983e77a261019",
+      "candidate": "overnight_long_100",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0cd15b8811f02c2ef2018e735d02b9741fddd832ba7e8beb6055e7819cf039ff",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__development__slip-1.summary.json",
+      "source_sha256": "85e59da00781b161ec611bef0d5764a78747e7e4551aaaf8a6f3082422fb6790",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "708a5cbb71ec56d6c508ed92eebd503c04cae5c1e62e41936c10aaf2564c7bd0",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__development__slip-2.summary.json",
+      "source_sha256": "746d207d9979edead5bdea7a4296e977260aed2d2b96bc3f2edb75fef8fc73db",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "17eb70d034e60e74a871a94647708dd3cccdd8a8b958983d76f591835937ce8f",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__development__slip-4.summary.json",
+      "source_sha256": "431ddd2cad2bc25f8fe23420ea8e16ddebd1aad91f17b4fad6f86cf4583ca897",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8716dc0639b303e713ae7b69447a8a13ea46e324a6fdd17b8148513070e1fab1",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__diagnostic__slip-1.summary.json",
+      "source_sha256": "cfd0883617f921b5e7554a3f7b998fcad2215746faf92baed88e5f954d12dee0",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8112816811c046741b9486a37e1e201d5b60de811be6b133dd974ee58ba420d6",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__diagnostic__slip-2.summary.json",
+      "source_sha256": "2348fa6d82b905f23ed9a8e38dec86d451c34aeb9f795ad441c2130803409b0c",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "acdbf1d3c6c1a87ea6ab515ff9a9e9eba473493fdd6402486a3fb6e13e7fc715",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__diagnostic__slip-4.summary.json",
+      "source_sha256": "53f3832192722c2ab7a44b85627d6d40c8b34105b242ca5bb459f3ad089712bd",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6b9c6e88522568c54722b90a77bc342aa4e9e69478f11a21cdc6905a3bfd15cb",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__full__slip-1.summary.json",
+      "source_sha256": "a82a5d8e6866ff0a00e88ed0b6d4e3ba980249dfd0d8191c07f1133c943ba5b3",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "cecf1b8358c79dcd41b9b4b4a1a815c16a9c24665e104572386fdbd12d640888",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__full__slip-2.summary.json",
+      "source_sha256": "efc5658ee944a49f68d540ba90043503db3f70f702742967fd05fd1620ff8b4b",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "cb8a56e55f05f60664bbbcb21bbc2626eac103866a9f13b2bf0fa2bf2761b222",
+      "source": "research/experiments/20260905T012753.026037Z-overnight-short-control-2883a70a5112/overnight_short_control_75__full__slip-4.summary.json",
+      "source_sha256": "3617af71db07e26168b2ced543fe64a197660d6f9c7ca4fee04c2e517f978fb4",
+      "candidate": "overnight_short_control_75",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "31fbb02d81f079c11aa6f2732f45c8b89c7da5b325248924462d17d9fd7f94dd",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__development__slip-1.summary.json",
+      "source_sha256": "dd6248ca410b8a1828de3cc2195eee0bbe6f25967c4d6614ef63d0a022675041",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "e645da9b3b955e4aaa23c092cbcd7b58a7b23d2ba1a8ac48e49df56ef2be2ea4",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__development__slip-2.summary.json",
+      "source_sha256": "72f7752df7d68b34325191688e81b3f9aeea14ef34bd06f185979057ac2ba38a",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 1636929,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "5ce798f206ce8a006805d744e6d4a47522c14d1a93a6b5ae5b9e5bbdc0f5fdf8",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__diagnostic__slip-1.summary.json",
+      "source_sha256": "b870082af7470cb1c7b25b6d47695f121a2190a86aa93f4df4af663b0ccf80a3",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c0405371146e2e35627c8d041f04ea6aa9a3c7fe1d458a3645179947173d1462",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__diagnostic__slip-2.summary.json",
+      "source_sha256": "a73cff5ce9da92ec24d0a8bb429cdd7fd71950ebbe42891b711c7c4e600e5678",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "1803e86860b140e930a178e9d29746dc24701dd9cbd94c06f51126ed038398fd",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__full__slip-1.summary.json",
+      "source_sha256": "0cb67e3584e71395831d529e867c2b33f200cddda3005a9de439979cb62d6872",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "9f513bc2332ed3df6d877473917e646fd615d0b23ff65e0be43fcf085b0ea773",
+      "source": "research/experiments/20260905T033840.343850Z-reddit-orb15-fixed-3a3e01f0f4ec/reddit_orb15_long__full__slip-2.summary.json",
+      "source_sha256": "0520e03f6566e09cf1daa577712cf44cb25e6adfa7faf5f173805146b9bcc01a",
+      "candidate": "reddit_orb15_long",
+      "status": "completed",
+      "range": {
+        "bar_count": 2530556,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-07T13:04:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "3febe68bb120c15ac09997d58e8051990e68ffd676e3ff8450e25c6bead7c743",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__development__slip-1.summary.json",
+      "source_sha256": "20950452c64575d98f8198fb67a6e7dca8c7430bb67d270439271361c8e3dcc8",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "09520292c8ad95fca6375bdf95390dfabf2d966e6f0cf614f90ef30eadbcea09",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__development__slip-2.summary.json",
+      "source_sha256": "55a931cb6612e8100716384bcafded358dd5a1e99c21228f374eb1e1c3b15604",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "20962c373fcb8cc3f59f2de0bbb267489b63cbb4efd9ab1657466e61ab34bd18",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__diagnostic__slip-1.summary.json",
+      "source_sha256": "efe790742a02d18e364428bade6a382ed2e9e0dae50cebe66b89139d10d0cd0d",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "25bdcbfb7f9f2bf678698c0e49d51a644988652ff8102ad13155534f62191644",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__diagnostic__slip-2.summary.json",
+      "source_sha256": "b8898b90c0dc3d586debb557018d076630a17f426dd5ac722e177ebf13dc4799",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "117ae46273165981e7ea8da51f09a3e9a5462ac043fa5bbad64cda4c388bb7a0",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__full__slip-1.summary.json",
+      "source_sha256": "b02127d5b897499f974710bdc2dcef8663b1f10c10b92b2274d41fdb73f3bfda",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "0e8c4f84f45a5ee7920a254948c979e268a13ee5b0b8bb9fb1264addb2b7ece9",
+      "source": "research/experiments/20260905T033946.470237Z-reddit-hourly-range-59ec775ee3bd/reddit_hourly_range_mnq__full__slip-2.summary.json",
+      "source_sha256": "0f6e8eb5210ed543a77349d4c2afda3f34ead688863af047bb29521047fb5a39",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "968989a65959e4b032e468df2691ef9770aad0d87b597daf85af50bb64e263d5",
+      "source": "research/experiments/20260905T033949.465592Z-reddit-scalper-1m-proxy-17d62c6bf364/reddit_scalper_1m_proxy__full__slip-1.summary.json",
+      "source_sha256": "988db1c4f8afdd1d903cab24457764493b5c10aed635e3936e9696173a5a2969",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "bfa66091b5184f9350ab224945f5b21c2212871f410774e26f588bf3c635fcbd",
+      "source": "research/experiments/20260905T033949.465592Z-reddit-scalper-1m-proxy-17d62c6bf364/reddit_scalper_1m_proxy__full__slip-2.summary.json",
+      "source_sha256": "833b3cf4d5952b2298f9f0d836ba11b0d411c79fc4211af05da03035d82a1129",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "6d3db7c9f38a9b92c29f47c6a11b9599755c71251ba73c78ca8150633aa55301",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__development__slip-1.summary.json",
+      "source_sha256": "f1597156d845b470f9bb295069b40ee57b56c2d794ddecc8c5b95e5fc1f20604",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 1638474,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "a62b8f8599180c25c00f6245016873e2f2b9446d1cbba077f2390321e8764e91",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__development__slip-2.summary.json",
+      "source_sha256": "152c86a19b29ae57ab2b4c4b4b43a66aae5619829851bbef774d800e5cef58bf",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 1638474,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "978a6145ec482ea7e018ba6cccd7fd9cc9748854595d45948020f76a6b4323fb",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__diagnostic__slip-1.summary.json",
+      "source_sha256": "b731bec720741b669d17ee5e6297b6a48d5d828e2d9ca594389ae086aa3724f1",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "76ef413fbe5334a7bd838bbdf087b57a7b71647ae3527fcac6172ab33010a972",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__diagnostic__slip-2.summary.json",
+      "source_sha256": "79853f52ae40a740bddbb730fa27c6028f08fb71ef0bd2fcea438eadfba35c7f",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8b47e177c69e7fdae72f033a137e93753b6b89a4e248f084596c3dc6225a38b3",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__full__slip-1.summary.json",
+      "source_sha256": "6460e8271330f625ddc6a057a9e8c958d2bc86fd0b86e3ed16c6172ed45b8b4c",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "82f353482afb449babcc7357553c44d4a91feb8c06469a45442b7aba955b3625",
+      "source": "research/experiments/20260905T034429.204861Z-reddit-scalper-1m-proxy-fixed-clock-ddd23c219bad/reddit_scalper_1m_proxy__full__slip-2.summary.json",
+      "source_sha256": "3245c429309c0cf2b3db322ed7b5f59c302e545615b0bee521eba633c59f1f57",
+      "candidate": "reddit_scalper_1m_proxy",
+      "status": "completed",
+      "range": {
+        "bar_count": 2532101,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-06T03:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "4d733db2f6f877fe6960d92c2a5a877f508e299583d7540cc2d96b5438b8176d",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__development__slip-1.summary.json",
+      "source_sha256": "5cf614e9eeaf4d0b42ddee85bc81474005f0bab914240081e3f3943e2ea8abf0",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "b90915159c157048b754d9d229a28f71e974ff8c413ddd70544c672f48dc4f1f",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__development__slip-2.summary.json",
+      "source_sha256": "e2606e6a20340b28e8eb12e022ea3b86f39090e0983ba4e9755c30f9f8502c79",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 1616273,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2023-12-29T22:00:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "173a11448e617b86128a4e8ecba0a1869ab5572567a8499ff0d460f1ae882ef5",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__diagnostic__slip-1.summary.json",
+      "source_sha256": "20cfad7de3e398b0dc74c8c8189174bbd357fa658c66cc319e1acd0473a6f89f",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "c4bb575e143b3a0a596bee7447cafd3cfdada866cc003a068842da08103800c9",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__diagnostic__slip-2.summary.json",
+      "source_sha256": "62a058b67a664728302a0f8f312f77507cd8e41ff74667a425969cc01e54b5dc",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 893627,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2024-01-01T23:00:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8e5e42e1ab205629324c71213f9f7683a11c456fd47b4241cda21163c4f3bfc0",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__full__slip-1.summary.json",
+      "source_sha256": "249fa4f4c4dce2d25ec2144a8cd1db95ff5248a96add0b037c979a86065849b6",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    },
+    {
+      "id": "8530db9eb376a8664de61bb7fb4f32566de9f694c4d66b9198732c07714fbbb9",
+      "source": "research/experiments/20260905T034455.216080Z-reddit-hourly-range-fixed-clock-a16661889de7/reddit_hourly_range_mnq__full__slip-2.summary.json",
+      "source_sha256": "080622ad63ff0ef7c5022ed687a8d441802877302b04621fd6b0bf7120786fa0",
+      "candidate": "reddit_hourly_range_mnq",
+      "status": "completed",
+      "range": {
+        "bar_count": 2509900,
+        "contract_id": "CON.F.US.MNQ.U26",
+        "end": "2026-07-10T20:20:00+00:00",
+        "start": "2019-05-29T10:59:00+00:00",
+        "symbol": "MNQ",
+        "timeframe_unit": "minute",
+        "timeframe_unit_number": 1
+      }
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,7 +13,7 @@ from ..market_observation_models import DecisionResearchSnapshot
 from ..models import BotDecision, BotOrderAttempt, ProjectXMarketCandle, ProjectXTradeEvent
 from . import market_observations as observations
 
-VERSION = "decision_snapshot_v1"
+VERSION = "decision_snapshot_v2_model_probability"
 _PENDING_KEY = "market_research_pending_snapshots"
 _ROUTING_KEY = "market_research_pending_routing"
 
@@ -55,11 +56,13 @@ def stage_decision_snapshot(db: Session, *, decision, config, signal, analysis: 
         target = observations.number(payload.get("take_profit")) or observations.number(payload.get("final_take_profit"))
         valid = bool(entry_price and stop and target and (
             direction == "long" and stop < entry_price < target or direction == "short" and target < entry_price < stop))
-        score = observations.number((analysis.get("trade_evaluation") or {}).get("total_score"))
+        forecast = payload.get("probabilistic_research") or {}
+        probability = observations.number(((forecast.get("forecasts") or {}).get(action) or {}).get("probability_net_positive"))
+        score = probability * 100 if probability is not None else None
         latest_candle = max(candles, key=lambda row: row.candle_timestamp) if candles else None
         candle_source = str(getattr(latest_candle, "source", None) or "projectx")
         candle_live = bool(getattr(latest_candle, "live", False))
-        snapshot = _safe_json({"version": VERSION, "observed_at": observed, "score_kind": "heuristic_not_probability",
+        snapshot = _safe_json({"version": VERSION, "observed_at": observed, "score_kind": "model_probability_net_positive",
             "candle_stream": {"source": candle_source, "live": candle_live, "contract_id": str(decision.contract_id)},
             "strategy": {key: getattr(config, key, None) for key in (
                 "id", "strategy_type", "strategy_params", "timeframe_unit", "timeframe_unit_number", "order_size",
@@ -141,7 +144,7 @@ def _rollback_snapshots(db: Session, previous_transaction) -> None:
             db.info[key] = [(scope, values) for scope, values in db.info[key] if not rolled_back(scope)]
 
 
-def label_barriers(snapshot, candles: list, *, now: datetime, horizon_minutes: int = 60) -> dict | None:
+def label_barriers(snapshot, candles: list, *, now: datetime, horizon_minutes: int = 15) -> dict | None:
     """Label only complete minutes strictly after observation, never the signal bar.
 
     This is a hypothetical barrier outcome, not a simulated/executed trade or
@@ -151,6 +154,8 @@ def label_barriers(snapshot, candles: list, *, now: datetime, horizon_minutes: i
     now = observations.utc(now)
     start = observed.replace(second=0, microsecond=0) + timedelta(minutes=1)
     end = start + timedelta(minutes=horizon_minutes)
+    if getattr(snapshot, "snapshot_version", None) == VERSION and getattr(snapshot, "signal_timestamp", None):
+        end = observations.utc(snapshot.signal_timestamp) + timedelta(minutes=5+horizon_minutes)
     stop, target = float(snapshot.stop_loss), float(snapshot.take_profit)
     direction = snapshot.direction
     expected = start
@@ -159,6 +164,8 @@ def label_barriers(snapshot, candles: list, *, now: datetime, horizon_minutes: i
                       key=lambda row: observations.utc(row.candle_timestamp))
     details = {"method": "observed_1m_barrier_sequence_v1", "start": start.isoformat(), "deadline": end.isoformat(),
                "horizon_minutes": horizon_minutes, "price_basis": "fixed_plan_barriers_no_fill_simulation"}
+    if start >= end:
+        return {"outcome": "gap", "outcome_at": end, "outcome_details": {**details, "reason": "observation_after_forecast_horizon"}}
     # Both historical/live copies of one minute with differing OHLC are ambiguous.
     seen = {}
     conflicts = set()
@@ -201,7 +208,7 @@ def evaluate_pending(db, *, user_id: str, account_id: int, now: datetime | None 
             ProjectXMarketCandle.contract_id == row.contract_id, ProjectXMarketCandle.unit == "minute",
             ProjectXMarketCandle.source == row.candle_source, ProjectXMarketCandle.live == row.candle_live,
             ProjectXMarketCandle.unit_number == 1, ProjectXMarketCandle.candle_timestamp >= start,
-            ProjectXMarketCandle.candle_timestamp < min(start + timedelta(minutes=60), now),
+            ProjectXMarketCandle.candle_timestamp < min(start + timedelta(minutes=15), now),
             ProjectXMarketCandle.is_partial.is_(False)).order_by(ProjectXMarketCandle.candle_timestamp).limit(121).all()
         result = label_barriers(row, candles, now=now)
         if result:
@@ -237,9 +244,14 @@ def execution_summary(db, *, user_id: str, account_id: int) -> dict:
             average_fill = sum(float(fill.price) * float(fill.size) for fill in fills) / quantity
             differences.setdefault(attempt.contract_id, []).append((average_fill - float(decision.price)) * (1 if attempt.side == "BUY" else -1))
     averages = {contract: sum(values) / len(values) for contract, values in differences.items()}
+    exit_drifts = [(a.raw_request or {}).get("timeExit", {}).get("exit_drift_seconds") for a in attempts]
+    exit_drifts = [v for v in exit_drifts if isinstance(v, (int, float)) and math.isfinite(v)]
     return {"order_attempts": len(attempts), "matched_orders": matched_orders, "matched_fill_count": fill_count,
             "mean_signed_price_difference": next(iter(averages.values())) if len(averages) == 1 else None,
             "price_difference_by_contract": averages,
+            "timed_exit_observations": len(exit_drifts),
+            "mean_exit_drift_seconds": sum(exit_drifts) / len(exit_drifts) if exit_drifts else None,
+            "maximum_exit_drift_seconds": max(exit_drifts) if exit_drifts else None,
             "latency_ms": None, "limitations": ["Latest 1,000 attempts; fills linked only by exact provider order ID, owner, account and contract.",
                 "Price difference is versus the decision reference, not measured arrival-quote slippage.",
                 "No provider submission/acknowledgement timestamps are captured; database timestamps are not execution latency."]}
@@ -249,9 +261,18 @@ def research_status(db, *, user_id: str, account_id: int, limit: int = 100) -> d
     query = db.query(DecisionResearchSnapshot).filter(DecisionResearchSnapshot.user_id == user_id, DecisionResearchSnapshot.account_id == account_id)
     counts = dict(query.with_entities(DecisionResearchSnapshot.outcome, func.count(DecisionResearchSnapshot.id)).group_by(DecisionResearchSnapshot.outcome).all())
     rows = query.order_by(DecisionResearchSnapshot.observed_at.desc(), DecisionResearchSnapshot.id.desc()).limit(limit).all()
+    from .trading_day import TRADING_TZ
+    hourly = {}
+    observed_rows = query.filter(DecisionResearchSnapshot.snapshot_version == VERSION).with_entities(
+        DecisionResearchSnapshot.observed_at, DecisionResearchSnapshot.action).order_by(DecisionResearchSnapshot.observed_at.desc()).limit(10000).all()
+    for at, action in observed_rows:
+        hour = str(observations.utc(at).astimezone(TRADING_TZ).hour).zfill(2)
+        item = hourly.setdefault(hour, {"observations": 0, "holds": 0, "entries_proposed": 0})
+        item["observations"] += 1
+        item["holds" if action == "HOLD" else "entries_proposed"] += 1
     fields = ("id", "decision_id", "account_id", "contract_id", "action", "reason", "observed_at", "score", "direction", "entry_price", "stop_loss", "take_profit", "outcome", "outcome_at", "outcome_details", "snapshot_version", "snapshot_hash", "candle_source", "candle_live", "routing")
     buckets = {}
-    for score, outcome, count in query.with_entities(DecisionResearchSnapshot.score, DecisionResearchSnapshot.outcome, func.count(DecisionResearchSnapshot.id)).group_by(DecisionResearchSnapshot.score, DecisionResearchSnapshot.outcome):
+    for score, outcome, count in query.filter(DecisionResearchSnapshot.snapshot_version == VERSION).with_entities(DecisionResearchSnapshot.score, DecisionResearchSnapshot.outcome, func.count(DecisionResearchSnapshot.id)).group_by(DecisionResearchSnapshot.score, DecisionResearchSnapshot.outcome):
         if score is not None:
             key = min(90, int(score) // 10 * 10)
             bucket = buckets.setdefault(key, {"minimum_score": key, "maximum_score": key + 9 if key < 90 else 100, "target": 0, "stop": 0, "other": 0})
@@ -259,9 +280,12 @@ def research_status(db, *, user_id: str, account_id: int, limit: int = 100) -> d
     score_buckets = [{**bucket, "resolved_barrier_count": bucket["target"] + bucket["stop"],
                      "target_first_rate": bucket["target"] / (bucket["target"] + bucket["stop"]) if bucket["target"] + bucket["stop"] else None}
                     for _, bucket in sorted(buckets.items())]
-    return {"items": [{**{key: getattr(row, key) for key in fields}, "score_kind": "heuristic_not_probability"} for row in rows],
+    return {"items": [{**{key: getattr(row, key) for key in fields}, "score_kind": "model_probability_net_positive" if row.snapshot_version == VERSION else "heuristic_not_probability"} for row in rows],
             "score_buckets": score_buckets,
+            "decisions_by_et_hour": hourly,
+            "hourly_sample_limit": 10000,
+            "label_limitation": "Barrier outcomes describe observed minutes in the 15-minute decision horizon, not executed fills or P(net profit) calibration.",
             "summary": {"total": sum(counts.values()), "pending": counts.get("pending", 0), "labeled": counts.get("target", 0) + counts.get("stop", 0) + counts.get("expired", 0),
                 "ambiguous": counts.get("ambiguous", 0), "gap": counts.get("gap", 0), "no_geometry": counts.get("no_geometry", 0),
-                "outcomes": counts, "score_kind": "heuristic_not_probability", "retention_days": observations.writer.decision_retention_days, "record_cap": observations.writer.decision_record_cap},
+                "outcomes": counts, "score_kind": "model_probability_net_positive", "retention_days": observations.writer.decision_retention_days, "record_cap": observations.writer.decision_record_cap},
             "execution": execution_summary(db, user_id=user_id, account_id=account_id)}
