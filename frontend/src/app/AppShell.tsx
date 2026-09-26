@@ -73,6 +73,15 @@ function AppShellRouteFallback() {
   );
 }
 
+const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
+  ["/", "Dashboard"],
+  ["/accounts", "Accounts"],
+  ["/trades", "Trades"],
+  ["/expenses", "Expenses"],
+  ["/bot", "Bot"],
+  ["/themes", "Themes"],
+];
+
 export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -321,6 +330,9 @@ export function AppShell() {
     : currentUserEmailDisplay;
   const isTradesRoute = location.pathname.startsWith("/trades");
   const isDashboardRoute = location.pathname === "/";
+  const currentPageLabel = WORKSPACE_PAGE_LABELS.find(([prefix]) =>
+    prefix === "/" ? location.pathname === "/" : location.pathname.startsWith(prefix),
+  )?.[1] ?? "Workspace";
   const providerSyncSummary = useMemo(
     () => summarizeAccountProviderSync(orderedAccounts),
     [orderedAccounts],
@@ -491,7 +503,7 @@ export function AppShell() {
       <aside className="workspace-sidebar" aria-label="Workspace sidebar">
         <Link className="workspace-brand" to={buildAccountAwarePath("/", selectedAccountId)} aria-label="TopSignal home">
           <span className="workspace-brand-mark"><Icon name="chart" /></span>
-          <span>TopSignal<span className="workspace-brand-caption">TRADING WORKSPACE</span></span>
+          <span className="workspace-brand-name">TopSignal<span className="workspace-brand-caption">TRADING WORKSPACE</span></span>
         </Link>
         <p className="workspace-nav-label">Workspace</p>
           <Tabs
@@ -542,6 +554,8 @@ export function AppShell() {
           >
             <div className="min-w-0 flex-1 space-y-1">
               <div className="workspace-controls flex flex-wrap items-end gap-2 sm:gap-3 xl:flex-nowrap">
+                {/* Decorative location marker; labels render from CSS so they never duplicate accessible text. */}
+                <div className="workspace-crumb" aria-hidden="true" data-page={currentPageLabel} />
                 <div className="workspace-account w-full min-w-0 sm:w-[300px] sm:flex-none xl:w-[320px]">
                   <label
                     htmlFor="app-active-account"
@@ -680,7 +694,7 @@ export function AppShell() {
       >
         {demoMode.enabled ? (
           <div
-            className="sticky top-0 z-20 -mx-4 mb-3 border-y border-app-accent/40 bg-app-bg/95 px-4 py-2 text-center text-xs font-semibold tracking-wide text-app-text shadow-sm backdrop-blur sm:static sm:mx-0 sm:rounded-lg sm:border"
+            className="workspace-demo-ribbon sticky top-0 z-20 -mx-4 mb-3 border-y border-app-accent/40 bg-app-bg/95 px-4 py-2 text-center text-xs font-semibold tracking-wide text-app-text shadow-sm backdrop-blur sm:static sm:mx-0 sm:rounded-lg sm:border"
             role="note"
             aria-label={`Demonstration data, read only, scenario as of ${DEMO_AS_OF_LABEL}`}
           >

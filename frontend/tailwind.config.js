@@ -3,6 +3,11 @@ export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-ui)"],
+        mono: ["var(--font-mono)"],
+        display: ["var(--font-display)"],
+      },
       colors: {
         app: {
           bg: "rgb(var(--theme-bg) / <alpha-value>)",

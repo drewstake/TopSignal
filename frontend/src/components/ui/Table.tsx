@@ -2,7 +2,7 @@
 import { cn } from "./cn";
 
 export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElement>) {
-  return <table className={cn("w-full min-w-[680px] text-left text-sm", className)} {...props} />;
+  return <table className={cn("ui-table w-full min-w-[680px] text-left text-sm", className)} {...props} />;
 }
 
 export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {

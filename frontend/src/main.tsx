@@ -2,6 +2,7 @@
 import { createRoot } from "react-dom/client";
 import "./styles/globals.css";
 import "./styles/workspace.css";
+import "./styles/signal.css";
 import App from "./App";
 import { initializeAppTheme } from "./lib/theme";
 
