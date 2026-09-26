@@ -30,7 +30,7 @@ export function Button({ className, variant = "primary", size = "md", type = "bu
     <button
       type={type}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl border font-medium transition duration-200 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60",
+        `ui-button ui-button-${variant} inline-flex items-center justify-center gap-2 rounded-xl border font-medium transition duration-200 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60`,
         buttonVariants[variant],
         buttonSizes[size],
         className,

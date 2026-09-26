@@ -20,7 +20,7 @@ export function DemoModeNotice({ children, className, compact = false }: DemoMod
   return (
     <aside
       className={cn(
-        "rounded-xl border border-app-accent/45 bg-app-accent/10 text-app-text-soft shadow-[0_12px_30px_-26px_rgb(var(--theme-accent)/0.85)]",
+        "demo-notice rounded-xl border border-app-accent/45 bg-app-accent/10 text-app-text-soft shadow-[0_12px_30px_-26px_rgb(var(--theme-accent)/0.85)]",
         compact ? "px-3 py-2" : "px-4 py-3",
         className,
       )}
@@ -29,7 +29,7 @@ export function DemoModeNotice({ children, className, compact = false }: DemoMod
       data-demo-provenance="true"
     >
       <div className="flex items-start gap-3">
-        <span className="inline-flex min-h-6 shrink-0 items-center rounded-full border border-app-accent/55 bg-app-accent/15 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-app-accent">
+        <span className="demo-notice-tag inline-flex min-h-6 shrink-0 items-center rounded-full border border-app-accent/55 bg-app-accent/15 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-app-accent">
           Demo data
         </span>
         <div className="min-w-0 text-xs leading-5">

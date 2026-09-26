@@ -19,7 +19,7 @@ export function Badge({ className, variant = "neutral", ...props }: BadgeProps) 
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-medium uppercase tracking-wide",
+        `ui-badge ui-badge-${variant} inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-medium uppercase tracking-wide`,
         styles[variant],
         className,
       )}
