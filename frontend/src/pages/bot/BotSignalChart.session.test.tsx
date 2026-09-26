@@ -108,13 +108,13 @@ it("defers automatic gap repairs while the page is hidden", async () => {
   expect(vi.mocked(api.botsApi.getCandles).mock.calls.some(([query]) => query.repair)).toBe(true);
 });
 
-it("renders TopBot's strategy overlays instead of legacy 9/21 average legends", () => {
+it("renders TopBot's VWAP context without moving-average legends", () => {
   render(<BotSignalChart bot={{ ...bot, strategy_type: "topbot_adaptive" }} authenticatedCacheScope="topbot-indicators"
     activity={null} lastEvaluation={null} refreshToken={0} demoMode />);
-  expect(screen.getByText("EMA 20")).not.toBeNull();
-  expect(screen.getByText("EMA 50 · short filter")).not.toBeNull();
-  expect(screen.getByText("TopBot VWAP · resets 09:30 / 18:00 ET")).not.toBeNull();
+  expect(screen.queryByText("EMA 20")).toBeNull();
+  expect(screen.getByText("VWAP · context only")).not.toBeNull();
   expect(screen.queryByText("Fast EMA 9")).toBeNull();
+  expect(screen.queryByText("Fast SMA 9")).toBeNull();
 });
 
 it("loads a market chart without a bot or account and avoids warming unrelated timeframes", async () => {

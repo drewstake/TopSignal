@@ -24,3 +24,17 @@ The September 4 protocol and reported v1 results remain immutable. Their source
 captures identify the old implementation. New v2 results, if generated later,
 must carry the new engine/model identifiers and source hashes and must not be
 presented as a rerun on the identical v1 engine or as unseen validation.
+
+## v3 dependency revision — 26 September 2026
+
+Removing the EMA/VWAP pullback strategy changed all three pinned dependencies:
+`bot_backtesting.py` now rejects in-app TopBot replays and no longer normalizes
+research fixture parameters to the removed preset; `research_topbot.py` uses the
+current TopBot settings as its base (fixtures still override strategy parameters
+and the 200-bar warmup); and `fixtures/topbot_research.py` drops the
+`baseline_v5`, `v5_long` and `v5_long_atr` controls. The `opening_drive` rule,
+its settings and its calendar exit are unchanged. The wrapper is re-registered as
+engine `5.4.0-topbot-all-sessions+target-through-1tick-v3`, execution model
+`observed_1m_target_through_one_tick_v3`, with the new normalized hashes pinned.
+No historical replay was run for this revision. Earlier v1/v2 results remain
+immutable and cannot be reproduced byte-identically from the current sources.

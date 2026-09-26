@@ -7,7 +7,7 @@ import pytest
 
 from app.services import bot_service, topbot_mathematical as strategy
 from app.services.probabilistic_shadow import model_path, scope_hash
-from app.services.topbot import TOPBOT_SETTINGS, LEGACY_TOPBOT_SETTINGS, prepare_topbot
+from app.services.topbot import TOPBOT_SETTINGS, prepare_topbot
 from test_probabilistic_strategy import NOW, CONTRACT, as_rows, candles, fitted
 from test_bot_execution_safety import (
     USER_A, RecordingClient, _add_account_and_config, _patch_actionable_signal,
@@ -79,16 +79,20 @@ def test_scope_is_bound_to_request_and_new_preset_cannot_weaken_model_limits(tmp
         strategy.RULES, minimum_training_paths=2, position_size=10, routing_policy="live"))
     assert normalized == strategy.RULES
     assert TOPBOT_SETTINGS["strategy_params"] == strategy.RULES
-    assert TOPBOT_SETTINGS["max_daily_loss"] == LEGACY_TOPBOT_SETTINGS["max_daily_loss"] == 250
+    assert TOPBOT_SETTINGS["max_daily_loss"] == 250
     assert TOPBOT_SETTINGS["order_size"] == 1
-    assert bot_service._normalize_strategy_params("topbot_adaptive", LEGACY_TOPBOT_SETTINGS["strategy_params"]) == LEGACY_TOPBOT_SETTINGS["strategy_params"]
+    removed = {"revision": "mnq_ema_vwap_pullback_v6_all_sessions", "ema_period": 20, "stop_points": 50.0}
+    assert bot_service._normalize_strategy_params("topbot_adaptive", removed) == strategy.RULES
 
 
-def test_dispatch_selects_math_and_preserves_persisted_legacy(monkeypatch):
+def test_dispatch_selects_math_and_holds_removed_ema_vwap_configs(monkeypatch):
     monkeypatch.setattr(strategy, "evaluate", lambda rows, **kw: "math")
-    monkeypatch.setattr("app.services.topbot_strategy.evaluate", lambda rows: "legacy")
     assert bot_service.evaluate_topbot_adaptive([], strategy_params=strategy.RULES) == "math"
-    assert bot_service.evaluate_topbot_adaptive([], strategy_params=LEGACY_TOPBOT_SETTINGS["strategy_params"]) == "legacy"
+    for stored in ({"revision": "mnq_ema_vwap_pullback_v6_all_sessions"}, {}, None):
+        held = bot_service.evaluate_topbot_adaptive([], strategy_params=stored)
+        assert held.action == "HOLD"
+        assert "EMA/VWAP strategy was removed" in held.reason
+        assert held.raw_payload["retired_strategy"] is True
 
 
 @pytest.mark.parametrize("offset", [-1, 1])

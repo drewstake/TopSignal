@@ -6,12 +6,10 @@ snapshots this file and these hypotheses before looking at results.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 import math
 
 from app.services import bot_service as indicators
-from app.services import topbot_strategy as baseline
 from app.services.trading_day import TRADING_TZ, futures_holiday_schedule, trading_day_date
 
 
@@ -21,22 +19,6 @@ COMMON = {"stop_cap_points": 100.0, "stop_floor_points": 10.0,
           "flatten_clock": "first observed minute at or after deadline, independent of signal bars",
           "position_size": 1}
 CANDIDATES = {
-    "baseline_v5": {
-        "description": "Original v5 control, including overnight bracket holds.",
-        "hypothesis": "Reproduce the losing baseline under corrected execution assumptions.",
-        "parameters": dict(baseline.RULES),
-    },
-    "v5_long": {
-        "description": "Original v5 entries and brackets, long entries only.",
-        "hypothesis": "Removing shorts isolates whether the original long signal covers costs.",
-        "parameters": {**baseline.RULES, "direction": "long_only"},
-    },
-    "v5_long_atr": {
-        "description": "V5 long entry, volatility-scaled stop, 2R target, daily flatten.",
-        "hypothesis": "A volatility-scaled bracket and larger reward capture trend extensions better than fixed 50/50 points.",
-        "parameters": {**COMMON, "atr_period": 20, "atr_stop_multiple": 2.0,
-                       "reward_multiple": 2.0, "entry_cutoff": "14:30"},
-    },
     "orb30_both": {
         "description": "First closed breakout of the 30-minute opening range, either direction.",
         "hypothesis": "The first opening-range escape captures intraday continuation with fewer transactions than repeated EMA pullbacks.",
@@ -78,8 +60,6 @@ def required_warmup_bars(variant):
 
 
 def get_settings(variant):
-    if variant in {"baseline_v5", "v5_long"}:
-        return {}
     return {"trading_end_time": "16:00", "max_trades_per_day": 3,
             "strategy_params": {"research_revision": REVISION,
                                 **CANDIDATES[variant]["parameters"]}}
@@ -105,7 +85,7 @@ def should_flatten(entry_timestamp, event_time, variant):
     An outage delays the fill until an observed open, but never resets an old
     position's deadline at midnight. Live integration needs this same clock.
     """
-    return variant not in {"baseline_v5", "v5_long"} and event_time >= _flatten_deadline(entry_timestamp)
+    return event_time >= _flatten_deadline(entry_timestamp)
 
 
 def _vwap(rows):
@@ -119,12 +99,6 @@ def _vwap(rows):
 def evaluate(candles, variant, position_qty=0.0):
     definition = CANDIDATES[variant]
     params = definition["parameters"]
-    if variant in {"baseline_v5", "v5_long"}:
-        signal = baseline.evaluate(candles)
-        if variant == "v5_long" and signal.action == "SELL":
-            return replace(signal, action="HOLD", reason="Research: long-only entry control")
-        return signal
-
     rows = indicators._closed_candles(candles)[-200:]
     latest = rows[-1] if rows else None
     timestamp = indicators._as_utc(latest.candle_timestamp) if latest else None
@@ -162,14 +136,7 @@ def evaluate(candles, variant, position_qty=0.0):
     if not math.isfinite(atr) or atr <= 0:
         return result()
     direction, risk = 0, 0.0
-    if variant == "v5_long_atr":
-        # Preserve the engine's already-validated input wrapper; baseline itself
-        # selects the same trailing 200 bars. Revalidating a plain slice here
-        # would repeat every OHLC check at every signal event.
-        signal = baseline.evaluate(candles)
-        if signal.action == "BUY":
-            direction, risk = 1, atr * params["atr_stop_multiple"]
-    elif variant.startswith("orb"):
+    if variant.startswith("orb"):
         count = params["opening_minutes"] // 5
         if len(session) <= count:
             return result()

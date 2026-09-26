@@ -30,14 +30,14 @@ describe("BacktestResults", () => {
 });
 
 describe("BotBacktestPanel", () => {
-  it("offers TopBot Adaptive replay without a strategy picker or date inputs", () => {
+  it("offers replay without a strategy picker or date inputs", () => {
     const markup = renderToStaticMarkup(<BotBacktestPanel bot={null} />);
 
     expect(markup).toContain("Run Backtest");
     expect(markup).not.toContain("Full History");
     expect(markup).not.toContain("Backtest strategy");
     expect(markup).not.toContain("<select");
-    expect(markup).toContain("TopBot Adaptive · MNQ 5m · EMA/VWAP pullback");
+    expect(markup).toContain("TopBot Mathematical can&#x27;t be replayed");
     expect(markup).not.toContain("E-mini S&amp;P 500");
     expect(markup).not.toContain("SMA Cross");
     expect(markup).toContain("No order routing");

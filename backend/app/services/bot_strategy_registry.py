@@ -113,6 +113,11 @@ class MinimumHistoryResolver:
         timeframe_unit: str = "minute",
         timeframe_unit_number: int = 5,
     ) -> tuple[HistoryRequirement, ...]:
+        if (self.identifier == "topbot_adaptive" and isinstance(strategy_params, Mapping)
+                and "research_revision" in strategy_params):
+            # Frozen offline research fixtures read up to 200 closed 5-minute
+            # bars. Check before normalization replaces them with the live preset.
+            return (_history("signal", 200, notes="Frozen offline research fixture; 200 closed 5-minute MNQ bars."),)
         params = LazyParameterNormalizer(self.identifier)(strategy_params)
         service = _bot_service_module()
         effective_fast, effective_slow = service._normalized_strategy_period_values(
@@ -207,7 +212,7 @@ _DEFINITIONS = (
     _definition(
         "topbot_adaptive",
         "evaluate_topbot_adaptive",
-        (_fixed("signal", "minute", 5, notes="MNQ EMA/VWAP trend pullback."),),
+        (_fixed("signal", "minute", 5, notes="MNQ candle features for the mathematical model."),),
         ("regular_session_vwap",),
     ),
     _definition("sma_cross", "evaluate_sma_cross", (_configured(),)),
@@ -418,11 +423,8 @@ def _resolve_minimum_history(
 ) -> tuple[HistoryRequirement, ...]:
     if identifier == "topbot_adaptive":
         from . import topbot_mathematical
-        if topbot_mathematical.selected(dict(params)):
-            return (_history("signal", topbot_mathematical.HISTORY_BARS,
-                             notes="Closed 5-minute MNQ features; separately fitted probabilistic model."),)
-        from .topbot_strategy import HISTORY_BARS
-        return (_history("signal", HISTORY_BARS, notes="One 5-minute MNQ stream; fixed EMA warmup and regular-session VWAP."),)
+        return (_history("signal", topbot_mathematical.HISTORY_BARS,
+                         notes="Closed 5-minute MNQ features; separately fitted probabilistic model."),)
 
     if identifier == "sma_cross":
         hard = slow_period + 1

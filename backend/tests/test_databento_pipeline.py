@@ -455,28 +455,36 @@ def test_local_cache_matches_relational_replay_for_the_same_dbn_sample(
 
         # Exercise the TopBot history adapter too: its rolling evaluator
         # inputs must remain zero-copy mmap slices and still produce the exact
-        # eager/list result.
+        # eager/list result. TopBot has no replayable live strategy, so a
+        # frozen-research style engine reads the adapter's inputs with SMA rules.
+        from app.services import bot_service as bot_service_module
+
         config.strategy_type = "topbot_adaptive"
         config.lookback_bars = 3
-        config.strategy_params = {
-            "source_strategies": ["sma_cross"],
-            "minimum_directional_votes": 1,
-            "max_opposing_votes": 0,
-            "minimum_confidence": 0,
-            "minimum_score": 0,
-            "minimum_reward_risk": 1,
-        }
+        config.strategy_params = {"research_revision": "synthetic-adapter-parity-test"}
+
+        class SmaResearchEngine(backtesting_module.BacktestEngine):
+            def _evaluate_topbot_adaptive(self, candles):
+                return bot_service_module.evaluate_sma_cross(
+                    candles, fast_period=int(config.fast_period), slow_period=int(config.slow_period),
+                )
+
         primary_key = backtesting_module._topbot_asset_stream_key("minute", 5)
-        eager_topbot = backtesting_module.run_backtest(
-            candles=relational,
-            replay_streams={primary_key: relational},
-            **replay_options,
-        )
-        lazy_topbot = backtesting_module.run_backtest(
-            candles=local,
-            replay_streams={primary_key: local},
-            **replay_options,
-        )
+        original_engine = backtesting_module.BacktestEngine
+        backtesting_module.BacktestEngine = SmaResearchEngine
+        try:
+            eager_topbot = backtesting_module.run_backtest(
+                candles=relational,
+                replay_streams={primary_key: relational},
+                **replay_options,
+            )
+            lazy_topbot = backtesting_module.run_backtest(
+                candles=local,
+                replay_streams={primary_key: local},
+                **replay_options,
+            )
+        finally:
+            backtesting_module.BacktestEngine = original_engine
         assert lazy_topbot == eager_topbot
     finally:
         store.clear()

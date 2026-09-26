@@ -567,7 +567,7 @@ def test_topbot_defers_replay_when_requested_start_precedes_available_warmup():
         bars,
         config=_config(
             strategy_type="topbot_adaptive",
-            strategy_params={"source_strategies": ["sma_cross"]},
+            strategy_params={"research_revision": "synthetic-warmup-test"},
             lookback_bars=25,
         ),
         start=BASE_TIME,
@@ -1990,146 +1990,14 @@ def test_full_history_route_is_deterministic_and_has_no_public_prepare_step(
     assert db_session.query(BotBacktest).count() == 2
 
 
-@pytest.mark.parametrize(
-    "cached_count",
-    [0, 200],
-    ids=["empty-primary-cache", "stale-primary-cache"],
-)
-def test_topbot_full_history_single_post_discovers_and_refreshes_primary_history(
-    db_session,
-    monkeypatch,
-    cached_count,
-):
+def test_topbot_backtest_is_rejected_before_any_provider_request(db_session, monkeypatch):
+    """TopBot's only strategy is the mathematical model; it has no replayable strategy."""
     config = _persist_config(
         db_session,
         strategy_type="topbot_adaptive",
         strategy_params={"source_strategies": ["sma_cross"]},
         lookback_bars=25,
     )
-    provider_bars = [
-        {
-            "timestamp": BASE_TIME + timedelta(minutes=5 * index),
-            "open": 100 + index,
-            "high": 101 + index,
-            "low": 99 + index,
-            "close": 100 + index,
-            "volume": 100,
-            "is_partial": False,
-            "raw_payload": {"isPartial": False},
-        }
-        for index in range(230)
-    ]
-    for bar in provider_bars[:cached_count]:
-        db_session.add(
-            _candle(
-                bar["timestamp"],
-                open_price=bar["open"],
-                high_price=bar["high"],
-                low_price=bar["low"],
-                close_price=bar["close"],
-                volume=bar["volume"],
-            )
-        )
-    db_session.commit()
-
-    class StubFullHistoryClient:
-        def __init__(self):
-            self.calls: list[dict[str, Any]] = []
-
-        def search_contracts(self, **_kwargs):
-            raise AssertionError("full-history discovery must retain the configured delivery")
-
-        def retrieve_bars(self, **kwargs):
-            self.calls.append(kwargs)
-            start = _utc(kwargs["start"])
-            end = _utc(kwargs["end"])
-            rows = [
-                bar
-                for bar in provider_bars
-                if start <= _utc(bar["timestamp"]) <= end
-            ]
-            return rows[-int(kwargs["limit"]):]
-
-    client = StubFullHistoryClient()
-    primary_history_loads = 0
-    real_primary_history_loader = backtesting_module._load_primary_closed_candles
-
-    def primary_history_loader_spy(*args, **kwargs):
-        nonlocal primary_history_loads
-        primary_history_loads += 1
-        return real_primary_history_loader(*args, **kwargs)
-
-    def unexpected_order_call(*_args, **_kwargs):
-        raise AssertionError("TopBot full-history replay invoked an order path")
-
-    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 50)
-    monkeypatch.setattr(
-        backtesting_module,
-        "_MAX_PROVIDER_EMPTY_SPAN",
-        timedelta(minutes=20),
-    )
-    monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
-    monkeypatch.setattr(
-        main_module,
-        "_projectx_client_for_user",
-        lambda *_args, **_kwargs: client,
-    )
-    monkeypatch.setattr(bot_service_module, "_submit_order_attempt", unexpected_order_call)
-    monkeypatch.setattr(
-        backtesting_module,
-        "_load_primary_closed_candles",
-        primary_history_loader_spy,
-    )
-
-    response = main_module.create_trading_bot_backtest(
-        bot_config_id=config.id,
-        payload=BotBacktestIn(
-            commission_per_contract=0,
-            slippage_ticks=0,
-        ),
-        db=db_session,
-    )
-    validated = BotBacktestOut.model_validate(response)
-
-    assert client.calls
-    assert all(call["contract_id"] == CONTRACT_ID for call in client.calls)
-    assert validated.range.contract_id == CONTRACT_ID
-    assert validated.range.start == BASE_TIME + timedelta(minutes=995)
-    assert validated.range.end == BASE_TIME + timedelta(minutes=1150)
-    assert validated.range.bar_count == 31
-    assert primary_history_loads == 2
-    assert (
-        db_session.query(ProjectXMarketCandle)
-        .filter(ProjectXMarketCandle.contract_id == CONTRACT_ID)
-        .count()
-        == 230
-    )
-
-
-
-def test_topbot_full_history_fails_explicitly_before_persisting_when_provider_budget_is_exhausted(
-    db_session,
-    monkeypatch,
-):
-    config = _persist_config(
-        db_session,
-        strategy_type="topbot_adaptive",
-        strategy_params={"source_strategies": ["sma_cross"]},
-        lookback_bars=25,
-    )
-    provider_bars = [
-        {
-            "timestamp": BASE_TIME + timedelta(minutes=5 * index),
-            "open": 100 + index,
-            "high": 101 + index,
-            "low": 99 + index,
-            "close": 100 + index,
-            "volume": 100,
-            "is_partial": False,
-            "raw_payload": {"isPartial": False},
-        }
-        for index in range(30)
-    ]
 
     class StubClient:
         def __init__(self):
@@ -2137,14 +2005,9 @@ def test_topbot_full_history_fails_explicitly_before_persisting_when_provider_bu
 
         def retrieve_bars(self, **kwargs):
             self.calls.append(kwargs)
-            start = _utc(kwargs["start"])
-            end = _utc(kwargs["end"])
-            rows = [bar for bar in provider_bars if start <= _utc(bar["timestamp"]) <= end]
-            return rows[-int(kwargs["limit"]):]
+            return []
 
     client = StubClient()
-    monkeypatch.setattr(backtesting_module, "MAX_PROVIDER_FETCH_BARS", 2)
-    monkeypatch.setattr(backtesting_module, "MAX_BACKTEST_PROVIDER_REQUESTS", 2)
     monkeypatch.setattr(main_module, "get_authenticated_user_id", lambda: OWNER_ID)
     monkeypatch.setattr(
         main_module,
@@ -2160,9 +2023,8 @@ def test_topbot_full_history_fails_explicitly_before_persisting_when_provider_bu
         )
 
     assert raised.value.status_code == 400
-    assert "backtest_market_data_request_limit_exceeded" in str(raised.value.detail)
-    assert "no partial backtest was saved" in str(raised.value.detail)
-    assert len(client.calls) == 2
+    assert "research_probabilistic_topbot.py" in str(raised.value.detail)
+    assert client.calls == []
     assert db_session.query(BotBacktest).count() == 0
     assert db_session.query(ProjectXMarketCandle).count() == 0
 

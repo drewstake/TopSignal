@@ -102,7 +102,7 @@ def test_bot_config_list_skips_incompatible_legacy_strategy_without_mutating_it(
 
 
 def test_topbot_normalizer_replaces_ensemble_settings_with_code_preset():
-    from app.services.topbot_strategy import RULES
+    from app.services.topbot_mathematical import RULES
     params = get_strategy_definition("topbot_adaptive").parameter_normalizer({
         "source_strategies": ["sma_cross"], "minimum_score": 0, "ema_period": 1,
         "time_stop_bars": 1, "enable_trailing_stop": True,
@@ -117,9 +117,9 @@ def test_topbot_normalizer_replaces_ensemble_settings_with_code_preset():
 
 
 def test_topbot_acquisition_fetches_one_stream_and_dispatches_only_topbot(monkeypatch):
-    from app.services.topbot_strategy import HISTORY_BARS
+    from app.services.topbot_mathematical import HISTORY_BARS
     candles = [object()]
-    config = SimpleNamespace(strategy_type="topbot_adaptive", strategy_params={})
+    config = SimpleNamespace(strategy_type="topbot_adaptive", strategy_params={}, contract_id="CON.F.US.MNQ.U26")
     fetches, evaluations = [], []
     def fetch(*args, **kwargs):
         fetches.append(kwargs)

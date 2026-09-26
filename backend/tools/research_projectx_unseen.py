@@ -29,7 +29,7 @@ QA_SHA = "f71d270c9ef31d56381bd8e6c6ceba1c83b4bea4458113de33c2eaf466d413ba"
 CONTRACT = "CON.F.US.MNQ.U26"
 SOURCE = "projectx_quarantined_dated_contract"
 REVISION = "projectx_unseen_opening_drive_v1"
-ORIGINAL_FIXTURE_NORMALIZED_SHA = "d0230d261f3e5f00f6f876756086b873987eb540ae2c6a6b1798ba2b376d80e6"
+ORIGINAL_FIXTURE_NORMALIZED_SHA = "90df94dbbc44990341f7eb10a46a1b474e8026befdbae0274c373db7c8e5e442"  # 2026-09-26: EMA/VWAP controls removed; opening_drive unchanged
 UTC = timezone.utc
 MINUTE = timedelta(minutes=1)
 START = datetime(2026, 7, 12, 22, tzinfo=UTC)
@@ -204,9 +204,10 @@ def complete_five_minute_bars(minutes):
 
 def make_config(fixture):
     from app.models import BotConfig
-    from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
+    from app.services.topbot import TOPBOT_SETTINGS
     settings = deepcopy(TOPBOT_SETTINGS)
     settings.update(fixture.get_settings("opening_drive"))
+    settings["lookback_bars"] = max(int(settings["lookback_bars"]), int(fixture.required_warmup_bars("opening_drive")))
     require(all(settings[k] == 1 for k in ("order_size", "max_contracts", "max_open_position")), "one contract required")
     require(settings["lookback_bars"] == 200 and settings["max_daily_loss"] == 250 and settings["cooldown_seconds"] == 300 and settings["max_trades_per_day"] == 3, "original risk settings changed")
     return BotConfig(id=1, user_id="offline-unseen", account_id=1, name="Frozen opening drive unseen evaluation",

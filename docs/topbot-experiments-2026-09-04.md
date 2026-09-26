@@ -178,8 +178,8 @@ commission. The former $1.20-per-side default overstated round-trip costs by
 $1.18. UI, API and all TopBot replay/research tools now default to $0.61.
 
 The fee-only protocol, exact commands and full results are recorded in
-[topbot-fee-correction.md](topbot-fee-correction.md), with machine-readable values
-in `topbot-fee-corrected-baseline.json`. The app replay improved from -$11,015.70
+topbot-fee-correction.md (removed with the EMA/VWAP strategy), with machine-readable values
+in `topbot-fee-corrected-baseline.json` (removed with the EMA/VWAP strategy). The app replay improved from -$11,015.70
 to -$5,357.50; its 4,800 trades include two additional shorts allowed through the
 risk gate. The observed-minute research baseline improved from -$8,433.60 to
 -$3,449.28 on the same 4,224 trades. Engine, strategy, calendar, cache and all
@@ -272,7 +272,7 @@ The separate legacy study completed all 48 cases with zero audit errors. Its
 comparisons reproduce their metrics and trade hashes. The old entry-distance
 filter improves but remains negative in the later period; the extra trend
 filter also remains negative. See the complete
-[legacy fee reconsideration](topbot-legacy-fee-audit-2026-09-04.md).
+legacy fee reconsideration (removed with the EMA/VWAP strategy).
 
 ## A07 — predeclared robustness of unchanged opening drive
 

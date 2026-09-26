@@ -21,7 +21,7 @@ REVISION = "mnq_opening_drive_fixed_neighbors_20260904_v1"
 SOURCE_REVISION = _original.REVISION
 # Normalize CRLF/LF via read_text, so identical source remains reproducible on
 # Windows and Linux. A changed original must not silently change this protocol.
-SOURCE_SHA256 = "d0230d261f3e5f00f6f876756086b873987eb540ae2c6a6b1798ba2b376d80e6"
+SOURCE_SHA256 = "90df94dbbc44990341f7eb10a46a1b474e8026befdbae0274c373db7c8e5e442"  # 2026-09-26: EMA/VWAP controls removed; opening_drive unchanged
 _SOURCE_PATH = Path(_original.__file__)
 _SOURCE_TEXT = _SOURCE_PATH.read_text(encoding="utf-8")
 if hashlib.sha256(_SOURCE_TEXT.encode("utf-8")).hexdigest() != SOURCE_SHA256:

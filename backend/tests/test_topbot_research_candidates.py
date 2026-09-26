@@ -111,5 +111,3 @@ def test_independent_clock_honors_early_close_and_outage_without_resetting_deadl
     assert not research.should_flatten(entry, before, "orb30_both")
     assert research.should_flatten(entry, due, "orb30_both")
     assert research.should_flatten(entry, due + timedelta(days=3), "orb30_both")
-    assert not research.should_flatten(entry, due, "baseline_v5")
-    assert not research.should_flatten(entry, due, "v5_long")

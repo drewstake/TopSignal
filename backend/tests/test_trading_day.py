@@ -138,4 +138,3 @@ def test_research_clock_exits_july3_before_observed_exchange_close():
     entry = datetime(2025, 7, 3, 10, 5, tzinfo=TRADING_TZ)
     assert not should_flatten(entry, datetime(2025, 7, 3, 13, 9, tzinfo=TRADING_TZ), "orb30_both")
     assert should_flatten(entry, datetime(2025, 7, 3, 13, 10, tzinfo=TRADING_TZ), "orb30_both")
-    assert not should_flatten(entry, datetime(2025, 7, 3, 13, 10, tzinfo=TRADING_TZ), "baseline_v5")

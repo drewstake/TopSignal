@@ -264,7 +264,7 @@ Bot control page:
 
 A user can:
 
-- press **Dry Run** or **Live Run** to start TopBot Adaptive on MNQ for the active account
+- press **Dry Run** or **Live Run** to start TopBot Mathematical on MNQ for the active account
 - stop future automation or use the account-wide emergency control
 - review the latest decision, candle timestamp, decision reason, risk blocks, and order-attempt status
 - inspect market bias, scenario weights, expected move, invalidation, nearby levels, volatility, volume, reasoning, and risk notes
@@ -281,7 +281,7 @@ Important bot behaviors:
 
 - The routed page lives at `/bot` and accepts the same active-account query parameter used by the app shell.
 - Run settings are code-owned in `backend/app/services/topbot.py` (`TOPBOT_SETTINGS`). Each start creates or refreshes a stopped account-scoped configuration, resolves the active MNQ delivery through the existing market-data path, and records the run server-side. Stop existing automation before changing modes.
-- TopBot evaluates one MNQ setup: a 20 EMA trend pullback confirmed by regular-session VWAP, with a fixed 50-point stop and 50-point target (1:1). Its long bias requires new shorts to have the 20 EMA below a falling 50 EMA; positions hold for their bracket, with no opposite-signal exits or pyramiding. Tune its rules in `backend/app/services/topbot_strategy.py`; sizing and account risk limits live in `topbot.py`. There is no configuration form or source voting. Defaults are 5-minute bars, one contract, a $250 daily loss entry gate, and 09:30–15:45 ET. See [the rules and measured baselines](docs/topbot-strategy.md). For autonomous strategy work, start with [the research handoff](docs/topbot-research-handoff.md).
+- TopBot's only strategy is TopBot Mathematical (`mnq_bayesian_payoff_v1`): a candle-based Bayesian expected-payoff model on closed 5-minute MNQ bars. It proposes BUY or SELL only when the uncertainty-penalized expected profit after costs exceeds $1 and it has enough independent evidence; otherwise it holds (NO TRADE). Stops are volatility-derived (4–25 points) with a 1.5R target and a 15-minute timed exit. Its adapter is `backend/app/services/topbot_mathematical.py`; sizing and account risk limits live in `topbot.py`. Defaults are one contract, a $250 daily loss entry gate and a 300-second cooldown. The earlier EMA/VWAP pullback strategy was removed on September 26, 2026; a saved configuration that still carries its settings holds every candle until it is stopped and restarted. See [the strategy, data requirements and execution boundaries](docs/topbot-mathematical-strategy.md) and [the probabilistic research workflow](docs/topbot-probabilistic-research.md).
 - Dry-run is the default. Live routing requires a live-mode configuration, an explicit confirmation, both server-side live gates, a healthy leased worker, and a fresh provider-hub classification proving the account is simulated.
 - **Stop Automation** is local-only: it prevents future evaluations but does not cancel working broker orders or close positions. The separately typed-confirmation emergency control cancels and flattens the entire account, then reports success only after ProjectX verifies no orders or positions remain.
 - Live/funded accounts are fail-closed. This supports Topstep's simulated account workflows; ProjectX API automation must not be used for a Live Funded Account.
@@ -725,17 +725,18 @@ Databento ZIPs are the canonical backtest market-data source. This command disco
 ten known MNQ, MES, NQ, and ES jobs in your Downloads folder, validates them, and builds
 partitioned Parquet plus memory-mapped arrays without connecting to PostgreSQL or Supabase:
 
-The Backtest card always runs the current code-owned TopBot Adaptive preset on
-5-minute MNQ candles. Starting balance, transaction fees, and slippage remain replay
-assumptions. MNQ defaults to $0.61 per contract per side ($1.22 round trip),
-including commission, exchange and regulatory fees; slippage is separate. See
-[the fee correction and rerun results](docs/topbot-fee-correction.md). Old saved source/vote settings do not change new replays. The indicator
-library remains available to chart and analysis tools; TopBot does not vote across it.
+The Backtest replay engine serves the other supported strategies and offline research
+fixtures. TopBot Mathematical cannot be replayed over its own training history, so a
+TopBot backtest request is rejected; validate it chronologically with
+`backend/tools/research_probabilistic_topbot.py`. Starting balance, transaction fees,
+and slippage remain replay assumptions. MNQ defaults to $0.61 per contract per side
+($1.22 round trip), including commission, exchange and regulatory fees; slippage is
+separate.
 
 Replay results include long/short performance, average/median/90th-percentile holding
 time for winners and losers, entry-hour/weekday/year groups, exit reasons, duration
 groups, and a sortable paginated trade ledger. Direction filters apply to detailed
-analysis and CSV/JSON exports. See [the current detailed analysis](docs/topbot-backtest-analysis.md).
+analysis and CSV/JSON exports.
 
 ```powershell
 backend\.venv\Scripts\python backend\tools\build_databento_cache.py --downloads

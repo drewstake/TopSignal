@@ -18,7 +18,7 @@ def build_bot_decision_explanation(*, config: Any, signal: Any, decision: Any,
     payload = signal.raw_payload if isinstance(signal.raw_payload, dict) else {}
     settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
     is_topbot = str(config.strategy_type) == "topbot_adaptive"
-    name = "TopBot EMA/VWAP pullback" if is_topbot else str(config.strategy_type).replace("_", " ").title()
+    name = "TopBot (retired strategy)" if is_topbot else str(config.strategy_type).replace("_", " ").title()
     from .topbot_mathematical import selected
     if is_topbot and selected(settings):
         name = "TopBot Mathematical · Bayesian expected payoff"
@@ -39,20 +39,6 @@ def build_bot_decision_explanation(*, config: Any, signal: Any, decision: Any,
     checks.append({"id": "closed_candle", "label": "Decision candle", "status": "passed" if stamp and stamp == provenance.get("latest_candle_timestamp") else "not_evaluated",
                    "detail": f"Closed candle on {decision.contract_id}, opening {stamp}, closing {closed_stamp}. Live quotes are separate." if stamp else "No eligible closed decision candle."})
 
-    # These observations were actually produced by TopBot's evaluator. Absence
-    # means the evaluator exited before that check; never turn it into a pass.
-    if is_topbot:
-        if "pullback_touched" in payload:
-            touched = payload["pullback_touched"] is True
-            checks.append({"id": "pullback", "label": "20 EMA pullback", "status": "passed" if touched else "failed",
-                           "detail": "Previous candle touched the 20 EMA." if touched else "Waiting for the previous candle to touch the 20 EMA."})
-        if "ema_slope" in payload and "session_vwap" in payload:
-            checks.append({"id": "ema_vwap", "label": "EMA and session VWAP", "status": "passed" if strategy_action in {"BUY", "SELL"} else "not_evaluated",
-                           "detail": f"20 EMA {payload['ema']:g}, 3-bar EMA change {payload['ema_slope']:g} points; session candle VWAP {payload['session_vwap']:g}. Entry also requires a confirming close beyond the previous candle and in the candle's own direction."})
-        if "short_entry_allowed" in payload:
-            allowed = payload["short_entry_allowed"] is True
-            checks.append({"id": "short_bias", "label": "Short-entry trend filter", "status": "passed" if allowed else "failed",
-                           "detail": "Shorts require the 20 EMA below a falling 50 EMA; " + ("this condition passed." if allowed else "this condition failed.")})
 
     risk_by_code = {str(row.code): row for row in risk_events}
     freshness_events = [row for code, row in risk_by_code.items() if code in {

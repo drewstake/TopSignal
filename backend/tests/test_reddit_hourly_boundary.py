@@ -9,7 +9,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from app.models import BotConfig
 from app.services import bot_backtesting as replay
-from app.services.topbot import LEGACY_TOPBOT_SETTINGS as TOPBOT_SETTINGS
+from app.services.topbot import TOPBOT_SETTINGS
 from app.services.trading_day import TRADING_TZ, futures_session_is_open
 from tools.fixtures import reddit_hourly_range as fixture
 from tools.research_reddit_hourly import (

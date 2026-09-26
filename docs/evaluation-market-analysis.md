@@ -15,13 +15,10 @@ quality/risk score cards, and the repeated collected-context summary are removed
 from that view. Legacy numeric fields remain in the API for compatibility;
 `score_definitions` explains their inputs, scale, window, and missing-data rules.
 
-TopBot v5 still uses the preset in `backend/app/services/topbot_strategy.py`:
-200 closed MNQ five-minute candles for warmup; EMA20 and its three-bar change;
-a previous-candle EMA touch; a confirming close beyond that candle and on the
-appropriate side of EMA20 and regular-session VWAP. Shorts additionally require
-EMA20 below a falling EMA50. Its entry window is 09:30–15:45 New York time at
-candle close. Regular-session VWAP requires uninterrupted candles from 09:30.
-The one-contract target and fixed 50-point stop/target are unchanged.
+TopBot's only strategy is TopBot Mathematical; see
+[its rules and execution boundaries](topbot-mathematical-strategy.md). The EMA/VWAP
+pullback preset described in earlier versions of this page was removed on
+September 26, 2026.
 
 `bot_decision` is built from the strategy payload and **final** routing outcome,
 including duplicate suppression, risk blocks, dry-run attempts, and provider
@@ -227,7 +224,7 @@ consistency. See the delivery report for commands and results.
   `test_market_context_bundle`, `test_market_observations`, `test_bot_service`,
   `test_bot_execution_safety`, `test_bot_risk_hardening`,
   `test_bot_evaluation_trade_levels`, `test_bot_evaluation_candle_acquisition`,
-  `test_topbot`, `test_topbot_strategy`, `test_bot_backtesting`,
+  `test_topbot`, `test_topbot_strategy` (since removed), `test_bot_backtesting`,
   `test_trading_day`, `test_trade_plan_evaluator`,
   `test_trade_plan_observation_coverage`, `test_databento_import_storage_policy`,
   `test_databento_local_cache`, and `test_local_backtest_support`.

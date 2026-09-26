@@ -46,10 +46,10 @@ def test_duplicate_explanation_reports_final_mutated_action(db_session, monkeypa
     assert client.place_order_calls == []
 
 
-def test_actual_topbot_warmup_hold_is_explained_without_claiming_risk_permission(db_session, monkeypatch, open_exchange_session):
-    from app.services.topbot_strategy import evaluate
+def test_retired_topbot_config_holds_without_claiming_risk_permission(db_session, monkeypatch, open_exchange_session):
     account, config = _add_account_and_config(db_session)
     config.strategy_type = "topbot_adaptive"
+    config.strategy_params = {"revision": "mnq_ema_vwap_pullback_v6_all_sessions"}
     db_session.flush()
     analysis_builder = bot_service.build_bot_market_analysis
     _patch_actionable_signal(monkeypatch)
@@ -57,12 +57,12 @@ def test_actual_topbot_warmup_hold_is_explained_without_claiming_risk_permission
     fetch = bot_service.fetch_candles_and_evaluate_strategy
     def actual_strategy(*args, **kwargs):
         candles, _signal = fetch(*args, **kwargs)
-        return candles, evaluate(candles)
+        return candles, bot_service.evaluate_topbot_adaptive(candles, strategy_params=config.strategy_params)
     monkeypatch.setattr(bot_service, "fetch_candles_and_evaluate_strategy", actual_strategy)
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account, client=RecordingClient(), dry_run=True)
     assert result.status == "held"
-    assert "200 closed candles" in result.analysis["bot_decision"]["summary"]
-    assert result.analysis["bot_decision"]["strategy"]["revision"]
+    assert "EMA/VWAP strategy was removed" in result.analysis["bot_decision"]["summary"]
+    assert result.analysis["bot_decision"]["strategy"]["revision"] == "mnq_ema_vwap_pullback_v6_all_sessions"
     assert next(check for check in result.analysis["bot_decision"]["checks"] if check["id"] == "risk")["status"] == "not_evaluated"
     response = BotEvaluationOut.model_validate(bot_service.serialize_evaluation(result)).model_dump(mode="json")
     research = response["analysis"]["bot_decision"]["probabilistic_research"]
@@ -194,19 +194,20 @@ def test_optional_explanation_failure_preserves_routing_result_and_api_contract(
     assert client.place_order_calls == []
 
 
-def test_topbot_warmup_does_not_stitch_different_contracts():
-    from app.services.topbot_strategy import evaluate
+def test_topbot_does_not_stitch_different_contracts():
+    from app.services.topbot_mathematical import evaluate
     started = datetime(2026, 9, 1, 13, 30, tzinfo=timezone.utc)
     rows = []
     for index in range(200):
         row = candle(started+timedelta(minutes=5*index))
         row.contract_id = "CON.F.US.MNQ.U26" if index < 199 else "CON.F.US.MNQ.Z26"
         row.symbol = "MNQ"
+        row.user_id = USER_A
         rows.append(row)
     assert len(bot_service._closed_candles(rows)) == 1
-    result = evaluate(rows)
+    result = evaluate(rows, contract_id="CON.F.US.MNQ.U26")
     assert result.action == "HOLD"
-    assert "200 closed candles" in result.reason
+    assert "contract does not match" in result.reason
 
 
 def test_analysis_uses_actual_special_strategy_timeframe_and_same_stream_as_strategy():

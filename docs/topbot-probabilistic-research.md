@@ -1,5 +1,12 @@
 # MNQ probabilistic TopBot research, 21 September 2026
 
+**Update, 26 September 2026:** The EMA/VWAP pullback strategy was removed from
+TopSignal. New experiments use the
+[registered protocol v2](topbot-probabilistic-protocol-v2.json), identical to v1
+except that the paired daily benchmark is flat (no trading, $0 per session)
+instead of the v5 replay comparator described below. Protocol v1 and its
+21 September results remain historical records.
+
 Status: **research implementation, not a validated replacement**. Mathematics
 specifies assumptions and tests; it does not guarantee profitability. The v5
 EMA/VWAP strategy remains the default and rollback comparator. No active run,

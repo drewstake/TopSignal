@@ -6,6 +6,14 @@ supplies the actual BUY / SELL / HOLD signal passed to the existing router.
 The API uses HOLD for the model's NO TRADE choice. This is a strategy-selection
 change, not evidence of profitability or completed live validation.
 
+**September 26, 2026:** The EMA/VWAP pullback strategy was removed; this model is
+now TopBot's only strategy. Saved settings from removed revisions normalize to this
+preset when a config is saved. A config that still stores removed settings holds
+every candle with an explanation; stop it and start a new run. The Backtest card
+rejects TopBot requests. Chronological validation now uses
+[protocol v2](topbot-probabilistic-protocol-v2.json), whose paired benchmark is
+flat (no trading) instead of the removed EMA/VWAP incumbent.
+
 `backend/app/services/topbot_mathematical.py` adapts the existing researched
 model; it does not substitute a new indicator rule or fit parameters during an
 evaluation. Model inputs are closed five-minute MNQ candles. It compares expected
@@ -105,7 +113,7 @@ new historical caches or database migrations are introduced by this feature.
 
 Tests exercise actual Bayesian BUY/SELL forecasts through the new adapter,
 missing/stale/invalid observations, receipt-time causality, owner and contract
-isolation, immutable model limits, legacy-versus-mathematical dispatch, live-worker/confirmation enforcement and a Dry Run router/API result using the original forecast.
+isolation, immutable model limits, removed-strategy HOLD dispatch, live-worker/confirmation enforcement and a Dry Run router/API result using the original forecast.
 UI tests distinguish selected-model decisions from the old shadow display.
 
 Historical verification recorded before experimental Practice routing: **2,101 backend tests passed,
