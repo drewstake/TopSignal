@@ -18,6 +18,9 @@ const ExpensesPage = lazy(() =>
 const BotPage = lazy(() =>
   import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
 );
+const SimulationPage = lazy(() =>
+  import("../pages/simulation/SimulationPage").then((module) => ({ default: module.SimulationPage })),
+);
 const ThemePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
 );
@@ -55,6 +58,11 @@ export const router = createBrowserRouter([
       {
         path: "bot",
         element: <BotPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "simulation",
+        element: <SimulationPage />,
         errorElement: <RouteErrorPage />,
       },
       {
