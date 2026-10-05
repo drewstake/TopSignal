@@ -1,0 +1,1102 @@
+[
+  {
+    "tradeHash": 853299275,
+    "books": {
+      "BT": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 81942,
+        "up": 0,
+        "volatility": 1,
+        "volume": 1,
+        "anchor": 81942,
+        "fair": 81942,
+        "down": 0,
+        "impulse": 0
+      },
+      "BX": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 23298,
+        "up": 0,
+        "volatility": 1,
+        "volume": 1,
+        "anchor": 23299,
+        "fair": 23299,
+        "down": 0,
+        "impulse": 0
+      },
+      "BG": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          }
+        },
+        "last": 23846,
+        "up": 0,
+        "volatility": 0.96,
+        "volume": 3,
+        "anchor": 23846,
+        "fair": 23846,
+        "down": 0,
+        "impulse": 0
+      }
+    },
+    "step": 0,
+    "randomState": 1018502579,
+    "totals": {
+      "balance": 25586714,
+      "realized": 0,
+      "cashFlow": 0
+    },
+    "newsUntil": 0,
+    "nextTrade": 4,
+    "nextNews": 80,
+    "nextRegime": 190.47474060695373,
+    "regime": "Range-bound",
+    "nextOrder": 93,
+    "totalVolume": 5
+  },
+  {
+    "tradeHash": 853299275,
+    "books": {
+      "BT": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 20485.5,
+              "Time": 0,
+              "Close": 20485.5,
+              "High": 20485.5,
+              "Open": 20485.5,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 81942,
+        "up": 0,
+        "volatility": 1,
+        "volume": 1,
+        "anchor": 81942.24101111174,
+        "fair": 81942.00602527779,
+        "down": 0,
+        "impulse": 0
+      },
+      "BX": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5824.5,
+              "High": 5824.5,
+              "Open": 5824.5,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 23298,
+        "up": 0,
+        "volatility": 1,
+        "volume": 1,
+        "anchor": 23299.133629542164,
+        "fair": 23299.003340738553,
+        "down": 0,
+        "impulse": 0
+      },
+      "BG": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "1m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.6,
+              "Time": 0,
+              "Close": 2384.6,
+              "High": 2384.6,
+              "Open": 2384.6,
+              "Volume": 3
+            }
+          }
+        },
+        "last": 23846,
+        "up": 0,
+        "volatility": 0.96,
+        "volume": 3,
+        "anchor": 23845.976949388772,
+        "fair": 23845.99942373472,
+        "down": 0,
+        "impulse": 0
+      }
+    },
+    "step": 1,
+    "randomState": 1172812360,
+    "totals": {
+      "balance": 25586714,
+      "realized": 0,
+      "cashFlow": 0
+    },
+    "newsUntil": 0,
+    "nextTrade": 4,
+    "nextNews": 80,
+    "nextRegime": 190.47474060695373,
+    "regime": "Range-bound",
+    "nextOrder": 93,
+    "totalVolume": 5
+  },
+  {
+    "tradeHash": 1075126890,
+    "books": {
+      "BT": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 20484.25,
+              "Time": 0,
+              "Close": 20484.5,
+              "High": 20485.75,
+              "Open": 20485.5,
+              "Volume": 437
+            }
+          },
+          "1m": {
+            "count": 2,
+            "last": {
+              "Low": 20484.25,
+              "Time": 60,
+              "Close": 20484.5,
+              "High": 20484.75,
+              "Open": 20484.5,
+              "Volume": 86
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 20484.25,
+              "Time": 0,
+              "Close": 20484.5,
+              "High": 20485.75,
+              "Open": 20485.5,
+              "Volume": 437
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 20484.25,
+              "Time": 0,
+              "Close": 20484.5,
+              "High": 20485.75,
+              "Open": 20485.5,
+              "Volume": 437
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 20484.25,
+              "Time": 0,
+              "Close": 20484.5,
+              "High": 20485.75,
+              "Open": 20485.5,
+              "Volume": 437
+            }
+          }
+        },
+        "last": 81938,
+        "up": 32,
+        "volatility": 0.5422255963436636,
+        "volume": 437,
+        "anchor": 81998.58121760275,
+        "fair": 81940.40731786775,
+        "down": 37,
+        "impulse": 5.846751915749528
+      },
+      "BX": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5825.5,
+              "High": 5826,
+              "Open": 5824.5,
+              "Volume": 409
+            }
+          },
+          "1m": {
+            "count": 2,
+            "last": {
+              "Low": 5825,
+              "Time": 60,
+              "Close": 5825.5,
+              "High": 5825.75,
+              "Open": 5825.75,
+              "Volume": 89
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5825.5,
+              "High": 5826,
+              "Open": 5824.5,
+              "Volume": 409
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5825.5,
+              "High": 5826,
+              "Open": 5824.5,
+              "Volume": 409
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 5824.5,
+              "Time": 0,
+              "Close": 5825.5,
+              "High": 5826,
+              "Open": 5824.5,
+              "Volume": 409
+            }
+          }
+        },
+        "last": 23302,
+        "up": 47,
+        "volatility": 0.5689395742838154,
+        "volume": 409,
+        "anchor": 23337.069597293732,
+        "fair": 23299.09465780939,
+        "down": 41,
+        "impulse": 3.7347474897374577
+      },
+      "BG": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 2384.3,
+              "Time": 0,
+              "Close": 2384.3,
+              "High": 2384.9,
+              "Open": 2384.6,
+              "Volume": 348
+            }
+          },
+          "1m": {
+            "count": 2,
+            "last": {
+              "Low": 2384.3,
+              "Time": 60,
+              "Close": 2384.3,
+              "High": 2384.7000000000003,
+              "Open": 2384.6,
+              "Volume": 82
+            }
+          },
+          "15m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.3,
+              "Time": 0,
+              "Close": 2384.3,
+              "High": 2384.9,
+              "Open": 2384.6,
+              "Volume": 348
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 2384.3,
+              "Time": 0,
+              "Close": 2384.3,
+              "High": 2384.9,
+              "Open": 2384.6,
+              "Volume": 348
+            }
+          },
+          "5m": {
+            "count": 1,
+            "last": {
+              "Low": 2384.3,
+              "Time": 0,
+              "Close": 2384.3,
+              "High": 2384.9,
+              "Open": 2384.6,
+              "Volume": 348
+            }
+          }
+        },
+        "last": 23843,
+        "up": 37,
+        "volatility": 0.29860550739531266,
+        "volume": 348,
+        "anchor": 23874.552725254285,
+        "fair": 23845.89719399861,
+        "down": 36,
+        "impulse": 2.8558574580103997
+      }
+    },
+    "step": 320,
+    "randomState": 1431355490,
+    "totals": {
+      "balance": 25588508.31973512,
+      "realized": 1794.3197351265735,
+      "cashFlow": 0
+    },
+    "newsUntil": 121.85162376000156,
+    "nextTrade": 570,
+    "nextNews": 257.8441522819196,
+    "nextRegime": 190.47474060695373,
+    "regime": "Range-bound",
+    "nextOrder": 2793,
+    "totalVolume": 1194
+  },
+  {
+    "tradeHash": 457642674,
+    "books": {
+      "BT": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 20479.25,
+              "Time": 0,
+              "Close": 20505.25,
+              "High": 20527.25,
+              "Open": 20485.5,
+              "Volume": 13992
+            }
+          },
+          "1m": {
+            "count": 31,
+            "last": {
+              "Low": 20505.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 3,
+            "last": {
+              "Low": 20505.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 20479.25,
+              "Time": 0,
+              "Close": 20505.25,
+              "High": 20527.25,
+              "Open": 20485.5,
+              "Volume": 13992
+            }
+          },
+          "5m": {
+            "count": 7,
+            "last": {
+              "Low": 20505.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 82021,
+        "up": 1221,
+        "volatility": 0.33655204420272755,
+        "volume": 13992,
+        "anchor": 82018.03177591885,
+        "fair": 82017.81614067644,
+        "down": 1160,
+        "impulse": -0.00007206034628831452
+      },
+      "BX": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 5824,
+              "Time": 0,
+              "Close": 5841.5,
+              "High": 5848.75,
+              "Open": 5824.5,
+              "Volume": 11251
+            }
+          },
+          "1m": {
+            "count": 30,
+            "last": {
+              "Low": 5841.25,
+              "Time": 1740,
+              "Close": 5841.5,
+              "High": 5842.5,
+              "Open": 5842.5,
+              "Volume": 265
+            }
+          },
+          "15m": {
+            "count": 2,
+            "last": {
+              "Low": 5841.25,
+              "Time": 900,
+              "Close": 5841.5,
+              "High": 5848.5,
+              "Open": 5848,
+              "Volume": 5229
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 5824,
+              "Time": 0,
+              "Close": 5841.5,
+              "High": 5848.75,
+              "Open": 5824.5,
+              "Volume": 11251
+            }
+          },
+          "5m": {
+            "count": 6,
+            "last": {
+              "Low": 5841.25,
+              "Time": 1500,
+              "Close": 5841.5,
+              "High": 5847,
+              "Open": 5846.5,
+              "Volume": 1387
+            }
+          }
+        },
+        "last": 23366,
+        "up": 1341,
+        "volatility": 0.3866049489229224,
+        "volume": 11251,
+        "anchor": 23357.305976939497,
+        "fair": 23357.37077393597,
+        "down": 1319,
+        "impulse": -0.000035805824124022524
+      },
+      "BG": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 2384.2000000000003,
+              "Time": 0,
+              "Close": 2387.5,
+              "High": 2390.6,
+              "Open": 2384.6,
+              "Volume": 8559
+            }
+          },
+          "1m": {
+            "count": 31,
+            "last": {
+              "Low": 2387.5,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.5,
+              "Open": 2387.5,
+              "Volume": 1
+            }
+          },
+          "15m": {
+            "count": 3,
+            "last": {
+              "Low": 2387.5,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.5,
+              "Open": 2387.5,
+              "Volume": 1
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 2384.2000000000003,
+              "Time": 0,
+              "Close": 2387.5,
+              "High": 2390.6,
+              "Open": 2384.6,
+              "Volume": 8559
+            }
+          },
+          "5m": {
+            "count": 7,
+            "last": {
+              "Low": 2387.5,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.5,
+              "Open": 2387.5,
+              "Volume": 1
+            }
+          }
+        },
+        "last": 23875,
+        "up": 1132,
+        "volatility": 0.464438080184751,
+        "volume": 8559,
+        "anchor": 23871.953053755686,
+        "fair": 23871.657830391883,
+        "down": 1086,
+        "impulse": -0.00002324880496877946
+      }
+    },
+    "step": 7200,
+    "randomState": 1521094057,
+    "totals": {
+      "balance": 25603561.15504691,
+      "realized": 16847.155046917946,
+      "cashFlow": 0
+    },
+    "newsUntil": 1565.844702126968,
+    "nextTrade": 16263,
+    "nextNews": 1862.6809669970212,
+    "nextRegime": 1926.1787866804184,
+    "regime": "Quiet",
+    "nextOrder": 64027,
+    "totalVolume": 33802
+  },
+  {
+    "tradeHash": 1783148050,
+    "books": {
+      "BT": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 20479.25,
+              "Time": 0,
+              "Close": 20505.25,
+              "High": 20527.25,
+              "Open": 20485.5,
+              "Volume": 14408
+            }
+          },
+          "1m": {
+            "count": 31,
+            "last": {
+              "Low": 20504.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 417
+            }
+          },
+          "15m": {
+            "count": 3,
+            "last": {
+              "Low": 20504.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 417
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 20479.25,
+              "Time": 0,
+              "Close": 20505.25,
+              "High": 20527.25,
+              "Open": 20485.5,
+              "Volume": 14408
+            }
+          },
+          "5m": {
+            "count": 7,
+            "last": {
+              "Low": 20504.25,
+              "Time": 1800,
+              "Close": 20505.25,
+              "High": 20505.25,
+              "Open": 20505.25,
+              "Volume": 417
+            }
+          }
+        },
+        "last": 82021,
+        "up": 1243,
+        "volatility": 0.43659575144584395,
+        "volume": 14408,
+        "anchor": 82017.66372773754,
+        "fair": 82017.67283748473,
+        "down": 1182,
+        "impulse": -0.0000062225776845940745
+      },
+      "BX": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 5824,
+              "Time": 0,
+              "Close": 5840.75,
+              "High": 5848.75,
+              "Open": 5824.5,
+              "Volume": 11546
+            }
+          },
+          "1m": {
+            "count": 31,
+            "last": {
+              "Low": 5840.75,
+              "Time": 1800,
+              "Close": 5840.75,
+              "High": 5842,
+              "Open": 5841.75,
+              "Volume": 295
+            }
+          },
+          "15m": {
+            "count": 3,
+            "last": {
+              "Low": 5840.75,
+              "Time": 1800,
+              "Close": 5840.75,
+              "High": 5842,
+              "Open": 5841.75,
+              "Volume": 295
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 5824,
+              "Time": 0,
+              "Close": 5840.75,
+              "High": 5848.75,
+              "Open": 5824.5,
+              "Volume": 11546
+            }
+          },
+          "5m": {
+            "count": 7,
+            "last": {
+              "Low": 5840.75,
+              "Time": 1800,
+              "Close": 5840.75,
+              "High": 5842,
+              "Open": 5841.75,
+              "Volume": 295
+            }
+          }
+        },
+        "last": 23363,
+        "up": 1363,
+        "volatility": 0.41231552877525557,
+        "volume": 11546,
+        "anchor": 23358.09943643582,
+        "fair": 23357.689802655736,
+        "down": 1346,
+        "impulse": -0.000003091915785155937
+      },
+      "BG": {
+        "candles": {
+          "1h": {
+            "count": 1,
+            "last": {
+              "Low": 2384.2000000000003,
+              "Time": 0,
+              "Close": 2387.5,
+              "High": 2390.6,
+              "Open": 2384.6,
+              "Volume": 8732
+            }
+          },
+          "1m": {
+            "count": 31,
+            "last": {
+              "Low": 2387.4,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.7000000000003,
+              "Open": 2387.5,
+              "Volume": 174
+            }
+          },
+          "15m": {
+            "count": 3,
+            "last": {
+              "Low": 2387.4,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.7000000000003,
+              "Open": 2387.5,
+              "Volume": 174
+            }
+          },
+          "1D": {
+            "count": 1,
+            "last": {
+              "Low": 2384.2000000000003,
+              "Time": 0,
+              "Close": 2387.5,
+              "High": 2390.6,
+              "Open": 2384.6,
+              "Volume": 8732
+            }
+          },
+          "5m": {
+            "count": 7,
+            "last": {
+              "Low": 2387.4,
+              "Time": 1800,
+              "Close": 2387.5,
+              "High": 2387.7000000000003,
+              "Open": 2387.5,
+              "Volume": 174
+            }
+          }
+        },
+        "last": 23875,
+        "up": 1150,
+        "volatility": 0.39178056351408663,
+        "volume": 8732,
+        "anchor": 23871.180760036266,
+        "fair": 23871.53044688448,
+        "down": 1106,
+        "impulse": -0.0000020075881180669062
+      }
+    },
+    "step": 7440,
+    "randomState": 2067065205,
+    "totals": {
+      "balance": 25610585.985144302,
+      "realized": 23871.985144308834,
+      "cashFlow": 0
+    },
+    "newsUntil": 1565.844702126968,
+    "nextTrade": 16599,
+    "nextNews": 1862.6809669970212,
+    "nextRegime": 1926.1787866804184,
+    "regime": "Quiet",
+    "nextOrder": 65457,
+    "totalVolume": 34686
+  }
+]

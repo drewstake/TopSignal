@@ -12,6 +12,7 @@ import { getDemoAccountId, getDemoAccountName } from "../../../lib/demoMode";
 import type { AccountInfo } from "../../../lib/types";
 import { formatAccountBalance, formatProviderLastSeen } from "../../../lib/accountProviderState";
 import type { CopyTradeAccountRow, CopyTradeDriftSummary, CopyTradeStatus, CopyTradeTotals } from "../copyTrade";
+import { isCopyTradeSelectableFollower } from "../copyTrade";
 
 interface CopyTradePanelProps {
   rows: CopyTradeAccountRow[];
@@ -100,8 +101,7 @@ export function CopyTradePanel({
   const followerCandidates = accounts.filter(
     (account) =>
       account.id !== leaderAccountId &&
-      account.trade_data_source === "projectx" &&
-      (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
+      isCopyTradeSelectableFollower(account),
   );
   const selectedFollowerAccounts = followerCandidates.filter((account) => selectedFollowerIds.has(account.id));
   const followerSelectionFull = selectedFollowerCount >= maxFollowers;

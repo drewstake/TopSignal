@@ -40,7 +40,7 @@ import {
   useAccountProviderFreshness,
 } from "../../lib/accountProviderState";
 import { accountsApi } from "../../lib/api";
-import { sortAccountsForActiveSelection } from "../../lib/accountOrdering";
+import { isPracticeAccount, sortAccountsForActiveSelection } from "../../lib/accountOrdering";
 import { isCompactModeEnabled, setCompactModeEnabled } from "../../lib/compactMode";
 import { DEMO_AS_OF_ISO } from "../../lib/demoScenario";
 import { getTradingDayBoundaryIso, getTradingDayRange, tradingDayKey } from "../../lib/tradingDay";
@@ -60,11 +60,11 @@ import { computeSustainability, type SustainabilityLabel } from "../../utils/sus
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { CompactDashboardSkeleton, CompactDashboardView } from "./components/CompactDashboardView";
 import { CopyTradePanel } from "./components/CopyTradePanel";
+import { CopyTradeConfirmation } from "./components/CopyTradeConfirmation";
 import { RecentTradesCard } from "./components/RecentTradesCard";
 import { TradeImportPanel } from "./components/TradeImportPanel";
 import { ViewportDeferredSection } from "./components/ViewportDeferredSection";
 import {
-  COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE,
   COPY_TRADE_MATCH_WINDOW_MINUTES,
   MAX_COPY_TRADE_FOLLOWERS,
   buildCopyTradeAccountRows,
@@ -73,6 +73,7 @@ import {
   computeCopyTradeTotals,
   getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeRosterAccountIds,
+  isCopyTradeSelectableFollower,
   getCopyTradeUncopyEventsResetAt,
   updateCopyTradeFollowerAccountIds,
   prepareCopyTradeModeToggle,
@@ -769,6 +770,7 @@ export function DashboardPage() {
   const [providerRefreshError, setProviderRefreshError] = useState<string | null>(null);
   const [copyTradeSettings, setCopyTradeSettings] = useState<CopyTradeSettings>(() => readStoredCopyTradeSettings());
   const [copyTradeTogglePending, setCopyTradeTogglePending] = useState(false);
+  const [copyTradeConfirmationAccountId, setCopyTradeConfirmationAccountId] = useState<number | null>(null);
   const [copyTradeToggleFeedback, setCopyTradeToggleFeedback] = useState<CopyTradeToggleFeedback | null>(null);
   const [liveAccountSetupRequest, setLiveAccountSetupRequest] = useState(0);
   const [pendingLiveAccountSetup, setPendingLiveAccountSetup] = useState<{ accountId: number | null } | null>(null);
@@ -969,6 +971,12 @@ export function DashboardPage() {
     setSelectedDate: handleSelectedTradeDateChange,
   } = useAccountScopedDaySelection(selectedAccountId);
   const selectedAccountIsCsvImport = selectedAccount?.trade_data_source === "csv_import";
+  const selectedAccountIsPractice = selectedAccount ? isPracticeAccount(selectedAccount) : false;
+  const copyTradeUnavailableReason = selectedAccountIsPractice
+    ? "Copy Trade Mode is unavailable for Practice accounts"
+    : selectedAccountIsCsvImport
+      ? "Copy Trade Mode is unavailable for Live CSV accounts"
+      : null;
   const liveAccountModeEnabled = selectedAccountIsCsvImport
     || pendingLiveAccountSetup?.accountId === selectedAccountId;
   useEffect(() => {
@@ -1016,7 +1024,7 @@ export function DashboardPage() {
   ]);
 
   const copyTradeModeConfigured =
-    copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport && !demoModeEnabled;
+    copyTradeSettings.modeEnabled && !selectedAccountIsCsvImport && !selectedAccountIsPractice && !demoModeEnabled;
   const copyTradeModeActive = copyTradeModeConfigured && !compactMode.enabled;
   const compactCopyTradeModeActive = copyTradeModeConfigured && compactMode.enabled;
   const providerSyncNotice = useMemo(
@@ -3143,23 +3151,23 @@ export function DashboardPage() {
   );
 
   const handleCopyTradeModeChange = useCallback(
-    (enabled: boolean) => {
+    (enabled: boolean, enableConfirmed = false) => {
       if (copyTradeTogglePendingRef.current) {
         return;
       }
-      if (enabled && selectedAccountIsCsvImport) {
+      if (enabled && copyTradeUnavailableReason) {
         setCopyTradeToggleFeedback({
           tone: "error",
-          message: "Copy Trade Mode is unavailable while this account uses Live CSV imports.",
+          message: `${copyTradeUnavailableReason}.`,
         });
         return;
       }
 
       const currentSettings = copyTradeSettingsRef.current;
-      const enableConfirmed =
-        enabled && !currentSettings.modeEnabled && selectedAccountId !== null
-          ? window.confirm(COPY_TRADE_ENABLE_CONFIRMATION_MESSAGE)
-          : undefined;
+      if (enabled && !currentSettings.modeEnabled && selectedAccountId !== null && !enableConfirmed) {
+        setCopyTradeConfirmationAccountId(selectedAccountId);
+        return;
+      }
       const decision = prepareCopyTradeModeToggle(currentSettings, enabled, {
         selectedAccountId,
         enableConfirmed,
@@ -3192,14 +3200,18 @@ export function DashboardPage() {
       }
 
       copyTradeToggleTimerRef.current = window.setTimeout(() => {
-        setCopyTradeToggleFeedback({ tone: "success", message: decision.message });
+        setCopyTradeToggleFeedback(null);
         copyTradeTogglePendingRef.current = false;
         copyTradeToggleTimerRef.current = null;
         setCopyTradeTogglePending(false);
       }, 0);
     },
-    [saveCopyTradeSettings, selectedAccountId, selectedAccountIsCsvImport],
+    [saveCopyTradeSettings, selectedAccountId, copyTradeUnavailableReason],
   );
+
+  useEffect(() => {
+    setCopyTradeConfirmationAccountId(null);
+  }, [selectedAccountId, copyTradeUnavailableReason, copyTradeSettings.modeEnabled]);
 
   const handleResetUncopyEvents = useCallback(() => {
     const confirmed = window.confirm(
@@ -3252,7 +3264,7 @@ export function DashboardPage() {
 
   const copyTradeToggleDisabled =
     copyTradeTogglePending ||
-    selectedAccountIsCsvImport ||
+    copyTradeUnavailableReason !== null ||
     (selectedAccountId === null && !copyTradeSettings.modeEnabled);
   const copyTradeModeStatusMessage = copyTradeToggleFeedback?.message ?? null;
   const copyTradeModeStatusTone: CopyTradeToggleFeedbackTone = copyTradeToggleFeedback?.tone ?? "neutral";
@@ -3280,8 +3292,7 @@ export function DashboardPage() {
       ? orderedAccounts.filter(
           (account) =>
             account.id !== selectedAccountId &&
-            account.trade_data_source === "projectx" &&
-            (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT"),
+            isCopyTradeSelectableFollower(account),
         )
       : [],
     [compactMode.enabled, orderedAccounts, selectedAccountId],
@@ -3464,13 +3475,13 @@ export function DashboardPage() {
                   label={
                     copyTradeTogglePending
                       ? "Updating..."
-                      : selectedAccountIsCsvImport
+                      : copyTradeUnavailableReason
                         ? "Copy Trade unavailable"
                         : "Copy Trade Mode"
                   }
                   aria-label={
-                    selectedAccountIsCsvImport
-                      ? "Copy Trade Mode is unavailable for Live CSV accounts"
+                    copyTradeUnavailableReason
+                      ? copyTradeUnavailableReason
                       : copyTradeModeConfigured
                       ? "Copy Trade Mode is on"
                       : copyTradeToggleDisabled
@@ -3567,7 +3578,8 @@ export function DashboardPage() {
               checked={copyTradeModeConfigured}
               onChange={handleCopyTradeModeChange}
               label={copyTradeTogglePending ? "Updating..." : "Copy Trade Mode"}
-              aria-label={copyTradeModeConfigured ? "Copy Trade Mode is on" : "Copy Trade Mode is off"}
+              aria-label={copyTradeUnavailableReason ?? (copyTradeModeConfigured ? "Copy Trade Mode is on" : "Copy Trade Mode is off")}
+              title={copyTradeUnavailableReason ?? undefined}
               aria-describedby={copyTradeModeStatusMessage ? "compact-copy-trade-status" : undefined}
               disabled={copyTradeToggleDisabled}
               className={cn(
@@ -4565,6 +4577,18 @@ export function DashboardPage() {
       />
         </>
       )}
+      {copyTradeConfirmationAccountId !== null && copyTradeConfirmationAccountId === selectedAccountId && !copyTradeUnavailableReason && !copyTradeSettings.modeEnabled ? (
+        <CopyTradeConfirmation
+          onCancel={() => {
+            setCopyTradeConfirmationAccountId(null);
+            setCopyTradeToggleFeedback({ tone: "neutral", message: "Copy Trade Mode stayed off." });
+          }}
+          onConfirm={() => {
+            setCopyTradeConfirmationAccountId(null);
+            handleCopyTradeModeChange(true, true);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

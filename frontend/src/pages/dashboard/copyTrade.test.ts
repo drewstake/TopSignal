@@ -11,6 +11,7 @@ import {
   computeCopyTradeTotals,
   getCopyTradeDailyNetPnlForTradingDay,
   getCopyTradeRosterAccountIds,
+  isCopyTradeSelectableFollower,
   getCopyTradeSelectedFollowerAccountIds,
   getCopyTradeUncopyEventsResetAt,
   getDailyNetPnlForTradingDay,
@@ -348,6 +349,46 @@ describe("buildCopyTradeAccountRows", () => {
 });
 
 describe("getCopyTradeRosterAccountIds", () => {
+  it.each(["PRAC-V2-192577-36993283", "PA-123", "Practice 123", "prac_v2_123"])(
+    "excludes %s from default and saved follower rosters, rows, and totals even after renaming",
+    (providerName) => {
+      const accounts = [
+        account({ id: 1, name: "50KTC-Leader", provider_simulated: true }),
+        account({ id: 2, name: "50KTC-Follower", provider_simulated: true }),
+        account({ id: 3, name: "My renamed account", provider_name: providerName }),
+      ];
+      const settings = updateCopyTradeFollowerAccountIds({ modeEnabled: true }, 1, [3, 2]);
+      expect(getCopyTradeRosterAccountIds(accounts, 1)).toEqual([1, 2]);
+      expect(getCopyTradeRosterAccountIds(accounts, 1, settings)).toEqual([1, 2]);
+      expect(isCopyTradeSelectableFollower(accounts[2])).toBe(false);
+      const rows = buildCopyTradeAccountRows({
+        accounts,
+        leaderAccountId: 1,
+        followerAccountIds: [3, 2],
+        snapshotsByAccountId: {
+          1: { netPnl: 100, dailyPnl: 10, openPositions: 0 },
+          2: { netPnl: 200, dailyPnl: 20, openPositions: 0 },
+          3: { netPnl: 10_000, dailyPnl: 1_000, openPositions: 5 },
+        },
+      });
+      expect(rows.map((row) => row.accountId)).toEqual([1, 2, null, null, null]);
+      expect(computeCopyTradeTotals(rows)).toMatchObject({ combinedNetPnl: 300, combinedDailyPnl: 30, combinedBalance: 100_000 });
+    },
+  );
+
+  it("excludes a Practice leader, including when follower selections already exist", () => {
+    const accounts = [account({ id: 1, name: "PRAC-V2-123" }), account({ id: 2, name: "EXPRESS-123" })];
+    const settings = updateCopyTradeFollowerAccountIds({ modeEnabled: true }, 1, [2]);
+    expect(getCopyTradeRosterAccountIds(accounts, 1, settings)).toEqual([]);
+    const rows = buildCopyTradeAccountRows({ accounts, leaderAccountId: 1, followerAccountIds: [2], snapshotsByAccountId: {} });
+    expect(rows.every((row) => row.accountId === null)).toBe(true);
+    expect(computeCopyTradeTotals(rows).canCalculate).toBe(false);
+  });
+
+  it("recognizes Practice names without a provider name, including locked-out Practice accounts", () => {
+    expect(isCopyTradeSelectableFollower(account({ id: 1, name: "Practice", provider_name: "", account_state: "LOCKED_OUT" }))).toBe(false);
+  });
+
   it("defaults an EXPRESS leader to active EXPRESS followers before locked accounts from other account families", () => {
     const accounts: AccountInfo[] = [
       account({ id: 50, name: "50KTC-V2-DLL-192577-11530403", account_state: "LOCKED_OUT", status: "LOCKED_OUT", can_trade: false }),

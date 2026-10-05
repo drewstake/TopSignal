@@ -2,7 +2,7 @@ import type { AccountInfo } from "./types";
 
 const COMBINE_ACCOUNT_PREFIXES = ["50KTC", "100KTC", "150KTC"] as const;
 const EXPRESS_ACCOUNT_PREFIX = "EXPRESS";
-const PRACTICE_ACCOUNT_PATTERN = /^PA(?:[-_\s]|$)|\bPRACTICE\b/i;
+const PRACTICE_ACCOUNT_PATTERN = /^(?:PA|PRAC)(?:[-_\s]|$)|\bPRACTICE\b/i;
 type AccountSelectionItem = Pick<AccountInfo, "id" | "name" | "is_main"> &
   Partial<Pick<AccountInfo, "provider_name">>;
 type ActiveAccountSelectionItem = AccountSelectionItem & Pick<AccountInfo, "trade_data_source">;
@@ -18,6 +18,12 @@ function isCombineAccountName(name: string): boolean {
 
 function isPracticeAccountName(name: string): boolean {
   return PRACTICE_ACCOUNT_PATTERN.test(name.trim());
+}
+
+export function isPracticeAccount(account: Pick<AccountInfo, "name"> & Partial<Pick<AccountInfo, "provider_name">>): boolean {
+  // Provider names remain stable when a user renames an account. Simulated
+  // status alone cannot distinguish Practice from Combine/Express accounts.
+  return isPracticeAccountName(account.provider_name?.trim() || account.name);
 }
 
 function getSelectionGroup(name: string): number {

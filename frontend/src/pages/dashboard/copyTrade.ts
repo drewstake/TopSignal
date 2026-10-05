@@ -1,4 +1,5 @@
 import { getDemoAccountName } from "../../lib/demoMode";
+import { isPracticeAccount } from "../../lib/accountOrdering";
 import { getScopedStorageKey } from "../../lib/storageScope";
 import { tradingDayKey } from "../../lib/tradingDay";
 import { getTradeNetPnl } from "../../lib/tradePnl";
@@ -198,7 +199,7 @@ export function prepareCopyTradeModeToggle(
   return {
     status: "ready",
     nextSettings: updateCopyTradeModeSetting(normalized, requestedModeEnabled),
-    message: requestedModeEnabled ? "Copy Trade Mode enabled." : "",
+    message: "",
   };
 }
 
@@ -253,7 +254,7 @@ export function getCopyTradeRosterAccountIds(
   }
 
   const leader = accounts.find((account) => account.id === leaderAccountId);
-  if (!leader) {
+  if (!leader || isPracticeAccount(leader)) {
     return [];
   }
   if (leader.trade_data_source === "csv_import") {
@@ -276,7 +277,7 @@ export function getCopyTradeRosterAccountIds(
 
 export function buildCopyTradeAccountRows(input: BuildCopyTradeAccountRowsInput): CopyTradeAccountRow[] {
   const { accounts, leaderAccountId, followerAccountIds, snapshotsByAccountId } = input;
-  const leader = leaderAccountId === null ? null : accounts.find((account) => account.id === leaderAccountId) ?? null;
+  const leader = leaderAccountId === null ? null : accounts.find((account) => account.id === leaderAccountId && !isPracticeAccount(account)) ?? null;
   const rows: CopyTradeAccountRow[] = [];
 
   if (leader) {
@@ -732,9 +733,10 @@ function getDefaultFollowerPriority(account: AccountInfo, leaderFamily: string):
   return 3;
 }
 
-function isCopyTradeSelectableFollower(account: AccountInfo): boolean {
+export function isCopyTradeSelectableFollower(account: AccountInfo): boolean {
   return (
     account.trade_data_source === "projectx" &&
+    !isPracticeAccount(account) &&
     (account.account_state === "ACTIVE" || account.account_state === "LOCKED_OUT")
   );
 }
