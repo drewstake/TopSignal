@@ -1,43 +1,83 @@
-import { useMemo } from 'react';
-import { buildSimulationDepth, type DepthLevel } from './simulationDepth';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { buildPriceLadder, LADDER_RADIUS, type DepthLevel } from './simulationDepth';
 import { PARTICIPANT_GROUPS, type ParticipantOrder } from './simulationPreview';
+import { wheelPixels } from './simulationViewport';
 
-const quantity = (value: number) => value.toLocaleString('en-US');
-
-function DepthSide({ side, levels, shares, maxLevelShares }: {
-  side: 'bid' | 'ask'; levels: DepthLevel[]; shares: number; maxLevelShares: number;
-}) {
-  const name = side === 'bid' ? 'Bids' : 'Asks';
-  const largest = Math.max(0, ...levels.map((level) => level.shares));
-  return <section className={`simulation-depth-side simulation-depth-${side}`} aria-label={`${name} depth`}>
-    <header><h3>{name} <span>Best price first</span></h3><span>{quantity(shares)} shares</span></header>
-    <div className="simulation-depth-scroll" tabIndex={0} role="region" aria-label={`${name} price levels, scroll for more`}>
-      <table aria-label={`Simulated ${side} levels`}>
-        <thead><tr><th scope="col">Price</th><th scope="col">Shares</th><th scope="col">Orders</th><th scope="col">Total</th></tr></thead>
-        <tbody>{levels.length ? levels.map((level) => {
-          const description = PARTICIPANT_GROUPS.filter((group) => level.byKind[group.kind])
-            .map((group) => `${group.label}: ${quantity(level.byKind[group.kind]!)} shares`).join(' · ');
-          return <tr key={level.price} className={level.shares === largest ? 'simulation-depth-largest' : undefined}
-            title={`${description}. Cumulative depth from best price: ${quantity(level.cumulative)} shares.`}>
-            <th scope="row">${level.price.toFixed(2)}</th>
-            <td className="simulation-depth-size"><span className="simulation-depth-bar" aria-hidden="true"
-              style={{ width: `${level.shares / maxLevelShares * 100}%` }} /><span>{quantity(level.shares)}</span></td>
-            <td>{quantity(level.orders)}</td><td>{quantity(level.cumulative)}</td>
-          </tr>;
-        }) : <tr><td colSpan={4} className="simulation-depth-empty">No resting {side === 'bid' ? 'buy' : 'sell'} orders</td></tr>}</tbody>
+const quantity = (n: number) => n.toLocaleString('en-US');
+function LiquidityCell({ level, side, scale, wall, inspect }: { level?: DepthLevel; side: 'bid' | 'ask'; scale: number; wall: number; inspect: (side: 'bid' | 'ask', price: number) => void }) {
+  const description = level ? PARTICIPANT_GROUPS.filter(g => level.byKind[g.kind])
+    .map(g => g.label + ': ' + quantity(level.byKind[g.kind]!) + ' contracts').join(' · ') : 'No resting orders';
+  return <td className={'simulation-ladder-size simulation-ladder-' + side + (level && level.contracts >= wall ? ' is-wall' : '')}
+    title={description + (level ? '. ' + level.orders + ' orders; cumulative depth ' + quantity(level.cumulative) + ' contracts.' : '')}>
+    <i aria-hidden="true" style={{ width: ((level?.contracts ?? 0) / scale * 100) + '%' }} />
+    {level ? <button className="simulation-level-inspect" aria-label={`Inspect ${side} at ${level.price.toFixed(2)}: ${level.contracts} contracts; cumulative ${level.cumulative}`} onClick={() => inspect(side, level.price)}>{quantity(level.contracts)} <small>Σ {quantity(level.cumulative)}</small></button> : <span className="simulation-empty-tick">·</span>}
+  </td>;
+}
+export function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol = 'BX' }: { book: readonly ParticipantOrder[]; lastPrice: number; tickSize?: number; symbol?: string }) {
+  const lastTicks = Math.round(lastPrice / tickSize);
+  const [center, setCenter] = useState(() => Math.max(LADDER_RADIUS + 1, lastTicks));
+  const [following, setFollowing] = useState(true);
+  const latestPrice = useRef(lastTicks);
+  const ladder = useRef<HTMLDivElement>(null);
+  const [inspection, setInspection] = useState<{ side: 'bid' | 'ask'; price: number } | null>(null);
+  useEffect(() => {
+    const target = ladder.current; if (!target) return;
+    let remainder = 0;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault(); remainder += wheelPixels(event.deltaY, event.deltaMode, target.clientHeight);
+      const ticks = Math.trunc(remainder / 20); if (!ticks) return;
+      remainder -= ticks * 20; setFollowing(false); setCenter(c => Math.max(LADDER_RADIUS + 1, c - ticks));
+    };
+    target.addEventListener('wheel', wheel, { passive: false }); return () => target.removeEventListener('wheel', wheel);
+  }, []);
+  useEffect(() => { latestPrice.current = lastTicks; }, [lastTicks]);
+  const nearEdge = Math.abs(lastTicks - center) > LADDER_RADIUS - 3;
+  useEffect(() => {
+    if (!following || !nearEdge) return;
+    // A short dwell avoids chasing every trade; price changes do not restart it.
+    const timer = window.setTimeout(() => setCenter(Math.max(LADDER_RADIUS + 1, latestPrice.current)), 400);
+    return () => window.clearTimeout(timer);
+  }, [following, nearEdge, center]);
+  const depth = useMemo(() => buildPriceLadder(book, center, tickSize), [book, center, tickSize]);
+  const page = (direction: number) => {
+    setFollowing(false);
+    setCenter(c => Math.max(LADDER_RADIUS + 1, c + direction * LADDER_RADIUS));
+  };
+  const follow = () => { setFollowing(true); setCenter(Math.max(LADDER_RADIUS + 1, lastTicks)); };
+  const bestBid = depth.bids[0]?.price;
+  const bestAsk = depth.asks[0]?.price;
+  const inspected = inspection && (inspection.side === 'bid' ? depth.bids : depth.asks).find(l => l.price === inspection.price);
+  const inspect = (side: 'bid' | 'ask', price: number) => setInspection({ side, price });
+  return <aside className="simulation-depth" aria-label={`${symbol} simulation L2 order book`}>
+    <header className="simulation-depth-heading"><h2>Order book <span>L2</span></h2>
+      <button type="button" aria-pressed={following} onClick={() => following ? setFollowing(false) : follow()}>Follow price</button></header>
+    <div className="simulation-depth-spread"><span>Last <strong>${lastPrice.toFixed(2)}</strong></span>
+      <span>Spread <strong>{depth.spread === null ? '—' : '$' + depth.spread.toFixed(2)}</strong></span></div>
+    <div className="simulation-depth-spread"><span>Best bid <strong>{bestBid?.toFixed(2) ?? 'None'}</strong></span><span>Best ask <strong>{bestAsk?.toFixed(2) ?? 'None'}</strong></span></div>
+    <div ref={ladder} className="simulation-ladder" tabIndex={0} role="region" aria-label="Price ladder. Arrow keys browse deeper levels; Home follows price."
+      onKeyDown={event => {
+        if (['ArrowUp', 'PageUp', 'ArrowDown', 'PageDown', 'Home'].includes(event.key)) event.preventDefault();
+        if (event.key === 'ArrowUp' || event.key === 'PageUp') page(1);
+        if (event.key === 'ArrowDown' || event.key === 'PageDown') page(-1);
+        if (event.key === 'Home') follow();
+      }}>
+      <table aria-label="Simulated price ladder"><colgroup><col /><col className="simulation-price-column" /><col /></colgroup>
+        <thead><tr><th scope="col">Bid contracts</th><th scope="col">Price ($)</th><th scope="col">Ask contracts</th></tr></thead>
+        <tbody>{depth.rows.map(row => <tr key={row.ticks} data-price={row.price.toFixed(2)}
+          className={(row.ticks === lastTicks ? 'is-current ' : '') + (bestBid !== undefined && bestAsk !== undefined && row.price > bestBid && row.price < bestAsk ? 'is-spread' : '')}
+          aria-label={'Price $' + row.price.toFixed(2) + (row.ticks === lastTicks ? ', last trade' : '')}>
+          <LiquidityCell level={row.bid} side="bid" scale={depth.maxLevelContracts} wall={depth.wallThreshold} inspect={inspect} />
+          <th scope="row" className={(row.price === bestBid ? 'is-best-bid ' : '') + (row.price === bestAsk ? 'is-best-ask' : '')}>
+            {row.ticks === lastTicks && <span className="simulation-last-arrow" aria-hidden="true">›</span>}{row.price.toFixed(2)}
+          </th>
+          <LiquidityCell level={row.ask} side="ask" scale={depth.maxLevelContracts} wall={depth.wallThreshold} inspect={inspect} />
+        </tr>)}</tbody>
       </table>
     </div>
-  </section>;
-}
-
-export function SimulationOrderBook({ book, lastPrice }: { book: readonly ParticipantOrder[]; lastPrice: number }) {
-  const depth = useMemo(() => buildSimulationDepth(book), [book]);
-  return <aside className="simulation-depth" aria-label="Simulation L2 order book">
-    <header className="simulation-depth-heading"><div><h2>Order book <span>L2</span></h2><p>BLOX100 · Simulated resting orders</p></div></header>
-    <DepthSide side="ask" levels={depth.asks} shares={depth.askShares} maxLevelShares={depth.maxLevelShares} />
-    <div className="simulation-depth-spread"><div><span>Last trade</span><strong>${lastPrice.toFixed(2)}</strong></div>
-      <div><span>Spread</span><strong>{depth.spread === null ? '—' : `$${depth.spread.toFixed(2)}`}</strong></div></div>
-    <DepthSide side="bid" levels={depth.bids} shares={depth.bidShares} maxLevelShares={depth.maxLevelShares} />
-    <p className="simulation-depth-note">Bars compare shares at each price on the same scale. Total is cumulative depth. Hover a level for participant sizes.</p>
+    <div className="simulation-ladder-nav"><button type="button" onClick={() => page(1)} aria-label="Show higher prices">↑ Higher</button>
+      <button type="button" onClick={follow}>Recenter</button>
+      <button type="button" disabled={center <= LADDER_RADIUS + 1} onClick={() => page(-1)} aria-label="Show lower prices">↓ Lower</button></div>
+    {inspection && <div className="simulation-book-inspection"><button aria-label="Close level inspection" onClick={() => setInspection(null)}>×</button><strong>{inspection.side} ${inspection.price.toFixed(2)}</strong><p>{inspected ? `${inspected.contracts} contracts · ${inspected.orders} orders · cumulative ${inspected.cumulative}` : 'No resting orders remain at this level.'}</p>{inspected && PARTICIPANT_GROUPS.filter(g => inspected.byKind[g.kind]).map(g => <p key={g.kind}>{g.label}: {inspected.byKind[g.kind]} contracts</p>)}</div>}
+    <p className="simulation-depth-note">{!depth.bidContracts && !depth.askContracts ? 'No resting orders. ' : !depth.bidContracts ? 'No resting bids. ' : !depth.askContracts ? 'No resting asks. ' : ''}{following ? 'Following price with edge delay' : 'Manual browsing'} · Wheel / keys browse · Σ cumulative contracts · Select a level for contributors</p>
   </aside>;
 }

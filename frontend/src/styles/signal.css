@@ -68,6 +68,86 @@ html {
   font-family: var(--font-ui);
 }
 
+/* Copy Trade confirmation shares the dashboard's theme and surface treatment. */
+.dashboard-surface.space-y-5 > dialog.copy-trade-confirmation {
+  position: fixed;
+  inset: 0;
+  width: min(500px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  animation: none;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid rgb(var(--theme-border-strong) / 0.7);
+  border-radius: var(--sd-radius-lg);
+  color: rgb(var(--theme-text));
+  background: linear-gradient(145deg, rgb(var(--theme-accent) / 0.07), transparent 45%), rgb(var(--theme-surface));
+  box-shadow: var(--sd-edge), 0 32px 100px -24px rgb(var(--theme-shadow-color) / 0.85);
+}
+
+.copy-trade-confirmation::backdrop {
+  background: rgb(var(--theme-bg) / 0.75);
+  backdrop-filter: blur(6px);
+}
+
+.copy-trade-confirmation-body { padding: 28px; }
+.copy-trade-confirmation-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 22px;
+  place-items: center;
+  border: 1px solid rgb(var(--theme-accent) / 0.3);
+  border-radius: 12px;
+  color: rgb(var(--theme-accent));
+  background: rgb(var(--theme-accent) / 0.1);
+  box-shadow: var(--sd-edge);
+}
+.copy-trade-confirmation-eyebrow {
+  color: rgb(var(--theme-accent));
+  font: 500 10px/1.6 var(--font-mono);
+  letter-spacing: 1.5px;
+}
+.copy-trade-confirmation h2 {
+  margin-top: 8px;
+  font: 600 26px/1.2 var(--font-display);
+  letter-spacing: -0.7px;
+}
+.copy-trade-confirmation-description {
+  margin-top: 14px;
+  color: rgb(var(--theme-muted));
+  font-size: 14px;
+  line-height: 1.7;
+}
+.copy-trade-confirmation-notice {
+  display: flex;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 15px;
+  border: 1px solid rgb(var(--theme-border) / 0.7);
+  border-radius: var(--sd-radius-sm);
+  background: var(--sd-surface-inset);
+  color: rgb(var(--theme-muted));
+  font-size: 12px;
+  line-height: 1.7;
+}
+.copy-trade-confirmation-notice svg { flex-shrink: 0; margin-top: 2px; color: rgb(var(--theme-accent)); }
+.copy-trade-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 18px 28px;
+  border-top: 1px solid rgb(var(--theme-border) / 0.7);
+  background: var(--sd-surface-inset);
+}
+.copy-trade-confirmation-actions .ui-button { min-height: 44px; height: auto; font-size: 12px; }
+@media (max-width: 480px) {
+  .copy-trade-confirmation-body { padding: 22px; }
+  .copy-trade-confirmation-actions { padding: 16px 22px; }
+  .copy-trade-confirmation-actions .ui-button { flex: 1 1 auto; }
+}
+
 :root body,
 .app-workspace {
   font-family: var(--font-ui);
