@@ -1,8 +1,12 @@
 # TopSignal
 
-TopSignal is a trading analytics application for ProjectX/TopstepX-style futures accounts. It syncs account and execution data from the provider or imports reviewed Topstep Live trade exports, stores it in PostgreSQL, computes account-level performance and risk metrics, and presents those results in a React dashboard with account management, trade review, expense tracking, payout logging, and trading-bot controls.
+TopSignal opens to a playable, browser-local simulated futures exchange. Buy and sell BX, BT, and BG against 390 finite, funded bots using market, limit, or stop entries, editable protection, and a $10,000 simulated account. The chart, order book, fills, and P&L all come from the same matching engine. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
 
-The app focuses on forward testing through the Bot workspace. The Data tab and
+Run `npm run dev` and open the Vite URL printed in the terminal (port 5174 when available). This starts only the simulated exchange frontend; no backend, Supabase sign-in, Roblox runtime, or broker connection is required for simulation. The simulation is the main `/` route and also opens at `/simulation`.
+
+The existing account analytics workspace remains at `/dashboard`, with its original cloud authentication and data protections. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
+
+The retained Bot workspace supports forward testing. The Data tab and
 Databento backtest panel have been removed; old `/data` links redirect to the
 dashboard with their account selection preserved. Existing market data still
 supports bot analysis and forward testing. On September 8, 2026, the local
@@ -800,13 +804,15 @@ from the supplied archives and the exact benchmark methodology.
 npm run dev
 ```
 
-That starts:
+That starts the simulated exchange frontend on the first available port beginning at 5174. Open the printed Vite URL. No database migration, backend, or broker connection is started.
+
+For the retained account workspace, `npm run dev:live` explicitly starts:
 
 - the regular cloud/login app on `http://localhost:5173`
 - the connected local workspace on `http://127.0.0.1:5174`, with ProjectX, saved SQLite data, and live order routing enabled; TopBot still requires a Live Run start and confirmation
 - a separate loopback backend for each app, using available ports starting at `8000`
 
-`npm run dev` starts the local backend first, then starts the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by this command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
+`npm run dev:live` starts the local backend first, then starts the cloud profile once the local port is bound. The cloud profile avoids that backend port even during a local reload. Each profile has its own environment and backend/frontend supervisor. A cloud startup or migration failure leaves the local workspace running. Ctrl+C stops both profiles launched by this command. If local port `5174` is already occupied, the launcher reports the conflict before starting another local backend and continues with the cloud profile. Use the existing local workspace, or stop its `dev:local`/`dev:offline` terminal with Ctrl+C before relaunching it.
 
 Use `npm run dev:cloud` for only the regular app, `npm run dev:local` for only the connected local workspace, or `npm run dev:offline` for local work without ProjectX. Local and cloud data remain separate; this launcher does not copy or synchronize them.
 
@@ -816,7 +822,7 @@ The connected local app shows saved accounts immediately and checks ProjectX onc
 
 The Bot page's **Manual order test** panel sends individual MNQ market entries with attached stop-loss and take-profit brackets to the selected simulated account. Stop automation first, choose quantity and SL/TP distances in ticks, then press Buy or Sell and review the account-specific confirmation. The panel displays broker order IDs, open positions, working bracket prices, and the last ten test attempts. In TopstepX, select **Settings → Risk Settings → Auto OCO Brackets**; API brackets are rejected in Position Brackets mode ([ProjectX documentation](https://gateway.docs.projectx.com/docs/api-reference/order/order-place/)). Defaults are one contract, a 20-tick stop and a 40-tick target. Tests accept 1–10 contracts and cap planned stop risk at $250 before fees/slippage, with fresh provider eligibility and a flat account required for every new entry. Close positions & cancel orders uses the existing confirmed account-wide flatten action. An uncertain response is retained in the order audit: Recover same submission checks its original broker tag and never resends an ambiguous order. No bot run is started by this panel.
 
-To submit TopBot orders to ProjectX, stop the current dev launcher with Ctrl+C and run `npm run dev` (both workspaces) or `npm run dev:local:live` (local only). `npm run dev:live` is an alias of `npm run dev`. These commands enable both server and worker live-routing gates for the local workspace, including after backend reloads. Open `http://127.0.0.1:5174`, select your active account, and use TopBot's Live Run control and confirmation. Starting the launcher does not start a bot. Orders are sent to the broker even when the account is simulated; existing account eligibility and risk checks still apply. The cloud profile retains its own configuration. `dev:local` and `dev:offline` continue to disable local live routing, regardless of `.env` gate values.
+To submit TopBot orders to ProjectX, stop the current dev launcher with Ctrl+C and run `npm run dev:live` (both workspaces) or `npm run dev:local:live` (local only). These commands enable both server and worker live-routing gates for the local workspace, including after backend reloads. Open `http://127.0.0.1:5174`, select your active account, and use TopBot's Live Run control and confirmation. Starting the launcher does not start a bot. Orders are sent to the broker even when the account is simulated; existing account eligibility and risk checks still apply. The cloud profile retains its own configuration. `dev:local` and `dev:offline` continue to disable local live routing, regardless of `.env` gate values.
 
 Each profile's supervisor prefixes backend/frontend logs, restarts processes that exit early during startup a limited number of times, and stops its sibling server if one side exits permanently. Before the cloud backend starts accepting requests, its wrapper transactionally applies pending database migrations using the same environment snapshot as the backend. Each supervisor waits for its backend `/ready` check before starting Vite, and passes that backend's matching `VITE_API_BASE_URL` to its frontend.
 
@@ -827,7 +833,7 @@ Development reload boundaries are intentional:
 - A browser reload only reloads the current frontend bundle. It cannot change the backend process environment.
 - Vite HMR reloads frontend source modules. Restart the Vite process after changing frontend `VITE_*` environment values.
 - Uvicorn reloads changed Python code in a child process, but that child inherits the environment snapshot captured when the Node dev wrapper started. It does not re-read changed values from `backend/.env`.
-- After changing `backend/.env`—especially `CREDENTIALS_ENCRYPTION_KEY`, ProjectX settings, auth settings, or database settings—stop and restart the full `npm run dev` supervisor (or the standalone `npm run dev:backend` wrapper). The dev wrapper prints this same instruction when it detects a `backend/.env` change. A successful direct provider login in a separate shell does not prove that the running app has the same environment or can decrypt the signed-in user's stored credential.
+- After changing `backend/.env`—especially `CREDENTIALS_ENCRYPTION_KEY`, ProjectX settings, auth settings, or database settings—stop and restart the relevant `npm run dev:live` / `dev:local` / `dev:cloud` supervisor (or the standalone `npm run dev:backend` wrapper). The dev wrapper prints this same instruction when it detects a `backend/.env` change. A successful direct provider login in a separate shell does not prove that the running app has the same environment or can decrypt the signed-in user's stored credential.
 
 ### Environment Variables
 
@@ -931,8 +937,8 @@ Frontend auth behavior:
 | `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
 | `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
 | `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Run both workspaces with live order routing enabled locally |
-| `npm run dev:live` | Alias of `npm run dev` |
+| `npm run dev` | Open the browser-local simulated exchange frontend |
+| `npm run dev:live` | Explicitly run both account workspaces with live order routing enabled locally |
 | `npm run dev:cloud` | Run only the regular cloud/login app |
 | `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |
 | `npm run dev:local:live` | Run only the local workspace with ProjectX live order routing enabled |

@@ -1,0 +1,154 @@
+[
+  {
+    "Books": {
+      "BG": {
+        "Anchor": 23846,
+        "Candles": 1,
+        "Fair": 23846,
+        "FairExact": 23846,
+        "Last": 23845,
+        "Reference": 23846,
+        "Volume": 1
+      },
+      "BT": {
+        "Anchor": 81942,
+        "Candles": 1,
+        "Fair": 81942,
+        "FairExact": 81942,
+        "Last": 81943,
+        "Reference": 81942,
+        "Volume": 1
+      },
+      "BX": {
+        "Anchor": 23299,
+        "Candles": 1,
+        "Fair": 23299,
+        "FairExact": 23299,
+        "Last": 23298,
+        "Reference": 23299,
+        "Volume": 1
+      }
+    },
+    "Hash": 174688127,
+    "NextOrder": 543,
+    "NextTrade": 3,
+    "Random": 1773738739,
+    "Step": 0,
+    "Time": 0,
+    "Volume": 3
+  },
+  {
+    "Books": {
+      "BG": {
+        "Anchor": 23846.116780424967,
+        "Candles": 1,
+        "Fair": 23846,
+        "FairExact": 23846.002919510625,
+        "Last": 23845,
+        "Reference": 23846,
+        "Volume": 1
+      },
+      "BT": {
+        "Anchor": 81941.7366839943,
+        "Candles": 1,
+        "Fair": 81942,
+        "FairExact": 81941.99341709986,
+        "Last": 81943,
+        "Reference": 81942,
+        "Volume": 1
+      },
+      "BX": {
+        "Anchor": 23299.12343566158,
+        "Candles": 1,
+        "Fair": 23299,
+        "FairExact": 23299.003085891538,
+        "Last": 23298,
+        "Reference": 23299,
+        "Volume": 1
+      }
+    },
+    "Hash": 174688127,
+    "NextOrder": 543,
+    "NextTrade": 3,
+    "Random": 818500699,
+    "Step": 1,
+    "Time": 0.25,
+    "Volume": 3
+  },
+  {
+    "Books": {
+      "BG": {
+        "Anchor": 23798.619464720032,
+        "Candles": 2,
+        "Fair": 23847,
+        "FairExact": 23846.53793830844,
+        "Last": 23846,
+        "Reference": 23846,
+        "Volume": 184
+      },
+      "BT": {
+        "Anchor": 81874.68302839682,
+        "Candles": 2,
+        "Fair": 81941,
+        "FairExact": 81941.11681491522,
+        "Last": 81942,
+        "Reference": 81942,
+        "Volume": 265
+      },
+      "BX": {
+        "Anchor": 23256.056765968126,
+        "Candles": 2,
+        "Fair": 23299,
+        "FairExact": 23299.23854826968,
+        "Last": 23298,
+        "Reference": 23299,
+        "Volume": 242
+      }
+    },
+    "Hash": 1056038727,
+    "NextOrder": 1310,
+    "NextTrade": 332,
+    "Random": 64567029,
+    "Step": 320,
+    "Time": 80,
+    "Volume": 691
+  },
+  {
+    "Books": {
+      "BG": {
+        "Anchor": 23797.613542265914,
+        "Candles": 30,
+        "Fair": 23798,
+        "FairExact": 23798.179371674316,
+        "Last": 23792,
+        "Reference": 23846,
+        "Volume": 17869
+      },
+      "BT": {
+        "Anchor": 81808.57193647888,
+        "Candles": 30,
+        "Fair": 81806,
+        "FairExact": 81805.61583966714,
+        "Last": 81798,
+        "Reference": 81942,
+        "Volume": 26351
+      },
+      "BX": {
+        "Anchor": 23238.043102929034,
+        "Candles": 30,
+        "Fair": 23238,
+        "FairExact": 23237.789438632863,
+        "Last": 23236,
+        "Reference": 23299,
+        "Volume": 17223
+      }
+    },
+    "Hash": 1244650447,
+    "NextOrder": 51523,
+    "NextTrade": 19897,
+    "Random": 211945468,
+    "Step": 7200,
+    "Time": 1800,
+    "Volume": 61443
+  }
+]

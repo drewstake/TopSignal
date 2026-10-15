@@ -1,0 +1,17 @@
+{
+  "source": "Adjacent Get-Funded/src working copy, not published game",
+  "inspected": "2026-10-15",
+  "sha256": {
+    "MarketConfig.luau": "4a77ecd68741c960015ef8c0fcf6f312e2788fa952aa567482c946f018c0e47a",
+    "Participants.luau": "b0e3c8ec6bda29e4af098d203d780fab2ae9f782cf8b2808f53982ec984bba58",
+    "MarketEngine.luau": "b5c4249525a55708cceff2ec66f00f3426e1baa901875c13cebe1394105d83f8",
+    "BotPopulation.luau": "660e6e1d7d85c778b9f70d911620193dd11ac7a537ff2650d0317a88759813b1",
+    "PlayerExecution.luau": "cffccec479f287095ab520cf8f3aca36d35b3d3b1b329165659dba53c1603f00",
+    "ProtectiveOrders.luau": "8341574ef876874e6b4ebbb4eee23550580c7aeb053d3954f8eb1e5678532a88",
+    "BotExitRetry.luau": "3aefb64355fdb578ce7d54fe41dc5a02b38e318a6223be85080d186504156d00",
+    "TradeProtection.luau": "872a2586795e2c718dead094437f591a45900c159c30addba49e99d3d513a2cc",
+    "ContractLimits.luau": "a09e12b84bcc129ba046d5a2540a91988bc5ecf30c978768ae63c54eaa6091ca",
+    "ProgressionConfig.luau": "6bb3e0cec34f5fc4e9b8d606c06f663b769789c7563038647784f1f7cdae2dba",
+    "TradeStats.luau": "fce549f37c90c724bb279e1ba3c7ab94fa48a75b31f1f26e4b023284c655f539"
+  }
+}

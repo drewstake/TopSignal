@@ -1,7 +1,8 @@
-import { lazy } from "react";
+import { lazy, Suspense } from "react";
 import { Navigate, createBrowserRouter, redirect } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
+import { AccountAccess } from "./AccountAccess";
 
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
@@ -19,7 +20,7 @@ const BotPage = lazy(() =>
   import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
 );
 const SimulationPage = lazy(() =>
-  import("../pages/simulation/SimulationPage").then((module) => ({ default: module.SimulationPage })),
+  import("../pages/simulation/funded/TradingPage").then((module) => ({ default: module.TradingPage })),
 );
 const ThemePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
@@ -28,11 +29,20 @@ const ThemePage = lazy(() =>
 export const router = createBrowserRouter([
   {
     path: "/",
-    element: <AppShell />,
+    element: <Suspense fallback={<div className="min-h-screen bg-app-bg p-8 text-app-text">Opening TopSignal…</div>}><SimulationPage /></Suspense>,
+    errorElement: <RouteErrorPage fullScreen />,
+  },
+  {
+    path: "/simulation",
+    element: <Suspense fallback={<div className="min-h-screen bg-app-bg p-8 text-app-text">Opening TopSignal…</div>}><SimulationPage /></Suspense>,
+    errorElement: <RouteErrorPage fullScreen />,
+  },
+  {
+    element: <AccountAccess><AppShell /></AccountAccess>,
     errorElement: <RouteErrorPage fullScreen />,
     children: [
       {
-        index: true,
+        path: "dashboard",
         element: <DashboardPage />,
         errorElement: <RouteErrorPage />,
       },
@@ -53,16 +63,11 @@ export const router = createBrowserRouter([
       },
       {
         path: "journal",
-        loader: ({ request }) => redirect(`/${new URL(request.url).search}`),
+        loader: ({ request }) => redirect(`/dashboard${new URL(request.url).search}`),
       },
       {
         path: "bot",
         element: <BotPage />,
-        errorElement: <RouteErrorPage />,
-      },
-      {
-        path: "simulation",
-        element: <SimulationPage />,
         errorElement: <RouteErrorPage />,
       },
       {
@@ -72,7 +77,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "data",
-        loader: ({ request }) => redirect(`/${new URL(request.url).search}`),
+        loader: ({ request }) => redirect(`/dashboard${new URL(request.url).search}`),
       },
     ],
   },
