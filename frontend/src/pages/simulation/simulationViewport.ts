@@ -5,9 +5,9 @@ export const MAX_SPACING = 80;
 export const DEFAULT_SPACING = 12;
 export interface ChartView {
   time: number; offset: number; spacing: number; follow: boolean; auto: boolean;
-  minimum: number; maximum: number;
+  minimum: number; maximum: number; log?: boolean;
 }
-export const defaultView = (): ChartView => ({ time: 0, offset: 0, spacing: DEFAULT_SPACING, follow: true, auto: true, minimum: 0, maximum: 1 });
+export const defaultView = (): ChartView => ({ time: 0, offset: 0, spacing: DEFAULT_SPACING, follow: true, auto: true, minimum: 0, maximum: 1, log: false });
 export const bound = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 export function wheelPixels(delta: number, mode: number, height: number) {
   return bound(delta * (mode === 1 ? 16 : mode === 2 ? height : 1), -600, 600);

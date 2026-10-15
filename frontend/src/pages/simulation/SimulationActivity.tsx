@@ -3,24 +3,30 @@ import type { SimulationRuntime } from './simulationRuntime';
 import { accountSummary } from './simulationExchange';
 import { PARTICIPANT_GROUPS, STEP_SECONDS, simulationTime, type Execution, type Instrument } from './simulationPreview';
 import { usePanelPreference } from './simulationWorkspace';
+import { dollars } from './simulationFormat';
 
 const RECENT_TRADES = 8, RECENT_EVENTS = 2;
 
-export function SimulationActivity({ runtime, instrument, earliest, onJump }: {
-  runtime: SimulationRuntime; instrument: Instrument; earliest: number; onJump: (time: number, label: string) => void;
+const subscribeHidden = () => () => {};
+const hiddenSnapshot = () => null;
+export function SimulationActivity({ runtime, instrument, earliest, onJump, active = true }: {
+  runtime: SimulationRuntime; instrument: Instrument; earliest: number; onJump: (time: number, label: string) => void; active?: boolean;
 }) {
-  const { session: { market } } = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot);
+  const snapshot = useSyncExternalStore(active ? runtime.subscribe : subscribeHidden, active ? runtime.getSnapshot : hiddenSnapshot);
+  const market = snapshot?.session.market;
   const [tapeOpen, setTapeOpen] = usePanelPreference('tape');
   const [eventsOpen, setEventsOpen] = usePanelPreference('events');
   const [side, setSide] = useState('all');
   const tape = useMemo(() => {
     const recent: Execution[] = [];
+    if (!market || !tapeOpen) return recent;
     for (let i = market.trades.length - 1; i >= 0 && recent.length < RECENT_TRADES; i--) {
       const trade = market.trades[i];
       if (trade.contract === instrument && (side === 'all' || trade.direction === Number(side))) recent.push(trade);
     }
     return recent;
-  }, [market.trades, instrument, side]);
+  }, [market, instrument, side, tapeOpen]);
+  if (!market) return null;
   return <div className="simulation-activity">
     <section className="simulation-activity-panel" aria-label={`${instrument} time and sales`}>
       <header><h2>Time & sales <small>{instrument}</small></h2><button aria-expanded={tapeOpen} onClick={() => setTapeOpen(!tapeOpen)}>{tapeOpen ? 'Collapse tape' : 'Show tape'}</button></header>
@@ -43,13 +49,15 @@ export function SimulationActivity({ runtime, instrument, earliest, onJump }: {
   </div>;
 }
 
-const dollars = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
-export function SimulationIndividuals({ runtime, instrument }: { runtime: SimulationRuntime; instrument: Instrument }) {
-  const { session: { market } } = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot);
+export function SimulationIndividuals({ runtime, instrument, active = true }: { runtime: SimulationRuntime; instrument: Instrument; active?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const snapshot = useSyncExternalStore(active && open ? runtime.subscribe : subscribeHidden, active && open ? runtime.getSnapshot : hiddenSnapshot);
+  const market = snapshot?.session.market;
   const [query, setQuery] = useState(''), [kind, setKind] = useState('all'), [status, setStatus] = useState('all');
-  const agents = market.participants.filter(p => p.key === instrument && (kind === 'all' || p.kind === kind) && p.id.toLowerCase().includes(query.toLowerCase())
-    && (status === 'all' || (status === 'halted' ? market.accounts[p.id].locked || market.accounts[p.id].liquidating : !!market.accounts[p.id].positions[instrument])));
-  return <details className="simulation-individuals"><summary>Inspect individual participants · {instrument}</summary>
+  const agents = market?.participants.filter(p => p.key === instrument && (kind === 'all' || p.kind === kind) && p.id.toLowerCase().includes(query.toLowerCase())
+    && (status === 'all' || (status === 'halted' ? market.accounts[p.id].locked || market.accounts[p.id].liquidating : !!market.accounts[p.id].positions[instrument]))) ?? [];
+  return <details className="simulation-individuals" open={open}><summary onClick={event => { event.preventDefault(); setOpen(!open); }}>Inspect individual participants · {instrument}</summary>
+    {market && <>
     <div className="simulation-activity-controls"><input aria-label="Search participant ID" placeholder="Search participant ID" value={query} onChange={e => setQuery(e.target.value)} />
       <select aria-label="Participant group" value={kind} onChange={e => setKind(e.target.value)}><option value="all">Every group</option>{PARTICIPANT_GROUPS.map(g => <option key={g.kind} value={g.kind}>{g.label}</option>)}</select>
       <select aria-label="Participant status" value={status} onChange={e => setStatus(e.target.value)}><option value="all">Every state</option><option value="position">Open position</option><option value="halted">Halted / liquidating</option></select><span>{agents.length} participants</span></div>
@@ -70,5 +78,6 @@ export function SimulationIndividuals({ runtime, instrument }: { runtime: Simula
         <p>{account.locked ? 'Engine halted this depleted account.' : account.liquidating ? 'Engine is working to reduce exposure through available liquidity.' : 'New exposure is checked against inventory limits and equity-based margin risk.'} Stops and targets submit orders into the book; an exit can remain pending when liquidity is insufficient.</p>
       </details>;
     })}</div>{!agents.length && <p>No participants match these filters.</p>}
+    </>}
   </details>;
 }

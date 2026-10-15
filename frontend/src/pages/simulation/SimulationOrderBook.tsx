@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { buildPriceLadder, LADDER_RADIUS, type DepthLevel } from './simulationDepth';
 import { PARTICIPANT_GROUPS, type ParticipantOrder } from './simulationPreview';
 import { wheelPixels } from './simulationViewport';
 
-const quantity = (n: number) => n.toLocaleString('en-US');
+import { quantity } from './simulationFormat';
 function LiquidityCell({ level, side, scale, wall, inspect }: { level?: DepthLevel; side: 'bid' | 'ask'; scale: number; wall: number; inspect: (side: 'bid' | 'ask', price: number) => void }) {
   const description = level ? PARTICIPANT_GROUPS.filter(g => level.byKind[g.kind])
     .map(g => g.label + ': ' + quantity(level.byKind[g.kind]!) + ' contracts').join(' · ') : 'No resting orders';
@@ -13,7 +13,7 @@ function LiquidityCell({ level, side, scale, wall, inspect }: { level?: DepthLev
     {level ? <button className="simulation-level-inspect" aria-label={`Inspect ${side} at ${level.price.toFixed(2)}: ${level.contracts} contracts; cumulative ${level.cumulative}`} onClick={() => inspect(side, level.price)}>{quantity(level.contracts)} <small>Σ {quantity(level.cumulative)}</small></button> : <span className="simulation-empty-tick">·</span>}
   </td>;
 }
-export function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol = 'BX' }: { book: readonly ParticipantOrder[]; lastPrice: number; tickSize?: number; symbol?: string }) {
+export const SimulationOrderBook = memo(function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol = 'BX', active = true }: { book: readonly ParticipantOrder[]; lastPrice: number; tickSize?: number; symbol?: string; active?: boolean }) {
   const lastTicks = Math.round(lastPrice / tickSize);
   const [center, setCenter] = useState(() => Math.max(LADDER_RADIUS + 1, lastTicks));
   const [following, setFollowing] = useState(true);
@@ -21,7 +21,7 @@ export function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol =
   const ladder = useRef<HTMLDivElement>(null);
   const [inspection, setInspection] = useState<{ side: 'bid' | 'ask'; price: number } | null>(null);
   useEffect(() => {
-    const target = ladder.current; if (!target) return;
+    const target = ladder.current; if (!target || !active) return;
     let remainder = 0;
     const wheel = (event: WheelEvent) => {
       event.preventDefault(); remainder += wheelPixels(event.deltaY, event.deltaMode, target.clientHeight);
@@ -29,21 +29,22 @@ export function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol =
       remainder -= ticks * 20; setFollowing(false); setCenter(c => Math.max(LADDER_RADIUS + 1, c - ticks));
     };
     target.addEventListener('wheel', wheel, { passive: false }); return () => target.removeEventListener('wheel', wheel);
-  }, []);
+  }, [active]);
   useEffect(() => { latestPrice.current = lastTicks; }, [lastTicks]);
   const nearEdge = Math.abs(lastTicks - center) > LADDER_RADIUS - 3;
   useEffect(() => {
-    if (!following || !nearEdge) return;
+    if (!active || !following || !nearEdge) return;
     // A short dwell avoids chasing every trade; price changes do not restart it.
     const timer = window.setTimeout(() => setCenter(Math.max(LADDER_RADIUS + 1, latestPrice.current)), 400);
     return () => window.clearTimeout(timer);
-  }, [following, nearEdge, center]);
-  const depth = useMemo(() => buildPriceLadder(book, center, tickSize), [book, center, tickSize]);
+  }, [active, following, nearEdge, center]);
+  const depth = useMemo(() => active ? buildPriceLadder(book, center, tickSize) : null, [active, book, center, tickSize]);
   const page = (direction: number) => {
     setFollowing(false);
     setCenter(c => Math.max(LADDER_RADIUS + 1, c + direction * LADDER_RADIUS));
   };
   const follow = () => { setFollowing(true); setCenter(Math.max(LADDER_RADIUS + 1, lastTicks)); };
+  if (!depth) return null;
   const bestBid = depth.bids[0]?.price;
   const bestAsk = depth.asks[0]?.price;
   const inspected = inspection && (inspection.side === 'bid' ? depth.bids : depth.asks).find(l => l.price === inspection.price);
@@ -80,4 +81,4 @@ export function SimulationOrderBook({ book, lastPrice, tickSize = 0.25, symbol =
     {inspection && <div className="simulation-book-inspection"><button aria-label="Close level inspection" onClick={() => setInspection(null)}>×</button><strong>{inspection.side} ${inspection.price.toFixed(2)}</strong><p>{inspected ? `${inspected.contracts} contracts · ${inspected.orders} orders · cumulative ${inspected.cumulative}` : 'No resting orders remain at this level.'}</p>{inspected && PARTICIPANT_GROUPS.filter(g => inspected.byKind[g.kind]).map(g => <p key={g.kind}>{g.label}: {inspected.byKind[g.kind]} contracts</p>)}</div>}
     <p className="simulation-depth-note">{!depth.bidContracts && !depth.askContracts ? 'No resting orders. ' : !depth.bidContracts ? 'No resting bids. ' : !depth.askContracts ? 'No resting asks. ' : ''}{following ? 'Following price with edge delay' : 'Manual browsing'} · Wheel / keys browse · Σ cumulative contracts · Select a level for contributors</p>
   </aside>;
-}
+}, (previous, next) => next.active === false && previous.active === false);

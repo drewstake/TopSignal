@@ -1,0 +1,589 @@
+{
+  "MarketConfig": {
+    "Seed": 0,
+    "StepSeconds": 0.25,
+    "SimulationSpeed": 18,
+    "BroadcastSeconds": 0.1,
+    "DepthLevels": 5,
+    "MakerQuotePolicyVersion": 4,
+    "MakerMinRestSeconds": 18,
+    "MakerRepriceTicks": 3,
+    "MakerQuoteSizeMultiplier": 1.5,
+    "MakerReplenishSeconds": 1.5,
+    "MakerDecisionMultiplier": 0.5,
+    "ReservePopulationVersion": 2,
+    "Reserve": {
+      "Count": 6,
+      "Capital": 5000000,
+      "InventoryLimit": 2000,
+      "QuoteSize": 24,
+      "QuoteSizes": {
+        "BX": 24,
+        "BT": 4,
+        "BG": 3
+      },
+      "SizeVariation": [
+        0.7,
+        1.3
+      ],
+      "DepthGrowth": 0.15,
+      "SpacingTicks": 1,
+      "Offsets": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "DecisionSeconds": 1,
+      "RestSeconds": 2,
+      "RepriceTicks": 2
+    },
+    "PlayerExecution": {
+      "Version": 1,
+      "WindowSeconds": 18,
+      "SliceContracts": 5000,
+      "OwnerContracts": 20000,
+      "MarketContracts": 100000,
+      "BookFraction": 0.1,
+      "GuardTicks": 20,
+      "OwnersPerStep": 32
+    },
+    "WarmupSeconds": 1800,
+    "MaxCatchupSteps": 32,
+    "SimulationFrameBudgetMs": 8,
+    "BotExitRetrySeconds": 4,
+    "ParticipantsPerInstrument": 76,
+    "BotPopulation": {
+      "Version": 1,
+      "Order": [
+        "Maker",
+        "Liquidity",
+        "Momentum",
+        "Value",
+        "Reversion",
+        "Protective",
+        "Scalper",
+        "Whale",
+        "Reserve"
+      ],
+      "Counts": {
+        "Maker": 20,
+        "Liquidity": 24,
+        "Momentum": 12,
+        "Value": 20,
+        "Reversion": 12,
+        "Protective": 8,
+        "Scalper": 24,
+        "Whale": 4,
+        "Reserve": 6
+      },
+      "Capital": {
+        "Maker": 750000,
+        "Liquidity": 150000,
+        "Momentum": 200000,
+        "Value": 250000,
+        "Reversion": 200000,
+        "Protective": 150000,
+        "Scalper": 100000,
+        "Whale": 1500000,
+        "Reserve": 5000000
+      },
+      "MarginFraction": 0.5,
+      "ReferenceDollarVolatility": 12.5,
+      "TraderActivityScale": 2.111111111111111,
+      "MakerActivityScale": 2,
+      "WhaleActivityScale": 1.3333333333333333,
+      "ValueHalfLife": [
+        6,
+        18
+      ],
+      "ValueObservationSeconds": [
+        2,
+        8
+      ],
+      "ValueNoiseTicks": [
+        2,
+        6
+      ],
+      "ScalperMinMoveTicks": [
+        3,
+        8
+      ],
+      "ScalperNoise": 0.2
+    },
+    "ScalperPopulationVersion": 1,
+    "ScalpersPerInstrument": 24,
+    "Scalper": {
+      "Size": [
+        1,
+        2
+      ],
+      "DecisionSeconds": [
+        2.67,
+        6.67
+      ],
+      "CooldownSeconds": [
+        12,
+        32
+      ],
+      "HoldSeconds": [
+        48,
+        160
+      ],
+      "OrderLifetimeSeconds": [
+        3,
+        7
+      ],
+      "TargetTicks": [
+        4,
+        10
+      ],
+      "StopTicks": [
+        5,
+        12
+      ],
+      "MaxSpreadTicks": 3,
+      "MaxSlippageTicks": 1,
+      "AggressiveChance": 0.45
+    },
+    "MakersPerInstrument": 20,
+    "MakerPopulationVersion": 1,
+    "WhalesPerInstrument": 4,
+    "BehaviorWeights": {
+      "Liquidity": 30,
+      "Momentum": 20,
+      "Value": 22,
+      "Reversion": 18,
+      "Protective": 10
+    },
+    "Liquidity": 1,
+    "Volatility": 1,
+    "WhaleFrequency": 1,
+    "NewsFrequency": 1,
+    "RegimeSeconds": [
+      100,
+      240
+    ],
+    "Regimes": [
+      {
+        "Name": "Quiet",
+        "Weight": 24,
+        "Volatility": 0.45,
+        "Liquidity": 1.4,
+        "Activity": 0.65,
+        "Trend": 0
+      },
+      {
+        "Name": "Trending",
+        "Weight": 22,
+        "Volatility": 1,
+        "Liquidity": 1,
+        "Activity": 1.1,
+        "Trend": 0.1
+      },
+      {
+        "Name": "Range-bound",
+        "Weight": 24,
+        "Volatility": 0.85,
+        "Liquidity": 1.2,
+        "Activity": 1,
+        "Trend": 0
+      },
+      {
+        "Name": "High volatility",
+        "Weight": 16,
+        "Volatility": 2.5,
+        "Liquidity": 0.6,
+        "Activity": 1.7,
+        "Trend": 0
+      },
+      {
+        "Name": "Thin liquidity",
+        "Weight": 14,
+        "Volatility": 1.5,
+        "Liquidity": 0.22,
+        "Activity": 0.85,
+        "Trend": 0
+      }
+    ],
+    "Timeframes": [
+      [
+        "1m",
+        60
+      ],
+      [
+        "5m",
+        300
+      ],
+      [
+        "15m",
+        900
+      ],
+      [
+        "1h",
+        3600
+      ],
+      [
+        "1D",
+        86400
+      ]
+    ],
+    "MaxCandles": 1200,
+    "MaxTradeHistory": 4000,
+    "MaxOrderHistory": 4000,
+    "MaxAccountHistory": 60,
+    "MaxPlayerQuantity": 100,
+    "MaxPlayerInventory": 100,
+    "MaxPlayerOrders": 16,
+    "PriceBandFraction": 0.1,
+    "LegacyOrder": [
+      "RTY",
+      "YM",
+      "MES",
+      "MNQ",
+      "M2K",
+      "MYM"
+    ],
+    "LegacyContracts": {
+      "RTY": {
+        "Name": "RTY \u00c2\u00b7 retired market",
+        "Short": "Retired \u00c2\u00b7 close only",
+        "Last": 2218.4,
+        "Multiplier": 50,
+        "Tick": 0.1,
+        "Scale": 0.6,
+        "Margin": 750,
+        "CloseOnly": true
+      },
+      "YM": {
+        "Name": "YM \u00c2\u00b7 retired market",
+        "Short": "Retired \u00c2\u00b7 close only",
+        "Last": 42376,
+        "Multiplier": 5,
+        "Tick": 1,
+        "Scale": 2,
+        "Margin": 750,
+        "CloseOnly": true
+      },
+      "MES": {
+        "Name": "Legacy micro \u00c2\u00b7 retired",
+        "Short": "Legacy micro",
+        "Last": 5824.75,
+        "Multiplier": 5,
+        "Tick": 0.25,
+        "Scale": 1,
+        "Margin": 1200,
+        "CloseOnly": true
+      },
+      "MNQ": {
+        "Name": "Legacy micro \u00c2\u00b7 retired",
+        "Short": "Legacy micro",
+        "Last": 20485.5,
+        "Multiplier": 2,
+        "Tick": 0.25,
+        "Scale": 3,
+        "Margin": 2000,
+        "CloseOnly": true
+      },
+      "M2K": {
+        "Name": "Legacy micro \u00c2\u00b7 retired",
+        "Short": "Legacy micro",
+        "Last": 2218.4,
+        "Multiplier": 5,
+        "Tick": 0.1,
+        "Scale": 0.6,
+        "Margin": 800,
+        "CloseOnly": true
+      },
+      "MYM": {
+        "Name": "Legacy micro \u00c2\u00b7 retired",
+        "Short": "Legacy micro",
+        "Last": 42376,
+        "Multiplier": 0.5,
+        "Tick": 1,
+        "Scale": 2,
+        "Margin": 1000,
+        "CloseOnly": true
+      }
+    },
+    "Renamed": {
+      "ES": "BX",
+      "NQ": "BT"
+    },
+    "LegacyToCurrent": {
+      "MES": "BX",
+      "MNQ": "BT"
+    },
+    "Contracts": {
+      "BX": {
+        "Name": "Blox 500",
+        "Short": "Blox 500",
+        "Last": 5824.75,
+        "Change": 0,
+        "Multiplier": 50,
+        "Tick": 0.25,
+        "Scale": 1,
+        "Margin": 750
+      },
+      "BT": {
+        "Name": "BloxTech 100",
+        "Short": "BloxTech 100",
+        "Last": 20485.5,
+        "Change": 0,
+        "Multiplier": 20,
+        "Tick": 0.25,
+        "Scale": 3,
+        "Margin": 750
+      },
+      "BG": {
+        "Name": "Blox Gold",
+        "Short": "Blox Gold",
+        "Last": 2384.6,
+        "Change": 0,
+        "Multiplier": 100,
+        "Tick": 0.1,
+        "Scale": 1,
+        "Margin": 750
+      }
+    },
+    "ContractOrder": [
+      "BX",
+      "BT",
+      "BG"
+    ]
+  },
+  "ProgressionConfig": {
+    "Version": 4,
+    "ProgressionVersion": 1,
+    "StartingBalance": 10000,
+    "MinimumContracts": 5,
+    "BalancePerContract": 1000,
+    "MarginUse": 0.8,
+    "ResetLimits": {
+      "Burst": 5,
+      "RefillSeconds": 720
+    },
+    "AccountLimits": {
+      "MaxExchangeAccounts": 20000
+    },
+    "BadgeAtlas": "rbxassetid://114491192679289",
+    "BadgeAtlasSize": 1024,
+    "Ranks": [
+      {
+        "Id": "Rookie",
+        "Name": "Market Rookie",
+        "Trades": 0,
+        "Wins": 0,
+        "Profit": 0,
+        "Badge": 1
+      },
+      {
+        "Id": "Apprentice",
+        "Name": "Trading Apprentice",
+        "Trades": 25,
+        "Wins": 10,
+        "Profit": 25000,
+        "Badge": 2
+      },
+      {
+        "Id": "Rising",
+        "Name": "Rising Trader",
+        "Trades": 100,
+        "Wins": 40,
+        "Profit": 100000,
+        "Badge": 4
+      },
+      {
+        "Id": "Skilled",
+        "Name": "Skilled Trader",
+        "Trades": 250,
+        "Wins": 100,
+        "Profit": 250000,
+        "Badge": 7
+      },
+      {
+        "Id": "Pro",
+        "Name": "Market Pro",
+        "Trades": 500,
+        "Wins": 250,
+        "Profit": 500000,
+        "Badge": 11
+      },
+      {
+        "Id": "Master",
+        "Name": "Market Master",
+        "Trades": 1000,
+        "Wins": 500,
+        "Profit": 1000000,
+        "Badge": 13
+      },
+      {
+        "Id": "Legend",
+        "Name": "Trading Legend",
+        "Trades": 2500,
+        "Wins": 1250,
+        "Profit": 2500000,
+        "Badge": 15
+      },
+      {
+        "Id": "Sovereign",
+        "Name": "Market Sovereign",
+        "Trades": 5000,
+        "Wins": 2500,
+        "Profit": 5000000,
+        "Badge": 16
+      }
+    ],
+    "Milestones": [
+      {
+        "Id": "FirstTrade",
+        "StartingBonus": 2500,
+        "Name": "Close 25 trades",
+        "Kind": "Trades",
+        "Goal": 25,
+        "Title": "Opening Bell",
+        "Badge": 2,
+        "OldTitle": "Trader"
+      },
+      {
+        "Id": "FirstWin",
+        "StartingBonus": 5000,
+        "Name": "Close 25 profitable trades",
+        "Kind": "Wins",
+        "Goal": 25,
+        "Title": "Green Spark",
+        "Badge": 3,
+        "OldTitle": "First Win"
+      },
+      {
+        "Id": "Trades5",
+        "StartingBonus": 7500,
+        "Name": "Close 100 trades",
+        "Kind": "Trades",
+        "Goal": 100,
+        "Title": "Tape Reader",
+        "Badge": 4
+      },
+      {
+        "Id": "Profit500",
+        "StartingBonus": 7500,
+        "Name": "Reach $50,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 50000,
+        "Title": "Profit Scout",
+        "Badge": 5,
+        "OldTitle": "Rising Trader"
+      },
+      {
+        "Id": "Wins10",
+        "StartingBonus": 10000,
+        "Name": "Close 100 profitable trades",
+        "Kind": "Wins",
+        "Goal": 100,
+        "Title": "Green Collector",
+        "Badge": 6
+      },
+      {
+        "Id": "Trades25",
+        "StartingBonus": 10000,
+        "Name": "Close 500 trades",
+        "Kind": "Trades",
+        "Goal": 500,
+        "Title": "Market Navigator",
+        "Badge": 7
+      },
+      {
+        "Id": "Profit2500",
+        "StartingBonus": 10000,
+        "Name": "Reach $100,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 100000,
+        "Title": "Golden Edge",
+        "Badge": 8
+      },
+      {
+        "Id": "Balance10K",
+        "StartingBonus": 12500,
+        "Name": "Reach $250,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 250000,
+        "Title": "Momentum Maker",
+        "Badge": 9,
+        "OldTitle": "Skilled Trader"
+      },
+      {
+        "Id": "Trades100",
+        "StartingBonus": 15000,
+        "Name": "Close 1,000 trades",
+        "Kind": "Trades",
+        "Goal": 1000,
+        "Title": "Order Veteran",
+        "Badge": 10
+      },
+      {
+        "Id": "Balance25K",
+        "StartingBonus": 15000,
+        "Name": "Reach $500,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 500000,
+        "Title": "Market Pro",
+        "Badge": 11
+      },
+      {
+        "Id": "Wins100",
+        "StartingBonus": 20000,
+        "Name": "Close 500 profitable trades",
+        "Kind": "Wins",
+        "Goal": 500,
+        "Title": "Profit Ace",
+        "Badge": 12
+      },
+      {
+        "Id": "Balance50K",
+        "StartingBonus": 20000,
+        "Name": "Reach $1,000,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 1000000,
+        "Title": "Market Master",
+        "Badge": 13
+      },
+      {
+        "Id": "Trades500",
+        "StartingBonus": 25000,
+        "Name": "Close 5,000 trades",
+        "Kind": "Trades",
+        "Goal": 5000,
+        "Title": "Closing Champion",
+        "Badge": 14
+      },
+      {
+        "Id": "Balance100K",
+        "StartingBonus": 25000,
+        "Name": "Reach $2,500,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 2500000,
+        "Title": "Get Funded Legend",
+        "Badge": 15
+      },
+      {
+        "Id": "Wins500",
+        "StartingBonus": 30000,
+        "Name": "Close 2,500 profitable trades",
+        "Kind": "Wins",
+        "Goal": 2500,
+        "Title": "Emerald Titan",
+        "Badge": 14
+      },
+      {
+        "Id": "Profit250K",
+        "StartingBonus": 35000,
+        "Name": "Reach $5,000,000 lifetime net profit",
+        "Kind": "Profit",
+        "Goal": 5000000,
+        "Title": "Market Sovereign",
+        "Badge": 16
+      }
+    ]
+  }
+}

@@ -5,6 +5,8 @@ import { SimulationChart } from './SimulationChart';
 
 import { createSimulation, type SimulationCandle } from './simulationPreview';
 import { createSimulationRuntime } from './simulationRuntime';
+import { priceScale } from './simulationPriceScale';
+import { advanceSimulation } from './simulationPreview';
 
 beforeEach(() => {
   vi.useFakeTimers(); localStorage.clear();
@@ -154,6 +156,23 @@ describe('Execution-accurate chart', () => {
     const transform = (container.querySelector('.simulation-price-marker') as SVGGElement).style.transform;
     expect(Number(transform.match(/translateY\((.*)px\)/)?.[1])).toBeCloseTo(27.83);
     expect(container.querySelector('.simulation-price-marker line')).not.toBeNull();
+  });
+  it('keeps edge labels above the axis controls without moving the crosshair or inventing a price line', () => {
+    for (const log of [false, true]) {
+      localStorage.setItem('topsignal.simulation.workspace.v1.chart.BX.1m', JSON.stringify({ time: 0, offset: 0, spacing: 12, follow: true, auto: false, minimum: 4, maximum: 6, log }));
+      const { container, unmount } = render(<SimulationChart candles={[candle(0, 5)]} lastPrice={.5} />);
+      const marker = container.querySelector('.simulation-price-marker')!;
+      expect(marker.querySelector('line')).toBeNull();
+      expect(marker.querySelector('text')?.textContent).toBe('↓ 0.50');
+      expect(Number(marker.querySelector('rect')?.getAttribute('y')) + 22).toBeLessThanOrEqual(0);
+      const chart = screen.getByRole('img');
+      vi.spyOn(chart, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 960, height: 440 } as DOMRect);
+      fireEvent(chart, new MouseEvent('pointermove', { bubbles: true, clientX: 50, clientY: 406 }));
+      const crosshair = container.querySelector('.simulation-crosshair')!;
+      expect(crosshair.querySelector('circle')?.getAttribute('cy')).toBe('406');
+      expect(Number(crosshair.querySelector('rect')?.getAttribute('y')) + 20).toBeLessThanOrEqual(407);
+      unmount();
+    }
   });
   it('batches dense retained history into bounded paths while keeping exact candle inspection', () => {
     const bars = Array.from({ length: 1200 }, (_, i) => candle(i * 60, 5 + (i % 3 - 1) * .25));
@@ -413,10 +432,126 @@ it('measures actual candle intervals and reports elapsed time across empty windo
   const chart = screen.getByRole('img'); fireEvent.keyDown(chart, { key: 'Enter' }); fireEvent.keyDown(chart, { key: 'ArrowLeft' }); fireEvent.keyDown(chart, { key: 'Enter' });
   expect(screen.getByText(/−?Measure: -1.00/).textContent).toContain('-4 ticks · 2 candles (inclusive) · 3540 simulated seconds');
 });
+
+it('fits the workspace below the saved chart height and keeps secondary tools collapsible', () => {
+  let resize: ResizeObserverCallback | undefined;
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: ResizeObserverCallback) { resize = callback; } observe() {} disconnect() {} });
+  const { container } = render(<SimulationChart candles={[candle(0, 5), candle(60, 6)]} height={720} fitContainer />);
+  const chart = screen.getByRole('img');
+  act(() => resize?.([{ contentRect: { width: 800, height: 280 } } as ResizeObserverEntry], {} as ResizeObserver));
+  expect(chart.getAttribute('viewBox')).toBe('0 0 800 280');
+  expect(container.querySelector('.simulation-chart-plot')?.getAttribute('style')).toBeNull();
+  expect(screen.getByText('Chart tools').closest('details')).toHaveProperty('open', false);
+  fireEvent.click(screen.getByText('Chart tools'));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'SMA' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Fit History' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close tools' }));
+  expect(screen.getByText('Chart tools').closest('details')).toHaveProperty('open', false);
+  fireEvent.click(screen.getByText('Chart tools'));
+  expect(screen.getByRole('checkbox', { name: 'SMA' })).toHaveProperty('checked', true);
+  fireEvent.keyDown(screen.getByText('Chart tools'), { key: 'Escape' });
+  expect(screen.getByText('Chart tools').closest('details')).toHaveProperty('open', false);
+});
 it('jumps within retained time, handles empty windows, and rejects future or invalid times', () => {
   render(<SimulationChart candles={[candle(0, 5), candle(3600, 6)]} elapsedTime={3700} />);
   const input = screen.getByLabelText('Jump to simulated seconds');
   fireEvent.change(input, { target: { value: '1800' } }); fireEvent.submit(input.closest('form')!);
   expect(screen.getByText(/Empty window: nearest retained candle shown/)).toBeTruthy();
   for (const value of ['3701', '-1', 'nope']) { fireEvent.change(input, { target: { value } }); fireEvent.submit(input.closest('form')!); expect(screen.getByText('Use retained seconds 0–3700.')).toBeTruthy(); }
+});
+
+describe('Auto and logarithmic chart interactions', () => {
+  const bars = Array.from({ length: 300 }, (_, i) => ({ time: i * 60, open: 10 + i, low: 5 + i, high: 20 + i, close: 15 + i, volume: 10 }));
+  const bounds = () => { const chart = screen.getByRole('img'); vi.spyOn(chart, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 960, height: 440 } as DOMRect); return chart; };
+  it('keeps Auto independent of historical navigation and restores it on axis double-click without resetting Log or time', () => {
+    render(<SimulationChart candles={bars} />); const chart = bounds();
+    fireEvent.keyDown(chart, { key: 'PageUp' }); const start = chart.dataset.start;
+    fireEvent.keyDown(chart, { key: 'l' });
+    expect(chart.dataset.priceScale).toBe('log');
+    expect(screen.getByRole('button', { name: 'Follow Latest' }).getAttribute('aria-pressed')).toBe('false');
+    fireEvent.keyDown(chart, { key: 'ArrowUp' });
+    expect(screen.getByRole('button', { name: 'Auto Price Scale' }).getAttribute('aria-pressed')).toBe('false');
+    fireEvent.doubleClick(chart, { clientX: 920, clientY: 200 });
+    expect(chart.dataset.start).toBe(start); expect(chart.dataset.priceScale).toBe('log');
+    expect(screen.getByRole('button', { name: 'Auto Price Scale' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.keyDown(chart, { key: 'a' }); fireEvent.keyDown(chart, { key: 'l' });
+    expect(chart.dataset.start).toBe(start); expect(chart.dataset.priceScale).toBe('linear');
+    expect(screen.getByRole('button', { name: 'Auto Price Scale' }).getAttribute('aria-pressed')).toBe('false');
+  });
+  it('anchors price-axis wheel zoom to its price and aligns candles, SMA, crosshair and measurements', () => {
+    const { container } = render(<SimulationChart candles={bars} />); const chart = bounds();
+    fireEvent.keyDown(chart, { key: 'l' });
+    const transform = () => priceScale({ minimum: Number(chart.dataset.minimum), maximum: Number(chart.dataset.maximum), log: true }, 24, 407);
+    const originalPrice = transform().price(200);
+    fireEvent.wheel(chart, { clientX: 920, clientY: 200, deltaY: -90 });
+    expect(transform().price(200)).toBeCloseTo(originalPrice, 8);
+    fireEvent.click(screen.getByLabelText('SMA'));
+    const last = container.querySelector('[data-candle="17940"]')!;
+    expect(Number(last.getAttribute('y'))).toBeCloseTo(transform().y(314));
+    expect(container.querySelector('.simulation-sma-line')?.getAttribute('d')).not.toMatch(/NaN|Infinity/);
+    fireEvent.keyDown(chart, { key: 'm' }); fireEvent.keyDown(chart, { key: 'Enter' }); fireEvent.keyDown(chart, { key: 'ArrowLeft' }); fireEvent.keyDown(chart, { key: 'Enter' });
+    expect(Number(container.querySelector('.simulation-measure-line')?.getAttribute('y1'))).toBeCloseTo(transform().y(314));
+    expect(Number(container.querySelector('.simulation-crosshair circle')?.getAttribute('cy'))).toBeCloseTo(transform().y(313));
+  });
+  it('omits nonpositive candles/markers safely and retains their truthful OHLC readout', () => {
+    const bad = { time: 0, open: -1, low: -2, high: 1, close: 0, volume: 1 };
+    const { container } = render(<SimulationChart candles={[bad]} lastPrice={0} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Logarithmic Price Scale' }));
+    expect(container.querySelector('[data-candle]')).toBeNull(); expect(container.querySelector('.simulation-price-marker')).toBeNull();
+    expect(screen.getByText('Log scale omits candles at or below zero.')).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('img'), { key: 'ArrowLeft' });
+    expect(container.querySelector('.simulation-crosshair')).toBeNull();
+    expect(container.innerHTML).not.toMatch(/NaN|Infinity/);
+    expect(container.querySelector('.simulation-ohlc')?.textContent).toContain('-1.00');
+  });
+  it('flushes separate log, auto and indicator preferences on navigation and debounces drag saves', () => {
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    const view = render(<SimulationChart key="BX1" candles={bars} symbol="BX" timeframe="1m" />);
+    const chart = bounds(); fireEvent.keyDown(chart, { key: 'l' }); fireEvent.keyDown(chart, { key: 'a' }); fireEvent.click(screen.getByLabelText('SMA'));
+    write.mockClear(); for (let i = 0; i < 20; i++) fireEvent.keyDown(chart, { key: 'ArrowUp' });
+    expect(write).not.toHaveBeenCalled();
+    view.rerender(<SimulationChart key="BG5" candles={bars} symbol="BG" timeframe="5m" />);
+    expect(screen.getByRole('img').dataset.priceScale).toBe('linear'); expect(screen.getByLabelText('SMA')).toHaveProperty('checked', false);
+    view.rerender(<SimulationChart key="BX1" candles={bars} symbol="BX" timeframe="1m" />);
+    expect(screen.getByRole('img').dataset.priceScale).toBe('log'); expect(screen.getByLabelText('SMA')).toHaveProperty('checked', true);
+    expect(screen.getByRole('button', { name: 'Auto Price Scale' }).getAttribute('aria-pressed')).toBe('false');
+    write.mockRestore();
+  });
+  it('preserves every deterministic step during 4x playback while all chart controls are exercised', () => {
+    const market = createSimulation(73521, undefined, 500);
+    const { api } = createSimulationRuntime({ storage: null, session: { market, running: true, speed: 4, generation: 0, instrument: 'BX', timeframe: '1m', fractionalSteps: 0 } });
+    const { unmount } = render(<SimulationChart runtime={api} />); const chart = bounds();
+    try {
+      for (let i = 0; i < 20; i++) {
+        fireEvent.keyDown(chart, { key: i % 2 ? 'l' : 'a' }); fireEvent.keyDown(chart, { key: 'PageUp' });
+        fireEvent.wheel(chart, { clientX: 400, clientY: 200, deltaY: i % 2 ? 20 : -20 });
+        act(() => vi.advanceTimersByTime(50));
+      }
+      expect(api.getSnapshot().session.market).toEqual(advanceSimulation(market, 288));
+      expect(api.getSnapshot().session.fractionalSteps).toBeCloseTo(0);
+    } finally { unmount(); api.dispose(); }
+  });
+});
+
+it('pans log geometry in pixels and keeps the candle under a moving pinch center', () => {
+  const bars = Array.from({ length: 300 }, (_, i) => ({ time: i * 60, open: 10 + i, low: 5 + i, high: 20 + i, close: 15 + i, volume: 10 }));
+  const { container } = render(<SimulationChart candles={bars} />);
+  const chart = screen.getByRole('img');
+  vi.spyOn(chart, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 960, height: 440 } as DOMRect);
+  const pointer = (type: string, x: number, y: number, id: number, touch = false) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 });
+    Object.defineProperties(event, { pointerId: { value: id }, pointerType: { value: touch ? 'touch' : 'mouse' }, isPrimary: { value: id === 1 } }); fireEvent(chart, event);
+  };
+  fireEvent.keyDown(chart, { key: 'l' });
+  const body = () => container.querySelector('[data-candle="15000"]')!;
+  const original = { x: Number(body().getAttribute('x')), y: Number(body().getAttribute('y')) };
+  pointer('pointerdown', 400, 200, 1); pointer('pointermove', 430, 220, 1); pointer('pointerup', 430, 220, 1);
+  expect(Number(body().getAttribute('x'))).toBeCloseTo(original.x + 30);
+  expect(Number(body().getAttribute('y'))).toBeCloseTo(original.y + 20);
+  const anchor = Number(chart.dataset.start) + (400 - 14) / Number(chart.dataset.spacing);
+  pointer('pointerdown', 300, 200, 1, true); pointer('pointerdown', 500, 200, 2, true); pointer('pointermove', 600, 200, 2, true);
+  expect(Number(chart.dataset.start) + (450 - 14) / Number(chart.dataset.spacing)).toBeCloseTo(anchor);
+  expect(chart.dataset.priceScale).toBe('log');
+  pointer('pointercancel', 600, 200, 2, true); pointer('pointerup', 300, 200, 1, true);
+  expect(chart.classList.contains('is-dragging')).toBe(false);
 });

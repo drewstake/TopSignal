@@ -74,6 +74,7 @@ function AppShellRouteFallback() {
 }
 
 const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
+  ["/dashboard", "Dashboard"],
   ["/", "Dashboard"],
   ["/accounts", "Accounts"],
   ["/trades", "Trades"],
@@ -330,7 +331,7 @@ export function AppShell() {
     ? "Live session remains signed in"
     : currentUserEmailDisplay;
   const isTradesRoute = location.pathname.startsWith("/trades");
-  const isDashboardRoute = location.pathname === "/";
+  const isDashboardRoute = location.pathname === "/dashboard" || location.pathname === "/";
   const currentPageLabel = WORKSPACE_PAGE_LABELS.find(([prefix]) =>
     prefix === "/" ? location.pathname === "/" : location.pathname.startsWith(prefix),
   )?.[1] ?? "Workspace";
@@ -432,10 +433,10 @@ export function AppShell() {
       return;
     }
     if (selectedAccountIsLocalOnly) {
-      if (location.pathname === "/") {
+      if (isDashboardRoute) {
         requestTradeImportFilePicker();
       } else {
-        navigate(buildAccountAwarePath("/", selectedAccountId));
+        navigate(buildAccountAwarePath("/dashboard", selectedAccountId));
       }
       return;
     }
@@ -509,7 +510,7 @@ export function AppShell() {
         <p className="workspace-nav-label">Workspace</p>
           <Tabs
             items={[
-              { label: "Dashboard", to: buildAccountAwarePath("/", selectedAccountId) },
+              { label: "Dashboard", to: buildAccountAwarePath("/dashboard", selectedAccountId) },
               { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },

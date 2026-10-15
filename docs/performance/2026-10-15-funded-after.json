@@ -1,0 +1,419 @@
+{
+  "label": "funded-final",
+  "conditions": {
+    "cpu": "AMD Ryzen 7 5800X 8-Core Processor             ",
+    "ramGiB": 31.9,
+    "os": "10.0.26300",
+    "browser": "155.0.8059.40",
+    "viewport": "1440x1000 DPR1",
+    "headless": true,
+    "seed": 73521,
+    "steps": 288000,
+    "build": "React production profiling, real worker, fixture initialization only"
+  },
+  "scenarios": [
+    {
+      "name": "paused-hover",
+      "seconds": 6.08,
+      "frames": {
+        "count": 868,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 7.1,
+        "max": 55.5
+      },
+      "inputToRaf": {
+        "count": 327,
+        "p50": 4.7,
+        "p95": 8.7,
+        "p99": 11.6,
+        "max": 12.8
+      },
+      "reactCommit": {
+        "count": 384,
+        "p50": 0.1,
+        "p95": 0.8,
+        "p99": 1,
+        "max": 1.1
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 0,
+      "stepsPerSecond": 0,
+      "backlog": 0,
+      "candles": 1200,
+      "domNodes": 539
+    },
+    {
+      "name": "paused-pan",
+      "seconds": 6.06,
+      "frames": {
+        "count": 863,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 13.7,
+        "max": 13.9
+      },
+      "inputToRaf": {
+        "count": 279,
+        "p50": 3.3,
+        "p95": 8.7,
+        "p99": 12.3,
+        "max": 13.2
+      },
+      "reactCommit": {
+        "count": 339,
+        "p50": 0.4,
+        "p95": 0.7,
+        "p99": 0.8,
+        "max": 1.2
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 0,
+      "stepsPerSecond": 0,
+      "backlog": 0,
+      "candles": 1200,
+      "domNodes": 483
+    },
+    {
+      "name": "paused-zoom",
+      "seconds": 6.09,
+      "frames": {
+        "count": 820,
+        "p50": 7,
+        "p95": 13.8,
+        "p99": 13.9,
+        "max": 41.7
+      },
+      "inputToRaf": {
+        "count": 268,
+        "p50": 5.4,
+        "p95": 12.5,
+        "p99": 15.2,
+        "max": 15.5
+      },
+      "reactCommit": {
+        "count": 358,
+        "p50": 0.1,
+        "p95": 0.8,
+        "p99": 1,
+        "max": 1.2
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 5,
+        "p50": 0,
+        "p95": 0.1,
+        "p99": 0.1,
+        "max": 0.1
+      },
+      "steps": 0,
+      "stepsPerSecond": 0,
+      "backlog": 0,
+      "candles": 1200,
+      "domNodes": 542
+    },
+    {
+      "name": "play-1x",
+      "seconds": 6.1,
+      "frames": {
+        "count": 847,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 13.9,
+        "max": 62.5
+      },
+      "inputToRaf": {
+        "count": 323,
+        "p50": 4.7,
+        "p95": 11.5,
+        "p99": 15.4,
+        "max": 16.4
+      },
+      "reactCommit": {
+        "count": 379,
+        "p50": 0.1,
+        "p95": 1,
+        "p99": 1.2,
+        "max": 1.2
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 439,
+      "stepsPerSecond": 72.01,
+      "backlog": 0.06840000021458076,
+      "candles": 1200,
+      "domNodes": 548
+    },
+    {
+      "name": "play-4x",
+      "seconds": 6.04,
+      "frames": {
+        "count": 841,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 13.9,
+        "max": 28
+      },
+      "inputToRaf": {
+        "count": 307,
+        "p50": 5.1,
+        "p95": 10.3,
+        "p99": 14,
+        "max": 15.2
+      },
+      "reactCommit": {
+        "count": 362,
+        "p50": 0.1,
+        "p95": 1,
+        "p99": 1.2,
+        "max": 1.4
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 1073,
+      "stepsPerSecond": 177.57,
+      "backlog": 182.26320000171677,
+      "candles": 1200,
+      "domNodes": 548
+    },
+    {
+      "name": "dense-indicators",
+      "seconds": 6.09,
+      "frames": {
+        "count": 840,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 13.9,
+        "max": 13.9
+      },
+      "inputToRaf": {
+        "count": 266,
+        "p50": 5.8,
+        "p95": 11.7,
+        "p99": 15.3,
+        "max": 24.4
+      },
+      "reactCommit": {
+        "count": 355,
+        "p50": 0.1,
+        "p95": 2.4,
+        "p99": 3.8,
+        "max": 4.3
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 900,
+      "stepsPerSecond": 147.69,
+      "backlog": 231.99639999914217,
+      "candles": 1200,
+      "domNodes": 358
+    },
+    {
+      "name": "ticket-adjustments",
+      "seconds": 6.08,
+      "frames": {
+        "count": 852,
+        "p50": 6.9,
+        "p95": 7.1,
+        "p99": 13.8,
+        "max": 48.6
+      },
+      "inputToRaf": {
+        "count": 308,
+        "p50": 5.3,
+        "p95": 10.2,
+        "p99": 14.8,
+        "max": 15.4
+      },
+      "reactCommit": {
+        "count": 369,
+        "p50": 0.1,
+        "p95": 2.1,
+        "p99": 3.8,
+        "max": 4
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 903,
+      "stepsPerSecond": 148.59,
+      "backlog": 232.13759999656713,
+      "candles": 1200,
+      "domNodes": 358
+    },
+    {
+      "name": "activity-open",
+      "seconds": 6.08,
+      "frames": {
+        "count": 822,
+        "p50": 7,
+        "p95": 13.7,
+        "p99": 13.9,
+        "max": 48.7
+      },
+      "inputToRaf": {
+        "count": 289,
+        "p50": 5.7,
+        "p95": 11.9,
+        "p99": 15.2,
+        "max": 24.5
+      },
+      "reactCommit": {
+        "count": 344,
+        "p50": 0.1,
+        "p95": 2.2,
+        "p99": 4.3,
+        "max": 4.5
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "steps": 918,
+      "stepsPerSecond": 151.1,
+      "backlog": 223.03160000085873,
+      "candles": 1200,
+      "domNodes": 358
+    },
+    {
+      "name": "log-auto-history",
+      "seconds": 6.08,
+      "frames": {
+        "count": 827,
+        "p50": 6.9,
+        "p95": 13.7,
+        "p99": 13.9,
+        "max": 48.6
+      },
+      "inputToRaf": {
+        "count": 265,
+        "p50": 5.8,
+        "p95": 12.4,
+        "p99": 15.2,
+        "max": 23.4
+      },
+      "reactCommit": {
+        "count": 354,
+        "p50": 0.1,
+        "p95": 2.6,
+        "p99": 4.6,
+        "max": 5.1
+      },
+      "longTasks": {
+        "count": 0,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0,
+        "max": 0
+      },
+      "storageWrites": {
+        "count": 2,
+        "p50": 0.1,
+        "p95": 0.1,
+        "p99": 0.1,
+        "max": 0.1
+      },
+      "steps": 926,
+      "stepsPerSecond": 152.21,
+      "backlog": 224.50760000085873,
+      "candles": 1200,
+      "domNodes": 358
+    }
+  ],
+  "checks": [
+    "All three instruments and five timeframes: finite geometry",
+    "Expanded view and Escape",
+    {
+      "mobileOverflow": false
+    }
+  ]
+}

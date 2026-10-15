@@ -93,10 +93,15 @@ export function createSimulationRuntime({ storage, now = Date.now, session, memo
     if (!writerMatches()) return false;
     if (readRaw() !== memory.expectedRaw) { conflict(); return false; } return true;
   };
+  let savedSession: SimulationSession | undefined;
   const checkpoint = () => {
     if (disposed || !ownsLock || !unchanged()) return false;
     writeWriter();
+    // A paused, unchanged snapshot needs only its ownership lease renewed.
+    // Still check external writes above before avoiding serialization/storage.
+    if (savedSession === memory.snapshot.session && memory.snapshot.savedLocally) { memory.lastSaved = now(); return true; }
     const success = !memory.preserveUnreadable && saveSimulationCheckpoint(memory.snapshot.session, now(), storage);
+    if (success) savedSession = memory.snapshot.session;
     memory.lastSaved = now(); if (success) memory.expectedRaw = readRaw();
     const savedStep = success ? memory.snapshot.session.market.step : memory.snapshot.savedStep;
     if (success !== memory.snapshot.savedLocally || savedStep !== memory.snapshot.savedStep) {

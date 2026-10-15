@@ -1,5 +1,11 @@
 # Browser-local market simulation
 
+> **Retired simulator documentation.** The active main experience is now the
+> [Get-Funded exchange](get-funded-simulation.md). The old engine, configuration
+> controls, checkpoint format, and structural bot cohorts described below are
+> preserved for reference/tests and are not imported by the active trading page.
+> Existing chart improvements remain in use with the new authoritative exchange.
+
 The Simulation page runs BX, BT and BG in that order on a shared Park–Miller random stream. The reproducible seed is 73521. Initialization creates five makers, 36 weighted ordinary traders and three whales per instrument, posts the opening quotes, and crosses them in an opening auction. It then adds two supply & demand traders and two support & resistance traders per instrument, bringing the default population to 48 per instrument (144 total), before running 7,200 quarter-second steps. Chart history is generated entirely by exchange executions.
 
 `simulationModel.ts` defines contract economics, configuration, state, RNG and candle aggregation. `simulationExchange.ts` implements price/time matching and signed futures accounting. `simulationParticipants.ts` ports the bot scheduler, regimes and news from the reference Luau source. `simulationPreview.ts` exposes immutable advancement and selected-instrument read models. The UI never draws from the RNG.
@@ -28,7 +34,7 @@ The default clock targets 18 simulated seconds per real second, multiplied by th
 
 Wheel up zooms in and wheel down zooms out at the candle under the pointer. A native non-passive listener normalizes pixel, line and page deltas and consumes scrolling only over the SVG. Touch supports one-finger pan and two-finger pinch. Candle spacing is bounded to 0.5–80 CSS pixels. Sparse series contain only execution-bearing buckets; horizontal distance counts actual candles, while labels and measurements report their actual simulated times.
 
-Drag the plot to pan time and price. Drag the right price axis vertically to scale price; drag the bottom time axis horizontally to scale time. **Follow Latest** / **Home** resumes time following without changing zoom or the price mode. **Auto Price Scale** independently fits the visible candle range. **Fit History** fits all retained candles and enables auto price; **Reset View** / **R** / double-click restores 12-pixel spacing, following and auto price for the current view. **+ / −** zoom, **Shift + / −** scale price, **Page Up / Down** pan time, **↑ / ↓** pan price and **← / →** inspect candles. **A** toggles auto price, **M** toggles measurement, **Enter** places a measurement endpoint at the inspected close and **Escape** clears inspection. The visible Shortcuts guide explains these controls.
+Drag the plot to pan time and price. Drag the right price axis vertically to scale price; drag the bottom time axis horizontally to scale time. **Follow Latest** / **Home** resumes time following without changing zoom or the price mode. **Auto Price Scale** independently fits the visible candle range. **Fit History** fits all retained candles and enables auto price; **Reset View** / **R** / double-click restores 12-pixel spacing, following and auto price for the current view. **+ / −** zoom, **Shift + / −** scale price, **Page Up / Down** pan time, **↑ / ↓** pan price and **← / →** inspect candles. **A** toggles auto price, **M** toggles measurement, **Enter** places a measurement endpoint at the inspected close and **Escape** clears inspection. **Chart tools → Shortcuts** explains these controls.
 
 Historical viewports store a candle timestamp plus a fractional slot offset. Appends and eviction before that timestamp preserve its horizontal position; an evicted anchor clamps to the earliest remaining data. Resizing keeps the historical left anchor. Each instrument/timeframe has its own view preference; indicators and panel preferences are shared. Resetting the run resets all 15 chart viewports while retaining indicator and layout settings. Earliest retained time is labeled, and an arrow on the last-price tag indicates a price outside the visible range.
 
@@ -36,7 +42,11 @@ The chart displays price only, using the full plotting height above the time axi
 
 **Measure** selects two tick-snapped price/time points and shows price change, percentage, ticks, inclusive candle count and actual simulated seconds. An evicted endpoint is reported as unavailable. Jump accepts retained simulated seconds; an empty bucket selects the nearest available candle without fabricating data or moving engine time. Event selection shows the event beside the chart and inspects its candle. There is no cursor-based engine rewind.
 
-**Expand workspace** opens the market in a viewport-sized portal, with a sticky playback toolbar and Exit control; Escape also exits. Panel sizes provides bounded keyboard-accessible minimum chart-height (300–720 px) and desktop book-width (260–460 px) sliders. The chart fills any extra height beside the order book, keeping its time axis, status footer and activity panels adjacent. Metrics, book, tape, events and participants collapse independently. Below 1150 px the book stacks beneath the chart; narrow layouts wrap controls and stack activity panels.
+The desktop workspace fits the available viewport below the app header. A compact toolbar keeps Pause/Resume, Reset, speed, instrument and timeframe visible above the chart. Last price, spread and volume share the heading; playback, elapsed time, news and local-save status share the bottom strip. The chart fills the remaining height, including when a previously saved minimum chart height would exceed the viewport. **Chart tools** opens an anchored panel for fit/reset, measurement, indicators, jump and shortcuts without moving the plot.
+
+The collapsible side panel opens to **Participants**, with maker liquidity and whale frequency controls above expandable group ledgers and individual inspection. **Book**, **Activity** and **Stats** switch the same panel to depth, tape/events and detailed metrics. Long panel contents scroll independently, keeping the chart and playback controls visible. **Advanced settings** is a modal drawer, closed by default, containing seed, step/boundary advancement, full environment overrides, display preferences, checkpoint import/export and market explanations. Escape closes the drawer and restores focus. The bounded chart-height preference (300–720 px) applies on small screens; book width (260–460 px) applies where space permits. Below 800 px the side panel stacks below the chart.
+
+**Expand workspace** opens the same controls and panels in a viewport-sized portal; Exit or Escape returns to the app. Escape closes an open settings drawer or chart-tools panel before leaving the expanded workspace.
 
 ## Playback and inspection
 
@@ -50,7 +60,7 @@ The selected-instrument tape displays actual execution times (including quarter 
 
 SMA uses actual candle closes and is unavailable before its full lookback. VWAP uses exact execution quantity and price from the retained tape only; its coverage start is shown and it is never called session VWAP. Both remain analysis overlays, visually distinct from price candles. Individual participants can be searched by ID and filtered by group/status. Inventory, realized/unrealized P&L, equity, position margin, worst resting exposure, engine risk allowance, protective exits and halted/liquidating state come from the same published snapshot as the chart/book/metrics.
 
-Overrides are drafts until Apply. Each field shows its range, explanation and applied value; Default values restores the draft to 1×. Applying changes affects future decisions and scheduling, preserving existing positions and history. Reset uses the applied settings.
+Overrides are drafts until Apply. Each field shows its range and applied value, with its explanation in a label tooltip; Default values restores the visible fields to 1×. Participant controls apply only their visible fields, leaving unapplied advanced drafts intact. Applying changes affects future decisions and scheduling, preserving existing positions and history. Reset uses the applied settings.
 
 ## Persistence
 

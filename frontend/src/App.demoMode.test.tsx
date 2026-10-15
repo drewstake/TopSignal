@@ -26,7 +26,7 @@ vi.mock("react-router-dom", () => ({
   RouterProvider: () => <div>TopSignal routes</div>,
 }));
 
-import App from "./App";
+import { AccountWorkspace as App } from "./App";
 
 describe("App Demo authentication isolation", () => {
   beforeEach(() => {

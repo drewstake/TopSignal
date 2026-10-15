@@ -1,0 +1,121 @@
+﻿import { Fragment, useEffect, useState, type ReactNode } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { isDemoModeEnabled } from "../lib/demoMode";
+import { bootstrapSupabaseSession, hasSupabaseConfig, signInWithGoogle, subscribeSupabaseAuthChanges } from "../lib/supabase";
+
+function formatGoogleSignInError(err: unknown): string {
+  const fallback = "Failed to start Google sign-in";
+  if (!(err instanceof Error)) {
+    return fallback;
+  }
+
+  const normalized = err.message.toLowerCase();
+  if (normalized.includes("unsupported provider") || normalized.includes("provider is not enabled")) {
+    return "Google sign-in is disabled for this Supabase project. Enable Google under Supabase Dashboard > Authentication > Providers.";
+  }
+  return err.message;
+}
+
+export function AccountAccess({ children }: { children: ReactNode }) {
+  const [demoModeAtStartup] = useState(isDemoModeEnabled);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(hasSupabaseConfig && !demoModeAtStartup);
+  const [error, setError] = useState<string | null>(null);
+  const canOpenOfflineWorkspace = import.meta.env.DEV &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+
+  useEffect(() => {
+    if (!hasSupabaseConfig || demoModeAtStartup) {
+      return;
+    }
+
+    let mounted = true;
+    void bootstrapSupabaseSession()
+      .then((nextSession) => {
+        if (!mounted) {
+          return;
+        }
+        setSession(nextSession);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!mounted) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : "Failed to initialize authentication");
+        setLoading(false);
+      });
+
+    const unsubscribe = subscribeSupabaseAuthChanges((nextSession) => {
+      if (!mounted) {
+        return;
+      }
+      setSession(nextSession);
+    });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, [demoModeAtStartup]);
+
+  if (!hasSupabaseConfig || demoModeAtStartup) {
+    return <>
+      {import.meta.env.DEV && import.meta.env.VITE_OFFLINE_MODE === "true" ? (
+        <div role="status" className="border-b border-app-border bg-app-surface px-4 py-2 text-center text-sm text-app-text">
+          {import.meta.env.VITE_LOCAL_PROJECTX === "true"
+            ? import.meta.env.VITE_LOCAL_LIVE_ORDERS === "true"
+              ? "Local workspace · Topstep API enabled · Live order routing enabled · Saved on this computer"
+              : "Local workspace · Topstep API enabled · Dry-run bot enabled · Saved on this computer · Live orders disabled"
+            : "Offline workspace · Saved on this computer · Cloud data and broker connections are unavailable"}
+        </div>
+      ) : null}
+      {children}
+    </>;
+  }
+
+  if (loading) {
+    return <div className="min-h-screen bg-app-bg p-8 text-sm text-app-muted">Loading authentication...</div>;
+  }
+
+  if (!session) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-app-bg p-6 text-app-text">
+        <div className="w-full max-w-md space-y-4 rounded-2xl border border-app-border bg-app-surface/70 p-6">
+          <h1 className="text-xl font-semibold">Sign in to TopSignal</h1>
+          <p className="text-sm text-app-muted">Use your Supabase account to access your cloud-synced data.</p>
+          {error ? <p className="text-sm text-app-negative">{error}</p> : null}
+          <button
+            type="button"
+            className="w-full rounded-lg bg-app-accent px-4 py-2 text-sm font-medium text-app-accent-contrast transition hover:bg-app-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
+            onClick={() => {
+              void signInWithGoogle().catch((err) => setError(formatGoogleSignInError(err)));
+            }}
+          >
+            Continue with Google
+          </button>
+          {canOpenOfflineWorkspace ? (
+            <div className="space-y-2">
+              <a
+                href="http://127.0.0.1:5174"
+                className="block w-full rounded-lg border border-app-border px-4 py-2 text-center text-sm font-medium transition hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/35"
+              >
+                Continue offline
+              </a>
+              <p className="text-xs leading-5 text-app-muted">
+                Open your local workspace without Google. Data is saved on this computer and does not automatically sync to the cloud.
+              </p>
+              <details className="text-xs leading-5 text-app-muted">
+                <summary className="cursor-pointer">If the offline workspace isn’t running</summary>
+                <p className="mt-2">For local storage with Topstep account refreshes and dry-run automation, run <code>npm run dev:local</code> from the TopSignal folder. Live orders stay disabled.</p>
+                <p className="mt-2">To work without broker connections, use <code>npm run dev:offline</code> instead. Both modes open with Continue offline and save to the same local workspace.</p>
+              </details>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  return <Fragment key={session.user.id}>{children}</Fragment>;
+}
