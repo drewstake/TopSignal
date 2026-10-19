@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 
 import { Card } from "../../../components/ui/Card";
 import { cn } from "../../../components/ui/cn";
+import { APP_SCALE_CHANGED_EVENT, getAppScale } from "../../../lib/appScale";
 
 export const compactFocusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app-surface";
@@ -39,17 +40,20 @@ export function InfoPopover({
     const viewportPadding = 8;
     const gap = 8;
     const rect = button.getBoundingClientRect();
-    const width = Math.max(0, Math.min(256, window.innerWidth - viewportPadding * 2));
+    const scale = getAppScale();
+    const viewportWidth = window.innerWidth / scale;
+    const viewportHeight = window.innerHeight / scale;
+    const width = Math.max(0, Math.min(256, viewportWidth - viewportPadding * 2));
     tooltip.style.width = `${width}px`;
     const tooltipHeight = tooltip.offsetHeight || 96;
-    const preferredLeft = align === "end" ? rect.right - width : rect.left;
+    const preferredLeft = align === "end" ? rect.right / scale - width : rect.left / scale;
     const left = Math.min(
       Math.max(viewportPadding, preferredLeft),
-      Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+      Math.max(viewportPadding, viewportWidth - width - viewportPadding),
     );
-    const below = rect.bottom + gap;
-    const above = rect.top - tooltipHeight - gap;
-    const top = below + tooltipHeight <= window.innerHeight - viewportPadding
+    const below = rect.bottom / scale + gap;
+    const above = rect.top / scale - tooltipHeight - gap;
+    const top = below + tooltipHeight <= viewportHeight - viewportPadding
       ? below
       : Math.max(viewportPadding, above);
     tooltip.style.top = `${top}px`;
@@ -86,11 +90,13 @@ export function InfoPopover({
 
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener(APP_SCALE_CHANGED_EVENT, updatePosition);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener(APP_SCALE_CHANGED_EVENT, updatePosition);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };

@@ -2,7 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Full-page layouts must still cover the viewport after document scaling. */
+body, #root, .min-h-screen {
+  min-height: calc(100vh / var(--app-scale));
+}
+
+/* Canvas chart input uses viewport pixels. Render its plot at native scale,
+   with scaled dimensions/text, while its controls retain the app density. */
+.bot-chart-viewport {
+  zoom: calc(1 / var(--app-scale));
+  height: calc(420px * var(--app-scale));
+}
+.bot-chart-viewport > :not(.bot-chart-canvas, svg) {
+  zoom: var(--app-scale);
+}
+@media (min-width: 768px) {
+  .bot-chart-viewport { height: calc(560px * var(--app-scale)); }
+}
+
 :root {
+  --app-scale: 0.8;
+  /* Scale the document, including body portals and native dialogs. */
+  zoom: var(--app-scale);
   color-scheme: var(--theme-color-scheme);
   --theme-color-scheme: dark;
   --theme-bg: 11 16 19;

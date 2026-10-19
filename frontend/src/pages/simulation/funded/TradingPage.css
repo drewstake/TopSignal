@@ -1,4 +1,5 @@
 .gf-terminal { --theme-bg: 12 17 25; --theme-surface: 17 24 35; --theme-surface-raised: 24 34 48; --theme-border: 48 63 82; --theme-text: 228 235 244; --theme-text-soft: 185 199 215; --theme-muted: 133 151 173; --theme-positive: 66 211 163; --theme-negative: 248 116 128; --theme-accent: 119 165 255; --theme-chart-grid: 70 87 108; --theme-chart-label: 133 151 173; color: #e4ebf4; background: #0c1119; min-height: 100vh; width: 100%; padding: 0 28px 18px; font: 13px 'Instrument Sans', sans-serif; overflow-x: clip; }
+.app-workspace .workspace-main > .gf-terminal { animation: none; height: auto; min-height: 0; padding: 0 12px 18px; }
 .gf-terminal * { box-sizing: border-box; }
 .gf-terminal button, .gf-terminal input, .gf-terminal select { font: inherit; }
 .gf-terminal button { border: 1px solid #2a394e; background: #172231; color: #cbd7e6; border-radius: 6px; padding: 7px 10px; cursor: pointer; transition: background .12s; }

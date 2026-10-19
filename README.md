@@ -1,10 +1,10 @@
 # TopSignal
 
-TopSignal opens to a playable, browser-local simulated futures exchange. Buy and sell BX, BT, and BG against 390 finite, funded bots using market, limit, or stop entries, editable protection, and a $10,000 simulated account. The chart, order book, fills, and P&L all come from the same matching engine. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
+TopSignal opens to the account dashboard. The shared navigation includes Dashboard, Accounts, Trades, Expenses, Bot, Simulation, and Appearance. The Simulation tab contains a playable, browser-local simulated futures exchange: buy and sell BX, BT, and BG against 390 finite, funded bots with a $10,000 simulated account. See [the Get-Funded implementation and validation notes](docs/get-funded-simulation.md).
 
-Run `npm run dev` and open the Vite URL printed in the terminal (port 5174 when available). This starts only the simulated exchange frontend; no backend, Supabase sign-in, Roblox runtime, or broker connection is required for simulation. The simulation is the main `/` route and also opens at `/simulation`.
+Run `npm run dev` and open `http://localhost:5173`. This starts the cloud backend, waits for it to be ready, and starts the frontend with the matching API address. The dashboard opens at `/` and `/dashboard`, and Simulation opens at `/simulation` inside the same authenticated workspace.
 
-The existing account analytics workspace remains at `/dashboard`, with its original cloud authentication and data protections. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
+The account analytics workspace retains its cloud authentication and data protections. It syncs ProjectX/TopstepX account data or imports reviewed trade exports, and provides account management, trade review, expense tracking, and trading-bot controls. `npm run dev:live`, `dev:cloud`, and `dev:local` remain explicit launch options for that workspace.
 
 The retained Bot workspace supports forward testing. The Data tab and
 Databento backtest panel have been removed; old `/data` links redirect to the
@@ -293,11 +293,11 @@ Important bot behaviors:
 - Historical backtests read only the local fingerprinted Databento Parquet/mmap cache. They never fetch or fall back to ProjectX candles.
 - The interactive signal chart and live/dry-run evaluation retain their existing closed-bar cache and frontend cache for responsiveness.
 
-### Themes
+### Appearance
 
-The Themes page is the routed appearance workspace for choosing the app's visual palette.
+The Appearance page contains app zoom and theme preferences. Zoom defaults to 80%, with settings from 60% to 150% in 5% steps. It applies immediately across the app, persists in this browser, and syncs between tabs.
 
-Themes page:
+Appearance page:
 
 ![Theme palette gallery and live preview](images/themes.png)
 
@@ -319,7 +319,7 @@ The current router includes these product surfaces:
 - `/expenses`: expenses and payouts
 - `/journal`: daily journal
 - `/bot`: TopBot MNQ run controls and activity review
-- `/themes`: appearance and palette selection
+- `/appearance`: app zoom and palette selection (`/themes` redirects here)
 
 There are no separate `overview/` or `analytics/` prototype route directories in the current tree.
 
@@ -804,7 +804,7 @@ from the supplied archives and the exact benchmark methodology.
 npm run dev
 ```
 
-That starts the simulated exchange frontend on the first available port beginning at 5174. Open the printed Vite URL. No database migration, backend, or broker connection is started.
+That starts the cloud account workspace at `http://localhost:5173`, with the dashboard as its landing page. The launcher checks database migrations and waits for the backend before starting the frontend with the matching API address. It uses the same supervisor as `npm run dev:cloud`.
 
 For the retained account workspace, `npm run dev:live` explicitly starts:
 
@@ -937,7 +937,7 @@ Frontend auth behavior:
 | `npm run db:baseline` | Validate a database created from current `schema.sql` and initialize its migration ledger |
 | `npm run db:migrate` | Apply pending PostgreSQL migrations transactionally |
 | `npm run db:check` | Check migration version/checksum state without changing the database |
-| `npm run dev` | Open the browser-local simulated exchange frontend |
+| `npm run dev` | Run the cloud dashboard frontend and its backend together |
 | `npm run dev:live` | Explicitly run both account workspaces with live order routing enabled locally |
 | `npm run dev:cloud` | Run only the regular cloud/login app |
 | `npm run dev:local` | Run only the local workspace with ProjectX and dry-run bots |

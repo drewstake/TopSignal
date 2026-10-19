@@ -24,6 +24,7 @@ import {
 } from "lightweight-charts";
 
 import { Button } from "../../components/ui/Button";
+import { APP_SCALE_CHANGED_EVENT, getAppScale } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { botsApi, buildUserScopedProjectXCandleRequestKey, streamProjectXMarketPrice, type CandleQuery } from "../../lib/api";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "../../lib/perf";
@@ -1688,11 +1689,13 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     }
     const eventSurface = container.parentElement instanceof HTMLElement ? container.parentElement : container;
     const theme = readBotChartThemeColors();
+    let appScale = getAppScale();
 
     const chart = createChart(container, {
       width: Math.max(container.clientWidth, 1),
-      height: Math.max(container.clientHeight, 320),
+      height: Math.max(container.clientHeight, 320 * appScale),
       layout: {
+        fontSize: 12 * appScale,
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: theme.label,
       },
@@ -1715,6 +1718,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
         },
       },
       timeScale: {
+        barSpacing: 6 * appScale,
         borderColor: theme.border,
         timeVisible: true,
         secondsVisible: true,
@@ -1838,10 +1842,19 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
     };
 
     const resize = () => {
-      chart.resize(Math.max(container.clientWidth, 1), Math.max(container.clientHeight, 240));
+      const nextScale = getAppScale();
+      if (nextScale !== appScale) {
+        chart.applyOptions({
+          layout: { fontSize: 12 * nextScale },
+          timeScale: { barSpacing: chart.timeScale().options().barSpacing * nextScale / appScale },
+        });
+        appScale = nextScale;
+      }
+      chart.resize(Math.max(container.clientWidth, 1), Math.max(container.clientHeight, 240 * appScale));
       requestDrawingOverlayUpdate();
     };
     resize();
+    window.addEventListener(APP_SCALE_CHANGED_EVENT, resize);
     chart.subscribeCrosshairMove(handleCrosshairMove);
     chart.timeScale().subscribeVisibleLogicalRangeChange(requestDrawingOverlayUpdate);
     const handleVisibleRangeForHistory = (range: LogicalRange | null) => {
@@ -2483,6 +2496,7 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(requestDrawingOverlayUpdate);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeForHistory);
       container.style.cursor = "";
+      window.removeEventListener(APP_SCALE_CHANGED_EVENT, resize);
       resizeObserver?.disconnect();
       if (resizeObserver === null) {
         window.removeEventListener("resize", resize);
@@ -3440,10 +3454,10 @@ export function BotSignalChart({ bot: savedBot, market, demoMode = false, authen
             onClick={() => toggleChartLayer("sellLiquidity")}
           />
         </div>
-        <div className="relative h-[420px] overflow-hidden rounded-xl border border-app-border bg-app-bg/45 md:h-[560px]">
+        <div className="bot-chart-viewport relative overflow-hidden rounded-xl border border-app-border bg-app-bg/45">
           <div
             ref={containerRef}
-            className="h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent/60"
+            className="bot-chart-canvas h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-app-accent/60"
             role="region"
             tabIndex={0}
             aria-label={`${subtitle} candlestick and volume chart`}

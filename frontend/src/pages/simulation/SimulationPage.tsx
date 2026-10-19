@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../../components/ui/Icon';
+import { APP_SCALE_CHANGED_EVENT, getAppScale } from '../../lib/appScale';
 import { SimulationDialog } from './SimulationDialog';
 import { SimulationOrderBook } from './SimulationOrderBook';
 import { SimulationChart } from './SimulationChart';
@@ -73,13 +74,14 @@ export function SimulationPage() {
   useEffect(() => {
     const root = page.current;
     if (!root) return;
-    const fit = () => root.style.setProperty('--simulation-available-height', `${Math.max(400, window.innerHeight - root.getBoundingClientRect().top - 12)}px`);
+    const fit = () => root.style.setProperty('--simulation-available-height', `${Math.max(400, (window.innerHeight - root.getBoundingClientRect().top) / getAppScale() - 12)}px`);
     const observer = new ResizeObserver(fit);
     observer.observe(root.parentElement ?? root);
     const header = document.querySelector('.workspace-topbar');
     if (header) observer.observe(header);
+    window.addEventListener(APP_SCALE_CHANGED_EVENT, fit);
     window.addEventListener('resize', fit); fit();
-    return () => { observer.disconnect(); window.removeEventListener('resize', fit); };
+    return () => { observer.disconnect(); window.removeEventListener(APP_SCALE_CHANGED_EVENT, fit); window.removeEventListener('resize', fit); };
   }, []);
   const orders = useMemo(() => visibleOrders(simulation, instrument), [simulation, instrument]);
   const market = useMemo(() => summarizeBook(orders, price), [orders, price]);

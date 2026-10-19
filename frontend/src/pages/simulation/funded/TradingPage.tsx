@@ -49,11 +49,11 @@ export function TradingPage() {
     dispatch({ type: 'order', request: { contract: symbol, direction, quantity: qty, type, price: normalized, stopDollars: stopOn ? Number(stop) : undefined, targetDollars: targetOn ? Number(target) : undefined } });
   }
   const account = view.account, totals = view.totals;
-  return <main className="gf-terminal simulation-page">
+  return <div className="gf-terminal simulation-page">
     <header className="gf-header">
-      <a className="gf-brand" href="/" aria-label="TopSignal home"><span className="gf-logo">↗</span>TopSignal</a>
+      <div className="gf-brand"><span className="gf-logo">↗</span>Simulation</div>
       <span className="gf-environment"><i />SIMULATED EXCHANGE</span>
-      <div className="gf-header-right"><span>390 participants · 3 markets</span><a href="/dashboard">Journal & accounts ↗</a></div>
+      <div className="gf-header-right"><span>390 participants · 3 markets</span></div>
     </header>
     <section className="gf-account" aria-label="Trading account">
       <div><span>Balance</span><strong>{money(totals?.balance ?? 10000)}</strong></div>
@@ -119,7 +119,7 @@ export function TradingPage() {
     <footer className="gf-footer"><div className="gf-playback"><button disabled={view.warming || view.restarting} onClick={() => dispatch({ type: 'play', playing: !view.playing })}>{view.playing ? 'Ⅱ Pause' : '▶ Play'}</button><button disabled={view.warming || view.playing || view.restarting} onClick={() => dispatch({ type: 'step' })}>Step 0.25s</button><span aria-label="Simulation elapsed time">{simulationTime(market?.time ?? 0)}</span><span>18&#215; &#183; 72 steps/s</span></div><div className="gf-restarts"><span>Seed {view.seed}</span><button disabled={disabled} onClick={() => dispatch({ type: 'restart', seed: view.seed })}>Restart same seed</button><button disabled={disabled} onClick={() => dispatch({ type: 'restart', seed: freshSeed() })}>Restart new seed</button></div></footer>
     <div className="gf-session-note"><span>Local simulated session · no fees · reload starts a fresh account from the saved seed</span><span>{view.restarting ? 'Restart waiting for closing liquidity' : view.backlog > 18 ? `${view.backlog.toFixed(1)} simulated seconds pending` : 'Chart, book and account use the same exchange'}</span></div>
     <details className="gf-population"><summary>Participant funding & simulation details</summary><p>130 bots per market. Starting capital is per bot; every order reserves finite inventory and funding.</p><div>{Object.entries(POPULATION).map(([kind, [count, capital]]) => <span key={kind}><b>{kind}</b> {count} × {money(capital)}</span>)}</div><p>Shared regimes and synthetic news influence quotes. Only matched trades move prices. Restarts close positions first, then repeat the opening auction and full warmup. Seed and inputs determine replay; this port is not a verified published-game snapshot.</p></details>
-  </main>;
+  </div>;
 }
 function OrdersTable({ orders, working, view }: { orders: Order[]; working: boolean; view: View }) {
   const runtime = getFundedRuntime();
