@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy } from "react";
 import { Navigate, createBrowserRouter, redirect } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
@@ -22,25 +22,21 @@ const BotPage = lazy(() =>
 const SimulationPage = lazy(() =>
   import("../pages/simulation/funded/TradingPage").then((module) => ({ default: module.TradingPage })),
 );
-const ThemePage = lazy(() =>
-  import("../pages/themes/ThemePage").then((module) => ({ default: module.ThemePage })),
+const AppearancePage = lazy(() =>
+  import("../pages/themes/ThemePage").then((module) => ({ default: module.AppearancePage })),
 );
 
 export const router = createBrowserRouter([
   {
     path: "/",
-    element: <Suspense fallback={<div className="min-h-screen bg-app-bg p-8 text-app-text">Opening TopSignal…</div>}><SimulationPage /></Suspense>,
-    errorElement: <RouteErrorPage fullScreen />,
-  },
-  {
-    path: "/simulation",
-    element: <Suspense fallback={<div className="min-h-screen bg-app-bg p-8 text-app-text">Opening TopSignal…</div>}><SimulationPage /></Suspense>,
-    errorElement: <RouteErrorPage fullScreen />,
-  },
-  {
     element: <AccountAccess><AppShell /></AccountAccess>,
     errorElement: <RouteErrorPage fullScreen />,
     children: [
+      {
+        index: true,
+        element: <DashboardPage />,
+        errorElement: <RouteErrorPage />,
+      },
       {
         path: "dashboard",
         element: <DashboardPage />,
@@ -71,9 +67,18 @@ export const router = createBrowserRouter([
         errorElement: <RouteErrorPage />,
       },
       {
-        path: "themes",
-        element: <ThemePage />,
+        path: "simulation",
+        element: <SimulationPage />,
         errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "appearance",
+        element: <AppearancePage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "themes",
+        loader: ({ request }) => redirect(`/appearance${new URL(request.url).search}`),
       },
       {
         path: "data",

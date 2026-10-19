@@ -81,7 +81,7 @@ const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["/expenses", "Expenses"],
   ["/bot", "Bot"],
   ["/simulation", "Simulation"],
-  ["/themes", "Themes"],
+  ["/appearance", "Appearance"],
 ];
 
 export function AppShell() {
@@ -116,7 +116,7 @@ export function AppShell() {
     if (!header || !shell) return;
     const measureHeader = () => {
       const sticky = window.getComputedStyle(header).position === "sticky";
-      shell.style.setProperty("--app-header-height", `${sticky ? header.getBoundingClientRect().height : 0}px`);
+      shell.style.setProperty("--app-header-height", `${sticky ? header.offsetHeight : 0}px`);
     };
     measureHeader();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureHeader);
@@ -510,13 +510,13 @@ export function AppShell() {
         <p className="workspace-nav-label">Workspace</p>
           <Tabs
             items={[
-              { label: "Dashboard", to: buildAccountAwarePath("/dashboard", selectedAccountId) },
+              { label: "Dashboard", to: buildAccountAwarePath(location.pathname === "/" ? "/" : "/dashboard", selectedAccountId) },
               { label: "Accounts", to: `/accounts${accountSuffix}` },
               { label: "Trades", to: `/trades${accountSuffix}` },
               { label: "Expenses", to: `/expenses${accountSuffix}` },
               { label: "Bot", to: `/bot${accountSuffix}` },
               { label: "Simulation", to: `/simulation${accountSuffix}` },
-              { label: "Themes", to: `/themes${accountSuffix}` },
+              { label: "Appearance", to: `/appearance${accountSuffix}` },
             ]}
           />
         <div className="workspace-sidebar-bottom">

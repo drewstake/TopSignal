@@ -11,7 +11,7 @@
     "db:baseline": "node scripts/db-migrate.cjs --baseline",
     "db:migrate": "node scripts/db-migrate.cjs",
     "db:check": "node scripts/db-migrate.cjs --check",
-    "dev": "npm --prefix frontend run dev -- --host 127.0.0.1 --port 5174",
+    "dev": "node scripts/dev.cjs",
     "dev:live": "node scripts/dev-both.cjs --live",
     "dev:cloud": "node scripts/dev.cjs",
     "dev:offline": "node scripts/dev.cjs --offline",

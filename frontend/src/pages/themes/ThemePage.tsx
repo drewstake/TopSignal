@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { DemoModeNotice } from "../../components/demo/DemoModeNotice";
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Select";
+import { APP_ZOOM_OPTIONS, DEFAULT_APP_ZOOM, selectAppZoom, useAppZoom } from "../../lib/appScale";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui/Card";
 import { cn } from "../../components/ui/cn";
 import {
@@ -38,7 +41,8 @@ function PreviewAction({ children, variant = "primary" }: { children: string; va
   );
 }
 
-export function ThemePage() {
+export function AppearancePage() {
+  const zoom = useAppZoom();
   const [selectedThemeId, setSelectedThemeId] = useState<AppThemeId>(() => readStoredAppThemeId());
   const themeButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedTheme = getAppTheme(selectedThemeId);
@@ -90,15 +94,15 @@ export function ThemePage() {
     <div className="space-y-6 pb-8">
       <DemoModeNotice>
         <p>
-          Theme selection is safe in Demo Mode and remains your workspace preference after you return to live data.
+          Appearance preferences also apply when you return to live data.
         </p>
       </DemoModeNotice>
       <section className="flex flex-col gap-4 border-b border-app-border/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-app-accent">Appearance</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-app-text md:text-4xl">Themes</h1>
+          <p className="text-xs font-semibold uppercase tracking-wide text-app-accent">Workspace preferences</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-app-text md:text-4xl">Appearance</h1>
           <p className="max-w-2xl text-sm leading-6 text-app-muted">
-            Select a workspace palette for dashboard review, trade management, and journal work.
+            Make TopSignal feel right for you. Adjust the size of the app and choose your color palette.
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface/60 px-3 py-2 text-sm text-app-muted">
@@ -107,6 +111,31 @@ export function ThemePage() {
         </div>
       </section>
 
+      <Card className="rounded-lg">
+        <CardHeader>
+          <CardTitle>App zoom</CardTitle>
+          <CardDescription>Scale text, charts, and controls across every page. Your preference is saved in this browser.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4 space-y-0 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-2">
+            <label htmlFor="app-zoom" className="block text-sm font-medium text-app-text">Display scale</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" aria-label="Decrease app zoom" disabled={zoom === APP_ZOOM_OPTIONS[0]} onClick={() => selectAppZoom(zoom - 5)}>−</Button>
+              <Select id="app-zoom" className="!w-44" value={zoom} onChange={(event) => selectAppZoom(Number(event.target.value))} aria-describedby="app-zoom-help">
+                {APP_ZOOM_OPTIONS.map((value) => <option key={value} value={value}>{value}%{value === DEFAULT_APP_ZOOM ? " (default)" : ""}</option>)}
+              </Select>
+              <Button variant="secondary" aria-label="Increase app zoom" disabled={zoom === APP_ZOOM_OPTIONS.at(-1)} onClick={() => selectAppZoom(zoom + 5)}>+</Button>
+            </div>
+            <p id="app-zoom-help" className="text-xs text-app-muted">Keep your browser at 100% zoom to see the selected scale.</p>
+          </div>
+          <Button variant="secondary" disabled={zoom === DEFAULT_APP_ZOOM} onClick={() => selectAppZoom(DEFAULT_APP_ZOOM)}>Reset to 80%</Button>
+        </CardContent>
+      </Card>
+
+      <div className="space-y-1">
+        <h2 className="text-xl font-semibold text-app-text">Themes</h2>
+        <p className="text-sm text-app-muted">Choose a palette for your entire workspace.</p>
+      </div>
       <section className="grid gap-4 lg:grid-cols-4" role="radiogroup" aria-label="Theme selection">
         {APP_THEMES.map((theme, themeIndex) => {
           const isSelected = theme.id === selectedThemeId;

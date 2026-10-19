@@ -83,7 +83,7 @@ function renderShell(initialEntry = "/", accounts = [mainAccount, secondaryAccou
       element: <AppShell />,
       children: [
         { index: true, element: <div>Live dashboard</div> },
-        { path: "themes", element: <div>Theme gallery</div> },
+        { path: "appearance", element: <div>Theme gallery</div> },
       ],
     }],
     { initialEntries: [initialEntry] },
@@ -168,18 +168,18 @@ describe("AppShell transition safety integration", () => {
     expect(reloadPageMock).not.toHaveBeenCalled();
   });
 
-  it("keeps a non-main active account through Themes and when the query is absent", async () => {
+  it("keeps a non-main active account through Appearance and when the query is absent", async () => {
     writeStoredAccountId(secondaryAccount.id);
     const router = renderShell();
     const accountSelect = await screen.findByRole("combobox", { name: /active account/i });
     await waitFor(() => expect((accountSelect as HTMLSelectElement).value).toBe(String(secondaryAccount.id)));
 
-    const themesLink = screen.getByRole("link", { name: "Themes" });
-    expect(themesLink.getAttribute("href")).toBe(`/themes?account=${secondaryAccount.id}`);
-    fireEvent.click(themesLink);
+    const appearanceLink = screen.getByRole("link", { name: "Appearance" });
+    expect(appearanceLink.getAttribute("href")).toBe(`/appearance?account=${secondaryAccount.id}`);
+    fireEvent.click(appearanceLink);
 
     await screen.findByText("Theme gallery");
-    expect(router.state.location.pathname).toBe("/themes");
+    expect(router.state.location.pathname).toBe("/appearance");
     expect(router.state.location.search).toBe(`?account=${secondaryAccount.id}`);
     expect((screen.getByRole("combobox", { name: /active account/i }) as HTMLSelectElement).value)
       .toBe(String(secondaryAccount.id));

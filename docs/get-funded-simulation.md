@@ -1,11 +1,12 @@
 # TopSignal Get-Funded exchange
 
-The main `/` route and `/simulation` now run the same playable local exchange.
-`npm run dev` starts the frontend on an available loopback port beginning at
-5174. The former analytics landing page is at `/dashboard`; account routes
-remain behind `AccountAccess`, including client-side navigation. Simulation
-does not initialize a cloud account, contact a broker, or write historical data
-to Supabase. The explicit account-workspace launch commands remain available.
+The dashboard opens at `/` and `/dashboard`. The playable local exchange is
+available at `/simulation` inside the shared workspace navigation. All these
+routes use `AccountAccess`, including client-side navigation and sign-in returns.
+`npm run dev` starts the cloud backend and frontend together at `http://localhost:5173`.
+The simulation engine remains local and
+does not contact a broker or write historical data to Supabase. The explicit
+account-workspace launch commands remain available.
 
 ## Operating configuration
 

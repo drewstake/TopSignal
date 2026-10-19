@@ -5,7 +5,7 @@ import { Icon, type IconName } from "./Icon";
 
 const navigationIcons: Record<string, IconName> = {
   Dashboard: "dashboard", Accounts: "accounts", Trades: "trades",
-  Expenses: "expenses", Bot: "bot", Simulation: "pulse", Themes: "themes",
+  Expenses: "expenses", Bot: "bot", Simulation: "pulse", Appearance: "themes",
 };
 
 export interface TabItem {
