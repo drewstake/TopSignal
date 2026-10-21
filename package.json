@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "devDependencies": {
-    "concurrently": "^9.0.0"
+    "concurrently": "^9.2.5"
   },
   "scripts": {
     "db:init": "node scripts/db-init.cjs",
