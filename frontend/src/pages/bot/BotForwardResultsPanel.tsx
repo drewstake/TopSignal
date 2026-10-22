@@ -21,12 +21,26 @@ const money = (value: number) => `$${value.toFixed(2)}`;
 const percent = (value: number | null) => value === null ? "—" : `${(value * 100).toFixed(1)}%`;
 
 export function BotForwardResultsPanel({ botId, demoMode = false }: { botId: number | null; demoMode?: boolean }) {
-  const [data, setData] = useState<ForwardResults | null>(null);
-  const [error, setError] = useState(false);
   const [days, setDays] = useState(30);
   const [refresh, setRefresh] = useState(0);
+  return <section className="rounded-xl border border-app-border bg-app-panel p-5 space-y-4" aria-label="Forward results">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <h3 className="text-lg font-semibold">Forward results · simulated account</h3>
+      <div className="flex gap-3 items-center">
+        <select aria-label="Forward results period" className="rounded border border-app-border bg-app-panel p-2" value={days} onChange={e => setDays(Number(e.target.value))}>
+          <option value={1}>Last 24 hours</option><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option>
+        </select>
+        <button type="button" className="underline" onClick={() => setRefresh(r => r + 1)}>Refresh results</button>
+      </div>
+    </div>
+    <ForwardResultsContent key={`${botId}:${demoMode}:${days}:${refresh}`} botId={botId} demoMode={demoMode} days={days} />
+  </section>;
+}
+
+function ForwardResultsContent({ botId, demoMode, days }: { botId: number | null; demoMode: boolean; days: number }) {
+  const [data, setData] = useState<ForwardResults | null>(null);
+  const [error, setError] = useState(false);
   useEffect(() => {
-    setData(null); setError(false);
     if (!botId || demoMode) return;
     let cancelled = false;
     let controller: AbortController | null = null;
@@ -42,18 +56,9 @@ export function BotForwardResultsPanel({ botId, demoMode = false }: { botId: num
     };
     void load(); const timer = window.setInterval(() => void load(), 30_000);
     return () => { cancelled = true; controller?.abort(); window.clearInterval(timer); };
-  }, [botId, demoMode, days, refresh]);
+  }, [botId, demoMode, days]);
   const account = data?.account;
-  return <section className="rounded-xl border border-app-border bg-app-panel p-5 space-y-4" aria-label="Forward results">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <h3 className="text-lg font-semibold">Forward results · simulated account</h3>
-      <div className="flex gap-3 items-center">
-        <select aria-label="Forward results period" className="rounded border border-app-border bg-app-panel p-2" value={days} onChange={e => setDays(Number(e.target.value))}>
-          <option value={1}>Last 24 hours</option><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option>
-        </select>
-        <button type="button" className="underline" onClick={() => setRefresh(r => r + 1)}>Refresh results</button>
-      </div>
-    </div>
+  return <>
     <p className="text-sm text-app-muted">Unvalidated dry-run research. No real orders. Forecast outcomes are separate from the simulated account’s trades.</p>
     {demoMode ? <p>Forward results require an actual dry-run session; no demo evidence is shown.</p> : !botId ? <p>Select a bot to view its results.</p> : error ? <p role="alert">Unable to refresh forward results. Any displayed results may be stale.</p> : !data ? <p>Loading forward results…</p> : null}
     {data && <>
@@ -96,5 +101,5 @@ export function BotForwardResultsPanel({ botId, demoMode = false }: { botId: num
         {account.recent_trades.slice().reverse().map(trade => <p key={trade.id}>{new Date(trade.exit_at).toLocaleString()} · {trade.side} · {label(trade.exit_kind)} · {money(trade.net_usd)}</p>)}
       </details>}
     </>}
-  </section>;
+  </>;
 }

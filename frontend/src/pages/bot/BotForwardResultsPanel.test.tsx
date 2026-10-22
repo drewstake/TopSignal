@@ -36,3 +36,38 @@ it("does not fabricate demo evidence", () => {
   render(<BotForwardResultsPanel botId={32} demoMode />);
   expect(botsApi.getForwardResults).not.toHaveBeenCalled();
 });
+
+it("clears loaded results immediately on bot, demo, and period changes", async () => {
+  vi.mocked(botsApi.getForwardResults).mockResolvedValue(fixture("Previous results"));
+  const view = render(<BotForwardResultsPanel botId={32} />);
+  await screen.findByText("Previous results");
+  vi.mocked(botsApi.getForwardResults).mockImplementation(() => new Promise(() => {}));
+  fireEvent.change(screen.getByLabelText("Forward results period"), { target: { value: "7" } });
+  expect(screen.queryByText("Previous results")).toBeNull();
+  expect(screen.getByText("Loading forward results…")).toBeTruthy();
+  expect(botsApi.getForwardResults).toHaveBeenLastCalledWith(32, 7, expect.anything());
+
+  vi.mocked(botsApi.getForwardResults).mockResolvedValue(fixture("Next bot results"));
+  view.rerender(<BotForwardResultsPanel botId={33} />);
+  await screen.findByText("Next bot results");
+  expect(botsApi.getForwardResults).toHaveBeenLastCalledWith(33, 7, expect.anything());
+  const requests = vi.mocked(botsApi.getForwardResults).mock.calls.length;
+  view.rerender(<BotForwardResultsPanel botId={33} demoMode />);
+  expect(screen.queryByText("Next bot results")).toBeNull();
+  expect(botsApi.getForwardResults).toHaveBeenCalledTimes(requests);
+});
+
+it("resets a failed request on manual refresh and cancels the prior request", async () => {
+  vi.mocked(botsApi.getForwardResults).mockRejectedValueOnce(new Error("offline"));
+  render(<BotForwardResultsPanel botId={32} />);
+  await screen.findByRole("alert");
+  const oldSignal = vi.mocked(botsApi.getForwardResults).mock.calls[0][2]?.signal;
+  let resolve!: (v: ForwardResults) => void;
+  vi.mocked(botsApi.getForwardResults).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh results" }));
+  expect(oldSignal?.aborted).toBe(true);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Loading forward results…")).toBeTruthy();
+  await act(async () => resolve(fixture("Recovered")));
+  expect(screen.getByText("Recovered")).toBeTruthy();
+});

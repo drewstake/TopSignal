@@ -51,3 +51,17 @@ it("rejects malformed bot links before fetching", () => {
   expect(screen.getByRole("alert")).toBeTruthy();
   expect(botsApi.listConfigsWithCacheScope).not.toHaveBeenCalled();
 });
+
+it("clears a previous bot's access error while the next owned bot loads", async () => {
+  vi.mocked(botsApi.listConfigsWithCacheScope).mockResolvedValueOnce({ configs: { items: [], total: 0 }, cacheScope: "owner" });
+  const router = renderPage("/bot-results/99");
+  await screen.findByRole("alert");
+  let resolve!: (value: Awaited<ReturnType<typeof botsApi.listConfigsWithCacheScope>>) => void;
+  vi.mocked(botsApi.listConfigsWithCacheScope).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  await act(async () => { await router.navigate("/bot-results/32"); });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Loading your bot…")).toBeTruthy();
+  vi.mocked(botsApi.getForwardResults).mockImplementation(() => new Promise(() => {}));
+  await act(async () => resolve({ configs: { items: [bot], total: 1 }, cacheScope: "owner" }));
+  expect(screen.getByRole("heading", { name: "TopBot results" })).toBeTruthy();
+});
