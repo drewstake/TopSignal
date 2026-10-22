@@ -33,6 +33,9 @@ def normalize_params(_params=None):
 
 def require_live_worker():
     import os
+    from .probabilistic_observation import requested
+    if requested():
+        raise ValueError("Unvalidated observation cannot route real orders")
     from .bot_execution_safety import live_execution_environment_enabled
     enabled = {"1", "true", "yes", "y", "on"}
     if (not live_execution_environment_enabled()
@@ -58,6 +61,16 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
 
     if not candles:
         return hold("NO TRADE: no candle observations for the mathematical model.")
+    from .observation_results import collect
+    import logging
+    def collect_observation(forecast=None):
+        try:
+            collect(candles, owner=str(owner if owner is not None else candles[-1].user_id),
+                    contract_id=str(contract_id if contract_id is not None else candles[-1].contract_id),
+                    as_of=now, forecast=forecast, root=root)
+        except (ValueError, TypeError, KeyError, AttributeError, OSError):
+            logging.getLogger(__name__).warning("observation_results_write_failed; inspect local research storage")
+    collect_observation()  # Mature prior predictions even after the entry session ends.
     from .topbot_session import entry_boundary_reason
     boundary = entry_boundary_reason(now)
     if boundary:
@@ -87,6 +100,7 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
         forecast["reasons"].append("Live routing requires reviewed offline, untouched and forward evidence.")
         payload["probabilistic_research"] = forecast
         payload["validation_status"] = forecast["validation_status"]
+        collect_observation(forecast)
         closed = [row for row in candles if not row.is_partial]
         if closed:
             stamp, price = closed[-1].candle_timestamp, float(closed[-1].close_price)
@@ -96,7 +110,9 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
                 or forecast["probability_basis"] != "uncalibrated_model_estimate" or forecast["forecasts"] is None):
             return hold("NO TRADE: " + " ".join(forecast["reasons"]))
         action = forecast["research_action"]
-        if forecast.get("validation_status") not in {"offline_passed", "passed"}:
+        from .probabilistic_observation import enabled
+        observation = enabled() and forecast.get("observation_only") is True
+        if forecast.get("validation_status") not in {"offline_passed", "passed"} and not observation:
             return hold("NO TRADE: model has no passed experiment and reviewed evidence binding.")
         if action not in {"BUY", "SELL"}:
             return hold("NO TRADE: " + " ".join(forecast["reasons"]))

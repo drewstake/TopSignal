@@ -2656,7 +2656,10 @@ def test_risk_blocked_signal_creates_no_order_attempt(db_session, monkeypatch):
     assert db_session.query(BotOrderAttempt).count() == 0
 
 
-def test_dry_run_is_default_even_for_live_config_and_never_submits(db_session, monkeypatch):
+def test_dry_run_is_default_even_for_live_config_and_never_submits(db_session, monkeypatch, caplog):
+    import json
+    import logging
+    caplog.set_level(logging.INFO, logger=bot_service.logger.name)
     _, config = _add_account_and_config(db_session, execution_mode="live")
     db_session.commit()
     _patch_actionable_signal(monkeypatch)
@@ -2678,6 +2681,23 @@ def test_dry_run_is_default_even_for_live_config_and_never_submits(db_session, m
     assert result.order_attempt.execution_mode == "dry_run"
     assert result.order_attempt.status == "dry_run"
     assert client.place_order_calls == []
+    events = [json.loads(record.message) for record in caplog.records if record.message.startswith('{"')]
+    completed = next(row for row in events if row["event"] == "bot_evaluation_completed")
+    timing = next(row for row in events if row["event"] == "bot_evaluation_timing")
+    assert completed["correlation_id"] == timing["correlation_id"] == result.correlation_id
+    assert completed["decision_id"] == result.decision.id
+    assert completed["order_attempt_id"] == result.order_attempt.id
+    assert completed["candle_count"] == 1
+    assert completed["reason"] == "characterized actionable signal"
+    assert completed["execution_mode"] == "dry_run"
+    assert completed["persistence"] == "pending_commit"
+    assert timing["duration_ms"] >= 0
+    stages = result.analysis['evaluation_timing']['stages']
+    assert {'ownership_preflight', 'ownership_recheck', 'collected_context', 'risk_and_routing', 'decision_flush', 'explanations'} <= stages.keys()
+    assert all(row['duration_ms'] >= row['self_ms'] >= 0 for row in stages.values())
+    recorded = [row for row in events if row['event'] == 'bot_evaluation_stage_timing']
+    assert {row['stage'] for row in recorded} == stages.keys()
+    assert all(row['correlation_id'] == result.correlation_id for row in recorded)
 
 
 def test_dry_config_cannot_be_overridden_to_live(db_session, monkeypatch):
@@ -4304,3 +4324,26 @@ def test_stale_pending_account_emergency_flattens_only_current_broker_exposure(
     recovered = db_session.get(AccountEmergencyAction, int(stale.id))
     assert recovered.status == "confirmed_account_flat"
     assert recovered.attempt_count == 4
+
+
+def test_forward_snapshot_survives_expired_orm_without_database_reload(db_session, monkeypatch):
+    from app.services import forward_results, topbot_mathematical
+    _, config = _add_account_and_config(db_session)
+    db_session.commit()
+    _patch_actionable_signal(monkeypatch)
+    result = evaluate_bot_config(db_session, user_id=USER_A, config=config, account=None,
+                                 client=RecordingClient(), dry_run=True)
+    result = replace(result, run=SimpleNamespace(id=9, dry_run=True))
+    monkeypatch.setattr(forward_results, 'enabled', lambda: True)
+    monkeypatch.setattr(topbot_mathematical, 'selected', lambda params: True)
+    prepared = forward_results.prepare_committed_record(result)
+    db_session.commit()
+    db_session.expire_all()
+    db_session.expunge_all()
+    # Expired/detached config and decision cannot lazy-load after this point.
+    captured = []
+    monkeypatch.setattr(forward_results, 'ingest', lambda **kwargs: captured.append(kwargs))
+    forward_results.record_committed(prepared=prepared)
+    assert captured[0]['owner'] == USER_A
+    assert captured[0]['action'] == 'BUY'
+    assert captured[0]['timing']['stages']

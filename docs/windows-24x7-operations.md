@@ -404,6 +404,7 @@ task restores the process after a reboot.
 Application state is under `C:\ProgramData\TopSignal\runtime` by default:
 
 - `logs\topsignal.log`: current file plus 14 rotated files, each up to 10 MiB
+- `logs\bot-diagnostics.jsonl`: structured bot/application events, current file plus 30 rotated files, each up to 10 MiB; see [bot diagnostics](bot-diagnostics.md)
 - `logs\access.log`: current file plus 7 rotated files, each up to 10 MiB
 - `logs\frontend-access.log`: current file plus five rotated files, each up to 10 MiB
 - `logs\supervisor.log`: current file plus five rotated files, each up to 10 MiB
@@ -411,7 +412,7 @@ Application state is under `C:\ProgramData\TopSignal\runtime` by default:
 - `STOP`: persistent operator latch, suppressing startup and restart until explicitly removed
 - `shutdown.request`: transient graceful-shutdown request used by the supervisor
 
-These four rotating streams use approximately 350 MiB maximum in total (a
+These five rotating streams use approximately 660 MiB maximum in total (a
 single oversized log record can exceed its file threshold). Startup check and
 migration stdout/stderr logs are overwritten per supervisor start. API access
 logs retain paths and status codes, dropping query strings; application log
@@ -646,3 +647,37 @@ Live arming never survives a restart. Automatic process recovery is supported;
 automatic resumption of provider-routing orders is deliberately not supported.
 If fully automatic trading after reboot is required, this deployment remains
 NO-GO for that requirement.
+
+## 11. Distinguish collection health from forecast age
+
+`backend/tools/check_topbot.py` is a read-only diagnostic. Deploy it as
+`checks/check-topbot.py` alongside `scripts/check-topbot-collection.ps1` on the
+hosting PC. Invoke the PowerShell runner with `-BotConfigId` and `-DeployedAt`
+(an ISO timestamp specifying the beginning of the broker-history check). The
+runner resolves the current release from the hosting task's `-RepoRoot`; it
+does not start or stop the service. Run it on demand or through an explicitly
+configured task. Installing these files does not create a recurring monitor.
+
+The numerical forecast age alone does not establish a collection failure.
+TopBot checks the volatility-derived stop before model inference. When that
+stop exceeds the unchanged 25-point risk cap, fresh candles can produce regular
+HOLD evaluations without a new numerical forecast. The checker reports
+`expected_risk_hold` only when both recent five-minute evaluations are present,
+timely, scoped to the active run/contract, and explicitly marked fresh with
+`volatility_above_risk_cap`. It allows the existing 120-second delivery budget.
+An outside-entry-window explanation must also agree with the strategy's actual
+session gate. Missing, late, invalid or unexplained evaluations still fail.
+
+Forecast-bearing evaluations must have matching observation-log entries.
+Model integrity, current service/process identity, advancing worker heartbeat,
+lease/provider health, both disabled live gates, direct live-entry rejection,
+order attempts, and read-only broker order/open-order/fill searches remain
+independent checks. The checker reads the local ledger in SQLite read-only
+mode and never creates an evaluation or routes an order.
+
+Reports retain the last numerical forecast time and age, genuine forecast and
+outcome counts, and the model's training-age disclosure. Volatility what-if
+paths do not become forecasts, calibration samples, account trades or
+validation evidence. A healthy collection report does not validate an old
+model. Preserve the prior report and checker before updating diagnostics;
+the new JSON/text report is written under `runtime/checks`.

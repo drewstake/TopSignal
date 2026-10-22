@@ -313,6 +313,7 @@ function Write-RuntimeLoggingConfig {
     $config = Get-Content -LiteralPath $loggingConfig -Raw | ConvertFrom-Json
     $config.handlers.rotating_file.filename = Join-Path $logDir "topsignal.log"
     $config.handlers.rotating_access_file.filename = Join-Path $logDir "access.log"
+    $config.handlers.rotating_diagnostic_file.filename = Join-Path $logDir "bot-diagnostics.jsonl"
     $temporaryConfig = "$runtimeLoggingConfig.tmp"
     $json = $config | ConvertTo-Json -Depth 20
     $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)

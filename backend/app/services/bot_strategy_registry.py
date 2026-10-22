@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..evaluation_timing import timed_stage
+
 import math
 from dataclasses import dataclass
 from functools import lru_cache
@@ -383,6 +385,7 @@ def validate_strategy_configuration(
     )
 
 
+@timed_stage("strategy_computation")
 def dispatch_strategy_evaluator(identifier: Any, /, *args: Any, **kwargs: Any) -> Any:
     """Dispatch an already-acquired candle bundle to the registered evaluator."""
 

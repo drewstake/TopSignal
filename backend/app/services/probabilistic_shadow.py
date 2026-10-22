@@ -74,7 +74,9 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             return result
         f = features(rows, as_of=as_of, all_sessions=all_sessions)
         result.update(data_status="fresh", stop_points=f.stop_points, target_points=math.ceil(f.stop_points * 1.5 / .25) * .25)
-        path = model_path(owner, contract_id, rows[-1].live, root=root)
+        from .probabilistic_observation import enabled, observation_path, load_model
+        observation = enabled()
+        path = (observation_path if observation else model_path)(owner, contract_id, rows[-1].live, root=root)
         if not path.exists():
             result["reasons"][0] = "No scoped research model artifact. Offline training, calibration and validation are still required."
             return result
@@ -87,13 +89,27 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
                 or artifact.get("data_live") is not rows[-1].live):
             raise ValueError("Research model scope does not match this owner, contract and data subscription.")
         from .probabilistic_artifacts import validate_binding
-        model, _ = validate_binding(artifact, root=root or cache_root(), as_of=f.decision_at)
+        metadata = {}
+        if observation:
+            model, metadata = load_model(artifact, as_of=f.decision_at)
+        else:
+            model, _ = validate_binding(artifact, root=root or cache_root(), as_of=f.decision_at)
         forecast = model.forecast(f)
         result.update(forecast)
         # Routing evidence is taken only from the verified experiment/review binding.
         result.update(action="NO_TRADE", routing_allowed=artifact["validation_status"] == "passed", validation_status=artifact["validation_status"],
                       probability_basis="uncalibrated_model_estimate")
         result["experiment_id"] = artifact["experiment_id"]
+        if observation:
+            result.update(metadata, routing_allowed=False, validation_status="unvalidated")
+            result["reasons"].append("Unvalidated dry-run observation only; no real orders. Training age is disclosed, not waived for validated use.")
+            # Independent research comparator on exactly the same frozen training paths.
+            # A failed comparator never changes the selected strategy forecast.
+            try:
+                pool = PathModel("empirical_pool_v1", model.samples, pool_mix=0.0).forecast(f)
+                result["pool_baseline"] = {key: pool[key] for key in ("research_action", "forecasts")}
+            except (ValueError, TypeError, KeyError, OverflowError):
+                result["pool_baseline"] = {"status": "unavailable"}
         return result
     except VolatilityAboveRiskCap as exc:
         result.update(data_status="fresh", reason_code="volatility_above_risk_cap",

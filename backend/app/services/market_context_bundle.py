@@ -5,7 +5,8 @@ from datetime import datetime, time, timedelta, timezone
 import math
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
+from ..evaluation_timing import stage
 
 from ..market_observation_models import MarketObservation
 from .market_data_context import stored_market_context
@@ -103,10 +104,14 @@ def _profile_context(db, *, user_id, contract_id, as_of):
             low -= 1; included += levels[low][1]
         else:
             high += 1; included += levels[high][1]
-    first_print, last_print, last_receipt = q.with_entities(func.min(MarketObservation.provider_timestamp), func.max(MarketObservation.provider_timestamp), func.max(MarketObservation.received_at)).one()
+    first_print, last_print, last_receipt, print_count, buy, sell = q.with_entities(
+        func.min(MarketObservation.provider_timestamp), func.max(MarketObservation.provider_timestamp),
+        func.max(MarketObservation.received_at), func.count(),
+        func.sum(case((MarketObservation.side == 'buy', MarketObservation.size), else_=0)),
+        func.sum(case((MarketObservation.side == 'sell', MarketObservation.size), else_=0)),
+    ).one()
     age = (as_of - _utc(last_print)).total_seconds()
-    sides = dict(q.with_entities(MarketObservation.side, func.sum(MarketObservation.size)).group_by(MarketObservation.side).all())
-    buy, sell = float(sides.get("buy") or 0), float(sides.get("sell") or 0)
+    buy, sell = float(buy or 0), float(sell or 0)
     classified = buy + sell
     return {"status": "partial" if age <= 300 else "stale", "partial": True, "session_start": start.isoformat(),
             "contract_id": contract_id, "eligible": age <= 300,
@@ -114,7 +119,7 @@ def _profile_context(db, *, user_id, contract_id, as_of):
             "received_through": _utc(last_receipt).isoformat(),
             "age_seconds": age, "freshness_limit_seconds": 300,
             "poc": levels[poc_index][0], "value_area_low": levels[low][0], "value_area_high": levels[high][0],
-            "value_area_fraction": .7, "recorded_volume": total, "recorded_trade_count": q.count(),
+            "value_area_fraction": .7, "recorded_volume": total, "recorded_trade_count": print_count,
             "vwap": sum(price * size for price, size in levels)/total,
             "classification_coverage": classified/total,
             "cumulative_delta": None,
@@ -137,7 +142,7 @@ def build_collected_context(db, *, user_id: str, contract_id: str, live: bool = 
     for key, read in reads.items():
         try:
             # Missing optional tables/failed reads must not poison the execution transaction.
-            with db.begin_nested():
+            with stage("context_" + key), db.begin_nested():
                 result[key] = read()
         except Exception:
             result[key] = {"status": "unavailable", "reason": "Collected context could not be read."}
