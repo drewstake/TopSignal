@@ -12,12 +12,15 @@ export function BotForwardResultsPage() {
   const parsed = rawBotId && /^[1-9]\d*$/.test(rawBotId) ? Number(rawBotId) : NaN;
   const botId = Number.isSafeInteger(parsed) ? parsed : null;
   const { demoModeEnabled } = useDemoInteractionPolicy();
+  return <BotForwardResultsContent key={`${botId}:${demoModeEnabled}`} botId={botId} demoModeEnabled={demoModeEnabled} />;
+}
+
+function BotForwardResultsContent({ botId, demoModeEnabled }: { botId: number | null; demoModeEnabled: boolean }) {
   const [loaded, setLoaded] = useState<{ id: number; config: BotConfig; scope: string } | null>(null);
   const [error, setError] = useState(false);
   const config = loaded?.id === botId ? loaded.config : null;
 
   useEffect(() => {
-    setLoaded(null); setError(false);
     if (!botId || demoModeEnabled) return;
     const controller = new AbortController();
     void botsApi.listConfigsWithCacheScope(undefined, { signal: controller.signal }).then(result => {
