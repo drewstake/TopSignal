@@ -18,6 +18,8 @@ import type {
 
 vi.mock("./BotSignalChart", () => ({ BotSignalChart: () => <div>Chart stub</div> }));
 vi.mock("./ManualOrderPanel", () => ({ ManualOrderPanel: () => <div>Manual order test panel</div> }));
+vi.mock("./BotDiagnosticsPanel", () => ({ BotDiagnosticsPanel: () => <div>Diagnostics test panel</div> }));
+vi.mock("./BotForwardResultsPanel", () => ({ BotForwardResultsPanel: () => <div>Forward results test panel</div> }));
 vi.mock("./ProjectXSignalChart", () => ({ ProjectXSignalChart: () => <div>Market chart stub</div> }));
 vi.mock("./OrderBookPanel", () => ({ OrderBookPanel: () => <div>Order book stub</div> }));
 vi.mock("./BotAnalysisPanel", () => ({

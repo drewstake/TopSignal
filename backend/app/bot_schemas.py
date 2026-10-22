@@ -588,6 +588,10 @@ class BotDepthResearchOut(BaseModel):
 
 
 class BotProbabilisticResearchOut(BaseModel):
+    observation_only: bool = False
+    model_age_days: float | None = None
+    training_stale: bool | None = None
+    artifact_sha256: str | None = None
     reason_code: str | None = None
     volatility_sigma: float | None = None
     implied_stop_points: float | None = None

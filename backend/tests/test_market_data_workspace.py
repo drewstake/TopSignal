@@ -113,6 +113,33 @@ def test_inventory_scopes_user_and_preserves_source_mode_timeframe(db):
     assert all(row.first_timestamp.tzinfo is not None for row in rows)
 
 
+@pytest.mark.parametrize('stream_count', [27, 65])
+def test_context_batches_top_rows_and_preserves_collection_cutoff(db, stream_count):
+    from sqlalchemy import event
+    cutoff = STAMP + timedelta(days=2)
+    for number in range(1, stream_count+1):
+        candle(db, number=number, close=100+number)
+        candle(db, number=number, timestamp=STAMP-timedelta(minutes=number), close=90+number)
+    # Neither another user's fresher data, nor data first collected after the
+    # decision cutoff may replace the original same-stream observations.
+    candle(db, number=stream_count, user=OTHER, timestamp=STAMP+timedelta(hours=1), close=999)
+    future = candle(db, number=stream_count, timestamp=STAMP+timedelta(hours=1), close=888)
+    future.fetched_at = cutoff + timedelta(seconds=1)
+    db.commit()
+    statements = []
+    def count(*args):
+        statements.append(args[2])
+    event.listen(db.bind, 'before_cursor_execute', count)
+    try:
+        result = stored_market_context(db, user_id=USER, as_of=cutoff, collected_by_as_of=True)
+    finally:
+        event.remove(db.bind, 'before_cursor_execute', count)
+    item = next(item for item in result.items if item.symbol == 'MNQ')
+    assert item.close == 100+stream_count
+    assert item.previous_close == 90+stream_count
+    assert len(statements) == 1 + (stream_count+63)//64
+
+
 def test_import_is_idempotent_and_does_not_use_other_tenant_rows(db, tmp_path):
     capture = fixture_capture(tmp_path)
     candle(db, user=OTHER)

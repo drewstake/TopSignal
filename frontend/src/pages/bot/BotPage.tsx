@@ -22,6 +22,8 @@ import type {
 } from "../../lib/types";
 import { BotMarketPanels } from "./BotMarketPanels";
 import { ManualOrderPanel } from "./ManualOrderPanel";
+import { BotDiagnosticsPanel } from "./BotDiagnosticsPanel";
+import { BotForwardResultsPanel } from "./BotForwardResultsPanel";
 import { boundedBotRequest, BotRequestTimeout } from "./botPageRequests";
 import { botConfigurationSummary, botRunStatus, botStrategyLabel, latestBotRun } from "./botRunPresentation";
 import "./BotPage.css";
@@ -941,9 +943,14 @@ export function BotPage() {
           <h1 className="text-2xl font-semibold tracking-tight text-app-text sm:text-[28px]">Trading Bot</h1>
           <p className="mt-1 text-sm text-app-muted">Follow the market. Manage your strategy.</p>
         </div>
+        <nav aria-label="Bot page sections" className="flex flex-wrap gap-2">
         <a href="#bot-run-activity" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-app-border px-3 text-xs font-medium text-app-text-soft transition hover:border-app-border-strong hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent">
           View activity <span aria-hidden="true">↓</span>
         </a>
+        <a href="#bot-diagnostics" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-app-border px-3 text-xs font-medium text-app-text-soft transition hover:border-app-border-strong hover:bg-app-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent">
+          Logs & summaries <span aria-hidden="true">↓</span>
+        </a>
+        </nav>
       </header>
       {activeProjectXAccountId === null ? (
         <BotProjectXAccountNotice
@@ -1300,6 +1307,8 @@ export function BotPage() {
               </div>
             </CardContent>
           </Card>
+          <BotDiagnosticsPanel key={authenticatedCacheScope} accountId={activeProjectXAccountId} demoMode={demoModeEnabled} />
+          <BotForwardResultsPanel key={`${authenticatedCacheScope}:${selectedBot?.id}`} botId={selectedBot?.id ?? null} demoMode={demoModeEnabled} />
       </div>
     </div>
   );

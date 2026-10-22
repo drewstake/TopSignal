@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import math
 import re
 from copy import deepcopy
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from numbers import Number
 from threading import Event, Lock
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import Any, Callable, Iterable, Sequence
 
 import numpy as np
@@ -18,6 +19,10 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+
+from ..bot_diagnostics import error_frames, event as diagnostic_event
+from .. import evaluation_timing
+from ..evaluation_timing import stage, timed_stage
 
 from ..models import (
     Account,
@@ -1183,8 +1188,19 @@ def evaluate_bot_config(
     bot_config_id = int(config.id)
     bot_run_id = int(run.id) if run is not None else None
     correlation_id = correlation_id or new_correlation_id()
+    started = perf_counter()
+    diagnostic_context = {
+        "user_id": user_id,
+        "bot_config_id": bot_config_id, "bot_run_id": bot_run_id,
+        "account_id": config.account_id, "correlation_id": correlation_id,
+        "strategy_type": config.strategy_type,
+        "config_hash": hashlib.sha256(repr(_bot_config_evaluation_snapshot(config)).encode()).hexdigest(),
+    }
+    evaluation_started_at = datetime.now(timezone.utc)
+    diagnostic_event(logger, "bot_evaluation_started", **diagnostic_context)
+    timing, timing_token = evaluation_timing.begin()
     try:
-        return _evaluate_bot_config_impl(
+        result = _evaluate_bot_config_impl(
             db,
             user_id=user_id,
             config=config,
@@ -1196,7 +1212,24 @@ def evaluate_bot_config(
             correlation_id=correlation_id,
             worker_lease_token=worker_lease_token,
         )
+        duration_ms = round((perf_counter() - started) * 1000, 3)
+        result.analysis['evaluation_timing'] = {
+            'evaluation_started_at': evaluation_started_at.isoformat(),
+            'evaluation_completed_at': datetime.now(timezone.utc).isoformat(),
+            'evaluation_duration_ms': duration_ms,
+            'stages': timing.snapshot(),
+        }
+        result.analysis['evaluation_config_hash'] = diagnostic_context['config_hash']
+        diagnostic_event(logger, "bot_evaluation_timing", **diagnostic_context,
+                         evaluation_status=result.status, duration_ms=duration_ms)
+        return result
     except Exception as exc:
+        diagnostic_event(logger, "bot_evaluation_failed", level=logging.ERROR,
+                         **diagnostic_context, error_type=type(exc).__name__,
+                         error_frames=error_frames(exc),
+                         reason_code=getattr(exc, "reason_code", None),
+                         status_code=getattr(exc, "status_code", None),
+                         duration_ms=round((perf_counter() - started) * 1000, 3))
         preserved = (
             bot_run_id is not None
             and preserve_run_on_transient_pre_routing_error
@@ -1218,8 +1251,14 @@ def evaluate_bot_config(
                 error=exc,
             )
         raise
+    finally:
+        evaluation_timing.end(timing_token)
+        for name, metrics in timing.snapshot().items():
+            diagnostic_event(logger, "bot_evaluation_stage_timing", **diagnostic_context,
+                             stage=name, **metrics)
 
 
+@timed_stage("evaluation_overhead")
 def _evaluate_bot_config_impl(
     db: Session,
     *,
@@ -1240,614 +1279,639 @@ def _evaluate_bot_config_impl(
     resolved_dry_run = effective_dry_run(requested_dry_run=dry_run)
     execution_mode = "dry_run" if resolved_dry_run else "live"
 
-    config = _require_bot_config(
-        db,
-        user_id=user_id,
-        bot_config_id=bot_config_id,
-        lock_for_update=True,
-    )
-    if not resolved_dry_run:
-        _require_strategy_available(str(config.strategy_type))
-        from .topbot_mathematical import selected, require_live_worker
-        if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
-            require_live_worker()
-            if run is None or not isinstance(run.raw_state, dict) or not (
-                run.raw_state.get("continuous") is True and run.raw_state.get("live_routing_confirmed") is True
-            ):
-                raise ValueError("Experimental Practice routing requires an explicitly confirmed continuous run.")
-    resolved_account = _require_owned_account(
-        db,
-        user_id=user_id,
-        account_id=int(config.account_id),
-        lock_for_update=True,
-    )
-    _require_projectx_trade_data_source(resolved_account)
-    if bot_run_id is not None:
-        run = _require_running_bot_run(
+    with stage("ownership_preflight"):
+        config = _require_bot_config(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
-            bot_run_id=bot_run_id,
             lock_for_update=True,
         )
+        if not resolved_dry_run:
+            _require_strategy_available(str(config.strategy_type))
+            from .topbot_mathematical import selected, require_live_worker
+            if str(config.strategy_type) == "topbot_adaptive" and selected(config.strategy_params):
+                require_live_worker()
+                if run is None or not isinstance(run.raw_state, dict) or not (
+                    run.raw_state.get("continuous") is True and run.raw_state.get("live_routing_confirmed") is True
+                ):
+                    raise ValueError("Experimental Practice routing requires an explicitly confirmed continuous run.")
+        resolved_account = _require_owned_account(
+            db,
+            user_id=user_id,
+            account_id=int(config.account_id),
+            lock_for_update=True,
+        )
+        _require_projectx_trade_data_source(resolved_account)
+        if bot_run_id is not None:
+            run = _require_running_bot_run(
+                db,
+                user_id=user_id,
+                bot_config_id=bot_config_id,
+                bot_run_id=bot_run_id,
+                lock_for_update=True,
+            )
 
-    config_snapshot = _bot_config_evaluation_snapshot(config)
-    account_snapshot = _account_execution_snapshot(resolved_account)
-    run_snapshot = _bot_run_execution_snapshot(run) if run is not None else None
-    market_config = _detached_bot_config_copy(config)
+        config_snapshot = _bot_config_evaluation_snapshot(config)
+        account_snapshot = _account_execution_snapshot(resolved_account)
+        run_snapshot = _bot_run_execution_snapshot(run) if run is not None else None
+        market_config = _detached_bot_config_copy(config)
 
-    # Evaluation is an explicit transaction boundary. The initial ownership and
-    # run checks are durable, then their short-lived locks/connections are
-    # released before any market-provider network request.
-    db.commit()
+        # Evaluation is an explicit transaction boundary. The initial ownership and
+        # run checks are durable, then their short-lived locks/connections are
+        # released before any market-provider network request.
+        db.commit()
     candles, signal = fetch_candles_and_evaluate_strategy(
         db,
         user_id=user_id,
         config=market_config,
         client=client,
     )
-    _commit_evaluation_market_cache(db, candles)
-    decision_candles = _closed_candles(candles)
-    latest_candle = decision_candles[-1] if decision_candles else None
-    execution_contract_id = _execution_contract_id(market_config, latest_candle)
-    execution_symbol = _execution_symbol(market_config, latest_candle)
-    from .topbot_mathematical import selected as mathematical_selected
-    mathematical = str(market_config.strategy_type) == "topbot_adaptive" and mathematical_selected(market_config.strategy_params)
-    contract_rolled = mathematical and latest_candle is not None and str(latest_candle.contract_id) != str(market_config.contract_id)
-    hold_reason = None
-    if contract_rolled:
-        hold_reason = "contract_rolled"
-    elif mathematical and not resolved_dry_run and worker_lease_token is None:
-        hold_reason = "worker_lease_required"
-    elif not resolved_dry_run and mathematical:
-        from .topbot_time_exit import pending_exits
-        if pending_exits(db).filter(BotOrderAttempt.account_id == int(market_config.account_id)).first() is not None:
-            hold_reason = "mathematical_exit_pending"
-    if hold_reason:
-        signal = SignalResult("HOLD", hold_reason, signal.candle_timestamp, signal.price,
-                              {"strategy_type": market_config.strategy_type, "hold_reason": hold_reason,
-                               "live_routing_allowed": False})
-    instrument_spec = None
-    if signal.action in {"BUY", "SELL"}:
-        instrument_spec = _load_or_resolve_instrument_spec(
-            db,
-            client=client,
-            contract_id=execution_contract_id,
-            symbol=execution_symbol,
-        )
-    config = _require_bot_config(
-        db,
-        user_id=user_id,
-        bot_config_id=bot_config_id,
-        lock_for_update=True,
-    )
-    if _bot_config_evaluation_snapshot(config) != config_snapshot:
-        raise ValueError("bot_config_changed_during_market_fetch")
-    resolved_account = _require_owned_account(
-        db,
-        user_id=user_id,
-        account_id=int(config.account_id),
-        lock_for_update=True,
-    )
-    _require_projectx_trade_data_source(resolved_account)
-    if _account_execution_snapshot(resolved_account) != account_snapshot:
-        raise ValueError("bot_account_changed_during_market_fetch")
-    if bot_run_id is not None:
-        run = _require_running_bot_run(
+    with stage("market_cache_commit"):
+        _commit_evaluation_market_cache(db, candles)
+    with stage("ownership_recheck"):
+        decision_candles = _closed_candles(candles)
+        latest_candle = decision_candles[-1] if decision_candles else None
+        execution_contract_id = _execution_contract_id(market_config, latest_candle)
+        execution_symbol = _execution_symbol(market_config, latest_candle)
+        from .topbot_mathematical import selected as mathematical_selected
+        mathematical = str(market_config.strategy_type) == "topbot_adaptive" and mathematical_selected(market_config.strategy_params)
+        contract_rolled = mathematical and latest_candle is not None and str(latest_candle.contract_id) != str(market_config.contract_id)
+        hold_reason = None
+        if contract_rolled:
+            hold_reason = "contract_rolled"
+        elif mathematical and not resolved_dry_run and worker_lease_token is None:
+            hold_reason = "worker_lease_required"
+        elif not resolved_dry_run and mathematical:
+            from .topbot_time_exit import pending_exits
+            if pending_exits(db).filter(BotOrderAttempt.account_id == int(market_config.account_id)).first() is not None:
+                hold_reason = "mathematical_exit_pending"
+        if hold_reason:
+            signal = SignalResult("HOLD", hold_reason, signal.candle_timestamp, signal.price,
+                                  {"strategy_type": market_config.strategy_type, "hold_reason": hold_reason,
+                                   "live_routing_allowed": False})
+        instrument_spec = None
+        if signal.action in {"BUY", "SELL"}:
+            instrument_spec = _load_or_resolve_instrument_spec(
+                db,
+                client=client,
+                contract_id=execution_contract_id,
+                symbol=execution_symbol,
+            )
+        config = _require_bot_config(
             db,
             user_id=user_id,
             bot_config_id=bot_config_id,
-            bot_run_id=bot_run_id,
             lock_for_update=True,
         )
-        if run_snapshot is None or _bot_run_execution_snapshot(run) != run_snapshot:
-            raise ValueError("bot_run_changed_during_market_fetch")
-
-    if contract_rolled:
-        config.enabled = False
-        if run is not None:
-            transition_bot_run(run, "blocked", reason="contract_rolled")
-        db.add(BotRiskEvent(user_id=user_id, bot_config_id=config.id,
-                           bot_run_id=run.id if run else None, account_id=config.account_id,
-                           severity="warning", code="contract_rolled",
-                           message="The active delivery contract changed. Review the new contract and restart the run.",
-                           raw_payload={"configured_contract": config.contract_id, "active_contract": execution_contract_id}))
-    analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
-    from .market_context_bundle import build_collected_context, integrate_collected_context
-    evaluation_time = datetime.now(timezone.utc)
-    collected_context = build_collected_context(
-        db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
-        as_of=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else evaluation_time,
-        captured_at=evaluation_time,
-    )
-    if latest_candle is None:
-        # Quotes cannot create a closed-candle decision when no candle exists.
-        for key in ("order_book", "volume_profile"):
-            collected_context[key]["eligible"] = False
-            collected_context[key]["reason"] = "No closed decision candle; recorded observations remain separate context."
-    try:
-        integrate_collected_context(analysis, collected_context)
-    except Exception:
-        # Optional explanation inputs must never retry or prevent an order.
-        collected_context = {"as_of": collected_context.get("as_of"), "contract_id": execution_contract_id,
-            "events": {"news_risk": "unknown"}, "status": "unavailable",
-            "reason": "Optional context could not be aligned with this closed-candle analysis."}
-        analysis["collected_context"] = collected_context
-    evaluation_day_pnl = (
-        _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
-        if signal.action in {"BUY", "SELL"}
-        else None
-    )
-    trade_evaluation = build_signal_trade_evaluation(
-        candles=candles,
-        config=config,
-        signal=signal,
-        analysis=analysis,
-        current_day_pnl=evaluation_day_pnl,
-        collected_context=collected_context,
-        tick_size=float(instrument_spec.tick_size) if instrument_spec is not None else None,
-        tick_value=float(instrument_spec.tick_value) if instrument_spec is not None else None,
-        point_value=instrument_spec.point_value if instrument_spec is not None else None,
-    )
-    if trade_evaluation is not None:
-        analysis["trade_evaluation"] = trade_evaluation
-    signal_order_size = _signal_order_size(config=config, signal=signal)
-    current_position_qty = _signal_current_position_qty(signal)
-    target_position_qty = _signal_target_position_qty(signal)
-    actionable_candle_timestamp = _actionable_candle_timestamp(
-        signal=signal,
-        candles=candles,
-        latest_candle=latest_candle,
-    )
-    idempotency_key = (
-        build_action_idempotency_key(
-            user_id=user_id,
-            bot_config_id=int(config.id),
-            candle_timestamp=actionable_candle_timestamp,
-            action=signal.action,
-            execution_mode=execution_mode,
-        )
-        if signal.action in {"BUY", "SELL"} and actionable_candle_timestamp is not None
-        else None
-    )
-    decision = BotDecision(
-        user_id=user_id,
-        bot_config_id=int(config.id),
-        bot_run_id=int(run.id) if run is not None and run.id is not None else None,
-        account_id=int(config.account_id),
-        contract_id=execution_contract_id,
-        symbol=execution_symbol,
-        decision_type="signal",
-        action=signal.action,
-        reason=signal.reason,
-        candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
-        price=signal.price,
-        quantity=(
-            _finite_optional_float(signal_order_size)
-            if signal.action in {"BUY", "SELL"}
-            else None
-        ),
-        correlation_id=correlation_id,
-        idempotency_key=idempotency_key,
-        raw_payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else signal.raw_payload,
-    )
-    db.add(decision)
-    db.flush()
-
-    # Capture the analysis before risk gates/order submission. The auxiliary
-    # writer receives it only after this transaction successfully commits.
-    try:
-        from .decision_research import stage_decision_snapshot
-        stage_decision_snapshot(db, decision=decision, config=config, signal=signal, analysis=analysis, candles=candles)
-    except Exception:
-        pass
-
-    risk_events: list[BotRiskEvent] = []
-    order_attempt: BotOrderAttempt | None = None
-    duplicate_of_order_attempt_id: int | None = None
-    evaluation_status: EvaluationStatus = "held" if signal.action == "HOLD" else "evaluated"
-    if signal.action in {"BUY", "SELL"}:
-        existing_attempt = _find_order_attempt_by_idempotency_key(
+        if _bot_config_evaluation_snapshot(config) != config_snapshot:
+            raise ValueError("bot_config_changed_during_market_fetch")
+        resolved_account = _require_owned_account(
             db,
             user_id=user_id,
-            bot_config_id=int(config.id),
-            idempotency_key=idempotency_key,
+            account_id=int(config.account_id),
+            lock_for_update=True,
         )
-        if existing_attempt is not None:
-            duplicate_of_order_attempt_id = int(existing_attempt.id)
-            _mark_duplicate_decision(
-                decision,
-                existing_attempt=existing_attempt,
-                idempotency_key=idempotency_key,
-            )
-            evaluation_status = "duplicate_skipped"
-        else:
-            blocks = evaluate_risk_gates(
+        _require_projectx_trade_data_source(resolved_account)
+        if _account_execution_snapshot(resolved_account) != account_snapshot:
+            raise ValueError("bot_account_changed_during_market_fetch")
+        if bot_run_id is not None:
+            run = _require_running_bot_run(
                 db,
                 user_id=user_id,
-                config=config,
-                account=resolved_account,
-                latest_candle=latest_candle,
-                contract_id=execution_contract_id,
-                symbol=execution_symbol,
-                action=signal.action,
-                requested_order_size=signal_order_size,
-                current_position_qty=current_position_qty,
-                target_position_qty=target_position_qty,
-                dry_run=resolved_dry_run,
-                confirm_live_order_routing=confirm_live_order_routing,
-                client=client,
-                decision=decision,
-                instrument_spec=instrument_spec,
-                # Only the final account-locked pass may consult authoritative
-                # provider state. An earlier remote pass would be stale before
-                # routing and would double every live preflight request.
-                perform_live_preflight=False,
-                reconcile_live_submissions=False,
+                bot_config_id=bot_config_id,
+                bot_run_id=bot_run_id,
+                lock_for_update=True,
             )
-            if not resolved_dry_run:
-                protection_block = _strategy_protection_block(
+            if run_snapshot is None or _bot_run_execution_snapshot(run) != run_snapshot:
+                raise ValueError("bot_run_changed_during_market_fetch")
+
+        if contract_rolled:
+            config.enabled = False
+            if run is not None:
+                transition_bot_run(run, "blocked", reason="contract_rolled")
+            db.add(BotRiskEvent(user_id=user_id, bot_config_id=config.id,
+                               bot_run_id=run.id if run else None, account_id=config.account_id,
+                               severity="warning", code="contract_rolled",
+                               message="The active delivery contract changed. Review the new contract and restart the run.",
+                               raw_payload={"configured_contract": config.contract_id, "active_contract": execution_contract_id}))
+    with stage("market_analysis"):
+        analysis = build_bot_market_analysis(candles=candles, config=config, signal=signal)
+    with stage("collected_context"):
+        from .market_context_bundle import build_collected_context, integrate_collected_context
+        evaluation_time = datetime.now(timezone.utc)
+        collected_context = build_collected_context(
+            db, user_id=user_id, contract_id=execution_contract_id, live=bool(getattr(latest_candle, "live", False)),
+            as_of=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else evaluation_time,
+            captured_at=evaluation_time,
+        )
+        if latest_candle is None:
+            # Quotes cannot create a closed-candle decision when no candle exists.
+            for key in ("order_book", "volume_profile"):
+                collected_context[key]["eligible"] = False
+                collected_context[key]["reason"] = "No closed decision candle; recorded observations remain separate context."
+        try:
+            integrate_collected_context(analysis, collected_context)
+        except Exception:
+            # Optional explanation inputs must never retry or prevent an order.
+            collected_context = {"as_of": collected_context.get("as_of"), "contract_id": execution_contract_id,
+                "events": {"news_risk": "unknown"}, "status": "unavailable",
+                "reason": "Optional context could not be aligned with this closed-candle analysis."}
+            analysis["collected_context"] = collected_context
+    with stage("trade_plan"):
+        evaluation_day_pnl = (
+            _todays_account_net_pnl(db, user_id=user_id, account_id=int(config.account_id))
+            if signal.action in {"BUY", "SELL"}
+            else None
+        )
+        trade_evaluation = build_signal_trade_evaluation(
+            candles=candles,
+            config=config,
+            signal=signal,
+            analysis=analysis,
+            current_day_pnl=evaluation_day_pnl,
+            collected_context=collected_context,
+            tick_size=float(instrument_spec.tick_size) if instrument_spec is not None else None,
+            tick_value=float(instrument_spec.tick_value) if instrument_spec is not None else None,
+            point_value=instrument_spec.point_value if instrument_spec is not None else None,
+        )
+        if trade_evaluation is not None:
+            analysis["trade_evaluation"] = trade_evaluation
+        signal_order_size = _signal_order_size(config=config, signal=signal)
+        current_position_qty = _signal_current_position_qty(signal)
+        target_position_qty = _signal_target_position_qty(signal)
+        actionable_candle_timestamp = _actionable_candle_timestamp(
+            signal=signal,
+            candles=candles,
+            latest_candle=latest_candle,
+        )
+        idempotency_key = (
+            build_action_idempotency_key(
+                user_id=user_id,
+                bot_config_id=int(config.id),
+                candle_timestamp=actionable_candle_timestamp,
+                action=signal.action,
+                execution_mode=execution_mode,
+            )
+            if signal.action in {"BUY", "SELL"} and actionable_candle_timestamp is not None
+            else None
+        )
+    with stage("decision_snapshot"):
+        decision = BotDecision(
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id) if run is not None and run.id is not None else None,
+            account_id=int(config.account_id),
+            contract_id=execution_contract_id,
+            symbol=execution_symbol,
+            decision_type="signal",
+            action=signal.action,
+            reason=signal.reason,
+            candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
+            price=signal.price,
+            quantity=(
+                _finite_optional_float(signal_order_size)
+                if signal.action in {"BUY", "SELL"}
+                else None
+            ),
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            raw_payload=dict(signal.raw_payload) if isinstance(signal.raw_payload, dict) else signal.raw_payload,
+        )
+        db.add(decision)
+        db.flush()
+
+        # Capture the analysis before risk gates/order submission. The auxiliary
+        # writer receives it only after this transaction successfully commits.
+        try:
+            from .decision_research import stage_decision_snapshot
+            stage_decision_snapshot(db, decision=decision, config=config, signal=signal, analysis=analysis, candles=candles)
+        except Exception:
+            pass
+
+    with stage("risk_and_routing"):
+        risk_events: list[BotRiskEvent] = []
+        order_attempt: BotOrderAttempt | None = None
+        duplicate_of_order_attempt_id: int | None = None
+        evaluation_status: EvaluationStatus = "held" if signal.action == "HOLD" else "evaluated"
+        if signal.action in {"BUY", "SELL"}:
+            existing_attempt = _find_order_attempt_by_idempotency_key(
+                db,
+                user_id=user_id,
+                bot_config_id=int(config.id),
+                idempotency_key=idempotency_key,
+            )
+            if existing_attempt is not None:
+                duplicate_of_order_attempt_id = int(existing_attempt.id)
+                _mark_duplicate_decision(
+                    decision,
+                    existing_attempt=existing_attempt,
+                    idempotency_key=idempotency_key,
+                )
+                evaluation_status = "duplicate_skipped"
+            else:
+                blocks = evaluate_risk_gates(
                     db,
+                    user_id=user_id,
                     config=config,
-                    signal=signal,
+                    account=resolved_account,
+                    latest_candle=latest_candle,
                     contract_id=execution_contract_id,
                     symbol=execution_symbol,
+                    action=signal.action,
+                    requested_order_size=signal_order_size,
+                    current_position_qty=current_position_qty,
+                    target_position_qty=target_position_qty,
+                    dry_run=resolved_dry_run,
+                    confirm_live_order_routing=confirm_live_order_routing,
+                    client=client,
+                    decision=decision,
                     instrument_spec=instrument_spec,
+                    # Only the final account-locked pass may consult authoritative
+                    # provider state. An earlier remote pass would be stale before
+                    # routing and would double every live preflight request.
+                    perform_live_preflight=False,
+                    reconcile_live_submissions=False,
                 )
-                if protection_block is not None:
-                    blocks.append(protection_block)
-            if idempotency_key is None:
-                blocks.append(
-                    RiskBlock(
-                        code="missing_actionable_candle_timestamp",
-                        message=(
-                            "The strategy signal timestamp does not match the latest closed decision candle; "
-                            "older signals cannot use newer candles or observations for routing."
-                            if signal.candle_timestamp is not None and latest_candle is not None
-                            and _as_utc(signal.candle_timestamp) != _as_utc(latest_candle.candle_timestamp)
-                            else "Actionable signals require an eligible closed candle timestamp."
-                        ),
-                        severity="critical",
+                if not resolved_dry_run:
+                    protection_block = _strategy_protection_block(
+                        db,
+                        config=config,
+                        signal=signal,
+                        contract_id=execution_contract_id,
+                        symbol=execution_symbol,
+                        instrument_spec=instrument_spec,
+                    )
+                    if protection_block is not None:
+                        blocks.append(protection_block)
+                if idempotency_key is None:
+                    blocks.append(
+                        RiskBlock(
+                            code="missing_actionable_candle_timestamp",
+                            message=(
+                                "The strategy signal timestamp does not match the latest closed decision candle; "
+                                "older signals cannot use newer candles or observations for routing."
+                                if signal.candle_timestamp is not None and latest_candle is not None
+                                and _as_utc(signal.candle_timestamp) != _as_utc(latest_candle.candle_timestamp)
+                                else "Actionable signals require an eligible closed candle timestamp."
+                            ),
+                            severity="critical",
+                        )
+                    )
+
+            if existing_attempt is None and blocks:
+                risk_events = [
+                    _create_risk_event(
+                        db,
+                        user_id=user_id,
+                        config=config,
+                        run=run,
+                        block=block,
+                        correlation_id=correlation_id,
+                        decision=decision,
+                    )
+                    for block in blocks
+                ]
+                db.add(
+                    BotDecision(
+                        user_id=user_id,
+                        bot_config_id=int(config.id),
+                        bot_run_id=int(run.id) if run is not None and run.id is not None else None,
+                        account_id=int(config.account_id),
+                        contract_id=execution_contract_id,
+                        symbol=execution_symbol,
+                        decision_type="risk_reject",
+                        action=signal.action,
+                        reason="; ".join(block.message for block in blocks),
+                        candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
+                        price=signal.price,
+                        quantity=_finite_optional_float(decision.quantity),
+                        correlation_id=correlation_id,
+                        idempotency_key=idempotency_key,
+                        raw_payload={
+                            "risk_blocks": [block.__dict__ for block in blocks],
+                            "signal_decision_id": int(decision.id),
+                            "signal_order_plan": (
+                                dict(decision.raw_payload)
+                                if isinstance(decision.raw_payload, dict)
+                                else decision.raw_payload
+                            ),
+                        },
                     )
                 )
-
-        if existing_attempt is None and blocks:
-            risk_events = [
-                _create_risk_event(
+                evaluation_status = "risk_blocked"
+                if run is not None and not _only_transient_live_blocks(blocks):
+                    transition_bot_run(run, "blocked", reason="risk_gate_blocked_order")
+                    config.enabled = False
+            elif existing_attempt is None:
+                order_attempt, raced_attempt = _claim_order_attempt(
                     db,
                     user_id=user_id,
                     config=config,
                     run=run,
-                    block=block,
-                    correlation_id=correlation_id,
                     decision=decision,
-                )
-                for block in blocks
-            ]
-            db.add(
-                BotDecision(
-                    user_id=user_id,
-                    bot_config_id=int(config.id),
-                    bot_run_id=int(run.id) if run is not None and run.id is not None else None,
-                    account_id=int(config.account_id),
                     contract_id=execution_contract_id,
-                    symbol=execution_symbol,
-                    decision_type="risk_reject",
                     action=signal.action,
-                    reason="; ".join(block.message for block in blocks),
-                    candle_timestamp=actionable_candle_timestamp or signal.candle_timestamp,
-                    price=signal.price,
-                    quantity=_finite_optional_float(decision.quantity),
+                    order_size=signal_order_size,
+                    execution_mode=execution_mode,
                     correlation_id=correlation_id,
                     idempotency_key=idempotency_key,
-                    raw_payload={
-                        "risk_blocks": [block.__dict__ for block in blocks],
-                        "signal_decision_id": int(decision.id),
-                        "signal_order_plan": (
-                            dict(decision.raw_payload)
-                            if isinstance(decision.raw_payload, dict)
-                            else decision.raw_payload
-                        ),
-                    },
                 )
-            )
-            evaluation_status = "risk_blocked"
-            if run is not None and not _only_transient_live_blocks(blocks):
-                transition_bot_run(run, "blocked", reason="risk_gate_blocked_order")
-                config.enabled = False
-        elif existing_attempt is None:
-            order_attempt, raced_attempt = _claim_order_attempt(
-                db,
-                user_id=user_id,
-                config=config,
-                run=run,
-                decision=decision,
-                contract_id=execution_contract_id,
-                action=signal.action,
-                order_size=signal_order_size,
-                execution_mode=execution_mode,
-                correlation_id=correlation_id,
-                idempotency_key=idempotency_key,
-            )
-            if raced_attempt is not None:
-                duplicate_of_order_attempt_id = int(raced_attempt.id)
-                _mark_duplicate_decision(
-                    decision,
-                    existing_attempt=raced_attempt,
-                    idempotency_key=idempotency_key,
-                )
-                evaluation_status = "duplicate_skipped"
-            elif order_attempt is not None and resolved_dry_run:
-                order_attempt.status = "dry_run"
-                order_attempt.raw_response = {"dry_run": True, "message": "Order not sent to ProjectX."}
-                evaluation_status = "dry_run_attempt"
-            elif order_attempt is not None:
-                # Persist the audit row before any possible external order submission.
-                order_attempt_id = int(order_attempt.id)
-                run_id = int(run.id) if run is not None else None
-                db.commit()
-                config = _require_bot_config(
-                    db,
-                    user_id=user_id,
-                    bot_config_id=int(config.id),
-                    lock_for_update=True,
-                )
-                # Manual evaluations retain the account-row serialization used
-                # by the request path.  A worker evaluation must leave the row
-                # unlocked during remote preflight so a streaming disconnect
-                # can invalidate its cached account classification.  The worker
-                # acquires and refreshes this row only at the final mutation
-                # boundary, where its deployment lease supplies serialization.
-                resolved_account = _require_owned_account(
-                    db,
-                    user_id=user_id,
-                    account_id=int(config.account_id),
-                    lock_for_update=False,
-                    refresh_from_database=True,
-                )
-                order_attempt = _require_order_attempt(
-                    db,
-                    user_id=user_id,
-                    bot_config_id=int(config.id),
-                    order_attempt_id=order_attempt_id,
-                )
-                run = (
-                    _find_bot_run(
+                if raced_attempt is not None:
+                    duplicate_of_order_attempt_id = int(raced_attempt.id)
+                    _mark_duplicate_decision(
+                        decision,
+                        existing_attempt=raced_attempt,
+                        idempotency_key=idempotency_key,
+                    )
+                    evaluation_status = "duplicate_skipped"
+                elif order_attempt is not None and resolved_dry_run:
+                    order_attempt.status = "dry_run"
+                    order_attempt.raw_response = {"dry_run": True, "message": "Order not sent to ProjectX."}
+                    evaluation_status = "dry_run_attempt"
+                elif order_attempt is not None:
+                    # Persist the audit row before any possible external order submission.
+                    order_attempt_id = int(order_attempt.id)
+                    run_id = int(run.id) if run is not None else None
+                    db.commit()
+                    config = _require_bot_config(
                         db,
                         user_id=user_id,
                         bot_config_id=int(config.id),
-                        bot_run_id=run_id,
                         lock_for_update=True,
                     )
-                    if run_id is not None
-                    else None
-                )
-                execution_snapshot_changed = (
-                    _bot_config_evaluation_snapshot(config) != config_snapshot
-                    or _account_execution_snapshot(resolved_account) != account_snapshot
-                )
-                if (
-                    execution_snapshot_changed
-                    or not bool(config.enabled)
-                    or (run_id is not None and (run is None or run.status != "running"))
-                ):
-                    order_attempt.status = "blocked"
-                    order_attempt.rejection_reason = (
-                        "Bot configuration or account changed before provider routing."
-                        if execution_snapshot_changed
-                        else "Bot execution state changed before provider routing."
-                    )
-                    state_block = RiskBlock(
-                        code="execution_state_changed",
-                        message=order_attempt.rejection_reason,
-                        severity="critical",
-                    )
-                    risk_events = [
-                        _create_risk_event(
-                            db,
-                            user_id=user_id,
-                            config=config,
-                            run=run,
-                            block=state_block,
-                            correlation_id=correlation_id,
-                        )
-                    ]
-                    evaluation_status = "risk_blocked"
-                else:
-                    preflight_started_at = monotonic()
-                    mutation_fence = _ProviderMutationFence(
-                        db=db,
-                        token=worker_lease_token,
-                        user_id=user_id,
-                        account_id=int(config.account_id),
-                        preflight_deadline=preflight_started_at + _LIVE_PREFLIGHT_MAX_DURATION_SECONDS,
-                    )
-                    final_blocks = evaluate_risk_gates(
+                    # Manual evaluations retain the account-row serialization used
+                    # by the request path.  A worker evaluation must leave the row
+                    # unlocked during remote preflight so a streaming disconnect
+                    # can invalidate its cached account classification.  The worker
+                    # acquires and refreshes this row only at the final mutation
+                    # boundary, where its deployment lease supplies serialization.
+                    resolved_account = _require_owned_account(
                         db,
                         user_id=user_id,
-                        config=config,
-                        account=resolved_account,
-                        latest_candle=latest_candle,
-                        contract_id=execution_contract_id,
-                        symbol=execution_symbol,
-                        action=signal.action,
-                        requested_order_size=signal_order_size,
-                        current_position_qty=current_position_qty,
-                        target_position_qty=target_position_qty,
-                        dry_run=resolved_dry_run,
-                        confirm_live_order_routing=confirm_live_order_routing,
-                        client=client,
-                        ignore_order_attempt_id=order_attempt_id,
-                        order_attempt=order_attempt,
-                        decision=decision,
-                        instrument_spec=instrument_spec,
+                        account_id=int(config.account_id),
+                        lock_for_update=False,
+                        refresh_from_database=True,
                     )
-                    if monotonic() - preflight_started_at > _LIVE_PREFLIGHT_MAX_DURATION_SECONDS:
-                        final_blocks.append(
-                            RiskBlock(
-                                code="live_preflight_unavailable",
-                                message="Provider reconciliation exceeded the 15-second freshness budget; no order was routed.",
-                                severity="critical",
-                            )
+                    order_attempt = _require_order_attempt(
+                        db,
+                        user_id=user_id,
+                        bot_config_id=int(config.id),
+                        order_attempt_id=order_attempt_id,
+                    )
+                    run = (
+                        _find_bot_run(
+                            db,
+                            user_id=user_id,
+                            bot_config_id=int(config.id),
+                            bot_run_id=run_id,
+                            lock_for_update=True,
                         )
-                    broker_flatten_completed = False
+                        if run_id is not None
+                        else None
+                    )
+                    execution_snapshot_changed = (
+                        _bot_config_evaluation_snapshot(config) != config_snapshot
+                        or _account_execution_snapshot(resolved_account) != account_snapshot
+                    )
                     if (
-                        order_attempt is not None
-                        and len(final_blocks) == 1
-                        and final_blocks[0].code
-                        in {"working_orders_require_cancel_for_exit", "verified_flatten_required"}
+                        execution_snapshot_changed
+                        or not bool(config.enabled)
+                        or (run_id is not None and (run is None or run.status != "running"))
                     ):
-                        try:
-                            flatten_block = _execute_verified_reduce_only_flatten(
-                                client=client,
-                                account_id=int(config.account_id),
-                                contract_id=execution_contract_id,
-                                order_attempt=order_attempt,
-                                before_provider_mutation=(
-                                    mutation_fence.require
-                                    if mutation_fence is not None
-                                    else None
-                                ),
-                            )
-                            if flatten_block is None:
-                                final_blocks = []
-                                broker_flatten_completed = True
-                            else:
-                                final_blocks = [flatten_block]
-                        except _ProviderMutationBlocked as exc:
-                            final_blocks = [exc.block]
-                    if not final_blocks and not broker_flatten_completed:
-                        try:
-                            # No provider call may occur between this check and
-                            # Order/place.  The lease and freshly-read account
-                            # rows remain locked until the caller commits the
-                            # provider outcome and audit writeback.
-                            mutation_fence.require()
-                        except _ProviderMutationBlocked as exc:
-                            final_blocks = [exc.block]
-                    if final_blocks:
-                        if order_attempt.status != "submission_unknown":
-                            order_attempt.status = "blocked"
-                            order_attempt.rejection_reason = "; ".join(
-                                block.message for block in final_blocks
-                            )
+                        order_attempt.status = "blocked"
+                        order_attempt.rejection_reason = (
+                            "Bot configuration or account changed before provider routing."
+                            if execution_snapshot_changed
+                            else "Bot execution state changed before provider routing."
+                        )
+                        state_block = RiskBlock(
+                            code="execution_state_changed",
+                            message=order_attempt.rejection_reason,
+                            severity="critical",
+                        )
                         risk_events = [
                             _create_risk_event(
                                 db,
                                 user_id=user_id,
                                 config=config,
                                 run=run,
-                                block=block,
+                                block=state_block,
                                 correlation_id=correlation_id,
-                                decision=decision,
-                                order_attempt=order_attempt,
                             )
-                            for block in final_blocks
                         ]
                         evaluation_status = "risk_blocked"
-                        if not _only_transient_live_blocks(final_blocks):
-                            config.enabled = False
-                        if (
-                            run is not None
-                            and run.status == "running"
-                            and not _only_transient_live_blocks(final_blocks)
-                        ):
-                            transition_bot_run(
-                                run,
-                                "blocked",
-                                reason="final_live_preflight_blocked_order",
-                            )
                     else:
-                        # Config, refreshed account, and worker lease locks are
-                        # held through the provider call and audit writeback.
-                        if not broker_flatten_completed:
-                            _submit_order_attempt(client=client, order_attempt=order_attempt)
-                        if order_attempt.status == "submitted":
-                            evaluation_status = "submitted"
-                        else:
-                            evaluation_status = "error"
-                            config.enabled = False
-                            if run is not None and run.status == "running":
-                                stop_reason = (
-                                    "provider_order_submission_unknown"
-                                    if order_attempt.status == "submission_unknown"
-                                    else "provider_order_submission_failed"
+                        preflight_started_at = monotonic()
+                        mutation_fence = _ProviderMutationFence(
+                            db=db,
+                            token=worker_lease_token,
+                            user_id=user_id,
+                            account_id=int(config.account_id),
+                            preflight_deadline=preflight_started_at + _LIVE_PREFLIGHT_MAX_DURATION_SECONDS,
+                        )
+                        final_blocks = evaluate_risk_gates(
+                            db,
+                            user_id=user_id,
+                            config=config,
+                            account=resolved_account,
+                            latest_candle=latest_candle,
+                            contract_id=execution_contract_id,
+                            symbol=execution_symbol,
+                            action=signal.action,
+                            requested_order_size=signal_order_size,
+                            current_position_qty=current_position_qty,
+                            target_position_qty=target_position_qty,
+                            dry_run=resolved_dry_run,
+                            confirm_live_order_routing=confirm_live_order_routing,
+                            client=client,
+                            ignore_order_attempt_id=order_attempt_id,
+                            order_attempt=order_attempt,
+                            decision=decision,
+                            instrument_spec=instrument_spec,
+                        )
+                        if monotonic() - preflight_started_at > _LIVE_PREFLIGHT_MAX_DURATION_SECONDS:
+                            final_blocks.append(
+                                RiskBlock(
+                                    code="live_preflight_unavailable",
+                                    message="Provider reconciliation exceeded the 15-second freshness budget; no order was routed.",
+                                    severity="critical",
                                 )
+                            )
+                        broker_flatten_completed = False
+                        if (
+                            order_attempt is not None
+                            and len(final_blocks) == 1
+                            and final_blocks[0].code
+                            in {"working_orders_require_cancel_for_exit", "verified_flatten_required"}
+                        ):
+                            try:
+                                flatten_block = _execute_verified_reduce_only_flatten(
+                                    client=client,
+                                    account_id=int(config.account_id),
+                                    contract_id=execution_contract_id,
+                                    order_attempt=order_attempt,
+                                    before_provider_mutation=(
+                                        mutation_fence.require
+                                        if mutation_fence is not None
+                                        else None
+                                    ),
+                                )
+                                if flatten_block is None:
+                                    final_blocks = []
+                                    broker_flatten_completed = True
+                                else:
+                                    final_blocks = [flatten_block]
+                            except _ProviderMutationBlocked as exc:
+                                final_blocks = [exc.block]
+                        if not final_blocks and not broker_flatten_completed:
+                            try:
+                                # No provider call may occur between this check and
+                                # Order/place.  The lease and freshly-read account
+                                # rows remain locked until the caller commits the
+                                # provider outcome and audit writeback.
+                                mutation_fence.require()
+                            except _ProviderMutationBlocked as exc:
+                                final_blocks = [exc.block]
+                        if final_blocks:
+                            if order_attempt.status != "submission_unknown":
+                                order_attempt.status = "blocked"
+                                order_attempt.rejection_reason = "; ".join(
+                                    block.message for block in final_blocks
+                                )
+                            risk_events = [
+                                _create_risk_event(
+                                    db,
+                                    user_id=user_id,
+                                    config=config,
+                                    run=run,
+                                    block=block,
+                                    correlation_id=correlation_id,
+                                    decision=decision,
+                                    order_attempt=order_attempt,
+                                )
+                                for block in final_blocks
+                            ]
+                            evaluation_status = "risk_blocked"
+                            if not _only_transient_live_blocks(final_blocks):
+                                config.enabled = False
+                            if (
+                                run is not None
+                                and run.status == "running"
+                                and not _only_transient_live_blocks(final_blocks)
+                            ):
                                 transition_bot_run(
                                     run,
-                                    "error",
-                                    reason=stop_reason,
-                                    error=order_attempt.rejection_reason or "Provider order submission failed.",
+                                    "blocked",
+                                    reason="final_live_preflight_blocked_order",
                                 )
-            db.flush()
+                        else:
+                            # Config, refreshed account, and worker lease locks are
+                            # held through the provider call and audit writeback.
+                            if not broker_flatten_completed:
+                                _submit_order_attempt(client=client, order_attempt=order_attempt)
+                            if order_attempt.status == "submitted":
+                                evaluation_status = "submitted"
+                            else:
+                                evaluation_status = "error"
+                                config.enabled = False
+                                if run is not None and run.status == "running":
+                                    stop_reason = (
+                                        "provider_order_submission_unknown"
+                                        if order_attempt.status == "submission_unknown"
+                                        else "provider_order_submission_failed"
+                                    )
+                                    transition_bot_run(
+                                        run,
+                                        "error",
+                                        reason=stop_reason,
+                                        error=order_attempt.rejection_reason or "Provider order submission failed.",
+                                    )
+                db.flush()
 
-    if run is not None and run.status == "running":
-        touch_bot_run(run, candle_timestamp=actionable_candle_timestamp)
-        state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
-        state["phase"] = "idle"
-        state["last_evaluation_status"] = evaluation_status
-        run.raw_state = state
-    db.flush()
-    decision.raw_payload = {**(decision.raw_payload or {}), "execution_mode": execution_mode,
-                            "routing_status": evaluation_status,
-                            "decision_interval_seconds": _market_candle_interval(unit=str(config.timeframe_unit), unit_number=int(config.timeframe_unit_number)).total_seconds()}
-    log_bot_event(
-        logger,
-        "bot_evaluation_completed",
-        user_id=user_id,
-        bot_config_id=int(config.id),
-        bot_run_id=int(run.id) if run is not None else None,
-        account_id=int(config.account_id),
-        correlation_id=correlation_id,
-        idempotency_key=idempotency_key,
-        execution_mode=execution_mode,
-        action=signal.action,
-        evaluation_status=evaluation_status,
-        order_attempt_id=int(order_attempt.id) if order_attempt is not None else None,
-        duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
-    )
-    try:
-        from .bot_decision_explanation import build_bot_decision_explanation
-        analysis["bot_decision"] = build_bot_decision_explanation(
-            config=config, signal=signal, decision=decision, status=evaluation_status,
-            risk_events=risk_events, dry_run=resolved_dry_run, analysis=analysis,
-            latest_candle=latest_candle, evaluated_at=datetime.now(timezone.utc), order_attempt=order_attempt,
+    with stage("decision_flush"):
+        if run is not None and run.status == "running":
+            touch_bot_run(run, candle_timestamp=actionable_candle_timestamp)
+            state = dict(run.raw_state) if isinstance(run.raw_state, dict) else {}
+            state["phase"] = "idle"
+            state["last_evaluation_status"] = evaluation_status
+            run.raw_state = state
+        db.flush()
+        decision.raw_payload = {**(decision.raw_payload or {}), "execution_mode": execution_mode,
+                                "routing_status": evaluation_status,
+                                "decision_interval_seconds": _market_candle_interval(unit=str(config.timeframe_unit), unit_number=int(config.timeframe_unit_number)).total_seconds()}
+        log_bot_event(
+            logger,
+            "bot_evaluation_completed",
+            user_id=user_id,
+            bot_config_id=int(config.id),
+            bot_run_id=int(run.id) if run is not None else None,
+            account_id=int(config.account_id),
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            execution_mode=execution_mode,
+            action=signal.action,
+            evaluation_status=evaluation_status,
+            order_attempt_id=int(order_attempt.id) if order_attempt is not None else None,
+            duplicate_of_order_attempt_id=duplicate_of_order_attempt_id,
+            decision_id=int(decision.id),
+            strategy_type=config.strategy_type,
+            contract_id=execution_contract_id,
+            symbol=execution_symbol,
+            candle_timestamp=decision.candle_timestamp,
+            candle_close_timestamp=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else None,
+            candle_age_seconds=(datetime.now(timezone.utc) - _market_candle_close_timestamp(latest_candle)).total_seconds() if latest_candle is not None else None,
+            candle_count=len(candles),
+            price=signal.price,
+            quantity=decision.quantity,
+            reason=signal.reason,
+            risk_codes=[risk.code for risk in risk_events],
+            order_status=order_attempt.status if order_attempt is not None else None,
+            provider_order_id=order_attempt.provider_order_id if order_attempt is not None else None,
+            persistence="pending_commit",
         )
-        if str(config.strategy_type) == "topbot_adaptive" and (
-            resolved_dry_run or isinstance(signal.raw_payload.get("probabilistic_research"), dict)
-        ):
-            from .probabilistic_shadow import explain_shadow
-            recorded_forecast = signal.raw_payload.get("probabilistic_research")
-            analysis["bot_decision"]["probabilistic_research"] = dict(recorded_forecast) if isinstance(recorded_forecast, dict) else explain_shadow(
-                candles=candles, owner=user_id, contract_id=str(config.contract_id),
-                as_of=datetime.now(timezone.utc),
+    with stage("explanations"):
+        try:
+            from .bot_decision_explanation import build_bot_decision_explanation
+            analysis["bot_decision"] = build_bot_decision_explanation(
+                config=config, signal=signal, decision=decision, status=evaluation_status,
+                risk_events=risk_events, dry_run=resolved_dry_run, analysis=analysis,
+                latest_candle=latest_candle, evaluated_at=datetime.now(timezone.utc), order_attempt=order_attempt,
             )
-            from .depth_shadow import explain_depth
-            analysis["bot_decision"]["probabilistic_research"]["depth"] = explain_depth(
-                candles=candles, owner=user_id, contract_id=str(config.contract_id), as_of=datetime.now(timezone.utc),
-            )
-    except Exception:
-        analysis.setdefault("bot_decision", {
-            "status": evaluation_status, "action": str(decision.action), "execution_mode": execution_mode,
-            "strategy_action": str(signal.action),
-            "strategy": {"name": str(config.strategy_type).replace("_", " ").title(), "revision": None},
-            "contract_id": str(decision.contract_id), "evaluated_at": datetime.now(timezone.utc).isoformat(),
-            "candle_timestamp": _as_utc(decision.candle_timestamp).isoformat() if decision.candle_timestamp else None,
-            "candle_close_timestamp": _market_candle_close_timestamp(latest_candle).isoformat() if latest_candle is not None else None,
-            "summary": f"Recorded outcome: {evaluation_status.replace('_', ' ')}. {decision.reason}",
-            "strategy_reason": signal.reason, "checks": [],
-            "limits": {"max_contracts": float(config.max_contracts), "max_open_position": float(config.max_open_position),
-                       "max_daily_loss": float(config.max_daily_loss), "max_trades_per_day": int(config.max_trades_per_day),
-                       "delivery_grace_seconds": int(config.max_data_staleness_seconds)},
-            "basis": "Detailed explanation unavailable; the recorded strategy and routing outcome remain authoritative.",
-        })
-    try:
-        from .decision_research import stage_routing_disposition
-        stage_routing_disposition(db, decision=decision, evaluation_status=evaluation_status,
-                                  order_attempt=order_attempt, risk_events=risk_events,
-                                  explanation=analysis["bot_decision"])
-    except Exception:
-        pass
+            if str(config.strategy_type) == "topbot_adaptive" and (
+                resolved_dry_run or isinstance(signal.raw_payload.get("probabilistic_research"), dict)
+            ):
+                from .probabilistic_shadow import explain_shadow
+                recorded_forecast = signal.raw_payload.get("probabilistic_research")
+                analysis["bot_decision"]["probabilistic_research"] = dict(recorded_forecast) if isinstance(recorded_forecast, dict) else explain_shadow(
+                    candles=candles, owner=user_id, contract_id=str(config.contract_id),
+                    as_of=datetime.now(timezone.utc),
+                )
+                from .depth_shadow import explain_depth
+                analysis["bot_decision"]["probabilistic_research"]["depth"] = explain_depth(
+                    candles=candles, owner=user_id, contract_id=str(config.contract_id), as_of=datetime.now(timezone.utc),
+                )
+        except Exception:
+            analysis.setdefault("bot_decision", {
+                "status": evaluation_status, "action": str(decision.action), "execution_mode": execution_mode,
+                "strategy_action": str(signal.action),
+                "strategy": {"name": str(config.strategy_type).replace("_", " ").title(), "revision": None},
+                "contract_id": str(decision.contract_id), "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                "candle_timestamp": _as_utc(decision.candle_timestamp).isoformat() if decision.candle_timestamp else None,
+                "candle_close_timestamp": _market_candle_close_timestamp(latest_candle).isoformat() if latest_candle is not None else None,
+                "summary": f"Recorded outcome: {evaluation_status.replace('_', ' ')}. {decision.reason}",
+                "strategy_reason": signal.reason, "checks": [],
+                "limits": {"max_contracts": float(config.max_contracts), "max_open_position": float(config.max_open_position),
+                           "max_daily_loss": float(config.max_daily_loss), "max_trades_per_day": int(config.max_trades_per_day),
+                           "delivery_grace_seconds": int(config.max_data_staleness_seconds)},
+                "basis": "Detailed explanation unavailable; the recorded strategy and routing outcome remain authoritative.",
+            })
+        try:
+            from .decision_research import stage_routing_disposition
+            stage_routing_disposition(db, decision=decision, evaluation_status=evaluation_status,
+                                      order_attempt=order_attempt, risk_events=risk_events,
+                                      explanation=analysis["bot_decision"])
+        except Exception:
+            pass
     return EvaluationResult(
         status=evaluation_status,
         correlation_id=correlation_id,
@@ -2634,6 +2698,7 @@ def get_bot_activity(
     }
 
 
+@timed_stage("market_acquisition")
 def fetch_candles_and_evaluate_strategy(
     db: Session,
     *,
@@ -3150,6 +3215,7 @@ def fetch_and_store_orb_fibonacci_candles(
     )
 
 
+@timed_stage("provider_history")
 def _retrieve_market_bars_singleflight(
     key: tuple[Any, ...],
     retrieve: Callable[[], list[dict[str, Any]]],
@@ -3214,6 +3280,7 @@ def _commit_evaluation_market_cache(
     db.commit()
 
 
+@timed_stage("candle_fetch")
 def fetch_and_store_market_candles(
     db: Session,
     *,
@@ -3372,6 +3439,7 @@ def fetch_and_store_market_candles(
     )
 
 
+@timed_stage("candle_cache_read")
 def list_market_candles(
     db: Session,
     *,
@@ -3666,6 +3734,7 @@ def resolve_market_contract(
     return normalized_contract_id, normalized_symbol
 
 
+@timed_stage("contract_resolution")
 def resolve_current_market_contract(
     client: ProjectXClient,
     *,
@@ -3724,6 +3793,7 @@ def _market_symbol_lookup_candidates(symbol: str) -> list[str]:
     return _unique_text_values(candidates)
 
 
+@timed_stage("candle_store")
 def store_market_candles(
     db: Session,
     *,
@@ -11784,6 +11854,8 @@ def reconcile_unresolved_order_attempts(
         provider_order_id = _normalized_optional_text(match.get("order_id"))
         if provider_order_id is None:
             continue
+        previous_status = row.status
+        previous_provider_id = row.provider_order_id
         row.provider_order_id = provider_order_id
         row.raw_response = {
             "reconciled": True,
@@ -11804,6 +11876,14 @@ def reconcile_unresolved_order_attempts(
             row.rejection_reason = None
             row.updated_at = observed_at
             resolved_count += 1
+
+        if row.status != previous_status or row.provider_order_id != previous_provider_id:
+            diagnostic_event(logger, "bot_order_reconciled",
+                             order_attempt_id=row.id, bot_run_id=row.bot_run_id,
+                             bot_config_id=row.bot_config_id, account_id=account_id,
+                             correlation_id=row.correlation_id, previous_state=previous_status,
+                             order_status=row.status, provider_order_id=row.provider_order_id,
+                             persistence="pending_commit")
 
     unresolved_count = sum(str(row.status) in {"pending", "submission_unknown"} for row in rows)
     return ReconciliationOutcome(
@@ -12745,6 +12825,17 @@ def _create_order_attempt(
 
 def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAttempt) -> None:
     request_payload = order_attempt.raw_request or {}
+    started = perf_counter()
+    diagnostic_context = {
+        key: getattr(order_attempt, attribute, None) for key, attribute in (
+            ("user_id", "user_id"),
+            ("order_attempt_id", "id"), ("bot_config_id", "bot_config_id"),
+            ("bot_run_id", "bot_run_id"), ("account_id", "account_id"),
+            ("correlation_id", "correlation_id"), ("contract_id", "contract_id"),
+            ("execution_mode", "execution_mode"), ("quantity", "size"), ("action", "side"),
+        )
+    }
+    diagnostic_event(logger, "bot_order_submission_started", **diagnostic_context)
     try:
         response = client.place_order(
             account_id=int(request_payload["accountId"]),
@@ -12770,6 +12861,10 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
         order_attempt.raw_response = response.get("raw_payload")
     except Exception as exc:
         safe_error = sanitize_error(exc)
+        diagnostic_context.update(error_type=type(exc).__name__,
+                                  reason_code=getattr(exc, "reason_code", None),
+                                  status_code=getattr(exc, "status_code", None),
+                                  error_frames=error_frames(exc))
         submission_outcome_unknown = (
             # An adapter bug or malformed successful response can happen after
             # the broker accepted the order. Only the typed provider adapter
@@ -12784,6 +12879,13 @@ def _submit_order_attempt(*, client: ProjectXClient, order_attempt: BotOrderAtte
             else safe_error
         )
         order_attempt.raw_response = {"error": safe_error, "error_type": type(exc).__name__}
+    finally:
+        diagnostic_event(logger, "bot_order_submission_finished", **diagnostic_context,
+                         level=logging.WARNING if order_attempt.status in {"submission_unknown", "error"} else logging.INFO,
+                         order_status=order_attempt.status,
+                         provider_order_id=order_attempt.provider_order_id,
+                         duration_ms=round((perf_counter() - started) * 1000, 3),
+                         persistence="pending_commit")
 
 
 def _execute_verified_reduce_only_flatten(

@@ -1141,6 +1141,10 @@ export interface BotDepthResearch {
 }
 
 export interface BotProbabilisticResearch {
+  observation_only?: boolean;
+  model_age_days?: number | null;
+  training_stale?: boolean | null;
+  artifact_sha256?: string | null;
   reason_code?: string | null;
   volatility_sigma?: number | null;
   implied_stop_points?: number | null;
@@ -1846,6 +1850,38 @@ export interface BotBacktestResult {
   warnings: string[];
   notes?: string[];
   data_quality?: BotBacktestDataQuality | null;
+}
+
+export interface BotLogEntry {
+  timestamp: string;
+  event: string;
+  level: string;
+  bot_run_id?: number;
+  correlation_id?: string;
+  reason?: string;
+  reason_code?: string;
+  error_type?: string;
+  evaluation_status?: string;
+  order_status?: string;
+  [field: string]: string | number | boolean | null | (string | number | boolean | null)[] | undefined;
+}
+
+export interface BotLogs {
+  account_id: number;
+  generated_at: string;
+  since: string;
+  status: "available" | "not_configured" | "read_error";
+  scan_limited: boolean;
+  has_more: boolean;
+  entries: BotLogEntry[];
+  summary: {
+    matched_events: number;
+    errors: number;
+    warnings: number;
+    evaluation_outcomes: Record<string, number>;
+    risk_blocks: Record<string, number>;
+    timings: Record<string, { count: number; mean_ms: number; max_ms: number }>;
+  };
 }
 
 export interface BotActivity {

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
+
+from ..bot_diagnostics import event as diagnostic_event
 
 
 EvaluationStatus = Literal[
@@ -119,6 +120,13 @@ def transition_bot_run(
     run.last_heartbeat_at = changed_at
     if normalized_target == "error":
         run.last_error = sanitize_error(error or reason or "Bot evaluation failed.")
+    diagnostic_event(logging.getLogger(__name__), "bot_run_transition",
+                     user_id=getattr(run, "user_id", None),
+                     bot_run_id=getattr(run, "id", None),
+                     bot_config_id=getattr(run, "bot_config_id", None),
+                     account_id=getattr(run, "account_id", None),
+                     previous_state=current_status, state=normalized_target,
+                     reason_code=reason, persistence="pending_commit")
     return run
 
 
@@ -136,6 +144,9 @@ def touch_bot_run(run: Any, *, candle_timestamp: datetime | None = None, now: da
 
 
 def live_execution_environment_enabled() -> bool:
+    from .probabilistic_observation import requested
+    if requested():
+        return False
     return os.getenv("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "").strip().lower() in _TRUE_VALUES
 
 
@@ -158,30 +169,7 @@ def sanitize_error(error: BaseException | str, *, max_length: int = 500) -> str:
 def log_bot_event(logger: logging.Logger, event: str, **fields: Any) -> None:
     """Emit allow-listed, structured JSON without strategy/provider payloads or credentials."""
 
-    safe_fields = {
-        key: value
-        for key, value in fields.items()
-        if key
-        in {
-            "user_id",
-            "bot_config_id",
-            "bot_run_id",
-            "account_id",
-            "correlation_id",
-            "idempotency_key",
-            "execution_mode",
-            "action",
-            "evaluation_status",
-            "order_attempt_id",
-            "duplicate_of_order_attempt_id",
-            "error_type",
-        }
-        and value is not None
-    }
-    logger.info(
-        "%s",
-        json.dumps({"event": str(event), **safe_fields}, sort_keys=True, default=str),
-    )
+    diagnostic_event(logger, event, **fields)
 
 
 def _as_utc(value: datetime) -> datetime:

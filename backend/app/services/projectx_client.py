@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..evaluation_timing import timed_stage
+
 import hashlib
 from http.client import HTTPException
 import json
@@ -727,6 +729,7 @@ class ProjectXClient:
 
             time.sleep(poll_seconds)
 
+    @timed_stage("provider_request")
     def _request(
         self,
         method: str,

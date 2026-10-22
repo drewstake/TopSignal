@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from types import SimpleNamespace
 
+from sqlalchemy import literal, union_all
 from sqlalchemy.orm import Session
 
 from ..market_data_schemas import MarketContextItemOut, MarketContextOut, MarketRefreshItemOut, MarketRefreshOut
 from ..models import ProjectXMarketCandle
-from .market_data_inventory import as_utc, database_streams, merge_candles_without_overwrite, symbol_root
+from .market_data_inventory import as_utc, merge_candles_without_overwrite, symbol_root
 from .projectx_client import ProjectXClient, ProjectXClientError
 from .public_market_context import PUBLIC_SOURCES, public_observation_details
 
@@ -22,21 +24,43 @@ def stored_market_context(db: Session, *, user_id: str, live: bool = False, as_o
     if cutoff > now:
         raise ValueError("as_of_must_not_be_in_the_future")
     c = ProjectXMarketCandle
-    streams = database_streams(db, user_id=user_id)
+    # Context needs identities, not a complete inventory's counts/ranges. Keep
+    # full-history aggregates in the inventory endpoint where they are used.
+    identities = db.query(c.contract_id, c.symbol, c.live, c.unit, c.unit_number, c.source).filter(
+        c.user_id == user_id).distinct().order_by(c.contract_id, c.unit, c.unit_number, c.live).all()
+    streams = [SimpleNamespace(**row._mapping, root_symbol=symbol_root(row.symbol, row.contract_id)) for row in identities]
     candidates: dict[str, list[tuple[datetime, int, list[ProjectXMarketCandle]]]] = {}
+    eligible = []
     for stream in streams:
         public_daily = stream.source in PUBLIC_SOURCES
         if (not public_daily and stream.live != live) or stream.root_symbol not in CONTEXT_SYMBOLS or stream.unit not in _UNIT_SECONDS:
             continue
+        eligible.append(stream)
+    # Each subquery retains its own index-friendly ORDER BY/LIMIT and exact
+    # tenant/source/cutoff filters. Batch small top-N reads into one round trip
+    # instead of one cloud request per stream; never load full candle history.
+    rows_by_stream = {}
+    for offset in range(0, len(eligible), 64):
+        queries = []
+        for index, stream in enumerate(eligible[offset:offset+64], start=offset):
+            public_daily = stream.source in PUBLIC_SOURCES
+            duration = _UNIT_SECONDS[stream.unit] * stream.unit_number
+            query = db.query(c.id.label('candle_id'), literal(index).label('stream_index')).filter(
+                c.user_id == user_id, c.contract_id == stream.contract_id, c.live == stream.live,
+                c.unit == stream.unit, c.unit_number == stream.unit_number, c.source == stream.source,
+                c.is_partial.is_(False), c.candle_timestamp <= (cutoff if public_daily else cutoff-timedelta(seconds=duration)),
+            )
+            if collected_by_as_of or public_daily:
+                query = query.filter(c.fetched_at <= cutoff)
+            bounded = query.order_by(c.candle_timestamp.desc()).limit(3 if public_daily else 2).subquery()
+            queries.append(bounded.select())
+        selected = union_all(*queries).subquery()
+        for row, index in db.query(c, selected.c.stream_index).join(selected, c.id == selected.c.candle_id).order_by(selected.c.stream_index, c.candle_timestamp.desc()).all():
+            rows_by_stream.setdefault(index, []).append(row)
+    for index, stream in enumerate(eligible):
+        public_daily = stream.source in PUBLIC_SOURCES
         duration = _UNIT_SECONDS[stream.unit] * stream.unit_number
-        query = db.query(c).filter(
-            c.user_id == user_id, c.contract_id == stream.contract_id, c.live == stream.live,
-            c.unit == stream.unit, c.unit_number == stream.unit_number, c.source == stream.source,
-            c.is_partial.is_(False), c.candle_timestamp <= (cutoff if public_daily else cutoff - timedelta(seconds=duration)),
-        )
-        if collected_by_as_of or public_daily:
-            query = query.filter(c.fetched_at <= cutoff)
-        rows = query.order_by(c.candle_timestamp.desc()).limit(3 if public_daily else 2).all()
+        rows = rows_by_stream.get(index, [])
         if public_daily:
             rows = [row for row in rows if public_observation_details(row, cutoff=cutoff) is not None][:2]
         if rows:

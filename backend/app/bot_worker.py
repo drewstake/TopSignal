@@ -13,6 +13,8 @@ from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
 
+from .bot_diagnostics import error_frames, event as diagnostic_event
+
 from sqlalchemy import case, func, or_
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -190,6 +192,8 @@ class BotWorkerRuntime:
         self._runner_task: asyncio.Task[None] | None = None
         self._lease_task: asyncio.Task[None] | None = None
         self._state_lock = Lock()
+        self._diagnostic_last_at = float("-inf")
+        self._diagnostic_state = None
         self._runner_heartbeat_at: datetime | None = None
         self._snapshot = BotWorkerSnapshot(
             enabled=self.settings.enabled,
@@ -228,6 +232,9 @@ class BotWorkerRuntime:
         self._stop_event.clear()
         self._shutdown_requested.clear()
         self._replace_snapshot(started_at=datetime.now(timezone.utc), state="electing")
+        diagnostic_event(logger, "bot_worker_started", worker_id=self.owner_id,
+                         poll_seconds=self.settings.poll_seconds,
+                         lease_ttl_seconds=self.settings.lease_ttl_seconds)
         self._runner_task = asyncio.create_task(
             self._run_forever(), name="topsignal-recurring-bot-worker"
         )
@@ -559,7 +566,11 @@ class BotWorkerRuntime:
                 )
                 logger.error(
                     "bot_worker_run_failed",
-                    extra={"bot_run_id": run_id, "error_type": type(exc).__name__},
+                    extra={"bot_run_id": run_id, "error_type": type(exc).__name__,
+                           "error_frames": error_frames(exc),
+                           "reason_code": last_error_code, "status_code": getattr(exc, "status_code", None),
+                           "failure_count": failures,
+                           "retry_delay_seconds": max(0, self._retry_not_before_by_run[run_id] - monotonic())},
                 )
         if probe_due:
             self._last_provider_probe = monotonic()
@@ -736,7 +747,40 @@ class BotWorkerRuntime:
                         state["worker_last_scheduled_close_at"] = scheduled_close.isoformat()
                         state["phase"] = "idle"
                     result.run.raw_state = state
+                committed_context = {
+                    "bot_run_id": run_id, "bot_config_id": current_config.id,
+                    "correlation_id": getattr(result, "correlation_id", None),
+                    "evaluation_status": getattr(result, "status", None),
+                }
+                # Snapshot before commit expires ORM attributes. Research still
+                # writes only AFTER a successful execution commit and lease check.
+                prepared_forward = None
+                if not lease_lost:
+                    try:
+                        from .services.forward_results import prepare_committed_record
+                        prepared_forward = prepare_committed_record(result)
+                    except Exception:
+                        logger.exception("forward_results_prepare_failed")
+                commit_started = monotonic()
                 db.commit()
+                commit_ms = round((monotonic() - commit_started) * 1000, 3)
+                if prepared_forward is not None and isinstance(prepared_forward.get('timing'), dict):
+                    prepared_forward['timing']['execution_commit_ms'] = commit_ms
+                diagnostic_event(logger, "bot_evaluation_stage_timing", stage="execution_commit",
+                                 duration_ms=commit_ms, **committed_context)
+                diagnostic_event(logger, "bot_worker_evaluation_committed",
+                                 persistence="committed", **committed_context)
+                if not lease_lost and prepared_forward is not None:
+                    forward_started = monotonic()
+                    try:
+                        from .services.forward_results import record_committed
+                        record_committed(prepared=prepared_forward)
+                    except Exception:
+                        logger.exception("forward_results_write_failed; inspect local research storage")
+                    finally:
+                        diagnostic_event(logger, "bot_evaluation_stage_timing", stage="forward_results_write",
+                                         duration_ms=round((monotonic() - forward_started) * 1000, 3),
+                                         **committed_context)
             except Exception as exc:
                 # The evaluator either records a terminal audit or, for an
                 # explicitly classified pre-routing transient, leaves the run
@@ -973,7 +1017,7 @@ class BotWorkerRuntime:
             )
 
     def _record_failure(self, code: str, exc: BaseException) -> None:
-        logger.error(code, extra={"error_type": type(exc).__name__})
+        logger.error(code, extra={"error_type": type(exc).__name__, "error_frames": error_frames(exc)})
         self._replace_snapshot(
             state="error",
             last_error_code=code,
@@ -985,6 +1029,7 @@ class BotWorkerRuntime:
             current = asdict(self._snapshot)
             current.update(changes)
             self._snapshot = BotWorkerSnapshot(**current)
+        self._log_health()
 
     def _replace_snapshot_if_lease_owned(self, **changes: Any) -> bool:
         """Atomically avoid reviving a cycle after its heartbeat lost ownership."""
@@ -995,7 +1040,25 @@ class BotWorkerRuntime:
             current = asdict(self._snapshot)
             current.update(changes)
             self._snapshot = BotWorkerSnapshot(**current)
-            return True
+        self._log_health()
+        return True
+
+    def _log_health(self) -> None:
+        # Changes are immediate; a steady worker emits at most once a minute.
+        # Both paths (including standby/error) retain evidence across restarts.
+        with self._state_lock:
+            snapshot = self._snapshot
+            state = (snapshot.state, snapshot.owns_lease, snapshot.provider_status,
+                     snapshot.last_error_code, snapshot.unresolved_live_submissions)
+            now = monotonic()
+            changed = state != self._diagnostic_state
+            if not changed and now - self._diagnostic_last_at < 60:
+                return
+            self._diagnostic_state = state
+            self._diagnostic_last_at = now
+        diagnostic_event(logger, "bot_worker_state_changed" if changed else "bot_worker_heartbeat",
+                         level=logging.WARNING if snapshot.last_error_code or snapshot.unresolved_live_submissions else logging.INFO,
+                         worker_id=self.owner_id, **asdict(snapshot))
 
     def _touch_runner_heartbeat(self, *, now: datetime | None = None) -> None:
         with self._state_lock:

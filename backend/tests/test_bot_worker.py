@@ -499,6 +499,48 @@ def test_worker_evaluates_at_most_once_for_a_closed_boundary(session_factory, mo
     assert lease_token.lease_ttl_seconds == runtime.settings.lease_ttl_seconds
 
 
+@pytest.mark.parametrize("commit_fails", [False, True])
+def test_evaluation_commit_diagnostic_requires_successful_commit(session_factory, monkeypatch, caplog, commit_fails):
+    import json
+    import logging
+    _seed_run(session_factory)
+    runtime = BotWorkerRuntime(
+        session_factory=session_factory,
+        client_factory=lambda *args, **kwargs: SimpleNamespace(list_accounts=lambda **kwargs: [{"id": 101}]),
+        settings=_settings(),
+    )
+    monkeypatch.setattr(runtime, "_sync_account_streams", lambda _ids: None)
+
+    evaluated = []
+
+    def evaluate(db, **kwargs):
+        evaluated.append(True)
+        if commit_fails:
+            def fail_commit():
+                raise RuntimeError("fixture disk/database failure")
+            monkeypatch.setattr(db, "commit", fail_commit)
+        return SimpleNamespace(run=kwargs["run"], risk_events=[], correlation_id="commit-test", status="held")
+
+    monkeypatch.setattr(worker_module, "evaluate_bot_config", evaluate)
+    from app.services import forward_results
+    writes = []
+    prepared = {'timing': {}}
+    monkeypatch.setattr(forward_results, 'prepare_committed_record', lambda result: prepared)
+    monkeypatch.setattr(forward_results, 'record_committed', lambda **kwargs: writes.append(kwargs))
+    caplog.set_level(logging.INFO, logger=worker_module.logger.name)
+    runtime._run_cycle(startup_recovery=True)
+    assert evaluated == [True]
+    committed = [json.loads(record.message) for record in caplog.records
+                 if record.message.startswith('{"') and json.loads(record.message)["event"] == "bot_worker_evaluation_committed"]
+    assert len(committed) == (0 if commit_fails else 1)
+    assert len(writes) == (0 if commit_fails else 1)
+    if committed:
+        assert writes[0]['prepared'] is prepared
+        assert prepared['timing']['execution_commit_ms'] >= 0
+        assert committed[0]["persistence"] == "committed"
+        assert committed[0]["correlation_id"] == "commit-test"
+
+
 def test_stale_cycle_cannot_overwrite_lease_lost_snapshot(session_factory, monkeypatch):
     runtime = _runtime(session_factory)
 

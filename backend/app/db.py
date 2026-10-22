@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import NullPool
 
 from .database_security import production_database_connect_args, validate_production_database_configuration
+from .evaluation_timing import install_database_timing
 
 load_dotenv()
 
@@ -61,10 +62,16 @@ def _build_engine_options(database_url: str) -> dict[str, Any]:
         if _uses_supabase_pooler(database_url):
             # Supabase transaction pooler is incompatible with psycopg prepared statements.
             connect_args["prepare_threshold"] = None
-            # Let Supabase own pooling to avoid stale connection/session state in app pool.
-            options["poolclass"] = NullPool
-            options["pool_pre_ping"] = False
-            options.pop("pool_timeout")
+            if parsed.port == 5432:
+                # Persistent hosts can use Supavisor session mode. Keep its
+                # per-process connection budget small, recycle and pre-ping;
+                # rollback-on-return and transaction-local settings still apply.
+                options.update(pool_size=3, max_overflow=2, pool_use_lifo=True)
+            else:
+                # Transaction mode retains Supabase's recommended NullPool.
+                options["poolclass"] = NullPool
+                options["pool_pre_ping"] = False
+                options.pop("pool_timeout")
 
     if connect_args:
         options["connect_args"] = connect_args
@@ -79,18 +86,23 @@ except Exception:
     raise RuntimeError("Invalid DATABASE_URL or database engine configuration") from None
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+install_database_timing(engine)
 
 
 @event.listens_for(SessionLocal, "after_begin")
 def _bound_database_transaction(session, transaction, connection) -> None:
-    if connection.dialect.name != "postgresql":
+    if connection.dialect.name != "postgresql" or transaction.nested:
         return
     # Apply on every transaction, including transaction-pooler connections.
     # Startup options/session SET can be rejected or lost by a pooler. The
     # separate migration process retains its own, longer DDL timeout policy.
-    connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
-    connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
-    connection.exec_driver_sql("SET LOCAL idle_in_transaction_session_timeout = '60s'")
+    # One round trip on every outer transaction; savepoints inherit its limits.
+    # Reapplying at each optional-context savepoint adds redundant network I/O.
+    # true means LOCAL;
+    # no session settings or timeouts can leak into a later pool checkout.
+    connection.exec_driver_sql("SELECT set_config('statement_timeout', '30s', true), "
+                               "set_config('lock_timeout', '5s', true), "
+                               "set_config('idle_in_transaction_session_timeout', '60s', true)")
 
 
 def resolve_database_host_mode() -> tuple[str, Literal["local", "cloud"]]:

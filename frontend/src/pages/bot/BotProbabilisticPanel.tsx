@@ -6,7 +6,7 @@ const probability = (value: number) => Number.isFinite(value) && value >= 0 && v
 
 export function BotProbabilisticPanel({ research, selectedStrategy = false, live = false }: { research: BotProbabilisticResearch; selectedStrategy?: boolean; live?: boolean }) {
   const forecasts = research.probability_basis === "uncalibrated_model_estimate" ? research.forecasts : null;
-  const statusLabel = research.validation_status === "passed" ? "Reviewed evidence passed" :
+  const statusLabel = research.observation_only ? `Unvalidated dry-run observation · no real orders${research.training_stale ? " · stale training" : ""}` : research.validation_status === "passed" ? "Reviewed evidence passed" :
     research.validation_status === "offline_passed" ? "Offline checks passed · forward evidence required" : "Validation incomplete";
   return <section className="mt-4 rounded-lg border border-app-border p-3" aria-label="Probabilistic research">
     <h4 className="text-sm font-semibold">{selectedStrategy ? `Selected mathematical strategy · ${live ? "Experimental Practice" : "Dry Run"}` : "Probabilistic research · Dry Run shadow"}</h4>

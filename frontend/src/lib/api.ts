@@ -1,4 +1,5 @@
 import { TradeRefreshCache } from "./tradeRefreshCache";
+import type { ForwardResults } from "../pages/bot/BotForwardResultsPanel";
 import type { ManualOrderInput, ManualOrderResult, ManualOrderState } from "./manualOrderTypes";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "./financialEvents";
 
@@ -59,6 +60,7 @@ import type {
   ProjectXCredentialsInput,
   ProjectXCredentialsStatus,
   BotActivity,
+  BotLogs,
   BotBacktestInput,
   BotBacktestProgress,
   BotBacktestResult,
@@ -2527,6 +2529,15 @@ export const botsApi = {
     requestJson<BotRuntimeStatus>("/api/bots/runtime/status", {
       signal: options.signal,
     }),
+  getLogs: (accountId: number,
+    filters: { hours?: number; level?: string; run_id?: number; search?: string; limit?: number } = {},
+    options: RequestSignalOptions = {}) =>
+    requestJson<BotLogs>(`/api/accounts/${accountId}/bot-logs`, {
+      query: filters,
+      signal: options.signal,
+    }),
+  getForwardResults: (botId: number, days = 7, options: RequestSignalOptions = {}) =>
+    requestJson<ForwardResults>(`/api/bots/${botId}/forward-results`, { query: { days }, signal: options.signal }),
   getActivity: (botConfigId: number, limit = 50, options: RequestSignalOptions = {},
     filters: { start?: string; end?: string; run_id?: number; execution_mode?: "dry_run" | "live"; signals_only?: boolean } = {}) =>
     requestJson<BotActivity>(`/api/bots/${botConfigId}/activity`, {

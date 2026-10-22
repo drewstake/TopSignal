@@ -19,6 +19,9 @@ const ExpensesPage = lazy(() =>
 const BotPage = lazy(() =>
   import("../pages/bot/BotPage").then((module) => ({ default: module.BotPage })),
 );
+const BotForwardResultsPage = lazy(() =>
+  import("../pages/bot/BotForwardResultsPage").then((module) => ({ default: module.BotForwardResultsPage })),
+);
 const SimulationPage = lazy(() =>
   import("../pages/simulation/funded/TradingPage").then((module) => ({ default: module.TradingPage })),
 );
@@ -27,6 +30,11 @@ const AppearancePage = lazy(() =>
 );
 
 export const router = createBrowserRouter([
+  {
+    path: "/bot-results/:botId",
+    element: <AccountAccess><BotForwardResultsPage /></AccountAccess>,
+    errorElement: <RouteErrorPage fullScreen />,
+  },
   {
     path: "/",
     element: <AccountAccess><AppShell /></AccountAccess>,

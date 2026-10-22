@@ -3638,6 +3638,39 @@ def get_trading_bot_activity(
     }
 
 
+@app.get("/api/accounts/{account_id}/bot-logs")
+def get_account_bot_logs(
+    account_id: int,
+    response: Response,
+    hours: int = Query(default=24, ge=1, le=168),
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = None,
+    run_id: int | None = Query(default=None, ge=1),
+    search: str = Query(default="", max_length=100),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    from .services.bot_log_reader import read_bot_logs
+    user_id = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    response.headers["Cache-Control"] = "no-store"
+    return read_bot_logs(db, user_id=user_id, account_id=account_id, hours=hours,
+                         level=level, run_id=run_id, search=search.strip(), limit=limit)
+
+
+@app.get("/api/bots/{bot_config_id}/forward-results")
+def get_forward_results(bot_config_id: int, response: Response,
+                        days: int = Query(default=7, ge=1, le=30), db: Session = Depends(get_db)):
+    from .models import BotConfig
+    from .services.forward_results import report
+    user_id = get_authenticated_user_id()
+    config = db.query(BotConfig).filter(BotConfig.id == bot_config_id, BotConfig.user_id == user_id).one_or_none()
+    if config is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    _require_owned_projectx_account(db, user_id=user_id, account_id=config.account_id)
+    response.headers["Cache-Control"] = "no-store"
+    return report(user_id, config.account_id, config.id, days=days)
+
+
 @app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)
 def list_projectx_account_journal_entries(
     account_id: int,
@@ -4522,6 +4555,8 @@ def _runtime_is_local_only() -> bool:
 
 
 def _validate_runtime_security_configuration() -> None:
+    from .services.probabilistic_observation import enabled as observation_enabled
+    observation_enabled()  # Fail startup on incompatible observation/live settings.
     local_only = _runtime_is_local_only()
     runtime_environment = str(os.getenv("TOPSIGNAL_ENV") or "").strip().lower()
     if runtime_environment == "production" and not auth_required():

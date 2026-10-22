@@ -36,6 +36,33 @@ def test_build_engine_options_keeps_default_pooling_for_sqlite():
     assert "connect_args" not in options
 
 
+def test_session_pooler_reuses_a_small_bounded_pool_and_still_disables_preparation():
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import QueuePool
+    url = 'postgresql+psycopg://user:pass@aws-0-us-west-2.pooler.supabase.com:5432/postgres'
+    options = _build_engine_options(url)
+    assert options['pool_size'] == 3 and options['max_overflow'] == 2
+    assert options['pool_pre_ping'] is True
+    assert options['pool_recycle'] == 300 and options['pool_timeout'] == 10
+    assert options['connect_args']['prepare_threshold'] is None
+    engine = create_engine(url, **options)
+    assert isinstance(engine.pool, QueuePool)
+    engine.dispose()
+
+
+def test_transaction_safety_timeouts_share_one_round_trip_and_remain_local():
+    from app.db import _bound_database_transaction
+    from types import SimpleNamespace
+    calls = []
+    connection = SimpleNamespace(dialect=SimpleNamespace(name='postgresql'), exec_driver_sql=calls.append)
+    _bound_database_transaction(None, SimpleNamespace(nested=False), connection)
+    assert len(calls) == 1
+    for name, value in [('statement_timeout', '30s'), ('lock_timeout', '5s'), ('idle_in_transaction_session_timeout', '60s')]:
+        assert f"set_config('{name}', '{value}', true)" in calls[0]
+    _bound_database_transaction(None, SimpleNamespace(nested=True), connection)
+    assert len(calls) == 1
+
+
 def test_pooler_has_bounded_connect_but_no_queuepool_only_options():
     from sqlalchemy import create_engine
     url = "postgresql+psycopg://user:pass@aws-0-us-west-2.pooler.supabase.com:6543/postgres"
