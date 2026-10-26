@@ -16,7 +16,7 @@ from ..journal_schemas import JournalMergeConflictStrategy, JournalMood
 from ..models import JournalEntry, JournalEntryImage, ProjectXTradeEvent
 from .journal_storage import delete_journal_image, load_journal_image, local_journal_image_path, save_journal_image
 from .trade_event_ranges import trade_event_range_filters
-from .topstep_fees import effective_topstep_trade_fee
+from .topstep_fees import effective_topstep_trade_fee, round_turn_trade_fees
 from .trading_day import trading_day_bounds_utc
 
 _MAX_TITLE_LENGTH = 160
@@ -823,6 +823,7 @@ def pull_journal_entry_trade_stats(
                 ProjectXTradeEvent.size,
                 ProjectXTradeEvent.trade_timestamp,
                 ProjectXTradeEvent.fees,
+                ProjectXTradeEvent.fee_scope,
                 ProjectXTradeEvent.commissions,
                 ProjectXTradeEvent.pnl,
             )
@@ -1354,13 +1355,14 @@ def _effective_trade_fee(
     contract_id: str | None,
     size: float | None,
     commissions: float | None = None,
+    fee_scope: str | None = "per_side",
 ) -> float:
     if pnl is None:
         return 0.0
     return effective_topstep_trade_fee(
         trade_timestamp=trade_timestamp,
         pnl=pnl,
-        fees=fees,
+        fees=round_turn_trade_fees(pnl=pnl, fees=fees, fee_scope=fee_scope),
         symbol=symbol,
         contract_id=contract_id,
         size=size,
@@ -1387,6 +1389,7 @@ def _compute_trade_stats_snapshot(
             trade_timestamp=getattr(row, "trade_timestamp", None),
             pnl=pnl_value,
             fees=float(row.fees) if row.fees is not None else 0.0,
+            fee_scope=getattr(row, "fee_scope", "per_side"),
             symbol=getattr(row, "symbol", None),
             contract_id=getattr(row, "contract_id", None),
             size=abs(float(row.size)) if getattr(row, "size", None) is not None else None,

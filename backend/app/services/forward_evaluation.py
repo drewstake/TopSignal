@@ -69,11 +69,23 @@ def resolve_volatility_counterfactual(record, rows, now, contract):
 def volatility_counterfactual_report(records, now):
     rows = [r for r in records if r.get('volatility_counterfactual')]
     scenarios = [r['volatility_counterfactual'] for r in rows]
+    sides = {}
+    for side in ('BUY', 'SELL'):
+        completed = [s for s in scenarios if s['status'] == 'observed']
+        values = [finite((s.get('outcomes') or {}).get(side, {}).get('net_usd')) for s in completed]
+        observed = [v for v in values if v is not None]
+        total = math.fsum(observed) if observed else None
+        sides[side] = dict(completed=len(observed), unavailable=len(values)-len(observed),
+                           net_usd=round(total, 4) if total is not None else None,
+                           mean_net_usd=round(total/len(observed), 4) if observed else None,
+                           positive=sum(v > 0 for v in observed), negative=sum(v < 0 for v in observed),
+                           breakeven=sum(v == 0 for v in observed))
     return dict(policy=VOLATILITY_POLICY, recorded=len(rows),
                 completed=sum(s['status']=='observed' for s in scenarios),
                 pending=sum(s['status']=='pending' for s in scenarios),
                 unknown=sum(s['status'].startswith('unknown') or s['status']=='entry_too_late' for s in scenarios),
                 overdue=sum(s['status']=='pending' and now > datetime.fromisoformat(s['deadline'])+timedelta(minutes=2) for s in scenarios),
+                sides=sides,
                 recent=[dict(at=r['at'], **r['volatility_counterfactual']) for r in rows[:30]])
 
 
@@ -220,6 +232,54 @@ def expected_closes(day):
     start = datetime.combine(datetime.fromisoformat(day).date(),time(9,35),ET)
     candidates = [start+i*BAR for i in range(72)]
     return tuple(t.astimezone(timezone.utc).isoformat() for t in candidates if entry_boundary_reason(t) is None)
+
+
+def collection_coverage(records, *, first_record, now, window_start, scan_limited):
+    """Describe observed coverage, without treating time before collection as data.
+
+    These are scheduled research-window closes, including HOLDs, not independent
+    forecasts or complete outcome sessions. Allow the collector two minutes to
+    finish the latest close, as the collection-health checker does.
+    """
+    first_close = datetime.fromisoformat(first_record['close']) if first_record else None
+    start = max(window_start, first_close) if first_close else now
+    due_through = now - timedelta(minutes=2)
+    closes = Counter(datetime.fromisoformat(r['close']) for r in records)
+    sessions = []
+    day = start.astimezone(ET).date()
+    while first_close and day <= now.astimezone(ET).date():
+        scheduled = [datetime.fromisoformat(t) for t in expected_closes(day.isoformat())]
+        due = {t for t in scheduled if start <= t <= due_through}
+        if scheduled and due:
+            seen = due & closes.keys()
+            failures = sum(r['stage'] in ('stale_candles', 'inputs_or_model_unavailable')
+                           for r in records if datetime.fromisoformat(r['close']) in due)
+            duplicates = sum(closes[t]-1 for t in seen)
+            partial = scheduled[0] < start
+            unfinished = scheduled[-1] > due_through
+            sessions.append(dict(day=day.isoformat(), scheduled=len(scheduled), due=len(due),
+                                 recorded=len(seen), missing=len(due-seen), quality_failures=failures, duplicates=duplicates,
+                                 partial_window=partial, unfinished=unfinished,
+                                 complete=not (partial or unfinished or failures or scan_limited
+                                               or duplicates)
+                                          and len(seen) == len(scheduled)))
+        day += timedelta(days=1)
+    forecasts = [r for r in records if r['forecast'].get('forecasts')]
+    scenarios = [r for r in records if r.get('volatility_counterfactual')]
+    comparisons = [r for r in records if r.get('comparison_cohort')]
+    return dict(collection_started_at=first_record['at'] if first_record else None,
+                requested_start=window_start.isoformat(), requested_end=now.isoformat(),
+                first_recorded_at=min((r['at'] for r in records), default=None),
+                last_recorded_at=max((r['at'] for r in records), default=None),
+                started_after_requested_window=bool(first_record and datetime.fromisoformat(first_record['at']) > window_start),
+                scan_limited=scan_limited, sessions=sessions,
+                complete_evaluation_sessions=sum(s['complete'] for s in sessions),
+                missing_due_closes=sum(s['missing'] for s in sessions),
+                duplicate_closes=sum(n-1 for n in closes.values()),
+                legacy_forecasts_without_delayed_entry=sum(r.get('evaluation_version') != 2 for r in forecasts),
+                volatility_without_scenario=sum(r['stage']=='volatility_risk_cap' and not r.get('volatility_counterfactual') for r in records),
+                first_scenario_at=min((r['at'] for r in scenarios), default=None),
+                comparison_evaluations=len(comparisons))
 
 
 def paired_uncertainty(differences):

@@ -1,7 +1,8 @@
 from datetime import datetime
 from threading import BoundedSemaphore
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .auth import auth_required, get_authenticated_user, get_authenticated_user_id
@@ -11,6 +12,7 @@ from .market_data_schemas import (CandleImportOut, MarketContextOut, MarketDataI
 from .services.market_data_context import refresh_market_context, stored_market_context
 from .services.market_data_inventory import CaptureIntegrityError, import_local_history, market_data_inventory
 from .services.public_market_context import public_market_status, refresh_public_market_context
+from .services.topbot_backtest_jobs import BacktestRequest, jobs as backtest_jobs
 
 
 router = APIRouter(prefix="/api/market-data", tags=["market-data"])
@@ -23,6 +25,61 @@ def market_data_user_id() -> str:
     if auth_required() and get_authenticated_user() is None:
         raise HTTPException(status_code=401, detail="authentication_required")
     return get_authenticated_user_id()
+
+
+@router.get("/databento/backtest-model")
+def databento_backtest_model(user_id: str = Depends(market_data_user_id)):
+    from .services.topbot_saved_model import load_saved_model
+    try:
+        _, metadata = load_saved_model(user_id)
+        return metadata
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/databento/backtests", status_code=202)
+def start_databento_backtest(payload: BacktestRequest, user_id: str = Depends(market_data_user_id)):
+    try:
+        return backtest_jobs.start(user_id, payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/databento/backtests/{job_id}")
+def get_databento_backtest(job_id: str, user_id: str = Depends(market_data_user_id)):
+    try:
+        return backtest_jobs.get(user_id, job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/databento/backtests/{job_id}/cancel")
+def cancel_databento_backtest(job_id: str, user_id: str = Depends(market_data_user_id)):
+    try:
+        return backtest_jobs.get(user_id, job_id, cancel=True)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/databento/candles")
+def databento_candles(
+    timeframe: Literal["1m", "5m", "4h", "1d"] = "5m",
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = Query(default=5000, ge=1, le=10000),
+    overview: bool = False,
+    user_id: str = Depends(market_data_user_id),
+):
+    from .services.databento_cache import DatabentoCacheError, DatabentoCacheMissingError
+    from .services.databento_chart import chart_candles
+    try:
+        return chart_candles(user_id=user_id, timeframe=timeframe, start=start, end=end, limit=limit, overview=overview)
+    except DatabentoCacheMissingError as exc:
+        raise HTTPException(status_code=404, detail="databento_chart_history_missing") from exc
+    except (DatabentoCacheError, OSError) as exc:
+        raise HTTPException(status_code=409, detail="databento_chart_cache_unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/inventory", response_model=MarketDataInventoryOut)

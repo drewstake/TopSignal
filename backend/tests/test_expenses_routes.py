@@ -681,6 +681,33 @@ def test_import_source_identity_preserves_repeated_charges_and_rejects_replay(db
     assert db_session.query(Expense).count() == 2
 
 
+@pytest.mark.parametrize("quantity, entries", [(5, 1), (1, 5)])
+def test_labs_purchases_round_trip_and_total_375_without_standard_plan_metadata(db_session, quantity, entries):
+    records = []
+    for index in range(entries):
+        payload = ExpenseCreateIn(
+            expense_date=date(2026, 10, 26),
+            source_id=f"topstep_labs:test-001-{index}",
+            amount_cents=7500 * quantity,
+            category="evaluation_fee",
+            provider="topstep",
+            description=f"Topstep Labs Drop #001 - $25K Static; {quantity} x $75.00 one-time fee",
+            tags=["topstep_labs", "lab_drop_001", "one_time_fee", f"quantity_{quantity}"],
+        )
+        records.append(create_expense(payload=payload, db=db_session))
+    db_session.expire_all()
+    rows = db_session.query(Expense).all()
+    assert len(rows) == entries
+    assert sum(row.amount_cents for row in rows) == 37500
+    assert all(row.account_type is None and row.plan_size is None for row in rows)
+    assert all(row.tags == payload.tags for row in rows)
+    assert records[0].description.startswith("Topstep Labs Drop #001 - $25K Static;")
+    with pytest.raises(HTTPException) as exc:
+        create_expense(payload=payload, db=db_session)
+    assert exc.value.status_code == 409
+    assert db_session.query(Expense).count() == entries
+
+
 def test_refund_is_a_separate_negative_expense(db_session):
     refund = create_expense(
         payload=ExpenseCreateIn(expense_date=date(2026, 6, 3), amount_cents=-22900,

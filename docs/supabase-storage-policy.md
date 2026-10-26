@@ -115,6 +115,26 @@ This specific authorization does not authorize other archive restoration or
 cloud historical imports. The retained source archives and retirement recovery
 ZIP still need an off-device backup destination.
 
+## October 24, 2026 local MNQ history extension
+
+The supplied `GLBX-20261024-DW4PKKXFLB.zip` was checksum-verified and preserved
+under `backend/storage/databento/sources/GLBX-20261024-DW4PKKXFLB/`. It contains
+179,612 OHLCV-1m records from July 10 through October 23, including spreads.
+The existing Definition archive covers all outright contracts in this download.
+The local cache builder now merges candle archives in timestamp order, removes
+identical overlap before aggregating volume, and rejects conflicting candles.
+The rebuild removed 1,923 identical overlapping outright records and added
+103,300 continuous MNQ minute candles, bringing that series to 2,635,600 rows.
+
+The 1m, 5m, 4h, and 1d series were rebuilt locally; their earlier OHLCV history
+was verified unchanged. The prior immutable cache remains available, with its
+pointer saved in `before-extension-20261024.json`. Validation details are in the
+source folder's `validation.json` and the cache's
+`extension-verification-20261024.json`. The source condition report flags
+August 29 as degraded; checksum verification does not certify feed completeness.
+No cloud historical rows were written. These local source files still require
+an off-device backup destination.
+
 ## If sign-in or service health fails again
 
 1. Capture the actual HTTP status and error from Auth/PostgREST. An unhealthy

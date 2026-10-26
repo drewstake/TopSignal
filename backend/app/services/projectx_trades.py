@@ -19,7 +19,7 @@ from .instruments import build_point_value_lookup, load_instrument_specs
 from .projectx_client import ProjectXClient, ProjectXClientError, projectx_error_reason_code
 from .projectx_metrics import TradeMetricSample, compute_daily_pnl_calendar, compute_point_payoff_by_basis, compute_trade_summary
 from .trade_event_ranges import trade_event_range_filters
-from .topstep_fees import effective_topstep_trade_fee
+from .topstep_fees import effective_topstep_trade_fee, round_turn_trade_fees
 from .trading_day import trading_day_bounds_utc, trading_day_date
 
 logger = logging.getLogger(__name__)
@@ -1780,10 +1780,7 @@ def _normalized_trade_fees(row: ProjectXTradeEvent) -> float:
 
 
 def _round_turn_trade_fees(row: Any) -> float:
-    fees = float(row.fees) if row.fees is not None else 0.0
-    if row.pnl is not None and getattr(row, "fee_scope", "per_side") != "round_turn":
-        fees *= 2
-    return fees
+    return round_turn_trade_fees(pnl=row.pnl, fees=row.fees, fee_scope=getattr(row, "fee_scope", "per_side"))
 
 
 def _trade_commissions(row: Any) -> float:

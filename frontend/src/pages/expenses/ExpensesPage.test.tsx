@@ -10,6 +10,7 @@ import { loadFreshAccountsForExpenseReconciliation } from "./expenseAccountLoadi
 import { buildAnniversaryYearRangeOptions, formatLocalIsoDate } from "./expenseNetRanges";
 import { ExpensesPage } from "./ExpensesPage";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "../../lib/financialEvents";
+import { observeAuthIdentity } from "../../lib/authIdentity";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -524,6 +525,45 @@ describe("ExpensesPage consolidated startup", () => {
 });
 
 describe("ExpensesPage combine reconciliation", () => {
+  it("cancels pending reconciliation on unmount before it can update storage", async () => {
+    mockExpenseStartup(financialSummary(0));
+    const held = deferred<AccountInfo[]>();
+    const accounts = vi.spyOn(api.accountsApi, "getAccounts").mockReturnValue(held.promise);
+    const create = vi.spyOn(api, "createExpense");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = render(<ExpensesPage />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Reconcile Combine Expenses" }));
+    await waitFor(() => expect(accounts).toHaveBeenCalled());
+    const signal = accounts.mock.calls[0][1]!.signal;
+    view.unmount();
+    expect(signal.aborted).toBe(true);
+    await act(async () => { held.resolve([projectXAccount()]); });
+    expect(create).not.toHaveBeenCalled();
+    expect(localStorage.getItem("topsignal.combineSpendTracker.v3:anonymous")).toBeNull();
+  });
+
+  it("cancels paginated expense reads after an identity change", async () => {
+    mockExpenseStartup(financialSummary(0));
+    vi.spyOn(api.accountsApi, "getAccounts").mockResolvedValue([projectXAccount()]);
+    vi.spyOn(api, "getCombineTrackerExpenseSuppressions").mockResolvedValue({ account_ids: [] });
+    const held = deferred<{ items: ExpenseRecord[]; total: number }>();
+    vi.mocked(api.listExpenses).mockImplementation(params => params?.category === "evaluation_fee"
+      ? held.promise : Promise.resolve({ items: [], total: 0 }));
+    const create = vi.spyOn(api, "createExpense");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ExpensesPage />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Reconcile Combine Expenses" }));
+    await waitFor(() => expect(api.listExpenses).toHaveBeenCalledWith(expect.objectContaining({ category: "evaluation_fee" }), expect.anything()));
+    await act(async () => {
+      observeAuthIdentity("replacement-fixture");
+      held.resolve({ items: Array.from({ length: 200 }, (_, id) => ({ id }) as ExpenseRecord), total: 400 });
+    });
+    expect(await screen.findByText(/Reconciliation cancelled/)).not.toBeNull();
+    expect(vi.mocked(api.listExpenses).mock.calls.some(([params]) => params?.offset === 200)).toBe(false);
+    expect(create).not.toHaveBeenCalled();
+    observeAuthIdentity(null);
+  });
+
   it("reloads expenses and totals when account discovery adds fees without prompting", async () => {
     const summarySpy = mockExpenseStartup(financialSummary(100));
     const confirmSpy = vi.spyOn(window, "confirm");
@@ -579,7 +619,7 @@ describe("ExpensesPage combine reconciliation", () => {
       showMissing: false,
       bypassCache: true,
       refreshProvider: true,
-    });
+    }, expect.objectContaining({ assertCurrent: expect.any(Function) }));
     expect(createExpense).not.toHaveBeenCalled();
     expect(deleteExpense).not.toHaveBeenCalled();
     expect(window.localStorage.length).toBe(0);
@@ -647,4 +687,90 @@ it("rejects a zero refund before submission", async () => {
   await user.click(screen.getByRole("button", { name: "Save Expense" }));
   expect(await screen.findByText("Amount must be greater than zero for this category.")).not.toBeNull();
   expect(create).not.toHaveBeenCalled();
+});
+
+describe("Topstep Labs expenses", () => {
+  it.each([
+    ["001", "$25K Static", "75.00", 7500],
+    ["006", "$50K Static", "149.00", 14900],
+    ["007", "The $1.5K Challenge", "99.00", 9900],
+    ["002", "$250K Freedom", "499.00", 49900],
+    ["008", "The $3K Challenge - Return", "199.00", 19900],
+    ["009", "The $3K Challenge - Revenge", "65.00", 6500],
+  ])("saves Drop #%s with its own one-time fee and identity", async (id, name, fee, cents) => {
+    mockExpenseStartup(financialSummary(0));
+    const create = vi.spyOn(api, "createExpense").mockResolvedValue({} as ExpenseRecord);
+    const user = userEvent.setup();
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Add Expense" }));
+    await user.selectOptions(screen.getByLabelText("Entry type"), "labs");
+    await user.selectOptions(screen.getByLabelText("Lab Drop"), id);
+    expect((screen.getByLabelText("Unit Fee (USD)") as HTMLInputElement).value).toBe(fee);
+    await user.click(screen.getByRole("button", { name: "Save Expense" }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const payload = create.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      amount_cents: cents,
+      category: "evaluation_fee",
+      provider: "topstep",
+      currency: "USD",
+      source_id: expect.stringMatching(/^topstep_labs:/),
+      tags: ["topstep_labs", `lab_drop_${id}`, "one_time_fee", "quantity_1"],
+      description: expect.stringContaining(`Drop #${id} - ${name}`),
+    });
+    expect(payload.account_type).toBeUndefined();
+    expect(payload.plan_size).toBeUndefined();
+  });
+
+  it("records five $25K Static purchases as $375 and keeps the same identity on retry", async () => {
+    const summary = mockExpenseStartup(financialSummary(0));
+    const create = vi.spyOn(api, "createExpense")
+      .mockRejectedValueOnce(new Error("Connection interrupted"))
+      .mockResolvedValue({} as ExpenseRecord);
+    const user = userEvent.setup();
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Add Expense" }));
+    await user.selectOptions(screen.getByLabelText("Entry type"), "labs");
+    await user.type(screen.getByLabelText("Account ID (Optional)"), "123");
+    await user.clear(screen.getByLabelText("Quantity"));
+    await user.type(screen.getByLabelText("Quantity"), "5");
+    expect(screen.getByText("Total: $375.00")).not.toBeNull();
+    expect((screen.getByLabelText("Account ID (Optional)") as HTMLInputElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Save Expense" }));
+    expect(await screen.findByText("Connection interrupted")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save Expense" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create.mock.calls[1][0]).toEqual(create.mock.calls[0][0]);
+    expect(create.mock.calls[0][0]).toMatchObject({
+      amount_cents: 37500,
+      account_id: undefined,
+      description: "Topstep Labs Drop #001 - $25K Static; 5 x $75.00 one-time fee",
+      tags: ["topstep_labs", "lab_drop_001", "one_time_fee", "quantity_5"],
+    });
+    await waitFor(() => expect(summary).toHaveBeenCalledTimes(2));
+  });
+
+  it("uses the paid unit fee, preserves notes, and restores standard presets when switching modes", async () => {
+    mockExpenseStartup(financialSummary(0));
+    const create = vi.spyOn(api, "createExpense").mockResolvedValue({} as ExpenseRecord);
+    const user = userEvent.setup();
+    render(<ExpensesPage />);
+    await user.click(screen.getByRole("button", { name: "Add Expense" }));
+    await user.selectOptions(screen.getByLabelText("Entry type"), "labs");
+    await user.selectOptions(screen.getByLabelText("Lab Drop"), "009");
+    await user.selectOptions(screen.getByLabelText("Entry type"), "preset");
+    expect((screen.getByLabelText("Amount (USD)") as HTMLInputElement).value).toBe("49.00");
+    await user.selectOptions(screen.getByLabelText("Entry type"), "labs");
+    expect((screen.getByLabelText("Unit Fee (USD)") as HTMLInputElement).value).toBe("65.00");
+    await user.clear(screen.getByLabelText("Unit Fee (USD)"));
+    await user.type(screen.getByLabelText("Unit Fee (USD)"), "60.25");
+    await user.type(screen.getByLabelText("Description (Optional)"), "Discounted purchase");
+    await user.type(screen.getByLabelText("Account ID (Optional)"), "456");
+    await user.click(screen.getByRole("button", { name: "Save Expense" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      amount_cents: 6025,
+      account_id: 456,
+      description: "Topstep Labs Drop #009 - The $3K Challenge - Revenge; 1 x $60.25 one-time fee; Discounted purchase",
+    })));
+  });
 });

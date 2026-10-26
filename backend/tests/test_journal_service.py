@@ -661,10 +661,10 @@ def test_create_journal_entry_image_validates_content_and_records_dimensions(
     assert (journal_storage_dir / image.filename).exists()
 
 
-def test_compute_trade_stats_snapshot_counts_broker_fees_once():
+def test_compute_trade_stats_snapshot_counts_round_turn_fees_once():
     rows = [
-        SimpleNamespace(pnl=100.0, fees=1.0, size=3.0),
-        SimpleNamespace(pnl=50.0, fees=30.0, size=5.0),
+        SimpleNamespace(pnl=100.0, fees=1.0, size=3.0, fee_scope="round_turn"),
+        SimpleNamespace(pnl=50.0, fees=30.0, size=5.0, fee_scope="round_turn"),
     ]
 
     snapshot = _compute_trade_stats_snapshot(rows)
@@ -838,7 +838,7 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 2
-    assert entry.stats_json["net_realized_pnl"] == 407.96
+    assert entry.stats_json["net_realized_pnl"] == 405.92  # 410 gross minus 4.08 round-turn fees.
 
     pull_journal_entry_trade_stats(
         db_session,
@@ -851,9 +851,9 @@ def test_pull_journal_entry_trade_stats_uses_date_range_when_provided(db_session
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 5
-    assert entry.stats_json["net_realized_pnl"] == 1492.76
+    assert entry.stats_json["net_realized_pnl"] == 1487.72
     assert entry.stats_json["win_rate"] == 100.0
-    assert entry.stats_json["avg_win"] == 298.55
+    assert entry.stats_json["avg_win"] == 297.54
     assert entry.stats_json["avg_loss"] == 0.0
 
 
@@ -1167,7 +1167,7 @@ def test_pull_journal_entry_trade_stats_entry_date_uses_trading_day_rollover_bou
     db_session.refresh(entry)
     assert entry.stats_json is not None
     assert entry.stats_json["trade_count"] == 2
-    assert entry.stats_json["net_realized_pnl"] == 298.0
+    assert entry.stats_json["net_realized_pnl"] == 296.0  # Two $1 per-side fees become $4 round-turn.
 
 
 def test_pull_journal_entry_trade_stats_invokes_sync_callback_with_effective_bounds(db_session):

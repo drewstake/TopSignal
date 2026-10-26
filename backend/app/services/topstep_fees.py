@@ -27,6 +27,12 @@ _TOPSTEP_MICRO_SYMBOLS = frozenset(
 )
 
 
+def round_turn_trade_fees(*, pnl: float | None, fees: float | None, fee_scope: str | None) -> float:
+    """Normalize event fees only; commissions are a separate round-turn amount."""
+    amount = float(fees) if fees is not None else 0.0
+    return amount * 2 if pnl is not None and fee_scope != "round_turn" else amount
+
+
 def effective_topstep_trade_fee(
     *,
     trade_timestamp: datetime | None,

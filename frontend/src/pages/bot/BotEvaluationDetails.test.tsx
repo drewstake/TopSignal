@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { BaselineComparisons, DecisionExplanation, VolatilityWhatIf, type DecisionDetails, type ForwardComparison, type VolatilityCounterfactuals } from "./BotEvaluationDetails";
 afterEach(cleanup);
@@ -11,11 +11,34 @@ it("keeps rejected wider-stop outcomes separate and never renders missing result
       { at: "2026-10-22T14:05:20Z", status: "unknown_missing_bars", entry_at: "2026-10-22T14:10:00Z", deadline: "2026-10-22T14:20:00Z",
         stop_points: 34.75, target_points: 52.25, risk_cap_points: 25, quantity: 1, costs: { total_usd: 3.22 }, outcomes: null }] };
   render(<VolatilityWhatIf data={data} />);
+  fireEvent.click(screen.getByText(/Recent blocked scenarios/));
   expect(screen.getByText(/TopBot still holds above its 25-point risk cap/)).toBeTruthy();
   expect(screen.getByRole("cell", { name: /71\.72/ })).toBeTruthy();
   expect(screen.getAllByText("Unknown")).toHaveLength(2);
   expect(screen.queryByText("$0.00")).toBeNull();
   expect(screen.queryByRole("button")).toBeNull();
+});
+it("shows separate full-period BUY and SELL P&L without summing the recent subset", () => {
+  const data: VolatilityCounterfactuals = { policy: "v1", recorded: 38, completed: 35, pending: 2, unknown: 1, overdue: 0, recent: [],
+    sides: { BUY: { completed: 35, unavailable: 0, net_usd: 145.25, mean_net_usd: 4.15, positive: 20, negative: 15, breakeven: 0 },
+      SELL: { completed: 35, unavailable: 0, net_usd: -210.5, mean_net_usd: -6.0143, positive: 10, negative: 24, breakeven: 1 } } };
+  render(<VolatilityWhatIf data={data} />);
+  const buy = within(screen.getByRole("region", { name: "Hypothetical BUY P&L" }));
+  const sell = within(screen.getByRole("region", { name: "Hypothetical SELL P&L" }));
+  expect(buy.getByText("$145.25")).toBeTruthy();
+  expect(sell.getByText("−$210.50")).toBeTruthy();
+  expect(buy.getByText(/35 completed scenarios/)).toBeTruthy();
+  expect(screen.getByText(/Pending and unknown outcomes are excluded/)).toBeTruthy();
+  expect(screen.getByText(/should not be combined into account P&L/)).toBeTruthy();
+});
+it("does not turn pending or unavailable side totals into zero P&L", () => {
+  const data: VolatilityCounterfactuals = { policy: "v1", recorded: 2, completed: 0, pending: 2, unknown: 0, overdue: 0, recent: [],
+    sides: { BUY: { completed: 0, unavailable: 0, net_usd: null, mean_net_usd: null, positive: 0, negative: 0, breakeven: 0 },
+      SELL: { completed: 0, unavailable: 1, net_usd: null, mean_net_usd: null, positive: 0, negative: 0, breakeven: 0 } } };
+  render(<VolatilityWhatIf data={data} />);
+  expect(screen.queryByText("$0.00")).toBeNull();
+  expect(screen.getAllByText(/Awaiting completed results/)).toHaveLength(2);
+  expect(screen.getByText(/1 completed outcomes unavailable/)).toBeTruthy();
 });
 it("distinguishes recording latency from an executable entry and explains a HOLD", () => {
   const details: DecisionDetails = { timing: { candle_close: "2026-10-22T13:35:00Z", recorded_at: "2026-10-22T13:35:26Z", close_to_record_seconds: 26,

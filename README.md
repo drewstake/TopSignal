@@ -71,6 +71,7 @@ Core features in the current routed app:
 - Manual trade sync from ProjectX
 - Reviewed Topstep CSV/XLSX trade imports with duplicate prevention and source-file audit history
 - Account-level performance summaries
+- Account Risk Forecast scenarios from recorded trades or existing backtests, with editable loss limits and exposure comparisons ([method and limitations](docs/account-risk-forecast.md))
 - Analytics-only Copy Trade Mode for combined leader/follower dashboard views
 - Trading-day PnL calendar
 - Trade event feed with lifecycle-derived entry/exit fields

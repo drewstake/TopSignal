@@ -1,3 +1,4 @@
+import { createAccountOperation, type AccountOperation } from "../../lib/accountOperation";
 import {
   getCombinePlanSizeFromAccountName,
   getCombinePriceCentsFromAccountName,
@@ -69,11 +70,11 @@ export interface CombineExpenseReconciliationPlan {
 }
 
 export interface CombineExpenseReconciliationDependencies {
-  loadAccounts: () => Promise<ExpenseReconciliationAccount[]>;
-  loadExpenses: () => Promise<ExpenseRecord[]>;
-  loadSuppressedAccountIds: () => Promise<number[]>;
-  createExpense: (input: ExpenseCreateInput) => Promise<ExpenseRecord>;
-  deleteExpense: (expenseId: number) => Promise<void>;
+  loadAccounts: (operation: AccountOperation) => Promise<ExpenseReconciliationAccount[]>;
+  loadExpenses: (operation: AccountOperation) => Promise<ExpenseRecord[]>;
+  loadSuppressedAccountIds: (operation: AccountOperation) => Promise<number[]>;
+  createExpense: (input: ExpenseCreateInput, operation: AccountOperation) => Promise<ExpenseRecord>;
+  deleteExpense: (expenseId: number, operation: AccountOperation) => Promise<void>;
   isDuplicateCreateError: (error: unknown) => boolean;
   syncTrackerFromExpenses: (expenses: ExpenseRecord[]) => CombineSpendSnapshot;
   syncTrackerFromAccounts: (accounts: ExpenseReconciliationAccount[]) => CombineTrackerSyncResult;
@@ -360,72 +361,88 @@ export function buildCombineExpenseReconciliationPlan(
  */
 export async function reconcileCombineExpenses(
   dependencies: CombineExpenseReconciliationDependencies,
+  signal?: AbortSignal,
 ): Promise<CombineExpenseReconciliationResult> {
-  const accounts = await dependencies.loadAccounts();
-  assertFreshProviderDataForExpenseReconciliation(accounts);
-  const [expenses, suppressedAccountIds] = await Promise.all([
-    dependencies.loadExpenses(),
-    dependencies.loadSuppressedAccountIds(),
-  ]);
+  const operation = createAccountOperation(signal);
+  try {
+    operation.assertCurrent();
+    const accounts = await dependencies.loadAccounts(operation);
+    operation.assertCurrent();
+    assertFreshProviderDataForExpenseReconciliation(accounts);
+    const [expenses, suppressedAccountIds] = await Promise.all([
+      dependencies.loadExpenses(operation),
+      dependencies.loadSuppressedAccountIds(operation),
+    ]);
+    operation.assertCurrent();
 
-  dependencies.syncTrackerFromExpenses(expenses);
-  dependencies.suppressEvaluationExpenseSync(suppressedAccountIds);
-  const projectXAccounts = accounts.filter(isProjectXAccount);
-  const trackerSync = dependencies.syncTrackerFromAccounts(projectXAccounts);
-  const plan = buildCombineExpenseReconciliationPlan(
-    accounts,
-    expenses,
-    trackerSync.unsyncedEvaluationPurchases,
-  );
+    dependencies.syncTrackerFromExpenses(expenses);
+    dependencies.suppressEvaluationExpenseSync(suppressedAccountIds);
+    const projectXAccounts = accounts.filter(isProjectXAccount);
+    const trackerSync = dependencies.syncTrackerFromAccounts(projectXAccounts);
+    const plan = buildCombineExpenseReconciliationPlan(
+      accounts,
+      expenses,
+      trackerSync.unsyncedEvaluationPurchases,
+    );
 
-  const successfullyDeletedIds = new Set<number>();
-  const createdExpenses: ExpenseRecord[] = [];
-  const duplicateCreateAccountIds: number[] = [];
-  let failedDeleteCount = 0;
-  let failedCreateCount = 0;
+    const successfullyDeletedIds = new Set<number>();
+    const createdExpenses: ExpenseRecord[] = [];
+    const duplicateCreateAccountIds: number[] = [];
+    let failedDeleteCount = 0;
+    let failedCreateCount = 0;
 
-  for (const expenseId of plan.expenseIdsToDelete) {
-    try {
-      await dependencies.deleteExpense(expenseId);
-      successfullyDeletedIds.add(expenseId);
-    } catch {
-      failedDeleteCount += 1;
-    }
-  }
-
-  for (const creation of plan.expensesToCreate) {
-    try {
-      createdExpenses.push(await dependencies.createExpense(creation.input));
-    } catch (error) {
-      if (dependencies.isDuplicateCreateError(error)) {
-        duplicateCreateAccountIds.push(creation.accountId);
-      } else {
-        failedCreateCount += 1;
+    for (const expenseId of plan.expenseIdsToDelete) {
+      operation.assertCurrent();
+      try {
+        await dependencies.deleteExpense(expenseId, operation);
+        operation.assertCurrent();
+        successfullyDeletedIds.add(expenseId);
+      } catch {
+        operation.assertCurrent();
+        failedDeleteCount += 1;
       }
     }
-  }
 
-  const didMutateExpenses = successfullyDeletedIds.size > 0 || createdExpenses.length > 0;
-  let snapshot = trackerSync.snapshot;
-  if (didMutateExpenses) {
-    const finalExpenses = expenses
-      .filter((expense) => !successfullyDeletedIds.has(expense.id))
-      .concat(createdExpenses);
-    dependencies.syncTrackerFromExpenses(finalExpenses);
-    snapshot = dependencies.syncTrackerFromAccounts(projectXAccounts).snapshot;
-  }
-  if (duplicateCreateAccountIds.length > 0) {
-    snapshot = dependencies.markEvaluationExpensesSynced(duplicateCreateAccountIds);
-  }
+    for (const creation of plan.expensesToCreate) {
+      operation.assertCurrent();
+      try {
+        const created = await dependencies.createExpense(creation.input, operation);
+        operation.assertCurrent();
+        createdExpenses.push(created);
+      } catch (error) {
+        operation.assertCurrent();
+        if (dependencies.isDuplicateCreateError(error)) {
+          duplicateCreateAccountIds.push(creation.accountId);
+        } else {
+          failedCreateCount += 1;
+        }
+      }
+    }
 
-  return {
-    snapshot,
-    eligibleCombineCount: collectActiveCombineAccounts(accounts).length,
-    createdCount: createdExpenses.length,
-    deletedCount: successfullyDeletedIds.size,
-    duplicateCreateCount: duplicateCreateAccountIds.length,
-    failedCreateCount,
-    failedDeleteCount,
-    didMutateExpenses,
-  };
+    const didMutateExpenses = successfullyDeletedIds.size > 0 || createdExpenses.length > 0;
+    let snapshot = trackerSync.snapshot;
+    if (didMutateExpenses) {
+      const finalExpenses = expenses
+        .filter((expense) => !successfullyDeletedIds.has(expense.id))
+        .concat(createdExpenses);
+      dependencies.syncTrackerFromExpenses(finalExpenses);
+      snapshot = dependencies.syncTrackerFromAccounts(projectXAccounts).snapshot;
+    }
+    if (duplicateCreateAccountIds.length > 0) {
+      snapshot = dependencies.markEvaluationExpensesSynced(duplicateCreateAccountIds);
+    }
+
+    return {
+      snapshot,
+      eligibleCombineCount: collectActiveCombineAccounts(accounts).length,
+      createdCount: createdExpenses.length,
+      deletedCount: successfullyDeletedIds.size,
+      duplicateCreateCount: duplicateCreateAccountIds.length,
+      failedCreateCount,
+      failedDeleteCount,
+      didMutateExpenses,
+    };
+  } finally {
+    operation.dispose();
+  }
 }

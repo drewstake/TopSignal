@@ -245,13 +245,22 @@ def report(owner, account, config, *, days=7, root=None, now=None):
                   evaluations=0, forecasts=0, completed=0, pending=0, unknown=0, overdue=0,
                   rejection_counts={}, paper_blocks={}, calibration={}, recent=[], account=None,
                   scan_limited=False, latest_at=None, artifacts=[], version=VERSION,
-                  timing_summary=None, comparison=None, volatility_counterfactuals=None)
+                  timing_summary=None, comparison=None, volatility_counterfactuals=None, coverage=None)
     if not path.exists():
         return result
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
+        # All sections must describe one snapshot while the worker keeps writing.
+        db.execute('BEGIN')
         state = db.execute('SELECT payload FROM account WHERE id=1').fetchone()
-        entries = db.execute('SELECT payload FROM evaluations WHERE at>=? ORDER BY at DESC LIMIT 9001',((now-timedelta(days=days)).isoformat(),)).fetchall()
-    records = [json.loads(r[0]) for r in entries[:9000]]
+        first = db.execute('SELECT payload FROM evaluations WHERE at<=? ORDER BY at LIMIT 1', (now.isoformat(),)).fetchone()
+        window_start = now-timedelta(days=days)
+        entries = db.execute('SELECT payload FROM evaluations WHERE at>=? AND at<=? ORDER BY at DESC LIMIT 9001',
+                             (window_start.isoformat(), now.isoformat())).fetchall()
+        records = [json.loads(r[0]) for r in entries[:9000]]
+        from .forward_evaluation import comparison_report, collection_coverage
+        result['comparison'] = comparison_report(db,records,now,len(entries)>9000,window_start)
+        result['coverage'] = collection_coverage(records, first_record=json.loads(first[0]) if first else None,
+                                                 now=now, window_start=window_start, scan_limited=len(entries)>9000)
     result.update(status='available', scan_limited=len(entries)>9000, account=json.loads(state[0]) if state else None)
     result['evaluations'] = len(records)
     result['latest_at'] = records[0]['at'] if records else None
@@ -272,7 +281,7 @@ def report(owner, account, config, *, days=7, root=None, now=None):
             subset=[(p,y) for p,y in pairs if min(int(p*5),4)==i]
             bins.append(dict(lower=i/5,upper=(i+1)/5,count=len(subset),predicted=sum(p for p,_ in subset)/len(subset) if subset else None,observed=sum(y for _,y in subset)/len(subset) if subset else None))
         result['calibration'][side]=dict(count=len(pairs),brier=sum((p-y)**2 for p,y in pairs)/len(pairs) if pairs else None,bins=bins)
-    from .forward_evaluation import details, comparison_report, volatility_counterfactual_report
+    from .forward_evaluation import details, volatility_counterfactual_report
     result['volatility_counterfactuals'] = volatility_counterfactual_report(records, now)
     result['recent']=[{**{k:r.get(k) for k in ('at','action','stage','reason','risk_codes','paper_disposition','outcome_status','outcomes')},
                        'details': details(r)} for r in records[:30]]
@@ -283,6 +292,4 @@ def report(owner, account, config, *, days=7, root=None, now=None):
                                   p95_seconds=float(np.quantile(latencies,.95)) if latencies else None,
                                   max_seconds=max(latencies) if latencies else None,
                                   measured_duration_count=len(durations),mean_evaluation_ms=float(np.mean(durations)) if durations else None)
-    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
-        result['comparison']=comparison_report(db,records,now,result['scan_limited'],now-timedelta(days=days))
     return result

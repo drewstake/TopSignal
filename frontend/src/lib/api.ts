@@ -88,6 +88,7 @@ import { beginLiveMutationRequest } from "./liveMutationState";
 import { NavigationReadCache, type NavigationReadOptions } from "./navigationReadCache";
 import { ENABLE_PERF_LOGS, logPerfInfo } from "./perf";
 import { getAccessToken } from "./supabase";
+import type { AccountOperation } from "./accountOperation";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const ACCOUNTS_CACHE_TTL_MS = 10 * 60_000;
@@ -98,6 +99,7 @@ const BACKTEST_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 type QueryValue = string | number | boolean | null | undefined;
 
 interface RequestJsonOptions {
+  operation?: AccountOperation;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   query?: Record<string, QueryValue>;
   body?: unknown;
@@ -291,10 +293,12 @@ async function getNavigationRead<T>(
   query: Record<string, QueryValue>,
   options: NavigationReadOptions = {},
 ): Promise<T> {
+  options.operation?.assertCurrent();
   const auth = await getRequestAuthContext();
+  options.operation?.assertCurrent(auth.accessToken);
   return navigationReadCache.get(
     `${group}|scope:${auth.cacheScope}|${path}?${toSortedQueryCacheKey(query)}`,
-    (signal) => requestJson<T>(path, { query, signal, accessTokenOverride: auth.accessToken }),
+    (signal) => requestJson<T>(path, { query, signal, operation: options.operation, accessTokenOverride: auth.accessToken }),
     options,
   );
 }
@@ -500,6 +504,7 @@ function normalizeJournalImage(image: JournalEntryImage): JournalEntryImage {
 
 export async function requestJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const { method = "GET", query, body, signal, tracksLiveMutation = false, accessTokenOverride } = options;
+  options.operation?.assertCurrent();
   if (isDemoModeEnabled()) {
     if (method !== "GET") {
       throw new ApiError(DEMO_READ_ONLY_MESSAGE, 409, null, null);
@@ -515,6 +520,7 @@ export async function requestJson<T>(path: string, options: RequestJsonOptions =
   const demoGuard = createDemoAwareRequestGuard(signal);
   try {
   const accessToken = accessTokenOverride === undefined ? await getAccessToken() : accessTokenOverride;
+  options.operation?.assertCurrent(accessToken);
   if (demoGuard.wasBlockedByDemo()) {
     throw demoLiveTransportStoppedError("Live data access");
   }
@@ -564,6 +570,7 @@ export async function requestJson<T>(path: string, options: RequestJsonOptions =
   }
 
   if (response.status === 204) {
+    options.operation?.assertCurrent();
     if (demoGuard.wasBlockedByDemo()) {
       throw demoLiveTransportStoppedError("Live data access");
     }
@@ -571,6 +578,7 @@ export async function requestJson<T>(path: string, options: RequestJsonOptions =
   }
 
   const payload = (await response.json()) as T;
+  options.operation?.assertCurrent();
   if (demoGuard.wasBlockedByDemo()) {
     throw demoLiveTransportStoppedError("Live data access");
   }
@@ -899,8 +907,10 @@ function replaceAccountListCachesAfterProviderSuccess(
   });
 }
 
-async function getAccountsFromApi(options: Required<GetAccountsOptions>): Promise<AccountInfo[]> {
+async function getAccountsFromApi(options: Required<GetAccountsOptions>, operation?: AccountOperation): Promise<AccountInfo[]> {
+  operation?.assertCurrent();
   const auth = await getRequestAuthContext();
+  operation?.assertCurrent(auth.accessToken);
   const unscopedCacheKey = accountsQueryCacheKey(options);
   const cacheKey = `${unscopedCacheKey}|scope:${auth.cacheScope}`;
   const localCacheKey = `${accountsQueryCacheKey({ ...options, refreshProvider: false })}|scope:${auth.cacheScope}`;
@@ -943,13 +953,15 @@ async function getAccountsFromApi(options: Required<GetAccountsOptions>): Promis
         },
         tracksLiveMutation: options.refreshProvider,
         accessTokenOverride: auth.accessToken,
+        operation,
+        signal: operation?.signal,
       }),
   }).then((accounts) => reclassifyAccountListProviderFreshness(accounts));
 }
 
-function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
+function getAccountsCached(optionsOrOnlyActive?: GetAccountsOptions | boolean, operation?: AccountOperation): Promise<AccountInfo[]> {
   const options = resolveGetAccountsOptions(optionsOrOnlyActive);
-  return getAccountsFromApi(options);
+  return getAccountsFromApi(options, operation);
 }
 
 function isSelectableAccount(
@@ -973,8 +985,8 @@ function getSelectableAccountsFromApi(options: SelectableAccountsOptions = {}): 
   }).then((accounts) => accounts.filter((account) => isSelectableAccount(account)));
 }
 
-export function getAccounts(optionsOrOnlyActive?: GetAccountsOptions | boolean): Promise<AccountInfo[]> {
-  return getAccountsCached(optionsOrOnlyActive);
+export function getAccounts(optionsOrOnlyActive?: GetAccountsOptions | boolean, operation?: AccountOperation): Promise<AccountInfo[]> {
+  return getAccountsCached(optionsOrOnlyActive, operation);
 }
 
 export function getSelectableAccounts(options: SelectableAccountsOptions = {}): Promise<AccountInfo[]> {
@@ -2565,25 +2577,28 @@ export function listExpenses(params: ExpenseListQuery = {}, options: NavigationR
   }, options);
 }
 
-export function createExpense(payload: ExpenseCreateInput) {
+export function createExpense(payload: ExpenseCreateInput, operation?: AccountOperation) {
   return requestJson<ExpenseRecord>("/api/expenses", {
     method: "POST",
     body: payload,
+    operation, signal: operation?.signal,
   }).finally(clearFinancialReadCache);
 }
 
-export function getCombineTrackerExpenseSuppressions() {
+export function getCombineTrackerExpenseSuppressions(operation?: AccountOperation) {
   return requestJson<CombineTrackerSuppressionsResponse>(
     "/api/expenses/combine-tracker-suppressions",
+    { operation, signal: operation?.signal },
   );
 }
 
 export function deleteExpense(
   id: number,
-  options: { suppressAutoRecreation?: boolean } = {},
+  options: { suppressAutoRecreation?: boolean; operation?: AccountOperation } = {},
 ) {
   return requestJson<void>(`/api/expenses/${id}`, {
     method: "DELETE",
+    operation: options.operation, signal: options.operation?.signal,
     query: {
       suppress_auto_recreation: options.suppressAutoRecreation ?? true,
     },

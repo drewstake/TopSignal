@@ -47,9 +47,11 @@ import type {
   PayoutTotals,
 } from "../../lib/types";
 import { isDemoModeEnabled } from "../../lib/demoMode";
+import type { AccountOperation } from "../../lib/accountOperation";
 import { useLatestRequestGuard } from "../../lib/latestRequest";
 import { parseStrictFiniteNumber, parseStrictInteger } from "../../lib/strictNumber";
 import { ACCOUNT_EXPENSES_UPDATED_EVENT } from "../../lib/financialEvents";
+import { buildTopstepLabsExpense, TOPSTEP_LAB_DROPS, type TopstepLabDropId } from "../../lib/topstepLabs";
 import { formatCurrency } from "../../utils/formatters";
 import { ExpenseCalendarCard } from "./ExpenseCalendarCard";
 import "./ExpensesPage.css";
@@ -178,7 +180,10 @@ function formatCombineReconciliationError(error: unknown): string {
 }
 
 interface AddExpenseState {
-  mode: "preset" | "general";
+  mode: "preset" | "general" | "labs";
+  labDropId: TopstepLabDropId;
+  quantity: string;
+  sourceId: string;
   category: ExpenseCategory;
   accountType: ExpenseAccountPresetType;
   planSize: "50k" | "100k" | "150k";
@@ -193,6 +198,9 @@ interface AddExpenseState {
 function buildInitialAddExpenseState(accountId: string): AddExpenseState {
   return {
     mode: "preset",
+    labDropId: "001",
+    quantity: "1",
+    sourceId: crypto.randomUUID(),
     category: "other",
     accountType: "standard",
     planSize: "50k",
@@ -252,6 +260,8 @@ export function ExpensesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const expensePaginationRef = useRef<HTMLElement>(null);
+  const reconciliationRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => reconciliationRequest.current?.abort(), []);
   const expensePaginationTopRef = useRef<number | null>(null);
   const expenseTableScrollRef = useRef<HTMLDivElement>(null);
   const payoutTableScrollRef = useRef<HTMLDivElement>(null);
@@ -464,16 +474,18 @@ export function ExpensesPage() {
     }
   }, [beginFinancialSummaryRequest]);
 
-  const listAllExpensesByCategory = useCallback(async (expenseCategory: Extract<ExpenseCategory, "evaluation_fee" | "activation_fee">) => {
+  const listAllExpensesByCategory = useCallback(async (expenseCategory: Extract<ExpenseCategory, "evaluation_fee" | "activation_fee">, operation: AccountOperation) => {
     const rows: ExpenseRecord[] = [];
     let nextOffset = 0;
 
     while (true) {
+      operation.assertCurrent();
       const payload = await listExpenses({
         category: expenseCategory,
         limit: COMBINE_EXPENSE_PAGE_SIZE,
         offset: nextOffset,
-      }, { bypassCache: true });
+      }, { bypassCache: true, signal: operation.signal, operation });
+      operation.assertCurrent();
 
       rows.push(...payload.items);
       if (payload.items.length < COMBINE_EXPENSE_PAGE_SIZE) {
@@ -485,10 +497,10 @@ export function ExpensesPage() {
     return rows;
   }, []);
 
-  const listAllCombineRelevantExpenses = useCallback(async () => {
+  const listAllCombineRelevantExpenses = useCallback(async (operation: AccountOperation) => {
     const [evaluationExpenses, activationExpenses] = await Promise.all([
-      listAllExpensesByCategory("evaluation_fee"),
-      listAllExpensesByCategory("activation_fee"),
+      listAllExpensesByCategory("evaluation_fee", operation),
+      listAllExpensesByCategory("activation_fee", operation),
     ]);
     return [...evaluationExpenses, ...activationExpenses];
   }, [listAllExpensesByCategory]);
@@ -499,26 +511,30 @@ export function ExpensesPage() {
       return;
     }
 
+    reconciliationRequest.current?.abort();
+    const controller = new AbortController();
+    reconciliationRequest.current = controller;
     setCombineTrackerLoading(true);
     setCombineTrackerError(null);
     setCombineTrackerNotice(null);
     try {
       const result = await runCombineExpenseReconciliation({
-        loadAccounts: () => loadFreshAccountsForExpenseReconciliation(accountsApi.getAccounts),
+        loadAccounts: (operation) => loadFreshAccountsForExpenseReconciliation((options) => accountsApi.getAccounts(options, operation)),
         loadExpenses: listAllCombineRelevantExpenses,
-        loadSuppressedAccountIds: async () =>
-          (await getCombineTrackerExpenseSuppressions()).account_ids,
+        loadSuppressedAccountIds: async (operation) =>
+          (await getCombineTrackerExpenseSuppressions(operation)).account_ids,
         createExpense,
-        deleteExpense: (expenseId) =>
-          deleteExpense(expenseId, { suppressAutoRecreation: false }),
+        deleteExpense: (expenseId, operation) =>
+          deleteExpense(expenseId, { suppressAutoRecreation: false, operation }),
         isDuplicateCreateError: (error) =>
           isApiError(error) && error.status === 409 && error.detail === "duplicate_expense",
         syncTrackerFromExpenses: syncCombineSpendTrackerFromExpenses,
         syncTrackerFromAccounts: syncCombineSpendTracker,
         markEvaluationExpensesSynced,
         suppressEvaluationExpenseSync,
-      });
+      }, controller.signal);
 
+      if (controller.signal.aborted) return;
       setCombineSpendSnapshot(result.snapshot);
       if (result.didMutateExpenses) {
         refreshFinancialData();
@@ -550,9 +566,10 @@ export function ExpensesPage() {
         }
       }
     } catch (err) {
+      if (controller.signal.aborted) return;
       setCombineTrackerError(formatCombineReconciliationError(err));
     } finally {
-      setCombineTrackerLoading(false);
+      if (!controller.signal.aborted) setCombineTrackerLoading(false);
     }
   }, [listAllCombineRelevantExpenses, refreshFinancialData]);
 
@@ -609,6 +626,12 @@ export function ExpensesPage() {
       }));
     }
   }, [addState.mode, addState.accountType, addState.planSize, addState.stage]);
+
+  useEffect(() => {
+    if (addState.mode !== "labs") return;
+    const drop = TOPSTEP_LAB_DROPS.find((item) => item.id === addState.labDropId)!;
+    setAddState((current) => ({ ...current, amount: (drop.feeCents / 100).toFixed(2) }));
+  }, [addState.mode, addState.labDropId]);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
@@ -699,13 +722,19 @@ export function ExpensesPage() {
       return;
     }
 
-    const parsedModalAccountId = parsePositiveInt(addState.accountId);
+    const labsQuantity = parseStrictInteger(addState.quantity);
+    if (addState.mode === "labs" && (labsQuantity === null || labsQuantity < 1 || labsQuantity > 5)) {
+      setAddError("Quantity must be a whole number from 1 to 5.");
+      return;
+    }
+    const parsedModalAccountId = addState.mode === "labs" && labsQuantity !== 1
+      ? undefined : parsePositiveInt(addState.accountId);
     if (parsedModalAccountId === null) {
       setAddError("Account ID must be a positive integer.");
       return;
     }
 
-    const expenseCategory = addState.mode === "preset" ? addState.stage : addState.category;
+    const expenseCategory = addState.mode === "labs" ? "evaluation_fee" : addState.mode === "preset" ? addState.stage : addState.category;
     const amount = parseStrictFiniteNumber(addState.amount);
     if (amount === null || amount < 0) {
       setAddError("Amount must be a non-negative number.");
@@ -718,7 +747,16 @@ export function ExpensesPage() {
 
     setAdding(true);
     try {
-      await createExpense({
+      await createExpense(addState.mode === "labs" ? buildTopstepLabsExpense({
+        dropId: addState.labDropId,
+        quantity: labsQuantity!,
+        unitFeeCents: Math.round(amount * 100),
+        expenseDate: addState.expenseDate,
+        sourceId: addState.sourceId,
+        accountId: parsedModalAccountId,
+        description: addState.description,
+        tags: splitTags(addState.tags),
+      }) : {
         expense_date: addState.expenseDate,
         amount: expenseCategory === "refund" ? -amount : amount,
         category: expenseCategory,
@@ -1301,6 +1339,7 @@ export function ExpensesPage() {
             <label htmlFor="expense-entry-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Entry type</label>
             <Select id="expense-entry-type" value={addState.mode} onChange={(event) => setAddState((current) => ({ ...current, mode: event.target.value as AddExpenseState["mode"], amount: "" }))}>
               <option value="preset">Topstep fee preset</option>
+              <option value="labs">Topstep Labs</option>
               <option value="general">Expense or refund</option>
             </Select>
           </div>
@@ -1312,7 +1351,22 @@ export function ExpensesPage() {
               </Select>
               {addState.category === "refund" ? <p className="mt-2 text-xs text-app-muted">Enter the amount received as a positive number. It will reduce recorded spend.</p> : null}
             </div>
-          ) : <>
+          ) : addState.mode === "labs" ? <>
+            <div>
+              <label htmlFor="expense-lab-drop" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Lab Drop</label>
+              <Select id="expense-lab-drop" value={addState.labDropId} onChange={(event) => setAddState((current) => ({ ...current, labDropId: event.target.value as TopstepLabDropId }))}>
+                {TOPSTEP_LAB_DROPS.map((drop) => (
+                  <option key={drop.id} value={drop.id}>Drop #{drop.id} - {drop.name} - {formatCurrency(drop.feeCents / 100)}</option>
+                ))}
+              </Select>
+              <p className="mt-2 text-xs text-app-muted">One-time purchase fee. Max 5 of each drop per trader, per month.</p>
+            </div>
+            <div>
+              <label htmlFor="expense-labs-quantity" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Quantity</label>
+              <Input id="expense-labs-quantity" type="number" required min="1" max="5" step="1" value={addState.quantity} onChange={(event) => setAddState((current) => ({ ...current, quantity: event.target.value }))} />
+              <p className="mt-2 text-xs text-app-muted">Saves one expense for the total. Enter purchases separately to link each account.</p>
+            </div>
+          </> : <>
           <div>
             <label htmlFor="expense-account-type" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Account Type</label>
             <Select
@@ -1395,7 +1449,7 @@ export function ExpensesPage() {
           </div>
 
           <div>
-            <label htmlFor="expense-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Amount (USD)</label>
+            <label htmlFor="expense-amount" className="mb-1 block text-xs uppercase tracking-wide text-slate-500">{addState.mode === "labs" ? "Unit Fee (USD)" : "Amount (USD)"}</label>
             <Input
               id="expense-amount"
               type="number"
@@ -1411,6 +1465,9 @@ export function ExpensesPage() {
               min="0"
               step="0.01"
             />
+            {addState.mode === "labs" ? <p className="mt-2 text-sm text-app-muted">
+              Total: {formatCurrency(Math.round((parseStrictFiniteNumber(addState.amount) ?? 0) * 100) * (parseStrictInteger(addState.quantity) ?? 0) / 100)}
+            </p> : null}
           </div>
 
           <div>
@@ -1418,6 +1475,7 @@ export function ExpensesPage() {
             <Input
               id="expense-account-id"
               type="number"
+              disabled={addState.mode === "labs" && addState.quantity !== "1"}
               value={addState.accountId}
               onChange={(event) =>
                 setAddState((current) => ({
@@ -1442,7 +1500,7 @@ export function ExpensesPage() {
                   description: event.target.value,
                 }))
               }
-              placeholder="Topstep 50k evaluation"
+              placeholder={addState.mode === "labs" ? "Optional purchase notes" : "Topstep 50k evaluation"}
             />
           </div>
 

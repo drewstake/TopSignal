@@ -1,6 +1,9 @@
+import type { AccountOperation } from "./accountOperation";
+
 export interface NavigationReadOptions {
   signal?: AbortSignal;
   bypassCache?: boolean;
+  operation?: AccountOperation;
 }
 
 interface CacheEntry {
