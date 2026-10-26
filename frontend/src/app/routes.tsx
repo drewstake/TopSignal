@@ -28,6 +28,9 @@ const SimulationPage = lazy(() =>
 const AppearancePage = lazy(() =>
   import("../pages/themes/ThemePage").then((module) => ({ default: module.AppearancePage })),
 );
+const BacktestingPage = lazy(() =>
+  import("../pages/backtesting/BacktestingPage").then((module) => ({ default: module.BacktestingPage })),
+);
 
 export const router = createBrowserRouter([
   {
@@ -77,6 +80,11 @@ export const router = createBrowserRouter([
       {
         path: "simulation",
         element: <SimulationPage />,
+        errorElement: <RouteErrorPage />,
+      },
+      {
+        path: "backtesting",
+        element: <BacktestingPage />,
         errorElement: <RouteErrorPage />,
       },
       {

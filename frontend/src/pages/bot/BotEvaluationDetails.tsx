@@ -31,6 +31,8 @@ const names: Record<string, string> = { topbot: "TopBot", flat: "Stay flat", alw
 
 export interface VolatilityCounterfactuals {
   policy: string; recorded: number; completed: number; pending: number; unknown: number; overdue: number;
+  sides?: Record<string, { completed: number; unavailable: number; net_usd: number | null;
+    mean_net_usd: number | null; positive: number; negative: number; breakeven: number }>;
   recent: { at: string; status: string; entry_at: string; deadline: string; stop_points: number;
     target_points: number; risk_cap_points: number; quantity: number; costs: { total_usd: number };
     outcomes: null | Record<string, { net_usd: number; entry: number; entry_at: string; exit_at: string; exit_kind: string }> }[];
@@ -38,11 +40,28 @@ export interface VolatilityCounterfactuals {
 
 export function VolatilityWhatIf({ data }: { data: VolatilityCounterfactuals }) {
   return <section aria-label="Volatility-blocked hypothetical outcomes" className="rounded border border-app-border p-4 space-y-3">
-    <h4 className="font-semibold">Volatility-blocked what-if outcomes</h4>
+    <h4 className="font-semibold">Blocked trades · hypothetical BUY and SELL P&L</h4>
     <p className="text-sm text-app-muted">TopBot still holds above its 25-point risk cap. These separate BUY and SELL scenarios show what would have happened with the wider, rejected stop. They never enter TopBot’s balance or baseline accounts and are not model forecasts.</p>
+    <div className="grid gap-3 sm:grid-cols-2">
+      {["BUY", "SELL"].map(side => {
+        const summary = data.sides?.[side];
+        return <section key={side} aria-label={`Hypothetical ${side} P&L`} className="rounded border border-app-border p-4 space-y-1">
+          <h5 className="text-sm font-semibold">{side} hypothetical P&L</h5>
+          <p className="text-2xl font-semibold">{summary?.net_usd == null ? "Unavailable" : money(summary.net_usd)}</p>
+          <p className="text-xs text-app-muted">Selected reporting period · sum after assumed costs</p>
+          {summary ? <>
+            <p className="text-sm">{summary.completed} completed scenarios · average {money(summary.mean_net_usd)}</p>
+            <p className="text-xs text-app-muted">Positive: {summary.positive} · Negative: {summary.negative} · Flat: {summary.breakeven}</p>
+            {!summary.completed && <p className="text-sm">Awaiting completed results; pending or unknown outcomes are not zero P&L.</p>}
+            {!!summary.unavailable && <p className="text-sm">{summary.unavailable} completed outcomes unavailable; excluded from this total.</p>}
+          </> : <p className="text-sm">Summary unavailable; totals are not inferred from the recent rows.</p>}
+        </section>;
+      })}
+    </div>
+    <p className="text-xs text-app-muted">BUY and SELL are alternative paths. These sums include overlapping scenarios, so they are not achievable portfolio returns and should not be combined into account P&L. Pending and unknown outcomes are excluded.</p>
     <p className="text-sm">Recorded: {data.recorded} · Completed: {data.completed} · Pending: {data.pending} · Unknown: {data.unknown} · Overdue: {data.overdue}</p>
     {!data.recorded && <p className="text-sm">Waiting for a new volatility-blocked evaluation with valid, fresh candles. Earlier rejected decisions are not backfilled.</p>}
-    {!!data.recent.length && <div className="overflow-x-auto"><table className="w-full text-xs text-left">
+    {!!data.recent.length && <details><summary className="cursor-pointer">Recent blocked scenarios ({data.recent.length} of {data.recorded}) · individual BUY / SELL results</summary><div className="overflow-x-auto"><table className="w-full text-xs text-left">
       <caption className="sr-only">Independent hypothetical outcomes after volatility rejection</caption>
       <thead><tr><th>Decision / status</th><th>Hypothetical bracket</th><th>Entry / deadline</th><th>BUY net</th><th>SELL net</th></tr></thead>
       <tbody>{data.recent.map(row => <tr key={row.at} className="border-t border-app-border">
@@ -51,7 +70,7 @@ export function VolatilityWhatIf({ data }: { data: VolatilityCounterfactuals }) 
         <td className="pr-3">{clock(row.entry_at)} / {clock(row.deadline)}<br />{row.quantity} MNQ · {money(row.costs.total_usd)} assumed costs</td>
         {["BUY", "SELL"].map(side => <td key={side} className="pr-3">{row.status === "observed" && row.outcomes?.[side] ? <>{money(row.outcomes[side].net_usd)}<br />{label(row.outcomes[side].exit_kind)}</> : row.status === "pending" ? "Pending" : "Unknown"}</td>)}
       </tr>)}</tbody>
-    </table></div>}
+    </table></div></details>}
     <p className="text-xs text-app-muted">Entry uses the first five-minute open after recording; the original 15-minute deadline stays fixed. Assumed costs, stop-first bar ordering, and adverse stop gaps apply. Missing prices remain unknown. Overlapping scenarios are not portfolio returns, independent samples, or actual fills. No probability calibration or validation claim is made.</p>
   </section>;
 }

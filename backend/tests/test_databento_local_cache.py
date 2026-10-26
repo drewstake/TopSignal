@@ -144,6 +144,7 @@ def _write_dbn_archive(
     schema_name: str,
     records: Iterable[InstrumentDefMsg | OHLCVMsg],
     mappings: Iterable[Any] | None = None,
+    job_id: str | None = None,
 ) -> Path:
     materialized = list(records)
     schema = Schema.DEFINITION if schema_name == "definition" else Schema.OHLCV_1M
@@ -167,7 +168,7 @@ def _write_dbn_archive(
     payload = zstandard.ZstdCompressor().compress(uncompressed)
     payload_name = f"tiny.{schema_name}.dbn.zst"
     payload_hash = hashlib.sha256(payload).hexdigest()
-    job_id = f"tiny-{root_symbol.lower()}-{schema_name}"
+    job_id = job_id or f"tiny-{root_symbol.lower()}-{schema_name}"
     metadata_json = {
         "version": 1,
         "job_id": job_id,
@@ -1573,3 +1574,54 @@ def test_sqlite_persistence_benchmark_checks_cold_and_warm_result_cache(
     assert eager_report["case"]["input_type"] == "CachedCandleList"
     assert eager_report["case"]["lazy_mmap"] is False
     assert eager_report["semantic_sha256"] == report["semantic_sha256"]
+
+
+@pytest.mark.parametrize("skip_minutes", [(), (2, 4)])
+def test_overlapping_archives_merge_without_duplicate_volume(tmp_path: Path, skip_minutes):
+    archives, start = _tiny_mnq_archives(tmp_path / "sources", skip_minutes=skip_minutes)
+    extension = _write_dbn_archive(
+        tmp_path / "extension.zip", root_symbol="MNQ", schema_name="ohlcv-1m",
+        job_id="extension",
+        records=[_ohlcv(start + timedelta(minutes=i), instrument_id=101, index=i)
+                 for i in range(2, 10)],
+    )
+    result = build_databento_cache(
+        [extension, *archives], cache_root=tmp_path / "cache", timeframes=("1m", "5m")
+    )
+    version = Path(result.version_dir)
+    manifest = json.loads((version / "manifest.json").read_text())
+    assert manifest["duplicate_ohlcv_records"] == 4 - len(skip_minutes)
+    assert manifest["parquet_rows"]["ohlcv_1m"] == 10
+    series = version / manifest["series"]["MNQ:1m"]["path"]
+    assert np.load(series / "timestamp_ns.npy").tolist() == [
+        _unix_nanos(start + timedelta(minutes=i)) for i in range(10)
+    ]
+    assert np.load(series / "volume.npy").tolist() == list(range(10, 20))
+    five = version / manifest["series"]["MNQ:5m"]["path"]
+    assert np.load(five / "volume.npy").tolist() == [60, 85]
+    assert np.load(five / "high_nano.npy").tolist() == [106_000_000_000, 111_000_000_000]
+
+
+def test_conflicting_overlap_keeps_current_cache(tmp_path: Path):
+    archives, start = _tiny_mnq_archives(tmp_path / "sources")
+    root = tmp_path / "cache"
+    build_databento_cache(archives, cache_root=root, timeframes=("1m",))
+    prior = (root / "current.json").read_bytes()
+    extension = _write_dbn_archive(
+        tmp_path / "conflict.zip", root_symbol="MNQ", schema_name="ohlcv-1m",
+        job_id="conflict",
+        records=[_ohlcv(start + timedelta(minutes=2), instrument_id=101, index=99)],
+    )
+    with pytest.raises(DatabentoCacheError, match="databento_conflicting_ohlcv"):
+        build_databento_cache([*archives, extension], cache_root=root, timeframes=("1m",))
+    assert (root / "current.json").read_bytes() == prior
+
+
+def test_series_bounds_follow_each_timeframe(tiny_cache: TinyCache):
+    store = DatabentoReplayStore(tiny_cache.cache_root)
+    try:
+        assert store.series_bounds("MNQ", "minute", 1) == (tiny_cache.start, tiny_cache.start + timedelta(minutes=6))
+        assert store.series_bounds("MNQ", "minute", 5) == (tiny_cache.start, tiny_cache.start + timedelta(minutes=5))
+        assert store.series_bounds("MNQ", "hour", 4) is None
+    finally:
+        store.clear()

@@ -1,0 +1,252 @@
+//@version=6
+indicator("TopBot Adaptive", overlay = true, max_labels_count = 500, max_lines_count = 500, max_bars_back = 100)
+// Pine port of the experimental FXReplay indicator, not the frozen TopBot model.
+// MNQ, any standard time-based chart. Uses previous 21 CLOSED chart candles.
+// Manual signals, NOT a Strategy Tester strategy. Training includes overnight.
+// No entry-year restriction: signals use whatever dates the chart has loaded.
+// MNQ $2/point, 0.5-point adverse slippage and $0.61 fee on EACH side.
+// Stop first on ambiguous bars; exits only at stop/target. No profit claim.
+// Positions stay open across session breaks. Minimum entry spacing: three bars.
+// Stop limits scale by sqrt(chart seconds / 300); the volatility rule is unchanged.
+// This timeframe adaptation is not the previously backtested 5-minute variant.
+
+int memory = input.int(240, "Recent training paths", minval = 40, maxval = 500)
+int minimum = input.int(24, "Warmup settled paths", minval = 12, maxval = 40)
+int advantageHundredths = input.int(5, "Minimum directional advantage (0.01R)", minval = 0, maxval = 100)
+bool positiveOnly = input.bool(false, "Require positive estimated payoff")
+bool rthOnly = input.bool(true, "Regular-hours entries (intraday charts only)")
+bool showExits = input.bool(true, "Show exit labels")
+bool showStatus = input.bool(true, "Show current status")
+bool showLevels = input.bool(true, "Show entry / stop / target lines")
+bool compactLabels = input.bool(true, "Compact signal labels (hover for trade details)")
+float labelSpacing = input.float(1.0, "Signal label distance (ATR)", minval = 0.25, maxval = 5.0, step = 0.25)
+int labelHistory = input.int(600, "Label history (bars)", minval = 50, maxval = 600)
+float riskScale = math.sqrt(timeframe.in_seconds() / 300.0)
+float minimumStop = math.max(0.25, math.ceil(4 * riskScale * 4) / 4.0)
+float maximumStop = math.max(minimumStop, math.ceil(25 * riskScale * 4) / 4.0)
+
+type Leg
+    int side
+    float entry
+    float stop
+    float target
+    float risk
+    bool done = false
+    float netR = 0.0
+    float exitPrice = 0.0
+    string reason = ""
+
+type Sample
+    int cell
+    float buy
+    float sell
+
+type Path
+    int cell
+    int nextBar
+    Leg buy
+    Leg sell
+
+newLeg(int side, float entry, float stop, float target) =>
+    float fill = entry + side * 0.5
+    Leg.new(side, fill, fill - side * stop, fill + side * target, stop)
+
+settleLeg(Leg leg, float bo, float bh, float bl) =>
+    if not leg.done
+        int s = leg.side
+        float adverse = s == 1 ? bl : bh
+        float favorable = s == 1 ? bh : bl
+        float fill = na
+        string reason = ""
+        if s * (bo - leg.stop) <= 0
+            fill := bo
+            reason := "STOP GAP"
+        else if s * (bo - leg.target) >= 0
+            fill := leg.target
+            reason := "TARGET"
+        else if s * (adverse - leg.stop) <= 0
+            fill := leg.stop
+            reason := "STOP"
+        else if s * (favorable - leg.target) >= 0
+            fill := leg.target
+            reason := "TARGET"
+        if reason != ""
+            leg.done := true
+            leg.exitPrice := fill - s * 0.5
+            leg.reason := reason
+            leg.netR := (s * (leg.exitPrice - leg.entry) * 2 - 1.22) / (leg.risk * 2)
+    leg
+
+validBar(int offset) =>
+    not na(time[offset]) and not na(volume[offset]) and volume[offset] >= 0 and math.min(open[offset], high[offset], low[offset], close[offset]) > 0 and low[offset] <= math.min(open[offset], close[offset]) and high[offset] >= math.max(open[offset], close[offset])
+
+features() =>
+    bool valid = true
+    float squared = 0.0
+    float recent = 0.0
+    float momentum = 0.0
+    for offset = 1 to 21
+        if not validBar(offset) or (offset > 1 and time[offset - 1] <= time[offset])
+            valid := false
+        if offset <= 20
+            float change = close[offset] - close[offset + 1]
+            squared += change * change
+            if offset <= 5
+                recent += change * change
+            if offset <= 3
+                momentum += change
+    float sigma = math.sqrt(squared / 20)
+    valid := valid and not na(sigma) and sigma > 0
+    float stop = math.max(minimumStop, math.ceil(sigma * math.sqrt(3) * 4) / 4.0)
+    float target = math.ceil(stop * 1.5 * 4) / 4.0
+    int cell = (momentum >= 0 ? 2 : 0) + (recent / 5 >= squared / 20 ? 1 : 0)
+    [valid, stop, target, cell]
+
+entrySession(int t) =>
+    string tz = "America/New_York"
+    int y = year(t, tz)
+    int d = dayofweek(t, tz)
+    int md = month(t, tz) * 100 + dayofmonth(t, tz)
+    int minutes = hour(t, tz) * 60 + minute(t, tz)
+    // These historical exceptions belong only to 2024; do not reuse their
+    // month/day values as a holiday calendar for other years.
+    bool holiday2024 = y == 2024 and (md == 101 or md == 115 or md == 219 or md == 329 or md == 527 or md == 619 or md == 703 or md == 704 or md == 902 or md == 1128 or md == 1129 or md == 1224 or md == 1225)
+    // A daily/weekly/monthly bar has no intraday entry window. Its open is eligible.
+    not timeframe.isintraday or not rthOnly or (d >= dayofweek.monday and d <= dayofweek.friday and not holiday2024 and minutes >= 575 and minutes <= 930)
+
+estimates(array<Sample> samples, int cell) =>
+    float allBuy = 0.0
+    float allSell = 0.0
+    float cellBuy = 0.0
+    float cellSell = 0.0
+    int count = 0
+    for sample in samples
+        allBuy += sample.buy
+        allSell += sample.sell
+        if sample.cell == cell
+            cellBuy += sample.buy
+            cellSell += sample.sell
+            count += 1
+    int n = math.max(1, array.size(samples))
+    [(cellBuy + 20 * allBuy / n) / (count + 20), (cellSell + 20 * allSell / n) / (count + 20)]
+
+var array<Sample> samples = array.new<Sample>()
+var array<Path> pending = array.new<Path>()
+var Leg active = na
+var int nextEntry = 0
+var int buys = 0
+var int sells = 0
+var float buyScore = 0.0
+var float sellScore = 0.0
+var string status = "Warming up"
+int signalSide = 0
+string exitReason = ""
+float exitPrice = na
+
+// Normal Pine rollback recomputes the current candle from its prior snapshot.
+// Never use current high/low/close/volume to decide or train an entry.
+if bar_index >= 21
+    if not validBar(1)
+        array.clear(pending)
+        // Do not fabricate an exit or release the position on missing data.
+        status := "Invalid candle - holding position; review data"
+    else
+        if not na(active)
+            settleLeg(active, open[1], high[1], low[1])
+            if active.done
+                exitReason := active.reason
+                exitPrice := active.exitPrice
+                active := na
+        array<Path> remaining = array.new<Path>()
+        for p in pending
+            if bar_index - 1 == p.nextBar
+                settleLeg(p.buy, open[1], high[1], low[1])
+                settleLeg(p.sell, open[1], high[1], low[1])
+                p.nextBar += 1
+                if p.buy.done and p.sell.done
+                    array.push(samples, Sample.new(p.cell, p.buy.netR, p.sell.netR))
+                    if array.size(samples) > memory
+                        array.shift(samples)
+                else
+                    array.push(remaining, p)
+        pending := remaining
+        [valid, stop, target, cell] = features()
+        if not valid or na(open) or open <= 0
+            status := "Need 21 valid closed chart candles"
+        else if stop > maximumStop
+            status := "Volatility: stop exceeds " + str.tostring(maximumStop, format.mintick)
+        else
+            // Bound training work without timing out or scoring unresolved paths.
+            if array.size(pending) < 500
+                array.push(pending, Path.new(cell, bar_index, newLeg(1, open, stop, target), newLeg(-1, open, stop, target)))
+            if array.size(samples) < minimum
+                status := "Learning " + str.tostring(array.size(samples)) + "/" + str.tostring(minimum)
+            else
+                [bScore, sScore] = estimates(samples, cell)
+                buyScore := bScore
+                sellScore := sScore
+                float difference = bScore - sScore
+                if not entrySession(time)
+                    status := "Outside entry session"
+                else if not na(active)
+                    status := "Trade open - waiting for SL / TP"
+                else if bar_index < nextEntry
+                    status := "Entry cooldown"
+                else if math.abs(difference) < advantageHundredths / 100.0 or difference == 0 or (positiveOnly and math.max(bScore, sScore) <= 0)
+                    status := "Waiting for directional advantage"
+                else
+                    signalSide := difference > 0 ? 1 : -1
+                    active := newLeg(signalSide, open, stop, target)
+                    nextEntry := bar_index + 3
+                    if signalSide == 1
+                        buys += 1
+                    else
+                        sells += 1
+                    status := signalSide == 1 ? "BUY" : "SELL"
+
+if not na(active) and signalSide == 0 and validBar(1)
+    status := "Trade open - waiting for SL / TP"
+
+bool drawRecent = bar_index >= last_bar_index - labelHistory
+// Current candle prices affect only label placement, never signal decisions.
+float labelPadding = math.max(nz(ta.atr(14), high - low), syminfo.mintick * 4) * labelSpacing
+float labelHigh = ta.highest(high, 5)
+float labelLow = ta.lowest(low, 5)
+if signalSide != 0 and drawRecent
+    string details = (signalSide == 1 ? "BUY" : "SELL") + " @ " + str.tostring(active.entry, format.mintick) + "\nSL " + str.tostring(active.stop, format.mintick) + " | TP " + str.tostring(active.target, format.mintick) + "\nHold until SL / TP"
+    float labelPrice = signalSide == 1 ? labelLow - labelPadding : labelHigh + labelPadding
+    color signalColor = signalSide == 1 ? color.green : color.red
+    line.new(time, active.entry, time, labelPrice, xloc = xloc.bar_time, color = color.new(signalColor, 65), style = line.style_dotted)
+    label.new(bar_index, labelPrice, compactLabels ? (signalSide == 1 ? "BUY" : "SELL") : details, style = signalSide == 1 ? label.style_label_up : label.style_label_down, color = signalColor, textcolor = color.white, size = size.small, tooltip = details)
+if showExits and exitReason != "" and drawRecent
+    // The previous closed candle supplied the exit; the current bar confirms it.
+    label.new(bar_index - 1, exitPrice, "EXIT " + exitReason + "\n" + str.tostring(exitPrice, format.mintick), style = label.style_label_left, color = color.orange, textcolor = color.black, size = size.tiny, tooltip = "Simulated exit on this candle. Confirmed at the next candle's open.")
+
+// Independent horizontal segments prevent adjacent trades from being joined.
+// End at the close of the exit candle; exits are learned on the following bar.
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+if not na(entryLine)
+    bool ended = exitReason != "" or na(active) or signalSide != 0
+    int rightEdge = ended ? time_close[1] : time_close
+    line.set_x2(entryLine, rightEdge)
+    line.set_x2(stopLine, rightEdge)
+    line.set_x2(targetLine, rightEdge)
+    if ended
+        entryLine := na
+        stopLine := na
+        targetLine := na
+// Also recover levels for a long-held position entered before the label window.
+if showLevels and not na(active) and na(entryLine) and drawRecent
+    entryLine := line.new(time, active.entry, time_close, active.entry, xloc = xloc.bar_time, color = color.blue, width = 2)
+    stopLine := line.new(time, active.stop, time_close, active.stop, xloc = xloc.bar_time, color = color.red, width = 2)
+    targetLine := line.new(time, active.target, time_close, active.target, xloc = xloc.bar_time, color = color.green, width = 2)
+plotshape(signalSide == 1, title = "BUY signal", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.tiny)
+plotshape(signalSide == -1, title = "SELL signal", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.tiny)
+
+var table info = table.new(position.top_right, 1, 3, bgcolor = color.new(color.black, 15))
+if barstate.islast and showStatus
+    table.cell(info, 0, 0, "TopBot Adaptive [" + timeframe.period + "] | " + status, text_color = color.white)
+    table.cell(info, 0, 1, "Learned " + str.tostring(array.size(samples)) + " | BUY " + str.tostring(buys) + " / SELL " + str.tostring(sells), text_color = color.white)
+    table.cell(info, 0, 2, "Experimental | scores " + str.tostring(buyScore, "#.00") + "/" + str.tostring(sellScore, "#.00") + "R", text_color = color.orange)

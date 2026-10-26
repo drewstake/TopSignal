@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -868,6 +869,23 @@ class DatabentoReplayStore:
             return (
                 _datetime_from_ns(first_timestamp_ns),
                 _datetime_from_ns(int(minute_entry["source_end_ns"])),
+            )
+
+    def series_bounds(self, root_symbol: str, unit: str, unit_number: int) -> tuple[datetime, datetime] | None:
+        """Bounds of completed cached bars in the requested timeframe.
+
+        A complete session bar can close after the last traded minute during
+        the scheduled maintenance break. Do not clip it to minute coverage.
+        """
+        root = str(root_symbol).strip().upper()
+        with self._lock:
+            manifest = self._refresh_manifest()
+            entry = self._series_entry(manifest, root, unit, unit_number)
+            if entry is None:
+                return None
+            return (
+                _datetime_from_ns(int(entry["first_timestamp_ns"])),
+                _datetime_from_ns(int(entry["source_end_ns"])),
             )
 
     def has_root(self, root_symbol: str) -> bool:
@@ -2435,6 +2453,46 @@ class _MappingResolver:
         return self._by_day_id.get((calendar_day, int(instrument_id)))
 
 
+def _merged_ohlcv_records(descriptors: Sequence[ArchiveDescriptor]):
+    """Merge source streams chronologically with bounded memory per archive."""
+    def read_source(source_id: int, descriptor: ArchiveDescriptor):
+        prior_timestamp: int | None = None
+        with ZipFile(descriptor.path) as archive:
+            for entry in _dbn_entries(archive, descriptor.schema):
+                mapping: _MappingResolver | None = None
+                for record in _iter_dbn_entry(archive, entry):
+                    if isinstance(record, Metadata):
+                        _validate_dbn_metadata(record, descriptor)
+                        mapping = _MappingResolver(record, root_symbol=descriptor.root_symbol)
+                        continue
+                    if not isinstance(record, OHLCVMsg):
+                        raise DatabentoCacheError(
+                            f"unexpected_dbn_record:{entry.filename}:{type(record).__name__}"
+                        )
+                    if mapping is None:
+                        raise DatabentoCacheError(f"dbn_metadata_missing:{entry.filename}")
+                    timestamp = int(record.ts_event)
+                    if prior_timestamp is not None and timestamp < prior_timestamp:
+                        raise DatabentoCacheError(
+                            f"databento_rows_not_monotonic:{descriptor.job_id}"
+                        )
+                    prior_timestamp = timestamp
+                    yield source_id, descriptor, record, mapping
+                if mapping is None:
+                    raise DatabentoCacheError(f"dbn_metadata_missing:{entry.filename}")
+
+    streams = [read_source(index, descriptor)
+               for index, descriptor in enumerate(descriptors)
+               if descriptor.schema == "ohlcv-1m"]
+    try:
+        yield from heapq.merge(
+            *streams, key=lambda item: (item[1].root_symbol, int(item[2].ts_event), item[0])
+        )
+    finally:
+        for stream in streams:
+            stream.close()
+
+
 def _build_parquet_and_rolls(
     version_dir: Path,
     descriptors: Sequence[ArchiveDescriptor],
@@ -2581,104 +2639,98 @@ def _build_parquet_and_rolls(
     }
     raw_bounds: dict[str, list[int]] = {root: [0, 0] for root in contracts}
 
-    for source_id, descriptor in enumerate(descriptors):
-        if descriptor.schema != "ohlcv-1m":
+    session_resolver = _SessionResolver()
+    overlap_timestamp: tuple[str, int] | None = None
+    overlap_values: dict[str, tuple[int, ...]] = {}
+    duplicate_ohlcv_records = 0
+    for source_id, descriptor, record, mapping in _merged_ohlcv_records(descriptors):
+        records_by_schema[descriptor.schema] += 1
+        timestamp_ns = int(record.ts_event)
+        instrument_id = int(record.instrument_id)
+        raw_symbol = mapping.resolve(timestamp_ns, instrument_id)
+        if raw_symbol is None:
+            raw_symbol = unique_instrument_mapping[
+                descriptor.root_symbol
+            ].get(instrument_id)
+        if raw_symbol is None:
+            raise DatabentoCacheError(
+                f"databento_mapping_missing:{descriptor.root_symbol}:{instrument_id}:{timestamp_ns}"
+            )
+        resolved_contract = _resolve_contract_code(
+            raw_symbol=raw_symbol,
+            timestamp_ns=timestamp_ns,
+            candidates=contracts_by_raw[descriptor.root_symbol].get(
+                raw_symbol, []
+            ),
+            codes=raw_symbol_codes[descriptor.root_symbol],
+            cache=contract_code_cache[descriptor.root_symbol],
+        )
+        if resolved_contract is None:
+            raw_root = _raw_symbol_root(raw_symbol)
+            if raw_root is None:
+                # Parent streams contain spreads; they are retained
+                # in definitions/statistics but excluded from rolls.
+                continue
+            raise DatabentoCacheError(
+                "databento_outright_definition_missing:"
+                f"{descriptor.root_symbol}:{raw_symbol}:{instrument_id}:"
+                f"{timestamp_ns}"
+            )
+        contract_key, code = resolved_contract
+        open_nano = int(record.open)
+        high_nano = int(record.high)
+        low_nano = int(record.low)
+        close_nano = int(record.close)
+        volume = int(record.volume)
+        _validate_ohlcv(
+            open_nano, high_nano, low_nano, close_nano, volume
+        )
+        # Only retain keys at the current timestamp, so overlap deduplication
+        # cannot grow with the historical date range. Reject revisions instead
+        # of silently choosing one price or double-counting roll volume.
+        overlap_key = (descriptor.root_symbol, timestamp_ns)
+        if overlap_key != overlap_timestamp:
+            overlap_timestamp = overlap_key
+            overlap_values.clear()
+        values = (instrument_id, open_nano, high_nano, low_nano, close_nano, volume)
+        prior = overlap_values.get(contract_key)
+        if prior is not None:
+            if prior != values:
+                raise DatabentoCacheError(
+                    f"databento_conflicting_ohlcv:{descriptor.root_symbol}:{contract_key}:{timestamp_ns}"
+                )
+            duplicate_ohlcv_records += 1
             continue
-        session_resolver = _SessionResolver()
-        prior_timestamp_ns: int | None = None
-        with ZipFile(descriptor.path) as archive:
-            for entry in _dbn_entries(archive, descriptor.schema):
-                mapping: _MappingResolver | None = None
-                for record in _iter_dbn_entry(archive, entry):
-                    if isinstance(record, Metadata):
-                        _validate_dbn_metadata(record, descriptor)
-                        mapping = _MappingResolver(
-                            record, root_symbol=descriptor.root_symbol
-                        )
-                        continue
-                    if not isinstance(record, OHLCVMsg):
-                        raise DatabentoCacheError(
-                            f"unexpected_dbn_record:{entry.filename}:{type(record).__name__}"
-                        )
-                    records_by_schema[descriptor.schema] += 1
-                    if mapping is None:
-                        raise DatabentoCacheError(f"dbn_metadata_missing:{entry.filename}")
-                    timestamp_ns = int(record.ts_event)
-                    if prior_timestamp_ns is not None and timestamp_ns < prior_timestamp_ns:
-                        raise DatabentoCacheError(
-                            f"databento_rows_not_monotonic:{descriptor.job_id}"
-                        )
-                    prior_timestamp_ns = timestamp_ns
-                    instrument_id = int(record.instrument_id)
-                    raw_symbol = mapping.resolve(timestamp_ns, instrument_id)
-                    if raw_symbol is None:
-                        raw_symbol = unique_instrument_mapping[
-                            descriptor.root_symbol
-                        ].get(instrument_id)
-                    if raw_symbol is None:
-                        raise DatabentoCacheError(
-                            f"databento_mapping_missing:{descriptor.root_symbol}:{instrument_id}:{timestamp_ns}"
-                        )
-                    resolved_contract = _resolve_contract_code(
-                        raw_symbol=raw_symbol,
-                        timestamp_ns=timestamp_ns,
-                        candidates=contracts_by_raw[descriptor.root_symbol].get(
-                            raw_symbol, []
-                        ),
-                        codes=raw_symbol_codes[descriptor.root_symbol],
-                        cache=contract_code_cache[descriptor.root_symbol],
-                    )
-                    if resolved_contract is None:
-                        raw_root = _raw_symbol_root(raw_symbol)
-                        if raw_root is None:
-                            # Parent streams contain spreads; they are retained
-                            # in definitions/statistics but excluded from rolls.
-                            continue
-                        raise DatabentoCacheError(
-                            "databento_outright_definition_missing:"
-                            f"{descriptor.root_symbol}:{raw_symbol}:{instrument_id}:"
-                            f"{timestamp_ns}"
-                        )
-                    contract_key, code = resolved_contract
-                    open_nano = int(record.open)
-                    high_nano = int(record.high)
-                    low_nano = int(record.low)
-                    close_nano = int(record.close)
-                    volume = int(record.volume)
-                    _validate_ohlcv(
-                        open_nano, high_nano, low_nano, close_nano, volume
-                    )
-                    session_ordinal = session_resolver.ordinal(timestamp_ns)
-                    session_date = date.fromordinal(session_ordinal)
-                    ohlcv_writer.append(
-                        descriptor.root_symbol,
-                        session_date,
-                        {
-                            "timestamp_ns": timestamp_ns,
-                            "session_ordinal": session_ordinal,
-                            "instrument_id": instrument_id,
-                            "raw_symbol_code": code,
-                            "open_nano": open_nano,
-                            "high_nano": high_nano,
-                            "low_nano": low_nano,
-                            "close_nano": close_nano,
-                            "volume": volume,
-                            "source_id": source_id,
-                        },
-                    )
-                    by_contract = daily_volumes[descriptor.root_symbol].setdefault(
-                        session_date, {}
-                    )
-                    by_contract[contract_key] = (
-                        by_contract.get(contract_key, 0) + volume
-                    )
-                    bounds = raw_bounds[descriptor.root_symbol]
-                    if bounds[0] == 0 or timestamp_ns < bounds[0]:
-                        bounds[0] = timestamp_ns
-                    if timestamp_ns > bounds[1]:
-                        bounds[1] = timestamp_ns
-                if mapping is None:
-                    raise DatabentoCacheError(f"dbn_metadata_missing:{entry.filename}")
+        overlap_values[contract_key] = values
+        session_ordinal = session_resolver.ordinal(timestamp_ns)
+        session_date = date.fromordinal(session_ordinal)
+        ohlcv_writer.append(
+            descriptor.root_symbol,
+            session_date,
+            {
+                "timestamp_ns": timestamp_ns,
+                "session_ordinal": session_ordinal,
+                "instrument_id": instrument_id,
+                "raw_symbol_code": code,
+                "open_nano": open_nano,
+                "high_nano": high_nano,
+                "low_nano": low_nano,
+                "close_nano": close_nano,
+                "volume": volume,
+                "source_id": source_id,
+            },
+        )
+        by_contract = daily_volumes[descriptor.root_symbol].setdefault(
+            session_date, {}
+        )
+        by_contract[contract_key] = (
+            by_contract.get(contract_key, 0) + volume
+        )
+        bounds = raw_bounds[descriptor.root_symbol]
+        if bounds[0] == 0 or timestamp_ns < bounds[0]:
+            bounds[0] = timestamp_ns
+        if timestamp_ns > bounds[1]:
+            bounds[1] = timestamp_ns
     ohlcv_writer.close()
 
     for source_id, descriptor in enumerate(descriptors):
@@ -2798,6 +2850,7 @@ def _build_parquet_and_rolls(
     return {
         "roots": sorted(contracts),
         "records_by_schema": dict(sorted(records_by_schema.items())),
+        "duplicate_ohlcv_records": duplicate_ohlcv_records,
         "parquet_rows": {
             "definitions": definition_writer.rows_written,
             "ohlcv_1m": ohlcv_writer.rows_written,

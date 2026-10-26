@@ -1,4 +1,5 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import { observeAuthIdentity } from "./authIdentity";
 
 const LOCAL_SUPABASE_URLS = new Set(["http://127.0.0.1:54321", "http://localhost:54321"]);
 const SUPABASE_URL_RAW = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -58,12 +59,14 @@ export async function bootstrapSupabaseSession(): Promise<Session | null> {
   const supabase = await getSupabaseClient();
   if (!supabase) {
     currentAccessToken = null;
+    observeAuthIdentity(currentAccessToken);
     currentEmail = null;
     return null;
   }
 
   const { data } = await supabase.auth.getSession();
   currentAccessToken = data.session?.access_token ?? null;
+  observeAuthIdentity(currentAccessToken);
   currentEmail = data.session?.user?.email ?? null;
   return data.session ?? null;
 }
@@ -79,6 +82,7 @@ export function subscribeSupabaseAuthChanges(onChange: (session: Session | null)
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       currentAccessToken = session?.access_token ?? null;
+      observeAuthIdentity(currentAccessToken);
       currentEmail = session?.user?.email ?? null;
       onChange(session);
     });
@@ -133,6 +137,7 @@ export async function getAccessToken(): Promise<string | null> {
 
   const { data } = await supabase.auth.getSession();
   currentAccessToken = data.session?.access_token ?? null;
+  observeAuthIdentity(currentAccessToken);
   currentEmail = data.session?.user?.email ?? null;
   return currentAccessToken;
 }

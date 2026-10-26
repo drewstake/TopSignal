@@ -57,6 +57,8 @@ def test_volatility_hold_collects_future_only_paths_without_account_or_calibrati
         outcome = section['recent'][0]['outcomes'][side]
         assert outcome['net_usd'] == pytest.approx(expected)
         assert outcome['exit_kind'] == 'stop'
+        assert section['sides'][side]['net_usd'] == pytest.approx(expected)
+        assert section['sides'][side]['completed'] == section['sides'][side]['negative'] == 1
     assert result['forecasts'] == result['completed'] == result['calibration']['BUY']['count'] == 0
     assert result['account']['net_usd'] == result['account']['trades'] == 0
     assert result['comparison']['cohorts'] == []
@@ -65,6 +67,8 @@ def test_volatility_hold_collects_future_only_paths_without_account_or_calibrati
     again = ledger.report('a',1,32,root=tmp_path,now=NOW+timedelta(minutes=20))
     assert again['volatility_counterfactuals']['recent'] == section['recent']
     assert ledger.report('other',1,32,root=tmp_path,now=NOW)['volatility_counterfactuals'] is None
+    outside_period = ledger.report('a',1,32,root=tmp_path,days=1,now=NOW+timedelta(days=2))
+    assert outside_period['volatility_counterfactuals']['sides']['BUY']['net_usd'] is None
 
 
 @pytest.mark.parametrize('fault', ['missing', 'subscription', 'roll'])
@@ -113,3 +117,34 @@ def test_no_retrospective_counterfactuals_for_old_rejections(tmp_path):
         db.execute('UPDATE evaluations SET payload=? WHERE id=?',(json.dumps(record),ident))
     ingest(tmp_path, **args)
     assert ledger.report('a',1,32,root=tmp_path,now=NOW)['volatility_counterfactuals']['recorded'] == 0
+
+
+def test_side_totals_cover_all_completed_scenarios_not_only_recent_rows():
+    from copy import deepcopy
+    from app.services.forward_evaluation import volatility_counterfactual_report
+    rows = [dict(at=NOW.isoformat(), volatility_counterfactual=dict(status='observed',
+            outcomes={'BUY': {'net_usd': i-15}, 'SELL': {'net_usd': 2}})) for i in range(35)]
+    for status in ('pending', 'unknown_missing_bars', 'entry_too_late'):
+        rows.append(dict(at=NOW.isoformat(), volatility_counterfactual=dict(status=status,
+            deadline=NOW.isoformat(), outcomes={'BUY': {'net_usd': 999}, 'SELL': {'net_usd': 999}})))
+    before = deepcopy(rows)
+    result = volatility_counterfactual_report(rows, NOW)
+    assert len(result['recent']) == 30 and result['completed'] == 35
+    assert result['sides']['BUY'] == dict(completed=35, unavailable=0, net_usd=70,
+        mean_net_usd=2, positive=19, negative=15, breakeven=1)
+    assert result['sides']['SELL']['net_usd'] == 70
+    assert result['sides']['SELL']['positive'] == 35
+    assert rows == before  # Summary is read-only; it never adds account entries.
+
+
+@pytest.mark.parametrize('bad', [None, float('nan'), float('inf'), True, '12.50'])
+def test_unavailable_completed_side_is_excluded_not_zero_or_copied_from_other_side(bad):
+    from app.services.forward_evaluation import volatility_counterfactual_report
+    rows = [dict(at=NOW.isoformat(), volatility_counterfactual=dict(status='observed',
+            outcomes={'BUY': {'net_usd': bad}, 'SELL': {'net_usd': -3.22}}))]
+    result = volatility_counterfactual_report(rows, NOW)
+    assert result['sides']['BUY']['completed'] == 0
+    assert result['sides']['BUY']['unavailable'] == 1
+    assert result['sides']['BUY']['net_usd'] is None
+    assert result['sides']['BUY']['mean_net_usd'] is None
+    assert result['sides']['SELL']['net_usd'] == -3.22

@@ -5,6 +5,7 @@ stopping/restarting a run and does not depend on candles or model availability.
 The deadline is anchored to the decision close and clamped before session close.
 """
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
 import math
 from time import perf_counter
 
@@ -25,6 +26,22 @@ def exit_plan(now=None, *, decision_at=None):
     return {"status": "pending", "deadline": exit_deadline(now, decision_at=decision_at).isoformat(),
             "prepared_at": now.isoformat(), "decision_at": (decision_at or now).isoformat(),
             "horizon_minutes": 15, "attempts": 0, "reconciliation_cycles": 0}
+
+
+def _read_entry_order(service, client, entry, now):
+    orders = client.search_orders(
+        account_id=entry.account_id,
+        start=service._as_utc(entry.created_at) - timedelta(minutes=5), end=now,
+    )
+    return service._matching_reconciled_order(entry, orders)
+
+
+def _record_entry_order(entry, order):
+    entry.provider_order_id = str(order["order_id"]).strip()
+    entry.raw_response = {"reconciled": True, "provider_order": order.get("raw_payload") or order}
+    if order.get("status") in {2, 3, 4}:
+        entry.status = "submitted" if order["status"] == 2 else "cancelled"
+        entry.rejection_reason = None
 
 
 def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
@@ -50,9 +67,35 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
     plan = dict(request["timeExit"])
 
     def save():
-        request["timeExit"] = plan
-        entry.raw_request = dict(request)
+        # Keep the ORM's prior JSON snapshot independent of subsequent nested
+        # plan edits, including the cancel audit and final retry/completion.
+        entry.raw_request = {**request, "timeExit": deepcopy(plan)}
         db.flush()
+
+    deadline = service._as_utc(datetime.fromisoformat(plan["deadline"]))
+    if plan.get("retry_at") and now < service._as_utc(datetime.fromisoformat(plan["retry_at"])):
+        return False
+    recovered_entry = False
+    working_entry = None
+    # Keep the no-resubmission latch, but distinguish an unidentified submission
+    # from an exact working order that can be cancelled after its deadline.
+    # Read again here: an older reconciliation is not authorization to mutate.
+    if (entry.status in {"pending", "submission_unknown"} and now >= deadline
+            and live_execution_environment_enabled() and worker_lease_token is not None):
+        try:
+            order = _read_entry_order(service, client, entry, now)
+            plan.pop("reconciliation_error", None)
+            plan.pop("reconciliation_read_failures", None)
+            if order is not None and order.get("status") in {1, 2, 3, 4, 6}:
+                _record_entry_order(entry, order)
+                recovered_entry = True
+                if order["status"] in {1, 6}:
+                    working_entry = order
+        except Exception as exc:
+            plan["reconciliation_error"] = service.sanitize_error(exc, max_length=180)
+            failures = int(plan.get("reconciliation_read_failures", 0)) + 1
+            plan["reconciliation_read_failures"] = failures
+            plan["retry_at"] = (now + timedelta(seconds=min(300, 5 * 2 ** min(failures, 6)))).isoformat()
 
     # A rejected/blocked entry never created exposure. Unknown submissions must
     # be reconciled by the existing tagged-order reconciler before any close.
@@ -60,7 +103,7 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         plan.update(status="complete", outcome="entry_not_submitted")
         save()
         return True
-    if entry.status not in {"submitted", "cancelled"}:
+    if entry.status not in {"submitted", "cancelled"} and working_entry is None:
         plan["reconciliation_cycles"] = int(plan.get("reconciliation_cycles", 0)) + 1
         if plan["reconciliation_cycles"] >= 3 and not plan.get("operator_alerted_at"):
             plan["operator_alerted_at"] = now.isoformat()
@@ -72,9 +115,6 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
                 raw_payload={"entry_order_attempt_id": entry.id, "cycles": plan["reconciliation_cycles"]},
             ))
         save()
-        return False
-    deadline = service._as_utc(datetime.fromisoformat(plan["deadline"]))
-    if plan.get("retry_at") and now < service._as_utc(datetime.fromisoformat(plan["retry_at"])):
         return False
     if not live_execution_environment_enabled() or worker_lease_token is None:
         return False
@@ -101,6 +141,27 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
             raise ValueError("Time exit is blocked for non-simulated accounts.")
         if provider.get("can_trade") is not True or provider.get("status") != "ACTIVE":
             raise ValueError("ProjectX has not confirmed this account is active and tradable.")
+        if working_entry is not None:
+            cancellation = {"order_id": entry.provider_order_id}
+            plan["entry_cancellation"] = cancellation
+            save()
+            fence = service._ProviderMutationFence(
+                db=db, token=worker_lease_token, user_id=entry.user_id, account_id=entry.account_id,
+            )
+            fence.require()
+            try:
+                response = client.cancel_order(account_id=entry.account_id, order_id=entry.provider_order_id)
+                cancellation["response"] = response.get("raw_payload")
+            except Exception as exc:
+                cancellation["error"] = service.sanitize_error(exc, max_length=180)
+            # Never infer cancellation from an acknowledgement or an empty
+            # position. A fill can race cancellation; require a terminal order
+            # read before closing anything, leaving protective stops intact.
+            terminal = _read_entry_order(service, client, entry, now)
+            if terminal is None or terminal.get("status") not in {2, 3, 4}:
+                raise ValueError("Entry cancellation is unconfirmed; reconcile the original order before closing.")
+            _record_entry_order(entry, terminal)
+            cancellation["terminal_status"] = terminal["status"]
         quantity = service._provider_contract_position_qty(
             client.search_open_positions(account_id=entry.account_id),
             account_id=entry.account_id, contract_id=entry.contract_id,
@@ -108,11 +169,11 @@ def process_time_exit(db, *, entry_id, client, worker_lease_token, now=None):
         expected_sign = 1 if entry.side == "BUY" else -1
         if quantity * expected_sign < 0 or abs(quantity) > float(entry.size):
             raise ValueError("Position differs from the bot entry; manual reconciliation is required.")
-        if quantity and entry.status == "cancelled":
+        if quantity and (entry.status == "cancelled" or recovered_entry):
             original = (entry.raw_response or {}).get("provider_order", {})
             filled = service._finite_optional_float(original.get("fillVolume"))
-            if filled is None or filled < abs(quantity):
-                raise ValueError("Cancelled entry has no verified fill matching this exposure; manual reconciliation is required.")
+            if filled is None or filled < abs(quantity) or filled > float(entry.size):
+                raise ValueError("Reconciled entry has no verified fill matching this exposure; manual reconciliation is required.")
         if quantity:
             plan["position_observed_at"] = now.isoformat()
             orders = client.search_open_orders(account_id=entry.account_id)

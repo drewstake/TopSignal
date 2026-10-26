@@ -29,6 +29,7 @@ from cryptography.fernet import Fernet
 from urllib.parse import urlsplit
 
 from .input_bounds import MAX_DATABASE_ID, MAX_QUERY_OFFSET, MIN_SUPPORTED_DATE, MAX_SUPPORTED_DATE
+from .local_request_security import anonymous_request_error
 
 from .auth import (
     AuthError,
@@ -111,6 +112,7 @@ from .services.trade_excursions import attach_trade_excursions
 from .market_data_routes import router as market_data_router
 from .market_event_routes import router as market_event_router
 from .market_observation_routes import router as market_observation_router
+from .risk_forecast_routes import router as risk_forecast_router
 from .metrics_schemas import (
     BehaviorMetricsOut,
     DayPnlOut,
@@ -471,6 +473,7 @@ app = FastAPI(title="TopSignal API", lifespan=app_lifespan)
 app.include_router(market_data_router)
 app.include_router(market_event_router)
 app.include_router(market_observation_router)
+app.include_router(risk_forecast_router)
 
 
 @app.exception_handler(IncompleteTradePnlError)
@@ -588,12 +591,17 @@ async def api_auth_middleware(request: Request, call_next):
     if not _is_authenticated_route(path):
         response = await call_next(request)
         return _with_timing_headers(response)
+    should_require_auth = auth_required()
+    if not should_require_auth:
+        local_error = anonymous_request_error(request, _origin_is_allowed)
+        if local_error:
+            response = JSONResponse(status_code=403, content={"detail": local_error})
+            return _with_timing_headers(_apply_cors_headers(request, response))
     if request.method.upper() == "OPTIONS":
         response = await call_next(request)
         return _with_timing_headers(response)
 
     token = extract_access_token(request)
-    should_require_auth = auth_required()
     user = None
 
     if token:

@@ -293,3 +293,174 @@ def test_failed_exit_records_warning_and_retries_only_after_backoff(db_session, 
     assert process_time_exit(db_session, entry_id=entry.id, client=client,
                              worker_lease_token=token, now=retry_at)
     assert pending_exits(db_session).count() == 0
+
+
+def recovered_working_entry(db, result, client, *, status=1, filled=0):
+    entry = result.order_attempt
+    entry.status = "submission_unknown"
+    entry.provider_order_id = None
+    entry.size = 2
+    entry.raw_request = {**entry.raw_request, "size": 2}
+    order = {"account_id": entry.account_id, "contract_id": entry.contract_id,
+             "order_id": "provider-order-1", "custom_tag": entry.raw_request["customTag"],
+             "status": status, "raw_payload": {"fillVolume": filled}}
+    client.orders = [order]
+    client.open_orders = [order, protective_stop()]
+    client.positions = ([{"account_id": entry.account_id, "contract_id": entry.contract_id,
+                          "signed_size": filled}] if filled else [])
+    cancel = client.cancel_order
+
+    def cancel_and_record(**kwargs):
+        response = cancel(**kwargs)
+        if kwargs["order_id"] == "provider-order-1":
+            client.orders[0] = {**client.orders[0], "status": 3}
+        return response
+    client.cancel_order = cancel_and_record
+    db.commit()
+    return entry
+
+
+@pytest.mark.parametrize("status", [1, 6])
+@pytest.mark.parametrize("filled", [0, 1, 2])
+def test_recovered_working_entry_exits_without_resubmitting(db_session, live_entry, status, filled):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client, status=status, filled=filled)
+    # The worker commits reconciliation before processing exits, including on restart.
+    outcome = bot_service.reconcile_unresolved_order_attempts(
+        db_session, user_id=entry.user_id, account_id=entry.account_id, client=client, now=due(entry))
+    assert outcome.unresolved_count == 1
+    db_session.commit()
+    result.run.status = "stopped"
+    result.config.enabled = False
+    db_session.commit()
+    assert process_time_exit(db_session, entry_id=entry.id, client=client,
+                             worker_lease_token=lease(db_session), now=due(entry))
+    db_session.commit()
+    assert client.cancel_order_calls[0]["order_id"] == "provider-order-1"
+    assert len(client.close_position_calls) == (1 if filled else 0)
+    assert len(client.place_order_calls) == 1
+    assert entry.status == "cancelled"
+    assert pending_exits(db_session).count() == 0
+
+
+def test_working_entry_is_not_cancelled_before_deadline(db_session, live_entry):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client)
+    bot_service.reconcile_unresolved_order_attempts(db_session, user_id=entry.user_id,
+        account_id=entry.account_id, client=client, now=due(entry)-timedelta(seconds=1))
+    db_session.commit()
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+        worker_lease_token=lease(db_session), now=due(entry)-timedelta(seconds=1))
+    assert not client.cancel_order_calls and not client.close_position_calls
+
+
+@pytest.mark.parametrize("fault", ["duplicate_tag", "wrong_account", "wrong_contract", "wrong_id", "missing_tag", "lost_lease", "funded", "live_disabled"])
+def test_recovered_entry_requires_identity_and_execution_fences(db_session, live_entry, monkeypatch, fault):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client)
+    token = lease(db_session)
+    if fault == "duplicate_tag": client.orders.append(dict(client.orders[0]))
+    if fault == "wrong_account": client.orders[0]["account_id"] = 9999
+    if fault == "wrong_contract": client.orders[0]["contract_id"] = "OTHER"
+    if fault == "wrong_id": entry.provider_order_id = "conflicting-id"
+    if fault == "missing_tag": client.orders[0]["custom_tag"] = None
+    if fault == "lost_lease": token = bot_service.BotWorkerLeaseToken(lease_name="test-time-exits", owner_id="other", lease_ttl_seconds=45)
+    if fault == "funded": client.account_simulated = False
+    if fault == "live_disabled": monkeypatch.setenv("TOPSIGNAL_LIVE_EXECUTION_ENABLED", "false")
+    db_session.commit()
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+                                 worker_lease_token=token, now=due(entry))
+    assert not client.cancel_order_calls and not client.close_position_calls
+    assert len(client.place_order_calls) == 1
+    assert pending_exits(db_session).count() == 1
+
+
+@pytest.mark.parametrize("lost_ack", [False, True])
+def test_fill_racing_entry_cancellation_is_read_before_close(db_session, live_entry, lost_ack):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client)
+    cancel = client.cancel_order
+    def race(**kwargs):
+        response = cancel(**kwargs)
+        if kwargs["order_id"] == entry.provider_order_id:
+            client.orders[0] = {**client.orders[0], "status": 2, "raw_payload": {"fillVolume": 2}}
+            client.positions = [{"account_id": entry.account_id, "contract_id": entry.contract_id, "signed_size": 2}]
+            if lost_ack: raise RuntimeError("lost cancel acknowledgement")
+        return response
+    client.cancel_order = race
+    assert process_time_exit(db_session, entry_id=entry.id, client=client,
+                             worker_lease_token=lease(db_session), now=due(entry))
+    assert len(client.close_position_calls) == 1
+    assert len(client.place_order_calls) == 1
+
+
+def test_uncertain_cancel_keeps_protection_and_retry_reads_before_mutating(db_session, live_entry):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client, filled=1)
+    token = lease(db_session)
+    def timeout(**kwargs):
+        client.cancel_order_calls.append(kwargs)
+        raise RuntimeError("cancel response unavailable")
+    client.cancel_order = timeout
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+                                 worker_lease_token=token, now=due(entry))
+    db_session.commit()
+    assert client.open_orders[-1] == protective_stop()
+    assert not client.close_position_calls
+    assert entry.status == "submission_unknown"
+    assert len(client.cancel_order_calls) == 1
+    retry = datetime.fromisoformat(entry.raw_request["timeExit"]["retry_at"])
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+                                 worker_lease_token=token, now=retry-timedelta(seconds=1))
+    # Broker now confirms the original cancellation. Don't cancel that entry twice.
+    client.orders[0] = {**client.orders[0], "status": 3}
+    client.open_orders = []
+    assert process_time_exit(db_session, entry_id=entry.id, client=client,
+                             worker_lease_token=token, now=retry)
+    assert len(client.cancel_order_calls) == len(client.close_position_calls) == 1
+
+
+def test_recovered_order_cannot_close_unattributed_position(db_session, live_entry):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client, filled=0)
+    client.positions = [{"account_id": entry.account_id, "contract_id": entry.contract_id, "signed_size": 1}]
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+                                 worker_lease_token=lease(db_session), now=due(entry))
+    assert len(client.cancel_order_calls) == 1  # Only the exact entry, not its stop.
+    assert client.open_orders == [protective_stop()]
+    assert not client.close_position_calls
+    assert pending_exits(db_session).count() == 1
+
+
+def test_recovery_read_outage_preserves_exit_and_backs_off(db_session, live_entry):
+    result, client = live_entry
+    entry = recovered_working_entry(db_session, result, client, filled=1)
+    token = lease(db_session)
+    search = client.search_orders
+    reads = []
+
+    def unavailable(**kwargs):
+        reads.append(kwargs)
+        raise RuntimeError("order history unavailable")
+
+    client.search_orders = unavailable
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+        worker_lease_token=token, now=due(entry))
+    db_session.commit()
+    db_session.expire_all()
+    retry = datetime.fromisoformat(entry.raw_request["timeExit"]["retry_at"])
+    assert retry == due(entry) + timedelta(seconds=10)
+    assert not process_time_exit(db_session, entry_id=entry.id, client=client,
+        worker_lease_token=token, now=retry-timedelta(seconds=1))
+    assert len(reads) == 1
+    assert not client.cancel_order_calls and not client.close_position_calls
+    assert client.open_orders[-1] == protective_stop()
+    assert pending_exits(db_session).count() == 1
+
+    client.search_orders = search
+    assert process_time_exit(db_session, entry_id=entry.id, client=client,
+        worker_lease_token=token, now=retry)
+    db_session.commit()
+    assert len(client.cancel_order_calls) >= 1
+    assert len(client.close_position_calls) == len(client.place_order_calls) == 1
+    assert "reconciliation_error" not in entry.raw_request["timeExit"]

@@ -157,7 +157,7 @@ async def request(app, method, path, body=None):
         events.append(event)
     scope = dict(type='http', asgi={'version': '3.0'}, http_version='1.1', method=method,
         scheme='http', path=url.path, raw_path=url.path.encode(), query_string=url.query.encode(), root_path='',
-        headers=[(b'content-type', b'application/json')], client=('127.0.0.1', 1234), server=('testserver', 80))
+        headers=[(b'host', b'127.0.0.1'), (b'content-type', b'application/json')], client=('127.0.0.1', 1234), server=('127.0.0.1', 80))
     await app(scope, receive, send)
     status = next(e['status'] for e in events if e['type'] == 'http.response.start')
     raw = b''.join(e.get('body', b'') for e in events if e['type'] == 'http.response.body')

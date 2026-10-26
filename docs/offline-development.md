@@ -21,6 +21,22 @@ binds to loopback and selects a free port starting at 8000; the frontend
 automatically uses that backend. Port 5174 is reserved for the offline workspace
 so its browser preferences do not mix with the normal development site.
 
+Anonymous local API requests must come from a loopback client with a loopback
+Host (`127.0.0.1`, `localhost`, or `::1`). Browser requests must use an origin
+listed in `ALLOWED_ORIGINS` (the launcher sets `http://127.0.0.1:5174`). Foreign
+and null origins are rejected before handlers run, including GET requests that
+refresh provider data. No-Origin CLI and supervisor requests remain supported
+on loopback; cross-site browser Fetch Metadata cannot use that exception.
+Authenticated deployments retain their bearer-token requirement.
+
+For offline backend validation, run
+`backend/.venv/Scripts/python.exe backend/tools/run_offline_tests.py` from the
+repository root. On Windows the runner allocates a unique short temporary
+directory for pytest, closes diagnostic logs after the suite, and removes only
+that invocation's temporary fixtures. Application/cache paths are unchanged.
+To retain fixtures for debugging, pass pytest an explicit `--basetemp` pointing
+to a new disposable directory; pytest can clear that directory before a run.
+
 The local development sign-in page also has **Continue offline** directly below
 **Continue with Google**. It opens this separate workspace; start the command
 above first if it is not already running. The link does not change the cloud

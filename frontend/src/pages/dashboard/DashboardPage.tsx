@@ -20,6 +20,7 @@ import { cn } from "../../components/ui/cn";
 import { Input } from "../../components/ui/Input";
 import { Icon } from "../../components/ui/Icon";
 import { DashboardOverview, TradingProfile } from "./components/DashboardOverview";
+import { AccountRiskForecastPanel } from "./components/AccountRiskForecastPanel";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Toggle } from "../../components/ui/Toggle";
 import {
@@ -3651,6 +3652,13 @@ export function DashboardPage() {
           </p>
         </Card>
       ) : null}
+
+      {selectedAccountId !== null && <AccountRiskForecastPanel
+        key={selectedAccountId}
+        accountId={selectedAccountId}
+        accountName={selectedAccount?.name ?? "Selected account"}
+        demoMode={demoModeEnabled}
+      />}
 
       {compactMode.enabled ? (
         <CompactDashboardView

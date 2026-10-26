@@ -11781,6 +11781,24 @@ def _fetch_live_execution_preflight(
     )
 
 
+def _matching_reconciled_order(entry: BotOrderAttempt, orders: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A tag alone is not proof: require one matching immutable order identity."""
+    tag = _normalized_optional_text((entry.raw_request or {}).get("customTag"))
+    if not tag:
+        return None
+    matches = [row for row in orders if isinstance(row, dict)
+               and _normalized_optional_text(row.get("custom_tag")) == tag]
+    if len(matches) != 1:
+        return None
+    row = matches[0]
+    order_id = _normalized_optional_text(row.get("order_id"))
+    if (order_id is None or row.get("account_id") != int(entry.account_id)
+            or str(row.get("contract_id") or "") != str(entry.contract_id)
+            or (entry.provider_order_id is not None and str(entry.provider_order_id) != order_id)):
+        return None
+    return row
+
+
 def reconcile_unresolved_order_attempts(
     db: Session,
     *,
@@ -11837,18 +11855,11 @@ def reconcile_unresolved_order_attempts(
         matches = orders_by_tag.get(custom_tag or "", [])
         if len(matches) != 1:
             continue
-        match = matches[0]
+        match = _matching_reconciled_order(row, matches)
         # A deterministic tag is a lookup aid, not proof of order identity.
         # Never clear the ambiguity latch using an unrelated account/contract
         # or a previously recorded, conflicting provider order ID.
-        if (
-            match.get("account_id") != int(row.account_id)
-            or str(match.get("contract_id") or "") != str(row.contract_id)
-            or (
-                row.provider_order_id is not None
-                and str(match.get("order_id") or "") != str(row.provider_order_id)
-            )
-        ):
+        if match is None:
             row.rejection_reason = "Provider tag matched an inconsistent order identity; reconciliation remains blocked."
             continue
         provider_order_id = _normalized_optional_text(match.get("order_id"))

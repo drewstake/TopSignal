@@ -8,9 +8,37 @@ deliberately excluded from this offline command.
 from __future__ import annotations
 
 import ipaddress
+from contextlib import contextmanager
+import logging
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
+
+
+@contextmanager
+def portable_pytest_arguments(arguments: list[str], *, platform: str | None = None):
+    """Avoid Windows MAX_PATH failures without changing application artifacts.
+
+    Own a fresh short root for this invocation only. Explicit --basetemp stays
+    under the caller's control, including its normal pytest retention behavior.
+    """
+    if (platform or sys.platform) != "win32" or any(
+        arg == "--basetemp" or arg.startswith("--basetemp=") for arg in arguments
+    ):
+        yield arguments
+        return
+    parent = Path(tempfile.gettempdir()).resolve()
+    scratch = Path(tempfile.mkdtemp(prefix="ts-", dir=parent)).resolve()
+    try:
+        yield [*arguments, "--basetemp", str(scratch)]
+    finally:
+        # Only this freshly allocated test directory may be removed. Never
+        # clean a caller's basetemp or an application/storage directory.
+        if scratch.is_symlink() or scratch.resolve().parent != parent or not scratch.name.startswith("ts-"):
+            raise RuntimeError("Refusing to clean an unexpected offline test directory")
+        shutil.rmtree(scratch)
 
 
 def main() -> int:
@@ -54,7 +82,13 @@ def main() -> int:
     sys.path.insert(0, str(backend))
     import pytest
 
-    result = int(pytest.main(sys.argv[1:] or ["tests", "-q", "-ra"]))
+    with portable_pytest_arguments(sys.argv[1:] or ["tests", "-q", "-ra"]) as arguments:
+        try:
+            result = int(pytest.main(arguments))
+        finally:
+            # Rotating diagnostic logs may hold fixture paths until interpreter
+            # exit. Release them before removing this invocation's Windows root.
+            logging.shutdown()
     print(f"Offline guard: external connections blocked={len(blocked_connections)}; dotenv disabled; live gates disabled")
     return result if not blocked_connections else 1
 

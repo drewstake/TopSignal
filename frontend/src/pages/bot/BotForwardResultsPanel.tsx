@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { botsApi } from "../../lib/api";
+import { BotCollectionCoverage, type CollectionCoverage } from "./BotCollectionCoverage";
 import { BaselineComparisons, DecisionExplanation, VolatilityWhatIf, type DecisionDetails, type ForwardComparison, type VolatilityCounterfactuals } from "./BotEvaluationDetails";
 
 export interface ForwardResults {
@@ -14,6 +15,7 @@ export interface ForwardResults {
   timing_summary?: null | { count: number; median_seconds: number | null; p95_seconds: number | null; max_seconds: number | null; measured_duration_count: number; mean_evaluation_ms: number | null };
   comparison?: ForwardComparison | null;
   volatility_counterfactuals?: VolatilityCounterfactuals | null;
+  coverage?: CollectionCoverage | null;
   recent: { at: string; action: string; stage: string; reason: string; risk_codes: string[]; paper_disposition: string; outcome_status: string; details?: DecisionDetails }[];
 }
 const label = (value: string) => value.replaceAll("_", " ");
@@ -67,6 +69,8 @@ function ForwardResultsContent({ botId, demoMode, days }: { botId: number | null
       <dl className="grid grid-cols-2 md:grid-cols-6 gap-3">
         {Object.entries({ Evaluations: data.evaluations, Forecasts: data.forecasts, Completed: data.completed, Pending: data.pending, Overdue: data.overdue, Unknown: data.unknown }).map(([name, value]) => <div key={name} className="rounded border border-app-border p-3"><dt className="text-xs text-app-muted">{name}</dt><dd className="text-xl font-semibold">{value}</dd></div>)}
       </dl>
+      {data.coverage && <BotCollectionCoverage coverage={data.coverage} />}
+      {data.volatility_counterfactuals && <VolatilityWhatIf data={data.volatility_counterfactuals} />}
       {data.timing_summary && <p className="text-sm">Forecast recording delay after candle close: median {data.timing_summary.median_seconds?.toFixed(1) ?? "—"}s · 95th percentile {data.timing_summary.p95_seconds?.toFixed(1) ?? "—"}s · maximum {data.timing_summary.max_seconds?.toFixed(1) ?? "—"}s ({data.timing_summary.count} forecasts).</p>}
       {data.recent[0]?.details && <section aria-label="Latest evaluation explanation" className="rounded border border-app-border p-4 space-y-3"><h4 className="font-semibold">Latest decision · {data.recent[0].action}</h4><p className="text-sm">{data.recent[0].reason}</p><DecisionExplanation details={data.recent[0].details} /></section>}
       <div className="grid md:grid-cols-2 gap-5">
@@ -85,7 +89,6 @@ function ForwardResultsContent({ botId, demoMode, days }: { botId: number | null
           </> : <p>No simulated account records yet.</p>}
         </div>
       </div>
-      {data.volatility_counterfactuals && <VolatilityWhatIf data={data.volatility_counterfactuals} />}
       {data.comparison && <BaselineComparisons comparison={data.comparison} />}
       <div><h4 className="font-semibold">Forecast reliability</h4><p className="text-xs text-app-muted">Nonoverlapping 15-minute forecast sample. BUY and SELL are scored separately, not independent evidence. Small bins are descriptive only; no validation claim. Model versions in this period: {data.artifacts.length}.</p>
         <div className="grid md:grid-cols-2 gap-4 mt-2">{Object.entries(data.calibration).map(([side, score]) => <div key={side}>

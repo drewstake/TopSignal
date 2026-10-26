@@ -1,0 +1,32 @@
+Audit and improve TopSignal's Backtesting tab end to end, then implement the verified fixes.
+
+Read AGENTS.md and docs/supabase-storage-policy.md. Preserve existing user changes.
+Keep historical data and archives on the backend filesystem. Do not write candle
+history to Supabase, enable live trading, purchase data, or delete source archives.
+
+Start with the actual Backtesting UI and its frontend, API, and local replay cache.
+Reproduce issues before changing behavior. Prioritize incorrect prices, timeframes,
+dates, missing candles, navigation jumps, and race conditions over cosmetic changes.
+
+Verify:
+- Each timeframe's OHLCV and volume against the underlying minute data.
+- Completed-bar boundaries, daily session timestamps, holidays, weekends, gaps,
+  contract rolls, earliest/latest data, empty ranges, and exclusive end dates.
+- Exact candles stay exact during zoom and pan; grouped history is explicit.
+- Timeframe changes preserve the date being inspected; date selections match the
+  request; latest-data and full-history controls work and are clearly different.
+- Delayed, failed, cancelled, and out-of-order requests cannot overwrite newer views.
+- Retry, initial loading, empty results, unmount, theme/scale changes, and resize.
+- Crosshair/OHLC labels describe the visible candle, not a hidden future candle.
+- Keyboard controls, status/error announcements, readable labels, and layout overflow.
+- Authentication, bounded API responses, malformed dates, and safe cache errors.
+- Request frequency, response size, rendering cost, and local processing time.
+
+Implement concrete fixes with focused regression tests. Measure optimizations
+before and after. Use the real browser for interactions in addition to mocked
+component tests. Check the production build and related backend/storage tests.
+Do not describe untested browsers or device sizes as verified.
+
+Deliver a concise summary of reproduced issues, implemented changes, test counts,
+performance measurements, and remaining limitations. Distinguish chart/data
+validation from strategy execution: do not invent backtest results or profitability.
