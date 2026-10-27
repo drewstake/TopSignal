@@ -223,22 +223,44 @@ def test_actual_deadline_leaves_submission_unknown_for_reconciliation():
         assert attempt.provider_order_id is None
 
 
+def test_setup_consuming_budget_never_starts_dns_or_dispatches(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(transport, "monotonic", lambda: clock[0])
+    initialize = transport.DeadlineHTTPSHandler.__init__
+    def slow_setup(self, deadline):
+        initialize(self, deadline)
+        clock[0] += 1.0
+    def forbidden_dns(*args):
+        pytest.fail("Expired setup must not start DNS or dispatch a request")
+    monkeypatch.setattr(transport.DeadlineHTTPSHandler, "__init__", slow_setup)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden_dns)
+    assert_timeout(lambda: client_at("https://example.invalid").get_access_token(), unknown=False)
+
+
 def test_dns_timeouts_have_bounded_workers_and_never_connect_later(monkeypatch):
     release = Event()
     entered = []
+    connections = []
     monkeypatch.setattr(transport, "_DNS_SLOTS", BoundedSemaphore(2))
     def slow_dns(*args):
         entered.append(args)
-        release.wait(3)
+        release.wait()  # Only the owning test's finally block releases a slot.
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))]
     def forbidden_connect(*args):
-        pytest.fail("A timed-out resolver must never initiate a connection")
+        connections.append(True)
+        raise OSError("A timed-out resolver must never initiate a connection")
     monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
     monkeypatch.setattr(socket.socket, "connect", forbidden_connect)
     before_threads = set(threads())
     try:
         for _ in range(4):
-            assert_timeout(lambda: client_at("https://example.invalid", .08).get_access_token(), unknown=False)
+            # Exercise connection/DNS directly: Windows certificate-store setup
+            # can consume this short budget before an HTTPS client reaches DNS.
+            before = time.monotonic()
+            with transport.RequestDeadline(.08) as deadline:
+                with pytest.raises(TimeoutError):
+                    deadline.connect(("example.invalid", 443))
+            assert time.monotonic() - before < .85
         assert len(entered) == 2
     finally:
         release.set()
@@ -246,6 +268,7 @@ def test_dns_timeouts_have_bounded_workers_and_never_connect_later(monkeypatch):
             if thread.name == "projectx-dns":
                 thread.join(timeout=2)
                 assert not thread.is_alive()
+    assert connections == []
 
 
 def test_stalled_tls_handshake_obeys_deadline():
