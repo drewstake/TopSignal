@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..evaluation_timing import timed_stage
+from .projectx_transport import DeadlineHTTPHandler, DeadlineHTTPSHandler, RequestDeadline
 
 import hashlib
 from http.client import HTTPException
@@ -9,6 +10,7 @@ import math
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -76,8 +78,35 @@ class _RejectRedirectHandler(request.HTTPRedirectHandler):
         return None
 
 
-def _open_projectx_request(req, *, timeout):
-    return request.build_opener(_RejectRedirectHandler()).open(req, timeout=timeout)
+def _open_projectx_request(req, *, timeout, deadline):
+    return request.build_opener(
+        DeadlineHTTPHandler(deadline), DeadlineHTTPSHandler(deadline), _RejectRedirectHandler(),
+    ).open(req, timeout=timeout)
+
+
+def _request_timeout(*, outcome_unknown: bool = False) -> ProjectXClientError:
+    return ProjectXClientError(
+        "ProjectX request timed out. Check the ProjectX connection and try again.",
+        status_code=504,
+        submission_outcome_unknown=outcome_unknown,
+        reason_code=PROJECTX_ERROR_NETWORK,
+    )
+
+
+@contextmanager
+def _token_cache_guard(deadline: RequestDeadline | None = None):
+    try:
+        acquired = _TOKEN_LOCK.acquire(timeout=deadline.remaining()) if deadline else _TOKEN_LOCK.acquire()
+    except TimeoutError as exc:
+        raise _request_timeout() from exc
+    if not acquired:
+        raise _request_timeout()
+    try:
+        if deadline and deadline.expired:
+            raise _request_timeout()
+        yield
+    finally:
+        _TOKEN_LOCK.release()
 
 
 def validate_projectx_url(value: str, *, websocket: bool = False) -> str:
@@ -111,7 +140,7 @@ class ProjectXClient:
         base_url: str,
         username: str,
         api_key: str,
-        timeout_seconds: int = 20,
+        timeout_seconds: float = 20,
     ):
         self.base_url = validate_projectx_url(base_url).rstrip("/")
         self.username = username
@@ -738,13 +767,16 @@ class ProjectXClient:
         payload: dict[str, Any] | None = None,
         with_auth: bool,
     ) -> Any:
-        try:
-            return self._request_once(method, path, payload=payload, with_auth=with_auth)
-        except ProjectXClientError as exc:
-            if with_auth and exc.status_code == 401:
-                _clear_token_cache(self._token_cache_key())
-                return self._request_once(method, path, payload=payload, with_auth=with_auth)
-            raise
+        # Authentication and the one permitted explicit-401 retry share the
+        # original budget. Never retry an uncertain broker mutation.
+        with RequestDeadline(self.timeout_seconds) as deadline:
+            try:
+                return self._request_once(method, path, payload=payload, with_auth=with_auth, deadline=deadline)
+            except ProjectXClientError as exc:
+                if with_auth and exc.status_code == 401 and not exc.submission_outcome_unknown:
+                    _clear_token_cache(self._token_cache_key(), deadline=deadline)
+                    return self._request_once(method, path, payload=payload, with_auth=with_auth, deadline=deadline)
+                raise
 
     def _request_once(
         self,
@@ -753,7 +785,16 @@ class ProjectXClient:
         *,
         payload: dict[str, Any] | None = None,
         with_auth: bool,
+        deadline: RequestDeadline | None = None,
     ) -> Any:
+        if deadline is None:
+            with RequestDeadline(self.timeout_seconds) as owned_deadline:
+                return self._request_once(method, path, payload=payload, with_auth=with_auth, deadline=owned_deadline)
+        try:
+            deadline.remaining()
+        except TimeoutError as exc:
+            # Nothing has been dispatched on this attempt yet.
+            raise _request_timeout() from exc
         url = parse.urljoin(f"{self.base_url}/", path.lstrip("/"))
         headers = {
             "Accept": "application/json",
@@ -761,14 +802,20 @@ class ProjectXClient:
         }
 
         if with_auth:
-            headers["Authorization"] = f"Bearer {self._get_access_token()}"
+            headers["Authorization"] = f"Bearer {self._get_access_token(deadline=deadline)}"
 
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = request.Request(url=url, data=body, headers=headers, method=method.upper())
 
         try:
-            with _open_projectx_request(req, timeout=self.timeout_seconds) as response:
+            remaining = deadline.remaining()
+        except TimeoutError as exc:
+            # In particular, an authentication timeout must not dispatch an order.
+            raise _request_timeout() from exc
+        try:
+            with _open_projectx_request(req, timeout=remaining, deadline=deadline) as response:
                 raw_bytes = response.read(_MAX_RESPONSE_BYTES + 1)
+                deadline.remaining()
                 if len(raw_bytes) > _MAX_RESPONSE_BYTES:
                     raise ProjectXClientError(
                         "ProjectX response exceeded the maximum allowed size.", status_code=502,
@@ -777,40 +824,34 @@ class ProjectXClient:
                     )
                 raw = raw_bytes.decode("utf-8")
         except error.HTTPError as exc:
+            outcome_unknown = _is_broker_mutation_path(path) and (
+                300 <= int(exc.code) <= 399 or int(exc.code) == 408 or 500 <= int(exc.code) <= 599
+            )
             try:
                 raw_error = exc.read(_MAX_ERROR_BYTES).decode("utf-8", errors="replace")
             except (OSError, HTTPException):
                 raw_error = ""
             finally:
                 exc.close()
+            if deadline.expired:
+                # Keep definitive rejection semantics, but do not authenticate
+                # again or retry a 401 after spending the request's budget.
+                raise _request_timeout(outcome_unknown=outcome_unknown) from exc
             detail = _extract_error_message(raw_error) or str(exc.reason)
             raise ProjectXClientError(
                 f"ProjectX request failed ({exc.code}): {detail}",
                 status_code=exc.code,
-                submission_outcome_unknown=(
-                    _is_broker_mutation_path(path)
-                    and (300 <= int(exc.code) <= 399 or int(exc.code) == 408 or 500 <= int(exc.code) <= 599)
-                ),
+                submission_outcome_unknown=outcome_unknown,
                 reason_code=_http_error_reason_code(path=path, status_code=int(exc.code)),
                 retry_after_seconds=_retry_after_seconds(
                     exc.headers.get("Retry-After") if exc.headers is not None else None
                 ),
             ) from exc
         except TimeoutError as exc:
-            raise ProjectXClientError(
-                "ProjectX request timed out. Check the ProjectX connection and try again.",
-                status_code=504,
-                submission_outcome_unknown=_is_broker_mutation_path(path),
-                reason_code=PROJECTX_ERROR_NETWORK,
-            ) from exc
+            raise _request_timeout(outcome_unknown=_is_broker_mutation_path(path)) from exc
         except error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError):
-                raise ProjectXClientError(
-                    "ProjectX request timed out. Check the ProjectX connection and try again.",
-                    status_code=504,
-                    submission_outcome_unknown=_is_broker_mutation_path(path),
-                    reason_code=PROJECTX_ERROR_NETWORK,
-                ) from exc
+            if deadline.expired or isinstance(exc.reason, TimeoutError):
+                raise _request_timeout(outcome_unknown=_is_broker_mutation_path(path)) from exc
             raise ProjectXClientError(
                 f"ProjectX network error: {exc.reason}",
                 status_code=502,
@@ -819,6 +860,8 @@ class ProjectXClient:
             ) from exc
 
         except (OSError, HTTPException, UnicodeDecodeError) as exc:
+            if deadline.expired:
+                raise _request_timeout(outcome_unknown=_is_broker_mutation_path(path)) from exc
             raise ProjectXClientError(
                 "ProjectX response was interrupted or invalid.", status_code=502,
                 submission_outcome_unknown=_is_broker_mutation_path(path),
@@ -838,6 +881,9 @@ class ProjectXClient:
                 reason_code=PROJECTX_ERROR_PROVIDER_RESPONSE,
             ) from exc
 
+        if deadline.expired:
+            raise _request_timeout(outcome_unknown=_is_broker_mutation_path(path))
+
         if isinstance(parsed, dict) and parsed.get("success") is False:
             raise ProjectXClientError(
                 _format_provider_error(path=path, payload=parsed),
@@ -854,10 +900,13 @@ class ProjectXClient:
     def get_access_token(self) -> str:
         return self._get_access_token()
 
-    def _get_access_token(self) -> str:
+    def _get_access_token(self, *, deadline: RequestDeadline | None = None) -> str:
+        if deadline is None:
+            with RequestDeadline(self.timeout_seconds) as owned_deadline:
+                return self._get_access_token(deadline=owned_deadline)
         cache_key = self._token_cache_key()
         now = datetime.now(timezone.utc)
-        with _TOKEN_LOCK:
+        with _token_cache_guard(deadline):
             # Credential rotations must not retain expired bearer tokens for
             # the entire lifetime of an unattended process.
             for expired_key in tuple(_TOKEN_CACHE_BY_KEY):
@@ -871,7 +920,7 @@ class ProjectXClient:
             "userName": self.username,
             "apiKey": self.api_key,
         }
-        data = self._request_once("POST", "/api/Auth/loginKey", payload=payload, with_auth=False)
+        data = self._request_once("POST", "/api/Auth/loginKey", payload=payload, with_auth=False, deadline=deadline)
         if not isinstance(data, dict):
             raise ProjectXClientError(
                 "ProjectX auth response format was invalid.",
@@ -889,7 +938,7 @@ class ProjectXClient:
 
         expires_at = _parse_token_expiry(data)
 
-        with _TOKEN_LOCK:
+        with _token_cache_guard(deadline):
             _TOKEN_CACHE_BY_KEY[cache_key] = _TokenCache(token=token, expires_at=expires_at)
 
         return token
@@ -930,8 +979,8 @@ def projectx_error_reason_code(exc: ProjectXClientError) -> str:
     return PROJECTX_ERROR_PROVIDER_RESPONSE
 
 
-def _clear_token_cache(cache_key: str | None = None) -> None:
-    with _TOKEN_LOCK:
+def _clear_token_cache(cache_key: str | None = None, *, deadline: RequestDeadline | None = None) -> None:
+    with _token_cache_guard(deadline):
         if cache_key is None:
             _TOKEN_CACHE_BY_KEY.clear()
             return

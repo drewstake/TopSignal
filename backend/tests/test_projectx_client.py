@@ -89,7 +89,7 @@ def test_transport_redirect_does_not_forward_bearer_or_mutation(monkeypatch):
 
     monkeypatch.setattr(client_module.request, "build_opener", lambda *handlers: original_build(FixtureHttpsHandler(), *handlers))
     client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
-    monkeypatch.setattr(client, "_get_access_token", lambda: "fixture-bearer")
+    monkeypatch.setattr(client, "_get_access_token", lambda **_kwargs: "fixture-bearer")
     with pytest.raises(ProjectXClientError) as exc_info:
         client._request_once("POST", "/api/Order/place", payload={"fixture": True}, with_auth=True)
     assert seen == [("https://example.test/api/Order/place", "Bearer fixture-bearer")]
@@ -1230,7 +1230,7 @@ def test_access_token_cache_is_invalidated_when_api_key_changes():
             super().__init__(base_url="https://example.test", username="demo", api_key=api_key)
             self.login_calls = login_calls
 
-        def _request_once(self, method, path, *, payload=None, with_auth):
+        def _request_once(self, method, path, *, payload=None, with_auth, deadline=None):
             assert method == "POST"
             assert path == "/api/Auth/loginKey"
             assert with_auth is False
