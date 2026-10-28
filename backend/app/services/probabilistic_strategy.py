@@ -22,6 +22,18 @@ INTERFACE_VERSION = "mnq-probabilistic-v3"
 MODEL_VERSIONS = ("empirical_pool_v1", "bayesian_cells_v1", "kernel_paths_v1")
 DEFAULT_RESEARCH_MODEL = "bayesian_cells_v1"  # Research prototype, not production selection.
 SPEC = protocol()
+REGISTERED_STOP_POLICY = "registered_25_points"
+UNCAPPED_STOP_POLICY = "observation_volatility_uncapped_v1"
+
+
+def valid_stop(stop: float, policy: str = REGISTERED_STOP_POLICY) -> bool:
+    if policy not in (REGISTERED_STOP_POLICY, UNCAPPED_STOP_POLICY):
+        raise ValueError("Unknown stop policy")
+    return (isinstance(stop, (int, float)) and not isinstance(stop, bool)
+            and math.isfinite(stop) and stop >= SPEC["minimum_candidate_stop_points"]
+            and (policy == UNCAPPED_STOP_POLICY or stop <= SPEC["maximum_candidate_stop_points"]))
+
+
 HORIZON = SPEC["horizon_bars"]
 FEATURE_BARS = SPEC["feature_bars"]
 TICK = 0.25
@@ -124,7 +136,7 @@ def contiguous(rows: Sequence[Candle]) -> bool:
 
 
 def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float = 1.0,
-             all_sessions: bool = False) -> Features:
+             all_sessions: bool = False, stop_policy: str = REGISTERED_STOP_POLICY) -> Features:
     """No sorting, interpolation, cross-owner pooling or partial-bar substitution."""
     if not math.isfinite(stop_multiplier) or stop_multiplier <= 0:
         raise ValueError("Invalid stop multiplier.")
@@ -148,7 +160,7 @@ def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float 
     values = (float(changes[-1] / sigma), float(sum(changes[-3:]) / (sigma * math.sqrt(3))),
               math.log(recent / sigma), math.log(window[-1].volume / volume_base))
     stop = max(SPEC["minimum_candidate_stop_points"], math.ceil(stop_multiplier * sigma * math.sqrt(HORIZON) / TICK) * TICK)
-    if stop > SPEC["maximum_candidate_stop_points"]:
+    if not valid_stop(stop, stop_policy):
         raise VolatilityAboveRiskCap(sigma, stop)
     return Features(values, stop, sigma, decision_at, local.date().isoformat())
 
@@ -162,7 +174,9 @@ class Sample:
 
 
 def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0,
-                 stop_multiplier: float = 1.0, population_by_day: dict | None = None) -> tuple[list[Sample], dict[str, int]]:
+                 stop_multiplier: float = 1.0, population_by_day: dict | None = None,
+                 stop_policy: str = REGISTERED_STOP_POLICY) -> tuple[list[Sample], dict[str, int]]:
+    valid_stop(4., stop_policy)
     if stride not in (1, 3) or delay_bars not in (0, 1):
         raise ValueError("Unsupported research lattice or latency stress.")
     samples: list[Sample] = []
@@ -179,7 +193,7 @@ def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0
             population["candidate_windows"] += 1
         try:
             f = features(rows[max(0, index - FEATURE_BARS + 1):index + 1], as_of=now,
-                         stop_multiplier=stop_multiplier)
+                         stop_multiplier=stop_multiplier, stop_policy=stop_policy)
             future = rows[index + 1 + delay_bars:index + 1 + delay_bars + HORIZON]
             if not contiguous(rows[index:index + HORIZON + delay_bars + 1]):
                 raise ValueError("Missing or invalid future path; outcome is unknown.")
@@ -267,8 +281,10 @@ class PathModel:
     version: str
     samples: tuple[Sample, ...]
     pool_mix: float = 0.0
+    stop_policy: str = REGISTERED_STOP_POLICY
 
     def __post_init__(self) -> None:
+        valid_stop(4., self.stop_policy)
         if self.version not in MODEL_VERSIONS or not 0 <= self.pool_mix <= 1:
             raise ValueError("Unknown model revision or calibration mixture.")
         if not 2 <= len(self.samples) <= 4096:
@@ -277,7 +293,7 @@ class PathModel:
         for sample in self.samples:
             f = sample.features
             if (not all(math.isfinite(v) for v in (*f.values, f.stop_points, f.volatility))
-                    or not 4 <= f.stop_points <= 25 or f.volatility <= 0
+                    or not valid_stop(f.stop_points, self.stop_policy) or f.volatility <= 0
                     or f.decision_at.tzinfo is None or sample.label_end.tzinfo is None
                     or sample.label_end != f.decision_at + HORIZON * BAR
                     or f.day != f.decision_at.astimezone(ET).date().isoformat()
@@ -340,6 +356,8 @@ class PathModel:
         return mixed / mixed.sum()
 
     def forecast(self, f: Features, costs: Costs = Costs()) -> dict:
+        if not valid_stop(f.stop_points, self.stop_policy):
+            raise ValueError("Forecast stop does not match the model's training policy")
         weights = self.weights(f)
         day_codes = self._day_codes
         day_weight = np.bincount(day_codes, weights=weights)
@@ -387,13 +405,14 @@ class PathModel:
                 "routing_allowed": False, "horizon_minutes": 15, "probability_basis": "uncalibrated_model_estimate",
                 "model_trained_through": self.trained_through.isoformat(),
                 "stop_points": f.stop_points, "target_points": math.ceil(f.stop_points * 1.5 / TICK) * TICK,
-                "quantity": 1, "costs": costs.describe(), "forecasts": outcomes,
+                "quantity": 1, "costs": costs.describe(), "forecasts": outcomes, "stop_policy": self.stop_policy,
                 "no_trade_expected_net_usd": 0.0, "minimum_net_edge_usd": 1.0,
                 "uncertainty_method": "Day-cluster/HAC SE with Kish effective-day correction; Student t and eight-test Bonferroni correction plus cost buffer.",
                 "training_paths": len(self.samples), "reasons": reasons}
 
     def to_dict(self) -> dict:
         return {"interface_version": INTERFACE_VERSION, "version": self.version, "pool_mix": self.pool_mix,
+                "stop_policy": self.stop_policy,
                 "samples": [{"features": list(s.features.values), "stop": s.features.stop_points,
                              "volatility": s.features.volatility, "decision_at": s.features.decision_at.isoformat(),
                              "day": s.features.day, "path": s.path, "label_end": s.label_end.isoformat()}
@@ -415,4 +434,5 @@ class PathModel:
                          datetime.fromisoformat(row["decision_at"]), row["day"])
             samples.append(Sample(f, tuple(tuple(float(v) for v in bar) for bar in row["path"]),
                                   datetime.fromisoformat(row["label_end"])))
-        return cls(payload["version"], tuple(samples), float(payload["pool_mix"]))
+        return cls(payload["version"], tuple(samples), float(payload["pool_mix"]),
+                   payload.get("stop_policy", REGISTERED_STOP_POLICY))

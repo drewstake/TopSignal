@@ -110,6 +110,49 @@ state/trade records stay on the backend filesystem, never cloud candle tables.
 
 ## Population and risk
 
+### October 28, 2026: uncapped observation stops
+
+The user requested removal of the fixed 25-point ceiling for the current dry-run.
+`TOPSIGNAL_OBSERVATION_UNCAPPED_STOPS=true` selects the separate
+`observation_volatility_uncapped_v1` policy. It requires explicit unvalidated
+observation mode, both live execution flags false, and a newly fitted artifact
+created with `fit_observation_model.py --uncapped-stops`. Old capped artifacts
+are rejected under this setting. The policy is included in the model hash and
+forecast records; the new artifact starts a separate forward comparison cohort.
+
+Training and inference both retain the minimum 4-point, quarter-point-rounded
+`sigma * sqrt(3)` stop and 1.5R target, with no fixed upper stop ceiling. Paper
+admission uses the same policy and still enforces one MNQ, the $250 remaining
+daily loss budget including proposed stop risk/costs, cooldown, and entry limit.
+Support, net-edge, freshness, session and live-routing gates are unchanged.
+Removing the ceiling permits more forecasts; it does not guarantee entries.
+Existing hypothetical volatility paths retain their original capped-policy
+meaning and are not backfilled as trades.
+
+This is a new, unvalidated observation experiment. The frozen v3 specification
+and its validated/live artifact path retain the registered 25-point ceiling;
+uncapped observation artifacts cannot enter that path. The following registered
+population and evidence requirements describe v3, not approval of the new policy.
+
+Deployed as `20261028-uncapped-11` on October 28, with configuration 32 / run 9
+continuing in dry-run. The 11:20 Eastern decision produced a numerical forecast
+with a 51.75-point stop and 77.75-point target; it held on net edge, not volatility.
+The new model has 4,096 paths, including 3,460 above the former ceiling, and labels
+through October 23, 15:45 Eastern. This refit also updates the training period,
+so subsequent performance changes cannot be attributed solely to cap removal.
+The new artifact starts a distinct comparison cohort; all 1,119 prior evaluation
+identities and frozen decision/forecast fields were verified preserved.
+
+Deployment was built from release 10 with only this change, leaving unrelated
+workspace changes out. Validation: 339 backend tests plus eight subtests, 380 bot
+frontend tests, and the production frontend build passed. Runtime and read-only
+broker verification at 11:21 Eastern found a healthy dry-run worker and zero
+broker orders, open orders or fills. Private evidence and verified off-host model,
+task/configuration and SQLite backups are under
+`C:\Users\drews\.ssh\topbot-uncapped-20261028`. Keep the previous release/model
+together for rollback; preserve the current ledger rather than restoring an old
+ledger over new observations.
+
 The registered population is MNQ five-minute closed bars, with decisions from
 09:35 through 15:30 America/New_York and a 15-minute horizon ending by 15:45.
 Overnight decisions HOLD. Scheduled closes also constrain entries: the horizon

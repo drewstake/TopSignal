@@ -4563,8 +4563,9 @@ def _runtime_is_local_only() -> bool:
 
 
 def _validate_runtime_security_configuration() -> None:
-    from .services.probabilistic_observation import enabled as observation_enabled
+    from .services.probabilistic_observation import enabled as observation_enabled, stop_policy
     observation_enabled()  # Fail startup on incompatible observation/live settings.
+    stop_policy()  # An observation-only risk policy must never activate in another mode.
     local_only = _runtime_is_local_only()
     runtime_environment = str(os.getenv("TOPSIGNAL_ENV") or "").strip().lower()
     if runtime_environment == "production" and not auth_required():

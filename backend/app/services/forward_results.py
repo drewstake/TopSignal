@@ -12,7 +12,7 @@ import numpy as np
 
 from .probabilistic_observation import enabled
 from .probabilistic_shadow import cache_root
-from .probabilistic_strategy import BAR, ET, Candle, Costs, contiguous, price_paths, utc
+from .probabilistic_strategy import BAR, ET, Candle, Costs, contiguous, price_paths, utc, valid_stop, REGISTERED_STOP_POLICY
 
 VERSION = 'forward-paper-v1'
 
@@ -126,7 +126,10 @@ def admission(state, record, now, *, directional_baseline=False):
     if not directional_baseline and (f.get('training_paths', 0) < 300 or f['forecasts'][record['action']].get('effective_days', 0) < 20 or f['forecasts'][record['action']].get('lower_utility_usd', 0) <= 1):
         return 'paper_signal_support'
     stop, target = f.get('stop_points'), f.get('target_points')
-    if not isinstance(stop, (int, float)) or not math.isfinite(stop) or not 4 <= stop <= 25 or target != math.ceil(stop*1.5/.25)*.25:
+    from .probabilistic_observation import stop_policy
+    policy = stop_policy()
+    if (f.get('stop_policy', REGISTERED_STOP_POLICY) != policy or not valid_stop(stop, policy)
+            or target != math.ceil(stop*1.5/.25)*.25):
         return 'paper_invalid_bracket'
     # Wait for the first *future* five-minute open; keep the original 15-minute deadline.
     entry_at = datetime.fromtimestamp((math.floor(now.timestamp()/300)+1)*300, timezone.utc)
@@ -162,7 +165,7 @@ def ingest(*, owner, account, config, contract, run, candles, forecast, action, 
     # Retain forecast metadata, never provider payloads or full input candle series.
     allowed = ('forecasts','research_action','data_status','training_paths','stop_points','target_points','artifact_sha256',
                'model_age_days','training_stale','observation_only','routing_allowed','reason_code','candle_close_timestamp',
-               'costs','evaluated_at','pool_baseline')
+               'costs','evaluated_at','pool_baseline','stop_policy')
     f = {k: forecast[k] for k in allowed if k in forecast}
     if f.get('forecasts') and f.get('candle_close_timestamp') != close:
         raise ValueError('Forecast/candle alignment mismatch')

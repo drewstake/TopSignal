@@ -52,6 +52,9 @@ def experiment_path(root: Path, experiment_id: str) -> Path:
 
 
 def validate_binding(artifact: dict, *, root: Path, as_of: datetime) -> tuple[PathModel, dict]:
+    from .probabilistic_strategy import REGISTERED_STOP_POLICY
+    if artifact.get("model", {}).get("stop_policy", REGISTERED_STOP_POLICY) != REGISTERED_STOP_POLICY:
+        raise ValueError("Observation stop policies cannot use the validated routing path")
     path = experiment_path(root, artifact.get("experiment_id"))
     if path.stat().st_size > 25_000_000:
         raise ValueError("Experiment exceeds its size bound")

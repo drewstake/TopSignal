@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import math
 
 from .probabilistic_shadow import explain_shadow, unavailable
-from .probabilistic_strategy import BAR, SPEC, utc
+from .probabilistic_strategy import BAR, SPEC, utc, valid_stop, REGISTERED_STOP_POLICY
 
 REVISION = "mnq_bayesian_payoff_v1"
 HISTORY_BARS = 25
@@ -121,7 +121,10 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
                 or not math.isfinite(choice["lower_utility_usd"]) or choice["lower_utility_usd"] <= SPEC["minimum_net_edge_usd"]):
             return hold("NO TRADE: insufficient independent evidence or net utility after costs and uncertainty.")
         stop, target = float(forecast["stop_points"]), float(forecast["target_points"])
-        if (price is None or not math.isfinite(price) or price <= 0 or not 4 <= stop <= 25
+        from .probabilistic_observation import stop_policy
+        policy = stop_policy() if observation else REGISTERED_STOP_POLICY
+        if (forecast.get("stop_policy", REGISTERED_STOP_POLICY) != policy
+                or price is None or not math.isfinite(price) or price <= 0 or not valid_stop(stop, policy)
                 or not math.isfinite(target) or target != math.ceil(stop * 1.5 / .25) * .25):
             return hold("NO TRADE: invalid mathematical-model price or risk bracket.")
         side = 1 if action == "BUY" else -1
