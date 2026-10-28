@@ -72,10 +72,10 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             result.update(data_status="stale")
             result["reasons"][0] = "Research needs a completed candle delivered within 120 seconds of its close."
             return result
-        f = features(rows, as_of=as_of, all_sessions=all_sessions)
-        result.update(data_status="fresh", stop_points=f.stop_points, target_points=math.ceil(f.stop_points * 1.5 / .25) * .25)
-        from .probabilistic_observation import enabled, observation_path, load_model
+        from .probabilistic_observation import enabled, observation_path, load_model, stop_policy
         observation = enabled()
+        f = features(rows, as_of=as_of, all_sessions=all_sessions, stop_policy=stop_policy())
+        result.update(data_status="fresh", stop_points=f.stop_points, target_points=math.ceil(f.stop_points * 1.5 / .25) * .25)
         path = (observation_path if observation else model_path)(owner, contract_id, rows[-1].live, root=root)
         if not path.exists():
             result["reasons"][0] = "No scoped research model artifact. Offline training, calibration and validation are still required."
@@ -106,7 +106,7 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             # Independent research comparator on exactly the same frozen training paths.
             # A failed comparator never changes the selected strategy forecast.
             try:
-                pool = PathModel("empirical_pool_v1", model.samples, pool_mix=0.0).forecast(f)
+                pool = PathModel("empirical_pool_v1", model.samples, pool_mix=0.0, stop_policy=model.stop_policy).forecast(f)
                 result["pool_baseline"] = {key: pool[key] for key in ("research_action", "forecasts")}
             except (ValueError, TypeError, KeyError, OverflowError):
                 result["pool_baseline"] = {"status": "unavailable"}

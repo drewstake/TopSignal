@@ -13,6 +13,8 @@ def main():
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--uncapped-stops", action="store_true",
+                        help="Fit the separate dry-run population without the 25-point ceiling")
     args = parser.parse_args()
     from research_probabilistic_topbot import offline_guard
     offline_guard()
@@ -31,17 +33,19 @@ def main():
     cutoff = datetime.fromisoformat(days[0]).replace(tzinfo=ET) - timedelta(days=1)
     recent = [r for r in rows if r.timestamp >= cutoff]
     # The existing Bayesian model's default mixture, not a tuned or validated choice.
-    from app.services.probabilistic_strategy import make_samples, PathModel, BAR
-    samples, _ = make_samples(recent, stride=3)
+    from app.services.probabilistic_strategy import make_samples, PathModel, BAR, REGISTERED_STOP_POLICY, UNCAPPED_STOP_POLICY
+    policy = UNCAPPED_STOP_POLICY if args.uncapped_stops else REGISTERED_STOP_POLICY
+    samples, _ = make_samples(recent, stride=3, stop_policy=policy)
     chosen = tuple(s for s in samples if s.features.day in set(days) and s.label_end <= now-timedelta(minutes=15))
     if len(chosen) < protocol()["minimum_training_examples"]:
         raise ValueError("Insufficient independent observation paths")
-    model = PathModel("bayesian_cells_v1", chosen[-4096:], pool_mix=0.0)
+    model = PathModel("bayesian_cells_v1", chosen[-4096:], pool_mix=0.0, stop_policy=policy)
     artifact = {"purpose": "dry_run_observation_only", "validation_status": "unvalidated",
         "routing_allowed": False, "owner_hash": scope_hash(args.owner), "root_symbol": "MNQ",
         "roll_policy": protocol()["roll_policy"], "data_live": False,
         "protocol_sha256": digest(protocol()), "implementation_sha256": implementation_sha(),
         "source_sha256": source_hash, "created_at": now.isoformat(),
+        "observation_stop_policy": policy,
         "training_sessions": days, "training_window_policy": "240 complete sessions, latest 4096 eligible stride-three paths; unvalidated observation only",
         "model": model.to_dict(),
         "limitations": ["No passed experiment; not validated.", "Training may be stale; observation only.",

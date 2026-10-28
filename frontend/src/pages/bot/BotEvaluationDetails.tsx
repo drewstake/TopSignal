@@ -41,7 +41,7 @@ export interface VolatilityCounterfactuals {
 export function VolatilityWhatIf({ data }: { data: VolatilityCounterfactuals }) {
   return <section aria-label="Volatility-blocked hypothetical outcomes" className="rounded border border-app-border p-4 space-y-3">
     <h4 className="font-semibold">Blocked trades · hypothetical BUY and SELL P&L</h4>
-    <p className="text-sm text-app-muted">TopBot still holds above its 25-point risk cap. These separate BUY and SELL scenarios show what would have happened with the wider, rejected stop. They never enter TopBot’s balance or baseline accounts and are not model forecasts.</p>
+    <p className="text-sm text-app-muted">These evaluations were blocked by the 25-point cap in effect when recorded. The separate BUY and SELL scenarios show what would have happened with the wider, rejected stop. They never enter TopBot’s balance or baseline accounts and are not model forecasts.</p>
     <div className="grid gap-3 sm:grid-cols-2">
       {["BUY", "SELL"].map(side => {
         const summary = data.sides?.[side];

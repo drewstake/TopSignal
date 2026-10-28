@@ -12,7 +12,7 @@ it("keeps rejected wider-stop outcomes separate and never renders missing result
         stop_points: 34.75, target_points: 52.25, risk_cap_points: 25, quantity: 1, costs: { total_usd: 3.22 }, outcomes: null }] };
   render(<VolatilityWhatIf data={data} />);
   fireEvent.click(screen.getByText(/Recent blocked scenarios/));
-  expect(screen.getByText(/TopBot still holds above its 25-point risk cap/)).toBeTruthy();
+  expect(screen.getByText(/25-point cap in effect when recorded/)).toBeTruthy();
   expect(screen.getByRole("cell", { name: /71\.72/ })).toBeTruthy();
   expect(screen.getAllByText("Unknown")).toHaveLength(2);
   expect(screen.queryByText("$0.00")).toBeNull();
