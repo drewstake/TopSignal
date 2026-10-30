@@ -41,7 +41,8 @@ export function OrderBookPanel({
 }: OrderBookPanelProps) {
   const pageVisible = usePageVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
-  const store = useMemo(() => new OrderBookStore(normalizedContractId, "all"), [normalizedContractId]);
+  const liveContractId = demoMode ? null : normalizedContractId;
+  const store = useMemo(() => new OrderBookStore(liveContractId, "all"), [liveContractId]);
 
   useEffect(() => {
     if (demoMode || !pageVisible || !normalizedContractId) {
