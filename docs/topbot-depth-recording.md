@@ -1,5 +1,10 @@
 # Continuous TopBot depth recording
 
+The [research workspace](microstructure-research.md) can derive v2 features and
+observed replay from these immutable raw segments. Its read-only host helper and
+bounded backfill preserve this running recorder. The optional scheduled derived
+feature worker is separate; see that document for installation status and limits.
+
 Deployed on peteamdpc (`DESKTOP-6EUPDU1`) on October 30, 2026. The independent
 `TopSignal Depth Recorder` Windows scheduled task records the active MNQ delivery
 contract from the existing owner's ProjectX credentials. TopBot remains in paper

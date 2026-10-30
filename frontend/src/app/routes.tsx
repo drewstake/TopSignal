@@ -6,6 +6,7 @@ import { AccountAccess } from "./AccountAccess";
 
 const LogsPage = lazy(() => import("../pages/diagnostics/LogsPage").then(module => ({ default: module.LogsPage })));
 const OrderBookHistoryPage = lazy(() => import("../pages/orderBookHistory/OrderBookHistoryPage").then(module => ({ default: module.OrderBookHistoryPage })));
+const ResearchPage = lazy(() => import("../pages/microstructure/ResearchPage").then(module => ({ default: module.ResearchPage })));
 
 const DashboardPage = lazy(() =>
   import("../pages/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })),
@@ -100,6 +101,9 @@ export const router = createBrowserRouter([
         element: <OrderBookHistoryPage />,
         errorElement: <RouteErrorPage />,
       },
+      ...["microstructure", "event-study", "research-notebook"].map(path => ({
+        path, element: <ResearchPage />, errorElement: <RouteErrorPage />,
+      })),
       {
         path: "appearance",
         element: <AppearancePage />,
