@@ -12,6 +12,7 @@ from app.services import topbot_mathematical as strategy
 from app.services.bot_execution_safety import live_execution_environment_enabled
 from test_probabilistic_strategy import NOW, CONTRACT, as_rows, candles, fitted
 from test_bot_execution_safety import db_session, open_exchange_session
+from app.services.probabilistic_payoff import PAPER_PAYOFF
 
 
 @pytest.fixture
@@ -25,12 +26,13 @@ def observation(monkeypatch, tmp_path):
     for s in model.samples:
         t = s.features.decision_at - timedelta(days=100)
         samples.append(replace(s, features=replace(s.features, decision_at=t, day=t.date().isoformat()),
-            label_end=s.label_end-timedelta(days=100), path=tuple(tuple(v*5 for v in bar) for bar in s.path)))
-    model = replace(model, samples=tuple(samples))
+            label_end=s.label_end-timedelta(days=100), payoff_semantics=PAPER_PAYOFF,
+            path=((-1.,0.,-1.,0.),(0.,8.,0.,6.),(6.,10.,6.,9.))))
+    model = replace(model, samples=tuple(samples), payoff_semantics=PAPER_PAYOFF)
     artifact = {"purpose": "dry_run_observation_only", "validation_status": "unvalidated", "routing_allowed": False,
         "owner_hash": scope_hash("owner"), "root_symbol": "MNQ", "roll_policy": protocol()["roll_policy"],
         "data_live": False, "protocol_sha256": digest(protocol()), "implementation_sha256": implementation_sha(),
-        "experiment_id": "synthetic-observation", "model": model.to_dict()}
+        "experiment_id": "synthetic-observation", "payoff_semantics": PAPER_PAYOFF, "model": model.to_dict()}
     artifact["model_sha256"] = digest(artifact["model"])
     path = obs.observation_path("owner", CONTRACT, False, root=tmp_path)
     path.parent.mkdir(parents=True)
@@ -88,7 +90,7 @@ def test_forecasts_and_hypothetical_outcomes_persist_once_across_repeated_evalua
     assert all(r['validation_status']=='unvalidated' and r['broker_orders'] is False for r in records)
 
 
-def test_unvalidated_buy_uses_dry_run_router_without_provider_order(observation, tmp_path, db_session, monkeypatch, open_exchange_session):
+def test_unvalidated_buy_requires_durable_authorized_simulation_run(observation, tmp_path, db_session, monkeypatch, open_exchange_session):
     from app.services import bot_service
     from test_bot_execution_safety import USER_A, RecordingClient, _add_account_and_config, _patch_actionable_signal
     account, config = _add_account_and_config(db_session)
@@ -107,7 +109,8 @@ def test_unvalidated_buy_uses_dry_run_router_without_provider_order(observation,
     monkeypatch.setattr(bot_service, 'fetch_candles_and_evaluate_strategy', fetch)
     client = RecordingClient()
     result = bot_service.evaluate_bot_config(db_session, user_id=USER_A, config=config, account=account, client=client, dry_run=True)
-    assert result.status == 'dry_run_attempt' and client.place_order_calls == []
+    assert result.status == 'risk_blocked' and client.place_order_calls == []
+    assert 'simulation_run_not_authorized' in [r.code for r in result.risk_events]
 
 
 def test_incompatible_live_settings_fail_startup(observation, monkeypatch):

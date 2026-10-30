@@ -52,6 +52,9 @@ def experiment_path(root: Path, experiment_id: str) -> Path:
 
 
 def validate_binding(artifact: dict, *, root: Path, as_of: datetime) -> tuple[PathModel, dict]:
+    from .probabilistic_payoff import LEGACY_PAYOFF
+    if artifact.get('model', {}).get('payoff_semantics', LEGACY_PAYOFF) != LEGACY_PAYOFF:
+        raise ValueError('Paper v2 payoff has no registered broker-routing validation protocol')
     from .probabilistic_strategy import REGISTERED_STOP_POLICY
     if artifact.get("model", {}).get("stop_policy", REGISTERED_STOP_POLICY) != REGISTERED_STOP_POLICY:
         raise ValueError("Observation stop policies cannot use the validated routing path")

@@ -67,7 +67,7 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             raise ValueError("No completed candle available.")
         close = rows[-1].timestamp + BAR
         age = (utc(as_of) - close).total_seconds()
-        result.update(candle_close_timestamp=close.isoformat(), age_seconds=age)
+        result.update(candle_close_timestamp=close.isoformat(), age_seconds=age, data_live=rows[-1].live)
         if age < 0 or age > 120:
             result.update(data_status="stale")
             result["reasons"][0] = "Research needs a completed candle delivered within 120 seconds of its close."
@@ -94,7 +94,9 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             model, metadata = load_model(artifact, as_of=f.decision_at)
         else:
             model, _ = validate_binding(artifact, root=root or cache_root(), as_of=f.decision_at)
-        forecast = model.forecast(f)
+        from .probabilistic_payoff import execution_window
+        window = execution_window(f.decision_at, utc(as_of)) if observation else None
+        forecast = model.forecast(f, entry_offset_bars=window['entry_offset_bars']) if window else model.forecast(f)
         result.update(forecast)
         # Routing evidence is taken only from the verified experiment/review binding.
         result.update(action="NO_TRADE", routing_allowed=artifact["validation_status"] == "passed", validation_status=artifact["validation_status"],
@@ -106,7 +108,8 @@ def explain_shadow(*, candles: Sequence[Any], owner: str, contract_id: str, as_o
             # Independent research comparator on exactly the same frozen training paths.
             # A failed comparator never changes the selected strategy forecast.
             try:
-                pool = PathModel("empirical_pool_v1", model.samples, pool_mix=0.0, stop_policy=model.stop_policy).forecast(f)
+                pool = PathModel("empirical_pool_v1", model.samples, pool_mix=0.0, stop_policy=model.stop_policy,
+                                 payoff_semantics=model.payoff_semantics).forecast(f, entry_offset_bars=window['entry_offset_bars'])
                 result["pool_baseline"] = {key: pool[key] for key in ("research_action", "forecasts")}
             except (ValueError, TypeError, KeyError, OverflowError):
                 result["pool_baseline"] = {"status": "unavailable"}

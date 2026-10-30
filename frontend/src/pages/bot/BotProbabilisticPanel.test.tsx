@@ -20,6 +20,11 @@ const estimate: BotResearchAction = { probability_net_positive: .8, probability_
   standard_error_usd: 3, uncertainty_penalty_usd: 8, lower_utility_usd: -10, effective_days: 25 };
 
 describe("probabilistic Dry Run explanation", () => {
+  it("does not diagnose a missing model from an outside-hours HOLD", () => {
+    render(<BotProbabilisticPanel research={{...missing,reasons:["NO TRADE: outside_research_session."]}} />);
+    expect(screen.getByText(/No numerical forecast is expected/)).toBeTruthy();
+    expect(screen.queryByText(/unavailable until a suitable model/)).toBeNull();
+  });
   it("shows missing probabilities as unavailable, never neutral or zero", () => {
     render(<BotProbabilisticPanel research={missing} />);
     expect(screen.getByText(/probabilities, expected payoff and model uncertainty are unavailable/)).toBeTruthy();

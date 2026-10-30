@@ -3676,7 +3676,18 @@ def get_forward_results(bot_config_id: int, response: Response,
         raise HTTPException(status_code=404, detail="Bot not found")
     _require_owned_projectx_account(db, user_id=user_id, account_id=config.account_id)
     response.headers["Cache-Control"] = "no-store"
-    return report(user_id, config.account_id, config.id, days=days)
+    result = report(user_id, config.account_id, config.id, days=days)
+    from .services.bot_model_diagnostics import report as model_diagnostics
+    try:
+        result['model_diagnostics'] = model_diagnostics(user_id, config, days=days)
+    except Exception:
+        result['model_diagnostics'] = {'status': 'unavailable'}
+    from .services.market_archive import status as archive_status
+    try:
+        result['archive'] = archive_status(user_id, days=days)
+    except Exception:
+        result['archive'] = {'enabled': False, 'unavailable': True}
+    return result
 
 
 @app.get("/api/accounts/{account_id}/journal", response_model=JournalEntryListOut)

@@ -220,6 +220,8 @@ class BotWorkerRuntime:
         self._reconcile_retry_not_before = 0.0
         self._reconcile_retry_failures = 0
         self._account_streams: dict[tuple[str, int], StreamingRuntime] = {}
+        self._archive_scopes = []
+        self._archive_scope_check_at = 0.0
         self.provider_health = BotProviderHealth(
             self._client_for_user, interval=self.settings.provider_probe_seconds,
         )
@@ -265,6 +267,11 @@ class BotWorkerRuntime:
                 self._record_failure("worker_shutdown_task_error", exc)
         await self._stop_lease_heartbeat()
         await asyncio.to_thread(self._stop_account_streams)
+        from .services.market_archive_collector import drain as drain_archive_collection
+        from .services.market_archive_events import drain as drain_archive_events
+        if not await asyncio.to_thread(drain_archive_collection) or not await asyncio.to_thread(drain_archive_events):
+            logger.error("market_archive_shutdown_incomplete")
+            return False
         if self._account_streams:
             self._replace_snapshot(last_error_code="streaming_shutdown_incomplete")
             logger.critical("bot_worker_streaming_shutdown_incomplete")
@@ -459,6 +466,7 @@ class BotWorkerRuntime:
             user_id: retry_at for user_id, retry_at in self._provider_retry_not_before_by_user.items()
             if user_id in active_users
         }
+        self._sync_archive_collection()
         self._sync_account_streams(run_ids)
 
         blocked_accounts: set[tuple[str, int]] = set()
@@ -646,6 +654,7 @@ class BotWorkerRuntime:
             user_id = str(run.user_id)
             account_id = int(run.account_id)
             config_id = int(config.id)
+            archive_contract = str(config.contract_id) if str(config.strategy_type) == "topbot_adaptive" else None
             scheduled_close = latest_closed_candle_boundary(
                 unit=str(config.timeframe_unit),
                 unit_number=int(config.timeframe_unit_number),
@@ -755,7 +764,18 @@ class BotWorkerRuntime:
                 # Snapshot before commit expires ORM attributes. Research still
                 # writes only AFTER a successful execution commit and lease check.
                 prepared_forward = None
+                prepared_archive = None
                 if not lease_lost:
+                    try:
+                        from .services.market_archive import prepare_decision, failure
+                        prepared_archive = prepare_decision(result)
+                        if prepared_archive is not None:
+                            from .services.market_archive import Archive
+                            # Durable pre-commit evidence. A failed execution commit
+                            # remains explicitly unconfirmed; startup reconciles IDs.
+                            Archive(user_id).decision(prepared_archive)
+                    except Exception as exc:
+                        failure(user_id, "decision_prepare", exc)
                     try:
                         from .services.forward_results import prepare_committed_record
                         prepared_forward = prepare_committed_record(result)
@@ -764,6 +784,12 @@ class BotWorkerRuntime:
                 commit_started = monotonic()
                 db.commit()
                 commit_ms = round((monotonic() - commit_started) * 1000, 3)
+                if prepared_archive is not None:
+                    archive_started = monotonic()
+                    from .services.market_archive import record_decision
+                    record_decision(prepared_archive)
+                    diagnostic_event(logger, "bot_evaluation_stage_timing", stage="market_archive_write",
+                                     duration_ms=round((monotonic() - archive_started) * 1000, 3), **committed_context)
                 if prepared_forward is not None and isinstance(prepared_forward.get('timing'), dict):
                     prepared_forward['timing']['execution_commit_ms'] = commit_ms
                 diagnostic_event(logger, "bot_evaluation_stage_timing", stage="execution_commit",
@@ -893,7 +919,45 @@ class BotWorkerRuntime:
         with self.session_factory() as db:
             return self.client_factory(db, user_id=user_id)
 
+    def _sync_archive_collection(self) -> None:
+        from .services.market_archive_scope import configured_scopes, heartbeat
+        from .services.market_archive_collector import request_collection
+        from .services.market_archive_events import resume
+        from .services.market_archive import failure
+        allowed = lambda: not self._shutdown_requested.is_set() and self.snapshot().owns_lease
+        if not allowed():
+            return
+        try:
+            scopes = configured_scopes()
+            if monotonic() >= self._archive_scope_check_at or scopes != self._archive_scopes:
+                self._archive_scope_check_at = monotonic() + 60
+                valid = []
+                with self.session_factory() as db:
+                    for scope in scopes:
+                        account = db.query(Account.id).filter(
+                            Account.user_id == scope['owner'], Account.provider == 'projectx',
+                            Account.external_id == str(scope['account']),
+                        ).first()
+                        if account is None:
+                            heartbeat(scope['owner'], error='account_ownership_unverified')
+                            continue
+                        valid.append(scope)
+                self._archive_scopes = valid
+            for scope in self._archive_scopes:
+                heartbeat(scope['owner'], contracts=scope['contracts'])
+                resume(scope['owner'])
+                for contract in scope['contracts']:
+                    request_collection(scope['owner'], scope['account'], 'scope:'+scope['id'], contract,
+                                       lambda owner=scope['owner']: self._client_for_user(owner), allowed)
+        except Exception as exc:
+            for scope in self._archive_scopes:
+                heartbeat(scope['owner'], error=type(exc).__name__)
+                failure(scope['owner'], 'collection_scope', exc)
+            self._archive_scopes = []
+            logger.error('market_archive_scope_failed', extra={'error_type': type(exc).__name__})
+
     def _sync_account_streams(self, run_ids: list[int]) -> None:
+        from .services.market_archive import enabled as archive_enabled
         with self.session_factory() as db:
             rows = (
                 db.query(BotRun, BotConfig)
@@ -901,29 +965,43 @@ class BotWorkerRuntime:
                 .filter(BotRun.id.in_(run_ids) if run_ids else False)
                 .all()
             )
+            archive_contracts = {}
+            if archive_enabled():
+                from .services.market_archive import recover_decision_commits, failure
+                for owner in {str(run.user_id) for run, _config in rows}:
+                    try:
+                        recover_decision_commits(db, owner)
+                    except Exception as exc:
+                        failure(owner, 'decision_commit_recovery', exc)
+                for scope in self._archive_scopes:
+                    archive_contracts[(scope['owner'], scope['account'])] = set(scope['contracts'])
             desired = {
                 (str(run.user_id), int(run.account_id))
                 for run, config in rows
                 if not bool(run.dry_run) and _run_disarm_reason(run, config) is None
-            }
+            } | set(archive_contracts)
 
         for key in tuple(self._account_streams):
-            if key in desired:
-                continue
             runtime = self._account_streams[key]
+            expected_contracts = tuple(sorted(archive_contracts.get(key, ())))
+            if key in desired and getattr(runtime, 'archive_contracts', ()) == expected_contracts:
+                continue
             if runtime.stop():
                 self._account_streams.pop(key, None)
         for user_id, account_id in desired:
             key = (user_id, account_id)
             runtime = self._account_streams.get(key)
             if runtime is None:
+                contracts = tuple(sorted(archive_contracts.get(key, ())))
+                archive_options = {'archive_contracts': contracts} if contracts else {}
                 runtime = create_streaming_runtime(
                     user_id=user_id,
                     account_id=account_id,
                     client_factory=lambda scoped_user_id=user_id: self._client_for_user(
                         scoped_user_id
                     ),
-                    market_hub_url="",
+                    market_hub_url=None if contracts and account_id == min(a for u, a in archive_contracts if u == user_id) else "",
+                    **archive_options,
                 )
                 self._account_streams[key] = runtime
             runtime.start()

@@ -15,6 +15,7 @@ from app.services.topbot_mathematical import evaluate, require_live_worker
 from test_probabilistic_strategy import NOW, candles, as_rows, fitted
 from test_unvalidated_observation import observation
 from test_forward_results import forecast, NOW as PAPER_NOW, CONTRACT
+from paper_fixtures import eligible
 
 
 def volatile(n=21):
@@ -62,12 +63,13 @@ def test_wide_stop_reaches_strategy_and_paper_without_live_routing(observation, 
     assert not result.raw_payload['live_routing_allowed']
     record = dict(stage='qualified_signal', forecast=f, action='BUY', status='dry_run_attempt',
                   id='wide', contract=CONTRACT, at=NOW.isoformat(), close=NOW.isoformat())
+    record['simulation_eligibility'] = eligible(NOW)
     state = paper.initial()
     assert paper.admission(state, record, NOW) == 'paper_entry_queued'
     assert state['position']['stop'] == 53
     with pytest.raises(ValueError, match='cannot route'):
         require_live_worker()
-    with pytest.raises(ValueError, match='validated routing'):
+    with pytest.raises(ValueError, match='routing'):
         validate_binding(observation[1], root=tmp_path, as_of=NOW)
 
 
@@ -104,6 +106,7 @@ def test_uncapped_keeps_daily_dollar_budget_and_finite_brackets(monkeypatch, sto
              target_points=math.ceil(stop*1.5/.25)*.25 if math.isfinite(stop) else None)
     record = dict(stage='qualified_signal', forecast=f, action='BUY', status='dry_run_attempt',
                   id='wide', contract=CONTRACT, at=PAPER_NOW.isoformat(), close=PAPER_NOW.replace(second=0).isoformat())
+    record['simulation_eligibility'] = eligible(PAPER_NOW.replace(second=0))
     state = paper.initial()
     state['daily']['2026-10-22'] = dict(entries=0, net_usd=net)
     assert paper.admission(state, record, PAPER_NOW) == expected

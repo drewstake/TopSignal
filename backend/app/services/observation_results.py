@@ -13,6 +13,7 @@ import numpy as np
 
 from .probabilistic_observation import enabled, observation_path
 from .probabilistic_strategy import BAR, Candle, Costs, contiguous, price_paths, utc
+from .probabilistic_payoff import PAPER_PAYOFF
 
 _lock = threading.Lock()
 
@@ -57,8 +58,10 @@ def collect(candles, *, owner, contract_id, as_of, forecast=None, root=None):
             if now < close + 3 * BAR:
                 remaining.append(pending)
                 continue
-            future = [by_stamp.get(close + i * BAR) for i in range(3)]
-            if (pending["contract_id"] == contract_id and all(future) and contiguous(future)):
+            offset = pending.get('entry_offset_bars', 0) if pending.get('payoff_semantics') == PAPER_PAYOFF else 0
+            future = [by_stamp.get(close + i * BAR) for i in range(offset, 3)]
+            if (pending["contract_id"] == contract_id and future and all(future) and contiguous(future)
+                    and all(r.live == pending.get('data_live', r.live) for r in future)):
                 reference = future[0].open
                 path = np.array([[[v-reference for v in (r.open, r.high, r.low, r.close)] for r in future]])
                 outcomes = {}
@@ -67,7 +70,7 @@ def collect(candles, *, owner, contract_id, as_of, forecast=None, root=None):
                     outcomes[action] = {"hypothetical_net_usd": float(net[0]),
                                         "exit_kind": ("stop", "time", "target")[int(kind[0])], "bars_exposed": int(bars[0])}
                 emit("observation_outcome", {**pending, "outcome_status": "observed",
-                    "outcomes": outcomes, "fill_assumption": "Next observed bar open; registered costs; stop-first OHLC. Not actual fills or portfolio P&L."})
+                    "outcomes": outcomes, "fill_assumption": "Recorded versioned entry and original deadline; registered costs; stop-first OHLC. Not actual fills or portfolio P&L."})
             elif now > close + timedelta(hours=2) or pending["contract_id"] != contract_id:
                 emit("observation_outcome", {**pending, "outcome_status": "unknown_missing_bars_or_contract_roll"})
             else:
@@ -81,6 +84,7 @@ def collect(candles, *, owner, contract_id, as_of, forecast=None, root=None):
                     "stop_points": forecast["stop_points"], "target_points": forecast["target_points"],
                     "model_age_days": forecast["model_age_days"], "training_stale": forecast["training_stale"],
                     "artifact_sha256": forecast["artifact_sha256"]}
+                record.update({k: forecast[k] for k in ('payoff_semantics', 'entry_offset_bars', 'exposure_bars', 'entry_at', 'deadline', 'data_live') if k in forecast})
                 emit("observation_forecast", {**record, "forecasts": forecast["forecasts"]})
                 remaining.append(record)
                 state["last_forecast"] = stamp

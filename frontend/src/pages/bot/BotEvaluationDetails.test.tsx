@@ -3,6 +3,27 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, expect, it } from "vitest";
 import { BaselineComparisons, DecisionExplanation, VolatilityWhatIf, type DecisionDetails, type ForwardComparison, type VolatilityCounterfactuals } from "./BotEvaluationDetails";
 afterEach(cleanup);
+it("shows paper eligibility independently of a hidden broker account during a HOLD", () => {
+  const details: DecisionDetails = {
+    timing: { candle_close: "2026-10-29T14:00:00Z", recorded_at: "2026-10-29T14:00:20Z", close_to_record_seconds: 20,
+      theoretical_entry_at: "2026-10-29T14:05:00Z", simulated_entry_at: "2026-10-29T14:05:00Z", exit_deadline: "2026-10-29T14:15:00Z",
+      remaining_horizon_seconds: 600, entry_available: true, quote_status: "not_captured" },
+    sides: {}, costs: null, risk_codes: [], stage: "edge_below_threshold", paper_disposition: "edge_below_threshold",
+    theoretical_outcomes: null, delayed_outcomes: null, payoff_semantics: "post_record_open_fixed_deadline_v2",
+    simulation_eligibility: { status: "eligible", codes: [] }, paper_readiness: { status: "eligible", codes: [] },
+    broker_readiness: { status: "blocked", codes: ["account_not_active", "observation_cannot_route"] },
+  };
+  render(<DecisionExplanation details={details} />);
+  expect(screen.getByText(/Shared simulation gates: eligible/)).toBeTruthy();
+  expect(screen.getByText(/Paper account readiness: eligible/)).toBeTruthy();
+  expect(screen.getByText(/Broker readiness: blocked.*account not active/)).toBeTruthy();
+  expect(screen.getByText(/Matched entry and remaining exposure/)).toBeTruthy();
+  cleanup();
+  render(<DecisionExplanation details={{ ...details, recording: { status: "unknown" },
+    paper_readiness: { status: "unknown", codes: ["simulation_recording_unconfirmed"] } }} />);
+  expect(screen.getByRole("alert").textContent).toContain("timestamp is provisional");
+  expect(screen.getByRole("alert").textContent).toContain("cannot be replayed as a fill");
+});
 it("keeps rejected wider-stop outcomes separate and never renders missing results as zero", () => {
   const data: VolatilityCounterfactuals = { policy: "v1", recorded: 2, completed: 1, pending: 0, unknown: 1, overdue: 0,
     recent: [{ at: "2026-10-22T14:00:20Z", status: "observed", entry_at: "2026-10-22T14:05:00Z", deadline: "2026-10-22T14:15:00Z",
@@ -50,7 +71,9 @@ it("distinguishes recording latency from an executable entry and explains a HOLD
   expect(screen.getByText(/26.0s later/)).toBeTruthy();
   expect(screen.getByText(/10m available/)).toBeTruthy();
   expect(screen.getByText("−$2.00")).toBeTruthy();
-  expect(screen.getByText(/quotes and actual fills are not captured/)).toBeTruthy();
+  expect(screen.getByText(/OHLC assumptions, not measured fills/)).toBeTruthy();
+  expect(screen.getByText(/Shared simulation gates: unknown/)).toBeTruthy();
+  expect(screen.getByText(/Broker readiness: unknown/)).toBeTruthy();
   expect(screen.getByText("net edge not above 1 usd")).toBeTruthy();
   expect(screen.getByText("Evaluation stage timings")).toBeTruthy();
   expect(screen.getByText("0.800s")).toBeTruthy();

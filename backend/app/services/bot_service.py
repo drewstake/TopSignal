@@ -616,7 +616,7 @@ def _bot_config_evaluation_snapshot(config: BotConfig) -> tuple[tuple[str, Any],
     )
 
 
-def _account_execution_snapshot(account: Account) -> tuple[tuple[str, Any], ...]:
+def _account_execution_snapshot(account: Account, *, simulation_only: bool = False) -> tuple[tuple[str, Any], ...]:
     fields = (
         "id",
         "user_id",
@@ -629,6 +629,8 @@ def _account_execution_snapshot(account: Account) -> tuple[tuple[str, Any], ...]
         "can_trade",
         "archived_at",
     )
+    if simulation_only:
+        fields = tuple(field for field in fields if field not in {'name', 'display_name', 'account_state', 'can_trade'})
     return tuple((field, _canonical_snapshot_value(getattr(account, field))) for field in fields)
 
 
@@ -1312,7 +1314,12 @@ def _evaluate_bot_config_impl(
             )
 
         config_snapshot = _bot_config_evaluation_snapshot(config)
-        account_snapshot = _account_execution_snapshot(resolved_account)
+        from .probabilistic_observation import enabled as observation_enabled
+        from .topbot_mathematical import selected as mathematical_selected
+        simulation_only = (resolved_dry_run and config.execution_mode == 'dry_run'
+                           and config.strategy_type == 'topbot_adaptive'
+                           and mathematical_selected(config.strategy_params) and observation_enabled())
+        account_snapshot = _account_execution_snapshot(resolved_account, simulation_only=simulation_only)
         run_snapshot = _bot_run_execution_snapshot(run) if run is not None else None
         market_config = _detached_bot_config_copy(config)
 
@@ -1349,6 +1356,11 @@ def _evaluate_bot_config_impl(
             signal = SignalResult("HOLD", hold_reason, signal.candle_timestamp, signal.price,
                                   {"strategy_type": market_config.strategy_type, "hold_reason": hold_reason,
                                    "live_routing_allowed": False})
+            if contract_rolled:
+                signal.raw_payload['market_discontinuity'] = dict(
+                    kind='contract_roll', configured_contract=market_config.contract_id,
+                    observed_contract=execution_contract_id,
+                    observed_close=_market_candle_close_timestamp(latest_candle).isoformat())
         instrument_spec = None
         if signal.action in {"BUY", "SELL"}:
             instrument_spec = _load_or_resolve_instrument_spec(
@@ -1372,7 +1384,7 @@ def _evaluate_bot_config_impl(
             lock_for_update=True,
         )
         _require_projectx_trade_data_source(resolved_account)
-        if _account_execution_snapshot(resolved_account) != account_snapshot:
+        if _account_execution_snapshot(resolved_account, simulation_only=simulation_only) != account_snapshot:
             raise ValueError("bot_account_changed_during_market_fetch")
         if bot_run_id is not None:
             run = _require_running_bot_run(
@@ -1456,6 +1468,17 @@ def _evaluate_bot_config_impl(
             else None
         )
     with stage("decision_snapshot"):
+        simulation = None
+        if mathematical:
+            from .simulation_eligibility import assess, broker_readiness
+            forecast = signal.raw_payload.get('probabilistic_research') or {}
+            simulation = assess(owner=user_id, config=config, account=resolved_account, run=run,
+                                dry_run=resolved_dry_run, candles=candles, forecast=forecast,
+                                now=datetime.now(timezone.utc))
+            signal.raw_payload['simulation_eligibility'] = simulation
+            signal.raw_payload['broker_readiness'] = broker_readiness(
+                account=resolved_account, config=config, run=run, forecast=forecast,
+                confirm_live=confirm_live_order_routing)
         decision = BotDecision(
             user_id=user_id,
             bot_config_id=int(config.id),
@@ -1509,29 +1532,38 @@ def _evaluate_bot_config_impl(
                 )
                 evaluation_status = "duplicate_skipped"
             else:
-                blocks = evaluate_risk_gates(
-                    db,
-                    user_id=user_id,
-                    config=config,
-                    account=resolved_account,
-                    latest_candle=latest_candle,
-                    contract_id=execution_contract_id,
-                    symbol=execution_symbol,
-                    action=signal.action,
-                    requested_order_size=signal_order_size,
-                    current_position_qty=current_position_qty,
-                    target_position_qty=target_position_qty,
-                    dry_run=resolved_dry_run,
-                    confirm_live_order_routing=confirm_live_order_routing,
-                    client=client,
-                    decision=decision,
-                    instrument_spec=instrument_spec,
-                    # Only the final account-locked pass may consult authoritative
-                    # provider state. An earlier remote pass would be stale before
-                    # routing and would double every live preflight request.
-                    perform_live_preflight=False,
-                    reconcile_live_submissions=False,
-                )
+                from .probabilistic_observation import requested as observation_requested
+                if mathematical and resolved_dry_run and observation_requested():
+                    # Explicit observation admission never uses broker tradability or
+                    # broker P&L as simulated account state. Missing evidence fails closed.
+                    blocks = [RiskBlock(code=code, message=code.replace('_', ' '))
+                              for code in simulation['codes']]
+                    if simulation['status'] != 'eligible' and not blocks:
+                        blocks = [RiskBlock(code='simulation_eligibility_unknown', message='Simulation eligibility is unknown.')]
+                else:
+                    blocks = evaluate_risk_gates(
+                        db,
+                        user_id=user_id,
+                        config=config,
+                        account=resolved_account,
+                        latest_candle=latest_candle,
+                        contract_id=execution_contract_id,
+                        symbol=execution_symbol,
+                        action=signal.action,
+                        requested_order_size=signal_order_size,
+                        current_position_qty=current_position_qty,
+                        target_position_qty=target_position_qty,
+                        dry_run=resolved_dry_run,
+                        confirm_live_order_routing=confirm_live_order_routing,
+                        client=client,
+                        decision=decision,
+                        instrument_spec=instrument_spec,
+                        # Only the final account-locked pass may consult authoritative
+                        # provider state. An earlier remote pass would be stale before
+                        # routing and would double every live preflight request.
+                        perform_live_preflight=False,
+                        reconcile_live_submissions=False,
+                    )
                 if not resolved_dry_run:
                     protection_block = _strategy_protection_block(
                         db,
@@ -1905,6 +1937,10 @@ def _evaluate_bot_config_impl(
                            "delivery_grace_seconds": int(config.max_data_staleness_seconds)},
                 "basis": "Detailed explanation unavailable; the recorded strategy and routing outcome remain authoritative.",
             })
+        if mathematical:
+            analysis.setdefault('bot_decision', {}).update(
+                simulation_eligibility=signal.raw_payload.get('simulation_eligibility'),
+                broker_readiness=signal.raw_payload.get('broker_readiness'))
         try:
             from .decision_research import stage_routing_disposition
             stage_routing_disposition(db, decision=decision, evaluation_status=evaluation_status,
@@ -11071,9 +11107,11 @@ def evaluate_risk_gates(
     from .topbot_mathematical import selected as mathematical_selected
     if not position_reducing and mathematical_selected(config.strategy_params):
         from .topbot_session import entry_boundary_reason
-        boundary = entry_boundary_reason(now, symbol=symbol or "MNQ")
+        boundary = entry_boundary_reason(now, decision_at=_market_candle_close_timestamp(latest_candle) if latest_candle is not None else now, symbol=symbol or "MNQ")
         if boundary:
             additional_blocks.append(RiskBlock(code=boundary, message=boundary.replace("_", " ")))
+        if latest_candle is None or not 0 <= (now-_market_candle_close_timestamp(latest_candle)).total_seconds() <= min(120, int(config.max_data_staleness_seconds)):
+            additional_blocks.append(RiskBlock(code='stale_market_data', message='Mathematical entries require a decision close within 120 seconds.'))
     cooldown_block = _cooldown_block(db, user_id=user_id, config=config, now=now, ignore_order_attempt_id=ignore_order_attempt_id)
 
     live_preflight_required = _requires_live_execution_preflight(
@@ -11358,7 +11396,7 @@ def evaluate_risk_gates(
                     )
                 )
 
-    latest_candle_age_seconds = _candle_delivery_delay_seconds(latest_candle, symbol=symbol or contract_id)
+    latest_candle_age_seconds = _candle_delivery_delay_seconds(latest_candle, symbol=symbol or contract_id, now=now)
     if order_attempt is not None and not position_reducing:
         protection_block = _order_attempt_protection_block(
             config=config,

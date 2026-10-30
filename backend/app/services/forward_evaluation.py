@@ -11,8 +11,10 @@ import numpy as np
 
 from .probabilistic_strategy import BAR, ET, Costs, SPEC, VolatilityAboveRiskCap, features, contiguous
 from .topbot_session import entry_boundary_reason
+from .probabilistic_payoff import LEGACY_PAYOFF, PAPER_PAYOFF
+from .simulation_eligibility import at_recording
 
-POLICY = 'forward-comparison-v1'
+POLICY = 'forward-comparison-v2'
 RULES = ('topbot', 'flat', 'always_long', 'always_short', 'empirical_pool')
 MIN_SESSIONS = 20
 BOOTSTRAP_REPLICATES = 20_000
@@ -105,7 +107,7 @@ def details(record):
     timing = dict(record.get('timing') or {})
     timing.update(candle_close=record['close'], recorded_at=record['at'],
                   close_to_record_seconds=round((at-close).total_seconds(), 3),
-                  theoretical_entry_at=record['close'], simulated_entry_at=entry.isoformat(),
+                  theoretical_entry_at=f.get('entry_at', record['close']), simulated_entry_at=entry.isoformat(),
                   exit_deadline=deadline.isoformat(),
                   remaining_horizon_seconds=max(0, (deadline-entry).total_seconds()),
                   entry_available=entry < deadline, quote_status='not_captured')
@@ -124,7 +126,10 @@ def details(record):
                            lower_utility_usd=lower, threshold_usd=1.,
                            margin_usd=None if lower is None else round(lower-1, 6),
                            effective_days=days, training_paths=paths, blocks=blocks)
-    return dict(timing=timing, sides=sides, costs=f.get('costs'),
+    return dict(timing=timing, sides=sides, costs=f.get('costs'), payoff_semantics=f.get('payoff_semantics', LEGACY_PAYOFF),
+                recording=record.get('recording'),
+                simulation_eligibility=record.get('simulation_eligibility'), paper_readiness=record.get('paper_readiness'),
+                broker_readiness=record.get('broker_readiness'),
                 risk_codes=record['risk_codes'], stage=record['stage'],
                 paper_disposition=record.get('paper_disposition'),
                 theoretical_outcomes=record.get('outcomes'), delayed_outcomes=record.get('delayed_outcomes'))
@@ -178,14 +183,15 @@ def admit_comparisons(db, record, now):
     if not forecast.get('forecasts'):
         # Record coverage for the current cohort without inventing an eligible signal.
         row = db.execute('SELECT id,payload FROM comparison_cohorts ORDER BY rowid DESC LIMIT 1').fetchone()
-        if row and json.loads(row[1])['config_hash'] == record.get('config_hash'):
+        if row and json.loads(row[1]).get('policy') == POLICY and json.loads(row[1])['config_hash'] == record.get('config_hash'):
             record['comparison_cohort'] = row[0]
         return
     if forecast.get('observation_only') is not True or forecast.get('routing_allowed') is not False:
         return
     if record['status'] not in ('held','evaluated','dry_run_attempt','risk_blocked'):
         return
-    binding = dict(policy=POLICY, artifact=forecast.get('artifact_sha256'),
+    binding = dict(policy=POLICY, artifact=forecast.get('artifact_sha256'), payoff_semantics=forecast.get('payoff_semantics', LEGACY_PAYOFF),
+                   directional_rules='Always long/short omit edge and sample-support gates; all accounts share simulation gates and have independent portfolio limits',
                    config_hash=record.get('config_hash'), costs=Costs().describe())
     binding_sha = hashlib.sha256(json.dumps(binding,sort_keys=True).encode()).hexdigest()
     latest = db.execute('SELECT id,payload FROM comparison_cohorts ORDER BY rowid DESC LIMIT 1').fetchone()
@@ -203,15 +209,16 @@ def admit_comparisons(db, record, now):
     dispositions = {}
     pool = forecast.get('pool_baseline') or {}
     for rule, state in cohort['accounts'].items():
+        shared = at_recording(record.get('simulation_eligibility'), forecast, datetime.fromisoformat(record['close']), now)
+        if shared['status'] != 'eligible':
+            dispositions[rule] = 'shared_simulation_' + shared['status']
+            continue
         if rule == 'flat':
             dispositions[rule] = 'flat_no_trade'
             continue
-        if rule != 'topbot' and record['risk_codes']:
-            dispositions[rule] = 'shared_execution_risk_block'
-            continue
         candidate = copy.deepcopy(record)
         if rule in ('always_long','always_short'):
-            candidate.update(action='BUY' if rule == 'always_long' else 'SELL', stage='qualified_signal', status='dry_run_attempt')
+            candidate.update(action='BUY' if rule == 'always_long' else 'SELL', stage='qualified_signal')
         elif rule == 'empirical_pool':
             if not pool.get('forecasts'):
                 dispositions[rule] = 'pool_forecast_unavailable'
@@ -220,9 +227,9 @@ def admit_comparisons(db, record, now):
             if action not in ('BUY','SELL'):
                 dispositions[rule] = 'pool_hold'
                 continue
-            candidate.update(action=action,stage='qualified_signal',status='dry_run_attempt')
+            candidate.update(action=action,stage='qualified_signal')
             candidate['forecast']['forecasts'] = pool['forecasts']
-        dispositions[rule] = admission(state,candidate,now, directional_baseline=rule in ('always_long','always_short'))
+        dispositions[rule] = admission(state,candidate,now, directional_baseline=rule in ('always_long','always_short'), comparison_rule=rule)
     record['comparison_dispositions'] = dispositions
     db.execute('INSERT OR REPLACE INTO comparison_cohorts VALUES (?,?)',(ident,json.dumps(cohort,allow_nan=False)))
 
@@ -276,7 +283,7 @@ def collection_coverage(records, *, first_record, now, window_start, scan_limite
                 complete_evaluation_sessions=sum(s['complete'] for s in sessions),
                 missing_due_closes=sum(s['missing'] for s in sessions),
                 duplicate_closes=sum(n-1 for n in closes.values()),
-                legacy_forecasts_without_delayed_entry=sum(r.get('evaluation_version') != 2 for r in forecasts),
+                legacy_forecasts_without_delayed_entry=sum(r.get('evaluation_version', 1) < 2 for r in forecasts),
                 volatility_without_scenario=sum(r['stage']=='volatility_risk_cap' and not r.get('volatility_counterfactual') for r in records),
                 first_scenario_at=min((r['at'] for r in scenarios), default=None),
                 comparison_evaluations=len(comparisons))
@@ -330,6 +337,7 @@ def comparison_report(db, records, now, scan_limited, window_start=None):
             partial_window=bool(expected) and (min(datetime.fromisoformat(t) for t in expected) < start_slot
                                                or max(datetime.fromisoformat(t) for t in expected) > period_end)
             bad=sum(r['stage'] in ('inputs_or_model_unavailable','stale_candles') or r['outcome_status'].startswith('unknown')
+                    or (cohort.get('policy') == POLICY and r.get('simulation_eligibility', {}).get('status', 'unknown') == 'unknown')
                     or r['outcome_status']=='pending' or r.get('comparison_dispositions',{}).get('empirical_pool')=='pool_forecast_unavailable'
                     or (r.get('delayed_outcomes') or {}).get('status') in ('unknown_missing_path','entry_too_late') for r in daily)
             usable_day=bool(expected) and seen==expected and not unfinished and not bad and not partial_window
@@ -351,7 +359,9 @@ def comparison_report(db, records, now, scan_limited, window_start=None):
                                     'no_observed_variation' if interval is None else 'descriptive_only'))
         accounts={rule:dict(net_usd=state['net_usd'],trades=state['trades'],position=state['position'],
                             blocked_reason=state['blocked_reason'],closed_drawdown_usd=state['closed_drawdown_usd']) for rule,state in cohort['accounts'].items()}
-        cohorts.append(dict(id=ident,artifact=cohort['artifact'],started_at=cohort['started_at'],accounts=accounts,
+        cohorts.append(dict(id=ident,artifact=cohort['artifact'],policy=cohort.get('policy', 'forward-comparison-v1'),
+                            payoff_semantics=cohort.get('payoff_semantics', LEGACY_PAYOFF), directional_rules=cohort.get('directional_rules'),
+                            started_at=cohort['started_at'],accounts=accounts,
                             sessions=sessions,complete_sessions=len(usable),comparisons=comparisons,
                             dispositions={rule:dict(Counter(r.get('comparison_dispositions',{}).get(rule,'no_forecast') for r in selected)) for rule in RULES}))
     return dict(policy=POLICY,cohorts=cohorts,minimum_sessions=MIN_SESSIONS,

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 from scipy.stats import t as student_t
 from .probabilistic_protocol import protocol
+from .probabilistic_payoff import LEGACY_PAYOFF, PAPER_PAYOFF
 
 
 INTERFACE_VERSION = "mnq-probabilistic-v3"
@@ -168,15 +169,20 @@ def features(rows: Sequence[Candle], *, as_of: datetime, stop_multiplier: float 
 @dataclass(frozen=True)
 class Sample:
     features: Features
-    # Each normalized OHLC is relative to the next observed open; no entry gap prediction.
+    # Versioned three-bar scenario envelope. Legacy reference: decision open;
+    # paper v2 reference: first strictly later open (offset 1). Scale stays sigma*sqrt(3).
     path: tuple[tuple[float, float, float, float], ...]
     label_end: datetime
+    payoff_semantics: str = LEGACY_PAYOFF
 
 
 def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0,
                  stop_multiplier: float = 1.0, population_by_day: dict | None = None,
-                 stop_policy: str = REGISTERED_STOP_POLICY) -> tuple[list[Sample], dict[str, int]]:
+                 stop_policy: str = REGISTERED_STOP_POLICY,
+                 payoff_semantics: str = LEGACY_PAYOFF) -> tuple[list[Sample], dict[str, int]]:
     valid_stop(4., stop_policy)
+    if payoff_semantics not in (LEGACY_PAYOFF, PAPER_PAYOFF) or (payoff_semantics == PAPER_PAYOFF and delay_bars):
+        raise ValueError("A shifted three-bar latency stress is not fixed-deadline paper exposure")
     if stride not in (1, 3) or delay_bars not in (0, 1):
         raise ValueError("Unsupported research lattice or latency stress.")
     samples: list[Sample] = []
@@ -194,16 +200,22 @@ def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0
         try:
             f = features(rows[max(0, index - FEATURE_BARS + 1):index + 1], as_of=now,
                          stop_multiplier=stop_multiplier, stop_policy=stop_policy)
+            if payoff_semantics == PAPER_PAYOFF:
+                from .topbot_session import entry_boundary_reason
+                if entry_boundary_reason(now, decision_at=now):
+                    raise ValueError("Outside paper decision session")
             future = rows[index + 1 + delay_bars:index + 1 + delay_bars + HORIZON]
             if not contiguous(rows[index:index + HORIZON + delay_bars + 1]):
                 raise ValueError("Missing or invalid future path; outcome is unknown.")
             end = future[-1].timestamp + BAR
             if end.astimezone(ET).date() != local.date() or end.astimezone(ET).time() > time(15, 45):
                 raise ValueError("Horizon exceeds the session exit deadline.")
-            reference = future[0].open
+            # V2 stores the original three-bar envelope to support offsets 1 and 2.
+            # The skipped first bar is never exposure; the normal label starts at offset 1.
+            reference = future[1 if payoff_semantics == PAPER_PAYOFF else 0].open
             path = tuple(tuple((v - reference) / (f.volatility * math.sqrt(HORIZON)) for v in
                                (row.open, row.high, row.low, row.close)) for row in future)
-            samples.append(Sample(f, path, end))
+            samples.append(Sample(f, path, end, payoff_semantics))
             if population is not None:
                 population["accepted"] += 1
         except ValueError as exc:
@@ -216,7 +228,7 @@ def make_samples(rows: Sequence[Candle], *, stride: int = 1, delay_bars: int = 0
 
 def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
                 target_ratio: float = SPEC["target_stop_ratio"], scale: float | None = None,
-                trade_through_ticks: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                trade_through_ticks: int = 0, entry_offset_bars: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Reprice first-passage scenarios with fills and brackets on the same basis.
 
     Returns net USD, exit kind (0 stop, 1 time, 2 target), and bars exposed.
@@ -227,8 +239,11 @@ def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
     if scale is not None and (not math.isfinite(scale) or scale <= 0):
         raise ValueError("Invalid forecast price scale")
     p = np.asarray(paths, dtype=float) * (stop if scale is None else scale)
-    if p.ndim != 3 or p.shape[1:] != (HORIZON, 4) or not np.isfinite(p).all():
+    if (p.ndim != 3 or p.shape[2] != 4 or not 1 <= p.shape[1] <= HORIZON or not np.isfinite(p).all()
+            or type(entry_offset_bars) is not int or not 0 <= entry_offset_bars < p.shape[1]):
         raise ValueError("Invalid scenario array.")
+    p = p[:, entry_offset_bars:, :]
+    exposure = p.shape[1]
     n = len(p)
     # Transform into signed price coordinates: losses are always below entry.
     opening = side * p[:, :, 0]
@@ -238,16 +253,27 @@ def price_paths(paths: np.ndarray, *, stop: float, side: int, costs: Costs,
     entry = opening[:, 0] + costs.adverse_points_per_side
     stop_level = entry - stop
     target = entry + math.ceil(stop * target_ratio / TICK) * TICK
+    stop_trigger = stop_level
+    target_trigger = target + trade_through_ticks * TICK
+    if entry_offset_bars:
+        # V2 normalization/rescaling and bracket arithmetic can move an exact
+        # touch by a few floating-point error units. Correct comparisons only:
+        # never snap prices, change fills/brackets, or reinterpret legacy paths.
+        roundoff = 8 * np.finfo(float).eps * np.maximum.reduce([
+            np.abs(entry), np.abs(stop_level), np.abs(target_trigger), np.full(n, TICK),
+        ])
+        stop_trigger = stop_level + roundoff
+        target_trigger = target_trigger - roundoff
     fill = closing[:, -1].copy()
     kind = np.ones(n, dtype=int)
-    duration = np.full(n, HORIZON, dtype=int)
+    duration = np.full(n, exposure, dtype=int)
     pending = np.ones(n, dtype=bool)
-    for bar in range(HORIZON):
+    for bar in range(exposure):
         # A known opening gap is ordered before that bar's uncertain high/low.
-        gap_stop = pending & (opening[:, bar] <= stop_level)
-        gap_target = pending & ~gap_stop & (opening[:, bar] >= target + trade_through_ticks * TICK)
-        hit_stop = pending & ~gap_target & (adverse[:, bar] <= stop_level)
-        hit_target = pending & ~gap_stop & ~hit_stop & (favorable[:, bar] >= target + trade_through_ticks * TICK)
+        gap_stop = pending & (opening[:, bar] <= stop_trigger)
+        gap_target = pending & ~gap_stop & (opening[:, bar] >= target_trigger)
+        hit_stop = pending & ~gap_target & (adverse[:, bar] <= stop_trigger)
+        hit_target = pending & ~gap_stop & ~hit_stop & (favorable[:, bar] >= target_trigger)
         stopped = gap_stop | hit_stop
         targeted = gap_target | hit_target
         fill[stopped] = np.minimum(stop_level[stopped], opening[stopped, bar])
@@ -282,9 +308,12 @@ class PathModel:
     samples: tuple[Sample, ...]
     pool_mix: float = 0.0
     stop_policy: str = REGISTERED_STOP_POLICY
+    payoff_semantics: str = LEGACY_PAYOFF
 
     def __post_init__(self) -> None:
         valid_stop(4., self.stop_policy)
+        if self.payoff_semantics not in (LEGACY_PAYOFF, PAPER_PAYOFF):
+            raise ValueError("Unknown payoff semantics")
         if self.version not in MODEL_VERSIONS or not 0 <= self.pool_mix <= 1:
             raise ValueError("Unknown model revision or calibration mixture.")
         if not 2 <= len(self.samples) <= 4096:
@@ -292,7 +321,8 @@ class PathModel:
         previous = None
         for sample in self.samples:
             f = sample.features
-            if (not all(math.isfinite(v) for v in (*f.values, f.stop_points, f.volatility))
+            if (sample.payoff_semantics != self.payoff_semantics
+                    or not all(math.isfinite(v) for v in (*f.values, f.stop_points, f.volatility))
                     or not valid_stop(f.stop_points, self.stop_policy) or f.volatility <= 0
                     or f.decision_at.tzinfo is None or sample.label_end.tzinfo is None
                     or sample.label_end != f.decision_at + HORIZON * BAR
@@ -303,7 +333,8 @@ class PathModel:
         paths = self.paths
         if paths.shape != (len(self.samples), HORIZON, 4) or not np.isfinite(paths).all():
             raise ValueError("Invalid training paths.")
-        if (not np.allclose(paths[:, 0, 0], 0) or np.any(paths[:, :, 2] > np.minimum(paths[:, :, 0], paths[:, :, 3]))
+        reference_bar = 1 if self.payoff_semantics == PAPER_PAYOFF else 0
+        if (not np.allclose(paths[:, reference_bar, 0], 0) or np.any(paths[:, :, 2] > np.minimum(paths[:, :, 0], paths[:, :, 3]))
                 or np.any(paths[:, :, 1] < np.maximum(paths[:, :, 0], paths[:, :, 3]))):
             raise ValueError("Malformed OHLC path.")
 
@@ -355,7 +386,10 @@ class PathModel:
             raise ValueError("Invalid forecast weights.")
         return mixed / mixed.sum()
 
-    def forecast(self, f: Features, costs: Costs = Costs()) -> dict:
+    def forecast(self, f: Features, costs: Costs = Costs(), *, entry_offset_bars: int | None = None) -> dict:
+        offset = (1 if self.payoff_semantics == PAPER_PAYOFF else 0) if entry_offset_bars is None else entry_offset_bars
+        if type(offset) is not int or offset not in ((1, 2) if self.payoff_semantics == PAPER_PAYOFF else (0,)):
+            raise ValueError("No supported remaining payoff exposure")
         if not valid_stop(f.stop_points, self.stop_policy):
             raise ValueError("Forecast stop does not match the model's training policy")
         weights = self.weights(f)
@@ -364,7 +398,7 @@ class PathModel:
         effective_days = float(1 / np.sum(day_weight ** 2))
         outcomes = {}
         for action, side in (("BUY", 1), ("SELL", -1)):
-            payoffs, kinds, _ = price_paths(self.paths, stop=f.stop_points, scale=f.volatility * math.sqrt(HORIZON), side=side, costs=costs)
+            payoffs, kinds, _ = price_paths(self.paths, stop=f.stop_points, scale=f.volatility * math.sqrt(HORIZON), side=side, costs=costs, entry_offset_bars=offset)
             mean = float(np.dot(weights, payoffs))
             contributions = np.bincount(day_codes, weights=weights * (payoffs - mean))
             variance = float(np.dot(contributions, contributions))
@@ -401,6 +435,8 @@ class PathModel:
         if outcomes[best]["lower_utility_usd"] <= 1:
             reasons.append("Neither action clears costs, model uncertainty and the $1 minimum net edge.")
         return {"interface_version": INTERFACE_VERSION, "model_version": self.version,
+                "payoff_semantics": self.payoff_semantics, "entry_offset_bars": offset, "exposure_bars": HORIZON-offset,
+                "entry_at": (f.decision_at+offset*BAR).isoformat(), "deadline": (f.decision_at+HORIZON*BAR).isoformat(),
                 "validation_status": "unvalidated", "action": "NO_TRADE", "research_action": proposal,
                 "routing_allowed": False, "horizon_minutes": 15, "probability_basis": "uncalibrated_model_estimate",
                 "model_trained_through": self.trained_through.isoformat(),
@@ -412,6 +448,7 @@ class PathModel:
 
     def to_dict(self) -> dict:
         return {"interface_version": INTERFACE_VERSION, "version": self.version, "pool_mix": self.pool_mix,
+                **({"payoff_semantics": self.payoff_semantics} if self.payoff_semantics != LEGACY_PAYOFF else {}),
                 "stop_policy": self.stop_policy,
                 "samples": [{"features": list(s.features.values), "stop": s.features.stop_points,
                              "volatility": s.features.volatility, "decision_at": s.features.decision_at.isoformat(),
@@ -433,6 +470,6 @@ class PathModel:
             f = Features(values, float(row["stop"]), float(row["volatility"]),
                          datetime.fromisoformat(row["decision_at"]), row["day"])
             samples.append(Sample(f, tuple(tuple(float(v) for v in bar) for bar in row["path"]),
-                                  datetime.fromisoformat(row["label_end"])))
+                                  datetime.fromisoformat(row["label_end"]), payload.get("payoff_semantics", LEGACY_PAYOFF)))
         return cls(payload["version"], tuple(samples), float(payload["pool_mix"]),
-                   payload.get("stop_policy", REGISTERED_STOP_POLICY))
+                   payload.get("stop_policy", REGISTERED_STOP_POLICY), payload.get("payoff_semantics", LEGACY_PAYOFF))
