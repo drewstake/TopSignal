@@ -117,12 +117,12 @@ function OrderBookDepth({ store, displayMarket }: { store: OrderBookStore; displ
       </div>
       <div className="grid grid-cols-2 gap-3 border-b border-app-border pb-2 text-xs">
         <div className="flex items-center justify-between gap-2 text-app-positive">
-          <span>Bids <span className="text-app-muted">({countLabel(depth.visibleBidCount, depth.bidCount)})</span></span>
+          <span className="flex flex-wrap items-baseline gap-x-1">Bids <span className="text-app-muted">({countLabel(depth.visibleBidCount, depth.bidCount)})</span><OrderBookSideTotal store={store} side="bid" /></span>
           <span className="text-[10px] text-app-muted">Price</span>
         </div>
         <div className="flex items-center justify-between gap-2 text-app-negative">
           <span className="text-[10px] text-app-muted">Price</span>
-          <span>Asks <span className="text-app-muted">({countLabel(depth.visibleAskCount, depth.askCount)})</span></span>
+          <span className="flex flex-wrap items-baseline justify-end gap-x-1">Asks <span className="text-app-muted">({countLabel(depth.visibleAskCount, depth.askCount)})</span><OrderBookSideTotal store={store} side="ask" /></span>
         </div>
       </div>
       <div
@@ -147,6 +147,20 @@ function OrderBookDepth({ store, displayMarket }: { store: OrderBookStore; displ
         {" · Best prices at the top"}
       </p>
     </>
+  );
+}
+
+function OrderBookSideTotal({ store, side }: { store: OrderBookStore; side: OrderBookSide }) {
+  const totals = useSyncExternalStore(store.subscribeTotals, store.getTotalsSnapshot, store.getTotalsSnapshot);
+  const size = side === "bid" ? totals.bidSize : totals.askSize;
+  return (
+    <span
+      className="font-semibold tabular-nums"
+      aria-label={`${side === "bid" ? "Bid" : "Ask"} contracts across displayed levels`}
+      title="Sum of contract sizes across the displayed price levels"
+    >
+      · {sizeFormatter.format(size)} contracts
+    </span>
   );
 }
 

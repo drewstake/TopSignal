@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 import type { AppShellOutletContext } from "../../app/AppShell";
 import { ApiError, requestJson } from "../../lib/api";
 import { getAccessTokenSync, subscribeSupabaseAuthChanges } from "../../lib/supabase";
@@ -38,6 +38,7 @@ export function LogsPage() {
     <header><p className="text-xs uppercase tracking-widest text-app-muted">Workspace health</p>
       <h1 className="mt-2 text-3xl font-semibold">Logs</h1>
       <p className="mt-2 text-sm text-app-muted">See interruptions, host restarts, and market-feed recovery.</p>
+      <Link to={`/order-book-history${selectedAccountId ? `?account=${selectedAccountId}` : ""}`} className="mt-3 inline-block text-sm text-app-accent underline">Explore order book totals, imbalance & price →</Link>
     </header>
     {demo.enabled ? <Card><p>Live server logs are unavailable in Demo Mode.</p></Card>
       : <SystemLogView key={identity} />}

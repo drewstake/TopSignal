@@ -69,6 +69,49 @@ does not backfill missed depth.
 
 ## Health and operation
 
+### Contract totals and imbalance history
+
+The recorder's `record_contract_totals: true` option adds an independent compact
+stream under `depth-recordings-v1/totals/<UTC date>/<run ID>/`. It runs without a
+browser and uses the same `MarketByPriceBook` aggregate `volume` semantics as the
+display ladder. It does not count orders, traders, executed volume, or
+`currentVolume` as resting contracts. The totals cover **all observed levels**,
+independent of the browser's selected level count. Separately recorded nearest
+10/20/50/100-level totals and actual level counts allow comparable depth scopes.
+
+Each `kind=book_totals` record contains UTC receipt time, monotonic time, raw
+capture/receipt references, bid/ask contract sums and level counts, best bid/ask,
+mid-price, spread, last trade price and age, and normalized imbalance:
+`(bid_contracts - ask_contracts) / (bid_contracts + ask_contracts)`. Positive
+values mean more observed bid contracts; an empty book has null imbalance.
+Price outcomes can be joined later at 5/15/60-second horizons. No future prices
+are used to construct measurements, and no predictive model is enabled.
+
+All received depth changes update the in-memory book. Measurements are emitted
+at most once per 250 ms during event activity, plus immediate boundary records.
+Quiet intervals are not filled with fabricated observations. Reconnects, gaps,
+contract changes, resets, and observed epoch changes clear prior book/trade state
+and increment a generation. Missing sides, crossed/locked books, side updates
+older than two seconds, and unreliable provider times are flagged. A fresh side
+does not prove every resting level is fresh. Snapshot completeness and provider
+sequence guarantees remain explicitly **unverified**; totals are observed-book
+measurements, not a certified full exchange book or a proven trading signal.
+
+Summary files use the existing compressed event envelope, `.segment.json` commit
+markers, verification, and backup inclusion. They share the existing 20 GiB
+recording budget, free-space reserve, and review boundary; raw capture is
+unchanged. The summary stream has its own receipt index and `capture_id`; each
+payload's `source_capture_id`/`source_index` identifies the latest raw input.
+Backups snapshot committed files independently, so a referenced raw segment may
+be sealed and backed up later. Summary measurements are self-contained.
+
+`status.json` exposes `recording.contract_totals` with sample count, sealed byte
+count, run ID, and the latest measurement. To verify only this compact history:
+
+```powershell
+& 'C:/ProgramData/TopSignal/releases/20261030-dashboard-18/backend/.venv/Scripts/python.exe' -B 'C:/ProgramData/TopSignal/tools/depth-recorder-v1/record_market_depth.py' --verify 'D:/TopSignal/data/databento/depth-recordings-v1/totals'
+```
+
 Read `status.json` for `state`, `at`, `last_frame_at`, acknowledgements, latest
 depth receipt, event counts, durable index, reconnect/errors and storage bounds.
 Counts are per process; segment manifests provide the retained history. A stale

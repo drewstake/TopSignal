@@ -705,6 +705,27 @@ def _offline_workspace_has_disabled_automation(db: Session) -> bool:
 
 @app.get("/ready")
 def readiness(db: Session = Depends(get_db), response: Response = None):
+    return _readiness(db, response=response)
+
+
+@app.get("/ready/dev", include_in_schema=False)
+def development_readiness(db: Session = Depends(get_db), response: Response = None):
+    # A dev UI may share the host's database without running a second worker.
+    # Only an identified dev launch with automation explicitly disabled can
+    # use API-only readiness. Production and bot admission remain strict.
+    api_only = (
+        bool(os.getenv("TOPSIGNAL_DEV_INSTANCE_ID", "").strip())
+        and os.getenv("TOPSIGNAL_ENV", "").strip().lower() != "production"
+        and not _read_bool_env("TOPSIGNAL_BOT_WORKER_ENABLED", True)
+        and not _read_bool_env("TOPSIGNAL_LIVE_EXECUTION_ENABLED", True)
+        and not _read_bool_env("TOPSIGNAL_BOT_WORKER_ALLOW_LIVE_EXECUTION", True)
+        and _bot_worker_runtime is not None
+        and not _bot_worker_runtime.settings.enabled
+    )
+    return _readiness(db, response=response, require_bot_runtime=not api_only)
+
+
+def _readiness(db: Session, *, response: Response = None, require_bot_runtime: bool = True):
     failed_checks: list[str] = []
     try:
         db.execute(text("select 1"))
@@ -913,7 +934,7 @@ def readiness(db: Session = Depends(get_db), response: Response = None):
         # Saved dry-run state may belong to a previous connected-local session.
         # An explicitly disconnected workspace still serves local pages without
         # changing that state. Bot status and start admission retain every check.
-        if _offline_workspace_has_disabled_automation(db):
+        if not require_bot_runtime or _offline_workspace_has_disabled_automation(db):
             pass
         elif _bot_worker_runtime is not None:
             runtime_readiness = inspect_bot_runtime(db, runtime=_bot_worker_runtime)
@@ -3659,6 +3680,33 @@ def get_trading_bot_activity(
         "order_attempts": [serialize_bot_order_attempt(row) for row in payload["order_attempts"]],
         "risk_events": [serialize_bot_risk_event(row) for row in payload["risk_events"]],
     }
+
+
+@app.get("/api/accounts/{account_id}/order-book-history")
+def get_order_book_history(
+    account_id: int,
+    response: Response,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    scope: Literal["all", "10", "20", "50", "100"] = "all",
+    db: Session = Depends(get_db),
+):
+    from .services.depth_history import account_history
+    user_id = get_authenticated_user_id()
+    _require_owned_projectx_account(db, user_id=user_id, account_id=account_id)
+    db.rollback()  # Release the read transaction before any filesystem/host IO.
+    response.headers["Cache-Control"] = "no-store"
+    if bool(start) != bool(end) or (start and (
+        start.tzinfo is None or end.tzinfo is None or not timedelta(0) < end-start <= timedelta(hours=1)
+    )):
+        raise HTTPException(status_code=422, detail="Choose a timezone-aware time range of one hour or less.")
+    try:
+        return account_history(user_id=user_id, start=start.isoformat() if start else None,
+                               end=end.isoformat() if end else None, scope=scope)
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail="Choose a shorter history range, up to one hour.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/accounts/{account_id}/bot-logs")

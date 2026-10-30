@@ -38,6 +38,11 @@ export interface OrderBookDepthSnapshot {
   visibleAskCount: number;
 }
 
+export interface OrderBookTotalsSnapshot {
+  bidSize: number;
+  askSize: number;
+}
+
 export interface OrderBookViewSnapshot {
   asks: OrderBookLevelView[];
   bids: OrderBookLevelView[];
@@ -71,9 +76,11 @@ export class OrderBookStore {
   private meta: OrderBookMetaSnapshot;
   private depth: OrderBookDepthSnapshot = { bidCount: 0, askCount: 0, visibleBidCount: 0, visibleAskCount: 0 };
   private spread: OrderBookSpreadSnapshot = { bestAsk: null, bestBid: null, spread: null };
+  private totals: OrderBookTotalsSnapshot = { bidSize: 0, askSize: 0 };
   private readonly metaListeners = new Set<StoreListener>();
   private readonly depthListeners = new Set<StoreListener>();
   private readonly spreadListeners = new Set<StoreListener>();
+  private readonly totalsListeners = new Set<StoreListener>();
   private readonly slotListeners = new Map<string, Set<StoreListener>>();
 
   constructor(contractId?: string | null, visibleLevelCount: OrderBookLevelCount = 20) {
@@ -94,6 +101,8 @@ export class OrderBookStore {
 
   getDepthSnapshot = (): OrderBookDepthSnapshot => this.depth;
 
+  getTotalsSnapshot = (): OrderBookTotalsSnapshot => this.totals;
+
   getAskSlotSnapshot = (index: number): OrderBookLevelView | null => this.askSlots[index] ?? null;
 
   getBidSlotSnapshot = (index: number): OrderBookLevelView | null => this.bidSlots[index] ?? null;
@@ -103,6 +112,8 @@ export class OrderBookStore {
   subscribeSpread = (listener: StoreListener): (() => void) => subscribe(this.spreadListeners, listener);
 
   subscribeDepth = (listener: StoreListener): (() => void) => subscribe(this.depthListeners, listener);
+
+  subscribeTotals = (listener: StoreListener): (() => void) => subscribe(this.totalsListeners, listener);
 
   subscribeAskSlot = (index: number, listener: StoreListener): (() => void) =>
     this.subscribeSlot("ask", index, listener);
@@ -310,6 +321,15 @@ export class OrderBookStore {
     const nextBidSlots = createSlots(bids, maximumSize);
     this.replaceSlots("ask", this.askSlots, nextAskSlots);
     this.replaceSlots("bid", this.bidSlots, nextBidSlots);
+
+    const nextTotals = {
+      bidSize: bids.reduce((sum, [, size]) => sum + size, 0),
+      askSize: asks.reduce((sum, [, size]) => sum + size, 0),
+    };
+    if (this.totals.bidSize !== nextTotals.bidSize || this.totals.askSize !== nextTotals.askSize) {
+      this.totals = nextTotals;
+      notify(this.totalsListeners);
+    }
 
     const bestAsk = asks[0]?.[0] ?? null;
     const bestBid = bids[0]?.[0] ?? null;

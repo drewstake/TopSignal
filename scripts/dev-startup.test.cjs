@@ -26,6 +26,7 @@ test("a port taken after selection is retried and readiness belongs to the repla
       start(port) {
         const child = spawn(process.execPath, ["-e", `
           require('node:http').createServer((req, res) => {
+            if (req.url !== '/ready/dev') { res.writeHead(503); res.end('worker disabled'); return; }
             res.setHeader('X-TopSignal-Dev-Instance', ${JSON.stringify(instanceId)});
             res.end('ready');
           }).listen(${port}, '127.0.0.1');
@@ -41,7 +42,7 @@ test("a port taken after selection is retried and readiness belongs to the repla
     assert.equal(children[0].exitCode, 1);
     assert.equal(children[1].exitCode, null);
     assert.match(messages.join("\n"), /Retrying on a new port \(1\/5\)/);
-    const response = await fetch(`http://127.0.0.1:${port}/ready`);
+    const response = await fetch(`http://127.0.0.1:${port}/ready/dev`);
     assert.equal(response.headers.get("x-topsignal-dev-instance"), instanceId);
   } finally {
     for (const child of children) {

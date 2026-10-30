@@ -93,6 +93,12 @@ async def record(config,client,owner,root,*,seconds=0):
         checkpoint(True)
         if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])
         recorder=SegmentRecorder(root,owner,segment_seconds=config['segment_seconds'],before_segment=capacity_check)
+        if config.get('record_contract_totals', False):
+            if __package__:
+                from .depth_totals import TotalsRecorder
+            else:
+                from depth_totals import TotalsRecorder
+            recorder=TotalsRecorder(recorder,before_segment=capacity_check)
         while not stopped():
             checkpoint()
             if storage['blocked_reason']:raise StorageLimit(storage['blocked_reason'])

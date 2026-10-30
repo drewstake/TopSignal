@@ -125,6 +125,10 @@ describe("OrderBookPanel", () => {
     expect(prices("asks").slice(0, 2)).toEqual([20000.25, 20000.5]);
     expect(screen.getByLabelText("bid 19,981.50, aggregate size 75")).toBeDefined();
     expect(screen.getByLabelText("Spread 0.25")).toBeDefined();
+    const bidTotal = () => screen.getByLabelText("Bid contracts across displayed levels").textContent;
+    const askTotal = () => screen.getByLabelText("Ask contracts across displayed levels").textContent;
+    expect(bidTotal()).toBe("· 2,850 contracts");
+    expect(askTotal()).toBe("· 3,240 contracts");
 
     const selector = screen.getByRole("combobox", { name: "Visible order book levels per side" });
     for (const count of [10, 20, 50]) {
@@ -132,6 +136,8 @@ describe("OrderBookPanel", () => {
       expect(prices("bids")).toHaveLength(count);
       expect(prices("asks")).toHaveLength(count);
       expect(screen.getByText(`(${count} of 75)`)).toBeDefined();
+      expect(bidTotal()).toBe(`· ${(count * (count + 1) / 2).toLocaleString("en-US")} contracts`);
+      expect(askTotal()).toBe(bidTotal());
     }
     act(() => {
       callbacks.onUpdate({ contract_id: contractId, sequence: 2, timestamp: "2026-10-30T12:00:01Z",
@@ -140,6 +146,12 @@ describe("OrderBookPanel", () => {
     fireEvent.change(selector, { target: { value: "all" } });
     expect(prices("bids")).toHaveLength(75);
     expect(screen.getByLabelText("bid 19,981.50, aggregate size 99")).toBeDefined();
+    expect(bidTotal()).toBe("· 2,874 contracts");
+    act(() => {
+      callbacks.onUpdate({ contract_id: contractId, sequence: null, timestamp: "2026-10-30T12:00:01Z",
+        side: "bid", price: 20000, size: 8 });
+    });
+    expect(bidTotal()).toBe("· 2,881 contracts");
     expect(streamFactory).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -152,6 +164,8 @@ describe("OrderBookPanel", () => {
     expect(screen.getByLabelText("ask 20,020.25, aggregate size 11")).toBeDefined();
     expect(prices("bids")).toHaveLength(74);
     expect(screen.queryByLabelText("bid 19,981.50, aggregate size 99")).toBeNull();
+    expect(bidTotal()).toBe("· 2,782 contracts");
+    expect(askTotal()).toBe("· 3,251 contracts");
 
     act(() => {
       callbacks.onState({ contract_id: contractId, state: "reconnecting" });
@@ -166,6 +180,8 @@ describe("OrderBookPanel", () => {
     expect(prices("asks")).toEqual([]);
     expect(prices("bids")).toEqual([20000]);
     expect(screen.getByLabelText("Best bid 20,000.00, aggregate size 3")).toBeDefined();
+    expect(bidTotal()).toBe("· 3 contracts");
+    expect(askTotal()).toBe("· 0 contracts");
     expect(screen.queryByText(/Showing last received depth/)).toBeNull();
   });
 
