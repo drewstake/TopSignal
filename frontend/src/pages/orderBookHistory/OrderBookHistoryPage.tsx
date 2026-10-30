@@ -28,6 +28,7 @@ export function OrderBookHistoryPage() {
         <p className="mt-2 max-w-2xl text-sm text-app-muted">Look at resting liquidity and price together. Zoom into the buildup, select a moment, and compare what followed.</p>
       </div>
       <Link className="text-sm text-app-accent underline" to={`/bot${selectedAccountId ? `?account=${selectedAccountId}` : ""}`}>Back to live order book</Link>
+      <Link className="text-sm text-app-accent underline" to={`/microstructure${selectedAccountId ? `?account=${selectedAccountId}` : ""}`}>Open liquidity research, replay & event studies →</Link>
     </header>
     {demo.enabled ? <Card><p>Exit Demo Mode to view your recorded market history.</p></Card>
       : selectedAccountId === null ? <Card><p>Select a ProjectX account to view your recordings.</p></Card>

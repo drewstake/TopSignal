@@ -17,7 +17,7 @@ import sys
 MAX_POINTS = 20000
 MAX_RAW_BYTES = 64 * 1024**2
 MAX_FILES = 50000
-SCOPES = {'all', '10', '20', '50', '100'}
+SCOPES = {'all', '1', '5', '10', '20', '50', '100'}
 
 
 def timestamp(value):
@@ -38,7 +38,7 @@ def safe_path(path, root):
     return path
 
 
-def verified_rows(marker, manifest, root):
+def verified_rows(marker, manifest, root, *, raw_events=False):
     name = manifest['file']
     if not re.fullmatch(r'\d{8}\.ndjson\.gz', name):
         raise ValueError('Invalid segment filename.')
@@ -59,11 +59,11 @@ def verified_rows(marker, manifest, root):
         if len(line) > 70000:
             raise ValueError('Oversized record.')
         row = json.loads(line)
-        if (row['schema'] != 'mnq-depth-events-v1' or row['kind'] != 'book_totals'
+        if (row['schema'] != 'mnq-depth-events-v1' or (not raw_events and row['kind'] != 'book_totals')
                 or row['owner_hash'] != manifest['owner_hash'] or row['capture_id'] != manifest['capture_id']
                 or row['index'] != manifest['first_index'] + index or row['synthetic'] is not False
                 or row['data_live'] is not manifest['data_live']
-                or row['payload']['schema'] != 'mnq-book-totals-v1'):
+                or (not raw_events and row['payload']['schema'] not in {'mnq-book-totals-v1', 'mnq-book-totals-v2'})):
             raise ValueError('Summary scope or order mismatch.')
         rows.append(row)
     if len(rows) != manifest['events'] or manifest['last_index'] != manifest['first_index'] + len(rows) - 1:

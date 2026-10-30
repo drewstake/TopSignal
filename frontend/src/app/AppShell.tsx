@@ -84,6 +84,9 @@ const WORKSPACE_PAGE_LABELS: ReadonlyArray<readonly [string, string]> = [
   ["/backtesting", "Backtesting"],
   ["/logs", "Logs"],
   ["/order-book-history", "Order book history"],
+  ["/microstructure", "Liquidity research"],
+  ["/event-study", "Event study"],
+  ["/research-notebook", "Experiment notebook"],
   ["/appearance", "Appearance"],
 ];
 
@@ -522,6 +525,8 @@ export function AppShell() {
               { label: "Simulation", to: `/simulation${accountSuffix}` },
               { label: "Logs", to: `/logs${accountSuffix}` },
               { label: "Order book history", to: `/order-book-history${accountSuffix}` },
+              { label: "Liquidity research", to: `/microstructure${accountSuffix}` },
+              { label: "Event study", to: `/event-study${accountSuffix}` },
               { label: "Appearance", to: `/appearance${accountSuffix}` },
             ]}
           />

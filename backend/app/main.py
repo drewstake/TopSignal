@@ -3688,7 +3688,7 @@ def get_order_book_history(
     response: Response,
     start: datetime | None = None,
     end: datetime | None = None,
-    scope: Literal["all", "10", "20", "50", "100"] = "all",
+    scope: Literal["all", "1", "5", "10", "20", "50", "100"] = "all",
     db: Session = Depends(get_db),
 ):
     from .services.depth_history import account_history
@@ -5681,3 +5681,10 @@ def _to_gemini_http_exception(exc: GeminiClientError) -> HTTPException:
     if exc.status_code in {429, 503}:
         return HTTPException(status_code=503, detail=message or "Gemini is temporarily unavailable.")
     return HTTPException(status_code=502, detail=message or "Gemini recap generation failed.")
+
+
+from .microstructure_api import install as _install_microstructure_api
+
+_install_microstructure_api(app, get_db=get_db,
+    authenticated_user=lambda: get_authenticated_user_id(),
+    require_account=lambda *args, **kwargs: _require_owned_projectx_account(*args, **kwargs))

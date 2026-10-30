@@ -4,6 +4,7 @@ export type HistoryPoint = {
   bid_contracts: number; ask_contracts: number; bid_levels: number; ask_levels: number;
   imbalance: number | null; mid_price: number | null; last_trade_price: number | null; spread: number | null;
   quality_flags: string[];
+  reconstruction_id?: string;
 };
 export type BookHistory = {
   points: HistoryPoint[]; scope: DepthScope; start: string; end: string;
@@ -11,7 +12,7 @@ export type BookHistory = {
   skipped_segments: number; sealed_only: boolean; interval_ms: number; source: string; generated_at: string;
 };
 export const sameStream = (a: HistoryPoint, b: HistoryPoint) =>
-  a.capture_id === b.capture_id && a.generation === b.generation && a.contract_id === b.contract_id;
+  a.capture_id === b.capture_id && a.generation === b.generation && a.contract_id === b.contract_id && a.reconstruction_id === b.reconstruction_id;
 export const usable = (p: HistoryPoint) => !p.quality_flags.length && p.mid_price !== null;
 
 export function continuousSegments(points: HistoryPoint[]): HistoryPoint[][] {

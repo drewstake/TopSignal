@@ -1,5 +1,10 @@
 # Order book history
 
+The [microstructure research workspace](microstructure-research.md) adds raw-event
+features, heatmap/replay, event studies, a cost-aware tester and a local experiment
+notebook. Open **Liquidity research** or **Event study** in navigation. This
+compact history view remains available for longer summary windows.
+
 Open **Order book history** in the workspace navigation, or follow the link from
 Logs. `/order-book-history?account=<owned ProjectX account>` displays recorded
 MNQ mid-price, bid/ask resting contract totals, and normalized imbalance on a

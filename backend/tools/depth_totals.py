@@ -1,13 +1,16 @@
 """Compact observed-book measurements; no prediction, trading, or database writes."""
 from datetime import datetime
 import math
-
-from app.services.projectx_order_book import MarketByPriceBook
+from decimal import Decimal, InvalidOperation
 
 if __package__:
+    from .depth_book import MarketByPriceBook
     from .depth_recording import SegmentRecorder
+    from .depth_features import Features
 else:
+    from depth_book import MarketByPriceBook
     from depth_recording import SegmentRecorder
+    from depth_features import Features
 
 
 def imbalance(bid, ask):
@@ -26,11 +29,16 @@ class BookTotals:
     """
     interval_ns = 250_000_000
 
-    def __init__(self):
+    def __init__(self, *, tick_distances=(1, 5, 10, 20)):
         self.book = None
         self.contract = None
         self.last_sample_ns = None
         self.generation = 0
+        self.features = Features(tick_distances=tick_distances)
+        self.last_mono = None
+        self.last_received = None
+        self.execution_interval = None
+        self.last_sample_index = None
         self._clear_metadata()
 
     def _clear_metadata(self):
@@ -43,6 +51,13 @@ class BookTotals:
         contract, kind, payload = event['contract_id'], event['kind'], event['payload']
         mono = event['monotonic_ns']
         boundary = kind if kind in {'connect', 'disconnect', 'gap', 'roll', 'end'} else None
+        if self.last_mono is not None and mono < self.last_mono:
+            boundary = 'receipt_gap'
+        elif self.last_mono is not None and mono-self.last_mono > 2_000_000_000:
+            self.features.reset()
+        if self.last_received is not None and event['received_at'] < self.last_received:
+            boundary = 'receipt_time_reversed'
+        self.last_mono, self.last_received = mono, event['received_at']
         if self.contract != contract:
             self.contract = contract
             self.book = MarketByPriceBook(contract)
@@ -56,11 +71,28 @@ class BookTotals:
         if boundary:
             self.book.clear_for_reconnect()
             self._clear_metadata()
+            self.features.reset()
             self.generation += 1
+            self.execution_interval = None
+            self.last_sample_index = None
+        before = after = None
         if kind == 'depth':
             if payload.get('epoch') is not None:
                 self.last_epoch = payload['epoch']
+            typ = payload.get('type')
+            # Only accepted explicit updates count toward depth reduction/refill.
+            levels = self.book._bids if typ == 2 else self.book._asks if typ == 1 else None
+            try:
+                price = Decimal(str(payload.get('price')))
+                if not price.is_finite():
+                    levels = None
+            except InvalidOperation:
+                levels = None
+            if levels is not None:
+                before = levels[price].size if price in levels else Decimal(0)
             changed = self.book.apply(payload)
+            if levels is not None:
+                after = levels[price].size if price in levels else Decimal(0)
             typ = payload.get('type')
             side = ('ask' if typ in {1, 3, 10} else 'bid' if typ in {2, 4, 9} else None) if type(typ) is int else None
             if changed and side:
@@ -68,6 +100,29 @@ class BookTotals:
         elif kind == 'trade' and finite_positive(payload.get('price')):
             self.last_trade = payload['price']
             self.trade_ns = mono
+        self.features.event(event, before, after)
+        # Extrema accumulate from incoming accepted observed book states BEFORE
+        # summary sampling. They can establish a single barrier crossing; when
+        # both barriers lie inside one interval, their order remains unresolved.
+        bid_price = float(max(self.book._bids)) if self.book._bids else None
+        ask_price = float(min(self.book._asks)) if self.book._asks else None
+        valid_path = bid_price is not None and ask_price is not None and bid_price < ask_price
+        for side in ('bid', 'ask'):
+            seen = self.side_times.get(side)
+            if not seen or mono-seen[0] > 2_000_000_000 or not seen[1]:
+                valid_path = False
+            elif not 0 <= (datetime.fromisoformat(event['received_at'])-datetime.fromisoformat(seen[1])).total_seconds() <= 2:
+                valid_path = False
+        if self.execution_interval is None:
+            self.execution_interval = dict(valid=valid_path, after_source_index=self.last_sample_index,
+                bid_low=bid_price, bid_high=bid_price, ask_low=ask_price, ask_high=ask_price)
+        else:
+            self.execution_interval['valid'] &= valid_path
+            for side, value in (('bid',bid_price),('ask',ask_price)):
+                if value is not None:
+                    for suffix, operation in (('low',min),('high',max)):
+                        old=self.execution_interval[side+'_'+suffix]
+                        self.execution_interval[side+'_'+suffix]=value if old is None else operation(old,value)
         if not boundary and self.last_sample_ns is not None and mono - self.last_sample_ns < self.interval_ns:
             return None
         self.last_sample_ns = mono
@@ -95,12 +150,12 @@ class BookTotals:
             if provider_ages[side] is None or not 0 <= provider_ages[side] <= 2000:
                 flags.append(f'{side}_provider_time_unreliable')
         nearest = {}
-        for count in (10, 20, 50, 100):
+        for count in (1, 5, 10, 20, 50, 100):
             b, a = bids[:count], asks[:count]
             bs, az = sum(v['size'] for v in b), sum(v['size'] for v in a)
             nearest[str(count)] = dict(bid_contracts=bs, ask_contracts=az,
                                       bid_levels=len(b), ask_levels=len(a), imbalance=imbalance(bs, az))
-        return dict(schema='mnq-book-totals-v1', derived=True, scope='all_observed_levels',
+        row = dict(schema='mnq-book-totals-v2', derived=True, scope='all_observed_levels',
                     source_capture_id=event['capture_id'], source_index=event['index'], generation=self.generation,
                     interval_ms=250, bid_contracts=bid, ask_contracts=ask,
                     bid_levels=len(bids), ask_levels=len(asks), imbalance=imbalance(bid, ask),
@@ -110,6 +165,12 @@ class BookTotals:
                     side_age_ms=ages, provider_age_ms=provider_ages, quality_flags=flags,
                     snapshot_completion_verified=False, provider_sequence_guarantee=False,
                     model_inputs_enabled=False)
+        row['features'] = self.features.sample(event, row, snapshot,
+            {side: sum(s == side for s, _ in self.book._explicit_depth_levels) for side in ('bid', 'ask')})
+        row['execution_interval'] = self.execution_interval
+        self.execution_interval = None
+        self.last_sample_index = event['index']
+        return row
 
 
 class TotalsRecorder:
