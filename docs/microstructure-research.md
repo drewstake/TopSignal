@@ -262,3 +262,10 @@ reader selection; no main-service rollback or restart is required.
 
 See the [October 30 verification receipt](audits/2026-10-30/microstructure-workspace.md)
 for actual coverage, storage measurements, tests and browser checks.
+
+The complete workspace is deployed on peteamdpc as release
+`20261030-research-24`. Open the same research routes through the existing private
+dashboard at `http://127.0.0.1:4173`. Production reads its native filesystem cache;
+the development notebook remains separate. See the
+[deployment receipt](audits/2026-10-30/microstructure-deployment.md) for the committed
+revision, backup, service restart and recorder/collector continuity checks.
