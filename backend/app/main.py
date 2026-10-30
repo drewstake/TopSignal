@@ -320,7 +320,9 @@ _ACCOUNT_CLASSIFICATION_REFRESH_TIMEOUT_SECONDS = 10.0
 _TRADE_IMPORT_PREVIEW_CLEANUP_INTERVAL_SECONDS = 15 * 60
 _streaming_runtime = None
 _bot_worker_runtime: BotWorkerRuntime | None = None
-_order_book_registry = ProjectXOrderBookRegistry()
+# Once viewed, keep depth current on the backend until shutdown, including
+# while the browser is closed. Provider outages still invalidate stale books.
+_order_book_registry = ProjectXOrderBookRegistry(keep_alive_without_viewers=True)
 _market_price_registry = ProjectXOrderBookRegistry(session_factory=ProjectXMarketPriceSession)
 _backtest_capacity_lock = Lock()
 _backtest_active_total = 0

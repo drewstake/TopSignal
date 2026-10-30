@@ -38,7 +38,12 @@ def portable_pytest_arguments(arguments: list[str], *, platform: str | None = No
         # clean a caller's basetemp or an application/storage directory.
         if scratch.is_symlink() or scratch.resolve().parent != parent or not scratch.name.startswith("ts-"):
             raise RuntimeError("Refusing to clean an unexpected offline test directory")
-        shutil.rmtree(scratch)
+        # Long-path backup regressions deliberately exceed MAX_PATH. Use the
+        # extended form of this already-verified private temp root for cleanup.
+        cleanup = str(scratch)
+        if sys.platform == "win32" and not cleanup.startswith("\\\\?\\"):
+            cleanup = "\\\\?\\UNC\\" + cleanup[2:] if cleanup.startswith("\\\\") else "\\\\?\\" + cleanup
+        shutil.rmtree(cleanup)
 
 
 def main() -> int:

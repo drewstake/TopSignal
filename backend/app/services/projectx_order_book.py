@@ -315,6 +315,9 @@ class ProjectXMarketDepthSession:
         send_timeout_seconds: float = 5.0,
         market_check_seconds: float = 5.0,
         keepalive_seconds: float = 15.0,
+        disconnect_grace_seconds: float = 0.0,
+        keep_alive_without_viewers: bool = False,
+        on_idle: Callable[[], Any] | None = None,
         now: Callable[[], datetime] | None = None,
     ):
         self._client = client
@@ -334,6 +337,11 @@ class ProjectXMarketDepthSession:
         self._send_timeout_seconds = max(0.05, float(send_timeout_seconds))
         self._market_check_seconds = max(0.01, float(market_check_seconds))
         self._keepalive_seconds = max(0.01, float(keepalive_seconds))
+        self._disconnect_grace_seconds = max(0.0, float(disconnect_grace_seconds))
+        self._keep_alive_without_viewers = keep_alive_without_viewers
+        self._on_idle = on_idle
+        self._pending_disconnects: dict[str, asyncio.Task[Any]] = {}
+        self._disconnect_tasks: set[asyncio.Task[Any]] = set()
         self._now = now or _utc_now
         self._market_wakeup = asyncio.Event()
         self._channels: dict[str, _ContractChannel] = {}
@@ -343,6 +351,7 @@ class ProjectXMarketDepthSession:
         self._runner_task: asyncio.Task[Any] | None = None
         self._websocket: Any | None = None
         self._connection_generation = 0
+        self._healthy_connection_generation: int | None = None
         self._provider_subscribed: set[str] = set()
         self._pending_invocations: dict[str, tuple[str, str, int]] = {}
         self._latest_contract_invocation: dict[str, str] = {}
@@ -359,6 +368,11 @@ class ProjectXMarketDepthSession:
         # Research storage is an auxiliary nonblocking queue. Even import or
         # persistence failures must not affect book state or order execution.
         if not self._observation_user_id:
+            return
+        channel = self._channels.get(kwargs.get("contract_id"))
+        if self._keep_alive_without_viewers and channel is not None and not channel.subscribers:
+            # Keeping a display book alive must not turn it into an unattended
+            # historical database recorder. Dedicated recorders are separate.
             return
         try:
             from . import market_observations
@@ -382,6 +396,9 @@ class ProjectXMarketDepthSession:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("market depth session is closed")
+            pending_disconnect = self._pending_disconnects.pop(normalized_contract_id, None)
+            if pending_disconnect is not None:
+                pending_disconnect.cancel()
             channel = self._channels.get(normalized_contract_id)
             if channel is None:
                 channel = _ContractChannel(book=MarketByPriceBook(normalized_contract_id))
@@ -441,17 +458,56 @@ class ProjectXMarketDepthSession:
         contract_id: str,
         queue: asyncio.Queue[dict[str, Any]],
     ) -> None:
+        await self._unsubscribe(contract_id, queue)
+
+    async def _unsubscribe(
+        self,
+        contract_id: str,
+        queue: asyncio.Queue[dict[str, Any]],
+        *,
+        immediate: bool = False,
+        expiration_task: asyncio.Task[Any] | None = None,
+    ) -> None:
         normalized_contract_id = _normalize_contract_id(contract_id)
         removed_contract = False
         provider_state_indeterminate = False
         task_to_stop: asyncio.Task[Any] | None = None
 
         async with self._lock:
+            if expiration_task is not None:
+                if self._pending_disconnects.get(normalized_contract_id) is not expiration_task:
+                    return
+                # Once teardown starts, a returning viewer must not cancel it
+                # midway through a provider unsubscribe or socket cleanup.
+                self._pending_disconnects.pop(normalized_contract_id)
             channel = self._channels.get(normalized_contract_id)
             if channel is None:
                 return
+            if (
+                self._keep_alive_without_viewers and not immediate
+                and queue in channel.subscribers and len(channel.subscribers) == 1
+            ):
+                self._observe(
+                    "capture_gap", contract_id=normalized_contract_id,
+                    reason="viewer_capture_paused", source_epoch=self._observation_epoch,
+                )
             channel.subscribers.discard(queue)
             if not channel.subscribers:
+                # Keep consuming the live feed, without retaining viewer queues.
+                # Failed subscriptions still roll back immediately; feed loss
+                # and market closure still clear books through the normal path.
+                if not immediate and self._keep_alive_without_viewers and not self._closed:
+                    return
+                if not immediate and self._disconnect_grace_seconds > 0 and not self._closed:
+                    if normalized_contract_id not in self._pending_disconnects:
+                        task = asyncio.create_task(
+                            self._expire_disconnected_contract(normalized_contract_id, queue),
+                            name="projectx-depth-disconnect-grace",
+                        )
+                        self._pending_disconnects[normalized_contract_id] = task
+                        self._disconnect_tasks.add(task)
+                        task.add_done_callback(self._disconnect_tasks.discard)
+                    return
                 del self._channels[normalized_contract_id]
                 removed_contract = True
             if not self._channels and self._runner_task is not None:
@@ -486,12 +542,22 @@ class ProjectXMarketDepthSession:
                 elif not self._channels:
                     self._connection_state = "disconnected"
 
+    async def _expire_disconnected_contract(
+        self, contract_id: str, queue: asyncio.Queue[dict[str, Any]],
+    ) -> None:
+        await asyncio.sleep(self._disconnect_grace_seconds)
+        await self._unsubscribe(
+            contract_id, queue, immediate=True, expiration_task=asyncio.current_task(),
+        )
+        if self._on_idle is not None:
+            await self._on_idle()
+
     async def _rollback_failed_subscription(
         self,
         contract_id: str,
         queue: asyncio.Queue[dict[str, Any]],
     ) -> None:
-        await self.unsubscribe(contract_id, queue)
+        await self._unsubscribe(contract_id, queue, immediate=True)
         # A timed-out or failed send may still have reached ProjectX. Reconnect
         # remaining channels so provider state is rebuilt from known intent.
         await self._restart_indeterminate_connection()
@@ -554,7 +620,12 @@ class ProjectXMarketDepthSession:
         async with self._lock:
             self._closed = True
             task = self._runner_task
+            disconnect_tasks = tuple(self._disconnect_tasks)
+            self._pending_disconnects.clear()
+            for disconnect_task in disconnect_tasks:
+                disconnect_task.cancel()
             self._channels.clear()
+        await asyncio.gather(*disconnect_tasks, return_exceptions=True)
         if task is not None:
             await self._stop_runner_task(task)
         await self._force_deactivate_connection()
@@ -660,6 +731,7 @@ class ProjectXMarketDepthSession:
 
     async def _run_connection_loop(self) -> None:
         backoff_seconds = self._reconnect_base_seconds
+        failures_without_depth = 0
         while await self._has_active_contracts():
             any_open, _ = await self._refresh_market_states()
             if not any_open:
@@ -670,6 +742,7 @@ class ProjectXMarketDepthSession:
             connected_once = False
             active_websocket: Any | None = None
             active_generation: int | None = None
+            token: str | None = None
             try:
                 token = await asyncio.to_thread(self._client.get_access_token)
                 any_open, _ = await self._refresh_market_states()
@@ -694,7 +767,6 @@ class ProjectXMarketDepthSession:
                         connection_generation=active_generation,
                     )
                     connected_once = True
-                    backoff_seconds = self._reconnect_base_seconds
                     await self._broadcast_state("connected")
                     # Existing SSE viewers need a new baseline after a scheduled
                     # closure, even if the provider starts with deltas, not Reset.
@@ -743,6 +815,16 @@ class ProjectXMarketDepthSession:
 
             if not await self._has_active_contracts():
                 break
+            if active_generation is not None and self._healthy_connection_generation == active_generation:
+                backoff_seconds = self._reconnect_base_seconds
+                failures_without_depth = 0
+            else:
+                failures_without_depth += 1
+                # A successful handshake doesn't prove that cached credentials
+                # still work for market data. Try fresh authentication once per
+                # failure streak, while retaining backoff during provider outages.
+                if failures_without_depth == 3 and token is not None:
+                    await asyncio.to_thread(self._client.invalidate_access_token, token)
             if connected_once:
                 await self._clear_books_for_reconnect()
             await asyncio.sleep(backoff_seconds)
@@ -848,6 +930,8 @@ class ProjectXMarketDepthSession:
             event_data = channel.book.apply(entry)
             if event_data is None:
                 return
+            if not event_data.get("reset"):
+                self._healthy_connection_generation = self._connection_generation
             if event_data.get("reset"):
                 # Provider resets can reuse timestamps and level values. The
                 # archive must retain each accepted rebuild, just as the live
@@ -1141,8 +1225,12 @@ class ProjectXOrderBookRegistry:
         self,
         *,
         session_factory: Callable[..., ProjectXMarketDepthSession] = ProjectXMarketDepthSession,
+        disconnect_grace_seconds: float = 0.0,
+        keep_alive_without_viewers: bool = False,
     ):
         self._session_factory = session_factory
+        self._disconnect_grace_seconds = disconnect_grace_seconds
+        self._keep_alive_without_viewers = keep_alive_without_viewers
         self._sessions: dict[str, ProjectXMarketDepthSession] = {}
         self._lock = asyncio.Lock()
         self._user_slots: dict[str, _RegistryUserSlot] = {}
@@ -1159,7 +1247,12 @@ class ProjectXOrderBookRegistry:
             async with self._lock:
                 session = self._sessions.get(user_id)
                 if session is None:
-                    session = self._session_factory(client=client)
+                    session = self._session_factory(
+                        client=client,
+                        disconnect_grace_seconds=self._disconnect_grace_seconds,
+                        keep_alive_without_viewers=self._keep_alive_without_viewers,
+                        on_idle=lambda: self._prune_user_session(user_id, session),
+                    )
                     if hasattr(session, "set_observation_user"):
                         session.set_observation_user(user_id)
                     self._sessions[user_id] = session
@@ -1207,12 +1300,17 @@ class ProjectXOrderBookRegistry:
         user_id: str,
         subscription: OrderBookSubscription,
     ) -> None:
+        await self._prune_user_session(user_id, subscription.session)
+
+    async def _prune_user_session(
+        self, user_id: str, session: ProjectXMarketDepthSession,
+    ) -> None:
         slot = await self._acquire_user_slot(user_id)
         try:
-            if not await subscription.session.is_idle():
+            if not await session.is_idle():
                 return
             async with self._lock:
-                if self._sessions.get(user_id) is subscription.session:
+                if self._sessions.get(user_id) is session:
                     del self._sessions[user_id]
         finally:
             await self._release_user_slot(user_id, slot)
