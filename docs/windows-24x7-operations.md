@@ -80,6 +80,22 @@ Remove-Item -LiteralPath $buildDependencies -Recurse -Force
 
 The wrapper also forces `VITE_DEMO_MODE=false` for the production artifact.
 
+For an update, preserve the immediately preceding build's public assets before
+hardening or activating the **new** release. Supply its dist directory to the
+wrapper (omit this on a first deployment):
+
+```powershell
+powershell -NoProfile -File "$releaseRoot\scripts\build-production-frontend.ps1" -RepoRoot $releaseRoot -ApiPort 8000 -PreviousDist "$previousReleaseRoot\frontend\dist"
+```
+
+This checks collisions and available disk space, carries only one preceding
+build's own assets, and writes `build-assets.json`; it never deletes the prior
+release. A failure blocks activation. Never build into the currently served
+directory. Retaining an old release on disk alone does not make its chunks
+available to open browser tabs. Tabs older than the preceding release may need
+a manual reload. The frontend access log now records HTTP status, allowing
+missing chunks to be distinguished from successful asset requests.
+
 The supervisor serves the resulting `frontend/dist` with the Python standard
 library server in `scripts/serve-production-frontend.py`. That server refuses
 non-loopback binding and non-loopback `Host` headers, supplies SPA fallback and

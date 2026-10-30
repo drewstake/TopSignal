@@ -70,6 +70,17 @@ it("shares the 18:00 ET context VWAP across strategies", () => {
 });
 
 describe("aggregateCandles", () => {
+  it("marks missing first or interior bars partial in every bucket", () => {
+    const rows = seriesFiveMinute(9, () => 100, "2026-06-09T14:00:00Z");
+    const result = aggregateCandles(rows.filter((_, i) => i !== 0 && i !== 4), "minute", 5, "minute", 15);
+    expect(result.map(row => row.is_partial)).toEqual([true, true, false]);
+  });
+
+  it("preserves unknown volume when aggregating", () => {
+    const rows = seriesFiveMinute(3, () => 100, "2026-06-09T14:00:00Z");
+    rows[1].volume = Number.NaN;
+    expect(aggregateCandles(rows, "minute", 5, "minute", 15)[0].volume).toBeNaN();
+  });
   it("aggregates 5m candles into 15m OHLCV buckets", () => {
     const source = [
       candle("2026-06-09T14:00:00Z", 101, { open: 100, high: 102, low: 99.5, volume: 10 }),
@@ -121,6 +132,13 @@ describe("classifyTrend", () => {
 });
 
 describe("averageTrueRange / computeRelativeVolume", () => {
+  it("requires a complete ATR window and includes the first high-low range", () => {
+    const rows = seriesFiveMinute(14, () => 100);
+    expect(averageTrueRange(rows.slice(1), 14)).toBeNull();
+    expect(averageTrueRange(rows, 14)).toBe(2);
+    rows[13] = { ...rows[13], high: 111, low: 109, close: 110 };
+    expect(averageTrueRange(rows, 14)).toBeCloseTo((13 * 2 + 11) / 14);
+  });
   it("keeps a measured zero volume and does not replace missing latest volume with an older bar", () => {
     const candles = seriesFiveMinute(20, () => 100);
     candles[candles.length - 1].volume = 0;
@@ -162,6 +180,11 @@ describe("averageTrueRange / computeRelativeVolume", () => {
 });
 
 describe("buildTimeframeTrends", () => {
+  it("does not use stale higher bars after incomplete buckets", () => {
+    const rows = seriesFiveMinute(90, i => 100 + i, "2026-06-09T08:00:00Z");
+    const gappy = rows.filter((_, i) => i < 78 || i % 3 === 2);
+    expect(buildTimeframeTrends(gappy, "minute", 5).map(t => t.label)).toEqual(["5m"]);
+  });
   it("includes the base timeframe and up to two divisible higher timeframes", () => {
     // 200 five-minute bars = enough for 15m (66 bars) and 1H (16 bars... below MIN bars)
     // so use 400 bars to give 1H enough history.
@@ -183,6 +206,29 @@ describe("buildTimeframeTrends", () => {
 });
 
 describe("buildMarketContext", () => {
+  it("does not carry a previous session VWAP into a zero-volume session", () => {
+    const rows = seriesFiveMinute(30, () => 100, "2026-06-09T19:00:00Z");
+    rows.push(candle("2026-06-09T22:00:00Z", 110, { volume: 0 }));
+    const result = buildMarketContext(snapshot(rows), Date.parse("2026-06-09T22:05:00Z"))!;
+    expect(result.vwap).toBeNull();
+    expect(result.vwapLocation).toBe("unavailable");
+  });
+
+  it("does not silently skip missing session volume in VWAP", () => {
+    const rows = seriesFiveMinute(30, () => 100);
+    rows[10].volume = Number.NaN;
+    expect(buildMarketContext(snapshot(rows), Date.parse(rows.at(-1)!.timestamp) + 300_000)!.vwap).toBeNull();
+  });
+
+  it("does not count neutral higher timeframes as directional confirmation", () => {
+    const rows = seriesFiveMinute(90, i => i % 3 === 2 ? 100 : 80, "2026-06-09T08:00:00Z");
+    rows.at(-1)!.close = 100.01;
+    rows.forEach(row => { row.high = Math.max(row.high, row.close); row.low = Math.min(row.low, row.close); });
+    const result = buildMarketContext(snapshot(rows), Date.parse(rows.at(-1)!.timestamp) + 300_000)!;
+    expect(result.trend?.direction).toBe("bullish");
+    expect(result.trends[1].direction).toBe("neutral");
+    expect(result.multiTimeframeAlignment.status).toBe("mixed");
+  });
   it("uses the chart's confirmed swing levels even when the source swing is over 600 bars old", () => {
     const rows = seriesFiveMinute(800, () => 100);
     rows[10] = { ...rows[10], high: 110, low: 90 };

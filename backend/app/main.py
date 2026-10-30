@@ -19,6 +19,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, inspect, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -631,6 +632,16 @@ async def api_auth_middleware(request: Request, call_next):
         return _with_timing_headers(response)
     finally:
         reset_authenticated_user(context_token)
+
+@app.get("/api/system/logs")
+def get_system_logs(response: Response, hours: int = Query(default=24, ge=1, le=168)):
+    from .services.system_logs import read_system_logs
+    result = read_system_logs(user_id=get_authenticated_user_id(), hours=hours)
+    health = worker_health()
+    result["worker"] = json.loads(health.body) if isinstance(health, JSONResponse) else health
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
 
 @app.get("/health")
 def health():
@@ -2770,6 +2781,17 @@ def _latest_market_candle_timestamp(candles: list[ProjectXMarketCandle]) -> date
     return max(timestamps) if timestamps else None
 
 
+def _stream_client_for_user(user_id: str):
+    # Both session creation and cleanup belong to the same worker thread.
+    # A synchronous pool checkout/DB wait must not freeze every async request,
+    # heartbeat and stream on the Uvicorn event loop during DB pressure.
+    with SessionLocal() as db:
+        try:
+            return _projectx_client_for_user(db, user_id=user_id)
+        except ProjectXClientError as exc:
+            raise _to_http_exception(exc) from exc
+
+
 @app.get("/api/projectx/market-price/stream")
 async def stream_projectx_market_price(
     request: Request,
@@ -2778,11 +2800,7 @@ async def stream_projectx_market_price(
     throttle_ms: int = Query(default=250, ge=50, le=5000),
 ):
     user_id = get_authenticated_user_id()
-    with SessionLocal() as db:
-        try:
-            client = _projectx_client_for_user(db, user_id=user_id)
-        except ProjectXClientError as exc:
-            raise _to_http_exception(exc) from exc
+    client = await run_in_threadpool(_stream_client_for_user, user_id)
     subscription = await _market_price_registry.subscribe(user_id=user_id, client=client, contract_id=contract_id)
     interval_seconds = max(throttle_ms, 50) / 1000.0
 
@@ -2813,13 +2831,8 @@ async def stream_projectx_market_depth(
     """Proxy one exact contract's ProjectX depth without exposing its JWT."""
 
     user_id = get_authenticated_user_id()
-    # Resolve and decrypt credentials in a short-lived DB scope. The never-ending
-    # SSE response must not reserve a database connection for its lifetime.
-    with SessionLocal() as db:
-        try:
-            client = _projectx_client_for_user(db, user_id=user_id)
-        except ProjectXClientError as exc:
-            raise _to_http_exception(exc) from exc
+    # Release the short-lived DB scope before the never-ending SSE response.
+    client = await run_in_threadpool(_stream_client_for_user, user_id)
 
     subscription = await _order_book_registry.subscribe(
         user_id=user_id,

@@ -247,7 +247,7 @@ it("shows account-free context from closed candles without turning it into a bot
   expect(screen.getByRole("heading", { name: "5m trend leans bullish" })).not.toBeNull();
   expect(screen.getByRole("heading", { name: "What supports this read" })).not.toBeNull();
   expect(screen.getByRole("heading", { name: "What conflicts with it" })).not.toBeNull();
-  expect(screen.getByRole("heading", { name: "Computed levels · 5m" })).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "Key levels · 5m" })).not.toBeNull();
   expect(screen.getByText("140.00")).not.toBeNull();
   expect(screen.getByText(/Based on 40 completed 5m candles/)).not.toBeNull();
   expect(screen.getByText("Excluded 1 partial candle.")).not.toBeNull();
@@ -284,6 +284,15 @@ it("follows the selected chart timeframe without treating its bars as matching e
 });
 
 describe("BotAnalysisPanel evidence and decision", () => {
+  it("keeps the assessment, evidence, levels and invalidation outside collapsed details", () => {
+    render(<BotAnalysisPanel bot={bot} evaluation={evaluation} />);
+    for (const title of ["Price is rising, with conflicting directional indicators.", "What supports this read", "What conflicts with it", "Key levels · 5m", "What would change the read"]) {
+      expect(screen.getByRole("heading", { name: title }).closest("details")).toBeNull();
+    }
+    expect(screen.getByText("3.00 pts below · 2.86% · 1.5 ATR").closest("details")).toBeNull();
+    expect(screen.getByText("Crossing ≠ confirmed structure change.")).toBeTruthy();
+    expect(screen.queryByText(/no opposing signal/i)).toBeNull();
+  });
   it("keeps evaluation available after success and when the saved read becomes stale", () => {
     const onEvaluate = vi.fn();
     const view = render(<BotAnalysisPanel bot={bot} evaluation={null} onEvaluate={onEvaluate} />);
@@ -418,8 +427,8 @@ describe("BotAnalysisPanel evidence and decision", () => {
     const snapshot: BotMarketSnapshot = { contractKey: `${bot.contract_id}:minute:5`, unit: "minute", unitNumber: 5, candles: [chartCandle("2026-07-09T15:05:00Z"), chartCandle("2026-07-09T15:10:00Z")], lastPrice: 106, updatedAt: "2026-07-09T15:10:20Z" };
     const html = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={snapshot} />);
     expect(html).toContain("matching chart has 1 newer closed bar");
-    expect(html).toContain("Live chart quote — separate");
-    expect(html).toContain("quote freshness is unverified");
+    expect(html).toContain("Separate chart quote");
+    expect(html).toContain("Quote event time is unavailable");
     const wrong = { ...snapshot, contractKey: "OTHER:minute:5" };
     const otherHtml = renderToStaticMarkup(<BotAnalysisPanel bot={bot} evaluation={evaluation} marketSnapshot={wrong} />);
     expect(otherHtml).not.toContain("newer closed bar");

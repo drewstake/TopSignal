@@ -1200,12 +1200,11 @@ def _analysis_summary(
     nearest_resistance: float | None,
 ) -> str:
     del weights, volume_state, vwap_location, nearest_support, nearest_resistance
-    strength_label = "weak" if trend_strength < 30 else "moderate" if trend_strength < 65 else "strong"
+    del trend_strength
     if bias_direction == "neutral":
         return "Closed candles do not establish a clear directional trend."
-    direction = "upward" if bias_direction == "bullish" else "downward"
-    context = {"quiet": "Recent candle ranges are contracting.", "chop": "Price action is choppy.", "volatile": "Recent candle ranges are expanding."}.get(regime, "")
-    return f"Closed candles show an {direction} trend with {strength_label} movement strength. {context}".strip()
+    context = {"quiet": "contracting ranges", "chop": "choppy market", "volatile": "expanding ranges", "trend": "trending conditions", "range": "range conditions"}.get(regime, "regime unavailable")
+    return f"{bias_direction.capitalize()} tilt · {context}"
 
 
 def _explanation(*, trend: dict[str, Any], regime: str, drivers: dict[str, list[str]], provenance: dict[str, Any],
@@ -1229,31 +1228,38 @@ def _explanation(*, trend: dict[str, Any], regime: str, drivers: dict[str, list[
             for frame in mtf["timeframes"][1:] if frame["direction"] in {"bullish", "bearish"}
         )
     else:
-        supporting = [text for item, text in zip(trend["components"], component_text) if item["direction"] == direction]
+        agreeing = [item["label"] for item in trend["components"] if item["direction"] == direction]
+        supporting = [f"{', '.join(agreeing)} point {'upward' if direction == 'bullish' else 'downward'}. Duplicate trend measures are not independent confirmations."] if agreeing else []
         conflicting = [text for item, text in zip(trend["components"], component_text) if item["direction"] not in {direction, "neutral"}]
         opposite = "bearish" if direction == "bullish" else "bullish"
         supporting.extend(text for text in drivers[direction] if "VWAP" in text or "timeframes" in text)
         conflicting.extend(text for text in drivers[opposite] if "VWAP" in text or "timeframes" in text)
     if direction != "neutral" and mtf["status"] == "mixed":
-        conflicting.append("The available higher-timeframe trends disagree with the selected timeframe.")
+        for frame in mtf["timeframes"][1:]:
+            if frame["direction"] == "neutral":
+                conflicting.append(f"The {frame['timeframe']} trend has no clear direction; it does not confirm the selected timeframe.")
+            elif frame["direction"] != direction:
+                conflicting.append(f"The {frame['timeframe']} trend is {frame['direction']}, opposing the selected timeframe.")
+    if direction != "neutral" and regime == "chop":
+        conflicting.append("The directional tilt sits within choppy conditions; it is not a clean sustained trend.")
     limitations = []
     if volume_state == "unavailable":
         limitations.append("Latest candle volume or its baseline is unavailable; volume supplies no confirmation.")
     elif volume_state == "low":
-        limitations.append("Latest candle volume is below its recent baseline; it supplies little participation evidence.")
+        conflicting.append("Latest candle volume is below its recent baseline; participation is subdued, not an opposing directional signal.")
     if mtf["status"] == "unavailable":
         limitations.append("There are not enough complete higher-timeframe candles to assess agreement.")
     if not vwap_provenance["complete_session"]:
-        limitations.append("VWAP covers only the available candles within the futures session, not a complete session history or the strategy's RTH VWAP.")
+        limitations.append("VWAP covers only the available candles within the futures session; missing intervals can shift this reference.")
     if provenance["is_stale"]:
         limitations.append("The candle snapshot is stale during scheduled trading time; this is a historical read.")
     elif not provenance["market_session_open"]:
         limitations.append("The scheduled market is closed; this describes the last available closed candles.")
     levels = []
     if nearest_resistance is not None:
-        levels.append({"direction": "bullish", "price": nearest_resistance, "condition": f"A closed {provenance['timeframe']['label']} candle above {_fmt(nearest_resistance)} would challenge the current resistance; re-evaluate trend components at that close."})
+        levels.append({"direction": "bullish", "price": nearest_resistance, "condition": f"A closed {provenance['timeframe']['label']} candle above {_fmt(nearest_resistance, digits=2)} would cross resistance. A bullish structure change still needs follow-through and a higher low / higher high; it is not confirmed by one crossing."})
     if nearest_support is not None:
-        levels.append({"direction": "bearish", "price": nearest_support, "condition": f"A closed {provenance['timeframe']['label']} candle below {_fmt(nearest_support)} would challenge the current support; re-evaluate trend components at that close."})
+        levels.append({"direction": "bearish", "price": nearest_support, "condition": f"A closed {provenance['timeframe']['label']} candle below {_fmt(nearest_support, digits=2)} would cross support. A bearish structure change still needs follow-through and a lower high / lower low; it is not confirmed by one crossing."})
     return {
         "headline": _analysis_summary(bias_direction=direction, trend_strength=trend["strength"], regime=regime,
             weights={}, volume_state=volume_state, vwap_location="", nearest_support=None, nearest_resistance=None),

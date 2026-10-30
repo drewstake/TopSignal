@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
-    [int]$ApiPort = 8000
+    [int]$ApiPort = 8000,
+    [string]$PreviousDist = '',
+    [string]$PythonPath = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,3 +59,8 @@ if (-not (Test-Path -LiteralPath $index -PathType Leaf)) {
     throw "Frontend build completed without producing frontend/dist/index.html."
 }
 Write-Output "Built the loopback control UI for http://127.0.0.1:$ApiPort."
+if (-not [string]::IsNullOrWhiteSpace($PreviousDist)) {
+    if ([string]::IsNullOrWhiteSpace($PythonPath)) { $PythonPath = Join-Path $resolvedRoot 'backend\.venv\Scripts\python.exe' }
+    & $PythonPath (Join-Path $PSScriptRoot 'preserve-frontend-assets.py') --directory (Join-Path $frontendDir 'dist') --previous-dist $PreviousDist
+    if ($LASTEXITCODE -ne 0) { throw 'Preceding frontend assets could not be preserved; do not activate this build.' }
+}
