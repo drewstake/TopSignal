@@ -50,6 +50,23 @@ def test_access_token_lookup_prunes_expired_credentials(monkeypatch):
     assert "expired" not in client_module._TOKEN_CACHE_BY_KEY
 
 
+def test_stream_token_invalidation_preserves_newer_login_and_other_credentials(monkeypatch):
+    import app.services.projectx_client as client_module
+
+    client = ProjectXClient(base_url="https://example.test", username="fixture", api_key="fixture")
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+    cache = {
+        client._token_cache_key(): client_module._TokenCache("new-login", expiry),
+        "other-user": client_module._TokenCache("other-login", expiry),
+    }
+    monkeypatch.setattr(client_module, "_TOKEN_CACHE_BY_KEY", cache)
+    client.invalidate_access_token("old-login")
+    assert client.get_access_token() == "new-login"
+    client.invalidate_access_token("new-login")
+    assert client._token_cache_key() not in cache
+    assert cache["other-user"].token == "other-login"
+
+
 @pytest.mark.parametrize("raw, expected", [("600", 600), ("-1", 0), ("nan", None), ("inf", None), ("garbage", None)])
 def test_retry_after_header_parser_is_finite(raw, expected):
     from app.services.projectx_client import _retry_after_seconds

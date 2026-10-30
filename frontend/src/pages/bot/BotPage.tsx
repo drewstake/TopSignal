@@ -1308,8 +1308,8 @@ export function BotPage() {
             </CardContent>
           </Card>
           <BotDiagnosticsPanel key={authenticatedCacheScope} accountId={activeProjectXAccountId} demoMode={demoModeEnabled} />
-          <BotForwardResultsPanel key={`${authenticatedCacheScope}:${selectedBot?.id}`} botId={selectedBot?.id ?? null} demoMode={demoModeEnabled} />
       </div>
+      <BotForwardResultsPanel key={`${authenticatedCacheScope}:${selectedBot?.id}`} botId={selectedBot?.id ?? null} demoMode={demoModeEnabled} />
     </div>
   );
 }

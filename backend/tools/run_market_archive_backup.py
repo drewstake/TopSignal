@@ -12,10 +12,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import time
 from uuid import uuid4
 
-from backup_market_cache import verify
+from backup_market_cache import verify, checksum, filesystem_path
 from check_market_archive_restore import restore_check
 
 
@@ -66,6 +67,35 @@ def publish(config, status):
            "if(Test-Path -LiteralPath $p){[IO.File]::Replace($tmp,$p,$p+'.'+[guid]::NewGuid().ToString()+'.previous')}else{[IO.File]::Move($tmp,$p)}", timeout=45)
 
 
+def unpack_backup(archive_path, destination, *, max_bytes):
+    """Extract regular snapshot files only, with explicit path/size bounds."""
+    destination = filesystem_path(destination)
+    if destination.exists():
+        raise ValueError('Restore destination already exists')
+    with tarfile.open(filesystem_path(archive_path), 'r:') as archive:
+        members = archive.getmembers()
+        names = set()
+        total = 0
+        for member in members:
+            name = member.name
+            target = (destination/name).resolve()
+            if (not member.isfile() or '\\' in name or ':' in name or name.startswith('/')
+                    or '..' in name.split('/') or not target.is_relative_to(destination)
+                    or str(target).casefold() in names):
+                raise ValueError('Invalid snapshot archive member')
+            names.add(str(target).casefold())
+            total += member.size
+            if total > max_bytes:
+                raise ValueError('Snapshot extraction budget exceeded')
+        destination.mkdir(parents=True, exist_ok=False)
+        for member in members:
+            target = destination/member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as source, target.open('xb') as output:
+                shutil.copyfileobj(source, output)
+    return verify(destination)
+
+
 def attempt(config, *, previous=None, force_restore=False):
     root = Path(config['destination']).resolve()
     if not root.is_dir():
@@ -73,27 +103,34 @@ def attempt(config, *, previous=None, force_restore=False):
     previous = previous or {}
     identity = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex[:8]
     limit = int(config.get('capacity_limit_bytes', 250_000_000_000))
-    used = sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+    used = sum(p.stat().st_size for p in filesystem_path(root).rglob('*') if p.is_file())
     if used >= limit or shutil.disk_usage(root).free < 5_000_000_000:
         raise OSError('Off-device capacity budget reached; no automatic deletion')
     stage = config['remote_staging'].rstrip('/')+'/'+identity
     # Bound staging and require space for a new full snapshot before starting.
     script = f'''$source={quote(config['remote_source'])}; $base={quote(config['remote_staging'])}
-$bytes=(Get-ChildItem -LiteralPath $source -File -Recurse | Measure-Object Length -Sum).Sum
+$members=@(Get-ChildItem -LiteralPath $source -File -Recurse)
+$bytes=($members | Measure-Object Length -Sum).Sum + $members.Count*4096 + 1MB
 $used=0; if(Test-Path -LiteralPath $base){{$used=(Get-ChildItem -LiteralPath $base -File -Recurse | Measure-Object Length -Sum).Sum}}
-if(($used+$bytes) -gt {limit}){{throw 'Staging capacity budget reached'}}
-if((Get-Volume -DriveLetter D).SizeRemaining -lt ($bytes+5GB)){{throw 'Staging free space floor'}}
+if(($used+2*$bytes) -gt {limit}){{throw 'Staging capacity budget reached'}}
+if((Get-Volume -DriveLetter D).SizeRemaining -lt (2*$bytes+5GB)){{throw 'Staging free space floor'}}
 $bytes | ConvertTo-Json -Compress
 '''
     estimated = int(json.loads(remote(config, script, timeout=60)))
-    if used+estimated*2 > limit or shutil.disk_usage(root).free < estimated*2+5_000_000_000:
+    if used+estimated*3 > limit or shutil.disk_usage(root).free < estimated*3+5_000_000_000:
         raise OSError('Backup and restore capacity insufficient')
     remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --source {quote(config['remote_source'])} --output {quote(stage)}; if($LASTEXITCODE -ne 0){{throw 'Snapshot failed'}}")
     backups = root/'backups'
     backups.mkdir(exist_ok=True)
     destination = backups/identity
-    run(['scp', *ssh_options(config), '-r', config['ssh_host']+':'+stage, str(backups)])
-    manifest = verify(destination)
+    transport = json.loads(remote(config, f"& {quote(config['remote_python'])} {quote(config['remote_helper'])} --pack {quote(stage)} --output {quote(stage+'.tar')}; if($LASTEXITCODE -ne 0){{throw 'Packing failed'}}"))
+    if transport['bytes'] > estimated:
+        raise OSError('Snapshot grew beyond estimated transport budget')
+    local_archive = backups/(identity+'.tar')
+    run(['scp', *ssh_options(config), config['ssh_host']+':'+stage+'.tar', str(local_archive)])
+    if local_archive.stat().st_size != transport['bytes'] or checksum(local_archive) != transport['sha256']:
+        raise ValueError('Transport archive checksum mismatch')
+    manifest = unpack_backup(local_archive, destination, max_bytes=estimated)
     result = dict(previous, schema=1, last_attempt_at=utc(), last_verified_at=utc(), status='verified',
                   destination=str(destination), schedule=config.get('schedule'),
                   dependency='Development computer powered on, drews signed in, private SSH connected; no browser required',

@@ -195,6 +195,10 @@ def test_clear_for_reconnect_always_emits_empty_reset_snapshot_and_new_epoch():
 class _StubClient:
     def __init__(self):
         self.auth_calls = 0
+        self.invalidated_tokens = []
+
+    def invalidate_access_token(self, token):
+        self.invalidated_tokens.append(token)
 
     def get_access_token(self):
         self.auth_calls += 1
@@ -917,6 +921,173 @@ def test_delayed_old_subscribe_error_cannot_override_newer_resubscribe():
     asyncio.run(scenario())
 
 
+def test_refresh_reuses_live_book_and_applies_updates_while_no_viewer_is_attached():
+    async def scenario():
+        connector = _FakeConnector()
+        registry = ProjectXOrderBookRegistry(
+            session_factory=lambda **kwargs: ProjectXMarketDepthSession(connect_factory=connector, **kwargs),
+            disconnect_grace_seconds=0.1,
+        )
+        first = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+        try:
+            await _wait_until(lambda: bool(connector.websockets) and bool(_invocations(connector.websockets[0], "SubscribeContractMarketDepth")))
+            session = first.session
+            await session._apply_depth_entry(CONTRACT_NQ, _depth(
+                timestamp="2026-07-10T14:00:00Z", depth_type=2, price=20000, volume=8,
+            ))
+            await first.close()
+            assert session._channels[CONTRACT_NQ].subscribers == set()
+            # The upstream book keeps receiving additions and removals throughout
+            # the refresh; retaining only the old display would be unsafe.
+            await session._apply_depth_entry(CONTRACT_NQ, _depth(
+                timestamp="2026-07-10T14:00:01Z", depth_type=2, price=20000, volume=0,
+            ))
+            await session._apply_depth_entry(CONTRACT_NQ, _depth(
+                timestamp="2026-07-10T14:00:01Z", depth_type=2, price=19999, volume=12,
+            ))
+            replacement = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+            assert replacement.session is session
+            assert replacement.initial_events[1]["data"]["bids"] == [{"price": 19999, "size": 12}]
+            assert len(connector.websockets) == 1
+            assert len(_invocations(connector.websockets[0], "SubscribeContractMarketDepth")) == 1
+            assert _invocations(connector.websockets[0], "UnsubscribeContractMarketDepth") == []
+            await asyncio.sleep(0.12)
+            assert not connector.websockets[0].closed
+            await replacement.close()
+            await _wait_until(lambda: not registry._sessions)
+            assert session._runner_task is None
+            assert connector.websockets[0].closed
+            assert registry._user_slots == {}
+        finally:
+            await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_disconnect_grace_is_scoped_to_contract_and_registry_shutdown_cancels_timers():
+    async def scenario():
+        connector = _FakeConnector()
+        registry = ProjectXOrderBookRegistry(
+            session_factory=lambda **kwargs: ProjectXMarketDepthSession(connect_factory=connector, **kwargs),
+            disconnect_grace_seconds=0.03,
+        )
+        first = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+        second = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_MNQ)
+        session = first.session
+        await _wait_until(lambda: bool(connector.websockets) and len(_invocations(connector.websockets[0], "SubscribeContractMarketDepth")) == 2)
+        await first.close()
+        await _wait_until(lambda: CONTRACT_NQ not in session._channels)
+        assert CONTRACT_MNQ in session._channels
+        assert not connector.websockets[0].closed
+        assert len(_invocations(connector.websockets[0], "UnsubscribeContractMarketDepth")) == 1
+        await second.close()
+        pending = tuple(session._disconnect_tasks)
+        assert pending
+        await registry.close()
+        assert all(task.done() for task in pending)
+        assert session._pending_disconnects == {}
+        assert session._runner_task is None
+        assert connector.websockets[0].closed
+
+    asyncio.run(scenario())
+
+
+def test_background_book_stays_live_without_viewers_until_backend_shutdown(monkeypatch):
+    from app.services import market_observations
+
+    recorded = []
+    for method in ("capture_depth", "capture_trade", "capture_gap"):
+        monkeypatch.setattr(market_observations, method, lambda _method=method, **kwargs: recorded.append((_method, kwargs)))
+
+    async def scenario():
+        connectors = []
+
+        def session_factory(**kwargs):
+            connector = _FakeConnector()
+            connectors.append(connector)
+            return ProjectXMarketDepthSession(connect_factory=connector, **kwargs)
+
+        registry = ProjectXOrderBookRegistry(
+            session_factory=session_factory, disconnect_grace_seconds=0.01,
+            keep_alive_without_viewers=True,
+        )
+        first = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+        other = await registry.subscribe(user_id="other-viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+        try:
+            await _wait_until(lambda: all(c.websockets and _invocations(c.websockets[0], "SubscribeContractMarketDepth") for c in connectors))
+            session = first.session
+            await first.close()
+            await other.close()
+            assert len([event for event in recorded if event[1].get("reason") == "viewer_capture_paused"]) == 2
+            recorded.clear()
+            await asyncio.sleep(0.03)
+            assert session._pending_disconnects == {}
+            assert session._channels[CONTRACT_NQ].subscribers == set()
+            assert not session._runner_task.done()
+            assert not connectors[0].websockets[0].closed
+            await connectors[0].websockets[0].incoming.put(json.dumps({
+                "type": 1, "target": "GatewayDepth", "arguments": [CONTRACT_NQ, _depth(
+                    timestamp="2026-07-10T14:00:00Z", depth_type=2, price=20000, volume=12,
+                )],
+            }) + _SIGNALR_RECORD_SEPARATOR)
+            await _wait_until(lambda: bool(session._channels[CONTRACT_NQ].book.snapshot()["bids"]))
+            await session.process_signalr_frame({
+                "type": 1, "target": "GatewayTrade", "arguments": [CONTRACT_NQ, {
+                    "price": 20000, "volume": 1, "timestamp": "2026-07-10T14:00:01Z",
+                }],
+            })
+            assert recorded == []
+            replacement = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+            assert replacement.session is session
+            assert replacement.initial_events[1]["data"]["bids"] == [{"price": 20000, "size": 12}]
+            assert other.session._channels[CONTRACT_NQ].book.snapshot()["bids"] == []
+            assert len(connectors) == 2
+            assert len(_invocations(connectors[0].websockets[0], "SubscribeContractMarketDepth")) == 1
+            await session._apply_depth_entry(CONTRACT_NQ, _depth(
+                timestamp="2026-07-10T14:00:02Z", depth_type=2, price=20000, volume=9,
+            ))
+            assert recorded[-1][0] == "capture_depth"
+            await replacement.close()
+        finally:
+            await registry.close()
+        assert registry._sessions == {}
+        assert session._runner_task is None
+        assert session._channels == {}
+        assert all(c.websockets[0].closed for c in connectors)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_feed_loss_during_refresh_still_clears_the_retained_book(background):
+    async def scenario():
+        connector = _FakeConnector()
+        registry = ProjectXOrderBookRegistry(
+            session_factory=lambda **kwargs: ProjectXMarketDepthSession(
+                connect_factory=connector, reconnect_base_seconds=0.01, **kwargs,
+            ),
+            disconnect_grace_seconds=1,
+            keep_alive_without_viewers=background,
+        )
+        first = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+        try:
+            await _wait_until(lambda: bool(connector.websockets) and bool(_invocations(connector.websockets[0], "SubscribeContractMarketDepth")))
+            await first.session._apply_depth_entry(CONTRACT_NQ, _depth(
+                timestamp="2026-07-10T14:00:00Z", depth_type=2, price=20000, volume=8,
+            ))
+            await first.close()
+            await connector.websockets[0].incoming.put(ConnectionError("feed interrupted"))
+            await _wait_until(lambda: len(connector.websockets) == 2)
+            replacement = await registry.subscribe(user_id="viewer", client=_StubClient(), contract_id=CONTRACT_NQ)
+            snapshot = replacement.initial_events[1]["data"]
+            assert snapshot["bids"] == []
+            assert snapshot["asks"] == []
+        finally:
+            await registry.close()
+
+    asyncio.run(scenario())
+
+
 def test_registry_subscription_lease_prevents_idle_prune_race():
     async def scenario():
         connector = _FakeConnector()
@@ -1253,6 +1424,52 @@ def test_late_old_generation_depth_is_ignored_after_reconnect_reset():
 
         await subscription.close()
         await session.close()
+
+    asyncio.run(scenario())
+
+
+def test_empty_reconnections_back_off_and_refresh_auth_only_once(monkeypatch):
+    sleep = asyncio.sleep
+    delays = []
+
+    async def record_sleep(delay):
+        if asyncio.current_task().get_name() == "projectx-market-depth":
+            delays.append(delay)
+        await sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+
+    async def scenario():
+        client = _StubClient()
+        connector = _FakeConnector()
+        session = ProjectXMarketDepthSession(
+            client=client, connect_factory=connector,
+            reconnect_base_seconds=0.01, reconnect_max_seconds=0.08,
+        )
+        subscription = await session.subscribe(CONTRACT_NQ)
+        try:
+            for index in range(6):
+                await _wait_until(lambda: len(connector.websockets) > index)
+                await _wait_until(lambda: bool(_invocations(connector.websockets[index], "SubscribeContractMarketDepth")))
+                await connector.websockets[index].incoming.put(StopAsyncIteration)
+            await _wait_until(lambda: len(delays) == 6)
+            assert delays == [0.01, 0.02, 0.04, 0.08, 0.08, 0.08]
+            assert client.invalidated_tokens == ["server-only-projectx-token"]
+            await _wait_until(lambda: len(connector.websockets) == 7)
+            healthy = connector.websockets[6]
+            await _wait_until(lambda: bool(_invocations(healthy, "SubscribeContractMarketDepth")))
+            await healthy.incoming.put(json.dumps({
+                "type": 1, "target": "GatewayDepth", "arguments": [CONTRACT_NQ, _depth(
+                    timestamp="2026-07-10T14:00:00Z", depth_type=1,
+                )],
+            }) + _SIGNALR_RECORD_SEPARATOR)
+            await _wait_until(lambda: session._healthy_connection_generation == 7)
+            await healthy.incoming.put(StopAsyncIteration)
+            await _wait_until(lambda: len(delays) == 7)
+            assert delays[-1] == 0.01
+        finally:
+            await subscription.close()
+            await session.close()
 
     asyncio.run(scenario())
 

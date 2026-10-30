@@ -900,6 +900,14 @@ class ProjectXClient:
     def get_access_token(self) -> str:
         return self._get_access_token()
 
+    def invalidate_access_token(self, rejected_token: str) -> None:
+        """Discard a failed stream's token without evicting a newer login."""
+        cache_key = self._token_cache_key()
+        with _token_cache_guard():
+            cached = _TOKEN_CACHE_BY_KEY.get(cache_key)
+            if cached is not None and cached.token == rejected_token:
+                _TOKEN_CACHE_BY_KEY.pop(cache_key, None)
+
     def _get_access_token(self, *, deadline: RequestDeadline | None = None) -> str:
         if deadline is None:
             with RequestDeadline(self.timeout_seconds) as owned_deadline:
