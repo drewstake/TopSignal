@@ -190,8 +190,27 @@ def init_db(*, force: bool = False):
     _ensure_journal_schema_compatibility()
     _ensure_multi_tenant_schema_compatibility()
     _ensure_bot_schema_compatibility()
+    _ensure_local_market_candle_schema_compatibility()
     _ensure_query_performance_indexes()
     _ensure_default_instrument_metadata()
+
+
+def _ensure_local_market_candle_schema_compatibility() -> None:
+    # create_all does not update existing offline databases. Keep provenance
+    # unknown for old candles instead of inventing a first-fetch time or hash.
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "projectx_market_candles" not in inspector.get_table_names():
+            return
+        columns = {column["name"] for column in inspector.get_columns("projectx_market_candles")}
+        for name, definition in (
+            ("first_fetched_at", "DATETIME"),
+            ("revision_hash", "VARCHAR(64)"),
+        ):
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE projectx_market_candles ADD COLUMN {name} {definition}"))
 
 
 def _ensure_accounts_schema_compatibility() -> None:

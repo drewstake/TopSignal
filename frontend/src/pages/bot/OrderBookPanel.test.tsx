@@ -187,6 +187,22 @@ describe("OrderBookPanel", () => {
     expect(streamFactory).toHaveBeenCalledTimes(2);
   });
 
+  it("starts with all levels when returning from Demo Mode", () => {
+    const contractId = "MNQ";
+    const streamFactory = vi.fn<MarketDepthStreamFactory>(() => vi.fn());
+    const { container, rerender } = render(<OrderBookPanel contractId={contractId} streamFactory={streamFactory} />);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "10" } });
+    rerender(<OrderBookPanel contractId={contractId} streamFactory={streamFactory} demoMode />);
+    expect(screen.queryByRole("combobox")).toBeNull();
+    rerender(<OrderBookPanel contractId={contractId} streamFactory={streamFactory} />);
+    act(() => {
+      streamFactory.mock.calls[1][1].onSnapshot({ contract_id: contractId, sequence: 1, timestamp: null,
+        bids: Array.from({ length: 75 }, (_, i) => ({ price: 20000 - i, size: 1 })), asks: [] });
+    });
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("all");
+    expect(container.querySelectorAll("[data-price]")).toHaveLength(75);
+  });
+
   it("renders an explicit unavailable state when no bot contract is selected", () => {
     const markup = renderToStaticMarkup(<OrderBookPanel contractId={null} />);
 
