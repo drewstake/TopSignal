@@ -72,11 +72,13 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
             logging.getLogger(__name__).warning("observation_results_write_failed; inspect local research storage")
     collect_observation()  # Mature prior predictions even after the entry session ends.
     from .topbot_session import entry_boundary_reason
-    boundary = entry_boundary_reason(now)
-    if boundary:
-        payload["hold_reason"] = boundary
-        return hold(f"NO TRADE: {boundary}.")
     try:
+        closed = [row for row in candles if not row.is_partial]
+        decision_at = utc(closed[-1].candle_timestamp) + BAR if closed else now
+        boundary = entry_boundary_reason(now, decision_at=decision_at)
+        if boundary:
+            payload["hold_reason"] = boundary
+            return hold(f"NO TRADE: {boundary}.")
         latest = candles[-1]
         payload["input_revisions"] = [{"timestamp": utc(row.candle_timestamp).isoformat(),
                                        "sha256": getattr(row, "revision_hash", None)} for row in candles[-21:]]
@@ -134,7 +136,8 @@ def evaluate(candles, *, as_of=None, root=None, owner=None, contract_id=None):
                        reward_r_multiple=target/stop, exit_policy=RULES["exit_policy"])
         reason = (f"{action}: Bayesian expected net ${choice['expected_net_usd']:.2f}; "
                   f"lower utility ${choice['lower_utility_usd']:.2f} exceeds $1 after costs and uncertainty. "
-                  "15-minute horizon; experimental decision, unvalidated probabilities.")
+                  f"{forecast.get('exposure_bars', 3)*5}-minute priced exposure under the original 15-minute deadline; "
+                  "experimental decision, unvalidated probabilities.")
         return SignalResult(action, reason, stamp, price, payload)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return hold("NO TRADE: mathematical-model inputs failed integrity checks.")

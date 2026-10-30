@@ -1,4 +1,9 @@
 export interface DecisionDetails {
+  recording?: { status: "pending" | "confirmed" | "unknown"; completed_at?: string };
+  payoff_semantics?: string;
+  simulation_eligibility?: { status: "eligible" | "blocked" | "unknown"; codes: string[] } | null;
+  paper_readiness?: { status: "eligible" | "blocked" | "unknown"; codes: string[] } | null;
+  broker_readiness?: { status: "eligible" | "blocked" | "unknown"; codes: string[] } | null;
   timing: { candle_close: string; recorded_at: string; close_to_record_seconds: number; theoretical_entry_at: string;
     simulated_entry_at: string; exit_deadline: string; remaining_horizon_seconds: number; entry_available: boolean;
     evaluation_started_at?: string; evaluation_completed_at?: string; evaluation_duration_ms?: number; quote_status: string;
@@ -15,7 +20,7 @@ export interface DecisionDetails {
 }
 export interface ForwardComparison {
   policy: string; minimum_sessions: number; method?: string;
-  cohorts: { id: string; artifact: string; started_at: string; complete_sessions: number;
+  cohorts: { id: string; artifact: string; policy?: string; payoff_semantics?: string; directional_rules?: string; started_at: string; complete_sessions: number;
     accounts: Record<string, { net_usd: number; trades: number; position: null | { side: string; entry?: number };
       blocked_reason: string | null; closed_drawdown_usd: number }>;
     sessions: { day: string; expected: number; recorded: number; missing: number; unfinished: boolean; quality_failures: number; usable: boolean }[];
@@ -78,13 +83,20 @@ export function VolatilityWhatIf({ data }: { data: VolatilityCounterfactuals }) 
 export function DecisionExplanation({ details }: { details: DecisionDetails }) {
   const t = details.timing;
   return <div className="space-y-3 text-sm">
+    <div aria-label="Execution readiness" className="space-y-1">
+      {details.recording && details.recording.status !== "confirmed" && <p role="alert">Paper recording {details.recording.status}: persistence completion was not confirmed. The displayed timestamp is provisional; this entry cannot be replayed as a fill.</p>}
+      <p>Shared simulation gates: {details.simulation_eligibility?.status ?? "unknown"}{details.simulation_eligibility?.codes.length ? ` · ${details.simulation_eligibility.codes.map(label).join("; ")}` : ""}.</p>
+      <p>Paper account readiness: {details.paper_readiness?.status ?? "unknown"}{details.paper_readiness?.codes.length ? ` · ${details.paper_readiness.codes.map(label).join("; ")}` : ""}.</p>
+      <p>Broker readiness: {details.broker_readiness?.status ?? "unknown"}{details.broker_readiness?.codes.length ? ` · ${details.broker_readiness.codes.map(label).join("; ")}` : ""}.</p>
+      <p className="text-xs text-app-muted">Readiness is separate from the signal’s edge and support. Missing historical evidence is unknown. Broker routing still requires authorization and a fresh provider preflight.</p>
+    </div>
     <dl className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div><dt className="text-app-muted">Candle closed</dt><dd>{clock(t.candle_close)}</dd></div>
       <div><dt className="text-app-muted">Decision recorded</dt><dd>{clock(t.recorded_at)} · {t.close_to_record_seconds.toFixed(1)}s later</dd></div>
       <div><dt className="text-app-muted">Simulated entry opportunity</dt><dd>{t.entry_available ? clock(t.simulated_entry_at) : "Too late for entry"}</dd></div>
       <div><dt className="text-app-muted">Original exit deadline</dt><dd>{clock(t.exit_deadline)} · {(t.remaining_horizon_seconds/60).toFixed(0)}m available</dd></div>
     </dl>
-    <p className="text-xs text-app-muted">{t.evaluation_duration_ms == null ? "Evaluation duration was not captured for this record." : `Evaluation took ${(t.evaluation_duration_ms/1000).toFixed(2)}s.`} Forecast outcomes assume the {clock(t.theoretical_entry_at)} open; simulations wait for the first five-minute open after recording. Bid/ask quotes and actual fills are not captured.</p>
+    <p className="text-xs text-app-muted">{t.evaluation_duration_ms == null ? "Evaluation duration was not captured for this record." : `Evaluation took ${(t.evaluation_duration_ms/1000).toFixed(2)}s.`} Forecast outcomes assume the {clock(t.theoretical_entry_at)} open; simulations wait for the first five-minute open after recording. {details.payoff_semantics === "post_record_open_fixed_deadline_v2" ? "Matched entry and remaining exposure; a changed entry opportunity blocks admission." : "Legacy forecast timing; not compatible with new paper admission."} These are OHLC assumptions, not measured fills.</p>
     {t.stages && <details><summary className="cursor-pointer">Evaluation stage timings</summary>
       <p className="text-xs text-app-muted my-2">Stage totals include nested work. Own time excludes nested stages; database time is part of own time. The final commit and forward-results write happen after evaluation; the write timing is available in server logs.</p>
       <div className="overflow-x-auto"><table className="w-full text-xs text-left">
@@ -115,10 +127,11 @@ export function DecisionExplanation({ details }: { details: DecisionDetails }) {
 export function BaselineComparisons({ comparison }: { comparison: ForwardComparison }) {
   return <section aria-label="Forward baseline comparisons" className="space-y-4">
     <h4 className="font-semibold">Forward baseline comparisons</h4>
-    <p className="text-sm text-app-muted">Separate simulated accounts start together for each model/configuration version. All use the same observed forecast opportunities, delayed entry, costs, brackets, position and daily limits. Directional baselines bypass signal-edge thresholds. Historical pool uses the same frozen training paths without conditioning on the current features.</p>
+    <p className="text-sm text-app-muted">Separate simulated accounts start together for each model/configuration and comparison policy. New comparisons require explicit shared simulation eligibility; position, cooldown and daily limits belong to each account independently. Directional baselines bypass signal-edge and sample-support gates. Historical pool uses the same frozen training paths without conditioning on the current features. Historical cohorts retain their recorded policy.</p>
     {!comparison.cohorts.length && <p>Waiting for the first forecast under this comparison policy. Older paper results are preserved; baseline history is not backfilled.</p>}
     {comparison.cohorts.map(cohort => <div className="rounded border border-app-border p-4 space-y-3" key={cohort.id}>
       <p className="text-xs text-app-muted">Comparison started {new Date(cohort.started_at).toLocaleString()} · model {cohort.artifact.slice(0,12)} · {cohort.complete_sessions}/{comparison.minimum_sessions} complete sessions required before uncertainty estimates</p>
+      <p className="text-xs text-app-muted">Policy: {cohort.policy ?? "forward-comparison-v1"} · payoff: {cohort.payoff_semantics ?? "legacy decision-open exposure"}. {cohort.directional_rules ?? "Historical cohort; shared eligibility was not independently recorded on every HOLD."}</p>
       <div className="overflow-x-auto"><table className="w-full text-sm text-left"><caption className="sr-only">Simulated baseline accounts since comparison began</caption><thead><tr><th>Rule</th><th>Net since start</th><th>Closed trades</th><th>Position / status</th></tr></thead><tbody>{Object.entries(cohort.accounts).map(([rule,a]) => <tr className="border-t border-app-border" key={rule}><td className="py-2">{names[rule] ?? label(rule)}</td><td>{money(a.net_usd)}</td><td>{a.trades}</td><td>{a.blocked_reason ? `Unknown exposure: ${label(a.blocked_reason)}` : a.position ? `${a.position.side} · ${a.position.entry == null ? "queued" : "open"}` : "Flat"}</td></tr>)}</tbody></table></div>
       <div className="overflow-x-auto"><table className="w-full text-sm text-left"><caption className="text-left font-medium my-2">TopBot advantage per complete session</caption><thead><tr><th>Compared with</th><th>Mean daily difference</th><th>Adjusted interval</th></tr></thead><tbody>{cohort.comparisons.map(c => <tr className="border-t border-app-border" key={c.rule}><td className="py-2">{names[c.rule] ?? label(c.rule)}</td><td>{money(c.mean_daily_advantage_usd)}</td><td>{c.interval ? `${money(c.interval.lower_usd)} to ${money(c.interval.upper_usd)}` : label(c.status)}</td></tr>)}</tbody></table></div>
       <p className="text-xs text-app-muted">Positive differences favor TopBot. Intervals use paired daily results with five- and ten-session block resampling and a conservative four-comparison adjustment. They are descriptive, not validation or protection against repeated peeking. Current, incomplete and missing-data sessions are excluded; zero-trade sessions remain included. No interval is shown without enough sessions or observed variation.</p>

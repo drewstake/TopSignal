@@ -17,14 +17,18 @@ def flat_deadline(now: datetime, *, symbol: str = "MNQ") -> datetime:
     return datetime.combine(day, min(close, TOPSTEP_FLAT_TIME), TRADING_TZ).astimezone(timezone.utc)
 
 
-def entry_boundary_reason(now: datetime, *, symbol: str = "MNQ", regular_only: bool = True) -> str | None:
+def entry_boundary_reason(now: datetime, *, decision_at: datetime | None = None,
+                          symbol: str = "MNQ", regular_only: bool = True) -> str | None:
     now = as_utc(now)
-    if now + HORIZON + CLOSE_BUFFER > flat_deadline(now, symbol=symbol):
+    decision = as_utc(decision_at or now)
+    if decision > now:
+        return "decision_not_closed"
+    if decision + HORIZON + CLOSE_BUFFER > flat_deadline(now, symbol=symbol) or now >= flat_deadline(now, symbol=symbol) - CLOSE_BUFFER:
         return "entry_too_close_to_session_close"
     if not futures_session_is_open(now, symbol=symbol):
         return "exchange_session_closed"
-    local = now.astimezone(TRADING_TZ)
-    end = (now + HORIZON).astimezone(TRADING_TZ)
+    local = decision.astimezone(TRADING_TZ)
+    end = (decision + HORIZON).astimezone(TRADING_TZ)
     if regular_only and (not time(9, 35) <= local.time() <= time(15, 30)
                          or end.date() != local.date() or end.time() > time(15, 45)):
         return "outside_research_session"

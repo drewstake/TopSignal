@@ -141,6 +141,7 @@ def create_streaming_runtime(
     client_factory: Callable[[], ProjectXClient],
     market_hub_url: str | None = None,
     user_hub_url: str | None = None,
+    archive_contracts: tuple[str, ...] = (),
 ) -> StreamingRuntime:
     normalized_user_id = user_id.strip()
     if not normalized_user_id:
@@ -158,6 +159,7 @@ def create_streaming_runtime(
         point_value_by_symbol=point_value_lookup,
         on_lifecycle_closed=_persist_closed_lifecycle,
     )
+    from .market_archive_events import capture
     runner = ProjectXHubRunner(
         tracker=tracker,
         client_factory=client_factory,
@@ -165,6 +167,8 @@ def create_streaming_runtime(
         account_id=account_id,
         market_hub_url=market_hub_url,
         user_hub_url=user_hub_url,
+        archive_contracts=archive_contracts,
+        on_archive_event=(lambda kind, payload: capture(normalized_user_id, account_id, kind, payload, archive_contracts)) if archive_contracts else None,
         on_user_account=lambda payload: _persist_account_classification(
             user_id=normalized_user_id,
             account_id=account_id,
@@ -175,7 +179,9 @@ def create_streaming_runtime(
             account_id=account_id,
         ),
     )
-    return StreamingRuntime(tracker=tracker, runner=runner)
+    runtime = StreamingRuntime(tracker=tracker, runner=runner)
+    runtime.archive_contracts = archive_contracts
+    return runtime
 
 
 def refresh_projectx_account_classification_once(

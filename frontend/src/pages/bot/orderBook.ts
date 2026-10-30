@@ -6,7 +6,7 @@ import type {
 } from "../../lib/types";
 
 export type OrderBookSide = "ask" | "bid";
-export type OrderBookLevelCount = 1 | 10 | 20 | 50;
+export type OrderBookLevelCount = 1 | 10 | 20 | 50 | "all";
 export type OrderBookConnectionState = ProjectXMarketDepthConnectionState | "loading";
 export type OrderBookUpdateResult = "applied" | "ignored" | "gap";
 
@@ -31,6 +31,13 @@ export interface OrderBookSpreadSnapshot {
   spread: number | null;
 }
 
+export interface OrderBookDepthSnapshot {
+  bidCount: number;
+  askCount: number;
+  visibleBidCount: number;
+  visibleAskCount: number;
+}
+
 export interface OrderBookViewSnapshot {
   asks: OrderBookLevelView[];
   bids: OrderBookLevelView[];
@@ -40,12 +47,6 @@ export interface OrderBookViewSnapshot {
 }
 
 type StoreListener = () => void;
-
-const MAX_VISIBLE_LEVELS = 50;
-const EMPTY_SLOTS: ReadonlyArray<OrderBookLevelView | null> = Array.from(
-  { length: MAX_VISIBLE_LEVELS },
-  () => null,
-);
 
 export function normalizeOrderBookContractId(contractId: string | null | undefined): string | null {
   const normalized = contractId?.trim().toUpperCase() ?? "";
@@ -65,11 +66,13 @@ export class OrderBookStore {
   private lastTimestampMs: number | null = null;
   private awaitingSnapshot = true;
   private visibleLevelCount: OrderBookLevelCount;
-  private askSlots = [...EMPTY_SLOTS];
-  private bidSlots = [...EMPTY_SLOTS];
+  private askSlots: Array<OrderBookLevelView | null> = [];
+  private bidSlots: Array<OrderBookLevelView | null> = [];
   private meta: OrderBookMetaSnapshot;
+  private depth: OrderBookDepthSnapshot = { bidCount: 0, askCount: 0, visibleBidCount: 0, visibleAskCount: 0 };
   private spread: OrderBookSpreadSnapshot = { bestAsk: null, bestBid: null, spread: null };
   private readonly metaListeners = new Set<StoreListener>();
+  private readonly depthListeners = new Set<StoreListener>();
   private readonly spreadListeners = new Set<StoreListener>();
   private readonly slotListeners = new Map<string, Set<StoreListener>>();
 
@@ -89,6 +92,8 @@ export class OrderBookStore {
 
   getSpreadSnapshot = (): OrderBookSpreadSnapshot => this.spread;
 
+  getDepthSnapshot = (): OrderBookDepthSnapshot => this.depth;
+
   getAskSlotSnapshot = (index: number): OrderBookLevelView | null => this.askSlots[index] ?? null;
 
   getBidSlotSnapshot = (index: number): OrderBookLevelView | null => this.bidSlots[index] ?? null;
@@ -96,6 +101,8 @@ export class OrderBookStore {
   subscribeMeta = (listener: StoreListener): (() => void) => subscribe(this.metaListeners, listener);
 
   subscribeSpread = (listener: StoreListener): (() => void) => subscribe(this.spreadListeners, listener);
+
+  subscribeDepth = (listener: StoreListener): (() => void) => subscribe(this.depthListeners, listener);
 
   subscribeAskSlot = (index: number, listener: StoreListener): (() => void) =>
     this.subscribeSlot("ask", index, listener);
@@ -249,8 +256,8 @@ export class OrderBookStore {
 
   getViewSnapshot(): OrderBookViewSnapshot {
     return {
-      asks: this.askSlots.slice(0, this.visibleLevelCount).filter(isOrderBookLevel),
-      bids: this.bidSlots.slice(0, this.visibleLevelCount).filter(isOrderBookLevel),
+      asks: this.askSlots.filter(isOrderBookLevel),
+      bids: this.bidSlots.filter(isOrderBookLevel),
       meta: this.meta,
       spread: this.spread,
       sequence: this.sequence,
@@ -290,13 +297,14 @@ export class OrderBookStore {
   }
 
   private recomputeVisibleBook(): void {
+    const limit = this.visibleLevelCount === "all" ? undefined : this.visibleLevelCount;
     const asks = [...this.asks.entries()]
       .sort(([leftPrice], [rightPrice]) => leftPrice - rightPrice)
-      .slice(0, this.visibleLevelCount);
+      .slice(0, limit);
     const bids = [...this.bids.entries()]
       .sort(([leftPrice], [rightPrice]) => rightPrice - leftPrice)
-      .slice(0, this.visibleLevelCount);
-    const maximumSize = Math.max(0, ...asks.map(([, size]) => size), ...bids.map(([, size]) => size));
+      .slice(0, limit);
+    const maximumSize = asks.concat(bids).reduce((maximum, [, size]) => Math.max(maximum, size), 0);
 
     const nextAskSlots = createSlots(asks, maximumSize);
     const nextBidSlots = createSlots(bids, maximumSize);
@@ -314,6 +322,18 @@ export class OrderBookStore {
       this.spread = nextSpread;
       notify(this.spreadListeners);
     }
+
+    const nextDepth = {
+      bidCount: this.bids.size,
+      askCount: this.asks.size,
+      visibleBidCount: bids.length,
+      visibleAskCount: asks.length,
+    };
+    if (this.depth.bidCount !== nextDepth.bidCount || this.depth.askCount !== nextDepth.askCount ||
+        this.depth.visibleBidCount !== nextDepth.visibleBidCount || this.depth.visibleAskCount !== nextDepth.visibleAskCount) {
+      this.depth = nextDepth;
+      notify(this.depthListeners);
+    }
   }
 
   private replaceSlots(
@@ -321,16 +341,17 @@ export class OrderBookStore {
     current: Array<OrderBookLevelView | null>,
     next: Array<OrderBookLevelView | null>,
   ): void {
-    for (let index = 0; index < MAX_VISIBLE_LEVELS; index += 1) {
+    const slotCount = Math.max(current.length, next.length);
+    for (let index = 0; index < slotCount; index += 1) {
       const currentLevel = current[index] ?? null;
       const nextLevel = next[index] ?? null;
       if (levelSnapshotsEqual(currentLevel, nextLevel)) {
-        next[index] = currentLevel;
         continue;
       }
       current[index] = nextLevel;
       notify(this.slotListeners.get(slotKey(side, index)));
     }
+    current.length = next.length;
   }
 }
 
@@ -356,16 +377,12 @@ function levelsToMap(levels: ProjectXMarketDepthSnapshot["bids"]): Map<number, n
 }
 
 function createSlots(entries: Array<[number, number]>, maximumSize: number): Array<OrderBookLevelView | null> {
-  const slots = [...EMPTY_SLOTS];
-  entries.forEach(([price, size], index) => {
-    slots[index] = {
-      price,
-      size,
-      depthPercent: maximumSize > 0 ? (size / maximumSize) * 100 : 0,
-      isBest: index === 0,
-    };
-  });
-  return slots;
+  return entries.map(([price, size], index) => ({
+    price,
+    size,
+    depthPercent: maximumSize > 0 ? (size / maximumSize) * 100 : 0,
+    isBest: index === 0,
+  }));
 }
 
 function parseTimestampMs(timestamp: string | null): number | null {

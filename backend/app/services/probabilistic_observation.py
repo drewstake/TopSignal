@@ -4,6 +4,7 @@ import os
 
 from .probabilistic_protocol import digest, implementation_sha, protocol
 from .probabilistic_strategy import BAR, HORIZON, PathModel, utc, REGISTERED_STOP_POLICY, UNCAPPED_STOP_POLICY
+from .probabilistic_payoff import PAPER_PAYOFF
 
 FLAG = "TOPSIGNAL_UNVALIDATED_DRY_RUN"
 UNCAPPED_FLAG = "TOPSIGNAL_OBSERVATION_UNCAPPED_STOPS"
@@ -33,7 +34,8 @@ def enabled():
 def observation_path(owner, contract_id, live, *, root=None):
     from .probabilistic_shadow import model_path
     path = model_path(owner, contract_id, live, root=root)
-    return path.parent.parent.parent / "unvalidated-models" / path.parent.name / path.name
+    # Keep the deployed v2 artifact immutable when binding the recording repair.
+    return path.parent.parent.parent / "unvalidated-v2.1" / path.parent.name / path.name
 
 
 def load_model(artifact, *, as_of):
@@ -47,6 +49,8 @@ def load_model(artifact, *, as_of):
             or artifact.get("model_sha256") != digest(artifact.get("model"))):
         raise ValueError("Unvalidated artifact integrity or mode mismatch")
     model = PathModel.from_dict(artifact["model"])
+    if model.payoff_semantics != PAPER_PAYOFF or artifact.get('payoff_semantics') != PAPER_PAYOFF:
+        raise ValueError('Paper timing requires a separately fitted and validated v2 observation artifact')
     if (model.stop_policy != stop_policy()
             or artifact.get("observation_stop_policy", REGISTERED_STOP_POLICY) != model.stop_policy):
         raise ValueError("Observation stop policy requires a matching refitted artifact")
@@ -55,6 +59,6 @@ def load_model(artifact, *, as_of):
     if model.trained_through > utc(as_of) - HORIZON * BAR:
         raise ValueError("Observation training labels violate the horizon embargo")
     age = (utc(as_of) - model.trained_through).total_seconds() / 86400
-    return model, {"observation_only": True, "model_age_days": round(age, 3), "stop_policy": model.stop_policy,
+    return model, {"observation_only": True, "integrity_verified": True, "model_age_days": round(age, 3), "stop_policy": model.stop_policy,
                    "training_stale": age > protocol()["refit"]["max_age_days"],
                    "artifact_sha256": digest(artifact)}

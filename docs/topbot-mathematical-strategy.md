@@ -1,5 +1,11 @@
 # TopBot Mathematical — current execution contract
 
+**October 29 local patch, not activated:** [paper contract v2](topbot-paper-v2.md)
+separates simulation from broker readiness, aligns forecasts to post-record entry
+and the original deadline, and fixes decision-close session boundaries. It
+requires a newly authorized artifact and validation before activation. The dated
+deployment descriptions below retain their historical meaning.
+
 Updated September 26, 2026. TopBot uses the Bayesian payoff model, with the API
 representing NO TRADE as HOLD. This selection is not evidence of profitability.
 No qualified artifact is currently installed in the local workspace.

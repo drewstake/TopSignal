@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useState,
   useSyncExternalStore,
 } from "react";
 
@@ -12,6 +13,7 @@ import {
   normalizeOrderBookContractId,
   OrderBookStore,
   type OrderBookConnectionState,
+  type OrderBookLevelCount,
   type OrderBookLevelView,
   type OrderBookSide,
 } from "./orderBook";
@@ -39,7 +41,7 @@ export function OrderBookPanel({
 }: OrderBookPanelProps) {
   const pageVisible = usePageVisibility();
   const normalizedContractId = normalizeOrderBookContractId(contractId);
-  const store = useMemo(() => new OrderBookStore(normalizedContractId, 1), [normalizedContractId]);
+  const store = useMemo(() => new OrderBookStore(normalizedContractId, "all"), [normalizedContractId]);
 
   useEffect(() => {
     if (demoMode || !pageVisible || !normalizedContractId) {
@@ -61,8 +63,8 @@ export function OrderBookPanel({
 
   return (
     <Card aria-label="Order book" className="!p-3 md:!p-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <header className="flex items-center gap-2" title={`${displayMarket} · Level 1 best bid and ask`}>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <header className="flex flex-wrap items-center gap-2" title={`${displayMarket} · Level 2 market depth`}>
           <CardTitle className="md:!text-sm">Order Book</CardTitle>
           {displaySymbol ? <span className="text-xs text-app-muted">{displaySymbol.split(".").at(-1)}</span> : null}
           {demoMode ? (
@@ -71,25 +73,79 @@ export function OrderBookPanel({
             </span>
           ) : <OrderBookConnectionStatus store={store} />}
         </header>
-        {demoMode ? (
-          <p className="text-xs text-app-muted" role="note">Live market depth is paused in Demo Mode</p>
-        ) : (
-        <div
-          className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 font-mono text-xs sm:w-auto sm:flex-1"
-          aria-label={`${displayMarket} best bid and ask`}
-        >
-          <div data-order-book-side="bids">
-            <OrderBookLevelRow store={store} side="bid" index={0} />
-          </div>
-          <OrderBookSpread store={store} />
-          <div data-order-book-side="asks">
-            <OrderBookLevelRow store={store} side="ask" index={0} />
-          </div>
-        </div>
-        )}
+        {!demoMode ? <OrderBookSpread store={store} /> : null}
       </div>
+      {demoMode ? (
+        <p className="mt-2 text-xs text-app-muted" role="note">Live market depth is paused in Demo Mode</p>
+      ) : <OrderBookDepth key={normalizedContractId} store={store} displayMarket={displayMarket} />}
       {!demoMode ? <OrderBookStateOverlay store={store} /> : null}
     </Card>
+  );
+}
+
+function OrderBookDepth({ store, displayMarket }: { store: OrderBookStore; displayMarket: string }) {
+  const [levelCount, setLevelCount] = useState<OrderBookLevelCount>("all");
+  const depth = useSyncExternalStore(store.subscribeDepth, store.getDepthSnapshot, store.getDepthSnapshot);
+  const countLabel = (visible: number, total: number) =>
+    visible < total ? `${visible} of ${total}` : String(total);
+
+  return (
+    <>
+      <div className="my-3 flex flex-wrap items-center justify-between gap-2 text-xs text-app-muted">
+        <span>Depth of market · Size in contracts</span>
+        <label className="flex items-center gap-2">
+          Levels per side
+          <select
+            aria-label="Visible order book levels per side"
+            className="rounded-md border border-app-border bg-app-bg px-2 py-1 text-xs text-app-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-app-accent"
+            value={levelCount}
+            onChange={(event) => {
+              const value = event.target.value;
+              const next = value === "all" ? "all" : Number(value);
+              if (next !== "all" && next !== 10 && next !== 20 && next !== 50) return;
+              store.setVisibleLevelCount(next);
+              setLevelCount(next);
+            }}
+          >
+            <option value="all">All</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+      </div>
+      <div className="grid grid-cols-2 gap-3 border-b border-app-border pb-2 text-xs">
+        <div className="flex items-center justify-between gap-2 text-app-positive">
+          <span>Bids <span className="text-app-muted">({countLabel(depth.visibleBidCount, depth.bidCount)})</span></span>
+          <span className="text-[10px] text-app-muted">Price</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 text-app-negative">
+          <span className="text-[10px] text-app-muted">Price</span>
+          <span>Asks <span className="text-app-muted">({countLabel(depth.visibleAskCount, depth.askCount)})</span></span>
+        </div>
+      </div>
+      <div
+        className="mt-2 grid max-h-80 grid-cols-2 gap-3 overflow-y-auto overscroll-contain rounded-md font-mono text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-app-accent"
+        role="region"
+        aria-label={`${displayMarket} market depth ladder`}
+        tabIndex={0}
+      >
+        <div data-order-book-side="bids" className="min-w-0 space-y-1">
+          {Array.from({ length: Math.max(1, depth.visibleBidCount) }, (_, index) => (
+            <OrderBookLevelRow key={index} store={store} side="bid" index={index} />
+          ))}
+        </div>
+        <div data-order-book-side="asks" className="min-w-0 space-y-1">
+          {Array.from({ length: Math.max(1, depth.visibleAskCount) }, (_, index) => (
+            <OrderBookLevelRow key={index} store={store} side="ask" index={index} />
+          ))}
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] text-app-muted">
+        {levelCount === "all" ? "All received price levels" : `Nearest ${levelCount} price levels per side`}
+        {" · Best prices at the top"}
+      </p>
+    </>
   );
 }
 
@@ -142,7 +198,7 @@ function OrderBookLevel({ side, level }: { side: OrderBookSide; level: OrderBook
       : "border-app-positive/45 bg-app-positive/10";
   return (
     <div
-      className={`relative flex min-h-8 flex-wrap items-center justify-center gap-x-2 gap-y-0.5 overflow-hidden rounded-md border px-2 py-1 tabular-nums ${
+      className={`relative flex min-h-7 items-center justify-between gap-1 overflow-hidden rounded-md border px-2 py-1 tabular-nums ${
         level?.isBest ? bestTone : "border-app-border/35"
       }`}
       data-price={level?.price}
@@ -161,12 +217,11 @@ function OrderBookLevel({ side, level }: { side: OrderBookSide; level: OrderBook
           aria-hidden="true"
         />
       ) : null}
-      <span className={`relative z-10 font-sans text-[10px] uppercase ${sideTone}`}>{side}</span>
-      <span className={`relative z-10 font-semibold ${level ? sideTone : "text-app-muted-strong"}`}>
+      <span className={`relative z-10 ${side === "bid" ? "order-2" : "order-1"} ${level ? sideTone : "text-app-muted-strong"}`}>
         {level ? priceFormatter.format(level.price) : "—"}
       </span>
-      <span className="relative z-10 text-[10px] text-app-muted" title="Size (contracts)">
-        ×{level ? sizeFormatter.format(level.size) : "—"}
+      <span className={`relative z-10 font-semibold ${side === "bid" ? "order-1" : "order-2"} ${sideTone}`} title="Size (contracts)">
+        {level ? sizeFormatter.format(level.size) : "—"}
       </span>
     </div>
   );
@@ -263,11 +318,11 @@ function overlayMessage(
   if (connection === "loading") {
     return "Loading order book…";
   }
-  if (connection === "reconnecting" && !hasDepth) {
-    return "Reconnecting market depth…";
+  if (connection === "reconnecting") {
+    return hasDepth ? "Reconnecting market depth… Showing last received depth." : "Reconnecting market depth…";
   }
-  if (connection === "disconnected" && !hasDepth) {
-    return message || "Market depth disconnected.";
+  if (connection === "disconnected") {
+    return hasDepth ? "Market depth disconnected. Showing last received depth." : message || "Market depth disconnected.";
   }
   if (!hasSnapshot) {
     return "Waiting for the initial depth snapshot…";

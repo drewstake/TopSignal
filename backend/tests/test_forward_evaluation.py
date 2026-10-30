@@ -9,6 +9,7 @@ import pytest
 
 from app.services import forward_evaluation as e, forward_results as f
 from test_forward_results import NOW, CONTRACT, candle, forecast, ingest, dry
+from paper_fixtures import eligible
 
 
 def predicted(action='NO_TRADE'):
@@ -55,17 +56,18 @@ def test_paper_and_baselines_resolve_once_without_retrospective_entry(tmp_path):
         assert cohort['accounts'][rule]['trades']==1
         assert cohort['accounts'][rule]['net_usd']==pytest.approx(-3.22)
     old=report['recent'][1]['details']
-    assert old['theoretical_outcomes']['BUY']['net_usd']>0
+    assert old['theoretical_outcomes']['BUY']['net_usd']==pytest.approx(-3.22)
     assert old['delayed_outcomes']['sides']['BUY']['net_usd']==pytest.approx(-3.22)
     with closing(sqlite3.connect(f.location('a',1,32,tmp_path))) as db:
         assert db.execute('select count(*) from comparison_trades').fetchone()[0]==4
 
 
 def test_shared_risk_and_late_decisions_block_baselines(tmp_path):
-    ingest(tmp_path,forecast=predicted(),action='HOLD',status='risk_blocked',risk_codes=['account_unavailable'])
+    blocked = eligible(NOW.replace(second=0)); blocked.update(status='blocked', codes=['scope_invalid'])
+    ingest(tmp_path,forecast=predicted(),action='HOLD',status='risk_blocked',risk_codes=['scope_invalid'], simulation_eligibility=blocked)
     cohort=f.report('a',1,32,root=tmp_path,now=NOW)['comparison']['cohorts'][0]
     assert all(a['position'] is None for a in cohort['accounts'].values())
-    assert cohort['dispositions']['always_long']=={'shared_execution_risk_block':1}
+    assert cohort['dispositions']['always_long']=={'shared_simulation_blocked':1}
     record={'at':(NOW+timedelta(minutes=11)).isoformat(),'close':NOW.replace(second=0).isoformat()}
     assert e.next_open(record)>=datetime.fromisoformat(record['close'])+timedelta(minutes=15)
 
@@ -107,7 +109,7 @@ def test_complete_session_coverage_counts_holds_and_excludes_missing_window(tmp_
         cohort=json.loads(db.execute('select payload from comparison_cohorts').fetchone()[0])
         cohort['started_at']='2026-10-22T13:30:00+00:00'
         db.execute('update comparison_cohorts set payload=?',(json.dumps(cohort),))
-        records=[dict(close=t,at=t,comparison_cohort=ident,stage='edge_below_threshold',outcome_status='no_forecast') for t in e.expected_closes('2026-10-22')]
+        records=[dict(close=t,at=t,comparison_cohort=ident,stage='edge_below_threshold',outcome_status='no_forecast', simulation_eligibility=eligible(datetime.fromisoformat(t))) for t in e.expected_closes('2026-10-22')]
         later=datetime(2026,10,22,22,tzinfo=timezone.utc)
         result=e.comparison_report(db,records,later,False)['cohorts'][0]
         assert result['complete_sessions']==1 and result['sessions'][0]['recorded']==72
@@ -150,6 +152,7 @@ def test_unapproved_records_do_not_start_baseline_accounts(tmp_path,status):
 def test_directional_baseline_bypasses_only_edge_not_risk_limits():
     record=dict(stage='qualified_signal',forecast=predicted(),action='BUY',status='dry_run_attempt',
                 id='test',contract=CONTRACT,at=NOW.isoformat(),close=NOW.replace(second=0).isoformat())
+    record['simulation_eligibility'] = eligible(NOW.replace(second=0))
     assert f.admission(f.initial(),record,NOW)=='paper_signal_support'
     state=f.initial()
     assert f.admission(state,record,NOW,directional_baseline=True)=='paper_entry_queued'

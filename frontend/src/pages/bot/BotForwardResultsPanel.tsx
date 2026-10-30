@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
+import { BotArchiveStatus, type ArchiveStatus } from "./BotArchiveStatus";
+import { BotModelDiagnostics, type ModelDiagnostics } from "./BotModelDiagnostics";
 import { botsApi } from "../../lib/api";
 import { BotCollectionCoverage, type CollectionCoverage } from "./BotCollectionCoverage";
 import { BaselineComparisons, DecisionExplanation, VolatilityWhatIf, type DecisionDetails, type ForwardComparison, type VolatilityCounterfactuals } from "./BotEvaluationDetails";
 
 export interface ForwardResults {
+  model_diagnostics?: ModelDiagnostics;
+  archive?: ArchiveStatus;
   status: string; generated_at: string; latest_at: string | null; scan_limited: boolean;
   evaluations: number; forecasts: number; completed: number; pending: number; unknown: number; overdue: number;
   rejection_counts: Record<string, number>; paper_blocks: Record<string, number>; artifacts: string[];
+  calibration_binding?: { artifact: string; payoff_semantics: string } | null;
   calibration: Record<string, { count: number; brier: number | null; bins: { lower: number; upper: number; count: number; predicted: number | null; observed: number | null }[] }>;
   account: null | { started_at: string; updated_at: string; net_usd: number; closed_drawdown_usd: number; trades: number; wins: number;
     blocked_reason: string | null; position: null | { side: string; entry?: number; marked_net_usd?: number; next_bar: string };
@@ -66,10 +71,13 @@ function ForwardResultsContent({ botId, demoMode, days }: { botId: number | null
     {data && <>
       <p className="text-xs text-app-muted">Last recorded evaluation: {data.latest_at ? new Date(data.latest_at).toLocaleString() : "None yet"}. Refreshes every 30 seconds. {data.scan_limited && "Report is truncated to 9,000 evaluations."}</p>
       {data.status === "awaiting_observations" && <p>Waiting for the worker’s first recorded evaluation. No historical results have been fabricated or backfilled.</p>}
+      {data.model_diagnostics && <BotModelDiagnostics data={data.model_diagnostics} />}
+      <h4 className="font-semibold">Historical totals · all model versions</h4>
       <dl className="grid grid-cols-2 md:grid-cols-6 gap-3">
         {Object.entries({ Evaluations: data.evaluations, Forecasts: data.forecasts, Completed: data.completed, Pending: data.pending, Overdue: data.overdue, Unknown: data.unknown }).map(([name, value]) => <div key={name} className="rounded border border-app-border p-3"><dt className="text-xs text-app-muted">{name}</dt><dd className="text-xl font-semibold">{value}</dd></div>)}
       </dl>
       {data.coverage && <BotCollectionCoverage coverage={data.coverage} />}
+      {data.archive && <BotArchiveStatus data={data.archive} />}
       {data.volatility_counterfactuals && <VolatilityWhatIf data={data.volatility_counterfactuals} />}
       {data.timing_summary && <p className="text-sm">Forecast recording delay after candle close: median {data.timing_summary.median_seconds?.toFixed(1) ?? "—"}s · 95th percentile {data.timing_summary.p95_seconds?.toFixed(1) ?? "—"}s · maximum {data.timing_summary.max_seconds?.toFixed(1) ?? "—"}s ({data.timing_summary.count} forecasts).</p>}
       {data.recent[0]?.details && <section aria-label="Latest evaluation explanation" className="rounded border border-app-border p-4 space-y-3"><h4 className="font-semibold">Latest decision · {data.recent[0].action}</h4><p className="text-sm">{data.recent[0].reason}</p><DecisionExplanation details={data.recent[0].details} /></section>}
@@ -90,7 +98,7 @@ function ForwardResultsContent({ botId, demoMode, days }: { botId: number | null
         </div>
       </div>
       {data.comparison && <BaselineComparisons comparison={data.comparison} />}
-      <div><h4 className="font-semibold">Forecast reliability</h4><p className="text-xs text-app-muted">Nonoverlapping 15-minute forecast sample. BUY and SELL are scored separately, not independent evidence. Small bins are descriptive only; no validation claim. Model versions in this period: {data.artifacts.length}.</p>
+      <div><h4 className="font-semibold">Forecast reliability</h4><p className="text-xs text-app-muted">Nonoverlapping 15-minute decision sample. BUY and SELL are scored separately, not independent evidence. Small bins are descriptive only; no validation claim. Model versions in this period: {data.artifacts.length}. {data.calibration_binding && `Calibration uses only the latest observed artifact (${data.calibration_binding.artifact?.slice(0,12) ?? "unknown"}) and payoff policy (${data.calibration_binding.payoff_semantics}).`}</p>
         <div className="grid md:grid-cols-2 gap-4 mt-2">{Object.entries(data.calibration).map(([side, score]) => <div key={side}>
           <p>{side}: {score.count} scored · Brier score {score.brier === null ? "—" : score.brier.toFixed(4)}</p>
           <table className="w-full text-xs text-left"><caption className="sr-only">{side} forecast calibration</caption><thead><tr><th>Probability band</th><th>Count</th><th>Predicted</th><th>Observed positive</th></tr></thead>

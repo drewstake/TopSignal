@@ -1,0 +1,89 @@
+"""Consistent SQLite backups plus checksum-verified cache files; never deletes.
+
+Copy the completed output off-device and run --verify there. A second directory
+on the production drive is staging, not a backup against device failure.
+"""
+import argparse
+from contextlib import closing
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import sqlite3
+from datetime import datetime, timezone
+
+
+def checksum(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def verify(root):
+    manifest = json.loads((root/'backup-manifest.json').read_text())
+    for name, expected in manifest['files'].items():
+        path = (root/name).resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():
+            raise ValueError('Invalid backup member')
+        if checksum(path) != expected['sha256'] or path.stat().st_size != expected['bytes']:
+            raise ValueError('Backup checksum mismatch: '+name)
+        if expected['sqlite']:
+            with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as db:
+                if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise ValueError('SQLite integrity failure: '+name)
+    return manifest
+
+
+def backup(source, output):
+    source, output = source.resolve(), output.resolve()
+    if not source.is_dir() or output.is_relative_to(source) or source.is_relative_to(output):
+        raise ValueError('Backup requires separate source and destination trees')
+    output.mkdir(parents=True, exist_ok=False)
+    files = {}
+    # A critical event moves spool -> archive -> transport acknowledgement.
+    # Snapshot all spools first: archive-first can miss a pre-existing event if
+    # its archive commit and spool acknowledgement happen between the copies.
+    # Other files are individually consistent, not one global point in time.
+    for path in sorted(source.rglob('*'), key=lambda p: (p.name not in {'critical-spool.sqlite3', 'optional-quotes.sqlite3'}, str(p))):
+        if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
+            raise ValueError('Reparse/symlink source requires explicit handling')
+        if not path.is_file():
+            continue
+        if path.name.endswith(('-wal', '-shm')) and path.with_name(path.name.rsplit('-', 1)[0]).is_file():
+            continue  # Consistent SQLite backup includes committed WAL pages.
+        relative = path.relative_to(source)
+        # A runtime restored from a verified backup may contain that backup's
+        # manifest. Preserve it as evidence without colliding with this one.
+        if relative.as_posix() == 'backup-manifest.json':
+            relative = Path('source-manifests') / (checksum(path) + '.json')
+        target = output/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        is_sqlite = path.suffix in {'.sqlite3', '.sqlite', '.db'}
+        if is_sqlite:
+            with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as src, closing(sqlite3.connect(target)) as dst:
+                src.backup(dst, pages=256, sleep=.01)
+        else:
+            shutil.copyfile(path, target)
+            if checksum(path) != checksum(target):
+                raise ValueError('Source changed during backup; retry into a new directory: '+str(relative))
+        files[relative.as_posix()] = dict(sha256=checksum(target), bytes=target.stat().st_size, sqlite=is_sqlite)
+    (output/'backup-manifest.json').write_text(json.dumps(dict(created_at=datetime.now(timezone.utc).isoformat(), source=str(source), files=files), indent=2))
+    return verify(output)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source', type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--verify', type=Path)
+    args = parser.parse_args()
+    if args.verify:
+        result = verify(args.verify.resolve())
+    elif args.source and args.output:
+        result = backup(args.source, args.output)
+    else:
+        parser.error('Use --verify or both --source and --output')
+    print(json.dumps({'verified_files': len(result['files']), 'bytes': sum(f['bytes'] for f in result['files'].values())}))
+
+
+if __name__ == '__main__':
+    main()

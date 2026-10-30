@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -85,24 +85,106 @@ describe("OrderBookPanel", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("renders best bid and ask, spread, and state without level or trading controls", () => {
+  it("renders a full-depth ladder with a level selector, spread, and state", () => {
     const markup = renderToStaticMarkup(
       <OrderBookPanel contractId="CON.F.US.MNQ.U26" symbol="MNQ" />,
     );
 
     expect(markup).toContain("Order Book");
-    expect(markup).toContain('title="MNQ · CON.F.US.MNQ.U26 · Level 1 best bid and ask"');
-    expect(markup).not.toContain("aggregate size by price");
-    expect(markup).not.toContain("Level 1 · Best bid and ask.");
+    expect(markup).toContain('title="MNQ · CON.F.US.MNQ.U26 · Level 2 market depth"');
+    expect(markup).toContain("Size in contracts");
+    expect(markup).toContain("All received price levels");
     expect(markup).toContain("Loading");
     expect(markup).toContain("Loading order book…");
-    expect(markup).toContain(">ask</span>");
-    expect(markup).toContain(">bid</span>");
+    expect(markup).toContain("Bids");
+    expect(markup).toContain("Asks");
     expect(markup).toContain("Spread");
-    expect(markup).not.toContain("<select");
-    expect(markup).not.toContain("Levels / side");
+    expect(markup).toContain("<select");
+    expect(markup).toContain("Levels per side");
     expect(markup).not.toContain("Buy");
     expect(markup).not.toContain("Sell");
+  });
+
+  it("displays every received level beyond 50 and changes the view without reopening the stream", () => {
+    const contractId = "CON.F.US.MNQ.Z26";
+    const streamFactory = vi.fn<MarketDepthStreamFactory>(() => vi.fn());
+    const { container } = render(<OrderBookPanel contractId={contractId} streamFactory={streamFactory} />);
+    const callbacks = streamFactory.mock.calls[0][1];
+    act(() => {
+      callbacks.onState({ contract_id: contractId, state: "connected" });
+      callbacks.onSnapshot({ contract_id: contractId, sequence: 1, timestamp: "2026-10-30T12:00:00Z",
+        bids: Array.from({ length: 75 }, (_, i) => ({ price: 20000 - i * 0.25, size: i + 1 })).reverse(),
+        asks: Array.from({ length: 80 }, (_, i) => ({ price: 20000.25 + i * 0.25, size: i + 1 })).reverse(),
+      });
+    });
+    const prices = (side: string) => Array.from(container.querySelectorAll(`[data-order-book-side="${side}"] [data-price]`))
+      .map((node) => Number(node.getAttribute("data-price")));
+    expect(prices("bids")).toHaveLength(75);
+    expect(prices("asks")).toHaveLength(80);
+    expect(prices("bids").slice(0, 2)).toEqual([20000, 19999.75]);
+    expect(prices("asks").slice(0, 2)).toEqual([20000.25, 20000.5]);
+    expect(screen.getByLabelText("bid 19,981.50, aggregate size 75")).toBeDefined();
+    expect(screen.getByLabelText("Spread 0.25")).toBeDefined();
+
+    const selector = screen.getByRole("combobox", { name: "Visible order book levels per side" });
+    for (const count of [10, 20, 50]) {
+      fireEvent.change(selector, { target: { value: String(count) } });
+      expect(prices("bids")).toHaveLength(count);
+      expect(prices("asks")).toHaveLength(count);
+      expect(screen.getByText(`(${count} of 75)`)).toBeDefined();
+    }
+    act(() => {
+      callbacks.onUpdate({ contract_id: contractId, sequence: 2, timestamp: "2026-10-30T12:00:01Z",
+        side: "bid", price: 19981.5, size: 99 });
+    });
+    fireEvent.change(selector, { target: { value: "all" } });
+    expect(prices("bids")).toHaveLength(75);
+    expect(screen.getByLabelText("bid 19,981.50, aggregate size 99")).toBeDefined();
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      callbacks.onUpdate({ contract_id: contractId, sequence: 3, timestamp: "2026-10-30T12:00:02Z",
+        side: "ask", price: 20020.25, size: 11 });
+      callbacks.onUpdate({ contract_id: contractId, sequence: 4, timestamp: "2026-10-30T12:00:03Z",
+        side: "bid", price: 19981.5, size: 0 });
+    });
+    expect(prices("asks")).toHaveLength(81);
+    expect(screen.getByLabelText("ask 20,020.25, aggregate size 11")).toBeDefined();
+    expect(prices("bids")).toHaveLength(74);
+    expect(screen.queryByLabelText("bid 19,981.50, aggregate size 99")).toBeNull();
+
+    act(() => {
+      callbacks.onState({ contract_id: contractId, state: "reconnecting" });
+    });
+    expect(screen.getByText(/Showing last received depth/)).toBeDefined();
+    act(() => {
+      callbacks.onSnapshot({ contract_id: contractId, sequence: 1, timestamp: null, bids: [], asks: [], reset: true });
+      callbacks.onState({ contract_id: contractId, state: "connected" });
+      callbacks.onUpdate({ contract_id: contractId, sequence: 2, timestamp: "2026-10-30T12:00:04Z",
+        side: "bid", price: 20000, size: 3 });
+    });
+    expect(prices("asks")).toEqual([]);
+    expect(prices("bids")).toEqual([20000]);
+    expect(screen.getByLabelText("Best bid 20,000.00, aggregate size 3")).toBeDefined();
+    expect(screen.queryByText(/Showing last received depth/)).toBeNull();
+  });
+
+  it("clears the full ladder on contract change and ignores callbacks from the old stream", () => {
+    const streamFactory = vi.fn<MarketDepthStreamFactory>(() => vi.fn());
+    const { container, rerender } = render(<OrderBookPanel contractId="MNQ" streamFactory={streamFactory} />);
+    const previous = streamFactory.mock.calls[0][1];
+    act(() => {
+      previous.onSnapshot({ contract_id: "MNQ", sequence: 1, timestamp: null,
+        bids: Array.from({ length: 75 }, (_, i) => ({ price: 20000 - i, size: 1 })), asks: [] });
+    });
+    expect(container.querySelectorAll("[data-price]")).toHaveLength(75);
+    rerender(<OrderBookPanel contractId="NQ" streamFactory={streamFactory} />);
+    act(() => {
+      previous.onSnapshot({ contract_id: "MNQ", sequence: 2, timestamp: null,
+        bids: [{ price: 20000, size: 99 }], asks: [] });
+    });
+    expect(container.querySelectorAll("[data-price]")).toHaveLength(0);
+    expect(streamFactory).toHaveBeenCalledTimes(2);
   });
 
   it("renders an explicit unavailable state when no bot contract is selected", () => {

@@ -73,10 +73,14 @@ def purged_partition(samples: Sequence[Sample], days: list[str], *, next_boundar
 
 
 def probability_scores(model: PathModel, samples: Sequence[Sample], costs: Costs) -> dict:
+    from .probabilistic_payoff import PAPER_PAYOFF
+    offset = 1 if model.payoff_semantics == PAPER_PAYOFF else 0
     brier, logs, crps, probabilities, outcomes = [], [], [], [], []
     score_days = []
     paths = model.paths
     for sample in samples:
+        if sample.payoff_semantics != model.payoff_semantics:
+            raise ValueError('Evaluation label payoff semantics mismatch')
         w = model.weights(sample.features)
         # A predeclared side on the non-overlapping 15-minute lattice: never
         # count complementary BUY/SELL outcomes as independent evidence.
@@ -85,9 +89,9 @@ def probability_scores(model: PathModel, samples: Sequence[Sample], costs: Costs
             continue
         for side in (1,):
             scale = sample.features.volatility * math.sqrt(HORIZON)
-            values, _, _ = price_paths(paths, stop=sample.features.stop_points, scale=scale, side=side, costs=costs)
+            values, _, _ = price_paths(paths, stop=sample.features.stop_points, scale=scale, side=side, costs=costs, entry_offset_bars=offset)
             observed = float(price_paths(np.asarray([sample.path]), stop=sample.features.stop_points,
-                                        scale=scale, side=side, costs=costs)[0][0])
+                                        scale=scale, side=side, costs=costs, entry_offset_bars=offset)[0][0])
             p = float(np.sum(w[values > 0]))
             outcome = int(observed > 0)
             brier.append((p - outcome) ** 2)
@@ -147,6 +151,8 @@ def calibrate(model: PathModel, samples: Sequence[Sample], costs: Costs, grid: l
 def simulate(model: PathModel, samples: Sequence[Sample], costs: Costs, days: list[str], *,
              rule: str = "model", trade_through_ticks: int = 0) -> list[dict]:
     """Evaluate each new close; one position, fixed size, unchanged daily limits."""
+    from .probabilistic_payoff import PAPER_PAYOFF
+    offset = 1 if model.payoff_semantics == PAPER_PAYOFF else 0
     daily = dict.fromkeys(days, 0.0)
     counts = dict.fromkeys(days, 0)
     busy_until = None
@@ -154,6 +160,8 @@ def simulate(model: PathModel, samples: Sequence[Sample], costs: Costs, days: li
     ledger = []
     vol_boundary = float(np.median([s.features.volatility for s in model.samples]))
     for sample in samples:
+        if sample.payoff_semantics != model.payoff_semantics:
+            raise ValueError('Evaluation label payoff semantics mismatch')
         f = sample.features
         if (busy_until is not None and f.decision_at < busy_until) or (
             last_entry is not None and (f.decision_at - last_entry).total_seconds() < registered_protocol()["cooldown_seconds"]
@@ -175,9 +183,9 @@ def simulate(model: PathModel, samples: Sequence[Sample], costs: Costs, days: li
             continue
         net, kind, duration = price_paths(np.asarray([sample.path]), stop=f.stop_points,
                                          scale=f.volatility * math.sqrt(HORIZON), trade_through_ticks=trade_through_ticks,
-                                         side=1 if action == "BUY" else -1, costs=costs)
+                                         side=1 if action == "BUY" else -1, costs=costs, entry_offset_bars=offset)
         bars = int(duration[0])
-        entry_at = sample.label_end - HORIZON * BAR
+        entry_at = sample.label_end - (HORIZON-offset) * BAR
         busy_until = entry_at + bars * BAR
         last_entry = entry_at
         daily[f.day] = daily.get(f.day, 0) + float(net[0])

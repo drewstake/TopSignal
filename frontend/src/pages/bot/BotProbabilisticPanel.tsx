@@ -6,13 +6,14 @@ const probability = (value: number) => Number.isFinite(value) && value >= 0 && v
 
 export function BotProbabilisticPanel({ research, selectedStrategy = false, live = false }: { research: BotProbabilisticResearch; selectedStrategy?: boolean; live?: boolean }) {
   const forecasts = research.probability_basis === "uncalibrated_model_estimate" ? research.forecasts : null;
+  const outsideHours = !forecasts && research.reasons.some(reason => /outside_research_session|exchange_session_closed|entry_too_close_to_session_close/.test(reason));
   const statusLabel = research.observation_only ? `Unvalidated dry-run observation · no real orders${research.training_stale ? " · stale training" : ""}` : research.validation_status === "passed" ? "Reviewed evidence passed" :
     research.validation_status === "offline_passed" ? "Offline checks passed · forward evidence required" : "Validation incomplete";
   return <section className="mt-4 rounded-lg border border-app-border p-3" aria-label="Probabilistic research">
     <h4 className="text-sm font-semibold">{selectedStrategy ? `Selected mathematical strategy · ${live ? "Experimental Practice" : "Dry Run"}` : "Probabilistic research · Dry Run shadow"}</h4>
     <p className="mt-2 text-sm font-medium">{statusLabel}</p>
     <p className="mt-1 text-xs leading-5 text-app-muted">{research.horizon_minutes}-minute horizon · {research.model_version}. {selectedStrategy ? "This forecast supplies the strategy decision above. Account and risk checks determine the final execution outcome." : "Research estimates do not authorize orders or replace the strategy decision above."}</p>
-    <p className="mt-2 text-xs leading-5 text-amber-200">{forecasts ? "Uncalibrated model probabilities. These are experimental estimates, not validated success rates or heuristic indicator scores." : "Outcome probabilities, expected payoff and model uncertainty are unavailable until a suitable model and fresh data are available."}</p>
+    <p className="mt-2 text-xs leading-5 text-amber-200">{forecasts ? "Uncalibrated model probabilities. These are experimental estimates, not validated success rates or heuristic indicator scores." : outsideHours ? "Outside the permitted entry window. No numerical forecast is expected; this does not establish a missing or invalid model." : "Outcome probabilities, expected payoff and model uncertainty are unavailable until a suitable model and fresh data are available."}</p>
     {forecasts && <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-xs">
       <caption className="sr-only">Experimental payoff comparison per one MNQ contract</caption>
       <thead><tr>{["Action", "P(net profit)", "Expected net", "Uncertainty penalty", "Lower utility"].map(label => <th key={label} className="px-2 py-2 font-medium">{label}</th>)}</tr></thead>

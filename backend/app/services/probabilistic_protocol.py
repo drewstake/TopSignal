@@ -32,7 +32,7 @@ def implementation_sha() -> str:
     services = root / "backend/app/services"
     paths = [*sorted(services.glob("probabilistic_*.py")),
              *(services / name for name in ("topbot_session.py", "topbot_mathematical.py",
-                 "topbot_time_exit.py", "topbot.py", "bot_service.py", "bot_risk.py", "trading_day.py", "databento_cache.py", "depth_model.py", "observation_results.py", "forward_results.py", "forward_evaluation.py")),
+                 "topbot_time_exit.py", "topbot.py", "bot_service.py", "bot_risk.py", "simulation_eligibility.py", "trading_day.py", "databento_cache.py", "depth_model.py", "observation_results.py", "forward_results.py", "forward_evaluation.py")),
              root / "backend/tools/research_probabilistic_v3.py", root / "backend/tools/fit_observation_model.py", root / "backend/requirements.txt"]
     # Canonical newlines make this stable across Windows and Linux checkouts.
     return digest({p.relative_to(root).as_posix(): sha256(p.read_text(encoding="utf-8").encode()).hexdigest() for p in paths})

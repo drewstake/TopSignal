@@ -4,6 +4,8 @@ import copy
 import json
 import pytest
 from app.services import forward_results as f
+from app.services.probabilistic_payoff import PAPER_PAYOFF, execution_window
+from paper_fixtures import eligible
 
 NOW = datetime(2026,10,22,14,0,20,tzinfo=timezone.utc)
 CONTRACT='CON.F.US.MNQ.Z26'
@@ -21,6 +23,7 @@ def candle(minute, low=99., high=101., close=100.):
 
 def forecast():
     return dict(observation_only=True,routing_allowed=False,training_paths=1000,data_status='fresh',
+                payoff_semantics=PAPER_PAYOFF, **execution_window(NOW.replace(second=0), NOW),
                 research_action='BUY',stop_points=4.,target_points=6.,artifact_sha256='test',
                 candle_close_timestamp=NOW.replace(second=0).isoformat(),
                 forecasts={s:dict(effective_days=40,lower_utility_usd=2.,probability_net_positive=.6) for s in ('BUY','SELL')})
@@ -31,6 +34,10 @@ def ingest(root, now=NOW, **kwargs):
     # 13:55, preceding the 14:00 forecast.
     values['candles'][0].candle_timestamp-=timedelta(hours=1)
     values.update(kwargs)
+    if values['forecast'].get('payoff_semantics') == PAPER_PAYOFF:
+        values['forecast'].update(execution_window(datetime.fromisoformat(values['forecast']['candle_close_timestamp']), now))
+    values.setdefault('simulation_eligibility', eligible(datetime.fromisoformat(values['forecast'].get('candle_close_timestamp', now.replace(second=0).isoformat())),
+                      owner=values['owner'], account=values['account'], config=values['config'], contract=values['contract']))
     f.ingest(**values)
 
 def test_retries_restart_and_future_fill(tmp_path):
@@ -77,6 +84,7 @@ def test_stop_before_target_and_closed_drawdown(tmp_path):
 
 def test_limits_and_no_overlapping_positions():
     rec=dict(stage='qualified_signal',forecast=forecast(),action='BUY',status='dry_run_attempt',id='test',contract=CONTRACT,at=NOW.isoformat(),close=NOW.replace(second=0).isoformat())
+    rec['simulation_eligibility'] = eligible(NOW.replace(second=0))
     state=f.initial()
     assert f.admission(state,rec,NOW)=='paper_entry_queued'
     assert f.admission(state,rec,NOW)=='paper_position_open'

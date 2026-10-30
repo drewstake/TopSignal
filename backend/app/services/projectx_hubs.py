@@ -134,6 +134,8 @@ class ProjectXHubRunner:
         user_account_refresh_seconds: float = 240.0,
         on_user_account: Callable[[Mapping[str, Any]], None] | None = None,
         on_user_disconnect: Callable[[], None] | None = None,
+        archive_contracts: tuple[str, ...] = (),
+        on_archive_event: Callable[[str, Mapping[str, Any]], None] | None = None,
     ):
         self._tracker = tracker
         self._client_factory = client_factory
@@ -163,6 +165,8 @@ class ProjectXHubRunner:
         )
         self._on_user_account = on_user_account
         self._on_user_disconnect = on_user_disconnect
+        self._archive_contracts = archive_contracts
+        self._on_archive_event = on_archive_event
         self._dispatch_circuits: dict[str, _DispatchCircuit] = {}
 
     async def run_forever(self) -> None:
@@ -279,8 +283,16 @@ class ProjectXHubRunner:
                             *_default_user_subscription_messages(self._account_id),
                             *subscription_messages,
                         ]
+                    elif self._archive_contracts:
+                        subscription_messages = [
+                            {"type": 1, "target": "SubscribeContractQuotes", "arguments": [contract]}
+                            for contract in self._archive_contracts
+                        ]
+                    # Do not duplicate an existing subscription from configuration.
+                    subscription_messages = list({json.dumps(m, sort_keys=True): m for m in subscription_messages}.values())
                     for message in subscription_messages:
                         await websocket.send(json.dumps(message) + _SIGNALR_RECORD_SEPARATOR)
+                    self._archive_connection_event(stream_kind, 'connected_subscriptions_sent')
                     for frame in initial_frames:
                         self._dispatch_frame(stream_kind, frame)
 
@@ -307,10 +319,12 @@ class ProjectXHubRunner:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
             except asyncio.CancelledError:
+                self._archive_connection_event(stream_kind, 'disconnected_cancelled')
                 if stream_kind == "user":
                     self._notify_user_disconnect()
                 raise
             except Exception as exc:
+                self._archive_connection_event(stream_kind, 'disconnected_' + type(exc).__name__)
                 if stream_kind == "user":
                     self._notify_user_disconnect()
                 if connected_at is not None and time.monotonic() - connected_at >= 60.0:
@@ -356,6 +370,20 @@ class ProjectXHubRunner:
         arguments = frame.get("arguments")
         if not isinstance(arguments, list):
             return
+
+        target_name = str(frame.get("target") or "")
+        if self._on_archive_event is not None and target_name in {"GatewayQuote", "GatewayUserOrder", "GatewayUserTrade", "GatewayUserPosition"}:
+            for argument in arguments:
+                if isinstance(argument, Mapping):
+                    archived = dict(argument)
+                    if target_name == "GatewayQuote" and arguments and isinstance(arguments[0], str):
+                        archived.setdefault("contractId", arguments[0])
+                    try:
+                        self._on_archive_event(target_name, archived)
+                    except Exception as exc:
+                        logger.error("market_archive_hub_callback_failed", extra={"error_type": type(exc).__name__})
+            if target_name == "GatewayQuote":
+                return
 
         if stream_kind == "market" and len(arguments) >= 2 and isinstance(arguments[0], str) and isinstance(arguments[1], Mapping):
             payload = dict(arguments[1])
@@ -433,7 +461,21 @@ class ProjectXHubRunner:
             return
         if not isinstance(simulated, bool):
             raise ValueError("GatewayUserAccount omitted a boolean simulated classification")
+        if self._on_archive_event is not None:
+            try:
+                self._on_archive_event('GatewayUserAccount', {**payload, 'accountId': account_id, 'simulated': simulated})
+            except Exception as exc:
+                logger.error('market_archive_account_failed', extra={'error_type': type(exc).__name__})
         callback({"id": account_id, "simulated": simulated})
+
+    def _archive_connection_event(self, stream: str, reason: str) -> None:
+        if self._on_archive_event is not None:
+            for contract in self._archive_contracts:
+                try:
+                    self._on_archive_event('connection', {'accountId': self._account_id, 'contractId': contract,
+                                                        'timestamp': time.time(), 'stream': stream, 'reason': reason})
+                except Exception as exc:
+                    logger.error('market_archive_connection_failed', extra={'error_type': type(exc).__name__})
 
     def _notify_user_disconnect(self) -> None:
         callback = self._on_user_disconnect

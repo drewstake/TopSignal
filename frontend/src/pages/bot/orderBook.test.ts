@@ -85,6 +85,39 @@ describe("OrderBookStore", () => {
     expect(spreadListener).not.toHaveBeenCalled();
   });
 
+  it("keeps all received levels and notifies deep slots and counts as the book grows and resets", () => {
+    const store = new OrderBookStore(CONTRACT, "all");
+    const asks = Array.from({ length: 75 }, (_, index) => level(101 + index, 5));
+    store.applySnapshot(snapshot({ asks, bids: [level(100, 20)] }));
+    expect(store.getViewSnapshot().asks).toHaveLength(75);
+    const deepListener = vi.fn();
+    const countListener = vi.fn();
+    store.subscribeAskSlot(74, deepListener);
+    store.subscribeDepth(countListener);
+    store.applyUpdate(update({ sequence: 11, side: "ask", price: 175, size: 6 }));
+    expect(store.getAskSlotSnapshot(74)?.size).toBe(6);
+    expect(deepListener).toHaveBeenCalledTimes(1);
+    expect(countListener).not.toHaveBeenCalled();
+    store.applyUpdate(update({ sequence: 12, side: "ask", price: 176, size: 5 }));
+    expect(store.getAskSlotSnapshot(75)?.price).toBe(176);
+    expect(store.getDepthSnapshot()).toEqual({ bidCount: 1, askCount: 76, visibleBidCount: 1, visibleAskCount: 76 });
+
+    store.setVisibleLevelCount(10);
+    expect(store.getAskSlotSnapshot(74)).toBeNull();
+    expect(deepListener).toHaveBeenCalledTimes(2);
+    expect(store.getDepthSnapshot().visibleAskCount).toBe(10);
+    store.setVisibleLevelCount("all");
+    expect(store.getAskSlotSnapshot(74)?.size).toBe(6);
+    expect(deepListener).toHaveBeenCalledTimes(3);
+
+    store.applySnapshot(snapshot({ sequence: 1, reset: true, asks: [], bids: [] }));
+    expect(store.getViewSnapshot().asks).toEqual([]);
+    expect(store.getAskSlotSnapshot(74)).toBeNull();
+    expect(store.getAskSlotSnapshot(75)).toBeNull();
+    expect(deepListener).toHaveBeenCalledTimes(4);
+    expect(store.getDepthSnapshot()).toEqual({ bidCount: 0, askCount: 0, visibleBidCount: 0, visibleAskCount: 0 });
+  });
+
   it("removes zero-size levels and shifts the best price incrementally", () => {
     const store = new OrderBookStore(CONTRACT, 10);
     store.applySnapshot(snapshot({
